@@ -24,19 +24,6 @@ struct DiscoverCommand: AsyncParsableCommand {
     @Flag(help: "Skip resolving the agent's version")
     var skipResolveAgentVersion: Bool = false
 
-    // Helper method for logging device counts
-    private func logDevicesFound<T: Device>(_ devices: [T], deviceType: String, logger: Logger) {
-        if json {
-            return
-        }
-
-        if devices.isEmpty {
-            Noora().info("No Wendy \(deviceType) found.")
-        } else {
-            Noora().success("Found \(devices.count) Wendy \(deviceType)")
-        }
-    }
-
     func run() async throws {
         let logger = Logger(label: "sh.wendy.cli.devices")
         let discovery = PlatformDeviceDiscovery(logger: logger)
@@ -60,7 +47,6 @@ struct DiscoverCommand: AsyncParsableCommand {
                 ) { progress in
                     await discovery.findUSBDevices()
                 }
-                logDevicesFound(usbDevices, deviceType: "USB device(s)", logger: logger)
             }
 
         case .ethernet:
@@ -75,7 +61,6 @@ struct DiscoverCommand: AsyncParsableCommand {
                 ) { progress in
                     await discovery.findEthernetInterfaces()
                 }
-                logDevicesFound(ethernetDevices, deviceType: "Ethernet interface(s)", logger: logger)
             }
 
         case .lan:
@@ -90,7 +75,6 @@ struct DiscoverCommand: AsyncParsableCommand {
                 ) { progress in
                     try await discovery.findLANDevices()
                 }
-                logDevicesFound(lanDevices, deviceType: "LAN device(s)", logger: logger)
             }
 
         case .all:
@@ -124,10 +108,6 @@ struct DiscoverCommand: AsyncParsableCommand {
                 usbDevices = devices.0
                 ethernetDevices = devices.1
                 lanDevices = devices.2
-                
-                logDevicesFound(usbDevices, deviceType: "USB device(s)", logger: logger)
-                logDevicesFound(ethernetDevices, deviceType: "Ethernet interface(s)", logger: logger)
-                logDevicesFound(lanDevices, deviceType: "LAN device(s)", logger: logger)
             }
         }
 
@@ -150,7 +130,17 @@ struct DiscoverCommand: AsyncParsableCommand {
                 logger.error("Error serializing to JSON: \(error)")
             }
         } else {
-            print(collection.toHumanReadableString())
+            if collection.isEmpty {
+                Noora().error(.alert("No Wendy devices found.", takeaways: [
+                    "Check all cables are plugged in and secure.",
+                    "Ensure the device is powered on and running.",
+                    "If the device is running, try again in a few seconds."
+                ]))
+            }
+            else {
+                Noora().success("Found \(collection.deviceCount) Wendy devices")
+                print(collection.toHumanReadableString())
+            }
         }
     }
 }
