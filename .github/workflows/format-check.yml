@@ -46,3 +46,7 @@ jobs:
             
             Then commit and push the changes.`
             });
+
+      - name: Fail Workflow
+        if: steps.format_check.outcome != 'success'
+        run: exit 1
