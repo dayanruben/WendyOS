@@ -19,12 +19,17 @@ jobs:
 
       - name: Run Swift Format Check
         id: format_check
-        run: swift format lint --recursive --strict Sources
+        run: |
+          set -o pipefail
+          swift format lint --recursive --strict Sources 2>&1 | tee format_output.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "lint_output<<'EOF'"
+            cat format_output.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          exit $status
         continue-on-error: true
-
-      - name: Fix Formatting Issues
-        if: steps.format_check.outcome != 'success'
-        run: swift format --recursive --in-place Sources
 
       - name: Comment on PR
         if: steps.format_check.outcome != 'success'
@@ -32,6 +37,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const lintOutput = `${{ steps.format_check.outputs.lint_output }}`.trim();
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -43,6 +49,15 @@ jobs:
             \`\`\`
             swift format --recursive --in-place Sources
             \`\`\`
+            
+            <details>
+            <summary>Formatting issues</summary>
+            
+            \`\`\`
+            ${lintOutput}
+            \`\`\`
+            
+            </details>
             
             Then commit and push the changes.`
             });
