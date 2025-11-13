@@ -88,7 +88,10 @@ actor ContainerMonitor {
     func markContainerStopped(_ appName: String) {
         if containerStates[appName] != nil {
             containerStates[appName]?.explicitlyStopped = true
-            logger.info("Marked container as explicitly stopped", metadata: ["container": "\(appName)"])
+            logger.info(
+                "Marked container as explicitly stopped",
+                metadata: ["container": "\(appName)"]
+            )
         }
     }
 
@@ -136,7 +139,8 @@ actor ContainerMonitor {
         tasks: [Containerd_V1_Types_Process]
     ) async {
         let appName = container.id
-        let restartPolicyLabel = container.labels["containerd.io/restart.policy"] ?? "unless-stopped"
+        let restartPolicyLabel =
+            container.labels["containerd.io/restart.policy"] ?? "unless-stopped"
         let restartPolicy = RestartPolicy(from: restartPolicyLabel)
 
         // Find the task (running state) for this container
@@ -169,7 +173,7 @@ actor ContainerMonitor {
                 "Restarting container",
                 metadata: [
                     "container": "\(appName)",
-                    "failure-count": "\(state.failureCount)"
+                    "failure-count": "\(state.failureCount)",
                 ]
             )
 
@@ -190,7 +194,7 @@ actor ContainerMonitor {
                     "Failed to restart container",
                     metadata: [
                         "container": "\(appName)",
-                        "error": "\(error)"
+                        "error": "\(error)",
                     ]
                 )
             }
@@ -234,7 +238,10 @@ actor ContainerMonitor {
     /// Run nerdctl command for container operations
     private func runNerdctl(_ args: [String]) async throws -> String {
         let fullArgs = ["--namespace", "default"] + args
-        logger.info("Running nerdctl command", metadata: ["args": "\(fullArgs.joined(separator: " "))"])
+        logger.info(
+            "Running nerdctl command",
+            metadata: ["args": "\(fullArgs.joined(separator: " "))"]
+        )
 
         do {
             let result = try await Subprocess.run(
@@ -251,10 +258,13 @@ actor ContainerMonitor {
             let stdout = result.standardOutput ?? ""
             return stdout
         } catch {
-            logger.error("Failed to run nerdctl", metadata: [
-                "command": "nerdctl \(fullArgs.joined(separator: " "))",
-                "error": "\(error)"
-            ])
+            logger.error(
+                "Failed to run nerdctl",
+                metadata: [
+                    "command": "nerdctl \(fullArgs.joined(separator: " "))",
+                    "error": "\(error)",
+                ]
+            )
             throw error
         }
     }
