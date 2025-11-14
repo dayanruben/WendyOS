@@ -56,7 +56,7 @@ actor ContainerMonitor: Service {
         logger.info("Starting container monitor service")
 
         // Wait for containerd to be ready
-        await waitForContainerd()
+        try await waitForContainerd()
 
         try await withGracefulShutdownHandler {
             while !Task.isCancelled {
@@ -76,7 +76,7 @@ actor ContainerMonitor: Service {
     }
 
     /// Wait for containerd to become available
-    private func waitForContainerd() async {
+    private func waitForContainerd() async throws {
         let maxAttempts = 30
         let delayBetweenAttempts: UInt64 = 1_000_000_000
 
@@ -113,7 +113,7 @@ actor ContainerMonitor: Service {
 
                 // Don't sleep on the last attempt
                 if attempt < maxAttempts {
-                    try? await Task.sleep(nanoseconds: delayBetweenAttempts)
+                    try await Task.sleep(nanoseconds: delayBetweenAttempts)
                 }
             }
         }
