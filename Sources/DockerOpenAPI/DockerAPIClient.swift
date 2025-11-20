@@ -5,15 +5,15 @@
 //  Wrapper for DockerOpenAPI proto-generated code
 //
 
-import Foundation
 import AsyncHTTPClient
-import OpenAPIAsyncHTTPClient
-import OpenAPIRuntime
+import Foundation
+import Logging
 import NIOCore
 import NIOHTTP1
 import NIOPosix
 import NIOTransportServices
-import Logging
+import OpenAPIAsyncHTTPClient
+import OpenAPIRuntime
 
 // MARK: - Data Models
 
@@ -137,9 +137,12 @@ public actor DockerAPIClient {
         tail: String? = nil
     ) async throws -> AsyncThrowingStream<LogMessage, Error> {
 
-        logger.debug("Streaming logs from container", metadata: [
-            "containerID": .string(containerID)
-        ])
+        logger.debug(
+            "Streaming logs from container",
+            metadata: [
+                "containerID": .string(containerID)
+            ]
+        )
 
         if let socketPath = self.socketPath, let eventLoopGroup = self.eventLoopGroup {
             return try await streamLogsViaUnixSocket(
@@ -188,12 +191,13 @@ public actor DockerAPIClient {
                         var buffer = ByteBuffer()
 
                         // Determine if stream is multiplexed based on content type
-                        let isMultiplexed = switch ok.body {
-                        case .applicationVnd_docker_multiplexedStream:
-                            true
-                        case .applicationVnd_docker_rawStream:
-                            false
-                        }
+                        let isMultiplexed =
+                            switch ok.body {
+                            case .applicationVnd_docker_multiplexedStream:
+                                true
+                            case .applicationVnd_docker_rawStream:
+                                false
+                            }
 
                         // Process the streaming body
                         for try await chunk in httpBody {
@@ -202,7 +206,12 @@ public actor DockerAPIClient {
                             if isMultiplexed {
                                 // Parse Docker's multiplexed format
                                 while buffer.readableBytes >= 8 {
-                                    guard let header = buffer.getBytes(at: buffer.readerIndex, length: 8) else {
+                                    guard
+                                        let header = buffer.getBytes(
+                                            at: buffer.readerIndex,
+                                            length: 8
+                                        )
+                                    else {
                                         break
                                     }
 
@@ -211,10 +220,10 @@ public actor DockerAPIClient {
                                     // [1-3]: reserved
                                     // [4-7]: frame size (big-endian)
                                     let streamType = header[0]
-                                    let frameSize = UInt32(header[4]) << 24 |
-                                                   UInt32(header[5]) << 16 |
-                                                   UInt32(header[6]) << 8 |
-                                                   UInt32(header[7])
+                                    let frameSize =
+                                        UInt32(header[4]) << 24 | UInt32(header[5]) << 16 | UInt32(
+                                            header[6]
+                                        ) << 8 | UInt32(header[7])
 
                                     let frameSizeInt = Int(frameSize)
 
@@ -232,7 +241,8 @@ public actor DockerAPIClient {
                                     }
 
                                     // Create and yield the log message
-                                    let logType: LogMessage.StreamType = streamType == 1 ? .stdout : .stderr
+                                    let logType: LogMessage.StreamType =
+                                        streamType == 1 ? .stdout : .stderr
                                     let message = LogMessage(
                                         type: logType,
                                         data: Data(data)
@@ -255,9 +265,12 @@ public actor DockerAPIClient {
 
                         continuation.finish()
                     } catch {
-                        logger.error("Error processing log stream", metadata: [
-                            "error": .string("\(error)")
-                        ])
+                        logger.error(
+                            "Error processing log stream",
+                            metadata: [
+                                "error": .string("\(error)")
+                            ]
+                        )
                         continuation.finish(throwing: error)
                     }
                 }
@@ -275,9 +288,13 @@ public actor DockerAPIClient {
     }
 
     /// List containers using proto
-    public func listContainers(all: Bool = false) async throws -> [Components.Schemas.ContainerSummary] {
+    public func listContainers(
+        all: Bool = false
+    ) async throws -> [Components.Schemas.ContainerSummary] {
         guard let client = self.client else {
-            throw DockerAPIError.connectionError(ClientError(description: "No OpenAPI client available for listing containers"))
+            throw DockerAPIError.connectionError(
+                ClientError(description: "No OpenAPI client available for listing containers")
+            )
         }
 
         let response = try await client.containerList(
@@ -300,9 +317,13 @@ public actor DockerAPIClient {
     }
 
     /// Inspect a container using proto
-    public func inspectContainer(_ containerID: String) async throws -> Components.Schemas.ContainerInspectResponse {
+    public func inspectContainer(
+        _ containerID: String
+    ) async throws -> Components.Schemas.ContainerInspectResponse {
         guard let client = self.client else {
-            throw DockerAPIError.connectionError(ClientError(description: "No OpenAPI client available for inspecting containers"))
+            throw DockerAPIError.connectionError(
+                ClientError(description: "No OpenAPI client available for inspecting containers")
+            )
         }
 
         let response = try await client.containerInspect(
@@ -381,10 +402,13 @@ public actor DockerAPIClient {
                     try await channel.pipeline.addHandler(handler).get()
 
                     // Send the request
-                    logger.debug("Sending HTTP request to Docker", metadata: [
-                        "uri": .string(uri),
-                        "follow": .string(follow ? "true" : "false")
-                    ])
+                    logger.debug(
+                        "Sending HTTP request to Docker",
+                        metadata: [
+                            "uri": .string(uri),
+                            "follow": .string(follow ? "true" : "false"),
+                        ]
+                    )
                     channel.write(HTTPClientRequestPart.head(requestHead), promise: nil)
                     channel.write(HTTPClientRequestPart.end(nil), promise: nil)
                     channel.flush()
@@ -411,9 +435,12 @@ public actor DockerAPIClient {
                         }
                     }
                 } catch {
-                    self.logger.error("Failed to stream logs via Unix socket", metadata: [
-                        "error": .string("\(error)")
-                    ])
+                    self.logger.error(
+                        "Failed to stream logs via Unix socket",
+                        metadata: [
+                            "error": .string("\(error)")
+                        ]
+                    )
                     continuation.finish(throwing: error)
                 }
             }
@@ -440,18 +467,24 @@ private final class DockerLogStreamHandler: ChannelInboundHandler, @unchecked Se
 
         switch part {
         case .head(let responseHead):
-            logger.info("Received Docker response", metadata: [
-                "status": .string("\(responseHead.status.code)"),
-                "headers": .string("\(responseHead.headers)")
-            ])
+            logger.info(
+                "Received Docker response",
+                metadata: [
+                    "status": .string("\(responseHead.status.code)"),
+                    "headers": .string("\(responseHead.headers)"),
+                ]
+            )
 
             // Validate response status
             guard responseHead.status == .ok || responseHead.status == .switchingProtocols else {
                 let error = DockerAPIError.httpError(status: responseHead.status)
-                logger.error("Docker API returned error", metadata: [
-                    "status": .string("\(responseHead.status.code)"),
-                    "reason": .string(responseHead.status.reasonPhrase)
-                ])
+                logger.error(
+                    "Docker API returned error",
+                    metadata: [
+                        "status": .string("\(responseHead.status.code)"),
+                        "reason": .string(responseHead.status.reasonPhrase),
+                    ]
+                )
                 continuation.finish(throwing: error)
                 context.close(promise: nil)
                 return
@@ -462,11 +495,16 @@ private final class DockerLogStreamHandler: ChannelInboundHandler, @unchecked Se
                 // Docker returns "application/vnd.docker.raw-stream" for TTY containers
                 // and "application/vnd.docker.multiplexed-stream" for non-TTY
                 isMultiplexed = !contentType.contains("raw-stream")
-                logger.info("Stream format detected", metadata: [
-                    "contentType": .string(contentType),
-                    "isMultiplexed": .string(isMultiplexed ? "true" : "false"),
-                    "transferEncoding": .string(responseHead.headers["transfer-encoding"].first ?? "none")
-                ])
+                logger.info(
+                    "Stream format detected",
+                    metadata: [
+                        "contentType": .string(contentType),
+                        "isMultiplexed": .string(isMultiplexed ? "true" : "false"),
+                        "transferEncoding": .string(
+                            responseHead.headers["transfer-encoding"].first ?? "none"
+                        ),
+                    ]
+                )
             }
 
         case .body(let bodyPart):
@@ -486,10 +524,9 @@ private final class DockerLogStreamHandler: ChannelInboundHandler, @unchecked Se
                     // [1-3]: reserved
                     // [4-7]: frame size (big-endian)
                     let streamType = header[0]
-                    let frameSize = UInt32(header[4]) << 24 |
-                                   UInt32(header[5]) << 16 |
-                                   UInt32(header[6]) << 8 |
-                                   UInt32(header[7])
+                    let frameSize =
+                        UInt32(header[4]) << 24 | UInt32(header[5]) << 16 | UInt32(header[6]) << 8
+                        | UInt32(header[7])
 
                     let frameSizeInt = Int(frameSize)
 
@@ -515,10 +552,13 @@ private final class DockerLogStreamHandler: ChannelInboundHandler, @unchecked Se
 
                     continuation.yield(message)
 
-                    logger.debug("Processed log frame", metadata: [
-                        "type": .string(streamType == 1 ? "stdout" : "stderr"),
-                        "size": .string("\(frameSize)")
-                    ])
+                    logger.debug(
+                        "Processed log frame",
+                        metadata: [
+                            "type": .string(streamType == 1 ? "stdout" : "stderr"),
+                            "size": .string("\(frameSize)"),
+                        ]
+                    )
                 }
             } else {
                 // For raw stream (TTY containers), all output is treated as stdout
@@ -530,9 +570,12 @@ private final class DockerLogStreamHandler: ChannelInboundHandler, @unchecked Se
                     )
                     continuation.yield(message)
 
-                    logger.debug("Processed raw stream data", metadata: [
-                        "size": .string("\(rawBytes.count)")
-                    ])
+                    logger.debug(
+                        "Processed raw stream data",
+                        metadata: [
+                            "size": .string("\(rawBytes.count)")
+                        ]
+                    )
                 }
             }
 

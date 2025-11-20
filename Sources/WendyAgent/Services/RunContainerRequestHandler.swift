@@ -1,9 +1,9 @@
 import AppConfig
+import DockerOpenAPI
 import Foundation
 import Logging
 import NIOFileSystem
 import Subprocess
-import DockerOpenAPI
 
 /// A state machine that handles the request to run a container.
 struct RunContainerRequestHandler {
@@ -330,13 +330,16 @@ struct RunContainerRequestHandler {
 
             // Start streaming logs from the container
             let logStreamingTask = Task { [eventsContinuation, containerName, logger] in
-                logger.info("Starting Docker log streaming via Unix socket API", metadata: ["container": .string(containerName)])
+                logger.info(
+                    "Starting Docker log streaming via Unix socket API",
+                    metadata: ["container": .string(containerName)]
+                )
 
                 do {
                     let dockerClient = try DockerAPIClient(
-                                socketPath: "/var/run/docker.sock",
-                                logger: logger
-                            )
+                        socketPath: "/var/run/docker.sock",
+                        logger: logger
+                    )
 
                     // Stream logs from the container
                     let logStream = try await dockerClient.streamLogs(
@@ -352,10 +355,15 @@ struct RunContainerRequestHandler {
                     await withTaskCancellationHandler {
                         do {
                             for try await logMessage in logStream {
-                                logger.debug("Received log message", metadata: [
-                                    "type": .string(logMessage.type == .stdout ? "stdout" : "stderr"),
-                                    "size": .string("\(logMessage.data.count) bytes")
-                                ])
+                                logger.debug(
+                                    "Received log message",
+                                    metadata: [
+                                        "type": .string(
+                                            logMessage.type == .stdout ? "stdout" : "stderr"
+                                        ),
+                                        "size": .string("\(logMessage.data.count) bytes"),
+                                    ]
+                                )
 
                                 let event = Event.consoleOutput(
                                     .init(
@@ -367,9 +375,12 @@ struct RunContainerRequestHandler {
                             }
                             logger.info("Docker log streaming ended normally")
                         } catch {
-                            logger.error("Error during log streaming", metadata: [
-                                "error": .string("\(error)")
-                            ])
+                            logger.error(
+                                "Error during log streaming",
+                                metadata: [
+                                    "error": .string("\(error)")
+                                ]
+                            )
                         }
                     } onCancel: {
                         logger.info("Log streaming task cancelled")
@@ -378,17 +389,23 @@ struct RunContainerRequestHandler {
                                 try await dockerClient.shutdown()
                                 logger.debug("Docker client shut down successfully")
                             } catch {
-                                logger.error("Failed to shut down Docker client", metadata: [
-                                    "error": .string("\(error)")
-                                ])
+                                logger.error(
+                                    "Failed to shut down Docker client",
+                                    metadata: [
+                                        "error": .string("\(error)")
+                                    ]
+                                )
                             }
                         }
                     }
                 } catch {
-                    logger.error("Failed to set up Docker log streaming", metadata: [
-                        "container": .string(containerName),
-                        "error": .string("\(error)")
-                    ])
+                    logger.error(
+                        "Failed to set up Docker log streaming",
+                        metadata: [
+                            "container": .string(containerName),
+                            "error": .string("\(error)"),
+                        ]
+                    )
                 }
             }
 
