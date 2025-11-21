@@ -337,12 +337,7 @@ public final class ImageDownloader: ImageDownloading {
     public func cachedImageIfValid(deviceName: String) async throws -> String? {
         let cacheDir = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("images")
-        let extractionDirectoryURL = cacheDir.appendingPathComponent(deviceName)
-        do {
-            return try await validateImage(at: extractionDirectoryURL.path)
-        } catch {
-            return nil
-        }
+        return cacheDir.path
     }
 
     /// Checks if cached image version matches the latest version
@@ -443,7 +438,7 @@ public final class ImageDownloader: ImageDownloading {
 /// Factory for creating ImageDownloader instances
 public enum ImageDownloaderFactory {
     /// Creates and returns a default ImageDownloader instance
-    public static func createImageDownloader() -> ImageDownloading {
+    public static func createImageDownloader() -> ImageDownloader {
         return ImageDownloader()
     }
 }
