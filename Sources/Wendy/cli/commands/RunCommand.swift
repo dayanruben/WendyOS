@@ -21,6 +21,7 @@ public enum ContainerRuntime: String, ExpressibleByArgument, Sendable {
 
 struct RunCommand: AsyncParsableCommand, Sendable {
     enum Error: Swift.Error, CustomStringConvertible {
+        case failedToUploadLayers(Int)
         case noExecutableTarget
         case invalidExecutableTarget(String)
         case multipleExecutableTargets([String])
@@ -28,6 +29,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
 
         var description: String {
             switch self {
+            case .failedToUploadLayers:
+                return "Failed to upload"
             case .noExecutableTarget:
                 return "No executable target found in package"
             case .invalidExecutableTarget(let name):
@@ -69,10 +72,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     var runtime: ContainerRuntime = .containerd
 
     @Option(name: .long, help: "The Swift SDK to use.")
-    var swiftSDK: String = "6.2-RELEASE_edgeos_aarch64"
+    var swiftSDK: String = "6.2.1-RELEASE_wendyos_aarch64"
 
     @Option(name: .long, help: "The Swift SDK to use.")
-    var swiftVersion: String = "+6.2-snapshot"
+    var swiftVersion: String = "+6.2.1"
 
     @Option(name: .long, help: "The base image to use. Defaults to debian:bookworm-slim.")
     var baseImage: String = "debian:bookworm-slim"
@@ -115,9 +118,25 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             )
         }
     }
-}
 
-extension RunCommand {
+    /// Compute the restart policy based on CLI flags
+    private func computeRestartPolicy() -> RestartPolicy {
+        var restartPolicy = RestartPolicy()
+
+        if noRestart {
+            restartPolicy.mode = .no
+        } else if let retries = restartOnFailureRetries {
+            restartPolicy.mode = .onFailure
+            restartPolicy.onFailureMaxRetries = Int32(retries)
+        } else if restartUnlessStoppedFlag {
+            restartPolicy.mode = .unlessStopped
+        } else {
+            restartPolicy.mode = .default
+        }
+
+        return restartPolicy
+    }
+
     func runDockerBased() async throws {
         let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let name = url.lastPathComponent.lowercased()
@@ -126,7 +145,15 @@ extension RunCommand {
             logger: Logger(label: "sh.wendy.cli.run.docker.container.docker")
         )
 
-        try await buildDockerBased(name: name)
+        try await Noora().progressStep(
+            message: "Building container",
+            successMessage: "Container built successfully!",
+            errorMessage: "Failed to build container",
+            showSpinner: true
+        ) { _ in
+            try await buildDockerBased(name: name)
+        }
+
         let output = FileManager.default.temporaryDirectory.appending(component: UUID().uuidString)
             .path()
         try await uploadDockerTar(
@@ -142,97 +169,144 @@ extension RunCommand {
         )
     }
 
-    func runContainerdBased() async throws {
-        let logger = Logger(label: "sh.wendy.cli.run.docker.container.containerd")
+    func withTCPProxyServer<T: Sendable>(
+        localHostname: String,
+        localPort: Int,
+        remoteHostname: String,
+        remotePort: Int,
+        _ withPort: @escaping @Sendable (NIOCore.SocketAddress?) async throws -> T
+    ) async throws -> T {
+        let server = try await ServerBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+            .serverChannelOption(ChannelOptions.backlog, value: numericCast(256))
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+            .bind(
+                host: localHostname,
+                port: localPort,
+                serverBackPressureStrategy: nil
+            ) { channel in
+                return channel.eventLoop.makeCompletedFuture {
+                    try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                        wrappingChannelSynchronously: channel,
+                        configuration: .init()
+                    )
+                }
+            }
 
+        func makeClient() async throws -> NIOAsyncChannel<ByteBuffer, ByteBuffer> {
+            try await ClientBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+                .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .connect(host: remoteHostname, port: remotePort) { channel in
+                    return channel.eventLoop.makeCompletedFuture {
+                        try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+                            wrappingChannelSynchronously: channel,
+                            configuration: .init()
+                        )
+                    }
+                }
+        }
+
+        let logger = Logger(label: "sh.wendy.cli.run.tcp-proxy-server")
+
+        func handleClient(client: NIOAsyncChannel<ByteBuffer, ByteBuffer>) async throws {
+            do {
+                try await client.executeThenClose { serverInbound, serverOutbound in
+                    try await makeClient().executeThenClose { clientInbound, clientOutbound in
+                        try await withThrowingTaskGroup { group in
+                            group.addTask {
+                                for try await buffer in serverInbound {
+                                    try await clientOutbound.write(buffer)
+                                }
+                            }
+                            group.addTask {
+                                for try await buffer in clientInbound {
+                                    try await serverOutbound.write(buffer)
+                                }
+                            }
+                            try await group.waitForAll()
+                        }
+                    }
+                }
+            } catch {
+                logger.error("Failed to handle client", metadata: ["error": .string("\(error)")])
+            }
+        }
+
+        return try await server.executeThenClose { clients in
+            try await withThrowingTaskGroup { group in
+                group.addTask {
+                    try await withThrowingDiscardingTaskGroup { group in
+                        for try await client in clients {
+                            group.addTask {
+                                try await handleClient(client: client)
+                            }
+                        }
+                    }
+                }
+
+                defer { group.cancelAll() }
+                return try await withPort(server.channel.localAddress)
+            }
+        }
+    }
+
+    func runContainerdBased() async throws {
         let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let name = url.lastPathComponent.lowercased()
 
-        try await buildDockerBased(name: name)
-
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
-            UUID().uuidString
-        )
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-        let imageTarPath = tempDir.appendingPathComponent("\(name).tar")
-
         let docker = DockerCLI()
-        try await docker.save(name: name, output: imageTarPath.path())
-        var layers = [ContainerdLayer]()
 
-        // Extract file (tar) to temp FS
-        let extractDir = tempDir.appendingPathComponent("extract")
-        try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
-        try await extractTar(from: imageTarPath, to: extractDir)
+        let title = TerminalText(stringLiteral: "Which device do you want to run this app on?")
+        let endpoint = try await agentConnectionOptions.read(title: title)
+        try await _withAgentGRPCClient(
+            endpoint,
+            title: title
+        ) { [name] client, endpoint in
+            try await withTCPProxyServer(
+                localHostname: "localhost",
+                localPort: 0,
+                remoteHostname: endpoint.host,
+                remotePort: 8080
+            ) { proxyAddress in
+                try await Noora().progressStep(
+                    message: "Building container",
+                    successMessage: "Container built successfully!",
+                    errorMessage: "Failed to build container",
+                    showSpinner: true
+                ) { _ in
+                    try await docker.buildx(name: name, port: proxyAddress?.port ?? 8080)
+                }
 
-        // Parse manifest.json to get layer order and metadata
-        let manifestPath = extractDir.appendingPathComponent("manifest.json")
-        let manifestData = try Data(contentsOf: manifestPath)
-        let manifests = try JSONDecoder().decode([DockerManifest].self, from: manifestData)
-
-        guard let manifest = manifests.first else {
-            throw Error.noManifestFound
-        }
-
-        // Load and parse the config file
-        let configPath = extractDir.appendingPathComponent(manifest.config)
-        let configData = try Data(contentsOf: configPath)
-        let imageConfig = try JSONDecoder().decode(ImageConfig.self, from: configData)
-
-        logger.debug(
-            "Loaded container config",
-            metadata: [
-                "architecture": .string(imageConfig.architecture),
-                "os": .string(imageConfig.os),
-                "cmd": .string(imageConfig.config.cmd?.joined(separator: " ") ?? "none"),
-                "workingDir": .string(imageConfig.config.workingDir ?? "none"),
-            ]
-        )
-
-        // Process layers in the correct order from manifest
-        for layerPath in manifest.layers {
-            // Extract the digest from the layer path (e.g., "blobs/sha256/abc123..." -> "sha256:abc123...")
-            let digest = "sha256:" + String(layerPath.dropFirst("blobs/sha256/".count))
-
-            // Get layer metadata from LayerSources to detect gzip or not
-            let gzip: Bool
-            if let layerSource = manifest.layerSources?[digest] {
-                // LayerSources only exists in Docker format, not in OCI
-                // And Docker produces gzipped files
-                gzip = layerSource.mediaType.contains("gzip")
-            } else {
-                // Layer sources does not exist in OCI format
-                // OCI is not gzip-ed normally
-                gzip = true
+                try await Noora().progressStep(
+                    message: "Uploading container",
+                    successMessage: "Container uploaded successfully!",
+                    errorMessage: "Failed to upload container",
+                    showSpinner: true
+                ) { _ in
+                    try await docker.push(name: name, port: proxyAddress?.port ?? 8080)
+                }
             }
 
-            // Construct the full path to the layer file
-            let layerFile = extractDir.appendingPathComponent(layerPath)
+            // TODO: Create image might be needed here, but my tests didn't require it for some reason
 
-            guard let info = try await FileSystem.shared.info(forFileAt: FilePath(layerFile.path()))
-            else {
-                logger.warning("Layer file not found: \(layerFile.path)")
-                continue
-            }
-
-            layers.append(
-                ContainerdLayer(
-                    source: .path(layerFile),
-                    digest: digest,
-                    diffID: digest,
-                    size: info.size,
-                    gzip: gzip
+            try await Noora().progressStep(
+                message: "Preparing app",
+                successMessage: "App ready to start",
+                errorMessage: "Failed to prepare app",
+                showSpinner: true
+            ) { _ in
+                try await createContainerdContainer(
+                    appName: name,
+                    client: client
                 )
+            }
+
+            try await startContainerdContainer(
+                imageName: name,
+                client: client
             )
         }
-
-        try await uploadAndRunContainerdContainer(
-            layers: layers,
-            imageName: name,
-            config: imageConfig,
-            logger: logger
-        )
     }
 
     struct ContainerdLayer: Sendable {
@@ -246,14 +320,21 @@ extension RunCommand {
         let diffID: String
         let size: Int64
         let gzip: Bool
+        let logger = Logger(label: "sh.wendy.cli.run.containerd.layer.stream")
 
         func withStream(_ write: (ArraySlice<UInt8>) async throws -> Void) async throws {
             switch source {
             case .path(let url):
+                logger.debug("Reading layer from path", metadata: ["path": .string(url.path())])
                 try await FileSystem.shared.withFileHandle(
                     forReadingAt: FilePath(url.path())
                 ) { fileHandle in
+                    logger.debug("Reading layer from file handle")
                     for try await chunk in fileHandle.readChunks() {
+                        logger.trace(
+                            "Reading layer chunk",
+                            metadata: ["size": .string("\(chunk.readableBytesView.count) bytes")]
+                        )
                         try await write(Array(buffer: chunk)[...])
                     }
                 }
@@ -346,8 +427,6 @@ extension RunCommand {
 
         let appConfigData = try await readAppConfigData(logger: logger)
 
-        print("Getting container layers")
-
         try await withAgentGRPCClient(
             agentConnectionOptions,
             title: "Which device do you want to run this app on?"
@@ -376,23 +455,58 @@ extension RunCommand {
             // satisfy the disk more by making more streams. Many streams share a TCP connection
             try await withThrowingTaskGroup { taskGroup in
                 actor LayersUploaded {
-                    var layersUploading = 0
-                    var layersUploaded = 0
-                    var status: String {
-                        "Layers uploading \(layersUploaded)/\(layersUploading)"
-                    }
-                    nonisolated let (statusChange, continuation) = AsyncStream<String>.makeStream()
+                    var status = Status()
 
-                    func incrementUploading() {
-                        layersUploading += 1
+                    struct Status: Sendable {
+                        var layersUploading = 0
+                        var layersUploaded = 0
+                        var layersFailedUploaded = 0
+                        var expectedBytes: Int64 = 0
+                        var uploadedBytes: Int64 = 0
+                        var progress: Double {
+                            return Double(uploadedBytes) / Double(expectedBytes)
+                        }
+
+                        var message: String {
+                            if layersFailedUploaded > 0 {
+                                return
+                                    "Layers uploading \(layersUploaded)/\(layersUploading) (failed: \(layersFailedUploaded))"
+                            } else {
+                                return "Layers uploading \(layersUploaded)/\(layersUploading)"
+                            }
+                        }
+                    }
+                    nonisolated let (statusChange, continuation) = AsyncStream<Status>.makeStream(
+                        bufferingPolicy: .bufferingNewest(1)
+                    )
+
+                    func incrementUploading(_ bytes: Int64) {
+                        status.layersUploading += 1
+                        status.expectedBytes += bytes
                         continuation.yield(status)
+                    }
+
+                    func uploaded(_ bytes: Int64) {
+                        status.uploadedBytes += bytes
+                        continuation.yield(status)
+                        checkFinished()
                     }
 
                     func incrementUploaded() {
-                        layersUploaded += 1
+                        status.layersUploaded += 1
                         continuation.yield(status)
+                        checkFinished()
+                    }
 
-                        if layersUploaded == layersUploading {
+                    func incrementFailedUploaded(error: any Swift.Error) {
+                        status.layersFailedUploaded += 1
+                        status.layersUploading -= 1
+                        continuation.yield(status)
+                        checkFinished()
+                    }
+
+                    private func checkFinished() {
+                        if status.layersUploaded == status.layersUploading {
                             finish()
                         }
                     }
@@ -409,46 +523,85 @@ extension RunCommand {
                 let layersUploaded = LayersUploaded()
                 let layersToUpload = layers.filter { !existingHashes.contains($0.digest) }
 
-                if !layersToUpload.isEmpty {
+                if layersToUpload.isEmpty {
+                    Noora().info("All layers are already uploaded")
+                } else {
                     for layer in layersToUpload {
-                        await layersUploaded.incrementUploading()
+                        await layersUploaded.incrementUploading(layer.size)
                         taskGroup.addTask {
                             // Upload layers that have changed or are new
                             logger.debug(
                                 "Uploading layer to agent",
                                 metadata: ["digest": .string(layer.digest)]
                             )
-                            try await agentContainers.writeLayer(
-                                request: .init { writer in
-                                    try await layer.withStream { chunk in
-                                        try await writer.write(
-                                            .with {
-                                                $0.digest = layer.digest
-                                                $0.data = Data(chunk)
-                                            }
+                            do {
+                                try await agentContainers.writeLayer(
+                                    request: .init { writer in
+                                        try await layer.withStream { chunk in
+                                            try await writer.write(
+                                                .with {
+                                                    $0.digest = layer.digest
+                                                    $0.data = Data(chunk)
+                                                }
+                                            )
+                                            await layersUploaded.uploaded(Int64(chunk.count))
+                                        }
+                                    }
+                                ) { response in
+                                    do {
+                                        for try await message in response.messages {
+                                            // Ignore responses
+                                            logger.trace(
+                                                "Got unknown response",
+                                                metadata: [
+                                                    "digest": .string(layer.digest),
+                                                    "response": .string("\(message)"),
+                                                ]
+                                            )
+                                        }
+                                    } catch {
+                                        logger.error(
+                                            "Failed to get response",
+                                            metadata: [
+                                                "digest": .string(layer.digest),
+                                                "error": .string("\(error)"),
+                                            ]
                                         )
+                                        throw error
                                     }
                                 }
-                            ) { response in
-                                for try await _ in response.messages {
-                                    // Ignore responses
-                                }
+                                logger.debug(
+                                    "Uploaded layer successfully",
+                                    metadata: ["digest": .string(layer.digest)]
+                                )
+                                await layersUploaded.incrementUploaded()
+                            } catch {
+                                logger.error(
+                                    "Failed to upload layer",
+                                    metadata: [
+                                        "digest": .string(layer.digest),
+                                        "error": .string("\(error)"),
+                                    ]
+                                )
+
+                                logger.error(
+                                    "Failed to upload layer",
+                                    metadata: ["error": .string("\(error)")]
+                                )
+                                await layersUploaded.incrementFailedUploaded(error: error)
                             }
-                            logger.debug("Uploaded layer \(layer.digest) successfully")
-                            await layersUploaded.incrementUploaded()
                         }
                     }
 
-                    try await Noora().progressStep(
-                        message: "Uploading layers to agent",
-                        successMessage: "Layers uploaded to agent",
-                        errorMessage: "Failed to upload layers to agent",
-                        showSpinner: true
-                    ) { progress in
-                        await progress(layersUploaded.status)
-
+                    try await Noora().progressBarStep(message: "Uploading layers to agent") {
+                        progress in
                         for await status in layersUploaded.statusChange {
-                            progress(status)
+                            progress(status.progress)
+                        }
+
+                        let errors = await layersUploaded.status.layersFailedUploaded
+                        if errors > 0 {
+                            throw Error.failedToUploadLayers(errors)
                         }
                     }
                 }
@@ -460,6 +613,8 @@ extension RunCommand {
 
             logger.debug("Starting container")
 
+            let restartPolicy = computeRestartPolicy()
+
             _ = try await agentContainers.runContainer(
                 .with {
                     $0.imageName = "\(imageName):latest"
@@ -467,6 +622,7 @@ extension RunCommand {
                     $0.workingDir = config.config.workingDir ?? "/"
                     $0.cmd = config.config.cmd?.joined(separator: " ") ?? "/bin/\(imageName)"
                     $0.appConfig = appConfigData
+                    $0.restartPolicy = restartPolicy
                     $0.layers = layers.map { layer in
                         .with {
                             $0.digest = layer.digest
@@ -480,11 +636,7 @@ extension RunCommand {
                 for try await message in response.messages {
                     switch message.responseType {
                     case .started:
-                        if debug {
-                            Noora().success("Started container with debug port 4242")
-                        } else {
-                            Noora().success("Started app")
-                        }
+                        Noora().success("Started app")
 
                         if detach {
                             return
@@ -497,9 +649,91 @@ extension RunCommand {
                         stderrOutput.data.withUnsafeBytes { data in
                             _ = write(STDERR_FILENO, data.baseAddress!, data.count)
                         }
-                    default:
-                        logger.warning("Unknown message received from agent")
+                    case .none:
+                        ()
                     }
+                }
+            }
+        }
+    }
+
+    func createContainerdContainer(
+        appName: String,
+        client: GRPCClient<HTTP2ClientTransport.Posix>
+    ) async throws {
+        let logger = Logger(label: "sh.wendy.cli.run.containerd.create")
+        let agentContainers = Wendy_Agent_Services_V1_WendyContainerService.Client(
+            wrapping: client
+        )
+
+        let appConfigData = try await readAppConfigData(logger: logger)
+        _ = try await agentContainers.createContainer(
+            request: .init(
+                message: .with {
+                    $0.imageName = "\(appName):latest"
+                    $0.appName = appName
+                    $0.appConfig = appConfigData
+                    if noRestart {
+                        $0.restartPolicy = .with {
+                            $0.mode = .no
+                        }
+                    } else if let retries = restartOnFailureRetries {
+                        $0.restartPolicy = .with {
+                            $0.mode = .onFailure
+                            $0.onFailureMaxRetries = Int32(retries)
+                        }
+                    } else if restartUnlessStoppedFlag {
+                        $0.restartPolicy = .with {
+                            $0.mode = .unlessStopped
+                        }
+                    } else {
+                        $0.restartPolicy = .with {
+                            $0.mode = .default
+                        }
+                    }
+                }
+            )
+        )
+    }
+
+    func startContainerdContainer(
+        imageName: String,
+        client: GRPCClient<HTTP2ClientTransport.Posix>
+    ) async throws {
+        let logger = Logger(label: "sh.wendy.cli.run.containerd.start")
+        let agentContainers = Wendy_Agent_Services_V1_WendyContainerService.Client(
+            wrapping: client
+        )
+
+        _ = try await agentContainers.startContainer(
+            request: .init(
+                message: .with {
+                    $0.appName = imageName
+                }
+            )
+        ) { response in
+            for try await message in response.messages {
+                switch message.responseType {
+                case .started:
+                    if debug {
+                        Noora().success("Started container with debug port 4242")
+                    } else {
+                        Noora().success("Started app")
+                    }
+
+                    if detach {
+                        return
+                    }
+                case .stdoutOutput(let stdoutOutput):
+                    stdoutOutput.data.withUnsafeBytes { data in
+                        _ = write(STDOUT_FILENO, data.baseAddress!, data.count)
+                    }
+                case .stderrOutput(let stderrOutput):
+                    stderrOutput.data.withUnsafeBytes { data in
+                        _ = write(STDERR_FILENO, data.baseAddress!, data.count)
+                    }
+                default:
+                    logger.warning("Unknown message received from agent")
                 }
             }
         }
@@ -511,9 +745,7 @@ extension RunCommand {
         try await docker.build(name: name)
         logger.debug("Container built successfully!")
     }
-}
 
-extension RunCommand {
     func addSwiftPMResources(
         at buildDir: URL,
         to spec: inout ContainerImageSpec
@@ -584,72 +816,6 @@ extension RunCommand {
             }
         }
 
-        try await swiftPM.build(
-            .product(executableTarget.name),
-            .swiftSDK(swiftSDK),
-            .configuration(debug ? "debug" : "release"),
-            .scratchPath(".wendy-build"),
-            .staticSwiftStdlib
-        )
-
-        let binPath = try await swiftPM.buildWithOutput(
-            .showBinPath,
-            .product(executableTarget.name),
-            .swiftSDK(swiftSDK),
-            .configuration(debug ? "debug" : "release"),
-            .quiet,
-            .scratchPath(".wendy-build"),
-            .staticSwiftStdlib
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let buildDir = URL(fileURLWithPath: binPath)
-        let executable = buildDir.appendingPathComponent(executableTarget.name)
-
-        logger.debug("Building container with base image \(baseImage)")
-        let imageName = executableTarget.name.lowercased()
-
-        // Use the debian:bookworm-slim base image instead of a blank image
-        var imageSpec = try await ContainerImageSpec.withBaseImage(
-            baseImage: baseImage,
-            executable: executable
-        )
-
-        try await addSwiftPMResources(at: buildDir, to: &imageSpec)
-
-        if debug {
-            // Include the ds2 executable in the container image.
-            let ds2URL: URL
-            if let url = Bundle.module.url(
-                forResource: "ds2-124963fd-static-linux-arm64",
-                withExtension: nil
-            ) {
-                ds2URL = url
-            } else {
-                let url = URL(fileURLWithPath: CommandLine.arguments[0])
-                    .deletingLastPathComponent()
-                    .appending(path: "wendy-agent_wendy.bundle")
-                    .appending(path: "Contents")
-                    .appending(path: "Resources")
-                    .appending(path: "Resources")
-                    .appending(component: "ds2-124963fd-static-linux-arm64")
-
-                guard FileManager.default.fileExists(atPath: url.path()) else {
-                    fatalError("Could not find ds2 executable in bundle resources")
-                }
-
-                ds2URL = url
-            }
-
-            let ds2Files = [
-                ContainerImageSpec.Layer.File(
-                    source: ds2URL,
-                    destination: "/bin/ds2",
-                    permissions: 0o755
-                )
-            ]
-            let ds2Layer = ContainerImageSpec.Layer(files: ds2Files)
-            imageSpec.layers.append(ds2Layer)
-        }
-
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         )
@@ -657,11 +823,91 @@ extension RunCommand {
         defer {
             try? FileManager.default.removeItem(at: tempDir)
         }
-        let container = try await buildDockerContainer(
-            image: imageSpec,
-            imageName: imageName,
-            tempDir: tempDir
-        )
+        let (imageName, container) = try await Noora().progressStep(
+            message: "Building container",
+            successMessage: "Container built successfully!",
+            errorMessage: "Failed to build container",
+            showSpinner: true
+        ) { progress in
+            progress("Building Swift app")
+            try await swiftPM.build(
+                .product(executableTarget.name),
+                .swiftSDK(swiftSDK),
+                .configuration(debug ? "debug" : "release"),
+                .scratchPath(".wendy-build"),
+                .staticSwiftStdlib,
+                .xLinker("-s")
+            )
+
+            progress("Building container with base image \(baseImage)")
+            let binPath = try await swiftPM.buildWithOutput(
+                .showBinPath,
+                .product(executableTarget.name),
+                .swiftSDK(swiftSDK),
+                .configuration(debug ? "debug" : "release"),
+                .quiet,
+                .scratchPath(".wendy-build"),
+                .staticSwiftStdlib
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let buildDir = URL(fileURLWithPath: binPath)
+            let executable = buildDir.appendingPathComponent(executableTarget.name)
+
+            logger.debug("Building container with base image \(baseImage)")
+            progress("Preparing base image")
+            let imageName = executableTarget.name.lowercased()
+
+            // Use the debian:bookworm-slim base image instead of a blank image
+            var imageSpec = try await ContainerImageSpec.withBaseImage(
+                baseImage: baseImage,
+                executable: executable
+            )
+            progress("Adding Swift PM resources")
+            try await addSwiftPMResources(at: buildDir, to: &imageSpec)
+
+            progress("Adding debugger executable")
+            if debug {
+                // Include the ds2 executable in the container image.
+                let ds2URL: URL
+                if let url = Bundle.module.url(
+                    forResource: "ds2-124963fd-static-linux-arm64",
+                    withExtension: nil
+                ) {
+                    ds2URL = url
+                } else {
+                    let url = URL(fileURLWithPath: CommandLine.arguments[0])
+                        .deletingLastPathComponent()
+                        .appending(path: "wendy-agent_wendy.bundle")
+                        .appending(path: "Contents")
+                        .appending(path: "Resources")
+                        .appending(path: "Resources")
+                        .appending(component: "ds2-124963fd-static-linux-arm64")
+
+                    guard FileManager.default.fileExists(atPath: url.path()) else {
+                        fatalError("Could not find ds2 executable in bundle resources")
+                    }
+
+                    ds2URL = url
+                }
+
+                let ds2Files = [
+                    ContainerImageSpec.Layer.File(
+                        source: ds2URL,
+                        destination: "/bin/ds2",
+                        permissions: 0o755
+                    )
+                ]
+                let ds2Layer = ContainerImageSpec.Layer(files: ds2Files)
+                imageSpec.layers.append(ds2Layer)
+            }
+
+            progress("Building final container image")
+            let container = try await buildDockerContainer(
+                image: imageSpec,
+                imageName: imageName,
+                tempDir: tempDir
+            )
+            return (imageName, container)
+        }
 
         let cmd: [String]
         if debug {
@@ -745,7 +991,8 @@ extension RunCommand {
             .swiftSDK(swiftSDK),
             .configuration(debug ? "debug" : "release"),
             .scratchPath(".wendy-build"),
-            .staticSwiftStdlib
+            .staticSwiftStdlib,
+            .xLinker("-s")
         )
 
         let binPath = try await swiftPM.buildWithOutput(
@@ -835,7 +1082,14 @@ extension RunCommand {
         ) { [appConfigData] client in
             let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
-                let outputPath = try await builtContainer.value
+                let outputPath = try await Noora().progressStep(
+                    message: "Preparing container for upload",
+                    successMessage: "Container prepared for upload",
+                    errorMessage: "Failed to prepare container for upload",
+                    showSpinner: true
+                ) { progress in
+                    try await builtContainer.value
+                }
 
                 // First, send the header.
                 try await writer.write(
@@ -910,14 +1164,9 @@ extension RunCommand {
             } onResponse: { response in
                 for try await message in response.messages {
                     switch message.responseType {
-                    case .started(let started):
-                        if started.debugPort != 0 {
-                            Noora().success(
-                                "Started container with debug port \(started.debugPort)"
-                            )
-                        } else {
-                            Noora().success("Started container")
-                        }
+                    case .started:
+                        Noora().success("Started app")
+
                         if detach {
                             return
                         }
@@ -933,7 +1182,7 @@ extension RunCommand {
 
     private func readAppConfigData(logger: Logger) async throws -> Data {
         do {
-            let appConfigData = try Data(contentsOf: URL(fileURLWithPath: "wendy.json"))
+            let appConfigData = try Data(contentsOf: URL(fileURLWithPath: "./wendy.json"))
             // Validate data
             _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
             return appConfigData
@@ -961,9 +1210,9 @@ extension RunCommand {
 
     private func extractTar(from sourceURL: URL, to destinationURL: URL) async throws {
         _ = try await Subprocess.run(
-            Subprocess.Executable.path("/usr/bin/env"),
+            .name("tar"),
             arguments: Subprocess.Arguments([
-                "tar", "-xf", sourceURL.path, "-C", destinationURL.path,
+                "-xf", sourceURL.path, "-C", destinationURL.path,
             ]),
             output: .discarded
         )

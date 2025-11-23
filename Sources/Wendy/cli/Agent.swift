@@ -9,10 +9,6 @@ import _NIOFileSystem
 struct Agent {
     let client: GRPCClient<GRPCTransport>
 
-    init(client: GRPCClient<GRPCTransport>) {
-        self.client = client
-    }
-
     func provision(
         enrollmentToken: String,
         assetID: Int32,
@@ -42,19 +38,31 @@ struct Agent {
             try await agent.listWiFiNetworks(.init())
         }.networks
 
-        let ssids = Set(networks.map { $0.ssid })
-            .sorted()
-            .filter { !$0.isEmpty }
+        // Group networks by SSID and keep the one with highest signal strength
+        let uniqueNetworks = Dictionary(grouping: networks.filter { !$0.ssid.isEmpty }) { $0.ssid }
+            .compactMapValues {
+                networksWithSameSsid -> Wendy_Agent_Services_V1_ListWiFiNetworksResponse
+                    .WiFiNetwork? in
+                networksWithSameSsid.max(by: { $0.signalStrength < $1.signalStrength })
+            }
+            .values
+            .sorted(by: {
+                $0.signalStrength > $1.signalStrength
+            })
+
+        let ssids = uniqueNetworks.map { $0.ssid }
 
         let index = try await Noora().selectableTable(
-            headers: ["SSID"],
-            rows: ssids.map { ssid in
-                [ssid]
+            headers: ["SSID", "Strength"],
+            rows: uniqueNetworks.map { network in
+                let signalDisplay =
+                    network.hasSignalStrength ? "\(network.signalStrength)" : "Unknown"
+                return [network.ssid, signalDisplay]
             },
-            pageSize: networks.count
+            pageSize: uniqueNetworks.count
         )
 
-        return networks[index].ssid
+        return ssids[index]
     }
 
     func connectToWiFi(
@@ -70,49 +78,82 @@ struct Agent {
         )
     }
 
-    func update(fromBinary path: String) async throws -> Bool {
+    func update(
+        fromBinary path: String,
+        onProgress: (Double) -> Void = { _ in }
+    ) async throws -> Bool {
         let logger = Logger(label: "sh.wendyengineer.agent.update")
         let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
-        print("Pushing update...")
-        return try await agent.updateAgent { writer in
-            logger.debug("Opening file...")
-            do {
-                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(path)) {
-                    handle in
-                    logger.debug("Uploading binary...")
-                    for try await chunk in handle.readChunks() {
-                        try await writer.write(
-                            .with {
-                                $0.chunk = .with {
-                                    $0.data = Data(buffer: chunk)
-                                }
-                            }
-                        )
-                    }
+        let (progress, continuation) = AsyncStream<Double>.makeStream()
 
-                    logger.debug("Finalizing update")
-                    try await writer.write(
-                        .with {
-                            $0.control = .with {
-                                $0.command = .update(.init())
+        return try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                defer { continuation.finish() }
+                return try await agent.updateAgent { writer in
+                    logger.debug("Opening file...")
+                    do {
+                        try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(path)) {
+                            handle in
+                            let fileSize = try await handle.info().size
+                            var writtenBytes: Int64 = 0
+                            logger.debug("Uploading binary...")
+                            for try await chunk in handle.readChunks() {
+                                try await writer.write(
+                                    .with {
+                                        $0.chunk = .with {
+                                            $0.data = Data(buffer: chunk)
+                                        }
+                                    }
+                                )
+                                writtenBytes += Int64(chunk.readableBytes)
+                                continuation.yield(Double(writtenBytes) / Double(fileSize))
+                            }
+
+                            logger.debug("Finalizing update")
+                            try await writer.write(
+                                .with {
+                                    $0.control = .with {
+                                        $0.command = .update(.init())
+                                    }
+                                }
+                            )
+                        }
+                    } catch {
+                        logger.error("Failed to upload binary: \(error)")
+                        throw error
+                    }
+                } onResponse: { response in
+                    do {
+                        for try await event in response.messages {
+                            switch event.responseType {
+                            case .updated:
+                                return true
+                            case .none:
+                                ()
                             }
                         }
-                    )
-                }
-            } catch {
-                logger.error("Failed to upload binary: \(error)")
-                throw error
-            }
-        } onResponse: { response in
-            for try await event in response.messages {
-                switch event.responseType {
-                case .updated:
-                    return true
-                case .none:
-                    ()
+                        return false
+                    } catch {
+                        logger.error(
+                            "Failed to update agent",
+                            metadata: [
+                                "error": "\(error)"
+                            ]
+                        )
+                        throw error
+                    }
                 }
             }
-            return false
+
+            for await value in progress {
+                onProgress(value)
+            }
+
+            guard let result = try await group.next() else {
+                throw CancellationError()
+            }
+
+            return result
         }
     }
 }

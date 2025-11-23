@@ -1,5 +1,5 @@
 {
-  "originHash" : "15c0a212fbd28a2f7bc7d2ad7d0794980777b6e2d707994a3c2d18c4f4b02709",
+  "originHash" : "54288c54c83d082a8a90cfd087abee0aecc82d2d9405ff229d79e7fcada5d237",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -15,8 +15,17 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/edgeengineer/dbus.git",
       "state" : {
-        "revision" : "a5caca44538663af7d8a30586a69fc3590f63a82",
-        "version" : "0.2.2"
+        "revision" : "b166ef42d254a6191127a1c97b68b342bd6b2dc9",
+        "version" : "0.2.3"
+      }
+    },
+    {
+      "identity" : "dnsclient",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orlandos-nl/DNSClient.git",
+      "state" : {
+        "revision" : "2d4174e4fbe75cc2f31d2fa2d384f486e5fe63b5",
+        "version" : "2.5.0"
       }
     },
     {
@@ -29,12 +38,21 @@
       }
     },
     {
+      "identity" : "grpc-swift-extras",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/grpc/grpc-swift-extras.git",
+      "state" : {
+        "revision" : "f6fc3a28a896cb5e01365758c717a3d56c16a2b2",
+        "version" : "2.1.0"
+      }
+    },
+    {
       "identity" : "grpc-swift-nio-transport",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Joannis/grpc-swift-nio-transport.git",
+      "location" : "https://github.com/grpc/grpc-swift-nio-transport.git",
       "state" : {
-        "branch" : "jo/custom-verification-of-server",
-        "revision" : "7b5303f6a1dc44ce2e50f4c59f3cf1622379d15a"
+        "revision" : "11d1f0917aa30ca50e2c78d216e8ae8c72f42af1",
+        "version" : "2.3.0"
       }
     },
     {
@@ -69,7 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/tuist/Noora.git",
       "state" : {
-        "revision" : "259b4ad29366ba327148aaaea0e59b1c78953831"
+        "revision" : "f33556847a6d3facd51886409e23b6906b44de67",
+        "version" : "0.51.0"
       }
     },
     {
@@ -298,6 +317,15 @@
       }
     },
     {
+      "identity" : "swift-openapi-hummingbird",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/hummingbird-project/swift-openapi-hummingbird.git",
+      "state" : {
+        "revision" : "026b50b17e9afe74d4d82c883d9c37154a8b30bf",
+        "version" : "2.0.1"
+      }
+    },
+    {
       "identity" : "swift-openapi-runtime",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-openapi-runtime",
@@ -338,8 +366,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-subprocess.git",
       "state" : {
-        "revision" : "44be5d56aa4b26dc2003a67c0288a6a68366a87d",
-        "version" : "0.1.0"
+        "revision" : "44922dfe46380cd354ca4b0208e717a3e92b13dd",
+        "version" : "0.2.1"
       }
     },
     {
@@ -356,8 +384,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jpsim/Yams",
       "state" : {
-        "revision" : "d41ba4e7164c0838c6d48351f7575f7f762151fe",
-        "version" : "6.1.0"
+        "revision" : "51b5127c7fb6ffac106ad6d199aaa33c5024895f",
+        "version" : "6.2.0"
       }
     }
   ],

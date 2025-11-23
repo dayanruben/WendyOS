@@ -12,13 +12,14 @@ import WendySDK
 import X509
 import _NIOFileSystem
 
-struct AgentCommand: AsyncParsableCommand {
+struct DeviceCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "agent",
+        commandName: "device",
         abstract: "Manage the Wendy device.",
         subcommands: [
             SetupCommand.self,
             AppsCommand.self,
+            HardwareCommand.self,
             WiFiCommand.self,
             VersionCommand.self,
             UpdateCommand.self,
@@ -58,8 +59,7 @@ struct AgentCommand: AsyncParsableCommand {
 
             var latestVersion: String? = nil
 
-            if checkUpdates {
-                let releases = try await fetchReleases()
+            if checkUpdates, let releases = try? await fetchReleases() {
                 if prerelease {
                     latestVersion = releases.first?.name
                 } else {
@@ -107,7 +107,10 @@ struct AgentCommand: AsyncParsableCommand {
                 title: "Which device do you want to update?"
             ) { client in
                 let agent = Agent(client: client)
-                return try await agent.update(fromBinary: binary)
+                return try await Noora().progressBarStep(message: "Updating Device") {
+                    updateProgress in
+                    try await agent.update(fromBinary: binary, onProgress: updateProgress)
+                }
             }
 
             guard success else {
@@ -242,13 +245,9 @@ struct AgentCommand: AsyncParsableCommand {
                 }
 
                 let binary = try await downloadLatestRelease().path
-
-                let success = try await withAgentGRPCClient(
-                    endpoint,
-                    title: "Which device do you want to update?"
-                ) { client in
-                    let agent = Agent(client: client)
-                    return try await agent.update(fromBinary: binary)
+                let success = try await Noora().progressBarStep(message: "Updating Device") {
+                    updateProgress in
+                    try await agent.update(fromBinary: binary, onProgress: updateProgress)
                 }
 
                 guard success else {

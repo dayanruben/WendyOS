@@ -3,11 +3,31 @@ import ArgumentParser
 public struct AppConfig: Codable {
     public let appId: String
     public let version: String
-    public let entitlements: [Entitlement]
+    public var language: String?
+    public var entitlements: [Entitlement]
+    public var python: PythonConfig?
 
-    public init(appId: String, version: String, entitlements: [Entitlement]) {
+    public struct PythonConfig: Codable, Sendable, Hashable {
+        public struct PythonContainerConfig: Codable, Sendable, Hashable {
+            public var sourceRoot: String
+        }
+
+        public var container: PythonContainerConfig?
+
+        public init(sourceRoot: String) {
+            self.container = .init(sourceRoot: sourceRoot)
+        }
+    }
+
+    public init(
+        appId: String,
+        version: String,
+        language: String? = nil,
+        entitlements: [Entitlement]
+    ) {
         self.appId = appId
         self.version = version
+        self.language = language
         self.entitlements = entitlements
     }
 }
@@ -16,6 +36,7 @@ public enum Entitlement: Codable, Sendable, Hashable {
     case network(NetworkEntitlements)
     case bluetooth(BluetoothEntitlements)
     case video(VideoEntitlements)
+    case gpu(GPUEntitlements)
     case audio
 
     public func encode(to encoder: Encoder) throws {
@@ -33,6 +54,9 @@ public enum Entitlement: Codable, Sendable, Hashable {
         case .bluetooth(let entitlement):
             try container.encode(EntitlementType.bluetooth, forKey: .type)
             try entitlement.encode(to: encoder)
+        case .gpu(let entitlement):
+            try container.encode(EntitlementType.gpu, forKey: .type)
+            try entitlement.encode(to: encoder)
         }
     }
 
@@ -47,6 +71,8 @@ public enum Entitlement: Codable, Sendable, Hashable {
             self = .video(try VideoEntitlements(from: decoder))
         case .bluetooth:
             self = .bluetooth(try BluetoothEntitlements(from: decoder))
+        case .gpu:
+            self = .gpu(try GPUEntitlements(from: decoder))
         case .audio:
             self = .audio
         }
@@ -62,6 +88,7 @@ public enum EntitlementType: String, Codable, CaseIterable, ExpressibleByArgumen
     case video
     case audio
     case bluetooth
+    case gpu
 }
 
 public struct BluetoothEntitlements: Codable, Sendable, Hashable {
@@ -74,6 +101,10 @@ public struct BluetoothEntitlements: Codable, Sendable, Hashable {
     public init(mode: BluetoothMode) {
         self.mode = mode
     }
+}
+
+public struct GPUEntitlements: Codable, Sendable, Hashable {
+    public init() {}
 }
 
 public struct VideoEntitlements: Codable, Sendable, Hashable {

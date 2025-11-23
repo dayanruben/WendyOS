@@ -67,7 +67,13 @@ public struct PullImage {
                     logger.debug("Layer \(layer.digest) already exists")
                     continue
                 }
-                try await containerd.writeLayer(ref: layer.digest) { writer in
+                // Add labels to prevent garbage collection of pulled layers
+                let labels = [
+                    "containerd.io/gc.root": "true",
+                    "sh.wendy.layer": "true",
+                    "sh.wendy.source": "registry",
+                ]
+                try await containerd.writeLayer(ref: layer.digest, labels: labels) { writer in
                     let data = try await registry.getBlob(
                         repository: imageRef.repository,
                         digest: layer.digest
@@ -165,7 +171,6 @@ public struct PullImage {
                     try await containerd.createTask(
                         containerID: appName,
                         appName: appName,
-                        snapshotName: snapshotKey ?? "",
                         mounts: mounts,
                         stdout: stdout,
                         stderr: stderr
@@ -187,7 +192,6 @@ public struct PullImage {
                     try await containerd.createTask(
                         containerID: appName,
                         appName: appName,
-                        snapshotName: snapshotKey ?? "",
                         mounts: mounts,
                         stdout: stdout,
                         stderr: stderr

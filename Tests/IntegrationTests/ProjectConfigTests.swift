@@ -19,6 +19,7 @@ struct ProjectConfigTests {
 
         var initCommand = InitCommand()
         initCommand.projectPath = projectDir.path()
+        initCommand.language = .swift
 
         try await initCommand.run()
 
@@ -45,6 +46,8 @@ struct ProjectConfigTests {
             command.entitlementType = .video
         case .audio:
             command.entitlementType = .audio
+        case .gpu:
+            command.entitlementType = .gpu
         }
 
         try await command.run()
@@ -63,6 +66,8 @@ struct ProjectConfigTests {
         command.project = projectDir.path()
 
         switch entitlement {
+        case .gpu:
+            command.entitlementType = .gpu
         case .network(let networkEntitlements):
             command.entitlementType = .network
             command.mode = networkEntitlements.mode.rawValue

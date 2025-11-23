@@ -1,5 +1,6 @@
 import AppConfig
 import Foundation
+import Logging
 
 extension OCI {
     mutating func setDeviceCapabilities(appName: String) {
@@ -58,10 +59,35 @@ extension OCI {
         entitlements: [Entitlement],
         appName: String
     ) {
+        let logger = Logger(label: #file)
+        logger.debug(
+            "applyEntitlements called",
+            metadata: [
+                "entitlements_count": .stringConvertible(entitlements.count),
+                "entitlements": .string("\(entitlements)"),
+            ]
+        )
         var didSetDeviceCapabilities = false
 
         for entitlement in entitlements {
+            logger.trace(
+                "Processing entitlement",
+                metadata: ["entitlement": .string("\(entitlement)")]
+            )
             switch entitlement {
+            case .gpu(_):
+                logger.info("GPU entitlement detected - adding video group")
+                // Add video group (gid 44) for access to GPU devices
+                // GPU devices on Jetson are owned by group 'video' (gid 44)
+                if !self.process.user.additionalGids.contains(44) {
+                    self.process.user.additionalGids.append(44)
+                    logger.debug(
+                        "Added video group to additionalGids",
+                        metadata: [
+                            "additionalGids": .stringConvertible(self.process.user.additionalGids)
+                        ]
+                    )
+                }
             case .network(let entitlement):
                 switch entitlement.mode {
                 case .host:
