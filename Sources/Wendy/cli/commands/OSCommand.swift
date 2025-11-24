@@ -115,8 +115,6 @@ struct OSCommand: AsyncParsableCommand {
         ]
     )
 
-    // Removed legacy SetupDiskCommand. Interactive write is now the default in WriteDeviceCommand.
-
     struct ListDrivesCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "list-drives",
