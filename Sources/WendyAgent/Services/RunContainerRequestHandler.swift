@@ -352,51 +352,51 @@ struct RunContainerRequestHandler {
                     logger.info("Log streaming started successfully")
 
                     // Process log messages as they arrive
-                    await withTaskCancellationHandler {
-                        do {
-                            for try await logMessage in logStream {
-                                logger.debug(
-                                    "Received log message",
-                                    metadata: [
-                                        "type": .string(
-                                            logMessage.type == .stdout ? "stdout" : "stderr"
-                                        ),
-                                        "size": .string("\(logMessage.data.count) bytes"),
-                                    ]
-                                )
-
-                                let event = Event.consoleOutput(
-                                    .init(
-                                        type: logMessage.type == .stdout ? .stdout : .stderr,
-                                        data: logMessage.data
-                                    )
-                                )
-                                eventsContinuation.yield(event)
-                            }
-                            logger.info("Docker log streaming ended normally")
-                        } catch {
-                            logger.error(
-                                "Error during log streaming",
+                    do {
+                        for try await logMessage in logStream where !Task.isCancelled {
+                            logger.debug(
+                                "Received log message",
                                 metadata: [
-                                    "error": .string("\(error)")
+                                    "type": .string(
+                                        logMessage.type == .stdout ? "stdout" : "stderr"
+                                    ),
+                                    "size": .string("\(logMessage.data.count) bytes"),
                                 ]
                             )
-                        }
-                    } onCancel: {
-                        logger.info("Log streaming task cancelled")
-                        Task {
-                            do {
-                                try await dockerClient.shutdown()
-                                logger.debug("Docker client shut down successfully")
-                            } catch {
-                                logger.error(
-                                    "Failed to shut down Docker client",
-                                    metadata: [
-                                        "error": .string("\(error)")
-                                    ]
+
+                            let event = Event.consoleOutput(
+                                .init(
+                                    type: logMessage.type == .stdout ? .stdout : .stderr,
+                                    data: logMessage.data
                                 )
-                            }
+                            )
+                            eventsContinuation.yield(event)
                         }
+
+                        if Task.isCancelled {
+                            logger.info("Log streaming task cancelled")
+                        } else {
+                            logger.info("Docker log streaming ended normally")
+                        }
+                    } catch {
+                        logger.error(
+                            "Error during log streaming",
+                            metadata: [
+                                "error": .string("\(error)")
+                            ]
+                        )
+                    }
+
+                    do {
+                        try await dockerClient.shutdown()
+                        logger.debug("Docker client shut down successfully")
+                    } catch {
+                        logger.error(
+                            "Failed to shut down Docker client",
+                            metadata: [
+                                "error": .string("\(error)")
+                            ]
+                        )
                     }
                 } catch {
                     logger.error(
