@@ -45,12 +45,18 @@ public struct ErrorSanitizer: Sendable {
     public static func sanitize(_ error: Error) -> SanitizedError {
         let errorType = String(describing: type(of: error))
 
-        // Extract error name (last component after dots)
-        let components = errorType.components(separatedBy: ".")
-        let errorName = sanitizeName(components.last ?? "UnknownError")
+        // Get the error description which includes the case name for enums
+        let errorDescription = String(describing: error)
 
-        // Extract domain (first component, usually the command or module)
-        let domain = components.first ?? "Unknown"
+        // Extract error name from description
+        let errorName = sanitizeName(errorDescription)
+
+        // Extract domain from the full type path
+        let typeComponents = errorType.components(separatedBy: ".")
+
+        // For nested types, get the module
+        // For simple types, use the type itself
+        let domain = typeComponents.count > 1 ? typeComponents.first! : errorType
 
         return SanitizedError(
             type: errorType,
@@ -73,6 +79,13 @@ public struct ErrorSanitizer: Sendable {
     /// - Returns: A sanitized string with sensitive data replaced
     public static func sanitizeString(_ string: String) -> String {
         var sanitized = string
+        
+        // Remove URLs first (before paths, since URLs contain paths)
+        sanitized = urlPattern.stringByReplacingMatches(
+            in: sanitized,
+            range: NSRange(sanitized.startIndex..., in: sanitized),
+            withTemplate: "[URL]"
+        )
 
         // Remove file paths
         sanitized = pathPattern.stringByReplacingMatches(
@@ -93,13 +106,6 @@ public struct ErrorSanitizer: Sendable {
             in: sanitized,
             range: NSRange(sanitized.startIndex..., in: sanitized),
             withTemplate: "[EMAIL]"
-        )
-
-        // Remove URLs
-        sanitized = urlPattern.stringByReplacingMatches(
-            in: sanitized,
-            range: NSRange(sanitized.startIndex..., in: sanitized),
-            withTemplate: "[URL]"
         )
 
         return sanitized
