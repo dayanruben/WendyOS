@@ -101,7 +101,6 @@ let package = Package(
                 .target(name: "AppConfig"),
                 .target(name: "CliXPCProtocol"),
                 .target(name: "WendySDK"),
-                .target(name: "DockerOpenAPI"),
             ],
             path: "Sources/Wendy",
             resources: [
@@ -118,24 +117,6 @@ let package = Package(
         ),
 
         .target(
-            name: "ContainerdRegistry",
-            dependencies: [
-                .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "HTTPTypes", package: "swift-http-types"),
-                .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
-                .product(name: "AsyncHTTPClient", package: "async-http-client"),
-                .product(name: "OpenAPIHummingbird", package: "swift-openapi-hummingbird"),
-                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
-                .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
-                .product(name: "GRPCCore", package: "grpc-swift-2"),
-                .product(name: "Hummingbird", package: "hummingbird"),
-                .target(name: "ContainerdGRPC"),
-                .target(name: "ContainerRegistry"),
-                .target(name: "OCIRegistryOpenAPI"),
-            ]
-        ),
-
-        .target(
             name: "DockerOpenAPI",
             dependencies: [
                 .product(
@@ -147,13 +128,6 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
-            ],
-            plugins: [.plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")]
-        ),
-        .target(
-            name: "OCIRegistryOpenAPI",
-            dependencies: [
-                .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime")
             ],
             plugins: [.plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")]
         ),
@@ -195,7 +169,6 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "Yams", package: "Yams"),
-                .target(name: "ContainerdRegistry"),
                 .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "ContainerdGRPC"),
@@ -204,7 +177,6 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .target(name: "WendySDK"),
                 .target(name: "OpenTelemetryGRPC"),
-                .target(name: "DockerOpenAPI"),
             ],
             path: "Sources/WendyAgent"
         ),
