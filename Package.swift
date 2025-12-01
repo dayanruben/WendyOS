@@ -83,7 +83,6 @@ let package = Package(
                 .product(name: "DNSClient", package: "DNSClient"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
-                .target(name: "WendyCLI"),
                 .target(name: "WendyShared"),
                 .target(name: "Imager"),
                 .target(name: "ContainerRegistry"),
@@ -121,28 +120,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             plugins: [.plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")]
-        ),
-
-        /// Contains everything WendyCLI, except for the command line interface.
-        .target(
-            name: "WendyCLI",
-            dependencies: [
-                .target(name: "ContainerBuilder"),
-                .product(name: "Subprocess", package: "swift-subprocess"),
-                .product(name: "Logging", package: "swift-log"),
-            ]
-        ),
-
-        /// Tools to build OCI-compliant container images.
-        .target(
-            name: "ContainerBuilder",
-            dependencies: [
-                .product(name: "Subprocess", package: "swift-subprocess"),
-                .product(name: "_NIOFileSystem", package: "swift-nio"),
-                .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "NIOFoundationCompat", package: "swift-nio"),
-                .target(name: "ContainerRegistry"),
-            ]
         ),
 
         /// The main executable provided by wendy-agent.
