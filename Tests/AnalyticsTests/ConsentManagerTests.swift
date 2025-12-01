@@ -90,9 +90,14 @@ struct ConsentManagerAsyncTests {
 
     @Test("Analytics should be enabled by default (opt-out model)")
     func isAnalyticsEnabledByDefault() async {
-        // Ensure no relevant env vars are set
+        // Ensure no relevant env vars are set (must unset ALL CI indicators)
         unsetenv("WENDY_ANALYTICS")
         unsetenv("CI")
+        unsetenv("CONTINUOUS_INTEGRATION")
+        unsetenv("BUILD_ID")
+        unsetenv("JENKINS_URL")
+        unsetenv("GITHUB_ACTIONS")
+        unsetenv("GITLAB_CI")
 
         let consentManager = ConsentManager()
 
@@ -105,9 +110,14 @@ struct ConsentManagerAsyncTests {
     func getStatus() async {
         let consentManager = ConsentManager()
 
-        // Test with no environment variables
+        // Test with no environment variables (must unset ALL CI indicators)
         unsetenv("WENDY_ANALYTICS")
         unsetenv("CI")
+        unsetenv("CONTINUOUS_INTEGRATION")
+        unsetenv("BUILD_ID")
+        unsetenv("JENKINS_URL")
+        unsetenv("GITHUB_ACTIONS")
+        unsetenv("GITLAB_CI")
         var status = await consentManager.getStatus()
         #expect(status.contains("Analytics:"))
 

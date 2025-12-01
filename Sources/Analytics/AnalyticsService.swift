@@ -3,6 +3,22 @@ import Foundation
 import Logging
 import WendyShared
 
+// MARK: - Config Types
+
+/// Wendy configuration file structure
+private struct WendyConfig: Codable {
+    let analytics: WendyAnalyticsConfig?
+}
+
+/// Analytics configuration
+private struct WendyAnalyticsConfig: Codable {
+    let enabled: Bool?
+    let anonymousId: String?
+    let optOutDate: String?
+}
+
+// MARK: - Analytics Service
+
 /// Main service for coordinating analytics tracking
 public actor AnalyticsService {
     /// Shared instance of the analytics service
@@ -48,10 +64,8 @@ public actor AnalyticsService {
 
             if FileManager.default.fileExists(atPath: configURL.path) {
                 let data = try Data(contentsOf: configURL)
-                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                    let analytics = json["analytics"] as? [String: Any],
-                    let id = analytics["anonymousId"] as? String
-                {
+                let config = try JSONDecoder().decode(WendyConfig.self, from: data)
+                if let id = config.analytics?.anonymousId {
                     return id
                 }
             }
@@ -218,6 +232,8 @@ public actor AnalyticsService {
         await client?.flush()
     }
 }
+
+// MARK: - Platform
 
 /// Platform information for analytics
 private struct Platform {
