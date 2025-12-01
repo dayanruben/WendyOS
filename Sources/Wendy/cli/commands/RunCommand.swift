@@ -70,9 +70,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     @OptionGroup
     var agentConnectionOptions: AgentConnectionOptions
     
-    var swiftSDK: String { "6.2.1-RELEASE_wendyos_aarch64" }
-    var swiftVersion: String { "+6.2.1" }
-    var baseImage: String { "debian:bookworm-slim" }
+    var swiftVersion: String { "6.2.1" }
+    var swiftSDK: String { "\(swiftVersion)-RELEASE_wendyos_aarch64" }
 
     func run() async throws {
         let isSwiftPackage = FileManager.default.fileExists(atPath: "Package.swift")
@@ -298,7 +297,6 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             }
         }
     }
-    
 
     struct LayerSource: Codable, Sendable {
         let mediaType: String
@@ -351,227 +349,6 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         enum CodingKeys: String, CodingKey {
             case type = "type"
             case diffIds = "diff_ids"
-        }
-    }
-
-    func uploadAndRunContainerdContainer(
-        layers: [ContainerdLayer],
-        imageName: String,
-        config: ImageConfig,
-        logger: Logger
-    ) async throws {
-        if layers.isEmpty {
-            logger.warning("No layers to run")
-            return
-        }
-
-        try await withAgentGRPCClientAndEndpoint(
-            agentConnectionOptions,
-            title: "Which device do you want to run this app on?"
-        ) { client, endpoint in
-            // Upload layers in parallel
-            // This is useful because a stream can only handle one chunk at a time
-            // But the networking latency might be high enough over WiFi that we can
-            // satisfy the disk more by making more streams. Many streams share a TCP connection
-            try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-                actor LayersUploaded {
-                    var status = Status()
-                    
-                    struct Status: Sendable {
-                        var layersUploading = 0
-                        var layersUploaded = 0
-                        var layersFailedUploaded = 0
-                        var expectedBytes: Int64 = 0
-                        var uploadedBytes: Int64 = 0
-                        var progress: Double {
-                            return Double(uploadedBytes) / Double(expectedBytes)
-                        }
-                        
-                        var message: String {
-                            if layersFailedUploaded > 0 {
-                                return "Layers uploading \(layersUploaded)/\(layersUploading) (failed: \(layersFailedUploaded))"
-                            } else {
-                                return "Layers uploading \(layersUploaded)/\(layersUploading)"
-                            }
-                        }
-                    }
-                    nonisolated let (statusChange, continuation) = AsyncStream<Status>.makeStream(
-                        bufferingPolicy: .bufferingNewest(1)
-                    )
-                    
-                    func incrementUploading(_ bytes: Int64) {
-                        status.layersUploading += 1
-                        status.expectedBytes += bytes
-                        continuation.yield(status)
-                    }
-                    
-                    func uploaded(_ bytes: Int64) {
-                        status.uploadedBytes += bytes
-                        continuation.yield(status)
-                        checkFinished()
-                    }
-                    
-                    func incrementUploaded() {
-                        status.layersUploaded += 1
-                        continuation.yield(status)
-                        checkFinished()
-                    }
-                    
-                    func incrementFailedUploaded(error: any Swift.Error) {
-                        status.layersFailedUploaded += 1
-                        status.layersUploading -= 1
-                        continuation.yield(status)
-                        checkFinished()
-                    }
-                    
-                    private func checkFinished() {
-                        if status.layersUploaded == status.layersUploading {
-                            finish()
-                        }
-                    }
-                    
-                    nonisolated func finish() {
-                        continuation.finish()
-                    }
-                    
-                    deinit {
-                        finish()
-                    }
-                }
-                
-                let layersUploaded = LayersUploaded()
-                let repository = ImageReference(
-                    registry: "\(endpoint.host):5000",
-                    repository: imageName,
-                    reference: "latest"
-                )
-                let registry = try await RegistryClient(
-                    registry: "\(endpoint.host):5000",
-                    insecure: true
-                )
-                for layer in layers {
-                    await layersUploaded.incrementUploading(layer.size)
-                    taskGroup.addTask {
-                        // Upload layers that have changed or are new
-                        logger.debug(
-                            "Uploading layer to agent",
-                            metadata: ["digest": .string(layer.digest)]
-                        )
-                        do {
-                            if try await registry.blobExists(repository: repository.repository, digest: layer.digest) {
-                                logger.debug(
-                                    "Layer already exists in registry",
-                                    metadata: ["digest": .string(layer.digest)]
-                                )
-                                await layersUploaded.incrementUploaded()
-                                return
-                            }
-                            
-                            let uploaded = try await layer.withData { data in
-                                return try await registry.putBlob(
-                                    repository: repository.repository,
-                                    data: data
-                                )
-                            }
-                            guard uploaded.digest == layer.digest else {
-                                throw RegistryClientError.digestMismatch(expected: layer.digest, registry: uploaded.digest)
-                            }
-                            logger.debug(
-                                "Uploaded layer successfully",
-                                metadata: ["digest": .string(layer.digest)]
-                            )
-                            await layersUploaded.incrementUploaded()
-                        } catch {
-                            logger.error(
-                                "Failed to upload layer",
-                                metadata: [
-                                    "digest": .string(layer.digest),
-                                    "error": .string("\(error)"),
-                                ]
-                            )
-                            
-                            logger.error(
-                                "Failed to upload layer",
-                                metadata: ["error": .string("\(error)")]
-                            )
-                            await layersUploaded.incrementFailedUploaded(error: error)
-                        }
-                    }
-                }
-                
-                try await Noora().progressBarStep(
-                    message: "Uploading layers to agent"
-                ) { progress in
-                    for await status in layersUploaded.statusChange {
-                        progress(status.progress)
-                    }
-                    
-                    let errors = await layersUploaded.status.layersFailedUploaded
-                    if errors > 0 {
-                        throw Error.failedToUploadLayers(errors)
-                    }
-                }
-                
-                layersUploaded.finish()
-                
-                try await taskGroup.waitForAll()
-
-                let configDescriptor = try await registry.putBlob(
-                    repository: repository.repository,
-                    mediaType: "application/vnd.oci.image.config.v1+json",
-                    data: config
-                )
-
-                let manifest = ImageManifest(
-                    schemaVersion: 2,
-                    mediaType: "application/vnd.oci.image.manifest.v1+json",
-                    config: ContentDescriptor(
-                        mediaType: "application/vnd.oci.image.config.v1+json",
-                        digest: configDescriptor.digest,
-                        size: configDescriptor.size
-                    ),
-                    layers: layers.map { layer in
-                        return ContentDescriptor(
-                            mediaType: layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar",
-                            digest: layer.digest,
-                            size: layer.size
-                        )
-                    }
-                )
-
-                _ = try await registry.putManifest(
-                    repository: repository.repository,
-                    reference: "latest",
-                    manifest: manifest
-                )
-                let index = ImageIndex(
-                    schemaVersion: 2,
-                    mediaType: "application/vnd.oci.image.index.v1+json",
-                    manifests: [
-                        ContentDescriptor(
-                            mediaType: "application/vnd.oci.image.manifest.v1+json",
-                            digest: manifest.digest,
-                            size: manifest.size,
-                            platform: .init(architecture: config.architecture, os: config.os)
-                        )
-                    ]
-                )
-                _ = try await registry.putIndex(repository: repository.repository, reference: "latest", index: index)
-            }
-            
-            try await Noora().progressStep(
-                message: "Preparing app",
-                successMessage: "App ready to start",
-                errorMessage: "Failed to prepare app",
-                showSpinner: true
-            ) { _ in
-                try await createContainerdContainer(
-                    appName: imageName,
-                    client: client
-                )
-            }
-            
-            try await startContainerdContainer(imageName: imageName, client: client)
         }
     }
 
@@ -708,13 +485,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     }
 
     func runSwiftContainerdBased() async throws {
-        let logger = Logger(label: "sh.wendy.cli.run.containerd")
-
         let swiftPM = SwiftPM()
-        let package = try await swiftPM.dumpPackage(
-            .scratchPath(".wendy-build")
-        )
-
+        try await swiftPM.addDependency(url: "https://github.com/apple/swift-container-plugin", from: "1.0.0")
+        let package = try await swiftPM.dumpPackage()
+        
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
 
@@ -725,154 +499,40 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 throw Error.invalidExecutableTarget(executableName)
             }
             executableTarget = target
+        } else if executableTargets.isEmpty {
+            Noora().error("No executable targets found in package")
+            return
         } else {
-            // If no executable specified, ensure there's only one executable target
-            if executableTargets.isEmpty {
-                throw Error.noExecutableTarget
-            } else if executableTargets.count > 1 {
-                throw Error.multipleExecutableTargets(executableTargets.map(\.name))
-            } else {
-                executableTarget = executableTargets[0]
-            }
+            executableTarget = Noora().singleChoicePrompt(
+                title: "Select executable target to run",
+                question: "Which executable target do you want to run?",
+                options: executableTargets
+            )
         }
+        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let appName = url.lastPathComponent.lowercased()
 
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
-            UUID().uuidString
-        )
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: tempDir)
-        }
-        let (imageName, container) = try await Noora().progressStep(
-            message: "Building container",
-            successMessage: "Container built successfully!",
-            errorMessage: "Failed to build container",
-            showSpinner: true
-        ) { progress in
-            progress("Building Swift app")
-            try await swiftPM.build(
-                .product(executableTarget.name),
-                .swiftSDK(swiftSDK),
-                .configuration(debug ? "debug" : "release"),
-                .scratchPath(".wendy-build"),
-                .staticSwiftStdlib,
-                .xLinker("-s")
+        try await withAgentGRPCClientAndEndpoint(
+            agentConnectionOptions,
+            title: "Which device do you want to run this app on?"
+        ) { client, endpoint in
+            Noora().info("Building Swift app")
+            try await swiftPM.buildAndPushContainer(
+                swiftSDK: swiftSDK,
+                scratchPath: ".wendy-build",
+                product: executableTarget,
+                device: endpoint.host
             )
 
-            progress("Building container with base image \(baseImage)")
-            let binPath = try await swiftPM.buildWithOutput(
-                .showBinPath,
-                .product(executableTarget.name),
-                .swiftSDK(swiftSDK),
-                .configuration(debug ? "debug" : "release"),
-                .quiet,
-                .scratchPath(".wendy-build"),
-                .staticSwiftStdlib
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-            let buildDir = URL(fileURLWithPath: binPath)
-            let executable = buildDir.appendingPathComponent(executableTarget.name)
-
-            logger.debug("Building container with base image \(baseImage)")
-            progress("Preparing base image")
-            let imageName = executableTarget.name.lowercased()
-
-            // Use the debian:bookworm-slim base image instead of a blank image
-            var imageSpec = try await ContainerImageSpec.withBaseImage(
-                baseImage: baseImage,
-                executable: executable
+            Noora().info("Creating Container")
+            try await createContainerdContainer(
+                appName: appName,
+                client: client
             )
-            progress("Adding Swift PM resources")
-            try await addSwiftPMResources(at: buildDir, to: &imageSpec)
-
-            progress("Adding debugger executable")
-            if debug {
-                // Include the ds2 executable in the container image.
-                let ds2URL: URL
-                if let url = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                ) {
-                    ds2URL = url
-                } else {
-                    let url = URL(fileURLWithPath: CommandLine.arguments[0])
-                        .deletingLastPathComponent()
-                        .appending(path: "wendy-agent_wendy.bundle")
-                        .appending(path: "Contents")
-                        .appending(path: "Resources")
-                        .appending(path: "Resources")
-                        .appending(component: "ds2-124963fd-static-linux-arm64")
-
-                    guard FileManager.default.fileExists(atPath: url.path()) else {
-                        fatalError("Could not find ds2 executable in bundle resources")
-                    }
-
-                    ds2URL = url
-                }
-
-                let ds2Files = [
-                    ContainerImageSpec.Layer.File(
-                        source: ds2URL,
-                        destination: "/bin/ds2",
-                        permissions: 0o755
-                    )
-                ]
-                let ds2Layer = ContainerImageSpec.Layer(files: ds2Files)
-                imageSpec.layers.append(ds2Layer)
-            }
-
-            progress("Building final container image")
-            let container = try await buildDockerContainer(
-                image: imageSpec,
-                imageName: imageName,
-                tempDir: tempDir
-            )
-            return (imageName, container)
+            
+            Noora().info("Starting Container")
+            try await startContainerdContainer(imageName: appName, client: client)
         }
-
-        let cmd: [String]
-        if debug {
-            cmd = [
-                "ds2",
-                "gdbserver",
-                "0.0.0.0:4242",
-                "/bin/\(imageName)",
-            ]
-        } else {
-            // Use the command from the config, or fallback to the image name
-            cmd = ["/bin/\(imageName)"]
-        }
-        // Create a default config for Swift-based containers
-        let defaultConfig = ImageConfig(
-            architecture: "arm64",
-            os: "linux",
-            config: ContainerConfig(
-                cmd: cmd,
-                env: nil,
-                workingDir: "/",
-                user: nil,
-                exposedPorts: nil,
-                labels: nil
-            ),
-            rootfs: RootFS(
-                type: "layers",
-                diffIds: container.layers.map(\.diffID)
-            )
-        )
-
-        try await uploadAndRunContainerdContainer(
-            layers: container.layers.map { layer in
-                ContainerdLayer(
-                    source: .path(layer.path),
-                    digest: layer.digest,
-                    diffID: layer.diffID,
-                    size: layer.size,
-                    gzip: layer.gzip
-                )
-            },
-            imageName: imageName,
-            config: defaultConfig,
-            logger: logger
-        )
     }
 
     private func readAppConfigData(logger: Logger) async throws -> Data {

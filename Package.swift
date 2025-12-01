@@ -169,7 +169,6 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .target(name: "WendySDK"),
                 .target(name: "OpenTelemetryGRPC"),
-                .target(name: "DockerOpenAPI"),
             ],
             path: "Sources/WendyAgent"
         ),
