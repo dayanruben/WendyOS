@@ -519,7 +519,6 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             Noora().info("Building Swift app")
             try await swiftPM.buildAndPushContainer(
                 swiftSDK: swiftSDK,
-                scratchPath: ".wendy-build",
                 product: executableTarget,
                 device: endpoint.host
             )

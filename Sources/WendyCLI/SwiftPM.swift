@@ -157,7 +157,6 @@ public struct SwiftPM: Sendable {
 
     public func buildAndPushContainer(
         swiftSDK: String,
-        scratchPath: String,
         product: SwiftPM.Package.Target,
         device: String
     ) async throws {
@@ -171,7 +170,8 @@ public struct SwiftPM: Sendable {
             "--product=\(product.name)",
             "--repository=\(device):5000/\(product.name.lowercased())",
             // TODO: Resources like DS2
-            // "--architecture=aarch64",
+            // TODO: Select target architecture based on target device advertisement?
+            "--architecture=arm64",
         ])
         let result = try await Subprocess.run(
             Subprocess.Executable.name(executableName),
