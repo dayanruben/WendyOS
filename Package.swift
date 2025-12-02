@@ -91,6 +91,8 @@ let package = Package(
                 .target(name: "AppConfig"),
                 .target(name: "CliXPCProtocol"),
                 .target(name: "WendySDK"),
+                .target(name: "DockerOpenAPI"),
+                .target(name: "Analytics"),
             ],
             path: "Sources/Wendy",
             resources: [
@@ -229,6 +231,17 @@ let package = Package(
             ]
         ),
 
+        /// Analytics module for privacy-first usage tracking
+        .target(
+            name: "Analytics",
+            dependencies: [
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Noora", package: "Noora"),
+                .target(name: "WendyShared"),
+            ]
+        ),
+
         /// Tests for WendyCLI components
         .testTarget(
             name: "WendyCLITests",
@@ -304,6 +317,13 @@ let package = Package(
             dependencies: [
                 .target(name: "wendy"),
                 .target(name: "wendy-agent"),
+            ]
+        ),
+
+        .testTarget(
+            name: "AnalyticsTests",
+            dependencies: [
+                .target(name: "Analytics"),
             ]
         ),
 
