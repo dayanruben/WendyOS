@@ -1,5 +1,4 @@
 import AsyncHTTPClient
-import ContainerBuilder
 import DownloadSupport
 import Foundation
 import NIOCore
