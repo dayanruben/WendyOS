@@ -94,8 +94,8 @@ func downloadLatestRelease(
     platform: Platform? = nil,
     includePrerelease: Bool = false
 ) async throws -> URL {
-    // Detect platform if not specified
-    let targetPlatform = try platform ?? Platform.current()
+    // Default to Linux aarch64 (agent runs on devices, not on the CLI platform)
+    let targetPlatform = platform ?? .linuxAarch64
 
     // Fetch all releases
     let releases = try await fetchReleases(httpClient: httpClient)
