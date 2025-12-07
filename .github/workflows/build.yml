@@ -45,8 +45,8 @@ jobs:
 
       - name: Generate protos
         run: |
-          chmod +x ./scripts/generate-proto.sh
-          ./scripts/generate-proto.sh
+          chmod +x ./Scripts/Generate-Proto.sh
+          ./Scripts/Generate-Proto.sh
 
       - name: Upload generated protos
         uses: actions/upload-artifact@v4

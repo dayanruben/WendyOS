@@ -36,7 +36,7 @@ _protos: $(PROTO_SENTINEL)
 
 $(PROTO_SENTINEL): $(PROTO_SOURCES)
 	@echo "Proto files changed, regenerating..."
-	./scripts/generate-proto.sh
+	./Scripts/Generate-Proto.sh
 	@touch $(PROTO_SENTINEL)
 
 # Force proto regeneration (useful for debugging)
