@@ -44,7 +44,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Generate protos
-        run: ./scripts/generate-proto.sh
+        run: |
+          chmod +x ./scripts/generate-proto.sh
+          ./scripts/generate-proto.sh
 
       - name: Upload generated protos
         uses: actions/upload-artifact@v4
