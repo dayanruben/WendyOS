@@ -91,7 +91,7 @@ enum Platform: String {
 
 func downloadLatestRelease(
     httpClient: HTTPExecutor = DefaultHTTPExecutor(),
-    platform: Platform? = nil,
+    platform: Platform = .linuxAarch64,
     includePrerelease: Bool = false
 ) async throws -> URL {
     // Default to Linux aarch64 (agent runs on devices, not on the CLI platform)
