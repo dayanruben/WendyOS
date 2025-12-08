@@ -114,7 +114,7 @@ func downloadLatestRelease(
     // Build the expected asset name pattern
     // Format: wendy-agent-{platform}-{version}.tar.gz
     // Example: wendy-agent-linux-static-musl-aarch64-v0.2.0.tar.gz
-    let assetPrefix = "wendy-agent-\(targetPlatform.rawValue)-"
+    let assetPrefix = "wendy-agent-\(platform.rawValue)-"
     let assetSuffix = ".tar.gz"
 
     guard
@@ -260,6 +260,7 @@ func downloadAsset(_ asset: Release.Asset) async throws -> URL {
 enum ExtractError: Error {
     case failedToExtract
     case executableNotFound
+    case maliciousArchive(String)
 }
 
 func extract(
@@ -267,32 +268,132 @@ func extract(
     to tempDir: URL,
     findExecutable: (URL) -> Bool
 ) async throws -> URL {
+    let logger = Logger(label: "sh.wendy.utils.fetchReleases")
+
     // Determine if it's a tar.gz or a binary
     let isTarGz = url.pathExtension == "gz" || url.lastPathComponent.contains("tar.gz")
     guard isTarGz else {
-        print("File is not a tar.gz file")
+        logger.debug(
+            "File is not a tar.gz file, returning as-is",
+            metadata: ["path": "\(url.path)"]
+        )
         return url
     }
 
-    print("Extracting tar.gz file...")
+    logger.info("Extracting tar.gz archive", metadata: ["path": "\(url.path)"])
     let extractDir = tempDir.appendingPathComponent("extract")
     try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["tar", "-xzf", url.path, "-C", extractDir.path]
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        print("Failed to extract tar.gz archive")
+
+    // Validate tar contents before extraction to prevent path traversal attacks
+    logger.debug("Validating tar archive contents")
+    let listResult = try await Subprocess.run(
+        Subprocess.Executable.name("tar"),
+        arguments: Subprocess.Arguments(["-tzf", url.path]),
+        output: .string(limit: .max),
+        error: .string(limit: .max)
+    )
+
+    guard listResult.terminationStatus.isSuccess else {
+        let errorMessage = listResult.standardError ?? "unknown error"
+        logger.error(
+            "Failed to list tar archive contents",
+            metadata: [
+                "termination_status": "\(listResult.terminationStatus)",
+                "archive": "\(url.path)",
+                "error": "\(errorMessage)",
+            ]
+        )
         throw ExtractError.failedToExtract
     }
 
-    // Find the binary in the extracted directory
-    let enumerator = FileManager.default.enumerator(at: extractDir, includingPropertiesForKeys: nil)
-    while let file = enumerator?.nextObject() as? URL {
-        if findExecutable(file) {
-            return file
+    let output = listResult.standardOutput ?? ""
+    let files = output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+
+    // Check each file path for security issues
+    for filePath in files {
+        // Check for absolute paths
+        if filePath.hasPrefix("/") {
+            logger.error(
+                "Archive contains absolute path",
+                metadata: ["path": "\(filePath)"]
+            )
+            throw ExtractError.maliciousArchive("Archive contains absolute path: \(filePath)")
+        }
+
+        // Check for path traversal sequences (.. anywhere in the path)
+        if filePath.contains("..") {
+            logger.error(
+                "Archive contains path traversal sequence",
+                metadata: ["path": "\(filePath)"]
+            )
+            throw ExtractError.maliciousArchive("Archive contains path traversal: \(filePath)")
         }
     }
+
+    // Extract the archive
+    let extractResult = try await Subprocess.run(
+        Subprocess.Executable.name("tar"),
+        arguments: Subprocess.Arguments(["-xzf", url.path, "-C", extractDir.path]),
+        output: .string(limit: .max),
+        error: .string(limit: .max)
+    )
+
+    guard extractResult.terminationStatus.isSuccess else {
+        let errorMessage = extractResult.standardError ?? "unknown error"
+        logger.error(
+            "Failed to extract tar.gz archive",
+            metadata: [
+                "termination_status": "\(extractResult.terminationStatus)",
+                "archive": "\(url.path)",
+                "error": "\(errorMessage)",
+            ]
+        )
+        throw ExtractError.failedToExtract
+    }
+
+    // Find the binary in the extracted directory with depth limit
+    // Limit to 5 levels deep to prevent malicious archives from causing excessive traversal
+    let maxDepth = 5
+
+    func findExecutableRecursive(in directory: URL, depth: Int) throws -> URL? {
+        guard depth < maxDepth else {
+            logger.warning(
+                "Reached maximum directory depth",
+                metadata: ["max_depth": "\(maxDepth)", "path": "\(directory.path)"]
+            )
+            return nil
+        }
+
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        // First check files in current directory
+        for file in contents {
+            let resourceValues = try file.resourceValues(forKeys: [.isDirectoryKey])
+            if resourceValues.isDirectory != true && findExecutable(file) {
+                return file
+            }
+        }
+
+        // Then recurse into subdirectories
+        for file in contents {
+            let resourceValues = try file.resourceValues(forKeys: [.isDirectoryKey])
+            if resourceValues.isDirectory == true {
+                if let found = try findExecutableRecursive(in: file, depth: depth + 1) {
+                    return found
+                }
+            }
+        }
+
+        return nil
+    }
+
+    if let executableURL = try findExecutableRecursive(in: extractDir, depth: 0) {
+        return executableURL
+    }
+
     throw ExtractError.executableNotFound
 }
