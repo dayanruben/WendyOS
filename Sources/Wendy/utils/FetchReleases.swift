@@ -253,7 +253,7 @@ func downloadAsset(_ asset: Release.Asset) async throws -> URL {
 
     let downloadedFileURL = tempDir.appendingPathComponent(asset.name)
     try await downloadFile(from: downloadURL, to: downloadedFileURL.path) { _ in }
-    logger.info("Downloaded asset", metadata: ["path": "\(downloadedFileURL.path)"])
+    logger.debug("Downloaded asset", metadata: ["path": "\(downloadedFileURL.path)"])
     return downloadedFileURL
 }
 
