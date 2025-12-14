@@ -1,0 +1,100 @@
+name: Windows Release & Winget
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # Required to upload assets to the release
+
+jobs:
+  build-windows:
+    name: Build & Bundle (Windows)
+    runs-on: windows-latest
+    
+    steps:
+      # 1. Setup Swift
+      - name: Setup Swift
+        uses: compnerd/gha-setup-swift@main
+        with:
+          swift-version: swift-6.2.1-release
+          swift-build: 6.2.1-RELEASE
+    
+      # 2. Checkout
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. Provision Zlib (Check Vcpkg)
+      - name: Provision Dependencies
+        shell: pwsh
+        run: |
+          # Vcpkg is pre-installed on windows-latest.
+          # We verify zlib is present.
+          $VcpkgRoot = "C:\vcpkg"
+          $ZlibDll = "$VcpkgRoot\installed\x64-windows\bin\zlib1.dll"
+          
+          if (-not (Test-Path $ZlibDll)) {
+            Write-Host "Zlib not found. Installing via vcpkg..."
+            & "$VcpkgRoot\vcpkg.exe" install zlib:x64-windows
+          } else {
+            Write-Host "Zlib found at $ZlibDll"
+          }
+
+      # 4. Build
+      - name: Build wendy CLI
+        shell: pwsh
+        run: |
+          # We pass the include and library paths from vcpkg explicitly
+          swift build -c release --arch x86_64 --product wendy`
+            -Xcc -I"C:\vcpkg\installed\x64-windows\include" `
+            -Xlinker -L"C:\vcpkg\installed\x64-windows\lib"
+
+      # 5. Bundle (The "Alongside" Requirement)
+      - name: Create Distribution Bundle
+        shell: pwsh
+        run: |
+          $ReleaseDir = ".build\x86_64-unknown-windows-msvc\release"
+          $StagingDir = "staging"
+          $ZlibSource = "C:\vcpkg\installed\x64-windows\bin\zlib1.dll"
+          
+          # Clean staging
+          if (Test-Path $StagingDir) { Remove-Item -Recurse -Force $StagingDir }
+          New-Item -ItemType Directory -Path $StagingDir
+          
+          # Copy Executable
+          Copy-Item "$ReleaseDir\wendy.exe" -Destination "$StagingDir\"
+          
+          # Copy DLL
+          Copy-Item $ZlibSource -Destination "$StagingDir\"
+          
+          # Verify contents
+          Get-ChildItem $StagingDir
+
+      # 6. Zip
+      - name: Create Archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "staging\*" -DestinationPath "wendy-windows-amd64.zip"
+
+      # 7. GitHub Release
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: wendy-windows-amd64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+#   publish-winget:
+#     name: Submit to Winget
+#     needs: build-windows
+#     runs-on: ubuntu-latest # Runs cheaper/faster on Linux; Komac is cross-platform
+#     steps:
+#       - name: Winget Releaser
+#         uses: vedantmgoyal2009/winget-releaser@v2
+#         with:
+#           identifier: WendyLabs.Wendy
+#           installers-regex: '-windows-amd64\.zip$' # Matches our zip name
+#           token: ${{ secrets.WINGET_TOKEN }}
