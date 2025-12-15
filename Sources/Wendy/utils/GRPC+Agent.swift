@@ -83,8 +83,18 @@ func withAgentGRPCClient<R: Sendable>(
     _ body: @escaping @Sendable (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
     let endpoint = try await connectionOptions.read(title: title)
-    return try await withAgentGRPCClient(endpoint, title: title) { client in
-        return try await body(client)
+    do {
+        return try await withAgentGRPCClient(endpoint, title: title) { client in
+            return try await body(client)
+        }
+    } catch  where endpoint.defaultDevice {
+        let endpoint = try await connectionOptions.read(
+            title: title,
+            readDefault: false
+        )
+        return try await withAgentGRPCClient(endpoint, title: title) { client in
+            return try await body(client)
+        }
     }
 }
 
@@ -106,8 +116,18 @@ func withAgentGRPCClientAndEndpoint<R: Sendable>(
         async throws -> R
 ) async throws -> R {
     let endpoint = try await connectionOptions.read(title: title)
-    return try await _withAgentGRPCClient(endpoint, title: title) { client, endpoint in
-        return try await body(client, endpoint)
+    do {
+        return try await _withAgentGRPCClient(endpoint, title: title) { client, endpoint in
+            return try await body(client, endpoint)
+        }
+    } catch  where endpoint.defaultDevice {
+        let endpoint = try await connectionOptions.read(
+            title: title,
+            readDefault: false
+        )
+        return try await _withAgentGRPCClient(endpoint, title: title) { client, endpoint in
+            return try await body(client, endpoint)
+        }
     }
 }
 
