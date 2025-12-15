@@ -13,7 +13,7 @@ permissions:
 jobs:
   build-windows:
     name: Build & Bundle (Windows)
-    runs-on: windows-latest
+    runs-on: windows-2022
     
     steps:
       # 1. Setup Swift
