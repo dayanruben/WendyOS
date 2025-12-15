@@ -15,14 +15,34 @@ import _NIOFileSystem
 struct DeviceCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "device",
-        abstract: "Manage the Wendy device.",
+        abstract: "Control your Wendy device.",
         subcommands: [
-            SetupCommand.self,
-            AppsCommand.self,
-            HardwareCommand.self,
-            WiFiCommand.self,
-            VersionCommand.self,
-            UpdateCommand.self,
+            SetDefaultCommand.self,
+            UnsetDefaultCommand.self,
+        ],
+        groupedSubcommands: [
+            CommandGroup(
+                name: "Device Management",
+                subcommands: [
+                    SetupCommand.self,
+                    HardwareCommand.self,
+                    WiFiCommand.self,
+                    AppsCommand.self,
+                ]
+            ),
+            CommandGroup(
+                name: "Debugging",
+                subcommands: [
+                    HardwareCommand.self
+                ]
+            ),
+            CommandGroup(
+                name: "Update",
+                subcommands: [
+                    VersionCommand.self,
+                    UpdateCommand.self,
+                ]
+            ),
         ]
     )
 
@@ -79,6 +99,45 @@ struct DeviceCommand: AsyncParsableCommand {
                     print("No update available")
                 }
             }
+        }
+    }
+
+    struct SetDefaultCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "set-default",
+            abstract: "Set the default device."
+        )
+
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func run() async throws {
+            let endpoint = try await agentConnectionOptions.read(
+                title: "Set default device",
+                readDefault: false
+            )
+
+            var config = getConfig()
+            config.defaultDevice = endpoint.host
+            try config.save()
+
+            Noora().success("Default device set to \(endpoint.host)")
+        }
+    }
+
+    struct UnsetDefaultCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "unset-default",
+            abstract: "Unset the default device."
+        )
+
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func run() async throws {
+            var config = getConfig()
+            config.defaultDevice = nil
+            try config.save()
+
+            Noora().success("Default device unset")
         }
     }
 
