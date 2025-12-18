@@ -8,10 +8,12 @@ struct AgentConnectionOptions: ParsableArguments {
     struct Endpoint: ExpressibleByArgument {
         let host: String
         var port: Int
+        var defaultDevice: Bool
 
-        init(host: String, port: Int) {
+        init(host: String, port: Int, defaultDevice: Bool = false) {
             self.host = host
             self.port = port
+            self.defaultDevice = defaultDevice
         }
 
         init?(argument: String) {
@@ -42,6 +44,7 @@ struct AgentConnectionOptions: ParsableArguments {
 
             self.host = cleanHost
             self.port = components.port ?? 50051
+            self.defaultDevice = false
         }
 
         static var defaultValueDescription: String {
@@ -70,7 +73,10 @@ struct AgentConnectionOptions: ParsableArguments {
     )
     var agent: Endpoint?
 
-    func read(title: TerminalText?) async throws -> Endpoint {
+    func read(
+        title: TerminalText?,
+        readDefault: Bool = true
+    ) async throws -> Endpoint {
         if let device {
             return device
         }
@@ -83,6 +89,11 @@ struct AgentConnectionOptions: ParsableArguments {
             let endpoint = Endpoint(argument: endpoint)
         {
             return endpoint
+        }
+
+        let config = getConfig()
+        if readDefault, let defaultDevice = config.defaultDevice {
+            return Endpoint(host: defaultDevice, port: 50051, defaultDevice: true)
         }
 
         let discovery = PlatformDeviceDiscovery(

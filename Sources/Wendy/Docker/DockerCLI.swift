@@ -282,6 +282,7 @@ public struct DockerCLI: Sendable {
             [registry."\(registryHostname):\(registryPort)"]
                 http = true
                 insecure = true
+
             """
 
         let wendyDir = FileManager.default.homeDirectoryForCurrentUser
