@@ -65,16 +65,24 @@ struct AppsCommand: AsyncParsableCommand {
                         for try await container in containers.messages {
                             let status =
                                 switch container.container.runningState {
-                                case .running: "✅ Running"
-                                case .stopped: "🛑 Stopped"
-                                case .UNRECOGNIZED: "❓ Unknown"
+                                case .running: "✅"
+                                case .stopped: "🛑"
+                                case .UNRECOGNIZED: "❓"
+                                }
+
+                            let state =
+                                switch container.container.runningState {
+                                case .running: "Running"
+                                case .stopped: "Stopped"
+                                case .UNRECOGNIZED: "Unknown"
                                 }
                             let failures = "\(container.container.failureCount)"
 
                             rows.append([
+                                status,
                                 container.container.appName,
                                 container.container.appVersion,
-                                status,
+                                state,
                                 failures,
                             ])
                         }
@@ -89,10 +97,11 @@ struct AppsCommand: AsyncParsableCommand {
 
                 Noora().table(
                     headers: [
-                        "App",
-                        "Version",
-                        "Status",
-                        "Failures",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
                     ],
                     rows: rows
                 )
