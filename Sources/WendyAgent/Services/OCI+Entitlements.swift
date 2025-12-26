@@ -250,13 +250,27 @@ extension OCI {
                     didSetDeviceCapabilities = true
                     self.setDeviceCapabilities(appName: appName)
                 }
-            case .video:
+            case .video(let video):
                 let fm = FileManager.default
 
                 // Find all video devices in /dev
                 do {
                     let devContents = try fm.contentsOfDirectory(atPath: "/dev")
-                    let videoDevices = devContents.filter { $0.hasPrefix("video") }.sorted()
+                    let videoDevices = devContents.filter { device in
+                        guard device.hasPrefix("video") else {
+                            return false
+                        }
+
+                        switch video.mode {
+                        case .all:
+                            return true
+                        case .allowlist:
+                            return video.allowlist.contains { allowed in
+                                // Strip `/dev/` prefix for ease of use
+                                return allowed.replacingOccurrences(of: "/dev/", with: "") == device
+                            }
+                        }
+                    }.sorted()
 
                     for device in videoDevices {
                         let devicePath = "/dev/\(device)"
