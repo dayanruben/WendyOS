@@ -236,7 +236,7 @@ jobs:
     name: Package Linux (${{ matrix.arch }})
     runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64
     needs: [determine-version, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         include:
