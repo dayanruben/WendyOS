@@ -26,6 +26,7 @@ struct DeviceCommand: AsyncParsableCommand {
                     SetupCommand.self,
                     HardwareCommand.self,
                     WiFiCommand.self,
+                    BluetoothCommand.self,
                     AppsCommand.self,
                 ]
             ),
