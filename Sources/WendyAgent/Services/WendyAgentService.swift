@@ -27,18 +27,32 @@ actor UpdateCoordinator {
 }
 
 struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
-    let logger = Logger(label: "WendyAgentService")
+    let logger: Logger
     let shouldRestart: @Sendable () async throws -> Void
     let currentUID: String
     let networkManagerFactory: NetworkConnectionManagerFactory
     let configuration: WendyAgentConfiguration
     let updateCoordinator = UpdateCoordinator()
+    let bluetoothManager: BluetoothManager
 
     init(shouldRestart: @escaping @Sendable () async throws -> Void) {
+        let logger = Logger(label: "WendyAgentService")
+        self.logger = logger
+        self.bluetoothManager = BluetoothManager(logger: logger)
         self.shouldRestart = shouldRestart
         self.currentUID = String(getuid())
         self.networkManagerFactory = NetworkConnectionManagerFactory(uid: currentUID)
         self.configuration = WendyAgentConfiguration.fromEnvironment()
+    }
+
+    private func makeStatus(
+        level: Wendy_Agent_Services_V1_ResponseStatus.Level,
+        message: String = ""
+    ) -> Wendy_Agent_Services_V1_ResponseStatus {
+        .with { status in
+            status.level = level
+            status.message = message
+        }
     }
 
     /// Helper to set executable permissions on a file with proper error handling
@@ -435,7 +449,13 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                     metadata: ["ssid": "\(connection.ssid)"]
                 )
                 return ServerResponse(
-                    message: .with { $0.success = true }
+                    message: .with {
+                        $0.success = true
+                        $0.status = makeStatus(
+                            level: .success,
+                            message: "Connected to \(connection.ssid)"
+                        )
+                    }
                 )
             } else {
                 logger.warning("Failed to connect to WiFi network", metadata: ["ssid": "\(ssid)"])
@@ -443,6 +463,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                     message: .with {
                         $0.success = false
                         $0.errorMessage = "Connection failed"
+                        $0.status = makeStatus(
+                            level: .error,
+                            message: "Connection failed"
+                        )
                     }
                 )
             }
@@ -459,6 +483,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -485,6 +513,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                     message: .with { response in
                         response.connected = true
                         response.ssid = connectionInfo.ssid
+                        response.status = makeStatus(
+                            level: .info,
+                            message: "Connected to \(connectionInfo.ssid)"
+                        )
                     }
                 )
             } else {
@@ -492,6 +524,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 return ServerResponse(
                     message: .with { response in
                         response.connected = false
+                        response.status = makeStatus(
+                            level: .info,
+                            message: "Not connected to any WiFi network"
+                        )
                     }
                 )
             }
@@ -502,6 +538,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with { response in
                     response.connected = false
                     response.errorMessage = error.localizedDescription
+                    response.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -533,7 +573,13 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                         metadata: ["ssid": "\(connectionInfo.ssid)"]
                     )
                     return ServerResponse(
-                        message: .with { $0.success = true }
+                        message: .with {
+                            $0.success = true
+                            $0.status = makeStatus(
+                                level: .success,
+                                message: "Disconnected from \(connectionInfo.ssid)"
+                            )
+                        }
                     )
                 } else {
                     logger.warning(
@@ -544,6 +590,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                         message: .with {
                             $0.success = false
                             $0.errorMessage = "Disconnection failed"
+                            $0.status = makeStatus(
+                                level: .error,
+                                message: "Disconnection failed"
+                            )
                         }
                     )
                 }
@@ -552,6 +602,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 return ServerResponse(
                     message: .with {
                         $0.success = true
+                        $0.status = makeStatus(
+                            level: .info,
+                            message: "Not connected to any WiFi network"
+                        )
                     }
                 )
             }
@@ -561,6 +615,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
             return ServerResponse(
                 message: .with {
                     $0.success = true
+                    $0.status = makeStatus(
+                        level: .info,
+                        message: "Not connected to any WiFi network"
+                    )
                 }
             )
         } catch {
@@ -570,6 +628,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -619,7 +681,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         )
 
         do {
-            let bluetoothManager = BluetoothManager(logger: logger)
             let devices = try await bluetoothManager.listDevices(
                 pairedOnly: request.message.pairedOnly
             )
@@ -665,11 +726,31 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         )
 
         do {
-            let bluetoothManager = BluetoothManager(logger: logger)
-            try await bluetoothManager.startScan(timeoutSeconds: request.message.timeoutSeconds)
+            let scanResult = try await bluetoothManager.startScan(
+                timeoutSeconds: request.message.timeoutSeconds
+            )
+
+            let status: Wendy_Agent_Services_V1_ResponseStatus
+            if scanResult.superseded {
+                logger.warning("Bluetooth scan start superseded by newer request")
+                status = makeStatus(
+                    level: .warning,
+                    message: "Scan request superseded by another request."
+                )
+            } else if scanResult.restartedExistingScan {
+                status = makeStatus(
+                    level: .warning,
+                    message: "Bluetooth scan already running; restarting scan."
+                )
+            } else {
+                status = makeStatus(level: .success)
+            }
 
             return ServerResponse(
-                message: .with { $0.success = true }
+                message: .with {
+                    $0.success = true
+                    $0.status = status
+                }
             )
         } catch {
             logger.error("Failed to start Bluetooth scan: \(error)")
@@ -677,6 +758,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -689,11 +774,29 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         logger.info("Stopping Bluetooth scan")
 
         do {
-            let bluetoothManager = BluetoothManager(logger: logger)
-            try await bluetoothManager.stopScan()
+            let stopResult = try await bluetoothManager.stopScan()
+
+            let status: Wendy_Agent_Services_V1_ResponseStatus
+            if stopResult.superseded {
+                logger.warning("Bluetooth scan stop superseded by newer request")
+                status = makeStatus(
+                    level: .warning,
+                    message: "Stop request superseded by a newer scan; scan is still running."
+                )
+            } else if !stopResult.hadActiveScan {
+                status = makeStatus(
+                    level: .info,
+                    message: "No active scan to stop."
+                )
+            } else {
+                status = makeStatus(level: .success)
+            }
 
             return ServerResponse(
-                message: .with { $0.success = true }
+                message: .with {
+                    $0.success = true
+                    $0.status = status
+                }
             )
         } catch {
             logger.error("Failed to stop Bluetooth scan: \(error)")
@@ -701,6 +804,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -723,7 +830,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         )
 
         do {
-            let bluetoothManager = BluetoothManager(logger: logger)
             if request.message.pair {
                 try await bluetoothManager.pair(address: address)
             }
@@ -737,7 +843,13 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 metadata: ["address": "\(address)"]
             )
             return ServerResponse(
-                message: .with { $0.success = true }
+                message: .with {
+                    $0.success = true
+                    $0.status = makeStatus(
+                        level: .success,
+                        message: "Connected to Bluetooth device \(address)"
+                    )
+                }
             )
         } catch {
             logger.error(
@@ -748,6 +860,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -763,7 +879,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         logger.info("Disconnecting from Bluetooth device", metadata: ["address": "\(address)"])
 
         do {
-            let bluetoothManager = BluetoothManager(logger: logger)
             try await bluetoothManager.disconnect(address: address)
 
             logger.info(
@@ -771,7 +886,13 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 metadata: ["address": "\(address)"]
             )
             return ServerResponse(
-                message: .with { $0.success = true }
+                message: .with {
+                    $0.success = true
+                    $0.status = makeStatus(
+                        level: .success,
+                        message: "Disconnected from Bluetooth device \(address)"
+                    )
+                }
             )
         } catch {
             logger.error(
@@ -782,6 +903,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }
@@ -796,12 +921,17 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         logger.info("Forgetting Bluetooth device", metadata: ["address": "\(address)"])
 
         do {
-            let bluetoothManager = BluetoothManager(logger: logger)
             try await bluetoothManager.forget(address: address)
 
             logger.info("Successfully forgot Bluetooth device", metadata: ["address": "\(address)"])
             return ServerResponse(
-                message: .with { $0.success = true }
+                message: .with {
+                    $0.success = true
+                    $0.status = makeStatus(
+                        level: .success,
+                        message: "Forgot Bluetooth device \(address)"
+                    )
+                }
             )
         } catch {
             logger.error(
@@ -812,6 +942,10 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
+                    $0.status = makeStatus(
+                        level: .error,
+                        message: error.localizedDescription
+                    )
                 }
             )
         }

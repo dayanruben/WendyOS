@@ -21,6 +21,66 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
+public struct Wendy_Agent_Services_V1_ResponseStatus: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var level: Wendy_Agent_Services_V1_ResponseStatus.Level = .unspecified
+
+  public var message: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public enum Level: SwiftProtobuf.Enum, Swift.CaseIterable {
+    public typealias RawValue = Int
+    case unspecified // = 0
+    case success // = 1
+    case info // = 2
+    case warning // = 3
+    case error // = 4
+    case UNRECOGNIZED(Int)
+
+    public init() {
+      self = .unspecified
+    }
+
+    public init?(rawValue: Int) {
+      switch rawValue {
+      case 0: self = .unspecified
+      case 1: self = .success
+      case 2: self = .info
+      case 3: self = .warning
+      case 4: self = .error
+      default: self = .UNRECOGNIZED(rawValue)
+      }
+    }
+
+    public var rawValue: Int {
+      switch self {
+      case .unspecified: return 0
+      case .success: return 1
+      case .info: return 2
+      case .warning: return 3
+      case .error: return 4
+      case .UNRECOGNIZED(let i): return i
+      }
+    }
+
+    // The compiler won't synthesize support with the UNRECOGNIZED case.
+    public static let allCases: [Wendy_Agent_Services_V1_ResponseStatus.Level] = [
+      .unspecified,
+      .success,
+      .info,
+      .warning,
+      .error,
+    ]
+
+  }
+
+  public init() {}
+}
+
 public struct Wendy_Agent_Services_V1_RunContainerRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -503,11 +563,22 @@ public struct Wendy_Agent_Services_V1_ConnectToWiFiResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for getting WiFi status
@@ -550,12 +621,23 @@ public struct Wendy_Agent_Services_V1_GetWiFiStatusResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _ssid: String? = nil
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for disconnecting from WiFi
@@ -588,11 +670,22 @@ public struct Wendy_Agent_Services_V1_DisconnectWiFiResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for listing hardware capabilities
@@ -768,11 +861,22 @@ public struct Wendy_Agent_Services_V1_StartBluetoothScanResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for stopping Bluetooth scan
@@ -805,11 +909,22 @@ public struct Wendy_Agent_Services_V1_StopBluetoothScanResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for connecting to a Bluetooth device
@@ -851,11 +966,22 @@ public struct Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for disconnecting from a Bluetooth device
@@ -891,11 +1017,22 @@ public struct Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse: Sendabl
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for forgetting a Bluetooth device
@@ -931,16 +1068,66 @@ public struct Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
+  /// Status details for the operation
+  public var status: Wendy_Agent_Services_V1_ResponseStatus {
+    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
+    set {_status = newValue}
+  }
+  /// Returns true if `status` has been explicitly set.
+  public var hasStatus: Bool {return self._status != nil}
+  /// Clears the value of `status`. Subsequent reads from it will return its default value.
+  public mutating func clearStatus() {self._status = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
+  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "wendy.agent.services.v1"
+
+extension Wendy_Agent_Services_V1_ResponseStatus: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ResponseStatus"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}level\0\u{1}message\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularEnumField(value: &self.level) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.message) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.level != .unspecified {
+      try visitor.visitSingularEnumField(value: self.level, fieldNumber: 1)
+    }
+    if !self.message.isEmpty {
+      try visitor.visitSingularStringField(value: self.message, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_ResponseStatus, rhs: Wendy_Agent_Services_V1_ResponseStatus) -> Bool {
+    if lhs.level != rhs.level {return false}
+    if lhs.message != rhs.message {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Wendy_Agent_Services_V1_ResponseStatus.Level: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0LEVEL_UNSPECIFIED\0\u{1}SUCCESS\0\u{1}INFO\0\u{1}WARNING\0\u{1}ERROR\0")
+}
 
 extension Wendy_Agent_Services_V1_RunContainerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerRequest"
@@ -1822,7 +2009,7 @@ extension Wendy_Agent_Services_V1_ConnectToWiFiRequest: SwiftProtobuf.Message, S
 
 extension Wendy_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ConnectToWiFiResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1832,6 +2019,7 @@ extension Wendy_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, 
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -1848,12 +2036,16 @@ extension Wendy_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, 
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_ConnectToWiFiResponse, rhs: Wendy_Agent_Services_V1_ConnectToWiFiResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1880,7 +2072,7 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusRequest: SwiftProtobuf.Message, S
 
 extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetWiFiStatusResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}connected\0\u{1}ssid\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}connected\0\u{1}ssid\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1891,6 +2083,7 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, 
       case 1: try { try decoder.decodeSingularBoolField(value: &self.connected) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._ssid) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -1910,6 +2103,9 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, 
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 3)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1917,6 +2113,7 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, 
     if lhs.connected != rhs.connected {return false}
     if lhs._ssid != rhs._ssid {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1943,7 +2140,7 @@ extension Wendy_Agent_Services_V1_DisconnectWiFiRequest: SwiftProtobuf.Message, 
 
 extension Wendy_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DisconnectWiFiResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1953,6 +2150,7 @@ extension Wendy_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message,
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -1969,12 +2167,16 @@ extension Wendy_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message,
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectWiFiResponse, rhs: Wendy_Agent_Services_V1_DisconnectWiFiResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2250,7 +2452,7 @@ extension Wendy_Agent_Services_V1_StartBluetoothScanRequest: SwiftProtobuf.Messa
 
 extension Wendy_Agent_Services_V1_StartBluetoothScanResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StartBluetoothScanResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2260,6 +2462,7 @@ extension Wendy_Agent_Services_V1_StartBluetoothScanResponse: SwiftProtobuf.Mess
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2276,12 +2479,16 @@ extension Wendy_Agent_Services_V1_StartBluetoothScanResponse: SwiftProtobuf.Mess
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StartBluetoothScanResponse, rhs: Wendy_Agent_Services_V1_StartBluetoothScanResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2308,7 +2515,7 @@ extension Wendy_Agent_Services_V1_StopBluetoothScanRequest: SwiftProtobuf.Messag
 
 extension Wendy_Agent_Services_V1_StopBluetoothScanResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StopBluetoothScanResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2318,6 +2525,7 @@ extension Wendy_Agent_Services_V1_StopBluetoothScanResponse: SwiftProtobuf.Messa
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2334,12 +2542,16 @@ extension Wendy_Agent_Services_V1_StopBluetoothScanResponse: SwiftProtobuf.Messa
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StopBluetoothScanResponse, rhs: Wendy_Agent_Services_V1_StopBluetoothScanResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2387,7 +2599,7 @@ extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest: SwiftProtobuf.M
 
 extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ConnectBluetoothDeviceResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2397,6 +2609,7 @@ extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse: SwiftProtobuf.
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2413,12 +2626,16 @@ extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse: SwiftProtobuf.
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse, rhs: Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2456,7 +2673,7 @@ extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest: SwiftProtobu
 
 extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DisconnectBluetoothDeviceResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2466,6 +2683,7 @@ extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse: SwiftProtob
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2482,12 +2700,16 @@ extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse: SwiftProtob
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse, rhs: Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2525,7 +2747,7 @@ extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest: SwiftProtobuf.Me
 
 extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ForgetBluetoothDeviceResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2535,6 +2757,7 @@ extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse: SwiftProtobuf.M
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2551,12 +2774,16 @@ extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse: SwiftProtobuf.M
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
+    try { if let v = self._status {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse, rhs: Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

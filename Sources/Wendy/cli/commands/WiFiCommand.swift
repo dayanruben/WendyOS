@@ -141,8 +141,11 @@ struct WiFiCommand: AsyncParsableCommand {
                     struct Response: Codable {
                         let success: Bool
                         let errorMessage: String?
+                        let statusLevel: String?
+                        let statusMessage: String?
                     }
 
+                    let status = response.hasStatus ? response.status : nil
                     let responseJSON = try JSONEncoder().encode(
                         Response(
                             success: result.success,
@@ -239,8 +242,11 @@ struct WiFiCommand: AsyncParsableCommand {
                 let connected: Bool
                 let ssid: String?
                 let errorMessage: String?
+                let statusLevel: String?
+                let statusMessage: String?
             }
 
+            let status = response.hasStatus ? response.status : nil
             let statusInfo = StatusInfo(
                 connected: status.connected,
                 ssid: status.ssid,
