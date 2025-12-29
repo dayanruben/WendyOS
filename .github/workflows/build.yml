@@ -530,13 +530,13 @@ jobs:
           path: repo/
           retention-days: 14
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./repo
-          destination_dir: ./
-          keep_files: false
+      # - name: Deploy to GitHub Pages
+      #   uses: peaceiris/actions-gh-pages@v4
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     publish_dir: ./repo
+      #     destination_dir: ./
+      #     keep_files: false
 
   release:
     name: Release
