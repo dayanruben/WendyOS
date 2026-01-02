@@ -1,6 +1,15 @@
 #if os(Windows)
     import Foundation
     import Subprocess
+    import WinSDK
+    import ucrt
+
+    // Windows IOCTL codes for volume operations
+    // CTL_CODE(FILE_DEVICE_FILE_SYSTEM, function, METHOD_BUFFERED, FILE_ANY_ACCESS)
+    // where FILE_DEVICE_FILE_SYSTEM = 0x00000009, METHOD_BUFFERED = 0, FILE_ANY_ACCESS = 0
+    private let FSCTL_LOCK_VOLUME: UInt32 = 0x00090018      // (0x9 << 16) | (6 << 2)
+    private let FSCTL_UNLOCK_VOLUME: UInt32 = 0x0009001C    // (0x9 << 16) | (7 << 2)
+    private let FSCTL_DISMOUNT_VOLUME: UInt32 = 0x00090020  // (0x9 << 16) | (8 << 2)
 
     /// Windows implementation of the DiskWriter protocol using PowerShell and direct file I/O.
     public class WindowsDiskWriter: DiskWriter {
@@ -49,79 +58,136 @@
             let diskNumber = drive.id.replacingOccurrences(of: "Disk", with: "")
 
             do {
-                // Use PowerShell to write the image using raw disk access
-                // This approach reads the image and writes directly to the physical disk device
-                let escapedImagePath = imagePath.replacingOccurrences(of: "\\", with: "\\\\")
-                
-                let powerShellScript = #"""
-                    $imagePath = '\#(escapedImagePath)'
-                    $diskNumber = \#(diskNumber)
-                    $diskPath = "\\.\PhysicalDrive$diskNumber"
-                    $chunkSize = 4MB
-                    
-                    try {
-                        # Open the image file for reading
-                        $imageFile = [System.IO.File]::OpenRead($imagePath)
-                        $totalBytes = $imageFile.Length
-                        
-                        # Open the disk device using FileStream with access to raw device
-                        $fileStream = [System.IO.FileStream]::new(
-                            $diskPath,
-                            [System.IO.FileMode]::Open,
-                            [System.IO.FileAccess]::Write,
-                            [System.IO.FileShare]::None
-                        )
-                        
-                        # Read and write in chunks
-                        $buffer = New-Object byte[] $chunkSize
-                        $bytesWritten = 0
-                        
-                        while ($true) {
-                            $bytesRead = $imageFile.Read($buffer, 0, $chunkSize)
-                            if ($bytesRead -eq 0) { break }
-                            
-                            $fileStream.Write($buffer, 0, $bytesRead)
-                            $bytesWritten += $bytesRead
-                        }
-                        
-                        $fileStream.Flush()
-                        $fileStream.Close()
-                        $imageFile.Close()
-                        
-                        exit 0
-                    } catch {
-                        Write-Error $_.Exception.Message
-                        exit 1
-                    }
-                    """#
-
-                // Create a temporary file to store the script
-                let tempDir = NSTemporaryDirectory()
-                let scriptFileName = "wendy_write_\(UUID().uuidString).ps1"
-                let scriptPath = (tempDir as NSString).appendingPathComponent(scriptFileName)
-                
-                try powerShellScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-                defer {
-                    try? FileManager.default.removeItem(atPath: scriptPath)
-                }
-
-                // Use Start-Process with -Verb RunAs to elevate PowerShell and execute the script
-                let elevationScript = #"""
-                    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "\#(scriptPath)" -Verb RunAs -Wait
-                    exit $LASTEXITCODE
-                    """#
-
-                let result = try await Subprocess.run(
-                    Subprocess.Executable.name("powershell.exe"),
-                    arguments: ["-NoProfile", "-Command", elevationScript],
-                    output: .discarded,
-                    error: .string(limit: .max)
+                let diskPath = "\\\\.\\PhysicalDrive\(diskNumber)"
+                let diskPathW = Array(diskPath.utf16) + [0]
+                let disk = CreateFileW(
+                    diskPathW,
+                    GENERIC_READ | UInt32(bitPattern: GENERIC_WRITE),
+                    UInt32(bitPattern: FILE_SHARE_READ | FILE_SHARE_WRITE),
+                    nil,
+                    UInt32(bitPattern: OPEN_EXISTING),
+                    UInt32(bitPattern: FILE_FLAG_NO_BUFFERING) | FILE_FLAG_WRITE_THROUGH,
+                    nil
                 )
 
-                if !result.terminationStatus.isSuccess {
-                    let stderr = result.standardError ?? "Unknown error"
-                    throw DiskWriterError.writeFailed(reason: stderr)
+                guard let disk, disk != INVALID_HANDLE_VALUE else {
+                    let errorCode = GetLastError()
+                    let reason: String
+                    switch errorCode {
+                    case 5:
+                        reason = "Access denied. Administrator privileges required."
+                    case 2:
+                        reason = "Physical drive not found. Invalid disk number."
+                    case 32:
+                        reason = "Disk is in use. Try ejecting the volume first."
+                    default:
+                        reason = "Failed to open disk device (error \(errorCode))."
+                    }
+                    throw DiskWriterError.writeFailed(reason: reason)
                 }
+
+                defer { CloseHandle(disk) }
+
+                let imagePath = Array(imagePath.utf16) + [0]
+                let image = CreateFileW(
+                    imagePath,
+                    GENERIC_READ,
+                    UInt32(bitPattern: FILE_SHARE_READ),
+                    nil,
+                    UInt32(bitPattern: OPEN_EXISTING),
+                    UInt32(bitPattern: FILE_FLAG_SEQUENTIAL_SCAN),
+                    nil
+                )
+                guard let image, image != INVALID_HANDLE_VALUE else {
+                    throw DiskWriterError.writeFailed(reason: "Failed to open image file.")
+                }
+
+                defer { CloseHandle(image) }
+
+                // Use diskpart to offline and clean the disk - this removes all partitions including EFI
+                do {
+                    let diskpartScript = """
+                        select disk \(diskNumber)
+                        offline disk
+                        online disk
+                        """
+                    
+                    let result = try await Subprocess.run(
+                        Subprocess.Executable.name("diskpart.exe"),
+                        arguments: [],
+                        input: .string(diskpartScript),
+                        output: .discarded,
+                        error: .discarded
+                    )
+                    
+                    if !result.terminationStatus.isSuccess {
+                        print("Warning: Failed to offline/online disk via diskpart")
+                    }
+                } catch {
+                    print("Warning: Failed to run diskpart: \(error)")
+                }
+                
+                // Try to lock the physical disk itself
+                var bytesReturned: UInt32 = 0
+                _ = DeviceIoControl(disk, FSCTL_LOCK_VOLUME, nil, 0, nil, 0, &bytesReturned, nil)
+                _ = DeviceIoControl(disk, FSCTL_DISMOUNT_VOLUME, nil, 0, nil, 0, &bytesReturned, nil)
+                defer { _ = DeviceIoControl(disk, FSCTL_UNLOCK_VOLUME, nil, 0, nil, 0, &bytesReturned, nil) }
+
+                var size = LARGE_INTEGER()
+                GetFileSizeEx(image, &size)
+                guard SetFilePointerEx(disk, LARGE_INTEGER(), nil, UInt32(bitPattern: FILE_BEGIN)) else {
+                    throw DiskWriterError.writeFailed(reason: "Failed to set file pointer.")
+                }
+
+                let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 8 * 1024 * 1024, alignment: 4096)
+                defer { buffer.deallocate() }
+                var totalWritten: Int64 = 0
+                while true {
+                    var bytesRead: UInt32 = 0
+                    guard ReadFile(image, buffer.baseAddress, UInt32(buffer.count), &bytesRead, nil) else {
+                        let errorCode = GetLastError()
+                        throw DiskWriterError.writeFailed(reason: "Failed to read from image file (error \(errorCode)).")
+                    }
+                    if bytesRead == 0 {
+                        break
+                    }
+                    
+                    // For FILE_FLAG_NO_BUFFERING, writes must be sector-aligned
+                    // Round up to next 512-byte boundary if not EOF
+                    var writeSize = bytesRead
+                    if writeSize % 512 != 0 {
+                        writeSize = ((writeSize + 511) / 512) * 512
+                        // Zero-fill the padding
+                        if Int(writeSize) <= buffer.count {
+                            buffer.baseAddress?.advanced(by: Int(bytesRead)).initializeMemory(
+                                as: UInt8.self,
+                                repeating: 0,
+                                count: Int(writeSize - bytesRead)
+                            )
+                        }
+                    }
+                    
+                    var bytesWritten: UInt32 = 0
+                    guard WriteFile(disk, buffer.baseAddress, writeSize, &bytesWritten, nil) else {
+                        let errorCode = GetLastError()
+                        switch errorCode {
+                        case 5:
+                            throw DiskWriterError.writeFailed(reason: "Access denied writing to disk device.")
+                        default:
+                            throw DiskWriterError.writeFailed(reason: "Failed to write to disk device (error \(errorCode)). TotalWritten=\(totalWritten), writeSize=\(writeSize).")
+                        }
+                    }
+                    totalWritten += Int64(bytesRead)  // Track actual data written, not padding
+                    progressHandler(
+                        DiskWriteProgress(
+                            bytesWritten: totalWritten,
+                            totalBytes: initialTotalBytes
+                        )
+                    )
+                }
+                
+                // Flush and send final progress
+                FlushFileBuffers(disk)
 
                 // Send final progress update
                 progressHandler(

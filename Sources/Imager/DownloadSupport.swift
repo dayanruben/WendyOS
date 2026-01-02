@@ -372,7 +372,6 @@ public final class ImageDownloader: ImageDownloading {
         }
 
         // Get the compressed size as rough estimate (uncompressed size not easily available with tar -t on Windows)
-        let zipURL = URL(fileURLWithPath: path)
         let zipAttrs = try FileManager.default.attributesOfItem(atPath: path)
         let zipSize = (zipAttrs[.size] as? Int64) ?? 0
         
@@ -597,8 +596,45 @@ public final class ImageDownloader: ImageDownloading {
     }
 
     /// Returns a valid cached .img path if available, else nil.
-    public func cachedImageIfValid(deviceName: String) async throws -> String? {
-        return try FileManager.default.cacheDirectory(.images).path
+    public func cachedImageIfValid(
+        deviceName: String,
+        nightly: Bool
+    ) async throws -> String? {
+        // Try to migrate old cache structure if this is a stable version check
+        if !nightly {
+            _ = migrateOldCacheIfNeeded(deviceName: deviceName)
+        }
+
+        let deviceCacheDir = try cacheDirectoryForDevice(deviceName, nightly: nightly)
+
+        // Check if device cache directory exists
+        guard fileManager.fileExists(atPath: deviceCacheDir.path) else {
+            return nil
+        }
+
+        // Search for .img file in the device cache directory
+        guard
+            let enumerator = fileManager.enumerator(
+                at: deviceCacheDir,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        else {
+            return nil
+        }
+
+        while let fileURL = enumerator.nextObject() as? URL {
+            guard
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                values.isRegularFile == true
+            else { continue }
+
+            if fileURL.pathExtension.lowercased() == "img" {
+                return fileURL.path
+            }
+        }
+
+        return nil
     }
 
     /// Checks if cached image version matches the latest version
