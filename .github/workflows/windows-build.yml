@@ -82,6 +82,11 @@ jobs:
           path: grpc-swift-nio-transport
 
       # 2. Provision Zlib (Check Vcpkg)
+      - name: Install Visual Studio
+        shell: pwsh
+        run: |
+          winget install --id Microsoft.VisualStudio.2022.BuildTools -e --silent --accept-package-agreements --accept-source-agreements
+      
       - name: Set up MSVC dev environment
         uses: ilammy/msvc-dev-cmd@v1
   
