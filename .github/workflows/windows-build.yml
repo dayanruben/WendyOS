@@ -82,10 +82,25 @@ jobs:
           path: grpc-swift-nio-transport
 
       # 2. Provision Zlib (Check Vcpkg)
-      - name: Install Visual Studio
+      - name: Install Visual Studio Build Tools (C++ workload)
         shell: pwsh
         run: |
-          winget install --id Microsoft.VisualStudio.2022.BuildTools -e --silent --accept-package-agreements --accept-source-agreements
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+      
+          $installer = "$env:TEMP\vs_BuildTools.exe"
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_BuildTools.exe" -OutFile $installer
+      
+          Start-Process -FilePath $installer -ArgumentList @(
+            "--quiet", "--wait", "--norestart", "--nocache",
+            "--installPath", "C:\BuildTools",
+            "--add", "Microsoft.VisualStudio.Workload.VCTools",
+            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "--add", "Microsoft.VisualStudio.Component.Windows10SDK.19041",
+            "--includeRecommended"
+          ) -NoNewWindow -Wait
+      
+          if ($LASTEXITCODE -ne 0) { throw "VS Build Tools installer failed with exit code $LASTEXITCODE" }
       
       - name: Set up MSVC dev environment
         uses: ilammy/msvc-dev-cmd@v1
