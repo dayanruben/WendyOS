@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        required: false
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
 
 permissions:
   contents: write # Required to upload assets to the release
@@ -16,6 +25,9 @@ jobs:
     runs-on:
       - runs-on=${{ github.run_id }}/image=windows25-full-x64/family=c7i
       - spot=false
+    env:
+      # Default to release on main branch, otherwise use input or default to debug
+      BUILD_CONFIG: ${{ github.ref == 'refs/heads/main' && 'release' || inputs.configuration || 'debug' }}
     
     steps:
       # 1. Setup Swift 6.3-DEVELOPMENT-SNAPSHOT-2025-12-24-a
@@ -129,18 +141,26 @@ jobs:
           }
 
       # 4. Build
+      # 4.1 Copy zlib.lib to z.lib
+      # Otherwise we'll fail at link time.
+      - name: Copy zlib.lib to z.lib
+        shell: pwsh
+        run: |
+          Copy-Item "C:\vcpkg\installed\x64-windows\lib\zlib.lib" "C:\vcpkg\installed\x64-windows\lib\z.lib"
+
+      # 4.2 Build wendy CLI using `swift build`
       - name: Build wendy CLI
         shell: pwsh
         run: |
           cd ${{ github.workspace }}/wendy-agent
           # We pass the include and library paths from vcpkg explicitly
-          swift build -c release --arch x86_64 --product wendy -Xcc -I"C:\vcpkg\installed\x64-windows\include" -Xlinker -L"C:\vcpkg\installed\x64-windows\lib"
+          swift build -c ${{ env.BUILD_CONFIG }} --arch x86_64 --product wendy -Xcc -I"C:\vcpkg\installed\x64-windows\include" -Xlinker -L"C:\vcpkg\installed\x64-windows\lib"
 
       # 5. Bundle (The "Alongside" Requirement)
       - name: Create Distribution Bundle
         shell: pwsh
         run: |
-          $ReleaseDir = ".build\x86_64-unknown-windows-msvc\release"
+          $BuildDir = ".build\x86_64-unknown-windows-msvc\${{ env.BUILD_CONFIG }}"
           $StagingDir = "staging"
           $ZlibSource = "C:\vcpkg\installed\x64-windows\bin\zlib1.dll"
           
@@ -149,7 +169,7 @@ jobs:
           New-Item -ItemType Directory -Path $StagingDir
           
           # Copy Executable
-          Copy-Item "$ReleaseDir\wendy.exe" -Destination "$StagingDir\"
+          Copy-Item "$BuildDir\wendy.exe" -Destination "$StagingDir\"
           
           # Copy DLL
           Copy-Item $ZlibSource -Destination "$StagingDir\"
