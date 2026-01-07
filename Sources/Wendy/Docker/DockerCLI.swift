@@ -48,7 +48,9 @@ public struct DockerCLI: Sendable {
 
     /// Fixes the QEMU bundled with Docker Desktop on Windows installations
     public func fixX86_64QEMU() async throws {
-        let arguments = ["run", "--rm", "--privileged", "multiarch/qemu-user-static", "--reset", "-p", "yes"]
+        let arguments = [
+            "run", "--rm", "--privileged", "multiarch/qemu-user-static", "--reset", "-p", "yes",
+        ]
         let result = try await Subprocess.run(
             Subprocess.Executable.name(self.command),
             arguments: Subprocess.Arguments(arguments),
@@ -173,7 +175,7 @@ public struct DockerCLI: Sendable {
         registryPort: Int = 5000
     ) async throws {
         #if os(Windows) && (arch(x86_64) || arch(i386))
-        try await fixX86_64QEMU()
+            try await fixX86_64QEMU()
         #endif
 
         let arguments = [

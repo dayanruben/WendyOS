@@ -357,17 +357,17 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     case .stdoutOutput(let stdoutOutput):
                         stdoutOutput.data.withUnsafeBytes { data in
                             #if os(Windows)
-                            _ = write(STDOUT_FILENO, data.baseAddress!, UInt32(data.count))
+                                _ = write(STDOUT_FILENO, data.baseAddress!, UInt32(data.count))
                             #else
-                            _ = write(STDOUT_FILENO, data.baseAddress!, data.count)
+                                _ = write(STDOUT_FILENO, data.baseAddress!, data.count)
                             #endif
                         }
                     case .stderrOutput(let stderrOutput):
                         stderrOutput.data.withUnsafeBytes { data in
                             #if os(Windows)
-                            _ = write(STDERR_FILENO, data.baseAddress!, UInt32(data.count))
+                                _ = write(STDERR_FILENO, data.baseAddress!, UInt32(data.count))
                             #else
-                            _ = write(STDERR_FILENO, data.baseAddress!, data.count)
+                                _ = write(STDERR_FILENO, data.baseAddress!, data.count)
                             #endif
                         }
                     default:
@@ -478,7 +478,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                         }
                     }
                 #else
-                return
+                    return
                 #endif
             }
         }
@@ -486,7 +486,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
 
     func checkSwiftRequirements() async throws {
         let swiftPM = SwiftPM()
-        
+
         let (installedSDKs, installedSwiftVersions) = try await Noora().progressStep(
             message: "Checking Swift requirements",
             successMessage: nil,
@@ -522,33 +522,33 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         }
 
         #if !os(Windows)
-        if !installedSwiftVersions.contains(where: { $0.version.name == swiftVersion }) {
-            let installSwift: Bool
+            if !installedSwiftVersions.contains(where: { $0.version.name == swiftVersion }) {
+                let installSwift: Bool
 
-            if autoAccept {
-                installSwift = true
-            } else {
-                installSwift = Noora().yesOrNoChoicePrompt(
-                    title: "Swift \(swiftVersion) version is not installed yet",
-                    question: "Do you want to install Swift \(swiftVersion)?",
-                    description: """
-                        WendyOS development is tied to a specific Swift toolchain.
-                        We update this version from time to time to ensure compatibility with the latest features.
-                        """
-                )
-            }
+                if autoAccept {
+                    installSwift = true
+                } else {
+                    installSwift = Noora().yesOrNoChoicePrompt(
+                        title: "Swift \(swiftVersion) version is not installed yet",
+                        question: "Do you want to install Swift \(swiftVersion)?",
+                        description: """
+                            WendyOS development is tied to a specific Swift toolchain.
+                            We update this version from time to time to ensure compatibility with the latest features.
+                            """
+                    )
+                }
 
-            if installSwift {
-                try await Noora().progressStep(
-                    message: "Installing Swift \(swiftVersion)",
-                    successMessage: "Swift \(swiftVersion) Installed",
-                    errorMessage: "Failed to install Swift \(swiftVersion)",
-                    showSpinner: true
-                ) { _ in
-                    try await swiftPM.installSDK(from: sdkDownloadURL, checksum: sdkChecksum)
+                if installSwift {
+                    try await Noora().progressStep(
+                        message: "Installing Swift \(swiftVersion)",
+                        successMessage: "Swift \(swiftVersion) Installed",
+                        errorMessage: "Failed to install Swift \(swiftVersion)",
+                        showSpinner: true
+                    ) { _ in
+                        try await swiftPM.installSDK(from: sdkDownloadURL, checksum: sdkChecksum)
+                    }
                 }
             }
-        }
         #endif
     }
 

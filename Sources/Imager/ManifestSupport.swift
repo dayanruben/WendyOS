@@ -124,22 +124,22 @@ public final class ManifestManager: ManifestManaging {
     /// Helper method to fetch JSON data using AsyncHTTPClient
     private func fetchData(from url: URL) async throws -> Data {
         #if os(Windows)
-        return try await URLSession.shared.data(from: url).0
+            return try await URLSession.shared.data(from: url).0
         #else
-        let request = HTTPClientRequest(url: url.absoluteString)
-        let response = try await HTTPClient.shared.execute(
-            request,
-            deadline: NIODeadline.now() + .seconds(60)
-        )
+            let request = HTTPClientRequest(url: url.absoluteString)
+            let response = try await HTTPClient.shared.execute(
+                request,
+                deadline: NIODeadline.now() + .seconds(60)
+            )
 
-        // Check for successful response
-        guard response.status == .ok else {
-            throw ManifestError.httpFailure(response.status.code)
-        }
+            // Check for successful response
+            guard response.status == .ok else {
+                throw ManifestError.httpFailure(response.status.code)
+            }
 
-        // Collect response body (10MB limit)
-        let body = try await response.body.collect(upTo: 10 * 1024 * 1024)
-        return Data(buffer: body)
+            // Collect response body (10MB limit)
+            let body = try await response.body.collect(upTo: 10 * 1024 * 1024)
+            return Data(buffer: body)
         #endif
     }
 

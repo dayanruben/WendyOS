@@ -7,9 +7,9 @@
     // Windows IOCTL codes for volume operations
     // CTL_CODE(FILE_DEVICE_FILE_SYSTEM, function, METHOD_BUFFERED, FILE_ANY_ACCESS)
     // where FILE_DEVICE_FILE_SYSTEM = 0x00000009, METHOD_BUFFERED = 0, FILE_ANY_ACCESS = 0
-    private let FSCTL_LOCK_VOLUME: UInt32 = 0x00090018      // (0x9 << 16) | (6 << 2)
-    private let FSCTL_UNLOCK_VOLUME: UInt32 = 0x0009001C    // (0x9 << 16) | (7 << 2)
-    private let FSCTL_DISMOUNT_VOLUME: UInt32 = 0x00090020  // (0x9 << 16) | (8 << 2)
+    private let FSCTL_LOCK_VOLUME: UInt32 = 0x0009_0018  // (0x9 << 16) | (6 << 2)
+    private let FSCTL_UNLOCK_VOLUME: UInt32 = 0x0009_001C  // (0x9 << 16) | (7 << 2)
+    private let FSCTL_DISMOUNT_VOLUME: UInt32 = 0x0009_0020  // (0x9 << 16) | (8 << 2)
 
     /// Windows implementation of the DiskWriter protocol using PowerShell and direct file I/O.
     public class WindowsDiskWriter: DiskWriter {
@@ -111,7 +111,7 @@
                         offline disk
                         online disk
                         """
-                    
+
                     let result = try await Subprocess.run(
                         Subprocess.Executable.name("diskpart.exe"),
                         arguments: [],
@@ -119,39 +119,66 @@
                         output: .discarded,
                         error: .discarded
                     )
-                    
+
                     if !result.terminationStatus.isSuccess {
                         print("Warning: Failed to offline/online disk via diskpart")
                     }
                 } catch {
                     print("Warning: Failed to run diskpart: \(error)")
                 }
-                
+
                 // Try to lock the physical disk itself
                 var bytesReturned: UInt32 = 0
                 _ = DeviceIoControl(disk, FSCTL_LOCK_VOLUME, nil, 0, nil, 0, &bytesReturned, nil)
-                _ = DeviceIoControl(disk, FSCTL_DISMOUNT_VOLUME, nil, 0, nil, 0, &bytesReturned, nil)
-                defer { _ = DeviceIoControl(disk, FSCTL_UNLOCK_VOLUME, nil, 0, nil, 0, &bytesReturned, nil) }
+                _ = DeviceIoControl(
+                    disk,
+                    FSCTL_DISMOUNT_VOLUME,
+                    nil,
+                    0,
+                    nil,
+                    0,
+                    &bytesReturned,
+                    nil
+                )
+                defer {
+                    _ = DeviceIoControl(
+                        disk,
+                        FSCTL_UNLOCK_VOLUME,
+                        nil,
+                        0,
+                        nil,
+                        0,
+                        &bytesReturned,
+                        nil
+                    )
+                }
 
                 var size = LARGE_INTEGER()
                 GetFileSizeEx(image, &size)
-                guard SetFilePointerEx(disk, LARGE_INTEGER(), nil, UInt32(bitPattern: FILE_BEGIN)) else {
+                guard SetFilePointerEx(disk, LARGE_INTEGER(), nil, UInt32(bitPattern: FILE_BEGIN))
+                else {
                     throw DiskWriterError.writeFailed(reason: "Failed to set file pointer.")
                 }
 
-                let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 8 * 1024 * 1024, alignment: 4096)
+                let buffer = UnsafeMutableRawBufferPointer.allocate(
+                    byteCount: 8 * 1024 * 1024,
+                    alignment: 4096
+                )
                 defer { buffer.deallocate() }
                 var totalWritten: Int64 = 0
                 while true {
                     var bytesRead: UInt32 = 0
-                    guard ReadFile(image, buffer.baseAddress, UInt32(buffer.count), &bytesRead, nil) else {
+                    guard ReadFile(image, buffer.baseAddress, UInt32(buffer.count), &bytesRead, nil)
+                    else {
                         let errorCode = GetLastError()
-                        throw DiskWriterError.writeFailed(reason: "Failed to read from image file (error \(errorCode)).")
+                        throw DiskWriterError.writeFailed(
+                            reason: "Failed to read from image file (error \(errorCode))."
+                        )
                     }
                     if bytesRead == 0 {
                         break
                     }
-                    
+
                     // For FILE_FLAG_NO_BUFFERING, writes must be sector-aligned
                     // Round up to next 512-byte boundary if not EOF
                     var writeSize = bytesRead
@@ -166,15 +193,20 @@
                             )
                         }
                     }
-                    
+
                     var bytesWritten: UInt32 = 0
                     guard WriteFile(disk, buffer.baseAddress, writeSize, &bytesWritten, nil) else {
                         let errorCode = GetLastError()
                         switch errorCode {
                         case 5:
-                            throw DiskWriterError.writeFailed(reason: "Access denied writing to disk device.")
+                            throw DiskWriterError.writeFailed(
+                                reason: "Access denied writing to disk device."
+                            )
                         default:
-                            throw DiskWriterError.writeFailed(reason: "Failed to write to disk device (error \(errorCode)). TotalWritten=\(totalWritten), writeSize=\(writeSize).")
+                            throw DiskWriterError.writeFailed(
+                                reason:
+                                    "Failed to write to disk device (error \(errorCode)). TotalWritten=\(totalWritten), writeSize=\(writeSize)."
+                            )
                         }
                     }
                     totalWritten += Int64(bytesRead)  // Track actual data written, not padding
@@ -185,7 +217,7 @@
                         )
                     )
                 }
-                
+
                 // Flush and send final progress
                 FlushFileBuffers(disk)
 

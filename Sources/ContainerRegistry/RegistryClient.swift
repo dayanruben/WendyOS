@@ -130,10 +130,10 @@ public struct RegistryClient: Sendable {
         }
 
         #if os(Windows) || os(macOS)
-        let httpClient = URLSession.shared
+            let httpClient = URLSession.shared
         #else
-        // Use AsyncHTTPClient instead of URLSession to resolve SSL certificate issues on Linux
-        let httpClient = AsyncHTTPClientWrapper()
+            // Use AsyncHTTPClient instead of URLSession to resolve SSL certificate issues on Linux
+            let httpClient = AsyncHTTPClientWrapper()
         #endif
         try await self.init(registry: registryURL, client: httpClient, auth: auth)
     }

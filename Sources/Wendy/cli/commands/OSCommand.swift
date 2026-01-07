@@ -101,7 +101,7 @@ struct OSCommand: AsyncParsableCommand {
         commandName: "os",
         abstract: "Download and install WendyOS",
         subcommands: [
-            OSInstallCommand.self,
+            OSInstallCommand.self
         ],
         groupedSubcommands: [
             CommandGroup(
@@ -296,9 +296,9 @@ struct OSCommand: AsyncParsableCommand {
             let noora = Noora()
 
             #if os(Windows)
-            noora.info(
-                "Administrator privileges are required to write raw disks. Please ensure you have administrative rights."
-            )
+                noora.info(
+                    "Administrator privileges are required to write raw disks. Please ensure you have administrative rights."
+                )
             #endif
 
             let selectedDeviceName: String
@@ -736,18 +736,20 @@ private func ensureAdminPrivileges() async throws {
         // Check if running as administrator
         let result = try await Subprocess.run(
             Subprocess.Executable.name("powershell.exe"),
-            arguments: ["-NoProfile", "-Command", 
-                       "[Security.Principal.WindowsIdentity]::GetCurrent().Owner"],
+            arguments: [
+                "-NoProfile", "-Command",
+                "[Security.Principal.WindowsIdentity]::GetCurrent().Owner",
+            ],
             output: .string(limit: .max),
             error: .discarded
         )
-        
+
         guard result.terminationStatus.isSuccess else {
             throw ValidationError(
                 "Failed to check administrator status. Please run as administrator."
             )
         }
-        
+
         // Inform the user about privilege requirements
         Noora().info(
             "Administrator privileges are required to write raw disks. Continuing..."

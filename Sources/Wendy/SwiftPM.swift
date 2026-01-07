@@ -25,21 +25,21 @@ public struct SwiftPM: Sendable {
     }
 
     #if os(Windows)
-    public init(
-        path: String = "swift",
-        swiftVersion: String? = SwiftPM.defaultSwiftVersion
-    ) {
-        self.path = path
-        self.swiftVersion = swiftVersion
-    }
+        public init(
+            path: String = "swift",
+            swiftVersion: String? = SwiftPM.defaultSwiftVersion
+        ) {
+            self.path = path
+            self.swiftVersion = swiftVersion
+        }
     #else
-    public init(
-        path: String = "swiftly run swift",
-        swiftVersion: String? = SwiftPM.defaultSwiftVersion
-    ) {
-        self.path = path
-        self.swiftVersion = swiftVersion
-    }
+        public init(
+            path: String = "swiftly run swift",
+            swiftVersion: String? = SwiftPM.defaultSwiftVersion
+        ) {
+            self.path = path
+            self.swiftVersion = swiftVersion
+        }
     #endif
 
     public enum BuildOption: Sendable {

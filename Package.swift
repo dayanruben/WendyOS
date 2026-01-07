@@ -30,7 +30,7 @@ let package = Package(
         .package(path: "../Rainbow"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.9.1"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
-       .package(
+        .package(
             url: "https://github.com/tuist/Noora.git",
             from: "0.52.0"
         ),
@@ -80,7 +80,10 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("zlib", .when(platforms: [.windows])),
                 .linkedLibrary("z", .when(platforms: [.windows])),
-                .unsafeFlags(["-LC:/vcpkg/installed/x64-windows/lib"], .when(platforms: [.windows])),
+                .unsafeFlags(
+                    ["-LC:/vcpkg/installed/x64-windows/lib"],
+                    .when(platforms: [.windows])
+                ),
             ]
         ),
 
@@ -133,7 +136,11 @@ let package = Package(
             name: "WendyShared",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver", condition: .when(platforms: [.macOS])),
+                .product(
+                    name: "AsyncDNSResolver",
+                    package: "swift-async-dns-resolver",
+                    condition: .when(platforms: [.macOS])
+                ),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "DNSClient", package: "DNSClient"),
             ]

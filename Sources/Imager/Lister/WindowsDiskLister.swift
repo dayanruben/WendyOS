@@ -13,7 +13,8 @@
         /// - Parameter all: If true, lists all drives, not just external/removable drives.
         /// - Returns: An array of Drive objects representing the available drives.
         public func list(all: Bool) async throws -> [Drive] {
-            let powerShellScript = all
+            let powerShellScript =
+                all
                 ? "Get-Disk | Select-Object Number, BusType, IsSystem, Model, IsReadOnly, FriendlyName, Size | ConvertTo-Json"
                 : "Get-Disk | Where-Object { $_.BusType -eq 'USB' -or $_.MediaType -eq 'Removable Media' } | Select-Object Number, BusType, IsSystem, Model, IsReadOnly, FriendlyName, Size | ConvertTo-Json"
 
@@ -47,7 +48,8 @@
         /// - Returns: The Drive object if found.
         /// - Throws: If the drive cannot be found.
         public func findDrive(byId id: String) async throws -> Drive {
-            let powerShellScript = "Get-Disk -Number \(id) | Select-Object Number, BusType, IsSystem, Model, IsReadOnly, FriendlyName, Size | ConvertTo-Json"
+            let powerShellScript =
+                "Get-Disk -Number \(id) | Select-Object Number, BusType, IsSystem, Model, IsReadOnly, FriendlyName, Size | ConvertTo-Json"
 
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("powershell.exe"),
@@ -82,7 +84,8 @@
                     name: disk.FriendlyName ?? "Disk \(disk.Number)",
                     available: 0,  // Windows drive available space would require additional queries
                     capacity: disk.Size ?? 0,
-                    isExternal: disk.BusType == "USB" || disk.BusType == "SD" || disk.BusType == "IEEE1394"
+                    isExternal: disk.BusType == "USB" || disk.BusType == "SD"
+                        || disk.BusType == "IEEE1394"
                 )
             }
         }
