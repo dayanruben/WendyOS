@@ -615,9 +615,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 var arguments: [String] = []
 
                 if debug {
+                    let ds2BinaryName = "ds2-124963fd-static-linux-arm64"
                     // Include the ds2 executable in the container image.
                     if let url = Bundle.module.url(
-                        forResource: "ds2-124963fd-static-linux-arm64",
+                        forResource: ds2BinaryName,
                         withExtension: nil
                     ) {
                         resources.append((source: url.path(), destination: "/bin/ds2"))
@@ -630,7 +631,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                             .appending(path: "Contents")
                             .appending(path: "Resources")
                             .appending(path: "Resources")
-                            .appending(component: "ds2-124963fd-static-linux-arm64")
+                            .appending(component: ds2BinaryName)
 
                         if FileManager.default.fileExists(atPath: url.path()) {
                             resources.append((source: url.path(), destination: "/bin/ds2"))
