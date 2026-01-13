@@ -636,6 +636,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                             resources.append((source: url.path(), destination: "/bin/ds2"))
                             entrypoint = "/bin/ds2"
                             arguments = debugArguments
+                        } else {
+                            Noora().warning(
+                                "ds2 binary not found. Debugging will not be available."
+                            )
                         }
                     }
                 }
