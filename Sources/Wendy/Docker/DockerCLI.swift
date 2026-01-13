@@ -8,6 +8,110 @@
 import Foundation
 import Subprocess
 
+#if os(macOS)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#elseif canImport(Musl)
+    import Musl
+#endif
+
+/// Manages a file-based lock to prevent parallel builds from interfering with each other
+public final class BuildLock: Sendable {
+    private let lockPath: String
+
+    public static let shared = BuildLock()
+
+    private init() {
+        let wendyDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".wendy")
+        self.lockPath = wendyDir.appendingPathComponent("build.lock").path
+    }
+
+    /// Attempts to acquire an exclusive lock for building
+    /// Returns a file descriptor that must be passed to `release()` when done
+    /// Throws `BuildLockError.buildInProgress` if another build is in progress
+    public func acquire() throws -> Int32 {
+        // Ensure directory exists
+        let wendyDir = (lockPath as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(
+            atPath: wendyDir,
+            withIntermediateDirectories: true
+        )
+
+        // Open or create the lock file
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else {
+            throw BuildLockError.unableToCreateLock
+        }
+
+        #if os(macOS) || canImport(Glibc) || canImport(Musl)
+            // Try to acquire an exclusive lock (non-blocking)
+            let result = flock(fd, LOCK_EX | LOCK_NB)
+            if result != 0 {
+                close(fd)
+                throw BuildLockError.buildInProgress
+            }
+        #endif
+
+        // Write our PID to the lock file for debugging purposes
+        let pid = String(getpid())
+        _ = ftruncate(fd, 0)
+        _ = pid.withCString { ptr in
+            write(fd, ptr, strlen(ptr))
+        }
+
+        return fd
+    }
+
+    /// Releases the build lock
+    public func release(fd: Int32) {
+        #if os(macOS) || canImport(Glibc) || canImport(Musl)
+            flock(fd, LOCK_UN)
+        #endif
+        close(fd)
+    }
+
+    /// Checks if a build is currently in progress
+    public func isBuildInProgress() -> Bool {
+        let fd = open(lockPath, O_RDONLY)
+        guard fd >= 0 else {
+            // Lock file doesn't exist, no build in progress
+            return false
+        }
+        defer { close(fd) }
+
+        #if os(macOS) || canImport(Glibc) || canImport(Musl)
+            // Try to acquire a shared lock (non-blocking)
+            // If we can't get even a shared lock, an exclusive lock is held
+            let result = flock(fd, LOCK_SH | LOCK_NB)
+            if result != 0 {
+                return true
+            }
+
+            // We got the shared lock, release it and return false
+            flock(fd, LOCK_UN)
+        #endif
+
+        return false
+    }
+}
+
+/// Errors related to build lock operations
+public enum BuildLockError: Error, LocalizedError {
+    case buildInProgress
+    case unableToCreateLock
+
+    public var errorDescription: String? {
+        switch self {
+        case .buildInProgress:
+            return "Build in progress, please try again when it finishes"
+        case .unableToCreateLock:
+            return "Unable to create build lock file"
+        }
+    }
+}
+
 /// Represents the Docker CLI interface for managing container images and running containers.
 public struct DockerCLI: Sendable {
     public let command: String
@@ -140,12 +244,17 @@ public struct DockerCLI: Sendable {
     /// Uses host.docker.internal:PORT for cross-platform support (works on both Linux and Docker Desktop).
     /// Disables provenance and SBOM to ensure Docker v2 manifest format (not OCI image index).
     /// Uses registry cache to preserve build cache across builder recreations.
+    /// Acquires a build lock to prevent parallel builds from interfering with builder restarts.
     public func buildxAndPush(
         name: String,
         directory: String = ".",
         registryHostname: String = "host.docker.internal",
         registryPort: Int = 5000
     ) async throws {
+        // Acquire build lock to prevent builder restarts during build
+        let lockFd = try BuildLock.shared.acquire()
+        defer { BuildLock.shared.release(fd: lockFd) }
+
         let arguments = [
             "buildx", "build",
             "--builder", defaultBuilderName,
@@ -348,6 +457,11 @@ public struct DockerCLI: Sendable {
                     output: "",
                     error: ""
                 )
+            }
+
+            // Check if a build is in progress before restarting
+            if BuildLock.shared.isBuildInProgress() {
+                throw BuildLockError.buildInProgress
             }
 
             // Restart to apply the new config
