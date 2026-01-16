@@ -127,8 +127,14 @@ struct WendyAgent: AsyncParsableCommand {
                         transportSecurity: .plaintext
                     ),
                     services: [
-                        OpenTelemetryLogsProxy(cloud: cloudClient, broadcaster: telemetryBroadcaster),
-                        OpenTelemetryMetricsProxy(cloud: cloudClient, broadcaster: telemetryBroadcaster),
+                        OpenTelemetryLogsProxy(
+                            cloud: cloudClient,
+                            broadcaster: telemetryBroadcaster
+                        ),
+                        OpenTelemetryMetricsProxy(
+                            cloud: cloudClient,
+                            broadcaster: telemetryBroadcaster
+                        ),
                     ]
                 )
             )

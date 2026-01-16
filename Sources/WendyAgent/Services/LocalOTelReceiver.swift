@@ -2,7 +2,8 @@ import Logging
 import OpenTelemetryGRPC
 
 /// Local OTel logs receiver that broadcasts to CLI clients without requiring cloud enrollment.
-actor LocalOTelLogsReceiver: Opentelemetry_Proto_Collector_Logs_V1_LogsService.SimpleServiceProtocol {
+actor LocalOTelLogsReceiver: Opentelemetry_Proto_Collector_Logs_V1_LogsService.SimpleServiceProtocol
+{
     let broadcaster: TelemetryBroadcaster
     let logger = Logger(label: "sh.wendy.agent.local-otel-logs")
 
@@ -20,7 +21,9 @@ actor LocalOTelLogsReceiver: Opentelemetry_Proto_Collector_Logs_V1_LogsService.S
 }
 
 /// Local OTel metrics receiver that broadcasts to CLI clients without requiring cloud enrollment.
-actor LocalOTelMetricsReceiver: Opentelemetry_Proto_Collector_Metrics_V1_MetricsService.SimpleServiceProtocol {
+actor LocalOTelMetricsReceiver: Opentelemetry_Proto_Collector_Metrics_V1_MetricsService
+        .SimpleServiceProtocol
+{
     let broadcaster: TelemetryBroadcaster
     let logger = Logger(label: "sh.wendy.agent.local-otel-metrics")
 

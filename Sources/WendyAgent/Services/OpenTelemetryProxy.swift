@@ -2,7 +2,9 @@ import Logging
 import OpenTelemetryGRPC
 
 /// Proxies OTel logs to cloud while broadcasting to CLI clients.
-actor OpenTelemetryLogsProxy: Opentelemetry_Proto_Collector_Logs_V1_LogsService.SimpleServiceProtocol {
+actor OpenTelemetryLogsProxy: Opentelemetry_Proto_Collector_Logs_V1_LogsService
+        .SimpleServiceProtocol
+{
     let cloud: CloudClient
     let broadcaster: TelemetryBroadcaster
     let logger = Logger(label: "sh.wendy.agent.otel-logs-proxy")
@@ -33,7 +35,9 @@ actor OpenTelemetryLogsProxy: Opentelemetry_Proto_Collector_Logs_V1_LogsService.
 }
 
 /// Proxies OTel metrics to cloud while broadcasting to CLI clients.
-actor OpenTelemetryMetricsProxy: Opentelemetry_Proto_Collector_Metrics_V1_MetricsService.SimpleServiceProtocol {
+actor OpenTelemetryMetricsProxy: Opentelemetry_Proto_Collector_Metrics_V1_MetricsService
+        .SimpleServiceProtocol
+{
     let cloud: CloudClient
     let broadcaster: TelemetryBroadcaster
     let logger = Logger(label: "sh.wendy.agent.otel-metrics-proxy")

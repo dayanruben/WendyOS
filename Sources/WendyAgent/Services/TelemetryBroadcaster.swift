@@ -27,7 +27,9 @@ actor TelemetryBroadcaster {
     /// Immediately sends cached recent logs if available.
     func subscribeLogs() -> (id: UUID, stream: AsyncStream<LogsRequest>) {
         let id = UUID()
-        let (stream, continuation) = AsyncStream<LogsRequest>.makeStream(bufferingPolicy: .bufferingNewest(100))
+        let (stream, continuation) = AsyncStream<LogsRequest>.makeStream(
+            bufferingPolicy: .bufferingNewest(100)
+        )
         logSubscribers[id] = continuation
         logger.debug("Log subscriber added", metadata: ["id": "\(id)"])
 
@@ -36,10 +38,13 @@ actor TelemetryBroadcaster {
             for cachedLog in recentLogs {
                 _ = continuation.yield(cachedLog)
             }
-            logger.debug("Sent cached logs to new subscriber", metadata: [
-                "id": "\(id)",
-                "logBatches": "\(recentLogs.count)"
-            ])
+            logger.debug(
+                "Sent cached logs to new subscriber",
+                metadata: [
+                    "id": "\(id)",
+                    "logBatches": "\(recentLogs.count)",
+                ]
+            )
         }
 
         return (id, stream)
@@ -80,7 +85,9 @@ actor TelemetryBroadcaster {
     /// Immediately sends the latest cached metrics if available.
     func subscribeMetrics() -> (id: UUID, stream: AsyncStream<MetricsRequest>) {
         let id = UUID()
-        let (stream, continuation) = AsyncStream<MetricsRequest>.makeStream(bufferingPolicy: .bufferingNewest(100))
+        let (stream, continuation) = AsyncStream<MetricsRequest>.makeStream(
+            bufferingPolicy: .bufferingNewest(100)
+        )
         metricsSubscribers[id] = continuation
         logger.debug("Metrics subscriber added", metadata: ["id": "\(id)"])
 
@@ -88,10 +95,13 @@ actor TelemetryBroadcaster {
         if !latestMetrics.isEmpty {
             let cachedRequest = buildCachedMetricsRequest()
             _ = continuation.yield(cachedRequest)
-            logger.debug("Sent cached metrics to new subscriber", metadata: [
-                "id": "\(id)",
-                "metricsCount": "\(latestMetrics.count)"
-            ])
+            logger.debug(
+                "Sent cached metrics to new subscriber",
+                metadata: [
+                    "id": "\(id)",
+                    "metricsCount": "\(latestMetrics.count)",
+                ]
+            )
         }
 
         return (id, stream)
@@ -121,7 +131,8 @@ actor TelemetryBroadcaster {
     /// Cache metrics from a request, keeping only the latest value for each metric.
     private func cacheMetrics(_ request: MetricsRequest) {
         for resourceMetrics in request.resourceMetrics {
-            let serviceName = resourceMetrics.resource.attributes
+            let serviceName =
+                resourceMetrics.resource.attributes
                 .first { $0.key == "service.name" }?.value.stringValue ?? "unknown"
 
             // Cache the resource for this service

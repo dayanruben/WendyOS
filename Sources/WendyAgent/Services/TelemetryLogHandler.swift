@@ -117,7 +117,9 @@ struct TelemetryLogHandler: LogHandler {
         }
     }
 
-    private func otelSeverity(from level: Logger.Level) -> Opentelemetry_Proto_Logs_V1_SeverityNumber {
+    private func otelSeverity(
+        from level: Logger.Level
+    ) -> Opentelemetry_Proto_Logs_V1_SeverityNumber {
         switch level {
         case .trace: return .trace
         case .debug: return .debug

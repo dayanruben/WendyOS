@@ -91,9 +91,10 @@ struct OTLPHTTPReceiver {
         let data = Data(buffer: body)
 
         do {
-            let metricsRequest = try Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest(
-                serializedBytes: data
-            )
+            let metricsRequest =
+                try Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest(
+                    serializedBytes: data
+                )
 
             // Broadcast to CLI subscribers
             await broadcaster.broadcastMetrics(metricsRequest)

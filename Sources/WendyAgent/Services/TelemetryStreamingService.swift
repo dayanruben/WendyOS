@@ -5,7 +5,8 @@ import WendyAgentGRPC
 
 /// Service that streams telemetry data to CLI clients.
 /// Subscribes to the TelemetryBroadcaster and streams logs/metrics to connected clients.
-actor TelemetryStreamingService: Wendy_Agent_Services_V1_WendyTelemetryService.SimpleServiceProtocol {
+actor TelemetryStreamingService: Wendy_Agent_Services_V1_WendyTelemetryService.SimpleServiceProtocol
+{
     let broadcaster: TelemetryBroadcaster
     let logger = Logger(label: "sh.wendy.agent.telemetry-streaming")
 

@@ -6,11 +6,11 @@ import OpenTelemetryGRPC
 import WendyAgentGRPC
 
 #if canImport(Darwin)
-import Darwin
+    import Darwin
 #elseif canImport(Glibc)
-import Glibc
+    import Glibc
 #elseif canImport(Musl)
-import Musl
+    import Musl
 #endif
 
 struct DashboardCommand: AsyncParsableCommand {
@@ -39,12 +39,12 @@ struct DashboardCommand: AsyncParsableCommand {
 
         // Enter alternate screen buffer and hide cursor
         print("\u{001B}[?1049h", terminator: "")  // Enter alternate screen
-        print("\u{001B}[?25l", terminator: "")    // Hide cursor
+        print("\u{001B}[?25l", terminator: "")  // Hide cursor
         fflush(stdout)
 
         // Ensure we restore terminal state on exit
         defer {
-            print("\u{001B}[?25h", terminator: "")    // Show cursor
+            print("\u{001B}[?25h", terminator: "")  // Show cursor
             print("\u{001B}[?1049l", terminator: "")  // Exit alternate screen
             fflush(stdout)
         }
@@ -55,7 +55,9 @@ struct DashboardCommand: AsyncParsableCommand {
                 while !Task.isCancelled {
                     do {
                         try await withAgentGRPCClient(endpoint, title: "") { client in
-                            let telemetry = Wendy_Agent_Services_V1_WendyTelemetryService.Client(wrapping: client)
+                            let telemetry = Wendy_Agent_Services_V1_WendyTelemetryService.Client(
+                                wrapping: client
+                            )
 
                             let request = Wendy_Agent_Services_V1_StreamMetricsRequest()
 
@@ -89,7 +91,9 @@ struct DashboardCommand: AsyncParsableCommand {
                 while !Task.isCancelled {
                     do {
                         try await withAgentGRPCClient(endpoint, title: "") { client in
-                            let telemetry = Wendy_Agent_Services_V1_WendyTelemetryService.Client(wrapping: client)
+                            let telemetry = Wendy_Agent_Services_V1_WendyTelemetryService.Client(
+                                wrapping: client
+                            )
 
                             let request = Wendy_Agent_Services_V1_StreamLogsRequest.with {
                                 if let service = service {
@@ -150,7 +154,8 @@ private func getTerminalHeight() -> Int {
     }
     // Fallback: check LINES environment variable
     if let linesStr = ProcessInfo.processInfo.environment["LINES"],
-       let lines = Int(linesStr) {
+        let lines = Int(linesStr)
+    {
         return lines
     }
     // Default fallback
@@ -209,12 +214,15 @@ actor Dashboard {
         logsConnected = connected
     }
 
-    func updateMetrics(with metricsRequest: Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest) {
+    func updateMetrics(
+        with metricsRequest: Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest
+    ) {
         lastMetricsUpdate = Date()
         metricsConnected = true
 
         for resourceMetrics in metricsRequest.resourceMetrics {
-            let serviceName = resourceMetrics.resource.attributes
+            let serviceName =
+                resourceMetrics.resource.attributes
                 .first { $0.key == "service.name" }?.value.stringValue ?? "unknown"
 
             for scopeMetrics in resourceMetrics.scopeMetrics {
@@ -232,12 +240,15 @@ actor Dashboard {
         }
     }
 
-    func updateLogs(with logsRequest: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest) {
+    func updateLogs(
+        with logsRequest: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest
+    ) {
         lastLogsUpdate = Date()
         logsConnected = true
 
         for resourceLogs in logsRequest.resourceLogs {
-            let serviceName = resourceLogs.resource.attributes
+            let serviceName =
+                resourceLogs.resource.attributes
                 .first { $0.key == "service.name" }?.value.stringValue ?? "unknown"
 
             for scopeLogs in resourceLogs.scopeLogs {
@@ -271,13 +282,22 @@ actor Dashboard {
         let clearLine = "\u{001B}[K"  // Clear from cursor to end of line
 
         // Header
-        print("╔════════════════════════════════════════════════════════════════════════════╗\(clearLine)")
-        print("║                         WENDY DEVICE DASHBOARD                             ║\(clearLine)")
-        print("╚════════════════════════════════════════════════════════════════════════════╝\(clearLine)")
+        print(
+            "╔════════════════════════════════════════════════════════════════════════════╗\(clearLine)"
+        )
+        print(
+            "║                         WENDY DEVICE DASHBOARD                             ║\(clearLine)"
+        )
+        print(
+            "╚════════════════════════════════════════════════════════════════════════════╝\(clearLine)"
+        )
 
         // Connection status
-        let metricsStatus = metricsConnected ? "\u{001B}[32m●\(resetColor) Metrics" : "\u{001B}[31m○\(resetColor) Metrics"
-        let logsStatus = logsConnected ? "\u{001B}[32m●\(resetColor) Logs" : "\u{001B}[31m○\(resetColor) Logs"
+        let metricsStatus =
+            metricsConnected
+            ? "\u{001B}[32m●\(resetColor) Metrics" : "\u{001B}[31m○\(resetColor) Metrics"
+        let logsStatus =
+            logsConnected ? "\u{001B}[32m●\(resetColor) Logs" : "\u{001B}[31m○\(resetColor) Logs"
         print("\(metricsStatus)  \(logsStatus)\(clearLine)")
         print(clearLine)
 
@@ -322,8 +342,11 @@ actor Dashboard {
             for entry in recentLogs {
                 let time = formatter.string(from: entry.timestamp)
                 let severityColor = colorForSeverity(entry.severity)
-                let truncatedBody = entry.body.count > 60 ? String(entry.body.prefix(60)) + "..." : entry.body
-                print("\(dim)\(time)\(resetColor) \(severityColor)\(entry.severity.padding(toLength: 5, withPad: " ", startingAt: 0))\(resetColor) [\(entry.service)] \(truncatedBody)\(clearLine)")
+                let truncatedBody =
+                    entry.body.count > 60 ? String(entry.body.prefix(60)) + "..." : entry.body
+                print(
+                    "\(dim)\(time)\(resetColor) \(severityColor)\(entry.severity.padding(toLength: 5, withPad: " ", startingAt: 0))\(resetColor) [\(entry.service)] \(truncatedBody)\(clearLine)"
+                )
             }
         }
         print(clearLine)
@@ -418,11 +441,11 @@ actor Dashboard {
         switch severity {
         case "TRACE": return "\u{001B}[90m"  // Gray
         case "DEBUG": return "\u{001B}[36m"  // Cyan
-        case "INFO": return "\u{001B}[32m"   // Green
-        case "WARN": return "\u{001B}[33m"   // Yellow
+        case "INFO": return "\u{001B}[32m"  // Green
+        case "WARN": return "\u{001B}[33m"  // Yellow
         case "ERROR": return "\u{001B}[31m"  // Red
         case "FATAL": return "\u{001B}[35m"  // Magenta
-        default: return "\u{001B}[0m"        // Reset
+        default: return "\u{001B}[0m"  // Reset
         }
     }
 }

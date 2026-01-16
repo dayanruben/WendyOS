@@ -19,13 +19,19 @@ struct LogsCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Filter logs by app/container name")
     var app: String?
 
-    @Option(name: .shortAndLong, help: "Minimum severity level (trace, debug, info, warn, error, fatal)")
+    @Option(
+        name: .shortAndLong,
+        help: "Minimum severity level (trace, debug, info, warn, error, fatal)"
+    )
     var level: String?
 
     @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
     var json: Bool = false
 
-    @Option(name: .long, help: "Forward logs to a local OTLP collector at this address (e.g., localhost:4317)")
+    @Option(
+        name: .long,
+        help: "Forward logs to a local OTLP collector at this address (e.g., localhost:4317)"
+    )
     var forward: String?
 
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
@@ -40,15 +46,16 @@ struct LogsCommand: AsyncParsableCommand {
             if let device = agentConnectionOptions.device ?? agentConnectionOptions.agent {
                 endpoint = device
             } else if let envEndpoint = ProcessInfo.processInfo.environment["WENDY_AGENT"],
-                      let parsed = AgentConnectionOptions.Endpoint(argument: envEndpoint) {
+                let parsed = AgentConnectionOptions.Endpoint(argument: envEndpoint)
+            {
                 endpoint = parsed
             } else if let defaultDevice = AgentConnectionOptions.defaultDevice() {
                 endpoint = defaultDevice
             } else {
                 // Output JSON error to stderr
                 let errorJSON = """
-                {"error":"no_device","message":"--json requires a device to be specified via --device, WENDY_AGENT environment variable, or a default device."}
-                """
+                    {"error":"no_device","message":"--json requires a device to be specified via --device, WENDY_AGENT environment variable, or a default device."}
+                    """
                 FileHandle.standardError.write(Data((errorJSON + "\n").utf8))
                 throw ExitCode.failure
             }
@@ -63,7 +70,9 @@ struct LogsCommand: AsyncParsableCommand {
         while !Task.isCancelled {
             do {
                 try await withAgentGRPCClient(endpoint, title: "") { client in
-                    let telemetry = Wendy_Agent_Services_V1_WendyTelemetryService.Client(wrapping: client)
+                    let telemetry = Wendy_Agent_Services_V1_WendyTelemetryService.Client(
+                        wrapping: client
+                    )
 
                     let request = Wendy_Agent_Services_V1_StreamLogsRequest.with {
                         if let service = service {
@@ -126,9 +135,12 @@ struct LogsCommand: AsyncParsableCommand {
         }
     }
 
-    private func printLogsAsText(_ logs: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest) {
+    private func printLogsAsText(
+        _ logs: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest
+    ) {
         for resourceLogs in logs.resourceLogs {
-            let serviceName = resourceLogs.resource.attributes
+            let serviceName =
+                resourceLogs.resource.attributes
                 .first { $0.key == "service.name" }?.value.stringValue ?? "unknown"
 
             for scopeLogs in resourceLogs.scopeLogs {
@@ -143,7 +155,9 @@ struct LogsCommand: AsyncParsableCommand {
         }
     }
 
-    private func printLogsAsJSON(_ logs: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest) {
+    private func printLogsAsJSON(
+        _ logs: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest
+    ) {
         struct LogEntry: Codable {
             let timestamp: String
             let service: String
@@ -152,7 +166,8 @@ struct LogsCommand: AsyncParsableCommand {
         }
 
         for resourceLogs in logs.resourceLogs {
-            let serviceName = resourceLogs.resource.attributes
+            let serviceName =
+                resourceLogs.resource.attributes
                 .first { $0.key == "service.name" }?.value.stringValue ?? "unknown"
 
             for scopeLogs in resourceLogs.scopeLogs {
@@ -165,7 +180,8 @@ struct LogsCommand: AsyncParsableCommand {
                     )
 
                     if let data = try? JSONEncoder().encode(entry),
-                       let json = String(data: data, encoding: .utf8) {
+                        let json = String(data: data, encoding: .utf8)
+                    {
                         print(json)
                     }
                 }
