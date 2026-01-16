@@ -116,7 +116,8 @@ struct AgentConnectionOptions: ParsableArguments {
         if JSONMode.isEnabled {
             jsonModeRequiresArgument(
                 argument: "device",
-                description: "Provide --device <hostname:port> or set WENDY_AGENT environment variable"
+                description:
+                    "Provide --device <hostname:port> or set WENDY_AGENT environment variable"
             )
         }
 

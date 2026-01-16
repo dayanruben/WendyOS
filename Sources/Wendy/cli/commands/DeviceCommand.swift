@@ -85,7 +85,10 @@ struct DeviceCommand: AsyncParsableCommand {
             }
 
             if JSONMode.isEnabled {
-                let output = JSONOutput(currentVersion: version.version, latestVersion: latestVersion)
+                let output = JSONOutput(
+                    currentVersion: version.version,
+                    latestVersion: latestVersion
+                )
                 let data = try JSONEncoder().encode(output)
                 print(String(data: data, encoding: .utf8)!)
             } else {
