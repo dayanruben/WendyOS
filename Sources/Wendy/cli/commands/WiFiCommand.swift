@@ -129,7 +129,10 @@ struct WiFiCommand: AsyncParsableCommand {
                 } else if json {
                     password = ""
                 } else {
-                    password = securePasswordPrompt("Password for '\(ssid)': ")
+                    password = secureTextPrompt(
+                        title: "Enter the password for '\(ssid)'",
+                        prompt: "Password"
+                    )
                 }
 
                 let logger = Logger(label: "sh.wendy.cli.wifi.connect")

@@ -1,4 +1,5 @@
 import Foundation
+import Noora
 
 #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
     import Darwin
@@ -10,6 +11,18 @@ import Foundation
     import ucrt
     import WinSDK
 #endif
+
+/// Prompt for password input with Noora-style rendering and masked characters
+/// - Parameters:
+///   - title: The title displayed above the prompt (e.g., "Enter WiFi password")
+///   - prompt: The prompt label (e.g., "Password")
+/// - Returns: The password entered by the user
+func secureTextPrompt(title: String, prompt: String) -> String {
+    // Print styled title
+    print(title.bold)
+    // Use the simple prompt with masking
+    return securePasswordPrompt("  \(prompt): ")
+}
 
 /// Prompt for password input with masked characters (shows * for each character)
 func securePasswordPrompt(_ prompt: String) -> String {
