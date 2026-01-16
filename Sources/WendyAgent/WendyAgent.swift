@@ -43,9 +43,13 @@ struct WendyAgent: AsyncParsableCommand {
                 ProcessInfo.processInfo.environment["LOG_LEVEL"]
                 .flatMap(Logger.Level.init(rawValue:)) ?? defaultLogLevel
 
-            var logger = StreamLogHandler.standardError(label: label)
-            logger.logLevel = level
-            return logger
+            var stderrHandler = StreamLogHandler.standardError(label: label)
+            stderrHandler.logLevel = level
+
+            var telemetryHandler = TelemetryLogHandler(label: label)
+            telemetryHandler.logLevel = level
+
+            return MultiplexLogHandler([stderrHandler, telemetryHandler])
         }
 
         let logger = Logger(label: "sh.wendy.agent")
@@ -67,6 +71,12 @@ struct WendyAgent: AsyncParsableCommand {
             ContainerMonitor.shared  // Add container monitor as a background service
         ]
         var servers = [GRPCServer<HTTP2ServerTransport.Posix>]()
+
+        // Telemetry broadcaster for streaming OTel data to CLI clients
+        let telemetryBroadcaster = TelemetryBroadcaster()
+
+        // Set broadcaster for the log handler so agent logs are broadcast too
+        TelemetryLogBroadcasterHolder.shared.broadcaster = telemetryBroadcaster
 
         if let enrolled = await config.enrolled {
             provisioning = await WendyProvisioningService(
@@ -108,6 +118,8 @@ struct WendyAgent: AsyncParsableCommand {
                 privateKey: config.privateKey
             )
             backgroundServices.append(cloudClient)
+
+            // Set up OTel receiver that forwards to cloud and broadcasts to CLI
             // TODO: Also set up OTel on 4318
             servers.append(
                 GRPCServer(
@@ -116,11 +128,24 @@ struct WendyAgent: AsyncParsableCommand {
                         transportSecurity: .plaintext
                     ),
                     services: [
-                        OpenTelemetryProxy(cloud: cloudClient)
+                        OpenTelemetryProxy(cloud: cloudClient, broadcaster: telemetryBroadcaster)
                     ]
                 )
             )
         } else {
+            // Set up local-only OTel receivers that broadcast to CLI (no cloud forwarding)
+            servers.append(
+                GRPCServer(
+                    transport: HTTP2ServerTransport.Posix(
+                        address: .ipv4(host: "127.0.0.1", port: 4317),
+                        transportSecurity: .plaintext
+                    ),
+                    services: [
+                        LocalOTelLogsReceiver(broadcaster: telemetryBroadcaster),
+                        LocalOTelMetricsReceiver(broadcaster: telemetryBroadcaster),
+                    ]
+                )
+            )
             logger.notice("Agent requires provisioning")
             mTLS = nil
             provisioning = await WendyProvisioningService(
@@ -135,13 +160,14 @@ struct WendyAgent: AsyncParsableCommand {
             }
         }
 
-        let authenticatedServices: [any GRPCCore.RegistrableRPCService] = [
+        var authenticatedServices: [any GRPCCore.RegistrableRPCService] = [
             WendyContainerService(persistenceBasePath: URL(filePath: storage)),
             WendyAgentService(shouldRestart: {
                 logger.info("Shutting down server")
                 continuation.yield()
             }),
             provisioning,
+            TelemetryStreamingService(broadcaster: telemetryBroadcaster),
         ]
         let unauthenticatedServices: [any GRPCCore.RegistrableRPCService] = [
             provisioning

@@ -144,6 +144,7 @@ let package = Package(
             dependencies: [
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+                .target(name: "OpenTelemetryGRPC"),
             ]
         ),
         .target(
