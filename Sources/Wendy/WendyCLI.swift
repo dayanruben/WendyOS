@@ -77,6 +77,7 @@ struct WendyCommand: AsyncParsableCommand {
                     DeviceCommand.self,
                     DiscoverCommand.self,
                     OSCommand.self,
+                    AudioCommand.self,
                 ]
             ),
             CommandGroup(

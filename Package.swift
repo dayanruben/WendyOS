@@ -140,6 +140,7 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .target(name: "WendySDK"),
                 .target(name: "OpenTelemetryGRPC"),
+                .target(name: "ALSA"),
                 .product(name: "Bluetooth", package: "bluetooth"),
             ],
             path: "Sources/WendyAgent"
@@ -193,6 +194,10 @@ let package = Package(
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
             ]
+        ),
+        .target(
+            name: "ALSA",
+            dependencies: []
         ),
         .target(
             name: "ContainerdGRPC",
