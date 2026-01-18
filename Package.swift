@@ -29,7 +29,7 @@ let packageDependencies: [Package.Dependency] = [
 let package = Package(
     name: "wendy-agent",
     platforms: [
-        .macOS(.v26)
+        .macOS(.v15)
     ],
     products: [
         .executable(name: "wendy-agent", targets: ["wendy-agent"]),
