@@ -154,7 +154,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/wendy-agent
           # We pass the include and library paths from vcpkg explicitly
-          swift build -v -c ${{ env.BUILD_CONFIG }} --arch x86_64 --product wendy -Xcc -I"C:\vcpkg\installed\x64-windows\include" -Xlinker -L"C:\vcpkg\installed\x64-windows\lib"
+          swift build -v -c ${{ env.BUILD_CONFIG }} --arch x86_64 --product wendy --static-swift-stdlib -Xcc -I"C:\vcpkg\installed\x64-windows\include" -Xlinker -L"C:\vcpkg\installed\x64-windows\lib"
 
       # 5. Bundle (The "Alongside" Requirement)
       - name: Create Distribution Bundle
@@ -162,22 +162,59 @@ jobs:
         run: |
           # Compute build dir using `swift` CLI for maximum correctness
           cd ${{ github.workspace }}/wendy-agent
-          $BuildDir = swift build --show-bin-path -c ${{ env.BUILD_CONFIG }} --arch x86_64
+          $BuildDir = swift build --show-bin-path -c ${{ env.BUILD_CONFIG }} --arch x86_64 --static-swift-stdlib
           cd ${{ github.workspace }}
           $StagingDir = "staging"
           $ZlibSource = "C:\vcpkg\installed\x64-windows\bin\zlib1.dll"
-          
+
+          # Find Swift runtime directory
+          $SwiftBin = (Get-Command swift).Source | Split-Path
+          $SwiftRuntime = Join-Path (Split-Path $SwiftBin) "bin"
+          Write-Host "Swift runtime directory: $SwiftRuntime"
+
           # Clean staging
           if (Test-Path $StagingDir) { Remove-Item -Recurse -Force $StagingDir }
           New-Item -ItemType Directory -Path $StagingDir
-          
+
           # Copy Executable
           Copy-Item "$BuildDir\wendy.exe" -Destination "$StagingDir\"
-          
-          # Copy DLL
+
+          # Copy zlib DLL
           Copy-Item $ZlibSource -Destination "$StagingDir\"
-          
+
+          # Copy Swift runtime DLLs
+          $SwiftDlls = @(
+            "swift_Concurrency.dll",
+            "swiftCore.dll",
+            "Foundation.dll",
+            "FoundationNetworking.dll",
+            "FoundationXML.dll",
+            "dispatch.dll",
+            "BlocksRuntime.dll",
+            "swiftWinSDK.dll",
+            "swiftCRT.dll",
+            "swiftDispatch.dll",
+            "swiftDistributed.dll",
+            "swiftObservation.dll",
+            "swiftRegex.dll",
+            "swiftSwiftOnoneSupport.dll",
+            "swift_RegexParser.dll",
+            "swift_StringProcessing.dll",
+            "swiftSynchronization.dll"
+          )
+
+          foreach ($dll in $SwiftDlls) {
+            $dllPath = Join-Path $SwiftRuntime $dll
+            if (Test-Path $dllPath) {
+              Write-Host "Copying $dll"
+              Copy-Item $dllPath -Destination "$StagingDir\"
+            } else {
+              Write-Host "Warning: $dll not found at $dllPath"
+            }
+          }
+
           # Verify contents
+          Write-Host "`nStaging directory contents:"
           Get-ChildItem $StagingDir
 
       # 6. Zip
