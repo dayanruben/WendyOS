@@ -21,7 +21,7 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
-        .package(url: "https://github.com/orlandos-nl/DNSClient.git", from: "2.5.0"),
+        .package(url: "https://github.com/orlandos-nl/DNSClient.git", from: "2.6.1"),
         .package(
             url: "https://github.com/grpc/grpc-swift-nio-transport.git",
             from: "2.3.0"
@@ -68,6 +68,7 @@ let package = Package(
                 ),
                 .product(name: "Noora", package: "Noora"),
                 .product(name: "DNSClient", package: "DNSClient"),
+                .product(name: "Bluetooth", package: "bluetooth"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyShared"),
@@ -138,6 +139,7 @@ let package = Package(
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "DNSClient", package: "DNSClient"),
+                .product(name: "Bluetooth", package: "bluetooth"),
             ]
         ),
         .target(
