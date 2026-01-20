@@ -1,73 +1,62 @@
 import Foundation
+import Synchronization
 
 /// JSON output renderer that collects events and outputs a single JSON response.
 /// This is designed for LLMs and third-party tools that expect structured output.
-public final class JSONRenderer: CLIOutput, @unchecked Sendable {
-    private let lock = NSLock()
-    private var events: [JSONEvent] = []
-    private var finalResult: (any Encodable & Sendable)?
+public final class JSONRenderer: CLIOutput, Sendable {
+    private struct State: Sendable {
+        var events: [JSONEvent] = []
+        var finalResult: (any Encodable & Sendable)?
+    }
+
+    private let state = Mutex(State())
 
     public init() {}
 
     public func success(_ message: String) {
-        lock.withLock {
-            events.append(.success(message))
-        }
+        state.withLock { $0.events.append(.success(message)) }
     }
 
     public func error(_ message: String, suggestion: String?) {
-        lock.withLock {
-            events.append(.error(message, suggestion: suggestion))
-        }
+        state.withLock { $0.events.append(.error(message, suggestion: suggestion)) }
     }
 
     public func info(_ message: String) {
-        lock.withLock {
-            events.append(.info(message))
-        }
+        state.withLock { $0.events.append(.info(message)) }
     }
 
     public func warning(_ message: String) {
-        lock.withLock {
-            events.append(.warning(message))
-        }
+        state.withLock { $0.events.append(.warning(message)) }
     }
 
     public func table(headers: [String], rows: [[String]]) {
-        lock.withLock {
-            events.append(.table(headers: headers, rows: rows))
-        }
+        state.withLock { $0.events.append(.table(headers: headers, rows: rows)) }
     }
 
     public func result<T: Encodable & Sendable>(_ value: T) {
-        lock.withLock {
-            finalResult = value
-        }
+        state.withLock { $0.finalResult = value }
     }
 
     public func progress(message: String, percent: Double?) {
-        lock.withLock {
-            events.append(.progress(message: message, percent: percent))
-        }
+        state.withLock { $0.events.append(.progress(message: message, percent: percent)) }
     }
 
     public func flush() {
-        let output: Data
-        lock.lock()
-        defer { lock.unlock() }
+        // Copy state while holding lock, then release before I/O
+        let (events, finalResult) = state.withLock { ($0.events, $0.finalResult) }
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
-        // If there's a final result, output it directly
+        let output: Data
         if let result = finalResult {
             if let data = try? encoder.encode(AnyEncodable(result)) {
                 output = data
             } else {
-                output = encodeResponse(encoder: encoder)
+                output = encodeResponse(events: events, encoder: encoder)
             }
         } else {
-            output = encodeResponse(encoder: encoder)
+            output = encodeResponse(events: events, encoder: encoder)
         }
 
         if let string = String(data: output, encoding: .utf8) {
@@ -75,7 +64,7 @@ public final class JSONRenderer: CLIOutput, @unchecked Sendable {
         }
     }
 
-    private func encodeResponse(encoder: JSONEncoder) -> Data {
+    private func encodeResponse(events: [JSONEvent], encoder: JSONEncoder) -> Data {
         let response = JSONResponse(events: events)
         return (try? encoder.encode(response)) ?? Data()
     }
@@ -143,10 +132,10 @@ private struct JSONResponse: Encodable {
 
 // MARK: - Type-erased Encodable wrapper
 
-private struct AnyEncodable: Encodable {
-    private let _encode: (Encoder) throws -> Void
+private struct AnyEncodable: Encodable, Sendable {
+    private let _encode: @Sendable (Encoder) throws -> Void
 
-    init<T: Encodable>(_ value: T) {
+    init<T: Encodable & Sendable>(_ value: T) {
         _encode = { encoder in
             try value.encode(to: encoder)
         }

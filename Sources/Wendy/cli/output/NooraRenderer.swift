@@ -55,7 +55,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(value),
-           let string = String(data: data, encoding: .utf8)
+            let string = String(data: data, encoding: .utf8)
         {
             print(string)
         }
@@ -100,13 +100,18 @@ public struct NooraRenderer: CLIOutput, Sendable {
     public func withStreamingOutput<T: Sendable>(
         title: String,
         maxLines: Int,
-        operation: @escaping @Sendable (@escaping @Sendable (String) async -> Void) async throws -> T
+        operation:
+            @escaping @Sendable (@escaping @Sendable (String) async throws -> Void) async throws ->
+            T
     ) async throws -> T {
         // Create temp file for full output
         let tempDir = FileManager.default.temporaryDirectory
-        let logFile = tempDir.appendingPathComponent("wendy-\(title.lowercased().replacingOccurrences(of: " ", with: "-"))-\(UUID().uuidString.prefix(8)).log")
+        let logFile = tempDir.appendingPathComponent(
+            "wendy-\(title.lowercased().replacingOccurrences(of: " ", with: "-"))-\(String(UUID().uuidString.prefix(8))).log"
+        )
         FileManager.default.createFile(atPath: logFile.path, contents: nil)
         let fileHandle = try FileHandle(forWritingTo: logFile)
+        defer { try? fileHandle.close() }
 
         let box = BorderedBox(title: title, width: 80, height: maxLines)
         await box.printTop()
@@ -115,7 +120,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
             let value = try await operation { line in
                 // Write to temp file
                 if let data = (line + "\n").data(using: .utf8) {
-                    try? fileHandle.write(contentsOf: data)
+                    try fileHandle.write(contentsOf: data)
                 }
 
                 // Split on newlines in case multiple lines are passed at once
@@ -127,12 +132,10 @@ public struct NooraRenderer: CLIOutput, Sendable {
                 }
             }
             await box.finish()
-            try? fileHandle.close()
             Noora().info(InfoAlert(stringLiteral: "Full output: \(logFile.path)"))
             return value
         } catch {
             await box.finish()
-            try? fileHandle.close()
             Noora().info(InfoAlert(stringLiteral: "Full output: \(logFile.path)"))
             throw error
         }
@@ -155,16 +158,25 @@ private actor BorderedBox {
     }
 
     func printTop() {
+        // First, ensure there's room for the box by printing newlines,
+        // then move back up. This prevents scrolling issues.
+        let totalHeight = height + 2  // top border + content + bottom border
+        var frame = String(repeating: "\n", count: totalHeight)
+        frame += "\u{1B}[\(totalHeight)A\r"  // Move up and to column 0
+
         // ┌─ Title ─────────┐
         let titlePart = "─ \(title) "
         let remaining = max(0, width - titlePart.count - 2)
-        print("┌\(titlePart)\(String(repeating: "─", count: remaining))┐")
+        frame += "\u{1B}[2K┌\(titlePart)\(String(repeating: "─", count: remaining))┐\n"
 
-        // Print empty box initially
+        // Empty content lines
         for _ in 0..<height {
-            printPaddedLine("")
+            frame += "\u{1B}[2K\(formatLine(""))\n"
         }
-        printBottomBorder()
+        frame += "\u{1B}[2K└\(String(repeating: "─", count: width - 2))┘"
+
+        print(frame)
+        fflush(stdout)
         hasDrawn = true
     }
 
@@ -179,36 +191,46 @@ private actor BorderedBox {
     private func redraw() {
         guard hasDrawn else { return }
 
-        // Move cursor up (height + 1 for bottom border)
-        print("\u{1B}[\(height + 1)A", terminator: "")
+        // Build entire frame as one string to avoid escape sequence timing issues
+        var frame = "\u{1B}[\(height + 1)A\r"  // Move up and to column 0
 
-        // Redraw all lines
         for i in 0..<height {
-            if i < lines.count {
-                printPaddedLine(lines[i])
-            } else {
-                printPaddedLine("")
-            }
+            let content = i < lines.count ? lines[i] : ""
+            frame += "\u{1B}[2K\(formatLine(content))\n"
         }
-        printBottomBorder()
+        frame += "\u{1B}[2K└\(String(repeating: "─", count: width - 2))┘"
 
-        // Flush output
+        print(frame)
         fflush(stdout)
     }
 
-    private func printPaddedLine(_ text: String) {
+    private func formatLine(_ text: String) -> String {
         let contentWidth = width - 4  // Account for "│ " and " │"
-        let displayText: String
-        if text.count > contentWidth {
-            displayText = String(text.prefix(contentWidth - 1)) + "…"
-        } else {
-            displayText = text + String(repeating: " ", count: contentWidth - text.count)
-        }
-        print("│ \(displayText) │")
-    }
 
-    private func printBottomBorder() {
-        print("└\(String(repeating: "─", count: width - 2))┘")
+        // Strip ANSI escape sequences to get visible text for measurement
+        var visibleText = text
+        while let range = visibleText.range(
+            of: "\u{1B}\\[[0-9;]*[A-Za-z~]",
+            options: .regularExpression
+        ) {
+            visibleText.removeSubrange(range)
+        }
+        // Also strip OSC sequences
+        while let range = visibleText.range(
+            of: "\u{1B}\\][^\u{07}]*\u{07}",
+            options: .regularExpression
+        ) {
+            visibleText.removeSubrange(range)
+        }
+
+        let displayText: String
+        if visibleText.count > contentWidth {
+            displayText = String(visibleText.prefix(contentWidth - 1)) + "…"
+        } else {
+            displayText =
+                visibleText + String(repeating: " ", count: contentWidth - visibleText.count)
+        }
+        return "│ \(displayText) │"
     }
 
     func finish() {

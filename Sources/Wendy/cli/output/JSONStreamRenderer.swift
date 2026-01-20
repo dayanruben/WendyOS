@@ -38,7 +38,7 @@ public struct JSONStreamRenderer: CLIOutput, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(event),
-              let line = String(data: data, encoding: .utf8)
+            let line = String(data: data, encoding: .utf8)
         else { return }
         FileHandle.standardOutput.write(Data((line + "\n").utf8))
     }

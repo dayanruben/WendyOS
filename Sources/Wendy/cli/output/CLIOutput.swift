@@ -63,7 +63,9 @@ public protocol CLIOutput: Sendable {
     func withStreamingOutput<T: Sendable>(
         title: String,
         maxLines: Int,
-        operation: @escaping @Sendable (@escaping @Sendable (String) async -> Void) async throws -> T
+        operation:
+            @escaping @Sendable (@escaping @Sendable (String) async throws -> Void) async throws ->
+            T
     ) async throws -> T
 }
 
@@ -127,7 +129,9 @@ extension CLIOutput {
     public func withStreamingOutput<T: Sendable>(
         title: String,
         maxLines: Int,
-        operation: @escaping @Sendable (@escaping @Sendable (String) async -> Void) async throws -> T
+        operation:
+            @escaping @Sendable (@escaping @Sendable (String) async throws -> Void) async throws ->
+            T
     ) async throws -> T {
         // Default: just print each line as it comes
         try await operation { @Sendable line in
@@ -230,7 +234,7 @@ internal struct DefaultCLIOutput: CLIOutput, @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(value),
-           let string = String(data: data, encoding: .utf8)
+            let string = String(data: data, encoding: .utf8)
         {
             print(string)
         }

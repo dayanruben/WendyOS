@@ -47,7 +47,8 @@ public func withJSONMode<T: Sendable>(
 
     return try await JSONMode.$isEnabled.withValue(enabled) {
         try await withCLIOutput(output, mode: mode) {
-            try await body()
+            defer { output.flush() }
+            return try await body()
         }
     }
 }

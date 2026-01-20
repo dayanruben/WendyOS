@@ -287,7 +287,7 @@ public struct DockerCLI: Sendable {
         directory: String = ".",
         registryHostname: String = "host.docker.internal",
         registryPort: Int = 5000,
-        onOutput: @escaping @Sendable (String) async -> Void
+        onOutput: @escaping @Sendable (String) async throws -> Void
     ) async throws {
         // Acquire shared build lock, allows parallel builds but prevents builder restarts
         try await BuildLock.shared.withLock {
@@ -305,16 +305,18 @@ public struct DockerCLI: Sendable {
             let result = try await Subprocess.run(
                 Subprocess.Executable.name(self.command),
                 arguments: Subprocess.Arguments(arguments)
-            ) { execution, stdin, stdout, stderr in
+            ) { _, stdin, stdout, stderr in
+                try await stdin.finish()
+
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {
                         for try await line in stdout.lines() {
-                            await onOutput(line)
+                            try await onOutput(line)
                         }
                     }
                     group.addTask {
                         for try await line in stderr.lines() {
-                            await onOutput(line)
+                            try await onOutput(line)
                         }
                     }
                     try await group.waitForAll()
