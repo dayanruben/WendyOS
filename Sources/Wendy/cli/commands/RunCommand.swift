@@ -56,8 +56,11 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     @Flag(name: .long, help: "Deploy mode with automatic restarts (up to 5 retries on failure)")
     var deploy: Bool = false
 
-    @Flag(name: .customShort("y"))
+    @Flag(name: .customShort("y"), help: "Auto-accept prompts (required for --json mode)")
     var autoAccept: Bool = false
+
+    /// Whether prompts should be auto-accepted (either explicit -y or JSON mode)
+    var shouldAutoAccept: Bool { autoAccept || JSONMode.isEnabled }
 
     // Docker restart policy flags (mutually exclusive). Only applies to docker runtime.
     @Flag(name: .customLong("no-restart"), help: "Do not restart the container")
@@ -80,10 +83,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     @OptionGroup
     var agentConnectionOptions: AgentConnectionOptions
 
-    var swiftVersion: String { "6.2.1" }
+    var swiftVersion: String { "6.2.3" }
     var swiftSDK: String { "\(swiftVersion)-RELEASE_wendyos_aarch64" }
     var sdkDownloadURL: String {
-        "https://github.com/wendylabsinc/wendy-swift-tools/releases/download/0.3.0/6.2.1-RELEASE_wendyos_aarch64.artifactbundle.zip"
+        "https://github.com/wendylabsinc/wendy-swift-tools/releases/download/0.3.0/\(swiftVersion)-RELEASE_wendyos_aarch64.artifactbundle.zip"
     }
     var sdkChecksum: String {
         "d1f198fe5ce827e4f7f0d812a4c180c0b09831affafe520a254d4f0ce0c53ae9"
@@ -401,6 +404,17 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 _ = try await docker.getServerVersion()
                 return
             } catch {
+                // In JSON mode, just fail with an error - cannot prompt to start Docker
+                if JSONMode.isEnabled {
+                    JSONErrorResponse(
+                        error: "docker_not_running",
+                        reason: "Docker is not running",
+                        suggestion:
+                            "Please start Docker Desktop or OrbStack before running this command"
+                    ).print()
+                    throw ExitCode.failure
+                }
+
                 Noora().warning("Docker is not running")
 
                 #if os(macOS)
@@ -499,7 +513,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         if !installedSDKs.contains(swiftSDK) {
             let installSDK: Bool
 
-            if autoAccept {
+            if shouldAutoAccept {
                 installSDK = true
             } else {
                 installSDK = Noora().yesOrNoChoicePrompt(
@@ -522,7 +536,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         if !installedSwiftVersions.contains(where: { $0.version.name == swiftVersion }) {
             let installSwift: Bool
 
-            if autoAccept {
+            if shouldAutoAccept {
                 installSwift = true
             } else {
                 installSwift = Noora().yesOrNoChoicePrompt(
@@ -555,11 +569,14 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         let package = try await swiftPM.showDependencies()
 
         if !package.dependencies.contains(where: {
-            $0.url == "https://github.com/apple/swift-container-plugin"
+            $0.url.hasSuffix("swift-container-plugin")
+                || $0.url.hasSuffix("swift-container-plugin.git")
         }) {
             Noora().info("Container plugin is not installed. Do you want to install it?")
 
-            guard autoAccept || Noora().yesOrNoChoicePrompt(question: "Do you want to install it?")
+            guard
+                shouldAutoAccept
+                    || Noora().yesOrNoChoicePrompt(question: "Do you want to install it?")
             else {
                 Noora().error(
                     "Container plugin is required to build and run Swift packages. Please install it manually."
@@ -586,8 +603,24 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             }
             executableTarget = target
         } else if executableTargets.isEmpty {
+            if JSONMode.isEnabled {
+                JSONErrorResponse(
+                    error: "no_executable_targets",
+                    reason: "No executable targets found in package"
+                ).print()
+                return
+            }
             Noora().error("No executable targets found in package")
             return
+        } else if executableTargets.count == 1 {
+            executableTarget = executableTargets[0]
+        } else if JSONMode.isEnabled {
+            // Multiple executable targets and no --executable specified
+            jsonModeRequiresArgument(
+                argument: "executable",
+                description:
+                    "Multiple executable targets available: \(executableTargets.map(\.name).joined(separator: ", ")). Provide the target name as an argument."
+            )
         } else {
             executableTarget = Noora().singleChoicePrompt(
                 title: "Select executable target to run",
@@ -604,10 +637,53 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         ) { client, endpoint in
             Noora().info("Building Swift app")
             try await executePhase(phase: "build_swift_app", runtime: "swift") {
+                var resources: [(source: String, destination: String)] = []
+                var entrypoint: String?
+                let debugArguments = [
+                    "gdbserver",
+                    "0.0.0.0:4242",
+                    "/\(url.lastPathComponent)",
+                ]
+                var arguments: [String] = []
+
+                if debug {
+                    let ds2BinaryName = "ds2-124963fd-static-linux-arm64"
+                    // Include the ds2 executable in the container image.
+                    if let url = Bundle.module.url(
+                        forResource: ds2BinaryName,
+                        withExtension: nil
+                    ) {
+                        resources.append((source: url.path(), destination: "/bin/ds2"))
+                        entrypoint = "/bin/ds2"
+                        arguments = debugArguments
+                    } else {
+                        let url = URL(fileURLWithPath: CommandLine.arguments[0])
+                            .deletingLastPathComponent()
+                            .appending(path: "wendy-agent_wendy.bundle")
+                            .appending(path: "Contents")
+                            .appending(path: "Resources")
+                            .appending(path: "Resources")
+                            .appending(component: ds2BinaryName)
+
+                        if FileManager.default.fileExists(atPath: url.path()) {
+                            resources.append((source: url.path(), destination: "/bin/ds2"))
+                            entrypoint = "/bin/ds2"
+                            arguments = debugArguments
+                        } else {
+                            Noora().warning(
+                                "ds2 binary not found. Debugging will not be available."
+                            )
+                        }
+                    }
+                }
+
                 try await swiftPM.buildAndPushContainer(
                     swiftSDK: swiftSDK,
                     product: executableTarget,
-                    device: endpoint.host
+                    device: endpoint.host,
+                    entrypoint: entrypoint,
+                    arguments: arguments,
+                    resources: resources
                 )
             }
 
