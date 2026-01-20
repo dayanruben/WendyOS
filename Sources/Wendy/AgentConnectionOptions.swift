@@ -151,7 +151,7 @@ struct AgentConnectionOptions: ParsableArguments {
                 try Task.checkCancellation()
                 let devices = try await discovery.findAllDevices()
                     .groupedDevices()
-                    .filter { $0.interfaces.contains(where: { $0.type == "LAN" }) }
+                    .filter { $0.interfaces.contains(where: { $0.type == .lan }) }
 
                 if !devices.isEmpty {
                     return devices
@@ -294,7 +294,7 @@ extension AgentConnectionOptions {
                     .filter { device in
                         // Include devices with LAN or Bluetooth interfaces
                         device.interfaces.contains { interface in
-                            interface.type == "LAN" || interface.type == "Bluetooth"
+                            interface.type == .lan || interface.type == .bluetooth
                         }
                     }
 
@@ -318,9 +318,9 @@ extension AgentConnectionOptions {
         let sortedInterfaces = device.interfaces.sorted { a, b in
             // Sort Bluetooth first if preferred, otherwise LAN first
             if preferBluetooth {
-                return a.type == "Bluetooth" && b.type != "Bluetooth"
+                return a.type == .bluetooth && b.type != .bluetooth
             } else {
-                return a.type == "LAN" && b.type != "LAN"
+                return a.type == .lan && b.type != .lan
             }
         }
 

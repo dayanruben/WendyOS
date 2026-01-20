@@ -247,7 +247,9 @@
             return interfaces
         }
 
-        public func findBluetoothDevices() async throws -> [BluetoothDevice] {
+        public func findBluetoothDevices(
+            resolveAgentVersion: Bool = false
+        ) async throws -> [BluetoothDevice] {
             return []
         }
     }

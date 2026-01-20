@@ -76,6 +76,11 @@
             return mockLANDevices
         }
 
+        func findBluetoothDevices(resolveAgentVersion: Bool = false) async throws -> [BluetoothDevice] {
+            // Bluetooth discovery not implemented in mock
+            return []
+        }
+
         // Test helper methods
         func addMockUSBDevice(_ device: USBDevice) async {
             mockUSBDevices.append(device)
