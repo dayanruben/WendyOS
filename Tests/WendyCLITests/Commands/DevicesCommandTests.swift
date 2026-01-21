@@ -230,7 +230,7 @@ struct MockDeviceDiscovery: DeviceDiscovery {
         return lanDevices
     }
 
-    func findBluetoothDevices() async throws -> [BluetoothDevice] {
+    func findBluetoothDevices(resolveAgentVersion: Bool) async throws -> [BluetoothDevice] {
         return []
     }
 }
