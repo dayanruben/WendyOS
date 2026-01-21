@@ -70,6 +70,11 @@ struct WendyAgent: AsyncParsableCommand {
         var backgroundServices: [any ServiceLifecycle.Service] = [
             ContainerMonitor.shared  // Add container monitor as a background service
         ]
+
+        #if os(Linux)
+            // Add Bluetooth service for device discovery and configuration via BLE
+            backgroundServices.append(BluetoothService())
+        #endif
         var servers = [GRPCServer<HTTP2ServerTransport.Posix>]()
 
         // Telemetry broadcaster for streaming OTel data to CLI clients

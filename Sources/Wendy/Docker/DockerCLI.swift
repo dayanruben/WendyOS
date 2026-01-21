@@ -443,7 +443,7 @@ public struct DockerCLI: Sendable {
 
             // Check if the builder container is actually running
             // containerNotFound is treated as "not running" since the builder exists but container may not
-            let isRunning: Bool
+            var isRunning: Bool
             do {
                 isRunning = try await isContainerRunning(containerName: containerName)
             } catch DockerError.containerNotFound {
@@ -458,23 +458,23 @@ public struct DockerCLI: Sendable {
                 let bootstrapResult = try await Subprocess.run(
                     Subprocess.Executable.name(self.command),
                     arguments: bootstrapArguments,
-                    output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
-                    error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false)
+                    output: .discarded,
+                    error: .discarded
                 )
 
-                guard bootstrapResult.terminationStatus.isSuccess else {
-                    let exitCode: Int
-                    switch bootstrapResult.terminationStatus {
-                    case .exited(let code), .unhandledException(let code):
-                        exitCode = Int(code)
-                    }
-                    throw SubprocessError.nonZeroExit(
-                        command: bootstrapArguments.description,
-                        exitCode: exitCode,
-                        terminationReason: bootstrapResult.terminationStatus.description,
-                        output: "",
-                        error: ""
-                    )
+                // Check if the container is now running after bootstrap
+                do {
+                    isRunning = try await isContainerRunning(containerName: containerName)
+                } catch {
+                    isRunning = false
+                }
+
+                // If bootstrap failed OR the container still doesn't exist, the builder
+                // is likely orphaned (pointing to a dead Docker context like desktop-linux
+                // when the user switched to OrbStack). Remove it and recreate.
+                if !bootstrapResult.terminationStatus.isSuccess || !isRunning {
+                    try? await removeBuildxBuilder(name: defaultBuilderName)
+                    return try await createBuildxBuilder(configPath: configPath)
                 }
             }
 
@@ -556,7 +556,11 @@ public struct DockerCLI: Sendable {
             return
         }
 
-        // Create builder with configuration
+        try await createBuildxBuilder(configPath: configPath)
+    }
+
+    /// Creates a new buildx builder with the given configuration file.
+    private func createBuildxBuilder(configPath: String) async throws {
         let createArguments: Subprocess.Arguments = [
             "buildx", "create",
             "--name", defaultBuilderName,
