@@ -526,16 +526,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             }
 
             if installSDK {
-                try await cliOutput.withStreamingOutput(
-                    title: "Installing SDK",
-                    maxLines: 15
-                ) { emit in
-                    try await swiftPM.installSDK(
-                        from: sdkDownloadURL,
-                        checksum: sdkChecksum,
-                        onOutput: emit
-                    )
-                }
+                try await swiftPM.installSDK(
+                    from: sdkDownloadURL,
+                    checksum: sdkChecksum
+                )
                 cliOutput.success("WendyOS SDK ready to use")
             }
         }
@@ -563,8 +557,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 ) { emit in
                     try await swiftPM.installSDK(
                         from: sdkDownloadURL,
-                        checksum: sdkChecksum,
-                        onOutput: emit
+                        checksum: sdkChecksum
                     )
                 }
                 cliOutput.success("Swift \(swiftVersion) Installed")
