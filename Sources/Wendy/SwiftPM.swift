@@ -1,9 +1,9 @@
 import Foundation
+import NIOCore
+import NIOPosix
 import Noora
 import Subprocess
 @preconcurrency import SystemPackage
-import NIOCore
-import NIOPosix
 
 #if canImport(Darwin)
     import Darwin
@@ -12,7 +12,6 @@ import NIOPosix
 #elseif canImport(Musl)
     import Musl
 #endif
-
 
 /// Thread-safe buffer for collecting subprocess output
 private actor OutputCollector {
@@ -472,7 +471,9 @@ public struct SwiftPM: Sendable {
                     var buffer = ByteBuffer()
                     for try await chunk in inbound {
                         buffer.writeImmutableBuffer(chunk)
-                        while let newlineIndex = buffer.readableBytesView.firstIndex(of: UInt8(ascii: "\n")) {
+                        while let newlineIndex = buffer.readableBytesView.firstIndex(
+                            of: UInt8(ascii: "\n")
+                        ) {
                             let lineLength = buffer.readableBytesView.distance(
                                 from: buffer.readableBytesView.startIndex,
                                 to: newlineIndex
@@ -480,7 +481,10 @@ public struct SwiftPM: Sendable {
                             var line = buffer.readString(length: lineLength) ?? ""
                             buffer.moveReaderIndex(forwardBy: 1)  // Skip the newline
                             // Strip ANSI escape sequences (and orphaned sequences split across chunks)
-                            line.replace(/\u{1B}\[[0-9;]*[A-Za-z~]|\[[0-9;]*[A-Za-z~]|\u{1B}/, with: "")
+                            line.replace(
+                                /\u{1B}\[[0-9;]*[A-Za-z~]|\[[0-9;]*[A-Za-z~]|\u{1B}/,
+                                with: ""
+                            )
                             line = line.trimmingCharacters(in: .whitespacesAndNewlines)
                             if line.isEmpty { continue }
                             try await onOutput(line)

@@ -124,4 +124,3 @@ private struct JSONResponse: Encodable {
         }
     }
 }
-

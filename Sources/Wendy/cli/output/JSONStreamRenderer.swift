@@ -74,5 +74,3 @@ private struct ResultEvent<T: Encodable>: Encodable {
     let type = "result"
     let result: T
 }
-
-
