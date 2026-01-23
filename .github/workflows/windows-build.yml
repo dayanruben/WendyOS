@@ -23,7 +23,7 @@ jobs:
   build-windows:
     name: Build & Bundle (Windows)
     runs-on:
-      - runs-on=${{ github.run_id }}/image=windows25-full-x64/family=c7i
+      - runs-on=${{ github.run_id }}/image=windows25-full-x64/family=c7i/cpu=8
       - spot=false
     env:
       # Default to release on main branch, otherwise use input or default to debug

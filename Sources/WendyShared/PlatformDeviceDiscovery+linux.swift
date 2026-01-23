@@ -1,4 +1,4 @@
-#if os(Linux) || os(Windows)
+#if os(Linux)
     import DNSClient
     import NIOCore
     import Foundation
@@ -245,6 +245,12 @@
             }
 
             return interfaces
+        }
+
+        public func findBluetoothDevices(
+            resolveAgentVersion: Bool = false
+        ) async throws -> [BluetoothDevice] {
+            return []
         }
     }
 #endif

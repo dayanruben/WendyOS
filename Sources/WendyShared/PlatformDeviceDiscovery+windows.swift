@@ -24,6 +24,11 @@
             return []
         }
 
+        public func findBluetoothDevices(resolveAgentVersion: Bool) async throws -> [BluetoothDevice] {
+            logger.debug("Listing Bluetooth devices on Windows not supported yet")
+            return []
+        }
+
         public func findLANDevices() async throws -> [LANDevice] {
             logger.debug("Starting mDNS discovery using Windows native API")
 
