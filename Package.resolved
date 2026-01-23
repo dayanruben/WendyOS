@@ -1,5 +1,5 @@
 {
-  "originHash" : "e7db835eab4788536cf342eeec5491b483292278d0d418f972aa62cd4aa08c4b",
+  "originHash" : "40ce1fde8d6b024bf9641f408e5242574ef1f95372f79e1e4e65d4b6cfd76bd1",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/grpc/grpc-swift-2.git",
       "state" : {
-        "revision" : "0e52abf7ea0fca7ffe876953aa41feff84cc6e29",
-        "version" : "2.1.0"
+        "revision" : "531924b28fde0cf7585123c781c6f55cc35ef7fc",
+        "version" : "2.2.1"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/grpc/grpc-swift-extras.git",
       "state" : {
-        "revision" : "f6fc3a28a896cb5e01365758c717a3d56c16a2b2",
-        "version" : "2.1.0"
+        "revision" : "7ab4a690ac09696689a9c4b99320af7ef809bb3d",
+        "version" : "2.1.1"
       }
     },
     {
@@ -321,8 +321,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/swift-service-lifecycle.git",
       "state" : {
-        "revision" : "e7187309187695115033536e8fc9b2eb87fd956d",
-        "version" : "2.8.0"
+        "revision" : "1de37290c0ab3c5a96028e0f02911b672fd42348",
+        "version" : "2.9.1"
       }
     },
     {
