@@ -73,7 +73,7 @@ func securePasswordPrompt(_ prompt: String) throws -> String {
             let readResult = ReadConsoleW(handle, &char, 1, &charsRead, nil)
 
             // Check for read failure or EOF
-            if readResult == 0 || charsRead == 0 {
+            if !readResult || charsRead == 0 {
                 break
             }
 
