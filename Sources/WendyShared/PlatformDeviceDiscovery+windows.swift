@@ -23,6 +23,11 @@
             return []
         }
 
+        public func findBluetoothDevices(resolveAgentVersion: Bool) async throws -> [BluetoothDevice] {
+            logger.debug("Listing Bluetooth devices on Windows not supported yet")
+            return []
+        }
+
         public func findLANDevices() async throws -> [LANDevice] {
             let dns = try await DNSClient.connectMulticast(
                 on: .singletonMultiThreadedEventLoopGroup
