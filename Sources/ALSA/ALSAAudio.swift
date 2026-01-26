@@ -189,9 +189,9 @@ public final class ALSACaptureStream: @unchecked Sendable {
     }
 
     deinit {
-        if process.isRunning {
-            process.terminate()
-        }
+        process.terminate()
+        pipe.standardOutput.close()
+        pipe.standardError.close()
     }
 
     /// Read audio frames into a buffer
@@ -228,9 +228,7 @@ public final class ALSACaptureStream: @unchecked Sendable {
 
     /// Stop the capture
     public func stop() {
-        if process.isRunning {
-            process.terminate()
-        }
+        process.terminate()
     }
 }
 
