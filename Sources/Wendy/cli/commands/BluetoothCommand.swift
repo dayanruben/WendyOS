@@ -47,9 +47,6 @@ struct BluetoothCommand: AsyncParsableCommand {
             abstract: "List paired or connected Bluetooth devices."
         )
 
-        @Flag(name: [.customShort("j"), .long], help: "Output in JSON format (non-interactive)")
-        var json: Bool = false
-
         @Option(help: "Number of rows to display per page")
         var pageSize: Int = 10
 
@@ -62,7 +59,7 @@ struct BluetoothCommand: AsyncParsableCommand {
             ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
 
-                if json {
+                if JSONMode.isEnabled {
                     // One-time JSON output
                     let response = try await agent.listBluetoothDevices(
                         .with { $0.pairedOnly = false }
@@ -70,12 +67,9 @@ struct BluetoothCommand: AsyncParsableCommand {
                     let devices = response.devices
                         .map { BluetoothDeviceInfo(from: $0) }
                         .filter { $0.paired || $0.connected }
-                    let encoder = JSONEncoder()
-                    encoder.outputFormatting = .prettyPrinted
-                    let data = try encoder.encode(devices)
-                    print(String(data: data, encoding: .utf8)!)
+                    cliOutput.result(devices)
                 } else {
-                    Noora().info("Press Ctrl+C to exit.")
+                    cliOutput.info("Press Ctrl+C to exit.")
 
                     // Live table showing paired or connected devices
                     let scanner = PairedDevicesScanner(source: agent)
@@ -83,7 +77,7 @@ struct BluetoothCommand: AsyncParsableCommand {
                     guard let initial = try await scanner.makeAsyncIterator().next(),
                         !initial.rows.isEmpty
                     else {
-                        Noora().info("No paired or connected Bluetooth devices found.")
+                        cliOutput.info("No paired or connected Bluetooth devices found.")
                         return
                     }
 
@@ -124,19 +118,26 @@ struct BluetoothCommand: AsyncParsableCommand {
                         address: providedAddress,
                         agent: agent
                     )
+                } else if JSONMode.isEnabled {
+                    jsonModeRequiresArgument(
+                        argument: "address",
+                        description:
+                            "Provide --address <mac_address> to specify the device to disconnect"
+                    )
                 } else {
-                    Noora().info("Press Ctrl+C to exit.")
+                    cliOutput.info("Press Ctrl+C to exit.")
 
                     let devices = try await fetchBluetoothDevices(
                         agent: agent
                     ) { $0.connected }
 
                     guard !devices.isEmpty else {
-                        Noora().info("No connected Bluetooth devices found.")
+                        cliOutput.info("No connected Bluetooth devices found.")
                         return
                     }
 
-                    let index = try await Noora().selectableTable(
+                    let index = try await cliOutput.selectFromTable(
+                        title: "Select device to disconnect",
                         headers: bluetoothDeviceHeaders,
                         rows: bluetoothDeviceRows(devices),
                         pageSize: min(pageSize, devices.count)
@@ -146,36 +147,44 @@ struct BluetoothCommand: AsyncParsableCommand {
                 }
 
                 guard let targetDevice else {
-                    Noora().warning("No Bluetooth device selected.")
+                    cliOutput.warning("No Bluetooth device selected.")
                     return
                 }
 
-                try await Noora().progressStep(
+                let response = try await cliOutput.withProgress(
                     message: "Disconnecting from \(targetDevice.displayName)...",
                     successMessage: "Disconnected from \(targetDevice.displayName)",
-                    errorMessage: "Failed to disconnect from \(targetDevice.displayName)",
-                    showSpinner: true
-                ) { _ in
-                    let response = try await agent.disconnectBluetoothDevice(
+                    errorMessage: "Failed to disconnect from \(targetDevice.displayName)"
+                ) {
+                    try await agent.disconnectBluetoothDevice(
                         .with { $0.address = targetDevice.address }
                     )
+                }
 
-                    if response.hasStatus {
-                        emitResponseStatusIfNeeded(response.status)
-                    }
+                if response.hasStatus {
+                    emitResponseStatusIfNeeded(response.status)
+                }
 
-                    if !response.success {
-                        let statusMessage = response.hasStatus ? response.status.message : ""
-                        let trimmedStatus = statusMessage.trimmingCharacters(
-                            in: .whitespacesAndNewlines
+                if !response.success {
+                    let statusMessage = response.hasStatus ? response.status.message : ""
+                    let trimmedStatus = statusMessage.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    throw BluetoothCommandError.disconnectFailed(
+                        targetDevice.displayName,
+                        response.hasErrorMessage
+                            ? response.errorMessage
+                            : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
+                    )
+                }
+
+                if JSONMode.isEnabled {
+                    cliOutput.result(
+                        BluetoothOperationResult(
+                            success: true,
+                            device: targetDevice
                         )
-                        throw BluetoothCommandError.disconnectFailed(
-                            targetDevice.displayName,
-                            response.hasErrorMessage
-                                ? response.errorMessage
-                                : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -213,19 +222,26 @@ struct BluetoothCommand: AsyncParsableCommand {
                         agent: agent
                     )
                     needsConfirmation = false
+                } else if JSONMode.isEnabled {
+                    jsonModeRequiresArgument(
+                        argument: "address",
+                        description:
+                            "Provide --address <mac_address> to specify the device to forget"
+                    )
                 } else {
-                    Noora().info("Press Ctrl+C to exit.")
+                    cliOutput.info("Press Ctrl+C to exit.")
 
                     let devices = try await fetchBluetoothDevices(
                         agent: agent
                     ) { $0.paired || $0.connected }
 
                     guard !devices.isEmpty else {
-                        Noora().info("No paired or connected Bluetooth devices found.")
+                        cliOutput.info("No paired or connected Bluetooth devices found.")
                         return
                     }
 
-                    let index = try await Noora().selectableTable(
+                    let index = try await cliOutput.selectFromTable(
+                        title: "Select device to forget",
                         headers: bluetoothDeviceHeaders,
                         rows: bluetoothDeviceRows(devices),
                         pageSize: min(pageSize, devices.count)
@@ -236,44 +252,52 @@ struct BluetoothCommand: AsyncParsableCommand {
                 }
 
                 guard let targetDevice else {
-                    Noora().warning("No Bluetooth device selected.")
+                    cliOutput.warning("No Bluetooth device selected.")
                     return
                 }
 
                 if needsConfirmation {
                     let confirmed = try await confirmForget()
                     guard confirmed else {
-                        Noora().info("Cancelled.")
+                        cliOutput.info("Cancelled.")
                         return
                     }
                 }
 
-                try await Noora().progressStep(
+                let response = try await cliOutput.withProgress(
                     message: "Forgetting \(targetDevice.displayName)...",
                     successMessage: "Forgot \(targetDevice.displayName)",
-                    errorMessage: "Failed to forget \(targetDevice.displayName)",
-                    showSpinner: true
-                ) { _ in
-                    let response = try await agent.forgetBluetoothDevice(
+                    errorMessage: "Failed to forget \(targetDevice.displayName)"
+                ) {
+                    try await agent.forgetBluetoothDevice(
                         .with { $0.address = targetDevice.address }
                     )
+                }
 
-                    if response.hasStatus {
-                        emitResponseStatusIfNeeded(response.status)
-                    }
+                if response.hasStatus {
+                    emitResponseStatusIfNeeded(response.status)
+                }
 
-                    if !response.success {
-                        let statusMessage = response.hasStatus ? response.status.message : ""
-                        let trimmedStatus = statusMessage.trimmingCharacters(
-                            in: .whitespacesAndNewlines
+                if !response.success {
+                    let statusMessage = response.hasStatus ? response.status.message : ""
+                    let trimmedStatus = statusMessage.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    throw BluetoothCommandError.forgetFailed(
+                        targetDevice.displayName,
+                        response.hasErrorMessage
+                            ? response.errorMessage
+                            : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
+                    )
+                }
+
+                if JSONMode.isEnabled {
+                    cliOutput.result(
+                        BluetoothOperationResult(
+                            success: true,
+                            device: targetDevice
                         )
-                        throw BluetoothCommandError.forgetFailed(
-                            targetDevice.displayName,
-                            response.hasErrorMessage
-                                ? response.errorMessage
-                                : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -283,7 +307,8 @@ struct BluetoothCommand: AsyncParsableCommand {
                 "Yes, Forget Device",
                 "Cancel",
             ]
-            let index = try await Noora().selectableTable(
+            let index = try await cliOutput.selectFromTable(
+                title: "Confirm forget device",
                 headers: ["Confirm"],
                 rows: options.map { [$0] },
                 pageSize: options.count
@@ -329,6 +354,12 @@ struct BluetoothCommand: AsyncParsableCommand {
                     // Direct connection with provided address
                     targetAddress = providedAddress
                     targetDisplayName = providedAddress
+                } else if JSONMode.isEnabled {
+                    jsonModeRequiresArgument(
+                        argument: "address",
+                        description:
+                            "Provide --address <mac_address> to specify the device to connect to"
+                    )
                 } else {
                     // Interactive: scan and select device
                     let target = try await scanAndSelectDevice(
@@ -340,36 +371,45 @@ struct BluetoothCommand: AsyncParsableCommand {
                 }
 
                 // Connect to the selected device
-                try await Noora().progressStep(
+                let response = try await cliOutput.withProgress(
                     message: "Connecting to \(targetDisplayName)...",
                     successMessage: "Connected to \(targetDisplayName)",
-                    errorMessage: "Failed to connect to \(targetDisplayName)",
-                    showSpinner: true
-                ) { _ in
-                    let response = try await agent.connectBluetoothDevice(
+                    errorMessage: "Failed to connect to \(targetDisplayName)"
+                ) {
+                    try await agent.connectBluetoothDevice(
                         .with {
                             $0.address = targetAddress
                             $0.pair = shouldPairAndTrust
                             $0.trust = shouldPairAndTrust
                         }
                     )
+                }
 
-                    if response.hasStatus {
-                        emitResponseStatusIfNeeded(response.status)
-                    }
+                if response.hasStatus {
+                    emitResponseStatusIfNeeded(response.status)
+                }
 
-                    if !response.success {
-                        let statusMessage = response.hasStatus ? response.status.message : ""
-                        let trimmedStatus = statusMessage.trimmingCharacters(
-                            in: .whitespacesAndNewlines
+                if !response.success {
+                    let statusMessage = response.hasStatus ? response.status.message : ""
+                    let trimmedStatus = statusMessage.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    throw BluetoothCommandError.connectionFailed(
+                        targetDisplayName,
+                        response.hasErrorMessage
+                            ? response.errorMessage
+                            : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
+                    )
+                }
+
+                if JSONMode.isEnabled {
+                    cliOutput.result(
+                        BluetoothOperationResult(
+                            success: true,
+                            address: targetAddress,
+                            displayName: targetDisplayName
                         )
-                        throw BluetoothCommandError.connectionFailed(
-                            targetDisplayName,
-                            response.hasErrorMessage
-                                ? response.errorMessage
-                                : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -381,7 +421,7 @@ struct BluetoothCommand: AsyncParsableCommand {
             let logger = Logger(label: "sh.wendy.cli.bluetooth.connect")
 
             // Start scanning
-            Noora().info("Starting Bluetooth scan...")
+            cliOutput.info("Starting Bluetooth scan...")
             let scanResponse = try await agent.startBluetoothScan(.with { $0.timeoutSeconds = 0 })
             if scanResponse.hasStatus {
                 emitResponseStatusIfNeeded(scanResponse.status)
@@ -424,7 +464,7 @@ struct BluetoothCommand: AsyncParsableCommand {
                         break
                     }
                     if attempt < 10 {
-                        Noora().info("Scanning for devices... (\(attempt * 2)s)")
+                        cliOutput.info("Scanning for devices... (\(attempt * 2)s)")
                     }
                 }
 
@@ -580,6 +620,28 @@ struct BluetoothDeviceInfo: Codable, Sendable {
 
     var connectedStatus: String {
         connected ? "Connected" : "Disconnected"
+    }
+}
+
+/// Result type for Bluetooth operations in JSON mode
+struct BluetoothOperationResult: Codable, Sendable {
+    let success: Bool
+    let device: BluetoothDeviceInfo?
+    let address: String?
+    let displayName: String?
+
+    init(success: Bool, device: BluetoothDeviceInfo) {
+        self.success = success
+        self.device = device
+        self.address = device.address
+        self.displayName = device.displayName
+    }
+
+    init(success: Bool, address: String, displayName: String) {
+        self.success = success
+        self.device = nil
+        self.address = address
+        self.displayName = displayName
     }
 }
 
