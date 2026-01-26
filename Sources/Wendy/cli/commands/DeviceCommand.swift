@@ -25,16 +25,22 @@ struct DeviceCommand: AsyncParsableCommand {
                 subcommands: [
                     SetupCommand.self,
                     HardwareCommand.self,
-                    WiFiCommand.self,
-                    BluetoothCommand.self,
                     AppsCommand.self,
                 ]
             ),
             CommandGroup(
-                name: "Observability",
+                name: "Connectivity",
+                subcommands: [
+                    WiFiCommand.self,
+                    BluetoothCommand.self,
+                ]
+            ),
+            CommandGroup(
+                name: "Debug Tools",
                 subcommands: [
                     LogsCommand.self,
                     DashboardCommand.self,
+                    AudioCommand.self,
                     TelemetryStreamCommand.self,
                 ]
             ),

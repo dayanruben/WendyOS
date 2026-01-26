@@ -230,7 +230,6 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         progress: updateProgress
                     )
                 }
-                cliOutput.success("App ready")
             }
 
             cliOutput.success("Build complete! Run 'wendy run' to start the app.")
@@ -423,7 +422,6 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         progress: updateProgress
                     )
                 }
-                cliOutput.success("Container created")
             }
 
             cliOutput.success("Build complete! Run 'wendy run' to start the app.")
