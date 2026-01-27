@@ -170,17 +170,6 @@ struct AgentConnectionOptions: ParsableArguments {
     }
 }
 
-struct InvalidEndpoint: Error {}
-struct NoDevicesFound: Error, CustomStringConvertible, CustomDebugStringConvertible {
-    var description: String {
-        "No Wendy devices found"
-    }
-
-    var debugDescription: String {
-        "No Wendy devices found"
-    }
-}
-
 // MARK: - Device Selection with Bluetooth Support
 
 extension AgentConnectionOptions {
@@ -283,6 +272,6 @@ extension AgentConnectionOptions {
             }
         }
 
-        throw InvalidEndpoint()
+        throw CLIError.invalidEndpoint("No valid endpoint found")
     }
 }
