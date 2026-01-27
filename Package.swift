@@ -219,6 +219,11 @@ let package = Package(
             dependencies: [
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
+                .product(
+                    name: "_NIOFileSystem",
+                    package: "swift-nio",
+                    condition: .when(platforms: [.macOS, .linux])
+                ),
             ]
         ),
         .target(

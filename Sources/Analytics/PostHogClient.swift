@@ -2,7 +2,7 @@ import Foundation
 import Logging
 import NIOFoundationCompat
 
-#if os(macOS) || os(Windows)
+#if os(Windows)
     import FoundationNetworking
 #else
     import AsyncHTTPClient
