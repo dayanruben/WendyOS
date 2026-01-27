@@ -5,53 +5,6 @@ import Noora
 import Subprocess
 @preconcurrency import SystemPackage
 
-#if canImport(Darwin)
-    import Darwin
-#elseif canImport(Glibc)
-    import Glibc
-#elseif canImport(Musl)
-    import Musl
-#endif
-
-/// Thread-safe buffer for collecting subprocess output
-private actor OutputCollector {
-    var output: String = ""
-
-    func append(_ line: String) {
-        output += line + "\n"
-    }
-
-    func getOutput() -> String {
-        output
-    }
-}
-
-/// Opens a pseudo-terminal pair for getting line-buffered output from subprocesses
-/// Returns (masterFD, slaveFD) as raw Int32 values
-#if !os(Windows)
-    private struct PTYError: Error {
-        let code: Int32
-        var localizedDescription: String {
-            String(cString: strerror(code))
-        }
-    }
-
-    private func openPTY() throws -> (master: Int32, slave: Int32) {
-        var masterFD: Int32 = -1
-        var slaveFD: Int32 = -1
-
-        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
-            guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else {
-                throw PTYError(code: errno)
-            }
-        #else
-            #error("PTY not supported on this platform")
-        #endif
-
-        return (masterFD, slaveFD)
-    }
-#endif
-
 /// Represents the Swift Package Manager interface for building and managing Swift packages.
 public struct SwiftPM: Sendable {
     public let path: String
