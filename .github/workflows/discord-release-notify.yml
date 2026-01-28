@@ -31,7 +31,7 @@ jobs:
 
 **macOS (Homebrew)**
 \`\`\`
-brew tap wendylabsinc/tap && brew install wendy
+brew install wendylabsinc/tap/wendy
 \`\`\`
 
 **Arch Linux (AUR)**
