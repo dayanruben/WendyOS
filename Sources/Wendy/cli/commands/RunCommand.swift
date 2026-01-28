@@ -568,18 +568,58 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         try await checkSwiftRequirements()
 
         let swiftPM = SwiftPM()
-        let package = try await cliOutput.withProgress(
-            message: "Analyzing package structure",
-            successMessage: "Package structure analyzed",
-            errorMessage: "Failed to analyze package"
-        ) {
-            try await swiftPM.showDependencies()
+        let projectPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let cache = PackageCache(projectPath: projectPath)
+
+        // Try to use cached data for executables and plugin status
+        let allExecutables: [SwiftPM.Executable]
+        let packageIdentity: String
+        var hasContainerPlugin: Bool
+
+        if let cached = cache.getValidCache() {
+            // Cache hit - use cached data
+            allExecutables = cached.executables
+            packageIdentity = cached.packageIdentity
+            hasContainerPlugin = cached.hasContainerPlugin
+        } else {
+            // Cache miss - fetch fresh data
+            let package = try await cliOutput.withProgress(
+                message: "Analyzing package structure",
+                successMessage: "Package structure analyzed",
+                errorMessage: "Failed to analyze package"
+            ) {
+                try await swiftPM.showDependencies()
+            }
+
+            let executables = try await cliOutput.withProgress(
+                message: "Finding executables",
+                successMessage: "Found executables",
+                errorMessage: "Failed to find executables"
+            ) {
+                try await swiftPM.showExecutables()
+            }
+
+            allExecutables = executables
+            packageIdentity = package.identity
+            hasContainerPlugin = package.dependencies.contains {
+                $0.url.hasSuffix("swift-container-plugin")
+                    || $0.url.hasSuffix("swift-container-plugin.git")
+            }
+
+            // Write to cache
+            if let hash = try? cache.computePackageSwiftHash() {
+                try? cache.write(
+                    PackageCache.CachedPackageInfo(
+                        packageSwiftHash: hash,
+                        packageIdentity: packageIdentity,
+                        executables: allExecutables,
+                        hasContainerPlugin: hasContainerPlugin
+                    )
+                )
+            }
         }
 
-        if !package.dependencies.contains(where: {
-            $0.url.hasSuffix("swift-container-plugin")
-                || $0.url.hasSuffix("swift-container-plugin.git")
-        }) {
+        if !hasContainerPlugin {
             Noora().info("Container plugin is not installed. Do you want to install it?")
 
             guard
@@ -596,18 +636,14 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 url: "https://github.com/apple/swift-container-plugin",
                 from: "1.0.0"
             )
+
+            // Invalidate cache since Package.swift was modified
+            cache.invalidate()
+            hasContainerPlugin = true
         }
 
-        // Get all executable targets
-        let allExecutables = try await cliOutput.withProgress(
-            message: "Finding executables",
-            successMessage: "Found executables",
-            errorMessage: "Failed to find executables"
-        ) {
-            try await swiftPM.showExecutables()
-        }
         let executableTargets = allExecutables.filter {
-            $0.package == package.identity || $0.package == nil
+            $0.package == packageIdentity || $0.package == nil
         }
 
         // Use specified executable or handle multiple executable targets
