@@ -19,12 +19,43 @@ jobs:
           URL="${{ github.event.release.html_url }}"
           REPO="${{ github.repository }}"
 
-          # Escape the release body for JSON (truncate to 1500 chars for Discord limits)
+          # Escape the release body for JSON (truncate to 800 chars to leave room for install instructions)
           BODY=$(cat << 'BODY_EOF'
           ${{ github.event.release.body }}
           BODY_EOF
           )
-          SHORT_BODY=$(echo "$BODY" | head -c 1500 | jq -Rs .)
+          SHORT_BODY=$(echo "$BODY" | head -c 800)
+
+          # Installation instructions
+          INSTALL_INSTRUCTIONS="## Install the Wendy CLI
+
+**macOS (Homebrew)**
+\`\`\`
+brew tap wendylabsinc/tap && brew install wendy
+\`\`\`
+
+**Arch Linux (AUR)**
+\`\`\`
+yay -S wendy
+\`\`\`
+
+**Debian/Ubuntu (APT)**
+\`\`\`
+curl -fsSL https://wendylabsinc.github.io/wendy-agent/install-apt.sh | sudo bash
+\`\`\`
+
+**Fedora/RHEL (DNF/YUM)**
+\`\`\`
+curl -fsSL https://wendylabsinc.github.io/wendy-agent/install-yum.sh | sudo bash
+\`\`\`"
+
+          # Combine release notes with install instructions
+          FULL_DESCRIPTION="${SHORT_BODY}
+
+${INSTALL_INSTRUCTIONS}"
+
+          # Escape for JSON
+          ESCAPED_DESC=$(echo "$FULL_DESCRIPTION" | jq -Rs .)
 
           # Build JSON payload
           cat > /tmp/discord_payload.json << EOF
@@ -34,7 +65,7 @@ jobs:
               {
                 "title": "${NAME:-$TAG}",
                 "url": "${URL}",
-                "description": ${SHORT_BODY},
+                "description": ${ESCAPED_DESC},
                 "color": 5814783,
                 "footer": { "text": "${REPO} • ${TAG}" }
               }
