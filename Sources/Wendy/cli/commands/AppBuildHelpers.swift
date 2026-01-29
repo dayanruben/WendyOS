@@ -177,11 +177,16 @@ enum AppBuildHelpers {
             }
 
             if installSDK {
-                try await swiftPM.installSDK(
-                    from: sdkDownloadURL,
-                    checksum: sdkChecksum
-                )
-                cliOutput.success("WendyOS SDK ready to use")
+                try await cliOutput.withProgress(
+                    message: "Installing WendyOS Swift SDK",
+                    successMessage: "WendyOS SDK ready to use",
+                    errorMessage: "Failed to install SDK"
+                ) {
+                    try await swiftPM.installSDK(
+                        from: sdkDownloadURL,
+                        checksum: sdkChecksum
+                    )
+                }
             }
         }
 
