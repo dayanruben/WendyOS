@@ -1,7 +1,7 @@
+import ContainerdGRPC
 import Foundation
 import Logging
 import ServiceLifecycle
-import ContainerdGRPC
 
 /// Monitor service that watches containers and enforces restart policies for containerd apps
 actor ContainerMonitor: Service {

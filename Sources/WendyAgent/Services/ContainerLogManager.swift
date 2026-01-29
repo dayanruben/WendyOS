@@ -78,7 +78,8 @@ actor ContainerLogManager {
     ) async throws {
         logTasks[appName]?.cancel()
 
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
             let task = Task.detached(priority: .userInitiated) { [appName] in
                 let taskLogger = Logger(label: "ContainerLogManager.log-task")
                 var startResumed = false
