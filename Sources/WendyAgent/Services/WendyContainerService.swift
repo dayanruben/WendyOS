@@ -3,8 +3,6 @@ import ContainerRegistry
 import ContainerdGRPC
 import Foundation
 import Logging
-import NIOCore
-import NIOFoundationCompat
 import WendyAgentGRPC
 import WendyShared
 import _NIOFileSystem
@@ -318,7 +316,8 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                 .isEmpty
             let args: [String]
             if requestCmdIsEmpty {
-                // Compose from config.entrypoint + config.cmd if they exist (following Docker convention)
+                // Compose from config.entrypoint + config.cmd if they exist
+                // (following Docker convention)
                 if let entrypoint = imageConfig.config?.Entrypoint, !entrypoint.isEmpty {
                     if let extraCmd = imageConfig.config?.Cmd, !extraCmd.isEmpty {
                         args = entrypoint + extraCmd
@@ -467,113 +466,39 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
         let request = request.message
         return StreamingServerResponse { writer in
-            try await Containerd.withClient { client in
-                func run(
-                    stdout: String?,
-                    stderr: String?
-                ) async throws {
-                    let container = try await client.getContainer(named: request.appName)
-                    let snapshot = try await client.mountsSnapshot(named: container.snapshotKey)
+            let appName = request.appName
+            let logStream = try await ContainerLogManager.shared.startContainer(
+                appName: appName,
+                markExplicitStop: true
+            )
 
-                    _ = try await stopContainer(
-                        request: .init(
-                            metadata: Metadata(),
-                            message: .with {
-                                $0.appName = request.appName
+            try await writer.write(
+                .with {
+                    $0.started = .init()
+                }
+            )
+
+            for await chunk in logStream {
+                do {
+                    if chunk.isStderr {
+                        try await writer.write(
+                            .with {
+                                $0.stderrOutput.data = chunk.data
                             }
-                        ),
-                        context: context
-                    ).accepted.get()
-
-                    do {
-                        logger.info("Creating task")
-                        try await client.createTask(
-                            containerID: request.appName,
-                            appName: request.appName,
-                            mounts: snapshot.mounts,
-                            stdout: stdout,
-                            stderr: stderr,
-                            runtime: container.runtime.name
                         )
-                    } catch let error as RPCError where error.code == .alreadyExists {
-                        logger.info(
-                            "Task already exists, re-creating it",
-                            metadata: [
-                                "container-id": .stringConvertible(request.appName)
-                            ]
-                        )
-                        try await client.deleteTask(containerID: request.appName)
-                        logger.debug(
-                            "Task removed, recreating",
-                            metadata: [
-                                "container-id": .stringConvertible(request.appName)
-                            ]
-                        )
-                        try await client.createTask(
-                            containerID: request.appName,
-                            appName: request.appName,
-                            mounts: snapshot.mounts,
-                            stdout: stdout,
-                            stderr: stderr,
-                            runtime: container.runtime.name
-                        )
-                    } catch is RPCError {
-                        logger.error(
-                            "Failed to kill container",
-                            metadata: [
-                                "container-id": .stringConvertible(request.appName)
-                            ]
-                        )
-                        try await client.createTask(
-                            containerID: request.appName,
-                            appName: request.appName,
-                            mounts: snapshot.mounts,
-                            stdout: stdout,
-                            stderr: stderr,
-                            runtime: container.runtime.name
-                        )
-                        logger.debug(
-                            "Task created",
-                            metadata: [
-                                "container-id": .stringConvertible(request.appName)
-                            ]
+                    } else {
+                        try await writer.write(
+                            .with {
+                                $0.stdoutOutput.data = chunk.data
+                            }
                         )
                     }
-
-                    logger.info("Starting task")
-                    try await client.runTask(containerID: request.appName)
-
-                    // Mark the container as started in the monitor (reset explicitly stopped flag)
-                    await ContainerMonitor.shared.markContainerStarted(request.appName)
-
-                    // Mark the container as started in the monitor (reset explicitly stopped flag)
-                    await ContainerMonitor.shared.markContainerStarted(request.appName)
-
-                    try await writer.write(
-                        .with {
-                            $0.started = .init()
-                        }
-                    )
+                } catch {
+                    break
                 }
-
-                try await client.withStdout { stdout, stderr in
-                    try await run(stdout: stdout, stderr: stderr)
-                } onStdout: { bytes in
-                    try await writer.write(
-                        .with {
-                            $0.stdoutOutput.data = Data(buffer: bytes)
-                        }
-                    )
-                } onStderr: { bytes in
-                    try await writer.write(
-                        .with {
-                            $0.stderrOutput.data = Data(buffer: bytes)
-                        }
-                    )
-                }
-
-                return Metadata()
             }
+
+            return Metadata()
         }
     }
 
@@ -682,4 +607,5 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
             return ServerResponse(message: .init())
         }
     }
+
 }
