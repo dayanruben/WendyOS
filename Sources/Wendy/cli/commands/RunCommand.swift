@@ -500,6 +500,42 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     "/\(url.lastPathComponent)",
                 ]
                 var arguments: [String] = []
+                var additionalEnv: [String] = []
+
+                // Add swift-backtrace binaries for crash reporting
+                for binaryName in [
+                    "swift-backtrace-static-linux-arm64",
+                    "swift-backtrace-linux-arm64",
+                ] {
+                    let destination = "/swift-backtrace"
+                    if let backtraceUrl = Bundle.module.url(
+                        forResource: binaryName,
+                        withExtension: nil
+                    ) {
+                        resources.append((source: backtraceUrl.path(), destination: destination))
+                    } else {
+                        let backtraceUrl = URL(fileURLWithPath: CommandLine.arguments[0])
+                            .deletingLastPathComponent()
+                            .appending(path: "wendy-agent_wendy.bundle")
+                            .appending(path: "Contents")
+                            .appending(path: "Resources")
+                            .appending(path: "Resources")
+                            .appending(component: binaryName)
+
+                        if FileManager.default.fileExists(atPath: backtraceUrl.path()) {
+                            resources.append(
+                                (source: backtraceUrl.path(), destination: destination)
+                            )
+                        } else {
+                            cliOutput.warning(
+                                "\(binaryName) not found. Backtraces may not be available."
+                            )
+                        }
+                    }
+                }
+                additionalEnv.append(
+                    "SWIFT_BACKTRACE=enable=yes,sanitize=yes,threads=all,images=all,interactive=no,swift-backtrace=/swift-backtrace"
+                )
 
                 if debug {
                     let ds2BinaryName = "ds2-124963fd-static-linux-arm64"
@@ -540,12 +576,13 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await cliOutput.withStreamingOutput(
                     title: "Building Swift app",
                     maxLines: 20
-                ) { emit in
+                ) { [additionalEnv] emit in
                     try await swiftPM.buildAndPushContainer(
                         swiftSDK: swiftSDK,
                         product: executableTarget,
                         device: endpoint.host,
                         entrypoint: finalEntrypoint,
+                        additionalEnv: additionalEnv,
                         arguments: finalArguments,
                         resources: finalResources,
                         onOutput: emit

@@ -265,6 +265,7 @@ public struct SwiftPM: Sendable {
         product: Executable,
         device: String,
         entrypoint: String?,
+        additionalEnv: [String],
         arguments entrypointArguments: [String],
         resources: [(source: String, destination: String)],
         onOutput: @escaping @Sendable (String) async throws -> Void
@@ -283,6 +284,7 @@ public struct SwiftPM: Sendable {
         ]
 
         flags += resources.map { "--resources=\($0.source):\($0.destination)" }
+        flags += additionalEnv.map { "--env=\($0)" }
 
         if let entrypoint {
             flags.append("--entrypoint=\(entrypoint)")
