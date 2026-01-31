@@ -662,7 +662,7 @@ public struct Containerd: Sendable {
     /// This is required when images are pushed to the registry but not yet unpacked.
     public func unpackImage(
         named imageName: String,
-        progress: (@Sendable (ContainerdUnpackProgress) async throws -> Void)? = nil
+        progress: @Sendable (ContainerdUnpackProgress) async throws -> Void = { _ in }
     ) async throws -> (snapshotKey: String?, mounts: [Containerd_Types_Mount]) {
         let images = Containerd_Services_Images_V1_Images.Client(wrapping: client)
         let snapshots = Containerd_Services_Snapshots_V1_Snapshots.Client(wrapping: client)
@@ -697,11 +697,9 @@ public struct Containerd: Sendable {
         var snapshotsReused = 0
         var snapshotsCreated = 0
 
-        if let progress {
-            try await progress(
-                ContainerdUnpackProgress(phase: .start(totalLayers: totalLayers))
-            )
-        }
+        try await progress(
+            ContainerdUnpackProgress(phase: .start(totalLayers: totalLayers))
+        )
 
         for (index, layer) in manifest.layers.enumerated() {
             // Get the DiffID for this layer from the config
@@ -760,18 +758,16 @@ public struct Containerd: Sendable {
                         "chain-id": .stringConvertible(chainID),
                     ]
                 )
-                if let progress {
-                    try await progress(
-                        ContainerdUnpackProgress(
-                            phase: .layer(
-                                index: index + 1,
-                                total: totalLayers,
-                                size: layer.size,
-                                reused: true
-                            )
+                try await progress(
+                    ContainerdUnpackProgress(
+                        phase: .layer(
+                            index: index + 1,
+                            total: totalLayers,
+                            size: layer.size,
+                            reused: true
                         )
                     )
-                }
+                )
                 previousChainID = chainID
                 continue
             }
@@ -861,18 +857,16 @@ public struct Containerd: Sendable {
                 }
             }
 
-            if let progress {
-                try await progress(
-                    ContainerdUnpackProgress(
-                        phase: .layer(
-                            index: index + 1,
-                            total: totalLayers,
-                            size: layer.size,
-                            reused: false
-                        )
+            try await progress(
+                ContainerdUnpackProgress(
+                    phase: .layer(
+                        index: index + 1,
+                        total: totalLayers,
+                        size: layer.size,
+                        reused: false
                     )
                 )
-            }
+            )
 
             previousChainID = chainID
         }
@@ -894,17 +888,15 @@ public struct Containerd: Sendable {
             ]
         )
 
-        if let progress {
-            try await progress(
-                ContainerdUnpackProgress(
-                    phase: .complete(
-                        totalLayers: totalLayers,
-                        reused: snapshotsReused,
-                        created: snapshotsCreated
-                    )
+        try await progress(
+            ContainerdUnpackProgress(
+                phase: .complete(
+                    totalLayers: totalLayers,
+                    reused: snapshotsReused,
+                    created: snapshotsCreated
                 )
             )
-        }
+        )
 
         guard let previousChainID else {
             throw RPCError(code: .internalError, message: "Failed to unpack image")

@@ -19,10 +19,9 @@ private struct SendableProgressUpdater: @unchecked Sendable {
         self.call = call
     }
 
+    @MainActor
     func update(_ value: Double) {
-        Task { @MainActor in
-            self.call(value)
-        }
+        self.call(value)
     }
 }
 
@@ -269,20 +268,20 @@ enum AppBuildHelpers {
                         case .progress(let progressUpdate):
                             switch progressUpdate.phase {
                             case .unpacking:
-                                progressHandler.update(0)
+                                await progressHandler.update(0)
                             case .applyingLayer:
                                 let total = Double(progressUpdate.totalLayers)
                                 let index = Double(progressUpdate.layerIndex)
                                 if total > 0 {
-                                    progressHandler.update(min(max(index / total, 0), 1))
+                                    await progressHandler.update(min(max(index / total, 0), 1))
                                 }
                             case .creatingContainer, .complete:
-                                progressHandler.update(1)
+                                await progressHandler.update(1)
                             case .unspecified, .UNRECOGNIZED:
                                 break
                             }
                         case .completed:
-                            progressHandler.update(1)
+                            await progressHandler.update(1)
                         case .none:
                             break
                         }
