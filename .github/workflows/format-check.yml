@@ -4,11 +4,39 @@ on:
   pull_request:
     branches: [main]
 permissions:
-  pull-requests: write 
+  pull-requests: write
 jobs:
+  check-bugfix:
+    name: Check for BUGFIX tag
+    runs-on: ubuntu-latest
+    outputs:
+      spot: ${{ steps.check.outputs.spot }}
+    steps:
+      - name: Check PR for BUGFIX tag or bug label
+        id: check
+        env:
+          HAS_BUG_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'bug') }}
+        run: |
+          # Always use spot instances for now (on-demand requires runs-on.com configuration)
+          SPOT="true"
+
+          TITLE="${{ github.event.pull_request.title }}"
+          BODY="${{ github.event.pull_request.body }}"
+
+          if [[ "$TITLE" == *"[BUGFIX]"* ]] || [[ "$BODY" == *"[BUGFIX]"* ]]; then
+            echo "Found [BUGFIX] tag in PR"
+            # SPOT="false"  # Uncomment when on-demand is configured in runs-on.com
+          elif [ "$HAS_BUG_LABEL" == "true" ]; then
+            echo "Found 'bug' label on PR"
+            # SPOT="false"  # Uncomment when on-demand is configured in runs-on.com
+          fi
+
+          echo "spot=$SPOT" >> $GITHUB_OUTPUT
+
   format-check:
     name: Swift Format Check
-    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64
+    needs: check-bugfix
+    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64/spot=${{ needs.check-bugfix.outputs.spot }}
     container: swift:6.2.3
 
     steps:
