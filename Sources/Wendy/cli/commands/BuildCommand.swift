@@ -53,17 +53,16 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         try await withErrorTracking {
             let currentPath = FileManager.default.currentDirectoryPath
             let isSwiftPackage = FileManager.default.fileExists(atPath: "Package.swift")
-            let hasPythonRequirements = FileManager.default.fileExists(atPath: "requirements.txt")
             let directory = try FileManager.default.contentsOfDirectory(atPath: currentPath)
 
-            for item in directory where item.lowercased().contains("dockerfile") {
+            for item in directory where isDockerfile(item) {
                 try await buildDockerfileApp()
                 return
             }
 
             if isSwiftPackage {
                 try await buildSwiftApp()
-            } else if hasPythonRequirements {
+            } else if isPythonProject(directory: directory) {
                 // Python project without Dockerfile - offer to generate one
                 try await generatePythonDockerfileAndBuild()
             } else {
@@ -74,10 +73,43 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         }
     }
 
+    /// Checks if a filename is a valid Dockerfile name
+    /// Valid names: Dockerfile, dockerfile, Dockerfile.dev, Dockerfile.prod, app.Dockerfile, etc.
+    private func isDockerfile(_ filename: String) -> Bool {
+        let lowercased = filename.lowercased()
+        // Exact match: "dockerfile"
+        if lowercased == "dockerfile" {
+            return true
+        }
+        // Pattern: "dockerfile.*" (e.g., dockerfile.dev, Dockerfile.prod)
+        if lowercased.hasPrefix("dockerfile.") {
+            return true
+        }
+        // Pattern: "*.dockerfile" (e.g., app.dockerfile)
+        if lowercased.hasSuffix(".dockerfile") {
+            return true
+        }
+        return false
+    }
+
+    /// Checks if the directory contains a Python project
+    private func isPythonProject(directory: [String]) -> Bool {
+        // Check for requirements.txt
+        if FileManager.default.fileExists(atPath: "requirements.txt") {
+            return true
+        }
+        // Check for pyproject.toml
+        if FileManager.default.fileExists(atPath: "pyproject.toml") {
+            return true
+        }
+        // Check for any .py files in the root directory
+        return directory.contains { $0.hasSuffix(".py") }
+    }
+
     func generatePythonDockerfileAndBuild() async throws {
         let generator = PythonDockerfileGenerator()
 
-        Noora().info("Detected Python project (requirements.txt found)")
+        Noora().info("Detected Python project")
 
         // Detect or prompt for entry point
         let entryPoint: String
