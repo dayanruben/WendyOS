@@ -3,13 +3,11 @@ name: Build products and release
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('build-pr-{0}', github.event.pull_request.number) || format('build-ref-{0}', github.ref) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
 # Add permissions needed for creating releases
 permissions:
@@ -22,29 +20,11 @@ jobs:
     outputs:
       spot: ${{ steps.check.outputs.spot }}
     steps:
-      - name: Check PR for BUGFIX tag or bug label
+      - name: Set spot instance preference
         id: check
-        env:
-          HAS_BUG_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'bug') }}
         run: |
-          # Always use spot instances for now (on-demand requires runs-on.com configuration)
-          # To enable on-demand for bugfixes, change SPOT="false" below when bugfix is detected
-          SPOT="true"
-
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            TITLE="${{ github.event.pull_request.title }}"
-            BODY="${{ github.event.pull_request.body }}"
-
-            if [[ "$TITLE" == *"[BUGFIX]"* ]] || [[ "$BODY" == *"[BUGFIX]"* ]]; then
-              echo "Found [BUGFIX] tag in PR"
-              # SPOT="false"  # Uncomment when on-demand is configured in runs-on.com
-            elif [ "$HAS_BUG_LABEL" == "true" ]; then
-              echo "Found 'bug' label on PR"
-              # SPOT="false"  # Uncomment when on-demand is configured in runs-on.com
-            fi
-          fi
-
-          echo "spot=$SPOT" >> $GITHUB_OUTPUT
+          # Always use spot instances (on-demand requires runs-on.com configuration)
+          echo "spot=true" >> $GITHUB_OUTPUT
 
   determine-version:
     name: Determine Version
