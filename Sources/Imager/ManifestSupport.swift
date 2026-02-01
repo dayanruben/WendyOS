@@ -262,7 +262,9 @@ public final class ManifestManager: ManifestManaging {
                     }
                     if !nightlyVersions.isEmpty {
                         let sortedNightlyVersions = nightlyVersions.sorted { lhs, rhs in
-                            if let lhsDate = lhs.value.date, let rhsDate = rhs.value.date, lhsDate != rhsDate {
+                            if let lhsDate = lhs.value.date, let rhsDate = rhs.value.date,
+                                lhsDate != rhsDate
+                            {
                                 return lhsDate > rhsDate
                             }
 
