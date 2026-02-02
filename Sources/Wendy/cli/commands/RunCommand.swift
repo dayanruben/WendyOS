@@ -245,7 +245,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             ) {
                 try await startContainerdContainer(
                     imageName: name,
-                    client: client
+                    client: client,
+                    hostname: endpoint.host
                 )
             }
         }
@@ -299,7 +300,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
 
     func startContainerdContainer(
         imageName: String,
-        client: GRPCClient<HTTP2ClientTransport.Posix>
+        client: GRPCClient<HTTP2ClientTransport.Posix>,
+        hostname: String
     ) async throws {
         let logger = Logger(label: "sh.wendy.cli.run.containerd.start")
         let agentContainers = Wendy_Agent_Services_V1_WendyContainerService.Client(
@@ -318,9 +320,11 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     switch message.responseType {
                     case .started:
                         if debug {
-                            Noora().success("Started container with debug port 4242")
+                            Noora().success(
+                                "Started app \(imageName) on \(hostname) with debug port 4242"
+                            )
                         } else {
-                            Noora().success("Started app")
+                            Noora().success("Started app \(imageName) on \(hostname)")
                         }
 
                         if isDetached {
@@ -577,7 +581,11 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 runtime: "swift",
                 commandName: "wendy run"
             ) {
-                try await startContainerdContainer(imageName: appName, client: client)
+                try await startContainerdContainer(
+                    imageName: appName,
+                    client: client,
+                    hostname: endpoint.host
+                )
             }
         }
     }
