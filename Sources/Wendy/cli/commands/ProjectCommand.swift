@@ -214,7 +214,7 @@ struct AddCommand: ModifyProjectCommand {
 
         // Check if wendy.json exists
         guard FileManager.default.fileExists(atPath: wendyJsonPath) else {
-            Noora().warning(
+            Noora(theme: .emerald()).warning(
                 """
                 No wendy.json found in current directory
                 Run 'wendy project init' to initialize a new project
@@ -230,7 +230,7 @@ struct AddCommand: ModifyProjectCommand {
         if let entitlementType {
             // Check if entitlement already exists
             if config.entitlements.contains(where: { $0.type == entitlementType }) {
-                Noora().warning(
+                Noora(theme: .emerald()).warning(
                     "\(entitlementType.rawValue.capitalized) entitlement already exists"
                 )
                 return
@@ -249,13 +249,13 @@ struct AddCommand: ModifyProjectCommand {
             }
 
             if availableEntitlementTypes.isEmpty {
-                Noora().info("All entitlements are already enabled")
+                Noora(theme: .emerald()).info("All entitlements are already enabled")
                 return
             }
 
-            Noora().info("Select an entitlement to enable")
+            Noora(theme: .emerald()).info("Select an entitlement to enable")
 
-            let index = try await Noora().selectableTable(
+            let index = try await Noora(theme: .emerald()).selectableTable(
                 headers: [
                     .primary("Entitlement")
                 ],
@@ -269,7 +269,7 @@ struct AddCommand: ModifyProjectCommand {
 
             switch availableEntitlementTypes[index] {
             case .network:
-                let host = Noora().yesOrNoChoicePrompt(
+                let host = Noora(theme: .emerald()).yesOrNoChoicePrompt(
                     question: TerminalText("Do you want to allow host network access?")
                 )
 
@@ -279,7 +279,7 @@ struct AddCommand: ModifyProjectCommand {
                     newEntitlement = .network(NetworkEntitlements(mode: .none))
                 }
             case .bluetooth:
-                let bluez = Noora().yesOrNoChoicePrompt(
+                let bluez = Noora(theme: .emerald()).yesOrNoChoicePrompt(
                     question: TerminalText("Do you want to use bluez?")
                 )
                 newEntitlement = .bluetooth(
@@ -288,7 +288,7 @@ struct AddCommand: ModifyProjectCommand {
                     )
                 )
             case .video:
-                let mode = Noora().singleChoicePrompt(
+                let mode = Noora(theme: .emerald()).singleChoicePrompt(
                     question: "Which devices do you want to allow?",
                     options: VideoEntitlements.VideoMode.allCases
                 )
@@ -312,10 +312,10 @@ struct AddCommand: ModifyProjectCommand {
                     }
 
                     if devices.isEmpty {
-                        Noora().warning("No camera devices found")
+                        Noora(theme: .emerald()).warning("No camera devices found")
                         return
                     } else {
-                        let allowlist = Noora().multipleChoicePrompt(
+                        let allowlist = Noora(theme: .emerald()).multipleChoicePrompt(
                             question: "Which device(s) do you want to allow?",
                             options: devices.map { $0.devicePath }
                         )
@@ -330,10 +330,10 @@ struct AddCommand: ModifyProjectCommand {
             case .gpu:
                 newEntitlement = .gpu(GPUEntitlements())
             case .persist:
-                let name = Noora().textPrompt(
+                let name = Noora(theme: .emerald()).textPrompt(
                     prompt: "Enter the name of the volume to persist"
                 )
-                let path = Noora().textPrompt(
+                let path = Noora(theme: .emerald()).textPrompt(
                     prompt: "Enter the path of the directory to persist"
                 )
 
@@ -352,7 +352,7 @@ struct AddCommand: ModifyProjectCommand {
         // Save configuration
         try saveConfig(config, to: wendyJsonPath)
 
-        Noora().success("Added \(newEntitlement.type.rawValue) entitlement")
+        Noora(theme: .emerald()).success("Added \(newEntitlement.type.rawValue) entitlement")
         if let mode {
             print("   Mode: \(mode)")
         }
@@ -452,15 +452,17 @@ struct RemoveCommand: ModifyProjectCommand {
         if let entitlementType {
             // Check if entitlement exists
             guard config.entitlements.contains(where: { $0.type == entitlementType }) else {
-                Noora().warning("\(entitlementType.rawValue.capitalized) entitlement not found")
+                Noora(theme: .emerald()).warning(
+                    "\(entitlementType.rawValue.capitalized) entitlement not found"
+                )
                 return
             }
 
             removedEntitlementType = entitlementType
         } else {
-            Noora().info("Select an entitlement to remove")
+            Noora(theme: .emerald()).info("Select an entitlement to remove")
 
-            let index = try await Noora().selectableTable(
+            let index = try await Noora(theme: .emerald()).selectableTable(
                 headers: [
                     .primary("Entitlement")
                 ],
@@ -485,7 +487,7 @@ struct RemoveCommand: ModifyProjectCommand {
         // Save configuration
         try saveConfig(config, to: wendyJsonPath)
 
-        Noora().success("Removed \(removedEntitlementType.rawValue) entitlement")
+        Noora(theme: .emerald()).success("Removed \(removedEntitlementType.rawValue) entitlement")
     }
 }
 

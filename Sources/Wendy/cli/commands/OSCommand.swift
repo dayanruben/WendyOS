@@ -136,7 +136,7 @@ struct OSCommand: AsyncParsableCommand {
                 print("No external drives found.")
             } else {
                 print("\nAvailable drives:")
-                Noora().table(
+                Noora(theme: .emerald()).table(
                     headers: [
                         "Disk",
                         "Identifier",
@@ -180,7 +180,7 @@ struct OSCommand: AsyncParsableCommand {
             } else if deviceList.isEmpty {
                 print("No devices found in the manifest.")
             } else {
-                let noora = Noora()
+                let noora = Noora(theme: .emerald())
                 print("\nAvailable devices:")
                 noora.table(
                     headers: [
@@ -235,7 +235,7 @@ struct OSCommand: AsyncParsableCommand {
 
             // Use DiskWriter to write the image with Noora progress bar
             let diskWriter = DiskWriterFactory.createDiskWriter()
-            let noora = Noora()
+            let noora = Noora(theme: .emerald())
 
             print("Press Ctrl+C to cancel\n")
 
@@ -287,7 +287,7 @@ struct OSCommand: AsyncParsableCommand {
             let logger = Logger(label: "wendy.imager")
             let manifestManager = ManifestManagerFactory.createManifestManager()
             let diskLister = DiskListerFactory.createDiskLister()
-            let noora = Noora()
+            let noora = Noora(theme: .emerald())
 
             let selectedDeviceName: String
             // Interactive device selection is the default when deviceName is omitted
@@ -634,7 +634,7 @@ private func ensureAdminPrivileges() async throws {
         if getuid() == 0 { return }
 
         // Inform the user and validate sudo timestamp (may prompt for password in the terminal)
-        Noora().info(
+        Noora(theme: .emerald()).info(
             "Administrator privileges are required to write raw disks. You may be prompted for your password."
         )
         do {

@@ -37,7 +37,7 @@ struct LoginCommand: AsyncParsableCommand {
             cloudDashboard: cloudDashboard,
             cloudGRPC: cloudGRPC
         ) { token in
-            Noora().success("Logged in")
+            Noora(theme: .emerald()).success("Logged in")
             #if canImport(Darwin)
                 Task {
                     try await Task.sleep(for: .seconds(1))
@@ -95,7 +95,7 @@ struct RefreshCertsCommand: AsyncParsableCommand {
                 var config = getConfig()
                 config.addAuth(auth)
                 try config.save()
-                Noora().success("Refreshed certificates")
+                Noora(theme: .emerald()).success("Refreshed certificates")
             }
         }
     }
@@ -130,7 +130,7 @@ struct LogoutCommand: AsyncParsableCommand {
                     reason: "No accounts found to log out from"
                 ).print()
             } else {
-                Noora().error("No accounts found")
+                Noora(theme: .emerald()).error("No accounts found")
             }
             return
         }
@@ -145,7 +145,9 @@ struct LogoutCommand: AsyncParsableCommand {
                         reason: "No account found for cloud dashboard: \(cloudDashboard)"
                     ).print()
                 } else {
-                    Noora().error("No account found for cloud dashboard: \(cloudDashboard)")
+                    Noora(theme: .emerald()).error(
+                        "No account found for cloud dashboard: \(cloudDashboard)"
+                    )
                 }
                 return
             }
@@ -156,7 +158,7 @@ struct LogoutCommand: AsyncParsableCommand {
                 description: "Provide --cloud-dashboard <url> to specify which account to log out"
             )
         } else {
-            logout = Noora().singleChoicePrompt(
+            logout = Noora(theme: .emerald()).singleChoicePrompt(
                 title: "Logout",
                 question: "Which account do you want to log out of?",
                 options: config.auth

@@ -245,7 +245,7 @@ public struct SwiftPM: Sendable {
             ["build"] + version + options.flatMap(\.arguments)
         )
 
-        let result = try await Noora().progressStep(
+        let result = try await Noora(theme: .emerald()).progressStep(
             message: "Building Swift package",
             successMessage: "Swift package built successfully",
             errorMessage: "Failed to build Swift package",

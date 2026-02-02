@@ -160,7 +160,11 @@ extension AgentClient {
         guard let initial = try await data.makeAsyncIterator().next() else {
             throw CancellationError()
         }
-        let index = try await Noora().selectableTable(initial, updates: data, pageSize: 20)
+        let index = try await Noora(theme: .emerald()).selectableTable(
+            initial,
+            updates: data,
+            pageSize: 20
+        )
         let displayedNetworks = await data.displayedNetworks
         return displayedNetworks[index].ssid
     }

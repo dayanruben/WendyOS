@@ -124,9 +124,9 @@ struct AgentConnectionOptions: ParsableArguments {
     private func printDeviceDetails(_ device: DevicesCollection.GroupedDevice) {
         // Show the selected device name and version (if available)
         if let version = device.interfaces.compactMap(\.agentVersion).first {
-            Noora().info(.alert("\(device.name) (version: \(version))"))
+            Noora(theme: .emerald()).info(.alert("\(device.name) (version: \(version))"))
         } else {
-            Noora().info(.alert("\(device.name)"))
+            Noora(theme: .emerald()).info(.alert("\(device.name)"))
         }
 
         let rows = device.interfaces.map { interface -> [String] in
@@ -148,7 +148,7 @@ struct AgentConnectionOptions: ParsableArguments {
             return [interfaceLabel, details]
         }
 
-        Noora().table(
+        Noora(theme: .emerald()).table(
             headers: ["Interface", "Details"],
             rows: rows
         )

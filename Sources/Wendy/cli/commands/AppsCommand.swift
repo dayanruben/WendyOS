@@ -39,9 +39,9 @@ struct AppsCommand: AsyncParsableCommand {
                 try await client.removeApp(name: appName, purgeImage: purgeImage)
 
                 if purgeImage {
-                    Noora().success("Removed application and its image.")
+                    Noora(theme: .emerald()).success("Removed application and its image.")
                 } else {
-                    Noora().success("Removed application.")
+                    Noora(theme: .emerald()).success("Removed application.")
                 }
             }
         }
@@ -64,7 +64,7 @@ struct AppsCommand: AsyncParsableCommand {
                 title: "Stopping application"
             ) { client in
                 try await client.stopApp(name: appName)
-                Noora().info("Stop request sent")
+                Noora(theme: .emerald()).info("Stop request sent")
             }
         }
     }
@@ -85,7 +85,7 @@ struct AppsCommand: AsyncParsableCommand {
                 let apps = try await client.listApps()
 
                 guard !apps.isEmpty else {
-                    Noora().info("No applications found.")
+                    Noora(theme: .emerald()).info("No applications found.")
                     return
                 }
 
@@ -98,7 +98,7 @@ struct AppsCommand: AsyncParsableCommand {
                     ]
                 }
 
-                Noora().table(
+                Noora(theme: .emerald()).table(
                     headers: [
                         "App",
                         "Version",

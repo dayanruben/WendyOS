@@ -322,7 +322,7 @@ struct PythonDockerfileGenerator {
         }
 
         // Let user choose
-        return Noora().singleChoicePrompt(
+        return Noora(theme: .emerald()).singleChoicePrompt(
             title: "Select entry point",
             question: "Which Python file is the main entry point?",
             options: pythonFiles

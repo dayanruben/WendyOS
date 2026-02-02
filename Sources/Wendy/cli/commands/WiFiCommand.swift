@@ -31,7 +31,7 @@ struct WiFiCommand: AsyncParsableCommand {
                 if JSONMode.isEnabled {
                     return try await client.listWiFiNetworks()
                 } else {
-                    return try await Noora().progressStep(
+                    return try await Noora(theme: .emerald()).progressStep(
                         message: "Listing available WiFi networks",
                         successMessage: nil,
                         errorMessage: nil,
@@ -46,13 +46,13 @@ struct WiFiCommand: AsyncParsableCommand {
                 if JSONMode.isEnabled {
                     print("[]")
                 } else {
-                    Noora().info("No WiFi networks found.")
+                    Noora(theme: .emerald()).info("No WiFi networks found.")
                 }
             } else if JSONMode.isEnabled {
                 let networksJSON = try formatNetworksAsJSON(networks)
                 print(networksJSON)
             } else {
-                Noora().info("Available WiFi networks:")
+                Noora(theme: .emerald()).info("Available WiFi networks:")
                 formatNetworksAsText(networks)
             }
         }
@@ -152,7 +152,7 @@ struct WiFiCommand: AsyncParsableCommand {
                     )
                     print(String(data: responseJSON, encoding: .utf8)!)
                 } else {
-                    _ = try await Noora().progressStep(
+                    _ = try await Noora(theme: .emerald()).progressStep(
                         message: "Connecting to WiFi network: \(ssid)...",
                         successMessage: "Connected to \(ssid)",
                         errorMessage: "Failed to connect to \(ssid)",
@@ -291,7 +291,7 @@ struct WiFiCommand: AsyncParsableCommand {
                 agentConnectionOptions,
                 title: "Which device do you want to disconnect from wifi?"
             ) { client in
-                let result = try await Noora().progressStep(
+                let result = try await Noora(theme: .emerald()).progressStep(
                     message: "Disconnecting from WiFi network...",
                     successMessage: "Disconnected from WiFi network",
                     errorMessage: "Failed to disconnect from WiFi network",
@@ -302,7 +302,7 @@ struct WiFiCommand: AsyncParsableCommand {
 
                 if !result.success {
                     let errorMessage = result.errorMessage ?? "Unknown error"
-                    Noora().warning("Disconnect reported failure: \(errorMessage)")
+                    Noora(theme: .emerald()).warning("Disconnect reported failure: \(errorMessage)")
                 }
             }
         }

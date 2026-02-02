@@ -89,13 +89,13 @@ func authenticate<R: Sendable>(
     forOrganizationId orgId: Int32? = nil,
     perform: @Sendable @escaping (Config.Auth) async throws -> R
 ) async throws -> R {
-    var cloudDashboard = Noora().textPrompt(
+    var cloudDashboard = Noora(theme: .emerald()).textPrompt(
         title: title,
         prompt: "Enter the cloud dashboard URL",
         collapseOnAnswer: false
     )
 
-    var cloudGRPC = Noora().textPrompt(
+    var cloudGRPC = Noora(theme: .emerald()).textPrompt(
         title: title,
         prompt: "Enter the cloud gRPC URL",
         collapseOnAnswer: false
@@ -157,7 +157,7 @@ func withAuth<R: Sendable>(
     } else if config.auth.count == 1 {
         return try await perform(config.auth[0])
     } else {
-        let account = Noora().singleChoicePrompt(
+        let account = Noora(theme: .emerald()).singleChoicePrompt(
             title: title,
             question: "Which account do you want to use?",
             options: config.auth
@@ -323,7 +323,7 @@ func loginFlow<R: Sendable>(
                 "\(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback"
             #if os(macOS)
                 if NSWorkspace.shared.open(URL(string: url)!) {
-                    Noora().info(
+                    Noora(theme: .emerald()).info(
                         """
                         Open the following link in your browser:
                         > \(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback
@@ -334,7 +334,7 @@ func loginFlow<R: Sendable>(
             #endif
 
             //         repeat {
-            //             let enrollmentToken = Noora().textPrompt(
+            //             let enrollmentToken = Noora(theme: .emerald()).textPrompt(
             //                 title: "Provide the enrollment token",
             //                 prompt: "Enter token",
             //                 collapseOnAnswer: false,
@@ -355,7 +355,7 @@ func loginFlow<R: Sendable>(
             //                 continuation.yield(try await withAuth(auth))
             //                 continuation.finish()
             //             } catch {
-            //                 Noora().error("Failed to setup config: \(error)")
+            //                 Noora(theme: .emerald()).error("Failed to setup config: \(error)")
             //             }
             //         } while !isFinished.withLock(\.self)
         }

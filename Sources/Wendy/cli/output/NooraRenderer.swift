@@ -16,28 +16,28 @@ public struct NooraRenderer: CLIOutput, Sendable {
     public init() {}
 
     public func success(_ message: String) {
-        Noora().success(SuccessAlert(stringLiteral: message))
+        Noora(theme: .emerald()).success(SuccessAlert(stringLiteral: message))
     }
 
     public func error(_ message: String, suggestion: String?) {
         // ErrorAlert doesn't support suggestions in its string literal init,
         // so we show them separately
-        Noora().error(ErrorAlert(stringLiteral: message))
+        Noora(theme: .emerald()).error(ErrorAlert(stringLiteral: message))
         if let suggestion {
-            Noora().info(InfoAlert(stringLiteral: "Suggestion: \(suggestion)"))
+            Noora(theme: .emerald()).info(InfoAlert(stringLiteral: "Suggestion: \(suggestion)"))
         }
     }
 
     public func info(_ message: String) {
-        Noora().info(InfoAlert(stringLiteral: message))
+        Noora(theme: .emerald()).info(InfoAlert(stringLiteral: message))
     }
 
     public func warning(_ message: String) {
-        Noora().warning(WarningAlert(stringLiteral: message))
+        Noora(theme: .emerald()).warning(WarningAlert(stringLiteral: message))
     }
 
     public func table(headers: [String], rows: [[String]]) {
-        Noora().table(headers: headers, rows: rows)
+        Noora(theme: .emerald()).table(headers: headers, rows: rows)
     }
 
     public func streamingTable<T: Encodable & Sendable>(
@@ -67,7 +67,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
             continuation.finish()
         }()
 
-        async let consumer: Void = Noora().table(tableData, updates: stream)
+        async let consumer: Void = Noora(theme: .emerald()).table(tableData, updates: stream)
 
         _ = await (producer, consumer)
     }
@@ -128,7 +128,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
 
             defer { group.cancelAll() }
             repeat {
-                let index = try await Noora().selectableTable(
+                let index = try await Noora(theme: .emerald()).selectableTable(
                     tableData,
                     updates: stream,
                     pageSize: pageSize
@@ -157,7 +157,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
             rows: tableRows
         )
 
-        return try await Noora().selectableTable(tableData, pageSize: pageSize)
+        return try await Noora(theme: .emerald()).selectableTable(tableData, pageSize: pageSize)
     }
 
     public func result<T: Encodable & Sendable>(_ value: T) {
@@ -181,7 +181,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
         } else {
             text = message
         }
-        Noora().info(InfoAlert(stringLiteral: text))
+        Noora(theme: .emerald()).info(InfoAlert(stringLiteral: text))
     }
 
     public func withProgress<T: Sendable>(
@@ -190,7 +190,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
         errorMessage: String,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await Noora().progressStep(
+        try await Noora(theme: .emerald()).progressStep(
             message: message,
             successMessage: successMessage,
             errorMessage: errorMessage,
@@ -204,7 +204,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
         message: String,
         operation: @escaping @Sendable (@escaping (Double) -> Void) async throws -> T
     ) async throws -> T {
-        try await Noora().progressBarStep(message: message) { updateProgress in
+        try await Noora(theme: .emerald()).progressBarStep(message: message) { updateProgress in
             try await operation(updateProgress)
         }
     }
@@ -244,11 +244,11 @@ public struct NooraRenderer: CLIOutput, Sendable {
                 }
             }
             await box.finish()
-            Noora().info(InfoAlert(stringLiteral: "Full output: \(logFile.path)"))
+            Noora(theme: .emerald()).info(InfoAlert(stringLiteral: "Full output: \(logFile.path)"))
             return value
         } catch {
             await box.finish()
-            Noora().info(InfoAlert(stringLiteral: "Full output: \(logFile.path)"))
+            Noora(theme: .emerald()).info(InfoAlert(stringLiteral: "Full output: \(logFile.path)"))
             throw error
         }
     }
