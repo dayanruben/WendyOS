@@ -198,21 +198,20 @@ struct DeviceCommand: AsyncParsableCommand {
                 ).path
             }
 
-            let success = try await withAgentGRPCClient(
+            let endpoint = try await withAgentGRPCClientAndEndpoint(
                 agentConnectionOptions,
                 title: "Which device do you want to update?"
-            ) { client in
+            ) { client, endpoint in
                 let agent = Agent(client: client)
-                return try await Noora().progressBarStep(message: "Updating Device") {
+                _ = try await Noora().progressBarStep(message: "Updating Device") {
                     updateProgress in
                     try await agent.update(fromBinary: binary, onProgress: updateProgress)
                 }
+                return endpoint
             }
 
-            guard success else {
-                Noora().error("Failed to update agent")
-                Self.exit(withError: nil)
-            }
+            // Wait for the gRPC socket to come back up after the device restarts
+            try await waitForDeviceRestart(endpoint: endpoint)
 
             Noora().success("Agent updated successfully")
         }
@@ -290,10 +289,10 @@ struct DeviceCommand: AsyncParsableCommand {
                 }
             }
 
-            try await withAgentClient(
+            let shouldWaitForRestart = try await withAgentClientAndHostname(
                 agentConnectionOptions,
                 title: "Listing available WiFi networks"
-            ) { agent in
+            ) { agent, hostname -> Bool in
                 let setupWifi = Noora().yesOrNoChoicePrompt(
                     question: "Do you want to setup WiFi?",
                     collapseOnSelection: false
@@ -330,13 +329,13 @@ struct DeviceCommand: AsyncParsableCommand {
                 )
 
                 guard shouldUpdate, case .grpc(let client) = agent else {
-                    return
+                    return false
                 }
 
                 // TODO: Detect platform of remote device
                 // Default to Linux aarch64 for device updates during setup
                 let binary = try await downloadLatestRelease(platform: .linuxAarch64).path
-                let success = try await Noora().progressBarStep(message: "Updating Device") {
+                _ = try await Noora().progressBarStep(message: "Updating Device") {
                     updateProgress in
                     try await Agent(client: client).update(
                         fromBinary: binary,
@@ -344,9 +343,25 @@ struct DeviceCommand: AsyncParsableCommand {
                     )
                 }
 
-                guard success else {
-                    Noora().error("Failed to update agent")
-                    Self.exit(withError: nil)
+                return true
+            }
+
+            if shouldWaitForRestart {
+                // Get the endpoint to wait for device restart
+                // The device is now provisioned, so this will connect via mTLS on the proper port
+                let endpoint = try await agentConnectionOptions.read(
+                    title: "Waiting for device",
+                    includeBluetooth: false
+                )
+
+                if case .lan(let host, let port, let defaultDevice) = endpoint {
+                    try await waitForDeviceRestart(
+                        endpoint: AgentConnectionOptions.Endpoint(
+                            host: host,
+                            port: port,
+                            defaultDevice: defaultDevice
+                        )
+                    )
                 }
 
                 Noora().success("Agent updated successfully")
@@ -358,5 +373,33 @@ struct DeviceCommand: AsyncParsableCommand {
 extension Wendycloud_V1_Organization: CustomStringConvertible {
     public var description: String {
         self.name
+    }
+}
+
+/// Wait for the gRPC socket to come back up after a device restart
+private func waitForDeviceRestart(endpoint: AgentConnectionOptions.Endpoint) async throws {
+    try await Noora().progressBarStep(message: "Waiting for device to restart") { _ in
+        let maxRetries = 60  // Wait up to 60 seconds
+        let retryDelay: UInt64 = 1_000_000_000  // 1 second in nanoseconds
+
+        for _ in 0..<maxRetries {
+            try await Task.sleep(nanoseconds: retryDelay)
+            do {
+                // Try to connect and verify the agent is responsive
+                try await withAgentGRPCClient(endpoint, title: "") { client in
+                    let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(
+                        wrapping: client
+                    )
+                    _ = try await agent.getAgentVersion(request: .init(message: .init()))
+                }
+                // Connection succeeded, device is back up
+                return
+            } catch {
+                // Connection failed, keep retrying
+                continue
+            }
+        }
+
+        throw RPCError(code: .unavailable, message: "Device did not come back up after update")
     }
 }
