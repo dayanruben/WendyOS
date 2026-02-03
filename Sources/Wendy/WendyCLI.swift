@@ -37,6 +37,9 @@ struct WendyCLI {
                 await WendyCommand.main()
             }
         }
+
+        // Check for CLI updates (runs once per day, non-blocking)
+        await UpdateChecker.checkForUpdatesIfNeeded()
     }
 }
 
