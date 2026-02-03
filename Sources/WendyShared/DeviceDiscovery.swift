@@ -2,7 +2,6 @@ import Bluetooth
 import Logging
 import NIOCore
 import NIOFoundationCompat
-import SwiftProtobuf
 import WendyAgentGRPC
 
 #if canImport(FoundationEssentials)
@@ -10,8 +9,6 @@ import WendyAgentGRPC
 #else
     import Foundation
 #endif
-
-extension ByteBufferView: @retroactive SwiftProtobufContiguousBytes {}
 
 public protocol DeviceDiscovery: Sendable {
     func findUSBDevices() async -> [USBDevice]
@@ -271,7 +268,7 @@ extension DeviceDiscovery {
                 }
 
                 let bluetoothRespone = try Wendy_Agent_Services_V1_BluetoothResponse(
-                    serializedBytes: response.readableBytesView
+                    serializedBytes: Array(response.readableBytesView)
                 )
 
                 if case .agentVersion(let agentVersion) = bluetoothRespone.response {
