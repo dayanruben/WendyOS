@@ -428,8 +428,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         let hasOlderContainerPluginVersion: Bool
         if hasContainerPlugin {
             // Plugin exists, check version
-            if
-                let containerPluginVersion,
+            if let containerPluginVersion,
                 SwiftPM.isVersion(containerPluginVersion, atLeast: requiredContainerPluginVersion)
             {
                 hasOlderContainerPluginVersion = false
@@ -538,7 +537,9 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                             forResource: binaryName,
                             withExtension: nil
                         ) {
-                            resources.append((source: backtraceUrl.path(), destination: destination))
+                            resources.append(
+                                (source: backtraceUrl.path(), destination: destination)
+                            )
                         } else {
                             let backtraceUrl = URL(fileURLWithPath: CommandLine.arguments[0])
                                 .deletingLastPathComponent()

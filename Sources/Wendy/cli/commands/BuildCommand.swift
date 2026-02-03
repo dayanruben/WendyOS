@@ -178,7 +178,8 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
         if let containerPlugin = package.findDependency(urlSuffix: "swift-container-plugin") {
             // Plugin exists, check version
-            if !SwiftPM.isVersion(containerPlugin.version, atLeast: requiredContainerPluginVersion) {
+            if !SwiftPM.isVersion(containerPlugin.version, atLeast: requiredContainerPluginVersion)
+            {
                 Noora().warning(
                     "swift-container-plugin version \(containerPlugin.version) is installed, but version \(requiredContainerPluginVersion) or higher is required."
                 )
@@ -186,7 +187,8 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 guard
                     shouldAutoAccept
                         || Noora().yesOrNoChoicePrompt(
-                            question: "Do you want to update swift-container-plugin to \(requiredContainerPluginVersion)?"
+                            question:
+                                "Do you want to update swift-container-plugin to \(requiredContainerPluginVersion)?"
                         )
                 else {
                     Noora().error(
@@ -319,7 +321,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         }
                     }
                 }
-                
+
                 if backtraceFound {
                     additionalEnv.append(
                         "SWIFT_BACKTRACE=enable=yes,sanitize=yes,threads=all,images=all,interactive=no,swift-backtrace=/swift-backtrace"
