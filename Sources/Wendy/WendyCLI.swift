@@ -17,10 +17,14 @@ struct WendyCLI {
             return logger
         }
 
+
         // Check for global --json flag in arguments
         let jsonMode =
             ProcessInfo.processInfo.arguments.contains("--json")
             || ProcessInfo.processInfo.arguments.contains("-j")
+
+        // Check for CLI updates (runs once per day, non-blocking)
+        await UpdateChecker.checkForUpdatesIfNeeded()
 
         // Track command execution with analytics
         if let analytics = try? AnalyticsService(config: getConfig().analytics) {
@@ -37,9 +41,6 @@ struct WendyCLI {
                 await WendyCommand.main()
             }
         }
-
-        // Check for CLI updates (runs once per day, non-blocking)
-        await UpdateChecker.checkForUpdatesIfNeeded()
     }
 }
 
