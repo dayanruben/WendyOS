@@ -226,7 +226,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 runtime: "dockerfile",
                 commandName: "wendy build"
             ) {
-                try await cliOutput.withProgressBar(
+                try await cliOutput.withProgressBarWithDetail(
                     message: "Unpacking image on device"
                 ) { updateProgress in
                     try await AppBuildHelpers.createContainerdContainer(
@@ -409,7 +409,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 runtime: "swift",
                 commandName: "wendy build"
             ) {
-                try await cliOutput.withProgressBar(
+                try await cliOutput.withProgressBarWithDetail(
                     message: "Unpacking image on device"
                 ) { updateProgress in
                     try await AppBuildHelpers.createContainerdContainer(
