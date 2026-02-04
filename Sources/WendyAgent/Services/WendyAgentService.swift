@@ -613,6 +613,9 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 let result = try await Subprocess.run(
                     .name("mender-update"),
                     arguments: ["install", artifactUrl],
+                    environment: .inherit.updating([
+                        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
+                    ]),
                     output: .string(limit: 10_000),
                     error: .string(limit: 10_000)
                 )
