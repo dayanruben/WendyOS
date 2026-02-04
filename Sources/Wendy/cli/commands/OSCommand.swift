@@ -672,6 +672,9 @@ struct OSCommand: AsyncParsableCommand {
             // Use a continuation to pass the artifact URL from the server callback
             let artifactUrlStream = AsyncStream<String>.makeStream()
 
+            // Track download completion
+            let downloadComplete = AsyncStream<Void>.makeStream()
+
             // Get file size for Content-Length header
             let fileInfo = try await FileSystem.shared.info(forFileAt: FilePath(absolutePath))
             guard let fileSize = fileInfo?.size else {
@@ -682,19 +685,27 @@ struct OSCommand: AsyncParsableCommand {
             // Start the Hummingbird webserver that serves the file
             let router = Router().get("\(fileHash)/:filename") { request, context in
                 let body = ResponseBody(contentLength: Int(fileSize)) { writer in
+                    defer {
+                        downloadComplete.continuation.yield()
+                        downloadComplete.continuation.finish()
+                    }
+
                     let handle = try await FileSystem.shared.openFile(
                         forReadingAt: FilePath(absolutePath),
                         options: .init()
                     )
+                    defer { Task { try? await handle.close() } }
 
+                    var bytesWritten: Int64 = 0
                     for try await chunk in handle.readChunks(
                         in: 0...,
                         chunkLength: .mebibytes(1)
                     ) {
                         try await writer.write(chunk)
+                        bytesWritten += Int64(chunk.readableBytes)
                     }
 
-                    try await handle.close()
+                    logger.info("Download complete: \(bytesWritten) bytes served")
                 }
 
                 return Response(
@@ -783,12 +794,11 @@ struct OSCommand: AsyncParsableCommand {
                         throw error
                     }
 
-                    // Give a moment for the device to download before shutting down
-                    try await Task.sleep(for: .seconds(2))
                 }
 
-                // Wait for the gRPC task to complete
-                try await group.next()
+                // Wait for download to complete before shutting down server
+                for await _ in downloadComplete.stream {}
+
                 group.cancelAll()
             }
         }
