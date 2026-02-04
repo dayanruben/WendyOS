@@ -19,7 +19,8 @@ struct InfoCommand: AsyncParsableCommand {
             swift: .init(
                 version: SwiftPM.defaultSwiftVersion,
                 sdk: "\(SwiftPM.defaultSwiftVersion)-RELEASE_wendyos_aarch64",
-                sdkDownloadURL: "https://github.com/wendylabsinc/wendy-swift-tools/releases/download/0.4.0/\(SwiftPM.defaultSwiftVersion)-RELEASE_wendyos_aarch64.artifactbundle.zip"
+                sdkDownloadURL:
+                    "https://github.com/wendylabsinc/wendy-swift-tools/releases/download/0.4.0/\(SwiftPM.defaultSwiftVersion)-RELEASE_wendyos_aarch64.artifactbundle.zip"
             )
         )
 
