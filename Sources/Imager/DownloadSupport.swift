@@ -88,7 +88,7 @@ public final class ImageDownloader: ImageDownloading {
         do {
             // Create lock file if it doesn't exist
             if !fileManager.fileExists(atPath: lockFileURL.path) {
-                fileManager.createFile(atPath: lockFileURL.path, contents: nil, attributes: nil)
+                _ = fileManager.createFile(atPath: lockFileURL.path, contents: nil, attributes: nil)
             }
             lockFile = try Foundation.FileHandle(forUpdating: lockFileURL)
         } catch {

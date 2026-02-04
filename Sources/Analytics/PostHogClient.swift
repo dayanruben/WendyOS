@@ -120,7 +120,7 @@ public actor PostHogClient {
                 request.headers.add(name: "Content-Type", value: "application/json")
                 request.body = .bytes(try JSONEncoder().encode(event))
 
-                let response = try await httpClient.execute(request, timeout: .seconds(10))
+                let response = try await HTTPClient.shared.execute(request, timeout: .seconds(10))
 
                 if response.status.code >= 400 {
                     logger.debug("PostHog capture failed with status: \(response.status)")
@@ -167,7 +167,7 @@ public actor PostHogClient {
                 request.headers.add(name: "Content-Type", value: "application/json")
                 request.body = .bytes(try JSONEncoder().encode(batch))
 
-                let response = try await httpClient.execute(request, timeout: .seconds(10))
+                let response = try await HTTPClient.shared.execute(request, timeout: .seconds(10))
 
                 if response.status.code >= 400 {
                     logger.debug("PostHog batch send failed with status: \(response.status)")
