@@ -209,7 +209,7 @@ public struct NooraRenderer: CLIOutput, Sendable {
         }
     }
 
-    public func withProgressBarWithDetail<T: Sendable>(
+    public func withLabeledProgressBar<T: Sendable>(
         message: String,
         operation: @escaping @Sendable (@escaping (ProgressBarUpdate) -> Void) async throws -> T
     ) async throws -> T {

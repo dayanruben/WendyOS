@@ -71,12 +71,14 @@ private actor UnpackProgressTracker {
             // Prefer byte-based progress for accuracy (layers vary in size)
             if totalBytes > 0 {
                 let value = Double(completedBytes) / Double(totalBytes)
-                return (min(max(value, 0), 0.95), detail)  // Cap at 95% to leave room for finalization
+                // Cap at 95% to leave room for finalization.
+                return (min(max(value, 0), 0.95), detail)
             }
 
             // Fallback to layer-based progress
             if totalLayers > 0 {
-                let value = Double(layerIndex) / Double(totalLayers) * 0.95  // Cap at 95%
+                // Cap at 95% to leave room for finalization.
+                let value = Double(layerIndex) / Double(totalLayers) * 0.95
                 return (min(max(value, 0), 0.95), detail)
             }
 
