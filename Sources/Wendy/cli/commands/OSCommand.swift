@@ -676,7 +676,8 @@ struct OSCommand: AsyncParsableCommand {
             let downloadComplete = AsyncStream<Void>.makeStream()
 
             // Get file size for Content-Length header
-            let fileInfo = try await FileSystem.shared.info(forFileAt: FilePath(absolutePath))
+            let artifactFilePath = FilePath(absolutePath)
+            let fileInfo = try await FileSystem.shared.info(forFileAt: artifactFilePath)
             guard let fileSize = fileInfo?.size else {
                 noora.error("Could not get file size")
                 throw ExitCode.failure
@@ -691,7 +692,7 @@ struct OSCommand: AsyncParsableCommand {
                     }
 
                     let handle = try await FileSystem.shared.openFile(
-                        forReadingAt: FilePath(absolutePath),
+                        forReadingAt: artifactFilePath,
                         options: .init()
                     )
                     defer { Task { try? await handle.close() } }
