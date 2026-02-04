@@ -21,7 +21,7 @@ private func flushStdout() {
     #if os(Linux)
         fflush(nil)
     #else
-        flushStdout()
+        fflush(stdout)
     #endif
 }
 
