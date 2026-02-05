@@ -150,10 +150,10 @@ enum AppBuildHelpers {
                     if let url = NSWorkspace.shared.urlForApplication(
                         withBundleIdentifier: "com.docker.docker"
                     ) {
-                        Noora().info("Docker Desktop is installed")
+                        Noora(theme: .emerald()).info("Docker Desktop is installed")
 
                         guard
-                            Noora().yesOrNoChoicePrompt(
+                            Noora(theme: .emerald()).yesOrNoChoicePrompt(
                                 question: "Do you want to open Docker Desktop?"
                             )
                         else {
@@ -161,7 +161,7 @@ enum AppBuildHelpers {
                         }
 
                         if NSWorkspace.shared.open(url) {
-                            Noora().info("Opening Docker.app")
+                            Noora(theme: .emerald()).info("Opening Docker.app")
                             while true {
                                 do {
                                     _ = try await docker.getServerVersion()
@@ -171,7 +171,7 @@ enum AppBuildHelpers {
                                 }
                             }
                         } else {
-                            Noora().info(
+                            Noora(theme: .emerald()).info(
                                 "Failed to open Docker Desktop automatically, please open it manually"
                             )
                         }
@@ -179,10 +179,10 @@ enum AppBuildHelpers {
                     } else if let url = NSWorkspace.shared.urlForApplication(
                         withBundleIdentifier: "com.orbstack.orbstack"
                     ) {
-                        Noora().info("OrbStack.app is installed")
+                        Noora(theme: .emerald()).info("OrbStack.app is installed")
 
                         guard
-                            Noora().yesOrNoChoicePrompt(
+                            Noora(theme: .emerald()).yesOrNoChoicePrompt(
                                 question: "Do you want to open OrbStack?"
                             )
                         else {
@@ -190,7 +190,7 @@ enum AppBuildHelpers {
                         }
 
                         if NSWorkspace.shared.open(url) {
-                            Noora().info("Opening OrbStack")
+                            Noora(theme: .emerald()).info("Opening OrbStack")
                             while true {
                                 do {
                                     _ = try await docker.getServerVersion()
@@ -200,7 +200,7 @@ enum AppBuildHelpers {
                                 }
                             }
                         } else {
-                            Noora().info(
+                            Noora(theme: .emerald()).info(
                                 "Failed to open OrbStack automatically, please open it manually"
                             )
                         }
@@ -208,7 +208,7 @@ enum AppBuildHelpers {
                     } else {
                         cliOutput.warning("Docker.app or OrbStack.app is not installed")
                         guard
-                            Noora().yesOrNoChoicePrompt(
+                            Noora(theme: .emerald()).yesOrNoChoicePrompt(
                                 question: "Do you want to open the installation guide?"
                             )
                         else {
@@ -218,9 +218,9 @@ enum AppBuildHelpers {
                         if NSWorkspace.shared.open(
                             URL(string: "https://docs.docker.com/get-docker/")!
                         ) {
-                            Noora().info("Opening Docker documentation")
+                            Noora(theme: .emerald()).info("Opening Docker documentation")
                         } else {
-                            Noora().error("Failed to open Docker documentation")
+                            Noora(theme: .emerald()).error("Failed to open Docker documentation")
                         }
                     }
                 #endif
@@ -247,7 +247,7 @@ enum AppBuildHelpers {
                         "Install swiftly by running: curl -L https://swiftlang.github.io/swiftly/swiftly-install.sh | bash"
                 ).print()
             } else {
-                Noora().error(
+                Noora(theme: .emerald()).error(
                     """
                     Swiftly is not installed on your system.
 
@@ -285,7 +285,7 @@ enum AppBuildHelpers {
             if shouldAutoAccept {
                 installSDK = true
             } else {
-                installSDK = Noora().yesOrNoChoicePrompt(
+                installSDK = Noora(theme: .emerald()).yesOrNoChoicePrompt(
                     question: "Do you want to install/update the WendyOS Swift SDK?"
                 )
             }
@@ -310,7 +310,7 @@ enum AppBuildHelpers {
             if shouldAutoAccept {
                 installSwift = true
             } else {
-                installSwift = Noora().yesOrNoChoicePrompt(
+                installSwift = Noora(theme: .emerald()).yesOrNoChoicePrompt(
                     title: "Swift \(swiftVersion) version is not installed yet",
                     question: "Do you want to install Swift \(swiftVersion)?",
                     description: """
@@ -404,7 +404,7 @@ enum AppBuildHelpers {
             return appConfigData
         } catch {
             logger.debug("Failed to decode app config", metadata: ["error": .string("\(error)")])
-            Noora().info("No valid wendy.json was found. Using default settings.")
+            Noora(theme: .emerald()).info("No valid wendy.json was found. Using default settings.")
             return Data()
         }
     }

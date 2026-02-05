@@ -106,7 +106,7 @@ struct LogsCommand: AsyncParsableCommand {
                 throw CancellationError()
             } catch {
                 if !json {
-                    Noora().warning("Connection lost, reconnecting...")
+                    Noora(theme: .emerald()).warning("Connection lost, reconnecting...")
                 }
                 try await Task.sleep(for: .seconds(2))
             }

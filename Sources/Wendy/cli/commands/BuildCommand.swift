@@ -65,7 +65,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 // Python project without Dockerfile - offer to generate one
                 try await generatePythonDockerfileAndBuild()
             } else {
-                Noora().error(
+                Noora(theme: .emerald()).error(
                     "Directory is not a Swift Package, nor can it be built as a docker container"
                 )
             }
@@ -143,7 +143,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         // Confirm generation
         if !shouldAutoAccept {
             guard
-                Noora().yesOrNoChoicePrompt(
+                Noora(theme: .emerald()).yesOrNoChoicePrompt(
                     question: "Generate Dockerfile and continue?"
                 )
             else {
@@ -186,7 +186,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 commandName: "wendy build",
                 additionalProperties: buildPhaseProperties
             ) {
-                try await Noora().progressStep(
+                try await Noora(theme: .emerald()).progressStep(
                     message: "Preparing builder",
                     successMessage: "Builder ready",
                     errorMessage: "Failed to create builder",
@@ -258,13 +258,17 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
             $0.url.hasSuffix("swift-container-plugin")
                 || $0.url.hasSuffix("swift-container-plugin.git")
         }) {
-            Noora().info("Container plugin is not installed. Do you want to install it?")
+            Noora(theme: .emerald()).info(
+                "Container plugin is not installed. Do you want to install it?"
+            )
 
             guard
                 shouldAutoAccept
-                    || Noora().yesOrNoChoicePrompt(question: "Do you want to install it?")
+                    || Noora(theme: .emerald()).yesOrNoChoicePrompt(
+                        question: "Do you want to install it?"
+                    )
             else {
-                Noora().error(
+                Noora(theme: .emerald()).error(
                     "Container plugin is required to build Swift packages. Please install it manually."
                 )
                 return
@@ -303,7 +307,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 ).print()
                 return
             }
-            Noora().error("No executable targets found in package")
+            Noora(theme: .emerald()).error("No executable targets found in package")
             return
         } else if executableTargets.count == 1 {
             executableTarget = executableTargets[0]
@@ -315,7 +319,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                     "Multiple executable targets available: \(executableTargets.map(\.name).joined(separator: ", ")). Provide the target name as an argument."
             )
         } else {
-            executableTarget = Noora().singleChoicePrompt(
+            executableTarget = Noora(theme: .emerald()).singleChoicePrompt(
                 title: "Select executable target to build",
                 question: "Which executable target do you want to build?",
                 options: executableTargets

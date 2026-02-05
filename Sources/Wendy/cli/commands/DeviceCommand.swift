@@ -131,7 +131,9 @@ struct DeviceCommand: AsyncParsableCommand {
             }
             try config.save()
 
-            Noora().success("Default device set to \(config.defaultDevice ?? "none")")
+            Noora(theme: .emerald()).success(
+                "Default device set to \(config.defaultDevice ?? "none")"
+            )
         }
     }
 
@@ -148,7 +150,7 @@ struct DeviceCommand: AsyncParsableCommand {
             config.defaultDevice = nil
             try config.save()
 
-            Noora().success("Default device unset")
+            Noora(theme: .emerald()).success("Default device unset")
         }
     }
 
@@ -174,7 +176,7 @@ struct DeviceCommand: AsyncParsableCommand {
 
         func run() async throws {
             #if os(Windows)
-                Noora().error("Device update is not supported on Windows hosts")
+                cliOutput.error("Device update is not supported on Windows hosts")
             #else
                 let binary: String
 
@@ -212,7 +214,9 @@ struct DeviceCommand: AsyncParsableCommand {
                     title: "Which device do you want to update?"
                 ) { client, endpoint in
                     let agent = Agent(client: client)
-                    _ = try await Noora().progressBarStep(message: "Updating Device") {
+                    _ = try await Noora(theme: .emerald()).progressBarStep(
+                        message: "Updating Device"
+                    ) {
                         updateProgress in
                         try await agent.update(fromBinary: binary, onProgress: updateProgress)
                     }
@@ -222,7 +226,7 @@ struct DeviceCommand: AsyncParsableCommand {
                 // Wait for the gRPC socket to come back up after the device restarts
                 try await waitForDeviceRestart(endpoint: endpoint)
 
-                Noora().success("Agent updated successfully")
+                cliOutput.success("Agent updated successfully")
             #endif
         }
     }
@@ -240,17 +244,17 @@ struct DeviceCommand: AsyncParsableCommand {
                 let orgs = try await cloudClient.listOrganizations()
 
                 if orgs.isEmpty {
-                    Noora().error("No organizations found")
+                    Noora(theme: .emerald()).error("No organizations found")
                     Self.exit(withError: nil)
                 }
 
-                let org = Noora().singleChoicePrompt(
+                let org = Noora(theme: .emerald()).singleChoicePrompt(
                     title: "Enroll device",
                     question: "Which organization do you want to enroll into?",
                     options: orgs
                 )
 
-                let name = Noora().textPrompt(
+                let name = Noora(theme: .emerald()).textPrompt(
                     title: "Name your device",
                     prompt: "Name",
                     collapseOnAnswer: false
@@ -303,7 +307,7 @@ struct DeviceCommand: AsyncParsableCommand {
                 agentConnectionOptions,
                 title: "Listing available WiFi networks"
             ) { agent, hostname -> Bool in
-                let setupWifi = Noora().yesOrNoChoicePrompt(
+                let setupWifi = Noora(theme: .emerald()).yesOrNoChoicePrompt(
                     question: "Do you want to setup WiFi?",
                     collapseOnSelection: false
                 )
@@ -323,10 +327,10 @@ struct DeviceCommand: AsyncParsableCommand {
                         )
 
                         if result.success {
-                            Noora().success("Connected to WiFi network \(ssid)")
+                            cliOutput.success("Connected to WiFi network \(ssid)")
                             break
                         } else {
-                            Noora().error(
+                            cliOutput.error(
                                 "Failed to connect to WiFi network: \(result.errorMessage ?? "Unknown error")"
                             )
                         }
@@ -334,7 +338,7 @@ struct DeviceCommand: AsyncParsableCommand {
                 }
 
                 #if !os(Windows)
-                    let shouldUpdate = Noora().yesOrNoChoicePrompt(
+                    let shouldUpdate = Noora(theme: .emerald()).yesOrNoChoicePrompt(
                         question: "Do you want to update the agent?",
                         collapseOnSelection: false
                     )
@@ -346,7 +350,9 @@ struct DeviceCommand: AsyncParsableCommand {
                     // TODO: Detect platform of remote device
                     // Default to Linux aarch64 for device updates during setup
                     let binary = try await downloadLatestRelease(platform: .linuxAarch64).path
-                    _ = try await Noora().progressBarStep(message: "Updating Device") {
+                    _ = try await Noora(theme: .emerald()).progressBarStep(
+                        message: "Updating Device"
+                    ) {
                         updateProgress in
                         try await Agent(client: client).update(
                             fromBinary: binary,
@@ -378,7 +384,7 @@ struct DeviceCommand: AsyncParsableCommand {
                     )
                 }
 
-                Noora().success("Agent updated successfully")
+                cliOutput.success("Agent updated successfully")
             }
         }
     }

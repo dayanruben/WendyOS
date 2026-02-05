@@ -46,7 +46,7 @@ struct CacheCommand: AsyncParsableCommand {
             dateFormatter.dateStyle = .medium
             dateFormatter.timeStyle = .short
 
-            Noora().table(
+            Noora(theme: .emerald()).table(
                 headers: [
                     "Device",
                     "Version",
@@ -108,7 +108,7 @@ struct CacheCommand: AsyncParsableCommand {
                 throw ValidationError("Specify a device name or --all.")
             }
 
-            let noora = Noora()
+            let noora = Noora(theme: .emerald())
             let fileManager = FileManager.default
             let cachedImages = try listCachedImages(fileManager: fileManager)
 

@@ -28,7 +28,7 @@ public func withErrorTracking(
                 reason: error.localizedDescription
             ).print()
         } else {
-            Noora().error(
+            Noora(theme: .emerald()).error(
                 .alert(
                     "An unexpected error occurred: \(error.localizedDescription)",
                     takeaways: [
@@ -143,7 +143,7 @@ private func deviceUnreachable(source: DeviceSource) async throws {
 
     switch source {
     case .commandLine(let value):
-        Noora().error(
+        Noora(theme: .emerald()).error(
             .alert(
                 """
                 Device is unreachable: \(value.underline)
@@ -153,7 +153,7 @@ private func deviceUnreachable(source: DeviceSource) async throws {
             )
         )
     case .environment(let key, let value):
-        Noora().error(
+        Noora(theme: .emerald()).error(
             .alert(
                 """
                 Device is unreachable: \(value.underline)
@@ -163,7 +163,7 @@ private func deviceUnreachable(source: DeviceSource) async throws {
             )
         )
     case .defaultConfig(let value):
-        Noora().error(
+        Noora(theme: .emerald()).error(
             .alert(
                 """
                 Device is unreachable: \(value.underline)
@@ -175,7 +175,7 @@ private func deviceUnreachable(source: DeviceSource) async throws {
             )
         )
     case .selected:
-        Noora().error(
+        Noora(theme: .emerald()).error(
             .alert(
                 """
                 Selected device is unreachable.
