@@ -56,7 +56,7 @@ public enum DiskWriterError: Error {
     }
 }
 
-public protocol DiskWriter {
+public protocol DiskWriter: Sendable {
     /// Write an image file to a drive with progress reporting
     /// - Parameters:
     ///   - imagePath: Path to the image file to write
@@ -65,6 +65,19 @@ public protocol DiskWriter {
     /// - Throws: If the write operation fails
     func write(
         imagePath: String,
+        drive: Drive,
+        progressHandler: @escaping (DiskWriteProgress) -> Void
+    ) async throws
+
+    /// Write an image from a zip archive directly to a drive, streaming the decompression.
+    /// This avoids storing the decompressed image on disk.
+    /// - Parameters:
+    ///   - zipPath: Path to the zip archive containing the .img file
+    ///   - drive: The target drive to write to
+    ///   - progressHandler: Callback that will be called periodically with progress updates
+    /// - Throws: If the write operation fails
+    func writeFromZip(
+        zipPath: String,
         drive: Drive,
         progressHandler: @escaping (DiskWriteProgress) -> Void
     ) async throws
