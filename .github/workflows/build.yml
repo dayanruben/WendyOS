@@ -423,8 +423,15 @@ jobs:
           for attempt in 1 2 3; do
             echo "Attempt $attempt of 3..."
             rm -rf "$sdk_path"
-            curl -L --fail --retry 5 --retry-delay 2 -o "$sdk_tmp" "$sdk_url"
-            if swift sdk install "$sdk_tmp" --checksum "$sdk_checksum"; then
+            if command -v curl >/dev/null 2>&1; then
+              curl -L --fail --retry 5 --retry-delay 2 -o "$sdk_tmp" "$sdk_url"
+              install_target="$sdk_tmp"
+            else
+              echo "curl not found; installing SDK directly from URL"
+              install_target="$sdk_url"
+            fi
+
+            if swift sdk install "$install_target" --checksum "$sdk_checksum"; then
               echo "SDK installed successfully"
               exit 0
             fi
