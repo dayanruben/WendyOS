@@ -15,13 +15,13 @@ import GRPCProtobuf
 
 /// Namespace containing generated types for the "wendy.agent.services.v1.WendyAudioService" service.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
-public enum Wendy_Agent_Services_V1_WendyAudioService {
+public enum Wendy_Agent_Services_V1_WendyAudioService: Sendable {
     /// Service descriptor for the "wendy.agent.services.v1.WendyAudioService" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyAudioService")
     /// Namespace for method metadata.
-    public enum Method {
+    public enum Method: Sendable {
         /// Namespace for "ListAudioDevices" metadata.
-        public enum ListAudioDevices {
+        public enum ListAudioDevices: Sendable {
             /// Request type for "ListAudioDevices".
             public typealias Input = Wendy_Agent_Services_V1_ListAudioDevicesRequest
             /// Response type for "ListAudioDevices".
@@ -33,7 +33,7 @@ public enum Wendy_Agent_Services_V1_WendyAudioService {
             )
         }
         /// Namespace for "SetDefaultAudioDevice" metadata.
-        public enum SetDefaultAudioDevice {
+        public enum SetDefaultAudioDevice: Sendable {
             /// Request type for "SetDefaultAudioDevice".
             public typealias Input = Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest
             /// Response type for "SetDefaultAudioDevice".
@@ -45,7 +45,7 @@ public enum Wendy_Agent_Services_V1_WendyAudioService {
             )
         }
         /// Namespace for "StreamAudioLevels" metadata.
-        public enum StreamAudioLevels {
+        public enum StreamAudioLevels: Sendable {
             /// Request type for "StreamAudioLevels".
             public typealias Input = Wendy_Agent_Services_V1_StreamAudioLevelsRequest
             /// Response type for "StreamAudioLevels".
@@ -57,7 +57,7 @@ public enum Wendy_Agent_Services_V1_WendyAudioService {
             )
         }
         /// Namespace for "StreamAudio" metadata.
-        public enum StreamAudio {
+        public enum StreamAudio: Sendable {
             /// Request type for "StreamAudio".
             public typealias Input = Wendy_Agent_Services_V1_StreamAudioRequest
             /// Response type for "StreamAudio".

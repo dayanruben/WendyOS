@@ -28,40 +28,11 @@ service WendyAgentService {
     // List available hardware capabilities on the device
     rpc ListHardwareCapabilities(ListHardwareCapabilitiesRequest) returns (ListHardwareCapabilitiesResponse);
 
-    // List available Bluetooth devices (uses BlueZ)
-    rpc ListBluetoothDevices(ListBluetoothDevicesRequest) returns (ListBluetoothDevicesResponse);
+    rpc ScanBluetoothPeripherals(stream ScanBluetoothPeripheralsRequest) returns (stream ScanBluetoothPeripheralsResponse);
 
-    // Start Bluetooth discovery scan
-    rpc StartBluetoothScan(StartBluetoothScanRequest) returns (StartBluetoothScanResponse);
-
-    // Stop Bluetooth discovery scan
-    rpc StopBluetoothScan(StopBluetoothScanRequest) returns (StopBluetoothScanResponse);
-
-    // Connect to a Bluetooth device
-    rpc ConnectBluetoothDevice(ConnectBluetoothDeviceRequest) returns (ConnectBluetoothDeviceResponse);
-
-    // Disconnect from a Bluetooth device
-    rpc DisconnectBluetoothDevice(DisconnectBluetoothDeviceRequest) returns (DisconnectBluetoothDeviceResponse);
-
-    // Forget (remove) a Bluetooth device
-    rpc ForgetBluetoothDevice(ForgetBluetoothDeviceRequest) returns (ForgetBluetoothDeviceResponse);
-}
-
-message ResponseStatus {
-    enum Level {
-        LEVEL_UNSPECIFIED = 0;
-        // Successful operation without extra details.
-        SUCCESS = 1;
-        // Successful operation with informational message.
-        INFO = 2;
-        // Successful operation with warning message.
-        WARNING = 3;
-        // Failed operation; success should be false.
-        ERROR = 4;
-    }
-
-    Level level = 1;
-    string message = 2;
+    rpc ConnectBluetoothPeripheral(ConnectBluetoothPeripheralRequest) returns (ConnectBluetoothPeripheralResponse);
+    rpc DisconnectBluetoothPeripheral(DisconnectBluetoothPeripheralRequest) returns (DisconnectBluetoothPeripheralResponse);
+    rpc ForgetBluetoothPeripheral(ForgetBluetoothPeripheralRequest) returns (ForgetBluetoothPeripheralResponse);
 }
 
 message RunContainerRequest {
@@ -214,9 +185,6 @@ message ConnectToWiFiResponse {
     
     // Optional error message if connection failed
     optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
 }
 
 // Request message for getting WiFi status
@@ -234,9 +202,6 @@ message GetWiFiStatusResponse {
     
     // Optional error message if status check failed
     optional string error_message = 3;
-
-    // Status details for the operation
-    optional ResponseStatus status = 4;
 }
 
 // Request message for disconnecting from WiFi
@@ -251,9 +216,6 @@ message DisconnectWiFiResponse {
     
     // Optional error message if disconnection failed
     optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
 }
 
 // Request message for listing hardware capabilities
@@ -283,136 +245,35 @@ message ListHardwareCapabilitiesResponse {
     }
 }
 
-// Request message for listing Bluetooth devices
-message ListBluetoothDevicesRequest {
-    // If true, only return paired devices
-    bool paired_only = 1;
+message ScanBluetoothPeripheralsRequest {}
+
+message DiscoveredBluetoothPeripheral {
+    string name = 1;
+    string address = 2;
+    int32 rssi = 3;
+    string deviceType = 4;
+    bool paired = 5;
+    bool connected = 6;
+    bool trusted = 7;
 }
 
-// Response message for listing Bluetooth devices
-message ListBluetoothDevicesResponse {
-    // List of discovered Bluetooth devices
-    repeated BluetoothDevice devices = 1;
-
-    // Information about a Bluetooth device
-    message BluetoothDevice {
-        // Device name (e.g., "AirPods Pro")
-        string name = 1;
-
-        // MAC address (e.g., "A4:C3:F0:12:34:56")
-        string address = 2;
-
-        // RSSI signal strength in dBm (e.g., -45)
-        optional int32 rssi = 3;
-
-        // Whether the device is currently paired
-        bool paired = 4;
-
-        // Whether the device is currently connected
-        bool connected = 5;
-
-        // Device type/class (e.g., "audio-headset", "keyboard", "mouse")
-        string device_type = 6;
-
-        // Whether the device is trusted
-        bool trusted = 7;
-
-        // Device icon hint from BlueZ (e.g., "audio-headphones", "input-keyboard")
-        optional string icon = 8;
-    }
+message ScanBluetoothPeripheralsResponse {
+    repeated DiscoveredBluetoothPeripheral discovered_devices = 1;
 }
 
-// Request message for starting Bluetooth scan
-message StartBluetoothScanRequest {
-    // Scan timeout in seconds (0 = indefinite until StopBluetoothScan is called)
-    uint32 timeout_seconds = 1;
-}
-
-// Response message for starting Bluetooth scan
-message StartBluetoothScanResponse {
-    // Whether the scan was started successfully
-    bool success = 1;
-
-    // Optional error message if scan failed to start
-    optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
-}
-
-// Request message for stopping Bluetooth scan
-message StopBluetoothScanRequest {
-    // Empty request - no parameters needed
-}
-
-// Response message for stopping Bluetooth scan
-message StopBluetoothScanResponse {
-    // Whether the scan was stopped successfully
-    bool success = 1;
-
-    // Optional error message if stopping scan failed
-    optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
-}
-
-// Request message for connecting to a Bluetooth device
-message ConnectBluetoothDeviceRequest {
-    // MAC address of the device to connect to (e.g., "A4:C3:F0:12:34:56")
+message ConnectBluetoothPeripheralRequest {
     string address = 1;
-
-    // If true, pair the device before connecting
     bool pair = 2;
-
-    // If true, trust the device before connecting
     bool trust = 3;
 }
+message ConnectBluetoothPeripheralResponse {}
 
-// Response message for connecting to a Bluetooth device
-message ConnectBluetoothDeviceResponse {
-    // Whether the connection was successful
-    bool success = 1;
-
-    // Optional error message if connection failed
-    optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
-}
-
-// Request message for disconnecting from a Bluetooth device
-message DisconnectBluetoothDeviceRequest {
-    // MAC address of the device to disconnect from
+message DisconnectBluetoothPeripheralRequest {
     string address = 1;
 }
+message DisconnectBluetoothPeripheralResponse {}
 
-// Response message for disconnecting from a Bluetooth device
-message DisconnectBluetoothDeviceResponse {
-    // Whether the disconnection was successful
-    bool success = 1;
-
-    // Optional error message if disconnection failed
-    optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
-}
-
-// Request message for forgetting a Bluetooth device
-message ForgetBluetoothDeviceRequest {
-    // MAC address of the device to forget
+message ForgetBluetoothPeripheralRequest {
     string address = 1;
 }
-
-// Response message for forgetting a Bluetooth device
-message ForgetBluetoothDeviceResponse {
-    // Whether the removal was successful
-    bool success = 1;
-
-    // Optional error message if removal failed
-    optional string error_message = 2;
-
-    // Status details for the operation
-    optional ResponseStatus status = 3;
-}
+message ForgetBluetoothPeripheralResponse {}

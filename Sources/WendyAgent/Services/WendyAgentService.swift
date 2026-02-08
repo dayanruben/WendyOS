@@ -1,3 +1,4 @@
+import Bluetooth
 import Crypto
 import Foundation
 import Logging
@@ -32,27 +33,16 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
     let currentUID: String
     let networkManagerFactory: NetworkConnectionManagerFactory
     let configuration: WendyAgentConfiguration
-    let updateCoordinator = UpdateCoordinator()
-    let bluetoothManager: BluetoothManager
+    let bluetooth = BluetoothManager(logger: Logger(label: "sh.wendy.agent.grpc.bluetooth"))
+    let updateCoordinator: UpdateCoordinator = UpdateCoordinator()
 
     init(shouldRestart: @escaping @Sendable () async throws -> Void) {
         let logger = Logger(label: "WendyAgentService")
         self.logger = logger
-        self.bluetoothManager = BluetoothManager(logger: logger)
         self.shouldRestart = shouldRestart
         self.currentUID = String(getuid())
         self.networkManagerFactory = NetworkConnectionManagerFactory(uid: currentUID)
         self.configuration = WendyAgentConfiguration.fromEnvironment()
-    }
-
-    private func makeStatus(
-        level: Wendy_Agent_Services_V1_ResponseStatus.Level,
-        message: String = ""
-    ) -> Wendy_Agent_Services_V1_ResponseStatus {
-        .with { status in
-            status.level = level
-            status.message = message
-        }
     }
 
     /// Helper to set executable permissions on a file with proper error handling
@@ -119,6 +109,140 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
             // Lock will be released after restart succeeds (process exits)
             // or in the error handler above if update fails
             return Metadata()
+        }
+    }
+
+    func scanBluetoothPeripherals(
+        request: GRPCCore.StreamingServerRequest<
+            Wendy_Agent_Services_V1_ScanBluetoothPeripheralsRequest
+        >,
+        context: GRPCCore.ServerContext
+    ) async throws
+        -> GRPCCore.StreamingServerResponse<
+            Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse
+        >
+    {
+        return StreamingServerResponse(metadata: [:]) { writer in
+            while !Task.isCancelled && !Task.isShuttingDownGracefully {
+                let devices = try await bluetooth.listDevices(pairedOnly: false)
+                let response = Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse.with {
+                    $0.discoveredDevices = devices.map { device in
+                        .with {
+                            $0.name = device.name
+                            $0.address = device.address
+                            if let rssi = device.rssi {
+                                $0.rssi = Int32(rssi)
+                            }
+                        }
+                    }
+                }
+                try await writer.write(response)
+            }
+
+            return [:]
+        }
+    }
+
+    func connectBluetoothPeripheral(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws
+        -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse>
+    {
+        let address = request.message.address
+
+        logger.info(
+            "Connecting to Bluetooth device",
+            metadata: [
+                "address": "\(address)",
+                "pair": "\(request.message.pair)",
+                "trust": "\(request.message.trust)",
+            ]
+        )
+
+        do {
+            try await bluetooth.connect(address: address)
+            logger.info(
+                "Successfully connected to Bluetooth device",
+                metadata: ["address": "\(address)"]
+            )
+            return ServerResponse(message: .init())
+        } catch {
+            logger.error(
+                "Failed to connect to Bluetooth device",
+                metadata: ["address": "\(address)", "error": "\(error)"]
+            )
+            throw RPCError(
+                code: .internalError,
+                message: "Failed to connect to Bluetooth device: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func disconnectBluetoothPeripheral(
+        request: GRPCCore.ServerRequest<
+            Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralRequest
+        >,
+        context: GRPCCore.ServerContext
+    ) async throws
+        -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse>
+    {
+        let address = request.message.address
+
+        logger.info(
+            "Disconnecting from Bluetooth device",
+            metadata: [
+                "address": "\(address)"
+            ]
+        )
+
+        do {
+            try await bluetooth.disconnect(address: address)
+            logger.info(
+                "Successfully disconnected from Bluetooth device",
+                metadata: ["address": "\(address)"]
+            )
+            return ServerResponse(message: .init())
+        } catch {
+            logger.error(
+                "Failed to disconnect from Bluetooth device",
+                metadata: ["address": "\(address)", "error": "\(error)"]
+            )
+            throw RPCError(
+                code: .internalError,
+                message: "Failed to disconnect from Bluetooth device: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func forgetBluetoothPeripheral(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ForgetBluetoothPeripheralRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws
+        -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse>
+    {
+        let address = request.message.address
+
+        logger.info(
+            "Forgetting Bluetooth device",
+            metadata: [
+                "address": "\(address)"
+            ]
+        )
+
+        do {
+            try await bluetooth.forget(address: address)
+            logger.info("Successfully forgot Bluetooth device", metadata: ["address": "\(address)"])
+            return ServerResponse(message: .init())
+        } catch {
+            logger.error(
+                "Failed to forget Bluetooth device",
+                metadata: ["address": "\(address)", "error": "\(error)"]
+            )
+            throw RPCError(
+                code: .internalError,
+                message: "Failed to forget Bluetooth device: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -451,10 +575,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 return ServerResponse(
                     message: .with {
                         $0.success = true
-                        $0.status = makeStatus(
-                            level: .success,
-                            message: "Connected to \(connection.ssid)"
-                        )
                     }
                 )
             } else {
@@ -463,10 +583,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                     message: .with {
                         $0.success = false
                         $0.errorMessage = "Connection failed"
-                        $0.status = makeStatus(
-                            level: .error,
-                            message: "Connection failed"
-                        )
                     }
                 )
             }
@@ -483,10 +599,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
                 }
             )
         }
@@ -513,10 +625,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                     message: .with { response in
                         response.connected = true
                         response.ssid = connectionInfo.ssid
-                        response.status = makeStatus(
-                            level: .info,
-                            message: "Connected to \(connectionInfo.ssid)"
-                        )
                     }
                 )
             } else {
@@ -524,10 +632,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 return ServerResponse(
                     message: .with { response in
                         response.connected = false
-                        response.status = makeStatus(
-                            level: .info,
-                            message: "Not connected to any WiFi network"
-                        )
                     }
                 )
             }
@@ -538,10 +642,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with { response in
                     response.connected = false
                     response.errorMessage = error.localizedDescription
-                    response.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
                 }
             )
         }
@@ -575,10 +675,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                     return ServerResponse(
                         message: .with {
                             $0.success = true
-                            $0.status = makeStatus(
-                                level: .success,
-                                message: "Disconnected from \(connectionInfo.ssid)"
-                            )
                         }
                     )
                 } else {
@@ -590,10 +686,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                         message: .with {
                             $0.success = false
                             $0.errorMessage = "Disconnection failed"
-                            $0.status = makeStatus(
-                                level: .error,
-                                message: "Disconnection failed"
-                            )
                         }
                     )
                 }
@@ -602,10 +694,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 return ServerResponse(
                     message: .with {
                         $0.success = true
-                        $0.status = makeStatus(
-                            level: .info,
-                            message: "Not connected to any WiFi network"
-                        )
                     }
                 )
             }
@@ -615,10 +703,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
             return ServerResponse(
                 message: .with {
                     $0.success = true
-                    $0.status = makeStatus(
-                        level: .info,
-                        message: "Not connected to any WiFi network"
-                    )
                 }
             )
         } catch {
@@ -628,10 +712,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
                 message: .with {
                     $0.success = false
                     $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
                 }
             )
         }
@@ -664,289 +744,6 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
             throw RPCError(
                 code: .internalError,
                 message: "Failed to discover hardware capabilities: \(error.localizedDescription)"
-            )
-        }
-    }
-
-    // MARK: - Bluetooth Methods (BlueZ)
-
-    func listBluetoothDevices(
-        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ListBluetoothDevicesRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ListBluetoothDevicesResponse>
-    {
-        logger.info(
-            "Listing Bluetooth devices",
-            metadata: ["pairedOnly": "\(request.message.pairedOnly)"]
-        )
-
-        do {
-            let devices = try await bluetoothManager.listDevices(
-                pairedOnly: request.message.pairedOnly
-            )
-
-            logger.info("Found \(devices.count) Bluetooth devices")
-
-            return ServerResponse(
-                message: .with { response in
-                    response.devices = devices.map { device in
-                        .with { proto in
-                            proto.name = device.name
-                            proto.address = device.address
-                            if let rssi = device.rssi {
-                                proto.rssi = Int32(rssi)
-                            }
-                            proto.paired = device.paired
-                            proto.connected = device.connected
-                            proto.trusted = device.trusted
-                            proto.deviceType = device.deviceType
-                            if let icon = device.icon {
-                                proto.icon = icon
-                            }
-                        }
-                    }
-                }
-            )
-        } catch {
-            logger.error("Failed to list Bluetooth devices: \(error)")
-            throw RPCError(
-                code: .internalError,
-                message: "Failed to list Bluetooth devices: \(error.localizedDescription)"
-            )
-        }
-    }
-
-    func startBluetoothScan(
-        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_StartBluetoothScanRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartBluetoothScanResponse> {
-        logger.info(
-            "Starting Bluetooth scan",
-            metadata: ["timeout": "\(request.message.timeoutSeconds)"]
-        )
-
-        do {
-            let scanResult = try await bluetoothManager.startScan(
-                timeoutSeconds: request.message.timeoutSeconds
-            )
-
-            let status: Wendy_Agent_Services_V1_ResponseStatus
-            if scanResult.superseded {
-                logger.warning("Bluetooth scan start superseded by newer request")
-                status = makeStatus(
-                    level: .warning,
-                    message: "Scan request superseded by another request."
-                )
-            } else if scanResult.restartedExistingScan {
-                status = makeStatus(
-                    level: .warning,
-                    message: "Bluetooth scan already running; restarting scan."
-                )
-            } else {
-                status = makeStatus(level: .success)
-            }
-
-            return ServerResponse(
-                message: .with {
-                    $0.success = true
-                    $0.status = status
-                }
-            )
-        } catch {
-            logger.error("Failed to start Bluetooth scan: \(error)")
-            return ServerResponse(
-                message: .with {
-                    $0.success = false
-                    $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
-                }
-            )
-        }
-    }
-
-    func stopBluetoothScan(
-        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_StopBluetoothScanRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StopBluetoothScanResponse> {
-        logger.info("Stopping Bluetooth scan")
-
-        do {
-            let stopResult = try await bluetoothManager.stopScan()
-
-            let status: Wendy_Agent_Services_V1_ResponseStatus
-            if stopResult.superseded {
-                logger.warning("Bluetooth scan stop superseded by newer request")
-                status = makeStatus(
-                    level: .warning,
-                    message: "Stop request superseded by a newer scan; scan is still running."
-                )
-            } else if !stopResult.hadActiveScan {
-                status = makeStatus(
-                    level: .info,
-                    message: "No active scan to stop."
-                )
-            } else {
-                status = makeStatus(level: .success)
-            }
-
-            return ServerResponse(
-                message: .with {
-                    $0.success = true
-                    $0.status = status
-                }
-            )
-        } catch {
-            logger.error("Failed to stop Bluetooth scan: \(error)")
-            return ServerResponse(
-                message: .with {
-                    $0.success = false
-                    $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
-                }
-            )
-        }
-    }
-
-    func connectBluetoothDevice(
-        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws
-        -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse>
-    {
-        let address = request.message.address
-        logger.info(
-            "Connecting to Bluetooth device",
-            metadata: [
-                "address": "\(address)",
-                "pair": "\(request.message.pair)",
-                "trust": "\(request.message.trust)",
-            ]
-        )
-
-        do {
-            if request.message.pair {
-                try await bluetoothManager.pair(address: address)
-            }
-            if request.message.trust {
-                try await bluetoothManager.trust(address: address)
-            }
-            try await bluetoothManager.connect(address: address)
-
-            logger.info(
-                "Successfully connected to Bluetooth device",
-                metadata: ["address": "\(address)"]
-            )
-            return ServerResponse(
-                message: .with {
-                    $0.success = true
-                    $0.status = makeStatus(
-                        level: .success,
-                        message: "Connected to Bluetooth device \(address)"
-                    )
-                }
-            )
-        } catch {
-            logger.error(
-                "Failed to connect to Bluetooth device: \(error)",
-                metadata: ["address": "\(address)"]
-            )
-            return ServerResponse(
-                message: .with {
-                    $0.success = false
-                    $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
-                }
-            )
-        }
-    }
-
-    func disconnectBluetoothDevice(
-        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws
-        -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse>
-    {
-        let address = request.message.address
-        logger.info("Disconnecting from Bluetooth device", metadata: ["address": "\(address)"])
-
-        do {
-            try await bluetoothManager.disconnect(address: address)
-
-            logger.info(
-                "Successfully disconnected from Bluetooth device",
-                metadata: ["address": "\(address)"]
-            )
-            return ServerResponse(
-                message: .with {
-                    $0.success = true
-                    $0.status = makeStatus(
-                        level: .success,
-                        message: "Disconnected from Bluetooth device \(address)"
-                    )
-                }
-            )
-        } catch {
-            logger.error(
-                "Failed to disconnect from Bluetooth device: \(error)",
-                metadata: ["address": "\(address)"]
-            )
-            return ServerResponse(
-                message: .with {
-                    $0.success = false
-                    $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
-                }
-            )
-        }
-    }
-
-    func forgetBluetoothDevice(
-        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse>
-    {
-        let address = request.message.address
-        logger.info("Forgetting Bluetooth device", metadata: ["address": "\(address)"])
-
-        do {
-            try await bluetoothManager.forget(address: address)
-
-            logger.info("Successfully forgot Bluetooth device", metadata: ["address": "\(address)"])
-            return ServerResponse(
-                message: .with {
-                    $0.success = true
-                    $0.status = makeStatus(
-                        level: .success,
-                        message: "Forgot Bluetooth device \(address)"
-                    )
-                }
-            )
-        } catch {
-            logger.error(
-                "Failed to forget Bluetooth device: \(error)",
-                metadata: ["address": "\(address)"]
-            )
-            return ServerResponse(
-                message: .with {
-                    $0.success = false
-                    $0.errorMessage = error.localizedDescription
-                    $0.status = makeStatus(
-                        level: .error,
-                        message: error.localizedDescription
-                    )
-                }
             )
         }
     }

@@ -21,74 +21,6 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
-public struct Wendy_Agent_Services_V1_ResponseStatus: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  public var level: Wendy_Agent_Services_V1_ResponseStatus.Level = .unspecified
-
-  public var message: String = String()
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public enum Level: SwiftProtobuf.Enum, Swift.CaseIterable {
-    public typealias RawValue = Int
-    case unspecified // = 0
-
-    /// Successful operation without extra details.
-    case success // = 1
-
-    /// Successful operation with informational message.
-    case info // = 2
-
-    /// Successful operation with warning message.
-    case warning // = 3
-
-    /// Failed operation; success should be false.
-    case error // = 4
-    case UNRECOGNIZED(Int)
-
-    public init() {
-      self = .unspecified
-    }
-
-    public init?(rawValue: Int) {
-      switch rawValue {
-      case 0: self = .unspecified
-      case 1: self = .success
-      case 2: self = .info
-      case 3: self = .warning
-      case 4: self = .error
-      default: self = .UNRECOGNIZED(rawValue)
-      }
-    }
-
-    public var rawValue: Int {
-      switch self {
-      case .unspecified: return 0
-      case .success: return 1
-      case .info: return 2
-      case .warning: return 3
-      case .error: return 4
-      case .UNRECOGNIZED(let i): return i
-      }
-    }
-
-    // The compiler won't synthesize support with the UNRECOGNIZED case.
-    public static let allCases: [Wendy_Agent_Services_V1_ResponseStatus.Level] = [
-      .unspecified,
-      .success,
-      .info,
-      .warning,
-      .error,
-    ]
-
-  }
-
-  public init() {}
-}
-
 public struct Wendy_Agent_Services_V1_RunContainerRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -571,22 +503,11 @@ public struct Wendy_Agent_Services_V1_ConnectToWiFiResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for getting WiFi status
@@ -629,23 +550,12 @@ public struct Wendy_Agent_Services_V1_GetWiFiStatusResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _ssid: String? = nil
   fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for disconnecting from WiFi
@@ -678,22 +588,11 @@ public struct Wendy_Agent_Services_V1_DisconnectWiFiResponse: Sendable {
   /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
   public mutating func clearErrorMessage() {self._errorMessage = nil}
 
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 /// Request message for listing hardware capabilities
@@ -756,139 +655,7 @@ public struct Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse: Sendable
   public init() {}
 }
 
-/// Request message for listing Bluetooth devices
-public struct Wendy_Agent_Services_V1_ListBluetoothDevicesRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// If true, only return paired devices
-  public var pairedOnly: Bool = false
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-/// Response message for listing Bluetooth devices
-public struct Wendy_Agent_Services_V1_ListBluetoothDevicesResponse: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// List of discovered Bluetooth devices
-  public var devices: [Wendy_Agent_Services_V1_ListBluetoothDevicesResponse.BluetoothDevice] = []
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  /// Information about a Bluetooth device
-  public struct BluetoothDevice: Sendable {
-    // SwiftProtobuf.Message conformance is added in an extension below. See the
-    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-    // methods supported on all messages.
-
-    /// Device name (e.g., "AirPods Pro")
-    public var name: String = String()
-
-    /// MAC address (e.g., "A4:C3:F0:12:34:56")
-    public var address: String = String()
-
-    /// RSSI signal strength in dBm (e.g., -45)
-    public var rssi: Int32 {
-      get {return _rssi ?? 0}
-      set {_rssi = newValue}
-    }
-    /// Returns true if `rssi` has been explicitly set.
-    public var hasRssi: Bool {return self._rssi != nil}
-    /// Clears the value of `rssi`. Subsequent reads from it will return its default value.
-    public mutating func clearRssi() {self._rssi = nil}
-
-    /// Whether the device is currently paired
-    public var paired: Bool = false
-
-    /// Whether the device is currently connected
-    public var connected: Bool = false
-
-    /// Device type/class (e.g., "audio-headset", "keyboard", "mouse")
-    public var deviceType: String = String()
-
-    /// Whether the device is trusted
-    public var trusted: Bool = false
-
-    /// Device icon hint from BlueZ (e.g., "audio-headphones", "input-keyboard")
-    public var icon: String {
-      get {return _icon ?? String()}
-      set {_icon = newValue}
-    }
-    /// Returns true if `icon` has been explicitly set.
-    public var hasIcon: Bool {return self._icon != nil}
-    /// Clears the value of `icon`. Subsequent reads from it will return its default value.
-    public mutating func clearIcon() {self._icon = nil}
-
-    public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-    public init() {}
-
-    fileprivate var _rssi: Int32? = nil
-    fileprivate var _icon: String? = nil
-  }
-
-  public init() {}
-}
-
-/// Request message for starting Bluetooth scan
-public struct Wendy_Agent_Services_V1_StartBluetoothScanRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Scan timeout in seconds (0 = indefinite until StopBluetoothScan is called)
-  public var timeoutSeconds: UInt32 = 0
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-/// Response message for starting Bluetooth scan
-public struct Wendy_Agent_Services_V1_StartBluetoothScanResponse: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Whether the scan was started successfully
-  public var success: Bool = false
-
-  /// Optional error message if scan failed to start
-  public var errorMessage: String {
-    get {return _errorMessage ?? String()}
-    set {_errorMessage = newValue}
-  }
-  /// Returns true if `errorMessage` has been explicitly set.
-  public var hasErrorMessage: Bool {return self._errorMessage != nil}
-  /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
-  public mutating func clearErrorMessage() {self._errorMessage = nil}
-
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-
-  fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
-}
-
-/// Request message for stopping Bluetooth scan
-public struct Wendy_Agent_Services_V1_StopBluetoothScanRequest: Sendable {
+public struct Wendy_Agent_Services_V1_ScanBluetoothPeripheralsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -898,56 +665,51 @@ public struct Wendy_Agent_Services_V1_StopBluetoothScanRequest: Sendable {
   public init() {}
 }
 
-/// Response message for stopping Bluetooth scan
-public struct Wendy_Agent_Services_V1_StopBluetoothScanResponse: Sendable {
+public struct Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Whether the scan was stopped successfully
-  public var success: Bool = false
+  public var name: String = String()
 
-  /// Optional error message if stopping scan failed
-  public var errorMessage: String {
-    get {return _errorMessage ?? String()}
-    set {_errorMessage = newValue}
-  }
-  /// Returns true if `errorMessage` has been explicitly set.
-  public var hasErrorMessage: Bool {return self._errorMessage != nil}
-  /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
-  public mutating func clearErrorMessage() {self._errorMessage = nil}
-
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-
-  fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
-}
-
-/// Request message for connecting to a Bluetooth device
-public struct Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// MAC address of the device to connect to (e.g., "A4:C3:F0:12:34:56")
   public var address: String = String()
 
-  /// If true, pair the device before connecting
+  public var rssi: Int32 = 0
+
+  public var deviceType: String = String()
+
+  public var paired: Bool = false
+
+  public var connected: Bool = false
+
+  public var trusted: Bool = false
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var discoveredDevices: [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral] = []
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var address: String = String()
+
   public var pair: Bool = false
 
-  /// If true, trust the device before connecting
   public var trust: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -955,50 +717,21 @@ public struct Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest: Sendable {
   public init() {}
 }
 
-/// Response message for connecting to a Bluetooth device
-public struct Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse: Sendable {
+public struct Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
-
-  /// Whether the connection was successful
-  public var success: Bool = false
-
-  /// Optional error message if connection failed
-  public var errorMessage: String {
-    get {return _errorMessage ?? String()}
-    set {_errorMessage = newValue}
-  }
-  /// Returns true if `errorMessage` has been explicitly set.
-  public var hasErrorMessage: Bool {return self._errorMessage != nil}
-  /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
-  public mutating func clearErrorMessage() {self._errorMessage = nil}
-
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
-
-  fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
-/// Request message for disconnecting from a Bluetooth device
-public struct Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest: Sendable {
+public struct Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// MAC address of the device to disconnect from
   public var address: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -1006,50 +739,21 @@ public struct Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest: Sendable
   public init() {}
 }
 
-/// Response message for disconnecting from a Bluetooth device
-public struct Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse: Sendable {
+public struct Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
-
-  /// Whether the disconnection was successful
-  public var success: Bool = false
-
-  /// Optional error message if disconnection failed
-  public var errorMessage: String {
-    get {return _errorMessage ?? String()}
-    set {_errorMessage = newValue}
-  }
-  /// Returns true if `errorMessage` has been explicitly set.
-  public var hasErrorMessage: Bool {return self._errorMessage != nil}
-  /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
-  public mutating func clearErrorMessage() {self._errorMessage = nil}
-
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
-
-  fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
-/// Request message for forgetting a Bluetooth device
-public struct Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest: Sendable {
+public struct Wendy_Agent_Services_V1_ForgetBluetoothPeripheralRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// MAC address of the device to forget
   public var address: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -1057,85 +761,19 @@ public struct Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest: Sendable {
   public init() {}
 }
 
-/// Response message for forgetting a Bluetooth device
-public struct Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse: Sendable {
+public struct Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Whether the removal was successful
-  public var success: Bool = false
-
-  /// Optional error message if removal failed
-  public var errorMessage: String {
-    get {return _errorMessage ?? String()}
-    set {_errorMessage = newValue}
-  }
-  /// Returns true if `errorMessage` has been explicitly set.
-  public var hasErrorMessage: Bool {return self._errorMessage != nil}
-  /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
-  public mutating func clearErrorMessage() {self._errorMessage = nil}
-
-  /// Status details for the operation
-  public var status: Wendy_Agent_Services_V1_ResponseStatus {
-    get {return _status ?? Wendy_Agent_Services_V1_ResponseStatus()}
-    set {_status = newValue}
-  }
-  /// Returns true if `status` has been explicitly set.
-  public var hasStatus: Bool {return self._status != nil}
-  /// Clears the value of `status`. Subsequent reads from it will return its default value.
-  public mutating func clearStatus() {self._status = nil}
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
-
-  fileprivate var _errorMessage: String? = nil
-  fileprivate var _status: Wendy_Agent_Services_V1_ResponseStatus? = nil
 }
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "wendy.agent.services.v1"
-
-extension Wendy_Agent_Services_V1_ResponseStatus: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ResponseStatus"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}level\0\u{1}message\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularEnumField(value: &self.level) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.message) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.level != .unspecified {
-      try visitor.visitSingularEnumField(value: self.level, fieldNumber: 1)
-    }
-    if !self.message.isEmpty {
-      try visitor.visitSingularStringField(value: self.message, fieldNumber: 2)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_ResponseStatus, rhs: Wendy_Agent_Services_V1_ResponseStatus) -> Bool {
-    if lhs.level != rhs.level {return false}
-    if lhs.message != rhs.message {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_ResponseStatus.Level: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0LEVEL_UNSPECIFIED\0\u{1}SUCCESS\0\u{1}INFO\0\u{1}WARNING\0\u{1}ERROR\0")
-}
 
 extension Wendy_Agent_Services_V1_RunContainerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerRequest"
@@ -2017,7 +1655,7 @@ extension Wendy_Agent_Services_V1_ConnectToWiFiRequest: SwiftProtobuf.Message, S
 
 extension Wendy_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ConnectToWiFiResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2027,7 +1665,6 @@ extension Wendy_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, 
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2044,16 +1681,12 @@ extension Wendy_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, 
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_ConnectToWiFiResponse, rhs: Wendy_Agent_Services_V1_ConnectToWiFiResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2080,7 +1713,7 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusRequest: SwiftProtobuf.Message, S
 
 extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetWiFiStatusResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}connected\0\u{1}ssid\0\u{3}error_message\0\u{1}status\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}connected\0\u{1}ssid\0\u{3}error_message\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2091,7 +1724,6 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, 
       case 1: try { try decoder.decodeSingularBoolField(value: &self.connected) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._ssid) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 4: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2111,9 +1743,6 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, 
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 3)
     } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2121,7 +1750,6 @@ extension Wendy_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, 
     if lhs.connected != rhs.connected {return false}
     if lhs._ssid != rhs._ssid {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2148,7 +1776,7 @@ extension Wendy_Agent_Services_V1_DisconnectWiFiRequest: SwiftProtobuf.Message, 
 
 extension Wendy_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DisconnectWiFiResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2158,7 +1786,6 @@ extension Wendy_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message,
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
       default: break
       }
     }
@@ -2175,16 +1802,12 @@ extension Wendy_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message,
     try { if let v = self._errorMessage {
       try visitor.visitSingularStringField(value: v, fieldNumber: 2)
     } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectWiFiResponse, rhs: Wendy_Agent_Services_V1_DisconnectWiFiResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -2299,211 +1922,8 @@ extension Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapab
   }
 }
 
-extension Wendy_Agent_Services_V1_ListBluetoothDevicesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ListBluetoothDevicesRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}paired_only\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.pairedOnly) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.pairedOnly != false {
-      try visitor.visitSingularBoolField(value: self.pairedOnly, fieldNumber: 1)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_ListBluetoothDevicesRequest, rhs: Wendy_Agent_Services_V1_ListBluetoothDevicesRequest) -> Bool {
-    if lhs.pairedOnly != rhs.pairedOnly {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_ListBluetoothDevicesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ListBluetoothDevicesResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}devices\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.devices) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.devices.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.devices, fieldNumber: 1)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_ListBluetoothDevicesResponse, rhs: Wendy_Agent_Services_V1_ListBluetoothDevicesResponse) -> Bool {
-    if lhs.devices != rhs.devices {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_ListBluetoothDevicesResponse.BluetoothDevice: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = Wendy_Agent_Services_V1_ListBluetoothDevicesResponse.protoMessageName + ".BluetoothDevice"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}address\0\u{1}rssi\0\u{1}paired\0\u{1}connected\0\u{3}device_type\0\u{1}trusted\0\u{1}icon\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.name) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.address) }()
-      case 3: try { try decoder.decodeSingularInt32Field(value: &self._rssi) }()
-      case 4: try { try decoder.decodeSingularBoolField(value: &self.paired) }()
-      case 5: try { try decoder.decodeSingularBoolField(value: &self.connected) }()
-      case 6: try { try decoder.decodeSingularStringField(value: &self.deviceType) }()
-      case 7: try { try decoder.decodeSingularBoolField(value: &self.trusted) }()
-      case 8: try { try decoder.decodeSingularStringField(value: &self._icon) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if !self.name.isEmpty {
-      try visitor.visitSingularStringField(value: self.name, fieldNumber: 1)
-    }
-    if !self.address.isEmpty {
-      try visitor.visitSingularStringField(value: self.address, fieldNumber: 2)
-    }
-    try { if let v = self._rssi {
-      try visitor.visitSingularInt32Field(value: v, fieldNumber: 3)
-    } }()
-    if self.paired != false {
-      try visitor.visitSingularBoolField(value: self.paired, fieldNumber: 4)
-    }
-    if self.connected != false {
-      try visitor.visitSingularBoolField(value: self.connected, fieldNumber: 5)
-    }
-    if !self.deviceType.isEmpty {
-      try visitor.visitSingularStringField(value: self.deviceType, fieldNumber: 6)
-    }
-    if self.trusted != false {
-      try visitor.visitSingularBoolField(value: self.trusted, fieldNumber: 7)
-    }
-    try { if let v = self._icon {
-      try visitor.visitSingularStringField(value: v, fieldNumber: 8)
-    } }()
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_ListBluetoothDevicesResponse.BluetoothDevice, rhs: Wendy_Agent_Services_V1_ListBluetoothDevicesResponse.BluetoothDevice) -> Bool {
-    if lhs.name != rhs.name {return false}
-    if lhs.address != rhs.address {return false}
-    if lhs._rssi != rhs._rssi {return false}
-    if lhs.paired != rhs.paired {return false}
-    if lhs.connected != rhs.connected {return false}
-    if lhs.deviceType != rhs.deviceType {return false}
-    if lhs.trusted != rhs.trusted {return false}
-    if lhs._icon != rhs._icon {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_StartBluetoothScanRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".StartBluetoothScanRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}timeout_seconds\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.timeoutSeconds) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.timeoutSeconds != 0 {
-      try visitor.visitSingularUInt32Field(value: self.timeoutSeconds, fieldNumber: 1)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_StartBluetoothScanRequest, rhs: Wendy_Agent_Services_V1_StartBluetoothScanRequest) -> Bool {
-    if lhs.timeoutSeconds != rhs.timeoutSeconds {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_StartBluetoothScanResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".StartBluetoothScanResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    try { if let v = self._errorMessage {
-      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
-    } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_StartBluetoothScanResponse, rhs: Wendy_Agent_Services_V1_StartBluetoothScanResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_StopBluetoothScanRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".StopBluetoothScanRequest"
+extension Wendy_Agent_Services_V1_ScanBluetoothPeripheralsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ScanBluetoothPeripheralsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -2515,15 +1935,15 @@ extension Wendy_Agent_Services_V1_StopBluetoothScanRequest: SwiftProtobuf.Messag
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_StopBluetoothScanRequest, rhs: Wendy_Agent_Services_V1_StopBluetoothScanRequest) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_ScanBluetoothPeripheralsRequest, rhs: Wendy_Agent_Services_V1_ScanBluetoothPeripheralsRequest) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_StopBluetoothScanResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".StopBluetoothScanResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
+extension Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DiscoveredBluetoothPeripheral"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}address\0\u{1}rssi\0\u{1}deviceType\0\u{1}paired\0\u{1}connected\0\u{1}trusted\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2531,42 +1951,88 @@ extension Wendy_Agent_Services_V1_StopBluetoothScanResponse: SwiftProtobuf.Messa
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
+      case 1: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.address) }()
+      case 3: try { try decoder.decodeSingularInt32Field(value: &self.rssi) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.deviceType) }()
+      case 5: try { try decoder.decodeSingularBoolField(value: &self.paired) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.connected) }()
+      case 7: try { try decoder.decodeSingularBoolField(value: &self.trusted) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 1)
     }
-    try { if let v = self._errorMessage {
-      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
-    } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
+    if !self.address.isEmpty {
+      try visitor.visitSingularStringField(value: self.address, fieldNumber: 2)
+    }
+    if self.rssi != 0 {
+      try visitor.visitSingularInt32Field(value: self.rssi, fieldNumber: 3)
+    }
+    if !self.deviceType.isEmpty {
+      try visitor.visitSingularStringField(value: self.deviceType, fieldNumber: 4)
+    }
+    if self.paired != false {
+      try visitor.visitSingularBoolField(value: self.paired, fieldNumber: 5)
+    }
+    if self.connected != false {
+      try visitor.visitSingularBoolField(value: self.connected, fieldNumber: 6)
+    }
+    if self.trusted != false {
+      try visitor.visitSingularBoolField(value: self.trusted, fieldNumber: 7)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_StopBluetoothScanResponse, rhs: Wendy_Agent_Services_V1_StopBluetoothScanResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
+  public static func ==(lhs: Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral, rhs: Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral) -> Bool {
+    if lhs.name != rhs.name {return false}
+    if lhs.address != rhs.address {return false}
+    if lhs.rssi != rhs.rssi {return false}
+    if lhs.deviceType != rhs.deviceType {return false}
+    if lhs.paired != rhs.paired {return false}
+    if lhs.connected != rhs.connected {return false}
+    if lhs.trusted != rhs.trusted {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ConnectBluetoothDeviceRequest"
+extension Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ScanBluetoothPeripheralsResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}discovered_devices\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.discoveredDevices) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.discoveredDevices.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.discoveredDevices, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse, rhs: Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse) -> Bool {
+    if lhs.discoveredDevices != rhs.discoveredDevices {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ConnectBluetoothPeripheralRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}pair\0\u{1}trust\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -2596,7 +2062,7 @@ extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest: SwiftProtobuf.M
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest, rhs: Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest, rhs: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest) -> Bool {
     if lhs.address != rhs.address {return false}
     if lhs.pair != rhs.pair {return false}
     if lhs.trust != rhs.trust {return false}
@@ -2605,52 +2071,27 @@ extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceRequest: SwiftProtobuf.M
   }
 }
 
-extension Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ConnectBluetoothDeviceResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
+extension Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ConnectBluetoothPeripheralResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
-      default: break
-      }
-    }
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    try { if let v = self._errorMessage {
-      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
-    } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse, rhs: Wendy_Agent_Services_V1_ConnectBluetoothDeviceResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
+  public static func ==(lhs: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse, rhs: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".DisconnectBluetoothDeviceRequest"
+extension Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DisconnectBluetoothPeripheralRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -2672,59 +2113,34 @@ extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest: SwiftProtobu
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest, rhs: Wendy_Agent_Services_V1_DisconnectBluetoothDeviceRequest) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralRequest, rhs: Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralRequest) -> Bool {
     if lhs.address != rhs.address {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".DisconnectBluetoothDeviceResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
+extension Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DisconnectBluetoothPeripheralResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
-      default: break
-      }
-    }
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    try { if let v = self._errorMessage {
-      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
-    } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse, rhs: Wendy_Agent_Services_V1_DisconnectBluetoothDeviceResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
+  public static func ==(lhs: Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse, rhs: Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ForgetBluetoothDeviceRequest"
+extension Wendy_Agent_Services_V1_ForgetBluetoothPeripheralRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ForgetBluetoothPeripheralRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -2746,52 +2162,27 @@ extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest: SwiftProtobuf.Me
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest, rhs: Wendy_Agent_Services_V1_ForgetBluetoothDeviceRequest) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_ForgetBluetoothPeripheralRequest, rhs: Wendy_Agent_Services_V1_ForgetBluetoothPeripheralRequest) -> Bool {
     if lhs.address != rhs.address {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ForgetBluetoothDeviceResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0\u{1}status\0")
+extension Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ForgetBluetoothPeripheralResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._status) }()
-      default: break
-      }
-    }
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    try { if let v = self._errorMessage {
-      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
-    } }()
-    try { if let v = self._status {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse, rhs: Wendy_Agent_Services_V1_ForgetBluetoothDeviceResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs._errorMessage != rhs._errorMessage {return false}
-    if lhs._status != rhs._status {return false}
+  public static func ==(lhs: Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse, rhs: Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

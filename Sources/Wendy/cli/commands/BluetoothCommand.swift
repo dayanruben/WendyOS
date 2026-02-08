@@ -50,39 +50,62 @@ struct BluetoothCommand: AsyncParsableCommand {
         @Flag(name: .customLong("stream"), help: "Show live updates")
         var stream: Bool = false
 
+        @Option(
+            name: .customLong("timeout"),
+            help: "Seconds to wait for initial device list when streaming"
+        )
+        var timeout: TimeInterval = 30
+
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
             try await withAgentClient(
                 agentConnectionOptions,
                 title: "For which device do you want to list Bluetooth devices?"
-            ) { [stream] agent in
+            ) { [stream] client in
                 if JSONMode.isEnabled && !stream {
+                    actor Devices {
+                        var devices = [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral]()
+                        func set(
+                            _ newDevices: [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral]
+                        ) {
+                            self.devices = newDevices
+                        }
+                    }
+                    let start = Date()
+                    let devices = Devices()
+                    try await client.withBluetoothPeripherals { peripherals in
+                        if start.addingTimeInterval(timeout) < Date() {
+                            throw BluetoothCommandError.noDevicesFound
+                        }
+
+                        await devices.set(peripherals)
+                    }
                     // One-time JSON output
-                    let devices = try await agent.listBluetoothDevices()
-                    cliOutput.result(devices)
+                    // await cliOutput.result(devices.devices)
                 } else {
                     if !JSONMode.isEnabled {
                         cliOutput.info("Press Ctrl+C to exit")
                     }
 
-                    // Live table showing paired or connected devices
-                    let scanner = PairedDevicesScanner(source: agent)
-
-                    // // Use non-selectable live table
-                    try await cliOutput.streamingTable(
-                        initial: [],
-                        updates: scanner
-                    ) { devices -> (headers: [String], rows: [[String]]) in
-                        return (
-                            headers: ["Name", "Address", "Type", "Status"],
-                            rows: devices.map { device in
-                                [
-                                    device.name, device.address, device.deviceTypeDisplay,
-                                    device.connectedStatus,
-                                ]
-                            }
-                        )
+                    return try await client.withBluetoothPeripheralsStream { stream in
+                        // Use non-selectable live table
+                        return try await cliOutput.streamingTable(
+                            initial: [],
+                            updates: stream
+                        ) { devices -> (headers: [String], rows: [[String]]) in
+                            return (
+                                headers: ["Name", "Address", "Type", "Status"],
+                                rows: devices.map { device in
+                                    [
+                                        device.name,
+                                        device.address,
+                                        device.deviceType,
+                                        device.connected ? "Connected" : "Not Connected",
+                                    ]
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -106,19 +129,16 @@ struct BluetoothCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withAgentGRPCClient(
+            try await withAgentClient(
                 agentConnectionOptions,
                 title: "Which device do you want to disconnect Bluetooth on?"
             ) { client in
-                let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
+                let targetDevice: String
+                let displayName: String
 
-                let targetDevice: BluetoothDeviceInfo?
-
-                if let providedAddress = address {
-                    targetDevice = try await resolveBluetoothDevice(
-                        address: providedAddress,
-                        agent: agent
-                    )
+                if let address {
+                    targetDevice = address
+                    displayName = address
                 } else if JSONMode.isEnabled {
                     jsonModeRequiresArgument(
                         argument: "address",
@@ -128,63 +148,38 @@ struct BluetoothCommand: AsyncParsableCommand {
                 } else {
                     cliOutput.info("Press Ctrl+C to exit.")
 
-                    let devices = try await fetchBluetoothDevices(
-                        agent: agent
-                    ) { $0.connected }
-
-                    guard !devices.isEmpty else {
-                        cliOutput.info("No connected Bluetooth devices found.")
-                        return
+                    let device = try await client.withBluetoothPeripheralsStream { stream in
+                        // Use non-selectable live table
+                        return try await cliOutput.selectFromStreamingTable(
+                            initial: [],
+                            updates: stream,
+                            pageSize: pageSize
+                        ) { devices -> (headers: [String], rows: [[String]]) in
+                            return (
+                                headers: ["Name", "Address", "Type", "Status"],
+                                rows: devices.filter(\.connected).map { device in
+                                    [
+                                        device.name,
+                                        device.address,
+                                        device.deviceType,
+                                        device.connected ? "Connected" : "Not Connected",
+                                    ]
+                                }
+                            )
+                        }
                     }
 
-                    let index = try await cliOutput.selectFromTable(
-                        title: "Select device to disconnect",
-                        headers: bluetoothDeviceHeaders,
-                        rows: bluetoothDeviceRows(devices),
-                        pageSize: min(pageSize, devices.count)
-                    )
-
-                    targetDevice = devices[index]
-                }
-
-                guard let targetDevice else {
-                    cliOutput.warning("No Bluetooth device selected.")
-                    return
+                    targetDevice = device.address
+                    displayName = device.name
                 }
 
                 let response = try await cliOutput.withProgress(
-                    message: "Disconnecting from \(targetDevice.displayName)...",
-                    successMessage: "Disconnected from \(targetDevice.displayName)",
-                    errorMessage: "Failed to disconnect from \(targetDevice.displayName)"
+                    message: "Disconnecting from \(displayName)...",
+                    successMessage: "Disconnected from \(displayName)",
+                    errorMessage: "Failed to disconnect from \(displayName)"
                 ) {
-                    try await agent.disconnectBluetoothDevice(
-                        .with { $0.address = targetDevice.address }
-                    )
-                }
-
-                if response.hasStatus {
-                    emitResponseStatusIfNeeded(response.status)
-                }
-
-                if !response.success {
-                    let statusMessage = response.hasStatus ? response.status.message : ""
-                    let trimmedStatus = statusMessage.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-                    throw BluetoothCommandError.disconnectFailed(
-                        targetDevice.displayName,
-                        response.hasErrorMessage
-                            ? response.errorMessage
-                            : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                    )
-                }
-
-                if JSONMode.isEnabled {
-                    cliOutput.result(
-                        BluetoothOperationResult(
-                            success: true,
-                            device: targetDevice
-                        )
+                    try await client.disconnectBluetoothPeripheral(
+                        address: targetDevice
                     )
                 }
             }
@@ -208,20 +203,17 @@ struct BluetoothCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withAgentGRPCClient(
+            try await withAgentClient(
                 agentConnectionOptions,
                 title: "Which device do you want to forget Bluetooth on?"
             ) { client in
-                let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
-
-                let targetDevice: BluetoothDeviceInfo?
+                let targetDevice: String
+                let displayName: String
                 let needsConfirmation: Bool
 
-                if let providedAddress = address {
-                    targetDevice = try await resolveBluetoothDevice(
-                        address: providedAddress,
-                        agent: agent
-                    )
+                if let address {
+                    targetDevice = address
+                    displayName = address
                     needsConfirmation = false
                 } else if JSONMode.isEnabled {
                     jsonModeRequiresArgument(
@@ -232,29 +224,29 @@ struct BluetoothCommand: AsyncParsableCommand {
                 } else {
                     cliOutput.info("Press Ctrl+C to exit.")
 
-                    let devices = try await fetchBluetoothDevices(
-                        agent: agent
-                    ) { $0.paired || $0.connected }
-
-                    guard !devices.isEmpty else {
-                        cliOutput.info("No paired or connected Bluetooth devices found.")
-                        return
+                    let device = try await client.withBluetoothPeripheralsStream { stream in
+                        // Use non-selectable live table
+                        return try await cliOutput.selectFromStreamingTable(
+                            initial: [],
+                            updates: stream,
+                            pageSize: pageSize
+                        ) { devices -> (headers: [String], rows: [[String]]) in
+                            return (
+                                headers: ["Name", "Address", "Type", "Status"],
+                                rows: devices.filter(\.connected).map { device in
+                                    [
+                                        device.name,
+                                        device.address,
+                                        device.deviceType,
+                                        device.connected ? "Connected" : "Not Connected",
+                                    ]
+                                }
+                            )
+                        }
                     }
-
-                    let index = try await cliOutput.selectFromTable(
-                        title: "Select device to forget",
-                        headers: bluetoothDeviceHeaders,
-                        rows: bluetoothDeviceRows(devices),
-                        pageSize: min(pageSize, devices.count)
-                    )
-
-                    targetDevice = devices[index]
                     needsConfirmation = true
-                }
-
-                guard let targetDevice else {
-                    cliOutput.warning("No Bluetooth device selected.")
-                    return
+                    displayName = device.name
+                    targetDevice = device.address
                 }
 
                 if needsConfirmation {
@@ -265,39 +257,13 @@ struct BluetoothCommand: AsyncParsableCommand {
                     }
                 }
 
-                let response = try await cliOutput.withProgress(
-                    message: "Forgetting \(targetDevice.displayName)...",
-                    successMessage: "Forgot \(targetDevice.displayName)",
-                    errorMessage: "Failed to forget \(targetDevice.displayName)"
+                try await cliOutput.withProgress(
+                    message: "Forgetting \(displayName)...",
+                    successMessage: "Forgot \(displayName)",
+                    errorMessage: "Failed to forget \(displayName)"
                 ) {
-                    try await agent.forgetBluetoothDevice(
-                        .with { $0.address = targetDevice.address }
-                    )
-                }
-
-                if response.hasStatus {
-                    emitResponseStatusIfNeeded(response.status)
-                }
-
-                if !response.success {
-                    let statusMessage = response.hasStatus ? response.status.message : ""
-                    let trimmedStatus = statusMessage.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-                    throw BluetoothCommandError.forgetFailed(
-                        targetDevice.displayName,
-                        response.hasErrorMessage
-                            ? response.errorMessage
-                            : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                    )
-                }
-
-                if JSONMode.isEnabled {
-                    cliOutput.result(
-                        BluetoothOperationResult(
-                            success: true,
-                            device: targetDevice
-                        )
+                    try await client.forgetBluetoothPeripheral(
+                        address: targetDevice
                     )
                 }
             }
@@ -341,20 +307,18 @@ struct BluetoothCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withAgentGRPCClient(
+            try await withAgentClient(
                 agentConnectionOptions,
                 title: "Which device do you want to connect Bluetooth on?"
             ) { client in
-                let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
-
                 let targetAddress: String
                 let targetDisplayName: String
                 let shouldPairAndTrust = pair || trust
 
-                if let providedAddress = address {
+                if let address {
                     // Direct connection with provided address
-                    targetAddress = providedAddress
-                    targetDisplayName = providedAddress
+                    targetAddress = address
+                    targetDisplayName = address
                 } else if JSONMode.isEnabled {
                     jsonModeRequiresArgument(
                         argument: "address",
@@ -363,465 +327,71 @@ struct BluetoothCommand: AsyncParsableCommand {
                     )
                 } else {
                     // Interactive: scan and select device
-                    let target = try await scanAndSelectDevice(
-                        agent: agent,
-                        pageSize: pageSize
-                    )
-                    targetAddress = target.address
-                    targetDisplayName = target.displayName
+
+                    let targetDevice = try await client.withBluetoothPeripheralsStream { stream in
+                        // Use non-selectable live table
+                        return try await cliOutput.selectFromStreamingTable(
+                            initial: [],
+                            updates: stream,
+                            pageSize: pageSize
+                        ) { devices -> (headers: [String], rows: [[String]]) in
+                            return (
+                                headers: ["Name", "Address", "Type", "Status"],
+                                rows: devices.filter(\.connected).map { device in
+                                    [
+                                        device.name,
+                                        device.address,
+                                        device.deviceType,
+                                        device.connected ? "Connected" : "Not Connected",
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                    targetAddress = targetDevice.address
+                    targetDisplayName = targetDevice.name
                 }
 
                 // Connect to the selected device
-                let response = try await cliOutput.withProgress(
+                try await cliOutput.withProgress(
                     message: "Connecting to \(targetDisplayName)...",
                     successMessage: "Connected to \(targetDisplayName)",
                     errorMessage: "Failed to connect to \(targetDisplayName)"
                 ) {
-                    try await agent.connectBluetoothDevice(
-                        .with {
-                            $0.address = targetAddress
-                            $0.pair = shouldPairAndTrust
-                            $0.trust = shouldPairAndTrust
-                        }
-                    )
-                }
-
-                if response.hasStatus {
-                    emitResponseStatusIfNeeded(response.status)
-                }
-
-                if !response.success {
-                    let statusMessage = response.hasStatus ? response.status.message : ""
-                    let trimmedStatus = statusMessage.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-                    throw BluetoothCommandError.connectionFailed(
-                        targetDisplayName,
-                        response.hasErrorMessage
-                            ? response.errorMessage
-                            : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                    )
-                }
-
-                if JSONMode.isEnabled {
-                    cliOutput.result(
-                        BluetoothOperationResult(
-                            success: true,
-                            address: targetAddress,
-                            displayName: targetDisplayName
-                        )
+                    try await client.connectBluetoothPeripheral(
+                        address: targetAddress,
+                        pair: shouldPairAndTrust,
+                        trust: shouldPairAndTrust
                     )
                 }
             }
         }
-
-        private func scanAndSelectDevice(
-            agent: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>,
-            pageSize: Int
-        ) async throws -> BluetoothDeviceInfo {
-            let logger = Logger(label: "sh.wendy.cli.bluetooth.connect")
-
-            // Start scanning
-            cliOutput.info("Starting Bluetooth scan...")
-            let scanResponse = try await agent.startBluetoothScan(.with { $0.timeoutSeconds = 0 })
-            if scanResponse.hasStatus {
-                emitResponseStatusIfNeeded(scanResponse.status)
-            }
-            if !scanResponse.success {
-                let statusMessage = scanResponse.hasStatus ? scanResponse.status.message : ""
-                let trimmedStatus = statusMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-                throw BluetoothCommandError.scanFailed(
-                    scanResponse.hasErrorMessage
-                        ? scanResponse.errorMessage
-                        : (!trimmedStatus.isEmpty ? trimmedStatus : "Unknown error")
-                )
-            }
-
-            let signalSource = installSigintHandler(agent: agent, logger: logger)
-
-            // Use defer only for synchronous cleanup (signal handling)
-            defer {
-                signalSource.cancel()
-                signal(SIGINT, SIG_DFL)
-            }
-
-            // Helper to stop scan with cancellation-aware fallback
-            @Sendable func stopScanBestEffort() async {
-                do {
-                    _ = try await agent.stopBluetoothScan(.init())
-                } catch {
-                    // Best-effort cleanup; ignore stop failures.
-                }
-            }
-
-            let scanner = DiscoveryScanner(source: agent)
-
-            do {
-                // Wait for devices to appear (with timeout)
-                var initial: [BluetoothDeviceInfo]?
-                for attempt in 1...10 {
-                    if let data = try await scanner.makeAsyncIterator().next(),
-                        !data.isEmpty
-                    {
-                        initial = data
-                        break
-                    }
-                    if attempt < 10 {
-                        cliOutput.info("Scanning for devices... (\(attempt * 2)s)")
-                    }
-                }
-
-                guard let tableData = initial else {
-                    throw BluetoothCommandError.noDevicesFound
-                }
-
-                let device = try await cliOutput.selectFromStreamingTable(
-                    initial: tableData,
-                    updates: scanner,
-                    pageSize: pageSize
-                ) { devices in
-                    let rows: [[String]] = devices.map { bluetoothDevice in
-                        let statusIcon = bluetoothDevice.paired ? "○" : "◌"
-                        return [
-                            "\(statusIcon) \(bluetoothDevice.name)",
-                            "\(bluetoothDevice.address)",
-                            "\(bluetoothDevice.deviceTypeDisplay)",
-                            "\(bluetoothDevice.rssiDescription)",
-                        ]
-                    }
-
-                    return (
-                        headers: scanner.headers,
-                        rows: rows
-                    )
-                }
-
-                await stopScanBestEffort()
-                return device
-            } catch {
-                await stopScanBestEffort()
-                throw error
-            }
-        }
-
-        private func installSigintHandler(
-            agent: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>,
-            logger: Logger
-        ) -> DispatchSourceSignal {
-            signal(SIGINT, SIG_IGN)
-
-            let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-            signalSource.setEventHandler {
-                logger.info("Received SIGINT, stopping Bluetooth scan")
-                signalSource.cancel()
-                Task {
-                    await stopScanAndExit(agent: agent, logger: logger, exitCode: 130)
-                }
-            }
-            signalSource.resume()
-            return signalSource
-        }
-
-        private func stopScanAndExit(
-            agent: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>,
-            logger: Logger,
-            exitCode: Int32
-        ) async {
-            logger.info(
-                "Stopping Bluetooth scan before exit",
-                metadata: ["exitCode": "\(exitCode)"]
-            )
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    _ = try? await agent.stopBluetoothScan(.init())
-                }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(2))
-                }
-                _ = await group.next()
-                group.cancelAll()
-            }
-            signal(SIGINT, SIG_DFL)
-            raise(SIGINT)
-            systemExit(exitCode)
-        }
     }
 }
 
-// MARK: - Bluetooth Device Model
+extension AgentClient {
+    fileprivate func withBluetoothPeripheralsStream<T: Sendable>(
+        perform:
+            @escaping (AsyncStream<[Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral]>)
+            async throws -> T
+    ) async throws -> T {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral].self
+        )
 
-struct BluetoothDeviceInfo: Codable, Sendable, Comparable {
-    let name: String
-    let address: String
-    let rssi: Int?
-    let paired: Bool
-    let connected: Bool
-    let trusted: Bool
-    let deviceType: String
-    let icon: String?
-
-    static func < (lhs: BluetoothDeviceInfo, rhs: BluetoothDeviceInfo) -> Bool {
-        if lhs.connected != rhs.connected {
-            return lhs.connected
-        }
-        return lhs.name < rhs.name
-    }
-
-    init(
-        name: String,
-        address: String,
-        rssi: Int? = nil,
-        paired: Bool = false,
-        connected: Bool = false,
-        trusted: Bool = false,
-        deviceType: String = "",
-        icon: String? = nil
-    ) {
-        self.name = name
-        self.address = address
-        self.rssi = rssi
-        self.paired = paired
-        self.connected = connected
-        self.trusted = trusted
-        self.deviceType = deviceType
-        self.icon = icon
-    }
-
-    init(from proto: Wendy_Agent_Services_V1_ListBluetoothDevicesResponse.BluetoothDevice) {
-        self.name = proto.name.isEmpty ? "Unknown" : proto.name
-        self.address = proto.address
-        self.rssi = proto.hasRssi ? Int(proto.rssi) : nil
-        self.paired = proto.paired
-        self.connected = proto.connected
-        self.trusted = proto.trusted
-        self.deviceType = proto.deviceType.isEmpty ? "unknown" : proto.deviceType
-        self.icon = proto.hasIcon ? proto.icon : nil
-    }
-
-    // Initializer for Bluetooth L2CAP proto type
-    init(from proto: Wendy_Agent_Services_V1_BluetoothDeviceInfo) {
-        self.name = proto.name.isEmpty ? "Unknown" : proto.name
-        self.address = proto.address
-        self.rssi = proto.hasRssi ? Int(proto.rssi) : nil
-        self.paired = proto.paired
-        self.connected = proto.connected
-        self.trusted = proto.trusted
-        self.deviceType = proto.deviceType.isEmpty ? "unknown" : proto.deviceType
-        self.icon = proto.hasIcon ? proto.icon : nil
-    }
-
-    var displayName: String {
-        if name.isEmpty || name == "Unknown" {
-            return address
-        }
-        return "\(name) (\(address))"
-    }
-
-    var rssiDescription: String {
-        guard let rssi = rssi else {
-            return "N/A"
-        }
-        switch rssi {
-        case -50...0:
-            return "Excellent (\(rssi) dBm)"
-        case -60 ..< -50:
-            return "Good (\(rssi) dBm)"
-        case -70 ..< -60:
-            return "Fair (\(rssi) dBm)"
-        default:
-            return "Weak (\(rssi) dBm)"
-        }
-    }
-
-    var deviceTypeDisplay: String {
-        switch deviceType.lowercased() {
-        case "audio-headset", "audio-headphones":
-            return "Headset"
-        case "audio-card", "audio-speakers":
-            return "Speaker"
-        case "input-keyboard":
-            return "Keyboard"
-        case "input-mouse":
-            return "Mouse"
-        case "input-gaming":
-            return "Gamepad"
-        case "phone":
-            return "Phone"
-        case "computer":
-            return "Computer"
-        default:
-            return deviceType.isEmpty ? "Unknown" : deviceType.capitalized
-        }
-    }
-
-    var connectedStatus: String {
-        connected ? "Connected" : "Disconnected"
-    }
-}
-
-/// Result type for Bluetooth operations in JSON mode
-struct BluetoothOperationResult: Codable, Sendable {
-    let success: Bool
-    let device: BluetoothDeviceInfo?
-    let address: String?
-    let displayName: String?
-
-    init(success: Bool, device: BluetoothDeviceInfo) {
-        self.success = success
-        self.device = device
-        self.address = device.address
-        self.displayName = device.displayName
-    }
-
-    init(success: Bool, address: String, displayName: String) {
-        self.success = success
-        self.device = nil
-        self.address = address
-        self.displayName = displayName
-    }
-}
-
-private let bluetoothDeviceHeaders = [
-    "Name",
-    "Address",
-    "Type",
-    "Status",
-]
-
-private func bluetoothDeviceRows(_ devices: [BluetoothDeviceInfo]) -> [[String]] {
-    devices.map { bluetoothDevice in
-        [
-            "\(bluetoothDevice.name)",
-            "\(bluetoothDevice.address)",
-            "\(bluetoothDevice.deviceTypeDisplay)",
-            "\(bluetoothDevice.connectedStatus)",
-        ]
-    }
-}
-
-private func fetchBluetoothDevices(
-    agent: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>,
-    filter: (BluetoothDeviceInfo) -> Bool
-) async throws -> [BluetoothDeviceInfo] {
-    let response = try await agent.listBluetoothDevices(
-        .with { $0.pairedOnly = false }
-    )
-
-    return response.devices
-        .map { BluetoothDeviceInfo(from: $0) }
-        .filter(filter)
-        .sorted { bluetoothDevice1, bluetoothDevice2 in
-            if bluetoothDevice1.connected != bluetoothDevice2.connected {
-                return bluetoothDevice1.connected
-            }
-            return bluetoothDevice1.name < bluetoothDevice2.name
-        }
-}
-
-private func resolveBluetoothDevice(
-    address: String,
-    agent: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>
-) async throws -> BluetoothDeviceInfo {
-    let match = try await fetchBluetoothDevices(agent: agent) { device in
-        device.address.caseInsensitiveCompare(address) == .orderedSame
-    }
-
-    if let device = match.first {
-        return device
-    }
-
-    return BluetoothDeviceInfo(
-        name: "Unknown",
-        address: address,
-        rssi: nil,
-        paired: false,
-        connected: false,
-        trusted: false,
-        deviceType: "",
-        icon: nil
-    )
-}
-
-// MARK: - Paired/Connected Devices Scanner (for list command)
-
-actor PairedDevicesScanner: nonisolated AsyncSequence {
-    nonisolated let source: AgentClient
-
-    init(source: AgentClient) {
-        self.source = source
-    }
-
-    nonisolated func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(scanner: self)
-    }
-
-    struct AsyncIterator: AsyncIteratorProtocol {
-        let scanner: PairedDevicesScanner
-
-        func next() async throws -> [BluetoothDeviceInfo]? {
-            // Poll interval for paired devices status
-            try await Task.sleep(for: .seconds(2))
-            return try await scanner.source.listBluetoothDevices()
-        }
-    }
-}
-
-// MARK: - Discovery Scanner (for connect command)
-
-actor DiscoveryScanner: nonisolated AsyncSequence {
-    typealias Element = [BluetoothDeviceInfo]
-
-    nonisolated let source: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>
-    private(set) var currentDevices: [BluetoothDeviceInfo] = []
-
-    nonisolated var headers: [String] {
-        [
-            "Name",
-            "Address",
-            "Type",
-            "Signal",
-        ]
-    }
-
-    init(source: Wendy_Agent_Services_V1_WendyAgentService.Client<GRPCTransport>) {
-        self.source = source
-    }
-
-    func setDevices(_ devices: [BluetoothDeviceInfo]) {
-        self.currentDevices = devices
-    }
-
-    nonisolated func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(scanner: self)
-    }
-
-    struct AsyncIterator: AsyncIteratorProtocol {
-        let scanner: DiscoveryScanner
-
-        func next() async throws -> [BluetoothDeviceInfo]? {
-            // Poll interval for discovery
-            try await Task.sleep(for: .seconds(2))
-
-            let response = try await scanner.source.listBluetoothDevices(
-                .with { $0.pairedOnly = false }
-            )
-
-            let devices = response.devices
-                .map { BluetoothDeviceInfo(from: $0) }
-                .sorted { bluetoothDevice1, bluetoothDevice2 in
-                    // Sort by: paired first, then by RSSI
-                    if bluetoothDevice1.paired != bluetoothDevice2.paired {
-                        return bluetoothDevice1.paired
-                    }
-                    return (bluetoothDevice1.rssi ?? -100) > (bluetoothDevice2.rssi ?? -100)
+        return try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                defer { continuation.finish() }
+                try await self.withBluetoothPeripherals { peripherals in
+                    continuation.yield(peripherals)
                 }
-
-            await scanner.setDevices(devices)
-            return devices
+            }
+            defer { continuation.finish() }
+            defer { group.cancelAll() }
+            return try await perform(stream)
         }
     }
 }
-
 // MARK: - Errors
 
 enum BluetoothCommandError: Error, LocalizedError {
@@ -847,32 +417,41 @@ enum BluetoothCommandError: Error, LocalizedError {
     }
 }
 
-private func emitResponseStatusIfNeeded(
-    _ status: Wendy_Agent_Services_V1_ResponseStatus?,
-    showSuccess: Bool = false,
-    showError: Bool = false
-) {
-    guard let status else {
-        return
+extension Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral: Comparable, Encodable {
+    var displayName: String {
+        if name.isEmpty {
+            return address
+        } else {
+            return "\(name) (\(address))"
+        }
     }
 
-    let trimmed = status.message.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else {
-        return
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case address
+        case deviceType
+        case rssi
+        case connected
     }
 
-    switch status.level {
-    case .success where showSuccess:
-        cliOutput.success(trimmed)
-    case .info:
-        cliOutput.info(trimmed)
-    case .warning:
-        cliOutput.warning(trimmed)
-    case .error where showError:
-        cliOutput.error(trimmed)
-    case .success, .error, .unspecified, .UNRECOGNIZED:
-        ()
-    @unknown default:
-        ()
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encode(address, forKey: .address)
+        try container.encode(deviceType, forKey: .deviceType)
+        try container.encode(rssi, forKey: .rssi)
+        try container.encode(connected, forKey: .connected)
+    }
+
+    public static func < (
+        lhs: Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral,
+        rhs: Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral
+    ) -> Bool {
+        if lhs.rssi < rhs.rssi {
+            return true
+        } else if lhs.rssi > rhs.rssi {
+            return false
+        }
+        return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
     }
 }
