@@ -1,7 +1,7 @@
+import CLIOutput
 import Foundation
 import NIOCore
 import NIOPosix
-import Noora
 import Subprocess
 @preconcurrency import SystemPackage
 
@@ -19,6 +19,22 @@ public struct SwiftPM: Sendable {
         path.split(separator: " ").first.map(String.init) ?? path
     }
 
+    /// Check if swiftly is available on the system.
+    /// Returns true if swiftly is installed and accessible.
+    public static func isSwiftlyAvailable() async -> Bool {
+        do {
+            let result = try await Subprocess.run(
+                .name("swiftly"),
+                arguments: ["--version"],
+                output: .discarded,
+                error: .discarded
+            )
+            return result.terminationStatus.isSuccess
+        } catch {
+            return false
+        }
+    }
+
     func arguments(_ arguments: [String]) -> Subprocess.Arguments {
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
@@ -26,13 +42,23 @@ public struct SwiftPM: Sendable {
         return Subprocess.Arguments(runArgs + arguments)
     }
 
-    public init(
-        path: String = "swiftly run swift",
-        swiftVersion: String? = SwiftPM.defaultSwiftVersion
-    ) {
-        self.path = path
-        self.swiftVersion = swiftVersion
-    }
+    #if os(Windows)
+        public init(
+            path: String = "swift",
+            swiftVersion: String? = SwiftPM.defaultSwiftVersion
+        ) {
+            self.path = path
+            self.swiftVersion = swiftVersion
+        }
+    #else
+        public init(
+            path: String = "swiftly run swift",
+            swiftVersion: String? = SwiftPM.defaultSwiftVersion
+        ) {
+            self.path = path
+            self.swiftVersion = swiftVersion
+        }
+    #endif
 
     public enum BuildOption: Sendable {
         /// Filter for selecting a specific Swift SDK to build with.
@@ -110,31 +136,35 @@ public struct SwiftPM: Sendable {
     }
 
     public func listSwiftVersions() async throws -> [InstalledToolchain] {
-        let args = Arguments(["list", "--format", "json"])
-        let result = try await Subprocess.run(
-            .name("swiftly"),
-            arguments: args,
-            output: .string(limit: 10_000),
-            error: .discarded
-        )
-
-        guard result.terminationStatus.isSuccess, let output = result.standardOutput else {
-            let exitCode =
-                switch result.terminationStatus {
-                case .exited(let code), .unhandledException(let code):
-                    Int(code)
-                }
-
-            throw SubprocessError(
-                command: args.description,
-                exitCode: exitCode,
-                output: result.standardOutput ?? "",
-                error: ""
+        #if os(Windows)
+            return []
+        #else
+            let args = Arguments(["list", "--format", "json"])
+            let result = try await Subprocess.run(
+                .name("swiftly"),
+                arguments: args,
+                output: .string(limit: 10_000),
+                error: .discarded
             )
-        }
 
-        return try JSONDecoder().decode(InstalledToolchains.self, from: Data(output.utf8))
-            .toolchains
+            guard result.terminationStatus.isSuccess, let output = result.standardOutput else {
+                let exitCode =
+                    switch result.terminationStatus {
+                    case .exited(let code), .unhandledException(let code):
+                        Int(code)
+                    }
+
+                throw SubprocessError(
+                    command: args.description,
+                    exitCode: exitCode,
+                    output: result.standardOutput ?? "",
+                    error: ""
+                )
+            }
+
+            return try JSONDecoder().decode(InstalledToolchains.self, from: Data(output.utf8))
+                .toolchains
+        #endif
     }
 
     public func updateDependencies() async throws {
@@ -239,12 +269,11 @@ public struct SwiftPM: Sendable {
             ["build"] + version + options.flatMap(\.arguments)
         )
 
-        let result = try await Noora().progressStep(
+        let result = try await cliOutput.withProgress(
             message: "Building Swift package",
             successMessage: "Swift package built successfully",
-            errorMessage: "Failed to build Swift package",
-            showSpinner: true
-        ) { _ in
+            errorMessage: "Failed to build Swift package"
+        ) {
             try await Subprocess.run(
                 Subprocess.Executable.name(executableName),
                 arguments: allArgs,
@@ -278,14 +307,14 @@ public struct SwiftPM: Sendable {
         additionalEnv: [String],
         arguments entrypointArguments: [String],
         resources: [(source: String, destination: String)],
-        onOutput: @escaping @Sendable (String) async throws -> Void
+        onOutput: @escaping @Sendable (ByteBuffer) async throws -> Void
     ) async throws {
         var flags = [
             "package",
             "--swift-sdk=\(swiftSDK)",
             "--allow-network-connections=all",
             "build-container-image",
-            "--from=swift:slim",
+            "--from=swift:\(swiftVersion ?? Self.defaultSwiftVersion)-slim",
             "--allow-insecure-http=destination",
             "--product=\(product.name)",
             "--repository=\(device):5000/\(product.name.lowercased())",

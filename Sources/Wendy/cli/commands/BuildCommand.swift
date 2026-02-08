@@ -1,6 +1,7 @@
 import Analytics
 import AppConfig
 import ArgumentParser
+import CLIOutput
 import ContainerRegistry
 import Crypto
 import Foundation
@@ -8,8 +9,6 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import NIO
-import NIOFileSystem
-import Noora
 import Subprocess
 import WendyAgentGRPC
 
@@ -51,24 +50,116 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
     func run() async throws {
         try await withErrorTracking {
+            let currentPath = FileManager.default.currentDirectoryPath
             let isSwiftPackage = FileManager.default.fileExists(atPath: "Package.swift")
-            let directory = try FileManager.default.contentsOfDirectory(
-                atPath: FileManager.default.currentDirectoryPath
-            )
+            let directory = try FileManager.default.contentsOfDirectory(atPath: currentPath)
 
-            for item in directory where item.lowercased().contains("dockerfile") {
+            for item in directory where isDockerfile(item) {
                 try await buildDockerfileApp()
                 return
             }
 
             if isSwiftPackage {
                 try await buildSwiftApp()
+            } else if isPythonProject(directory: directory) {
+                // Python project without Dockerfile - offer to generate one
+                try await generatePythonDockerfileAndBuild()
             } else {
-                Noora().error(
+                cliOutput.error(
                     "Directory is not a Swift Package, nor can it be built as a docker container"
                 )
             }
         }
+    }
+
+    /// Checks if a filename is a valid Dockerfile name
+    /// Valid names: Dockerfile, dockerfile, Dockerfile.dev, Dockerfile.prod, app.Dockerfile, etc.
+    private func isDockerfile(_ filename: String) -> Bool {
+        let lowercased = filename.lowercased()
+        // Exact match: "dockerfile"
+        if lowercased == "dockerfile" {
+            return true
+        }
+        // Pattern: "dockerfile.*" (e.g., dockerfile.dev, Dockerfile.prod)
+        if lowercased.hasPrefix("dockerfile.") {
+            return true
+        }
+        // Pattern: "*.dockerfile" (e.g., app.dockerfile)
+        if lowercased.hasSuffix(".dockerfile") {
+            return true
+        }
+        return false
+    }
+
+    /// Checks if the directory contains a Python project
+    private func isPythonProject(directory: [String]) -> Bool {
+        // Check for requirements.txt
+        if FileManager.default.fileExists(atPath: "requirements.txt") {
+            return true
+        }
+        // Check for pyproject.toml
+        if FileManager.default.fileExists(atPath: "pyproject.toml") {
+            return true
+        }
+        // Check for any .py files in the root directory
+        return directory.contains { $0.hasSuffix(".py") }
+    }
+
+    func generatePythonDockerfileAndBuild() async throws {
+        let generator = PythonDockerfileGenerator()
+
+        cliOutput.info("Detected Python project")
+
+        // Detect or prompt for entry point
+        let entryPoint: String
+        if let detected = generator.detectEntryPoint() {
+            cliOutput.info("Detected entry point: \(detected)")
+            entryPoint = detected
+        } else if let selected = try await generator.promptForEntryPoint(
+            autoAccept: shouldAutoAccept
+        ) {
+            entryPoint = selected
+        } else {
+            cliOutput.error(
+                "No Python files found in the project. Please create a Python file or add a Dockerfile manually."
+            )
+            return
+        }
+
+        // Show what we detected
+        let pythonVersion = generator.getPythonVersion()
+        let framework = generator.detectFramework()
+        let systemDeps = generator.detectSystemDependencies()
+
+        cliOutput.info("Python version: \(pythonVersion)")
+        if framework != .none {
+            cliOutput.info("Detected framework: \(framework.displayName)")
+        }
+        if !systemDeps.isEmpty {
+            cliOutput.info("System dependencies: \(systemDeps.joined(separator: ", "))")
+        }
+        if generator.usesPyTorch() {
+            cliOutput.info("PyTorch detected - using Jetson-optimized Dockerfile")
+        }
+
+        // Confirm generation
+        if !shouldAutoAccept {
+            guard
+                try await cliOutput.yesOrNoPrompt(
+                    question: "Generate Dockerfile and continue?",
+                    defaultAnswer: true
+                )
+            else {
+                return
+            }
+        }
+
+        // Generate and write Dockerfile
+        try generator.writeDockerfile(entryPoint: entryPoint)
+        cliOutput.success("Generated Dockerfile")
+
+        // Now build as a Dockerfile app
+        try await buildDockerfileApp()
     }
 
     func buildDockerfileApp() async throws {
@@ -80,10 +171,9 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         let docker = DockerCLI()
         let dockerContext = await docker.currentContext()
 
-        let title = TerminalText(stringLiteral: "Which device do you want to build this app for?")
         try await withAgentGRPCClientAndEndpoint(
             agentConnectionOptions,
-            title: title
+            title: "Which device do you want to build this app for?"
         ) { [name, dockerContext] client, endpoint in
             // Build additional properties for analytics
             var buildPhaseProperties: [String: String] = [:]
@@ -98,12 +188,11 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 commandName: "wendy build",
                 additionalProperties: buildPhaseProperties
             ) {
-                try await Noora().progressStep(
+                try await cliOutput.withProgress(
                     message: "Preparing builder",
                     successMessage: "Builder ready",
-                    errorMessage: "Failed to create builder",
-                    showSpinner: true
-                ) { _ in
+                    errorMessage: "Failed to create builder"
+                ) {
                     try await docker.prepareBuildxBuilder(
                         registryHostname: endpoint.host,
                         registryPort: 5000
@@ -118,17 +207,11 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 commandName: "wendy build",
                 additionalProperties: buildPhaseProperties
             ) {
-                try await cliOutput.withStreamingOutput(
-                    title: "Building and uploading container",
-                    maxLines: 20
-                ) { emit in
-                    try await docker.buildxAndPush(
-                        name: name,
-                        registryHostname: endpoint.host,
-                        registryPort: 5000,
-                        onOutput: emit
-                    )
-                }
+                try await docker.buildxAndPush(
+                    name: name,
+                    registryHostname: endpoint.host,
+                    registryPort: 5000
+                )
                 cliOutput.success("Container built and uploaded successfully!")
             }
 
@@ -137,18 +220,17 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 runtime: "dockerfile",
                 commandName: "wendy build"
             ) {
-                try await Noora().progressStep(
-                    message: "Preparing app",
-                    successMessage: "App ready",
-                    errorMessage: "Failed to prepare app",
-                    showSpinner: true
-                ) { _ in
+                try await cliOutput.withLabeledProgressBar(
+                    message: "Unpacking image on device"
+                ) { updateProgress in
                     try await AppBuildHelpers.createContainerdContainer(
                         appName: name,
                         client: client,
-                        restartPolicy: .with { $0.mode = .no }
+                        restartPolicy: .with { $0.mode = .no },
+                        progress: updateProgress
                     )
                 }
+                cliOutput.success("App ready")
             }
 
             cliOutput.success("Build complete! Run 'wendy run' to start the app.")
@@ -180,13 +262,13 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
             // Plugin exists, check version
             if !SwiftPM.isVersion(containerPlugin.version, atLeast: requiredContainerPluginVersion)
             {
-                Noora().warning(
+                cliOutput.warning(
                     "swift-container-plugin version \(containerPlugin.version) is installed, but version \(requiredContainerPluginVersion) or higher is required."
                 )
 
                 guard
                     shouldAutoAccept
-                        || Noora().yesOrNoChoicePrompt(
+                        || cliOutput.yesOrNoChoicePrompt(
                             question:
                                 "Do you want to update swift-container-plugin to \(requiredContainerPluginVersion)?"
                         )
@@ -204,13 +286,20 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
             }
         } else {
             // Plugin not installed
-            Noora().info("Container plugin is not installed. Do you want to install it?")
+            cliOutput.info("Container plugin is not installed. Do you want to install it?")
 
-            guard
-                shouldAutoAccept
-                    || Noora().yesOrNoChoicePrompt(question: "Do you want to install it?")
-            else {
-                Noora().error(
+            let accepted: Bool
+            if shouldAutoAccept {
+                accepted = true
+            } else {
+                accepted = try await cliOutput.yesOrNoPrompt(
+                    question: "Do you want to install it?",
+                    defaultAnswer: true
+                )
+            }
+
+            guard accepted else {
+                cliOutput.error(
                     "Container plugin is required to build Swift packages. Please install it manually."
                 )
                 return
@@ -249,7 +338,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 ).print()
                 return
             }
-            Noora().error("No executable targets found in package")
+            cliOutput.error("No executable targets found in package")
             return
         } else if executableTargets.count == 1 {
             executableTarget = executableTargets[0]
@@ -261,11 +350,12 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                     "Multiple executable targets available: \(executableTargets.map(\.name).joined(separator: ", ")). Provide the target name as an argument."
             )
         } else {
-            executableTarget = Noora().singleChoicePrompt(
+            let selectedName = try await cliOutput.singleChoicePrompt(
                 title: "Select executable target to build",
                 question: "Which executable target do you want to build?",
-                options: executableTargets
+                options: executableTargets.map(\.name)
             )
+            executableTarget = executableTargets.first(where: { $0.name == selectedName })!
         }
 
         // Use the executable target name for image naming to match what swift container plugin uses
@@ -368,7 +458,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 let finalArguments = arguments
                 let finalResources = resources
 
-                try await cliOutput.withStreamingOutput(
+                try await cliOutput.withStreamingOutputBox(
                     title: "Building Swift app",
                     maxLines: 20
                 ) { [additionalEnv] emit in
@@ -391,17 +481,17 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 runtime: "swift",
                 commandName: "wendy build"
             ) {
-                try await cliOutput.withProgress(
-                    message: "Creating container",
-                    successMessage: "Container created",
-                    errorMessage: "Failed to create container"
-                ) {
+                try await cliOutput.withLabeledProgressBar(
+                    message: "Unpacking image on device"
+                ) { updateProgress in
                     try await AppBuildHelpers.createContainerdContainer(
                         appName: appName,
                         client: client,
-                        restartPolicy: .with { $0.mode = .no }
+                        restartPolicy: .with { $0.mode = .no },
+                        progress: updateProgress
                     )
                 }
+                cliOutput.success("Container created")
             }
 
             cliOutput.success("Build complete! Run 'wendy run' to start the app.")

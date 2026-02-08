@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 
 // Helper to flush stdout in Swift 6
 @inline(__always)
@@ -8,6 +9,17 @@ private func flushStdout() {
     #else
         fflush(stdout)
     #endif
+}
+
+/// Our own ProgressBarUpdate type so Noora doesn't leak through the public API.
+public struct ProgressBarUpdate: Sendable, Equatable {
+    public let progress: Double
+    public let detail: String?
+
+    public init(progress: Double, detail: String? = nil) {
+        self.progress = progress
+        self.detail = detail
+    }
 }
 
 /// Protocol for CLI output rendering. Commands emit structured events
@@ -47,6 +59,15 @@ public protocol CLIOutput: Sendable {
         pageSize: Int
     ) async throws -> Int
 
+    /// Select an item from a streaming table that updates in real-time.
+    /// Returns the selected element.
+    func selectFromStreamingTable<S: BidirectionalCollection & Sendable>(
+        initial: S,
+        updates: some AsyncSequence<S, Never> & Sendable,
+        pageSize: Int,
+        renderTable: @escaping @Sendable ([S.Element]) -> (headers: [String], rows: [[String]])
+    ) async throws -> S.Element where S.Index == Int, S.Element: Sendable & Comparable
+
     /// Emit a structured result that can be encoded as JSON
     func result<T: Encodable & Sendable>(_ value: T)
 
@@ -72,6 +93,13 @@ public protocol CLIOutput: Sendable {
         operation: @escaping @Sendable (@escaping (Double) -> Void) async throws -> T
     ) async throws -> T
 
+    /// Execute an async operation with progress bar indication and label updates.
+    /// In interactive mode, shows a progress bar with label text. In JSON mode, runs silently.
+    func withLabeledProgressBar<T: Sendable>(
+        message: String,
+        operation: @escaping @Sendable (@escaping (ProgressBarUpdate) -> Void) async throws -> T
+    ) async throws -> T
+
     /// Execute an operation with streaming output displayed in a collapsible box.
     /// In interactive mode, shows a scrollable bordered box with the output.
     /// In JSON mode, just runs the operation silently.
@@ -79,13 +107,43 @@ public protocol CLIOutput: Sendable {
     ///   - title: Title for the output section
     ///   - maxLines: Maximum lines to show in the scrolling view
     ///   - operation: The operation to run, receives a callback to emit each line
-    func withStreamingOutput<T: Sendable>(
+    func withStreamingOutputBox<T: Sendable>(
         title: String,
         maxLines: Int,
         operation:
-            @escaping @Sendable (@escaping @Sendable (String) async throws -> Void) async throws ->
+            @escaping @Sendable (@escaping @Sendable (ByteBuffer) async throws -> Void) async throws
+            ->
             T
     ) async throws -> T
+
+    func withStreamingOutput<T: Sendable>(
+        title: String,
+        operation:
+            @escaping @Sendable (@escaping @Sendable (ByteBuffer) async throws -> Void) async throws
+            ->
+            T
+    ) async throws -> T
+
+    // MARK: - Interactive prompts
+
+    /// Yes/No confirmation prompt
+    func yesOrNoPrompt(question: String, defaultAnswer: Bool) async throws -> Bool
+
+    /// Single choice from a list of options
+    func singleChoicePrompt(
+        title: String?,
+        question: String,
+        options: [String]
+    ) async throws -> String
+
+    /// Free-text input prompt
+    func textPrompt(title: String?, prompt: String) async throws -> String
+
+    /// Multiple choice selection from a list of options
+    func multipleChoicePrompt(question: String, options: [String]) async throws -> [String]
+
+    /// Secure password input prompt
+    func secureTextPrompt(title: String, prompt: String) throws -> String
 }
 
 // MARK: - Default implementations
@@ -127,6 +185,18 @@ extension CLIOutput {
         )
     }
 
+    public func selectFromStreamingTable<S: BidirectionalCollection & Sendable>(
+        initial: S,
+        updates: some AsyncSequence<S, Never> & Sendable,
+        pageSize: Int,
+        renderTable: @escaping @Sendable ([S.Element]) -> (headers: [String], rows: [[String]])
+    ) async throws -> S.Element where S.Index == Int, S.Element: Sendable & Comparable {
+        throw InteractiveSelectionRequiredError(
+            argument: "selection",
+            description: "Provide the selection via CLI arguments"
+        )
+    }
+
     public func withProgress<T: Sendable>(
         message: String,
         successMessage: String,
@@ -145,17 +215,12 @@ extension CLIOutput {
         try await operation({ _ in })
     }
 
-    public func withStreamingOutput<T: Sendable>(
-        title: String,
-        maxLines: Int,
-        operation:
-            @escaping @Sendable (@escaping @Sendable (String) async throws -> Void) async throws ->
-            T
+    public func withLabeledProgressBar<T: Sendable>(
+        message: String,
+        operation: @Sendable (@escaping (ProgressBarUpdate) -> Void) async throws -> T
     ) async throws -> T {
-        // Default: just print each line as it comes
-        try await operation { @Sendable line in
-            print(line)
-        }
+        // Default: just run the operation with no-op progress callback
+        try await operation({ _ in })
     }
 
     public func streamingTable<T: Encodable & Sendable>(
@@ -185,13 +250,52 @@ extension CLIOutput {
             }
         }
     }
+
+    public func yesOrNoPrompt(question: String, defaultAnswer: Bool) async throws -> Bool {
+        throw InteractiveSelectionRequiredError(
+            argument: "confirmation",
+            description: "Provide confirmation via CLI arguments"
+        )
+    }
+
+    public func singleChoicePrompt(
+        title: String?,
+        question: String,
+        options: [String]
+    ) async throws -> String {
+        throw InteractiveSelectionRequiredError(
+            argument: "choice",
+            description: "Provide the choice via CLI arguments"
+        )
+    }
+
+    public func textPrompt(title: String?, prompt: String) async throws -> String {
+        throw InteractiveSelectionRequiredError(
+            argument: "input",
+            description: "Provide the input via CLI arguments"
+        )
+    }
+
+    public func multipleChoicePrompt(question: String, options: [String]) async throws -> [String] {
+        throw InteractiveSelectionRequiredError(
+            argument: "choices",
+            description: "Provide the choices via CLI arguments"
+        )
+    }
+
+    public func secureTextPrompt(title: String, prompt: String) throws -> String {
+        throw InteractiveSelectionRequiredError(
+            argument: "password",
+            description: "Provide the password via CLI arguments"
+        )
+    }
 }
 
 // MARK: - Output Mode
 
 /// The current output mode for CLI commands.
 public enum OutputMode: Sendable {
-    /// Human-readable interactive output via Noora
+    /// Human-readable interactive output
     case interactive
 
     /// Single JSON response for LLMs and third-party tools
@@ -294,6 +398,33 @@ internal struct DefaultCLIOutput: CLIOutput, @unchecked Sendable {
             print("[\(Int(percent * 100))%] \(message)")
         } else {
             print("... \(message)")
+        }
+    }
+
+    func withStreamingOutputBox<T: Sendable>(
+        title: String,
+        maxLines: Int,
+        operation:
+            @escaping @Sendable (@escaping @Sendable (ByteBuffer) async throws -> Void) async throws
+            ->
+            T
+    ) async throws -> T {
+        // Default: just print each line as it comes
+        try await operation { @Sendable chunk in
+            print(String(buffer: chunk))
+        }
+    }
+
+    func withStreamingOutput<T: Sendable>(
+        title: String,
+        operation:
+            @escaping @Sendable (@escaping @Sendable (ByteBuffer) async throws -> Void) async throws
+            ->
+            T
+    ) async throws -> T {
+        // Default: just print each line as it comes
+        try await operation { @Sendable chunk in
+            print(String(buffer: chunk))
         }
     }
 }

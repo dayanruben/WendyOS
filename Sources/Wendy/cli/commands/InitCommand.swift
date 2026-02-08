@@ -1,7 +1,7 @@
 import AppConfig
 import ArgumentParser
+import CLIOutput
 import Logging
-import Noora
 import Subprocess
 import SystemPackage
 
@@ -35,7 +35,7 @@ struct InitCommand: AsyncParsableCommand {
 
     func run() async throws {
         logger.debug("Initializing new Wendy project", metadata: ["path": .string(projectPath)])
-        Noora().info("Creating new WendyOS project")
+        cliOutput.info("Creating new WendyOS project")
 
         // Create the directory if it doesn't exist
         let fileManager = FileManager.default
@@ -45,7 +45,7 @@ struct InitCommand: AsyncParsableCommand {
                     atPath: projectPath,
                     withIntermediateDirectories: true
                 )
-                Noora().info("Creating project directory at \(projectPath)")
+                cliOutput.info("Creating project directory at \(projectPath)")
             } catch {
                 throw CLIError.directoryCreationFailed(
                     path: projectPath,
@@ -369,6 +369,11 @@ struct InitCommand: AsyncParsableCommand {
         if language == .python {
             defaultConfig.python = .init(sourceRoot: "/app")
             defaultConfig.entitlements.append(.network(.init(mode: .host)))
+            // Shared cache for Hugging Face models (transformers, datasets, etc.)
+            // Using a well-known name allows multiple apps to share downloaded models
+            defaultConfig.entitlements.append(
+                .persist(.init(name: "huggingface-cache", path: "/app/.cache/huggingface"))
+            )
         }
 
         do {
