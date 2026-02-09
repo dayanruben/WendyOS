@@ -85,10 +85,11 @@
 
                 buffer.frameLength = AVAudioFrameCount(frameCount)
 
-                // Copy PCM data to buffer
+                // Copy PCM data to buffer - use audioBufferList for interleaved format
                 pcmData.withUnsafeBytes { rawBuffer in
                     guard let baseAddress = rawBuffer.baseAddress else { return }
-                    memcpy(buffer.int16ChannelData![0], baseAddress, pcmData.count)
+                    let audioBuffer = buffer.audioBufferList.pointee.mBuffers
+                    memcpy(audioBuffer.mData, baseAddress, pcmData.count)
                 }
 
                 // Schedule the buffer for playback

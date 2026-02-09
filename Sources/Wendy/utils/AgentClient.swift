@@ -130,15 +130,18 @@ extension AgentClient {
             _ = try await agent.scanBluetoothPeripherals(
                 request: .init(producer: { _ in })
             ) { response in
-                var peripherals: [(Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral, Date)] =
-                    []
+                // Use dictionary keyed by address to deduplicate and prevent unbounded growth
+                var peripherals: [String: (Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral, Date)] = [:]
+                
                 for try await message in response.messages {
+                    // Update or insert devices, replacing old entries
                     for peripheral in message.discoveredDevices {
-                        peripherals.append((peripheral, Date()))
+                        peripherals[peripheral.address] = (peripheral, Date())
                     }
 
                     try await perform(
-                        peripherals.map(\.0)
+                        peripherals.values
+                            .map(\.0)
                             .sorted { bluetoothDevice1, bluetoothDevice2 in
                                 // Sort by: paired first, then by RSSI
                                 if bluetoothDevice1.paired != bluetoothDevice2.paired {
@@ -148,7 +151,7 @@ extension AgentClient {
                             }
                     )
                 }
-                return peripherals
+                return Array(peripherals.values)
             }
         case .bluetooth:
             throw CLIError.unsupportedPlatform(

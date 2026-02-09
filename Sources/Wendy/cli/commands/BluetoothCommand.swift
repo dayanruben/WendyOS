@@ -66,23 +66,43 @@ struct BluetoothCommand: AsyncParsableCommand {
                 if JSONMode.isEnabled && !stream {
                     actor Devices {
                         var devices = [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral]()
+                        var hasDevices = false
+                        
                         func set(
                             _ newDevices: [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral]
                         ) {
                             self.devices = newDevices
+                            if !newDevices.isEmpty {
+                                hasDevices = true
+                            }
+                        }
+                        
+                        func getDevices() -> [Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral] {
+                            return devices
+                        }
+                        
+                        func didFindDevices() -> Bool {
+                            return hasDevices
                         }
                     }
                     let start = Date()
                     let devices = Devices()
-                    try await client.withBluetoothPeripherals { peripherals in
-                        if start.addingTimeInterval(timeout) < Date() {
-                            throw BluetoothCommandError.noDevicesFound
+                    
+                    do {
+                        try await client.withBluetoothPeripherals { peripherals in
+                            await devices.set(peripherals)
+                            
+                            // Only timeout if no devices have been found yet
+                            if start.addingTimeInterval(timeout) < Date() && !await devices.didFindDevices() {
+                                throw BluetoothCommandError.noDevicesFound
+                            }
                         }
-
-                        await devices.set(peripherals)
+                    } catch is CancellationError {
+                        // User cancelled, output what we have
                     }
-                    // One-time JSON output
-                    // await cliOutput.result(devices.devices)
+                    
+                    // Output JSON result
+                    try await cliOutput.result(await devices.getDevices())
                 } else {
                     if !JSONMode.isEnabled {
                         cliOutput.info("Press Ctrl+C to exit")
@@ -233,7 +253,7 @@ struct BluetoothCommand: AsyncParsableCommand {
                         ) { devices -> (headers: [String], rows: [[String]]) in
                             return (
                                 headers: ["Name", "Address", "Type", "Status"],
-                                rows: devices.filter(\.connected).map { device in
+                                rows: devices.filter(\.paired).map { device in
                                     [
                                         device.name,
                                         device.address,
@@ -337,7 +357,7 @@ struct BluetoothCommand: AsyncParsableCommand {
                         ) { devices -> (headers: [String], rows: [[String]]) in
                             return (
                                 headers: ["Name", "Address", "Type", "Status"],
-                                rows: devices.filter(\.connected).map { device in
+                                rows: devices.filter { !$0.connected }.map { device in
                                     [
                                         device.name,
                                         device.address,

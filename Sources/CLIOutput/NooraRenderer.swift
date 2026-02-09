@@ -210,10 +210,11 @@ public struct NooraRenderer: CLIOutput, Sendable {
         operation: @escaping @Sendable (@escaping @Sendable (Double) -> Void) async throws -> T
     ) async throws -> T {
         try await noora.progressBarStep(message: message) { updateProgress in
-            nonisolated(unsafe) let updateProgress = updateProgress
-            return try await operation { progress in
+            // Wrap the updateProgress closure to make it @Sendable
+            let sendableUpdate: @Sendable (Double) -> Void = { progress in
                 updateProgress(progress)
             }
+            return try await operation(sendableUpdate)
         }
     }
 
