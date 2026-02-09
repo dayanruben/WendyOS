@@ -151,7 +151,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     commandName: "wendy run"
                 ) {
                     try await startContainerdContainer(
-                        imageName: appName,
+                        imageName: appName.name,
                         client: client,
                         hostname: endpoint.host
                     )

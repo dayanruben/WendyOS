@@ -48,6 +48,10 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         "ef8fa5a2eda766e3b1df791dc175bbf87f570b9cc6f95ada1fe7643a327e087e"
     }
 
+    struct BuiltApp: Sendable {
+        let name: String
+    }
+
     func run() async throws {
         try await withContainer { _, _, _ in
             cliOutput.success("Build complete! Run 'wendy run' to start the app.")
@@ -55,8 +59,10 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
     }
 
     func withContainer(
-        perform: (String, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint) async throws
-            -> Void
+        perform:
+            @Sendable @escaping (
+                BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
+            ) async throws -> Void
     ) async throws {
         try await withErrorTracking {
             let currentPath = FileManager.default.currentDirectoryPath
@@ -64,15 +70,18 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
             let directory = try FileManager.default.contentsOfDirectory(atPath: currentPath)
 
             for item in directory where isDockerfile(item) {
-                try await buildDockerfileApp()
+                try await withBuiltDockerfileApp(perform: perform)
                 return
             }
 
             if isSwiftPackage {
-                try await buildSwiftApp()
+                try await withBuiltSwiftApp(perform: perform)
             } else if isPythonProject(directory: directory) {
                 // Python project without Dockerfile - offer to generate one
                 try await generatePythonDockerfileAndBuild()
+
+                // Now build as a Dockerfile app
+                try await withBuiltDockerfileApp(perform: perform)
             } else {
                 cliOutput.error(
                     "Directory is not a Swift Package, nor can it be built as a docker container"
@@ -166,12 +175,14 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         // Generate and write Dockerfile
         try generator.writeDockerfile(entryPoint: entryPoint)
         cliOutput.success("Generated Dockerfile")
-
-        // Now build as a Dockerfile app
-        try await buildDockerfileApp()
     }
 
-    func buildDockerfileApp() async throws {
+    func withBuiltDockerfileApp(
+        perform:
+            @Sendable @escaping (
+                BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
+            ) async throws -> Void
+    ) async throws {
         try await AppBuildHelpers.checkDockerIsRunning(shouldAutoAccept: shouldAutoAccept)
 
         let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -242,11 +253,20 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 cliOutput.success("App ready")
             }
 
-            cliOutput.success("Build complete! Run 'wendy run' to start the app.")
+            try await perform(
+                BuiltApp(name: name),
+                client,
+                endpoint
+            )
         }
     }
 
-    func buildSwiftApp() async throws {
+    func withBuiltSwiftApp(
+        perform:
+            @Sendable @escaping (
+                BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
+            ) async throws -> Void
+    ) async throws {
         try await AppBuildHelpers.checkSwiftRequirements(
             swiftVersion: swiftVersion,
             swiftSDK: swiftSDK,
@@ -466,6 +486,12 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 }
                 cliOutput.success("Container created")
             }
+
+            try await perform(
+                BuiltApp(name: appName),
+                client,
+                endpoint
+            )
         }
     }
 }
