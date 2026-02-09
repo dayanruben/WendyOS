@@ -266,14 +266,14 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                     "swift-container-plugin version \(containerPlugin.version) is installed, but version \(requiredContainerPluginVersion) or higher is required."
                 )
 
-                guard
-                    shouldAutoAccept
-                        || cliOutput.yesOrNoChoicePrompt(
-                            question:
-                                "Do you want to update swift-container-plugin to \(requiredContainerPluginVersion)?"
-                        )
-                else {
-                    Noora().error(
+                if autoAccept {
+                    ()
+                } else if try await !cliOutput.yesOrNoPrompt(
+                    question:
+                        "Do you want to update swift-container-plugin to \(requiredContainerPluginVersion)?",
+                    defaultAnswer: true
+                ) {
+                    cliOutput.error(
                         "swift-container-plugin \(requiredContainerPluginVersion)+ is required. Please update it manually."
                     )
                     return
