@@ -648,6 +648,9 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                             resources.append(
                                 (source: backtraceUrl.path(), destination: destination)
                             )
+                            additionalEnv.append(
+                                "SWIFT_BACKTRACE=enable=yes,sanitize=yes,threads=all,images=all,interactive=no,swift-backtrace=/swift-backtrace"
+                            )
                         } else {
                             let backtraceUrl = URL(fileURLWithPath: CommandLine.arguments[0])
                                 .deletingLastPathComponent()
