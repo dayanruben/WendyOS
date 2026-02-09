@@ -1,6 +1,7 @@
 import Foundation
 import GRPCCore
 import Logging
+import NIOFoundationCompat
 import WendyAgentGRPC
 
 /// gRPC service for audio device management and streaming
