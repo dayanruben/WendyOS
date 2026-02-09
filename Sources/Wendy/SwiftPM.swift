@@ -440,16 +440,50 @@ public struct SwiftPM: Sendable {
     }
 
     /// Compares two semantic version strings. Returns true if version1 >= version2.
+    ///
+    /// The comparison:
+    /// - Strips any pre-release (`-...`) or build (`+...`) metadata.
+    /// - Requires a full `major.minor.patch` numeric form.
+    /// - Treats parse failures as "not at least" (returns `false`).
     public static func isVersion(_ version1: String, atLeast version2: String) -> Bool {
-        let v1Parts = version1.split(separator: ".").compactMap { Int($0) }
-        let v2Parts = version2.split(separator: ".").compactMap { Int($0) }
-
-        for i in 0..<max(v1Parts.count, v2Parts.count) {
-            let v1 = i < v1Parts.count ? v1Parts[i] : 0
-            let v2 = i < v2Parts.count ? v2Parts[i] : 0
-            if v1 > v2 { return true }
-            if v1 < v2 { return false }
+        guard
+            let v1 = parseSemVer(version1),
+            let v2 = parseSemVer(version2)
+        else {
+            // If either version cannot be parsed as a full SemVer, conservatively
+            // treat it as not satisfying the "at least" requirement.
+            return false
         }
-        return true  // versions are equal
+
+        if v1.major != v2.major {
+            return v1.major > v2.major
+        }
+        if v1.minor != v2.minor {
+            return v1.minor > v2.minor
+        }
+        if v1.patch != v2.patch {
+            return v1.patch > v2.patch
+        }
+        // versions are equal
+        return true
+    }
+
+    /// Parses a semantic version string in the form `major.minor.patch`,
+    /// ignoring any pre-release (`-...`) or build (`+...`) metadata.
+    /// Returns `nil` if the string is not a valid full numeric SemVer.
+    private static func parseSemVer(_ version: String) -> (major: Int, minor: Int, patch: Int)? {
+        // Strip pre-release and build metadata.
+        let withoutPrerelease = version.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        let coreVersion = String(withoutPrerelease).split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)[0]
+
+        let components = coreVersion.split(separator: ".")
+        guard components.count == 3,
+              let major = Int(components[0]),
+              let minor = Int(components[1]),
+              let patch = Int(components[2]) else {
+            return nil
+        }
+
+        return (major: major, minor: minor, patch: patch)
     }
 }
