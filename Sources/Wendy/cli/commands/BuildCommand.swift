@@ -54,13 +54,16 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
     func run() async throws {
         try await withErrorTracking {
-            try await withContainer { _, _, _ in
+            try await withContainer(
+                restartPolicy: .with { $0.mode = .no }
+            ) { _, _, _ in
                 cliOutput.success("Build complete! Run 'wendy run' to start the app.")
             }
         }
     }
 
     func withContainer(
+        restartPolicy: RestartPolicy,
         perform:
             @Sendable @escaping (
                 BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
@@ -71,12 +74,18 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         let directory = try FileManager.default.contentsOfDirectory(atPath: currentPath)
 
         for item in directory where isDockerfile(item) {
-            try await withBuiltDockerfileApp(perform: perform)
+            try await withBuiltDockerfileApp(
+                restartPolicy: restartPolicy,
+                perform: perform
+            )
             return
         }
 
         if isSwiftPackage {
-            try await withBuiltSwiftApp(perform: perform)
+            try await withBuiltSwiftApp(
+                restartPolicy: restartPolicy,
+                perform: perform
+            )
         } else if isPythonProject(directory: directory) {
             // Python project without Dockerfile - offer to generate one
             try await generatePythonDockerfileAndBuild()
@@ -89,7 +98,10 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 return
             }
             // Now build as a Dockerfile app
-            try await withBuiltDockerfileApp(perform: perform)
+            try await withBuiltDockerfileApp(
+                restartPolicy: restartPolicy,
+                perform: perform
+            )
         } else {
             cliOutput.error(
                 "Directory is not a Swift Package, nor can it be built as a docker container"
@@ -185,6 +197,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
     }
 
     func withBuiltDockerfileApp(
+        restartPolicy: RestartPolicy,
         perform:
             @Sendable @escaping (
                 BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
@@ -250,7 +263,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                     try await AppBuildHelpers.createContainerdContainer(
                         appName: name,
                         client: client,
-                        restartPolicy: .with { $0.mode = .no },
+                        restartPolicy: restartPolicy,
                         progress: updateProgress
                     )
                 }
@@ -266,6 +279,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
     }
 
     func withBuiltSwiftApp(
+        restartPolicy: RestartPolicy,
         perform:
             @Sendable @escaping (
                 BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
@@ -482,7 +496,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                     try await AppBuildHelpers.createContainerdContainer(
                         appName: appName,
                         client: client,
-                        restartPolicy: .with { $0.mode = .no },
+                        restartPolicy: restartPolicy,
                         progress: updateProgress
                     )
                 }

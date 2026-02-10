@@ -143,7 +143,9 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 autoAccept: autoAccept,
                 executable: _executable,
                 agentConnectionOptions: _agentConnectionOptions
-            ).withContainer { appName, client, endpoint in
+            ).withContainer(
+                restartPolicy: buildRestartPolicy()
+            ) { appName, client, endpoint in
                 cliOutput.info("Starting container on \(endpoint.host)")
                 try await AppBuildHelpers.executePhase(
                     phase: "start_container",
@@ -152,8 +154,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     try await startContainerdContainer(
                         imageName: appName.name,
                         client: client,
-                        hostname: endpoint.host,
-                        restartPolicy: buildRestartPolicy()
+                        hostname: endpoint.host
                     )
                 }
             }
