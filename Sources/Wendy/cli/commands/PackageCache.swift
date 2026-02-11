@@ -8,21 +8,17 @@ struct PackageCache: Sendable {
         let packageSwiftHash: String
         let packageIdentity: String
         let executables: [SwiftPM.Executable]
-        let hasContainerPlugin: Bool
-        /// The version of the container plugin if installed, nil otherwise
         let containerPluginVersion: String?
 
         init(
             packageSwiftHash: String,
             packageIdentity: String,
             executables: [SwiftPM.Executable],
-            hasContainerPlugin: Bool,
             containerPluginVersion: String? = nil
         ) {
             self.packageSwiftHash = packageSwiftHash
             self.packageIdentity = packageIdentity
             self.executables = executables
-            self.hasContainerPlugin = hasContainerPlugin
             self.containerPluginVersion = containerPluginVersion
         }
     }
