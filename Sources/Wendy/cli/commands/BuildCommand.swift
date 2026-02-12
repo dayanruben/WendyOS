@@ -78,6 +78,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
     func withContainer(
         restartPolicy: RestartPolicy,
+        userArgs: [String] = [],
         perform:
             @Sendable @escaping (
                 BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
@@ -90,6 +91,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         for item in directory where isDockerfile(item) {
             try await withBuiltDockerfileApp(
                 restartPolicy: restartPolicy,
+                userArgs: userArgs,
                 perform: perform
             )
             return
@@ -98,6 +100,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         if isSwiftPackage {
             try await withBuiltSwiftApp(
                 restartPolicy: restartPolicy,
+                userArgs: userArgs,
                 perform: perform
             )
         } else if isPythonProject(directory: directory) {
@@ -114,6 +117,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
             // Now build as a Dockerfile app
             try await withBuiltDockerfileApp(
                 restartPolicy: restartPolicy,
+                userArgs: userArgs,
                 perform: perform
             )
         } else {
@@ -212,6 +216,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
     func withBuiltDockerfileApp(
         restartPolicy: RestartPolicy,
+        userArgs: [String] = [],
         perform:
             @Sendable @escaping (
                 BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
@@ -228,7 +233,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
         try await withAgentGRPCClientAndEndpoint(
             agentConnectionOptions,
             title: "Which device do you want to build this app for?"
-        ) { [name, dockerContext] client, endpoint in
+        ) { [name, dockerContext, userArgs] client, endpoint in
             // Build additional properties for analytics
             var buildPhaseProperties: [String: String] = [:]
             if let dockerContext {
@@ -278,6 +283,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         appName: name,
                         client: client,
                         restartPolicy: restartPolicy,
+                        userArgs: userArgs,
                         progress: updateProgress
                     )
                 }
@@ -294,6 +300,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
     func withBuiltSwiftApp(
         restartPolicy: RestartPolicy,
+        userArgs: [String] = [],
         perform:
             @Sendable @escaping (
                 BuiltApp, GRPCClient<GRPCTransport>, AgentConnectionOptions.Endpoint
@@ -511,6 +518,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         appName: appName,
                         client: client,
                         restartPolicy: restartPolicy,
+                        userArgs: userArgs,
                         progress: updateProgress
                     )
                 }

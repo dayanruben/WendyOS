@@ -277,9 +277,9 @@ enum AppBuildHelpers {
             successMessage: "Swift environment ready",
             errorMessage: "Failed to check Swift requirements"
         ) {
-            async let sdks = try await swiftPM.listSDKs()
-            async let versions = try await swiftPM.listSwiftVersions()
-            return try await (sdks, versions)
+            let sdks = (try? await swiftPM.listSDKs()) ?? []
+            let versions = try await swiftPM.listSwiftVersions()
+            return (sdks, versions)
         }
 
         if !installedSDKs.contains(swiftSDK) {
@@ -341,6 +341,7 @@ enum AppBuildHelpers {
         appName: String,
         client: GRPCClient<HTTP2ClientTransport.Posix>,
         restartPolicy: RestartPolicy,
+        userArgs: [String] = [],
         progress: ((ProgressBarUpdate) -> Void)? = nil
     ) async throws {
         let logger = Logger(label: "sh.wendy.cli.build.containerd.create")
@@ -356,6 +357,7 @@ enum AppBuildHelpers {
             $0.appName = appName
             $0.appConfig = appConfigData
             $0.restartPolicy = restartPolicy
+            $0.userArgs = userArgs
         }
 
         let progressHandler = SendableProgressUpdater(progress ?? { _ in })

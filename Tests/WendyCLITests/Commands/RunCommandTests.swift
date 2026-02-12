@@ -1,3 +1,4 @@
+import AppConfig
 import ArgumentParser
 import Foundation
 import Testing
@@ -216,6 +217,150 @@ struct RunCommandTests {
             #expect(throws: (any Error).self) {
                 try RunCommand.parse(["--no-restart", "--deploy"]).validate()
             }
+        }
+    }
+
+    // MARK: - Passthrough Args Tests
+
+    @Suite("Passthrough Args Parsing")
+    struct PassthroughArgsTests {
+
+        @Test("No passthrough args by default")
+        func testNoPassthroughArgs() throws {
+            let cmd = try RunCommand.parse([])
+            #expect(cmd.userPassthroughArgs.isEmpty)
+        }
+
+        @Test("Captures args after --")
+        func testCapturePassthroughArgs() throws {
+            let cmd = try RunCommand.parse(["--", "--port", "9090"])
+            #expect(cmd.userPassthroughArgs == ["--port", "9090"])
+        }
+
+        @Test("Passthrough args with existing flags")
+        func testPassthroughWithFlags() throws {
+            let cmd = try RunCommand.parse(["--deploy", "--", "--port", "9090"])
+            #expect(cmd.deploy == true)
+            #expect(cmd.userPassthroughArgs == ["--port", "9090"])
+        }
+
+        @Test("Passthrough args filters -- separator")
+        func testFiltersSeparator() throws {
+            let cmd = try RunCommand.parse(["--", "--debug"])
+            // The separator should be filtered out
+            #expect(!cmd.userPassthroughArgs.contains("--"))
+            #expect(cmd.userPassthroughArgs == ["--debug"])
+        }
+    }
+
+    // MARK: - Merge Args Tests
+
+    @Suite("Merge Args Logic")
+    struct MergeArgsTests {
+
+        @Test("CLI only args")
+        func testCLIOnly() {
+            let result = RunCommand.mergeArgs(jsonArgs: nil, cliArgs: ["--port", "9090"])
+            #expect(result == ["--port", "9090"])
+        }
+
+        @Test("JSON only args with string value")
+        func testJSONOnlyString() {
+            let jsonArgs: [String: ArgValue] = ["--port": .string("8080")]
+            let result = RunCommand.mergeArgs(jsonArgs: jsonArgs, cliArgs: [])
+            #expect(result.contains("--port"))
+            #expect(result.contains("8080"))
+        }
+
+        @Test("JSON only args with bool true")
+        func testJSONOnlyBoolTrue() {
+            let jsonArgs: [String: ArgValue] = ["-v": .bool(true)]
+            let result = RunCommand.mergeArgs(jsonArgs: jsonArgs, cliArgs: [])
+            #expect(result == ["-v"])
+        }
+
+        @Test("JSON only args with bool false are omitted")
+        func testJSONOnlyBoolFalse() {
+            let jsonArgs: [String: ArgValue] = ["--quiet": .bool(false)]
+            let result = RunCommand.mergeArgs(jsonArgs: jsonArgs, cliArgs: [])
+            #expect(result.isEmpty)
+        }
+
+        @Test("CLI overrides JSON by key")
+        func testCLIOverridesJSON() {
+            let jsonArgs: [String: ArgValue] = [
+                "--port": .string("8080"),
+                "-v": .bool(true),
+            ]
+            let cliArgs = ["--port", "9090", "--debug"]
+            let result = RunCommand.mergeArgs(jsonArgs: jsonArgs, cliArgs: cliArgs)
+
+            // CLI's --port should override JSON's --port
+            #expect(!result.contains("8080"))
+            #expect(result.contains("--port"))
+            #expect(result.contains("9090"))
+            // JSON's -v should be kept
+            #expect(result.contains("-v"))
+            // CLI's --debug should be included
+            #expect(result.contains("--debug"))
+        }
+
+        @Test("No args returns empty")
+        func testNoArgs() {
+            let result = RunCommand.mergeArgs(jsonArgs: nil, cliArgs: [])
+            #expect(result.isEmpty)
+        }
+
+        @Test("Empty JSON args returns CLI args only")
+        func testEmptyJSONArgs() {
+            let result = RunCommand.mergeArgs(jsonArgs: [:], cliArgs: ["--foo"])
+            #expect(result == ["--foo"])
+        }
+    }
+
+    // MARK: - AppConfig Args Decoding Tests
+
+    @Suite("AppConfig Args Decoding")
+    struct AppConfigArgsTests {
+
+        @Test("Decodes args with string values")
+        func testDecodeStringArgs() throws {
+            let json = """
+                {"appId": "test", "version": "1.0", "entitlements": [], "args": {"--port": "8080"}}
+                """
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(config.args?["--port"] == .string("8080"))
+        }
+
+        @Test("Decodes args with bool values")
+        func testDecodeBoolArgs() throws {
+            let json = """
+                {"appId": "test", "version": "1.0", "entitlements": [], "args": {"-v": true, "--quiet": false}}
+                """
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(config.args?["-v"] == .bool(true))
+            #expect(config.args?["--quiet"] == .bool(false))
+        }
+
+        @Test("Decodes config without args field")
+        func testDecodeWithoutArgs() throws {
+            let json = """
+                {"appId": "test", "version": "1.0", "entitlements": []}
+                """
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(config.args == nil)
+        }
+
+        @Test("Decodes args with mixed values")
+        func testDecodeMixedArgs() throws {
+            let json = """
+                {"appId": "test", "version": "1.0", "entitlements": [], "args": {"--port": "8080", "-v": true, "--quiet": false}}
+                """
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(config.args?.count == 3)
+            #expect(config.args?["--port"] == .string("8080"))
+            #expect(config.args?["-v"] == .bool(true))
+            #expect(config.args?["--quiet"] == .bool(false))
         }
     }
 }
