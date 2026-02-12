@@ -41,7 +41,12 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
     init() {}
 
-    init(debug: Bool, autoAccept: Bool, executable: String?, agentConnectionOptions: AgentConnectionOptions) {
+    init(
+        debug: Bool,
+        autoAccept: Bool,
+        executable: String?,
+        agentConnectionOptions: AgentConnectionOptions
+    ) {
         self.debug = debug
         self.autoAccept = autoAccept
         self.executable = executable
