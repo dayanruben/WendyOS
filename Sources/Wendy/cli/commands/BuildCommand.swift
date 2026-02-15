@@ -327,10 +327,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
             allExecutables = executables
             packageIdentity = package.identity
-            let containerPlugin = package.dependencies.first {
-                $0.url.hasSuffix("swift-container-plugin")
-                    || $0.url.hasSuffix("swift-container-plugin.git")
-            }
+            let containerPlugin = package.findDependency(urlSuffix: "swift-container-plugin")
 
             // Write to cache
             if let hash = try? cache.computePackageSwiftHash() {
@@ -347,16 +344,16 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
 
         let containerPluginURL = "https://github.com/apple/swift-container-plugin.git"
         let requiredContainerPluginVersion = "1.3.0"
-        let backtraceAvailable: Bool
+        let pluginSupportsBacktrace: Bool
         if let containerPluginVersion {
             // Plugin exists, check version
             if !SwiftPM.isVersion(containerPluginVersion, atLeast: requiredContainerPluginVersion) {
                 cliOutput.warning(
                     "swift-container-plugin version \(containerPluginVersion) is installed, but version \(requiredContainerPluginVersion) or higher is recommended"
                 )
-                backtraceAvailable = false
+                pluginSupportsBacktrace = false
             } else {
-                backtraceAvailable = true
+                pluginSupportsBacktrace = true
             }
         } else {
             cliOutput.info(
@@ -384,7 +381,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 url: containerPluginURL,
                 from: requiredContainerPluginVersion
             )
-            backtraceAvailable = true
+            pluginSupportsBacktrace = true
         }
 
         let executableTargets = allExecutables.filter {
@@ -453,7 +450,7 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                 findBacktrace: for binaryName in [
                     "swift-backtrace-static-linux-arm64",
                     "swift-backtrace-linux-arm64",
-                ] where backtraceAvailable {
+                ] where pluginSupportsBacktrace {
                     let destination = "/swift-backtrace"
                     if let backtraceUrl = Bundle.module.url(
                         forResource: binaryName,
