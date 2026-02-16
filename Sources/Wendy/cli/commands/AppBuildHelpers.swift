@@ -277,9 +277,9 @@ enum AppBuildHelpers {
             successMessage: "Swift environment ready",
             errorMessage: "Failed to check Swift requirements"
         ) {
-            let sdks = (try? await swiftPM.listSDKs()) ?? []
-            let versions = try await swiftPM.listSwiftVersions()
-            return (sdks, versions)
+            async let sdks = try await swiftPM.listSDKs()
+            async let versions = try await swiftPM.listSwiftVersions()
+            return try await (sdks, versions)
         }
 
         if !installedSDKs.contains(swiftSDK) {

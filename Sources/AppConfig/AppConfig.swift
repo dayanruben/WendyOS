@@ -1,37 +1,12 @@
 import ArgumentParser
 import Foundation
 
-public enum ArgValue: Codable, Sendable, Hashable {
-    case string(String)
-    case bool(Bool)
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let boolValue = try? container.decode(Bool.self) {
-            self = .bool(boolValue)
-        } else {
-            self = .string(try container.decode(String.self))
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .string(let value):
-            try container.encode(value)
-        case .bool(let value):
-            try container.encode(value)
-        }
-    }
-}
-
 public struct AppConfig: Codable {
     public let appId: String
     public let version: String
     public var language: String?
     public var entitlements: [Entitlement]
     public var python: PythonConfig?
-    public var args: [String: ArgValue]?
 
     public struct PythonConfig: Codable, Sendable, Hashable {
         public struct PythonContainerConfig: Codable, Sendable, Hashable {
@@ -49,14 +24,12 @@ public struct AppConfig: Codable {
         appId: String,
         version: String,
         language: String? = nil,
-        entitlements: [Entitlement],
-        args: [String: ArgValue]? = nil
+        entitlements: [Entitlement]
     ) {
         self.appId = appId
         self.version = version
         self.language = language
         self.entitlements = entitlements
-        self.args = args
     }
 
     /// Validates wendy.json data and returns warnings for unknown keys in entitlements.

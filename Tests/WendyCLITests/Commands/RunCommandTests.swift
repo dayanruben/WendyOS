@@ -1,4 +1,3 @@
-import AppConfig
 import ArgumentParser
 import Foundation
 import Testing
@@ -253,49 +252,4 @@ struct RunCommandTests {
         }
     }
 
-    // MARK: - AppConfig Args Decoding Tests
-
-    @Suite("AppConfig Args Decoding")
-    struct AppConfigArgsTests {
-
-        @Test("Decodes args with string values")
-        func testDecodeStringArgs() throws {
-            let json = """
-                {"appId": "test", "version": "1.0", "entitlements": [], "args": {"--port": "8080"}}
-                """
-            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
-            #expect(config.args?["--port"] == .string("8080"))
-        }
-
-        @Test("Decodes args with bool values")
-        func testDecodeBoolArgs() throws {
-            let json = """
-                {"appId": "test", "version": "1.0", "entitlements": [], "args": {"-v": true, "--quiet": false}}
-                """
-            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
-            #expect(config.args?["-v"] == .bool(true))
-            #expect(config.args?["--quiet"] == .bool(false))
-        }
-
-        @Test("Decodes config without args field")
-        func testDecodeWithoutArgs() throws {
-            let json = """
-                {"appId": "test", "version": "1.0", "entitlements": []}
-                """
-            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
-            #expect(config.args == nil)
-        }
-
-        @Test("Decodes args with mixed values")
-        func testDecodeMixedArgs() throws {
-            let json = """
-                {"appId": "test", "version": "1.0", "entitlements": [], "args": {"--port": "8080", "-v": true, "--quiet": false}}
-                """
-            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
-            #expect(config.args?.count == 3)
-            #expect(config.args?["--port"] == .string("8080"))
-            #expect(config.args?["-v"] == .bool(true))
-            #expect(config.args?["--quiet"] == .bool(false))
-        }
-    }
 }
