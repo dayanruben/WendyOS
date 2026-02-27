@@ -391,14 +391,14 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
         return ServerResponse(
             message: .with {
                 $0.version = Version.current
+                $0.os = os
                 if let osVersion {
                     $0.osVersion = osVersion
-                    $0.os = os
-                    if let arch {
-                        $0.cpuArchitecture = arch
-                    }
-                    $0.featureset = featueset.map { $0.rawValue }
                 }
+                if let arch {
+                    $0.cpuArchitecture = arch
+                }
+                $0.featureset = featueset.map { $0.rawValue }
             }
         )
     }

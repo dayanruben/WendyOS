@@ -102,8 +102,17 @@ struct DeviceCommand: AsyncParsableCommand {
                 print(String(data: data, encoding: .utf8)!)
             } else {
                 print("Agent version: \(version.version)")
+                if !version.os.isEmpty {
+                    print("OS: \(version.os)")
+                }
                 if version.hasOsVersion {
                     print("OS version: \(version.osVersion)")
+                }
+                if !version.cpuArchitecture.isEmpty {
+                    print("Architecture: \(version.cpuArchitecture)")
+                }
+                if !version.featureset.isEmpty {
+                    print("Features: \(version.featureset.joined(separator: ", "))")
                 }
                 if let latestVersion, version.version != latestVersion {
                     print("Update available: \(latestVersion)")
@@ -205,8 +214,15 @@ struct DeviceCommand: AsyncParsableCommand {
                             )
                         }
                     } else {
-                        // Default to aarch64 (most common for devices)
-                        targetPlatform = .linuxAarch64
+                        // Query the device for its architecture
+                        targetPlatform = try await withAgentGRPCClient(
+                            agentConnectionOptions,
+                            title: "Detecting device architecture"
+                        ) { client in
+                            let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
+                            let version = try await agent.getAgentVersion(request: .init(message: .init()))
+                            return try Platform.linuxPlatform(forArchitecture: version.cpuArchitecture)
+                        }
                     }
 
                     binary = try await downloadLatestRelease(
@@ -353,9 +369,11 @@ struct DeviceCommand: AsyncParsableCommand {
                         return false
                     }
 
-                    // TODO: Detect platform of remote device
-                    // Default to Linux aarch64 for device updates during setup
-                    let binary = try await downloadLatestRelease(platform: .linuxAarch64).path
+                    // Detect platform of remote device
+                    let agentService = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
+                    let versionInfo = try await agentService.getAgentVersion(request: .init(message: .init()))
+                    let devicePlatform = try Platform.linuxPlatform(forArchitecture: versionInfo.cpuArchitecture)
+                    let binary = try await downloadLatestRelease(platform: devicePlatform).path
                     _ = try await cliOutput.withProgressBar(
                         message: "Updating Device"
                     ) {
