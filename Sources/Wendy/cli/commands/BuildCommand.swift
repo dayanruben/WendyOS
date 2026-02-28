@@ -389,7 +389,6 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         progress: updateProgress
                     )
                 }
-                cliOutput.success("App ready")
             }
 
             try await perform(
@@ -679,7 +678,6 @@ struct BuildCommand: AsyncParsableCommand, Sendable {
                         progress: updateProgress
                     )
                 }
-                cliOutput.success("Container created")
             }
 
             try await perform(
