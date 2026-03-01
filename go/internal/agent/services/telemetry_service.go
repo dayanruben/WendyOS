@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -12,21 +13,28 @@ import (
 	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
 )
 
+const defaultMaxCachedLogs = 20
+
 // TelemetryBroadcaster fans out received OTEL telemetry to multiple connected clients.
 type TelemetryBroadcaster struct {
-	mu         sync.RWMutex
-	logSubs    map[string]chan *otelpb.ExportLogsServiceRequest
-	metricSubs map[string]chan *otelpb.ExportMetricsServiceRequest
-	traceSubs  map[string]chan *otelpb.ExportTraceServiceRequest
-	nextID     uint64
+	mu            sync.RWMutex
+	logSubs       map[string]chan *otelpb.ExportLogsServiceRequest
+	metricSubs    map[string]chan *otelpb.ExportMetricsServiceRequest
+	traceSubs     map[string]chan *otelpb.ExportTraceServiceRequest
+	nextID        uint64
+	recentLogs    []*otelpb.ExportLogsServiceRequest
+	maxCachedLogs int
+	latestMetrics map[string]*otelpb.ExportMetricsServiceRequest // keyed by "service:metric"
 }
 
 // NewTelemetryBroadcaster creates a new TelemetryBroadcaster.
 func NewTelemetryBroadcaster() *TelemetryBroadcaster {
 	return &TelemetryBroadcaster{
-		logSubs:    make(map[string]chan *otelpb.ExportLogsServiceRequest),
-		metricSubs: make(map[string]chan *otelpb.ExportMetricsServiceRequest),
-		traceSubs:  make(map[string]chan *otelpb.ExportTraceServiceRequest),
+		logSubs:       make(map[string]chan *otelpb.ExportLogsServiceRequest),
+		metricSubs:    make(map[string]chan *otelpb.ExportMetricsServiceRequest),
+		traceSubs:     make(map[string]chan *otelpb.ExportTraceServiceRequest),
+		maxCachedLogs: defaultMaxCachedLogs,
+		latestMetrics: make(map[string]*otelpb.ExportMetricsServiceRequest),
 	}
 }
 
@@ -36,12 +44,29 @@ func (b *TelemetryBroadcaster) nextSubID() string {
 }
 
 // SubscribeLogs adds a log subscriber and returns the channel and subscription ID.
+// Cached recent logs are pre-filled into the channel asynchronously.
 func (b *TelemetryBroadcaster) SubscribeLogs() (string, <-chan *otelpb.ExportLogsServiceRequest) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	id := b.nextSubID()
 	ch := make(chan *otelpb.ExportLogsServiceRequest, 64)
 	b.logSubs[id] = ch
+
+	// Pre-fill cached logs into the channel in a goroutine.
+	if len(b.recentLogs) > 0 {
+		cached := make([]*otelpb.ExportLogsServiceRequest, len(b.recentLogs))
+		copy(cached, b.recentLogs)
+		go func() {
+			for _, entry := range cached {
+				select {
+				case ch <- entry:
+				default:
+					return // channel full, stop pre-filling
+				}
+			}
+		}()
+	}
+
 	return id, ch
 }
 
@@ -55,8 +80,16 @@ func (b *TelemetryBroadcaster) UnsubscribeLogs(id string) {
 	}
 }
 
-// PublishLogs sends a log export request to all log subscribers.
+// PublishLogs sends a log export request to all log subscribers and caches the log.
 func (b *TelemetryBroadcaster) PublishLogs(req *otelpb.ExportLogsServiceRequest) {
+	b.mu.Lock()
+	// Append to recent logs ring buffer.
+	b.recentLogs = append(b.recentLogs, req)
+	if len(b.recentLogs) > b.maxCachedLogs {
+		b.recentLogs = b.recentLogs[len(b.recentLogs)-b.maxCachedLogs:]
+	}
+	b.mu.Unlock()
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, ch := range b.logSubs {
@@ -69,12 +102,31 @@ func (b *TelemetryBroadcaster) PublishLogs(req *otelpb.ExportLogsServiceRequest)
 }
 
 // SubscribeMetrics adds a metrics subscriber.
+// Cached latest metrics are pre-filled into the channel asynchronously.
 func (b *TelemetryBroadcaster) SubscribeMetrics() (string, <-chan *otelpb.ExportMetricsServiceRequest) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	id := b.nextSubID()
 	ch := make(chan *otelpb.ExportMetricsServiceRequest, 64)
 	b.metricSubs[id] = ch
+
+	// Pre-fill cached metrics into the channel in a goroutine.
+	if len(b.latestMetrics) > 0 {
+		cached := make([]*otelpb.ExportMetricsServiceRequest, 0, len(b.latestMetrics))
+		for _, v := range b.latestMetrics {
+			cached = append(cached, v)
+		}
+		go func() {
+			for _, entry := range cached {
+				select {
+				case ch <- entry:
+				default:
+					return
+				}
+			}
+		}()
+	}
+
 	return id, ch
 }
 
@@ -88,8 +140,21 @@ func (b *TelemetryBroadcaster) UnsubscribeMetrics(id string) {
 	}
 }
 
-// PublishMetrics sends a metrics export request to all metrics subscribers.
+// PublishMetrics sends a metrics export request to all metrics subscribers and updates the cache.
 func (b *TelemetryBroadcaster) PublishMetrics(req *otelpb.ExportMetricsServiceRequest) {
+	b.mu.Lock()
+	// Update latestMetrics cache keyed by "serviceName:metricName".
+	for _, rm := range req.GetResourceMetrics() {
+		serviceName := resourceServiceName(rm.GetResource())
+		for _, sm := range rm.GetScopeMetrics() {
+			for _, m := range sm.GetMetrics() {
+				key := serviceName + ":" + m.GetName()
+				b.latestMetrics[key] = req
+			}
+		}
+	}
+	b.mu.Unlock()
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, ch := range b.metricSubs {
@@ -196,6 +261,8 @@ func (s *TelemetryService) StreamMetrics(req *agentpb.StreamMetricsRequest, stre
 
 	s.logger.Info("StreamMetrics client connected", zap.String("sub_id", id))
 
+	hasFilter := req.ServiceName != nil || req.AppName != nil || req.MetricNamePrefix != nil
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -203,6 +270,13 @@ func (s *TelemetryService) StreamMetrics(req *agentpb.StreamMetricsRequest, stre
 		case metricsReq, ok := <-ch:
 			if !ok {
 				return nil
+			}
+
+			if hasFilter {
+				metricsReq = filterMetrics(metricsReq, req)
+				if metricsReq == nil {
+					continue
+				}
 			}
 
 			if err := stream.Send(&agentpb.StreamMetricsResponse{
@@ -223,6 +297,8 @@ func (s *TelemetryService) StreamTraces(req *agentpb.StreamTracesRequest, stream
 
 	s.logger.Info("StreamTraces client connected", zap.String("sub_id", id))
 
+	hasFilter := req.ServiceName != nil || req.AppName != nil || req.SpanNamePrefix != nil
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -230,6 +306,13 @@ func (s *TelemetryService) StreamTraces(req *agentpb.StreamTracesRequest, stream
 		case traceReq, ok := <-ch:
 			if !ok {
 				return nil
+			}
+
+			if hasFilter {
+				traceReq = filterTraces(traceReq, req)
+				if traceReq == nil {
+					continue
+				}
 			}
 
 			if err := stream.Send(&agentpb.StreamTracesResponse{
@@ -293,14 +376,212 @@ func (r *OTELTraceReceiver) Export(_ context.Context, req *otelpb.ExportTraceSer
 	return &otelpb.ExportTraceServiceResponse{}, nil
 }
 
+// matchResourceAttributes checks whether a resource's attributes match the given
+// service name and app name filters. Returns true if all specified filters match.
+func matchResourceAttributes(resource *otelpb.Resource, serviceName, appName *string) bool {
+	if serviceName == nil && appName == nil {
+		return true
+	}
+	for _, attr := range resource.GetAttributes() {
+		if serviceName != nil && attr.GetKey() == "service.name" {
+			if attr.GetValue().GetStringValue() != *serviceName {
+				return false
+			}
+		}
+		if appName != nil && attr.GetKey() == "wendy.app.name" {
+			if attr.GetValue().GetStringValue() != *appName {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// resourceServiceName extracts the service.name attribute from a resource, if present.
+func resourceServiceName(resource *otelpb.Resource) string {
+	for _, attr := range resource.GetAttributes() {
+		if attr.GetKey() == "service.name" {
+			return attr.GetValue().GetStringValue()
+		}
+	}
+	return ""
+}
+
 // filterLogs filters log records based on the stream request filters.
 // Returns nil if all records are filtered out.
 func filterLogs(req *otelpb.ExportLogsServiceRequest, filter *agentpb.StreamLogsRequest) *otelpb.ExportLogsServiceRequest {
-	// For now, pass through all logs. A full implementation would filter by
-	// service name, severity, and app name by inspecting resource attributes
-	// and log record fields.
-	_ = filter
-	return req
+	if filter == nil {
+		return req
+	}
+
+	serviceName := filter.ServiceName
+	appName := filter.AppName
+	var minSeverity int32
+	if filter.MinSeverity != nil {
+		minSeverity = *filter.MinSeverity
+	}
+
+	// If no filters, pass through.
+	if serviceName == nil && appName == nil && minSeverity == 0 {
+		return req
+	}
+
+	var filteredResourceLogs []*otelpb.ResourceLogs
+	for _, rl := range req.GetResourceLogs() {
+		// Check resource attributes for service.name and wendy.app.name.
+		if !matchResourceAttributes(rl.GetResource(), serviceName, appName) {
+			continue
+		}
+
+		// Filter by severity if specified.
+		if minSeverity > 0 {
+			var filteredScopeLogs []*otelpb.ScopeLogs
+			for _, sl := range rl.GetScopeLogs() {
+				var filteredRecords []*otelpb.LogRecord
+				for _, lr := range sl.GetLogRecords() {
+					if int32(lr.GetSeverityNumber()) >= minSeverity {
+						filteredRecords = append(filteredRecords, lr)
+					}
+				}
+				if len(filteredRecords) > 0 {
+					filtered := &otelpb.ScopeLogs{
+						Scope:      sl.GetScope(),
+						LogRecords: filteredRecords,
+						SchemaUrl:  sl.GetSchemaUrl(),
+					}
+					filteredScopeLogs = append(filteredScopeLogs, filtered)
+				}
+			}
+			if len(filteredScopeLogs) > 0 {
+				filteredResourceLogs = append(filteredResourceLogs, &otelpb.ResourceLogs{
+					Resource:  rl.GetResource(),
+					ScopeLogs: filteredScopeLogs,
+					SchemaUrl: rl.GetSchemaUrl(),
+				})
+			}
+		} else {
+			filteredResourceLogs = append(filteredResourceLogs, rl)
+		}
+	}
+
+	if len(filteredResourceLogs) == 0 {
+		return nil
+	}
+	return &otelpb.ExportLogsServiceRequest{ResourceLogs: filteredResourceLogs}
+}
+
+// filterMetrics filters metrics based on the stream request filters.
+// Returns nil if all metrics are filtered out.
+func filterMetrics(req *otelpb.ExportMetricsServiceRequest, filter *agentpb.StreamMetricsRequest) *otelpb.ExportMetricsServiceRequest {
+	if filter == nil {
+		return req
+	}
+
+	serviceName := filter.ServiceName
+	appName := filter.AppName
+	metricNamePrefix := filter.MetricNamePrefix
+
+	if serviceName == nil && appName == nil && metricNamePrefix == nil {
+		return req
+	}
+
+	var filteredResourceMetrics []*otelpb.ResourceMetrics
+	for _, rm := range req.GetResourceMetrics() {
+		if !matchResourceAttributes(rm.GetResource(), serviceName, appName) {
+			continue
+		}
+
+		if metricNamePrefix != nil {
+			prefix := *metricNamePrefix
+			var filteredScopeMetrics []*otelpb.ScopeMetrics
+			for _, sm := range rm.GetScopeMetrics() {
+				var filteredMetrics []*otelpb.Metric
+				for _, m := range sm.GetMetrics() {
+					if strings.HasPrefix(m.GetName(), prefix) {
+						filteredMetrics = append(filteredMetrics, m)
+					}
+				}
+				if len(filteredMetrics) > 0 {
+					filteredScopeMetrics = append(filteredScopeMetrics, &otelpb.ScopeMetrics{
+						Scope:     sm.GetScope(),
+						Metrics:   filteredMetrics,
+						SchemaUrl: sm.GetSchemaUrl(),
+					})
+				}
+			}
+			if len(filteredScopeMetrics) > 0 {
+				filteredResourceMetrics = append(filteredResourceMetrics, &otelpb.ResourceMetrics{
+					Resource:     rm.GetResource(),
+					ScopeMetrics: filteredScopeMetrics,
+					SchemaUrl:    rm.GetSchemaUrl(),
+				})
+			}
+		} else {
+			filteredResourceMetrics = append(filteredResourceMetrics, rm)
+		}
+	}
+
+	if len(filteredResourceMetrics) == 0 {
+		return nil
+	}
+	return &otelpb.ExportMetricsServiceRequest{ResourceMetrics: filteredResourceMetrics}
+}
+
+// filterTraces filters traces based on the stream request filters.
+// Returns nil if all spans are filtered out.
+func filterTraces(req *otelpb.ExportTraceServiceRequest, filter *agentpb.StreamTracesRequest) *otelpb.ExportTraceServiceRequest {
+	if filter == nil {
+		return req
+	}
+
+	serviceName := filter.ServiceName
+	appName := filter.AppName
+	spanNamePrefix := filter.SpanNamePrefix
+
+	if serviceName == nil && appName == nil && spanNamePrefix == nil {
+		return req
+	}
+
+	var filteredResourceSpans []*otelpb.ResourceSpans
+	for _, rs := range req.GetResourceSpans() {
+		if !matchResourceAttributes(rs.GetResource(), serviceName, appName) {
+			continue
+		}
+
+		if spanNamePrefix != nil {
+			prefix := *spanNamePrefix
+			var filteredScopeSpans []*otelpb.ScopeSpans
+			for _, ss := range rs.GetScopeSpans() {
+				var filteredSpans []*otelpb.Span
+				for _, s := range ss.GetSpans() {
+					if strings.HasPrefix(s.GetName(), prefix) {
+						filteredSpans = append(filteredSpans, s)
+					}
+				}
+				if len(filteredSpans) > 0 {
+					filteredScopeSpans = append(filteredScopeSpans, &otelpb.ScopeSpans{
+						Scope:     ss.GetScope(),
+						Spans:     filteredSpans,
+						SchemaUrl: ss.GetSchemaUrl(),
+					})
+				}
+			}
+			if len(filteredScopeSpans) > 0 {
+				filteredResourceSpans = append(filteredResourceSpans, &otelpb.ResourceSpans{
+					Resource:   rs.GetResource(),
+					ScopeSpans: filteredScopeSpans,
+					SchemaUrl:  rs.GetSchemaUrl(),
+				})
+			}
+		} else {
+			filteredResourceSpans = append(filteredResourceSpans, rs)
+		}
+	}
+
+	if len(filteredResourceSpans) == 0 {
+		return nil
+	}
+	return &otelpb.ExportTraceServiceRequest{ResourceSpans: filteredResourceSpans}
 }
 
 // Ensure compile-time interface compliance.

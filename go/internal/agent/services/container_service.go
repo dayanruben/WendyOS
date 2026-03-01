@@ -19,13 +19,28 @@ type ContainerService struct {
 	agentpb.UnimplementedWendyContainerServiceServer
 	logger     *zap.Logger
 	containerd ContainerdClient
+	logManager *ContainerLogManager
 }
 
 // NewContainerService creates a new ContainerService.
-func NewContainerService(logger *zap.Logger, client ContainerdClient) *ContainerService {
-	return &ContainerService{
+func NewContainerService(logger *zap.Logger, client ContainerdClient, opts ...ContainerServiceOption) *ContainerService {
+	s := &ContainerService{
 		logger:     logger,
 		containerd: client,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// ContainerServiceOption configures a ContainerService.
+type ContainerServiceOption func(*ContainerService)
+
+// WithLogManager sets the ContainerLogManager on the ContainerService.
+func WithLogManager(lm *ContainerLogManager) ContainerServiceOption {
+	return func(s *ContainerService) {
+		s.logManager = lm
 	}
 }
 
@@ -193,6 +208,8 @@ func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, st
 }
 
 // streamContainerOutput starts a container and streams its stdout/stderr to the client.
+// When a ContainerLogManager is configured, it reads from the log manager subscription
+// instead of directly from containerd, enabling multi-subscriber fan-out and telemetry bridging.
 func (s *ContainerService) streamContainerOutput(
 	ctx context.Context,
 	appName string,
@@ -212,11 +229,31 @@ func (s *ContainerService) streamContainerOutput(
 		return err
 	}
 
+	// If a log manager is configured, start a goroutine that publishes containerd
+	// output to the log manager, and subscribe to read from it.
+	var readCh <-chan ContainerOutput
+	if s.logManager != nil {
+		// Pump containerd output into the log manager.
+		go func() {
+			for output := range outputCh {
+				s.logManager.Publish(appName, output)
+			}
+			// When containerd channel closes, publish a Done marker.
+			s.logManager.Publish(appName, ContainerOutput{Done: true})
+		}()
+
+		subID, subCh := s.logManager.Subscribe(appName)
+		defer s.logManager.Unsubscribe(appName, subID)
+		readCh = subCh
+	} else {
+		readCh = outputCh
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case output, ok := <-outputCh:
+		case output, ok := <-readCh:
 			if !ok || output.Done {
 				return nil
 			}

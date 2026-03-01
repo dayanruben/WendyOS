@@ -44,12 +44,15 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string) (*tls.Config, error) {
 }
 
 // NewServer creates a gRPC server with mTLS credentials.
-func NewServer(certPEM, chainPEM, keyPEM string) (*grpc.Server, error) {
+// Additional gRPC server options can be passed and will be applied alongside the TLS credentials.
+func NewServer(certPEM, chainPEM, keyPEM string, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
 	tlsConfig, err := NewTLSConfig(certPEM, chainPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("creating TLS config: %w", err)
 	}
 
 	creds := credentials.NewTLS(tlsConfig)
-	return grpc.NewServer(grpc.Creds(creds)), nil
+	opts := []grpc.ServerOption{grpc.Creds(creds)}
+	opts = append(opts, extraOpts...)
+	return grpc.NewServer(opts...), nil
 }

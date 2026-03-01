@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/wendylabsinc/wendy/internal/agent/container"
 	agentcontainerd "github.com/wendylabsinc/wendy/internal/agent/containerd"
 	"github.com/wendylabsinc/wendy/internal/agent/hardware"
+	"github.com/wendylabsinc/wendy/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/internal/agent/network"
 	"github.com/wendylabsinc/wendy/internal/agent/services"
@@ -27,8 +29,9 @@ import (
 )
 
 const (
-	defaultAgentPort = "50051"
-	defaultOTELPort  = "4317"
+	defaultAgentPort    = "50051"
+	defaultOTELPort     = "4317"
+	defaultOTELHTTPPort = "4318"
 )
 
 func main() {
@@ -66,8 +69,10 @@ func main() {
 		defer ctrdClient.Close()
 	}
 
+	logManager := services.NewContainerLogManager(logger, broadcaster)
+
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager)
-	containerSvc := services.NewContainerService(logger, containerdClient)
+	containerSvc := services.NewContainerService(logger, containerdClient, services.WithLogManager(logManager))
 	audioSvc := services.NewAudioService(logger)
 
 	configPath := "/etc/wendy-agent"
@@ -126,7 +131,10 @@ func main() {
 			return
 		}
 
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM)
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM,
+			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+		)
 		if err != nil {
 			logger.Error("Failed to create mTLS server", zap.Error(err))
 			return
@@ -175,7 +183,10 @@ func main() {
 	}
 
 	// Plaintext agent gRPC server.
-	agentServer := grpc.NewServer()
+	agentServer := grpc.NewServer(
+		grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+		grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+	)
 	if alreadyProvisioned {
 		// When already provisioned, only expose ProvisioningService on plaintext.
 		agentpb.RegisterWendyProvisioningServiceServer(agentServer, provisioningSvc)
@@ -204,7 +215,10 @@ func main() {
 		otelPort = p
 	}
 
-	otelServer := grpc.NewServer()
+	otelServer := grpc.NewServer(
+		grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+		grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+	)
 	otelpb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
 	otelpb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
 	otelpb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
@@ -223,6 +237,27 @@ func main() {
 		}
 	}()
 
+	// OTEL HTTP/protobuf receiver server (port 4318).
+	otelHTTPPort := defaultOTELHTTPPort
+	if p := os.Getenv("WENDY_OTEL_HTTP_PORT"); p != "" {
+		otelHTTPPort = p
+	}
+
+	otelHTTPReceiver := services.NewOTELHTTPReceiver(logger, broadcaster)
+	otelHTTPLis, err := net.Listen("tcp", ":"+otelHTTPPort)
+	if err != nil {
+		logger.Fatal("Failed to listen on OTEL HTTP port", zap.String("port", otelHTTPPort), zap.Error(err))
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logger.Info("OTEL HTTP receiver listening", zap.String("port", otelHTTPPort))
+		if err := otelHTTPReceiver.Serve(otelHTTPLis); err != nil && err != http.ErrServerClosed {
+			logger.Error("OTEL HTTP server error", zap.Error(err))
+		}
+	}()
+
 	// Graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -233,6 +268,12 @@ func main() {
 	cancel()
 	agentServer.GracefulStop()
 	otelServer.GracefulStop()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := otelHTTPReceiver.Shutdown(shutdownCtx); err != nil {
+		logger.Error("OTEL HTTP server shutdown error", zap.Error(err))
+	}
 
 	mtlsMu.Lock()
 	if mtlsServer != nil {
