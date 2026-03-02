@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +15,8 @@ import (
 )
 
 const maxOTELHTTPBodySize = 10 * 1024 * 1024 // 10 MB
+
+var errBodyTooLarge = fmt.Errorf("request body exceeds %d bytes", maxOTELHTTPBodySize)
 
 // OTELHTTPReceiver serves OTLP data over HTTP/protobuf on port 4318.
 // Many OTEL SDKs (including the Python SDK) default to HTTP/protobuf export
@@ -56,7 +60,7 @@ func (r *OTELHTTPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) 
 	body, err := r.readBody(req)
 	if err != nil {
 		r.logger.Warn("Failed to read OTLP logs request body", zap.Error(err))
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		r.writeBodyError(w, err)
 		return
 	}
 
@@ -75,7 +79,7 @@ func (r *OTELHTTPReceiver) handleMetrics(w http.ResponseWriter, req *http.Reques
 	body, err := r.readBody(req)
 	if err != nil {
 		r.logger.Warn("Failed to read OTLP metrics request body", zap.Error(err))
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		r.writeBodyError(w, err)
 		return
 	}
 
@@ -94,7 +98,7 @@ func (r *OTELHTTPReceiver) handleTraces(w http.ResponseWriter, req *http.Request
 	body, err := r.readBody(req)
 	if err != nil {
 		r.logger.Warn("Failed to read OTLP traces request body", zap.Error(err))
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		r.writeBodyError(w, err)
 		return
 	}
 
@@ -109,6 +113,14 @@ func (r *OTELHTTPReceiver) handleTraces(w http.ResponseWriter, req *http.Request
 	w.WriteHeader(http.StatusOK)
 }
 
+func (r *OTELHTTPReceiver) writeBodyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errBodyTooLarge) {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+	} else {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+	}
+}
+
 func (r *OTELHTTPReceiver) readBody(req *http.Request) ([]byte, error) {
 	limited := io.LimitReader(req.Body, maxOTELHTTPBodySize+1)
 	body, err := io.ReadAll(limited)
@@ -116,7 +128,7 @@ func (r *OTELHTTPReceiver) readBody(req *http.Request) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(body)) > maxOTELHTTPBodySize {
-		return nil, io.ErrUnexpectedEOF
+		return nil, errBodyTooLarge
 	}
 	return body, nil
 }
