@@ -272,7 +272,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 
 		// Discover external provider devices. Microwasm devices are added
 		// to the collection so MergedDevices() can merge them with BLE Lite.
-		var nonMicrowasmExternals []struct {
+		var nonWendyLiteExternals []struct {
 			device   *models.ExternalDevice
 			provider providers.DeviceProvider
 		}
@@ -284,11 +284,11 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 			if err != nil || len(devices) == 0 {
 				continue
 			}
-			if prov.Key() == "microwasm" {
+			if prov.Key() == "wendy-lite" {
 				collection.ExternalDevices = append(collection.ExternalDevices, devices...)
 			} else {
 				for i := range devices {
-					nonMicrowasmExternals = append(nonMicrowasmExternals, struct {
+					nonWendyLiteExternals = append(nonWendyLiteExternals, struct {
 						device   *models.ExternalDevice
 						provider providers.DeviceProvider
 					}{device: &devices[i], provider: prov})
@@ -296,7 +296,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 			}
 		}
 
-		// Build merged picker items (LAN + BLE + microwasm).
+		// Build merged picker items (LAN + BLE + wendy-lite).
 		merged := collection.MergedDevices()
 		var items []tui.PickerItem
 		for i := range merged {
@@ -320,9 +320,9 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 			p.Send(tui.PickerAddMsg{Items: items})
 		}
 
-		// Add remaining non-microwasm external devices.
+		// Add remaining non-wendy-lite external devices.
 		var extItems []tui.PickerItem
-		for _, ext := range nonMicrowasmExternals {
+		for _, ext := range nonWendyLiteExternals {
 			extItems = append(extItems, tui.PickerItem{
 				Name:    ext.device.DisplayName,
 				Type:    "External",

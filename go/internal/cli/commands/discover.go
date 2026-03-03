@@ -338,8 +338,8 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 		rows = append(rows, []string{d.DisplayName, "Ethernet", d.IPAddress, "", d.AgentVersion})
 	}
 	for _, d := range collection.ExternalDevices {
-		// Microwasm devices are merged with BLE Lite in MergedDevices().
-		if d.ProviderKey == "microwasm" {
+		// Wendy Lite devices are merged with BLE Lite in MergedDevices().
+		if d.ProviderKey == "wendy-lite" {
 			continue
 		}
 		addr := fmt.Sprintf("%s: %s", d.ProviderKey, d.ID)

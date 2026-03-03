@@ -32,7 +32,7 @@ type microWendyBuildContext struct {
 // MicroWendyProvider builds Swift packages to WASM and serves them to ESP32 devices.
 type MicroWendyProvider struct{}
 
-func (p *MicroWendyProvider) Key() string         { return "microwasm" }
+func (p *MicroWendyProvider) Key() string         { return "wendy-lite" }
 func (p *MicroWendyProvider) DisplayName() string { return "Micro Wendy (WASM)" }
 
 func (p *MicroWendyProvider) IsAvailable(ctx context.Context) bool {
@@ -61,7 +61,7 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 		}
 
 		devices = append(devices, models.ExternalDevice{
-			ID:          fmt.Sprintf("microwasm:%s", svc.Hostname),
+			ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
 			DisplayName: displayName,
 			ProviderKey: p.Key(),
 			ConnectionInfo: map[string]string{
@@ -123,7 +123,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 	bc, ok := app.Context.(*microWendyBuildContext)
 	if !ok {
-		return fmt.Errorf("microwasm provider: invalid build context")
+		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
 	serveCtx, cancel := context.WithCancel(ctx)
@@ -199,7 +199,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 	bc, ok := app.Context.(*microWendyBuildContext)
 	if !ok {
-		return fmt.Errorf("microwasm provider: invalid build context")
+		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 	if bc.cancel != nil {
 		bc.cancel()

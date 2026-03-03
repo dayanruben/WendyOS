@@ -254,11 +254,11 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 		}
 	}
 
-	// Merge microwasm external devices by name. These represent the same
+	// Merge wendy-lite external devices by name. These represent the same
 	// physical Wendy Lite hardware discovered via mDNS (WiFi) instead of BLE.
 	for i := range c.ExternalDevices {
 		d := &c.ExternalDevices[i]
-		if d.ProviderKey != "microwasm" {
+		if d.ProviderKey != "wendy-lite" {
 			continue
 		}
 		key := strings.ToLower(d.DisplayName)
