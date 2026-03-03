@@ -159,7 +159,7 @@ elif [[ "$OS" == "linux" ]]; then
     sudo apt-get install -y wendy
 
   elif command -v dnf &>/dev/null; then
-    echo "DNF detected. Will add the Wendy repository and install wendy-cli."
+    echo "DNF detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
     echo "Adding Wendy YUM repository..."
@@ -171,10 +171,10 @@ enabled=1
 gpgcheck=0
 REPO
     sudo dnf makecache
-    sudo dnf install -y wendy-cli
+    sudo dnf install -y wendy
 
   elif command -v yum &>/dev/null; then
-    echo "YUM detected. Will add the Wendy repository and install wendy-cli."
+    echo "YUM detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
     echo "Adding Wendy YUM repository..."
@@ -186,7 +186,7 @@ enabled=1
 gpgcheck=0
 REPO
     sudo yum makecache
-    sudo yum install -y wendy-cli
+    sudo yum install -y wendy
 
   else
     TMPDIR_DL=$(mktemp -d)
