@@ -238,6 +238,9 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 // ListWiFiNetworks delegates to the NetworkManager.
 func (s *AgentService) ListWiFiNetworks(ctx context.Context, _ *agentpb.ListWiFiNetworksRequest) (*agentpb.ListWiFiNetworksResponse, error) {
+	if s.networkManager == nil {
+		return nil, status.Error(codes.Unavailable, "WiFi management is not available (nmcli not found)")
+	}
 	networks, err := s.networkManager.ListWiFiNetworks(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list WiFi networks: %v", err)
@@ -247,6 +250,9 @@ func (s *AgentService) ListWiFiNetworks(ctx context.Context, _ *agentpb.ListWiFi
 
 // ConnectToWiFi delegates to the NetworkManager.
 func (s *AgentService) ConnectToWiFi(ctx context.Context, req *agentpb.ConnectToWiFiRequest) (*agentpb.ConnectToWiFiResponse, error) {
+	if s.networkManager == nil {
+		return nil, status.Error(codes.Unavailable, "WiFi management is not available (nmcli not found)")
+	}
 	if err := s.networkManager.ConnectToWiFi(ctx, req.GetSsid(), req.GetPassword()); err != nil {
 		errMsg := err.Error()
 		return &agentpb.ConnectToWiFiResponse{Success: false, ErrorMessage: &errMsg}, nil
@@ -256,6 +262,9 @@ func (s *AgentService) ConnectToWiFi(ctx context.Context, req *agentpb.ConnectTo
 
 // GetWiFiStatus delegates to the NetworkManager.
 func (s *AgentService) GetWiFiStatus(ctx context.Context, _ *agentpb.GetWiFiStatusRequest) (*agentpb.GetWiFiStatusResponse, error) {
+	if s.networkManager == nil {
+		return nil, status.Error(codes.Unavailable, "WiFi management is not available (nmcli not found)")
+	}
 	connected, ssid, err := s.networkManager.GetWiFiStatus(ctx)
 	if err != nil {
 		errMsg := err.Error()
@@ -266,6 +275,9 @@ func (s *AgentService) GetWiFiStatus(ctx context.Context, _ *agentpb.GetWiFiStat
 
 // DisconnectWiFi delegates to the NetworkManager.
 func (s *AgentService) DisconnectWiFi(ctx context.Context, _ *agentpb.DisconnectWiFiRequest) (*agentpb.DisconnectWiFiResponse, error) {
+	if s.networkManager == nil {
+		return nil, status.Error(codes.Unavailable, "WiFi management is not available (nmcli not found)")
+	}
 	if err := s.networkManager.DisconnectWiFi(ctx); err != nil {
 		errMsg := err.Error()
 		return &agentpb.DisconnectWiFiResponse{Success: false, ErrorMessage: &errMsg}, nil

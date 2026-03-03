@@ -19,7 +19,12 @@ type NMCLINetworkManager struct {
 }
 
 // NewNMCLINetworkManager creates a new NMCLINetworkManager.
+// Returns nil if nmcli is not available on the system.
 func NewNMCLINetworkManager(logger *zap.Logger) *NMCLINetworkManager {
+	if _, err := exec.LookPath("nmcli"); err != nil {
+		logger.Warn("nmcli not found, WiFi management will be unavailable")
+		return nil
+	}
 	return &NMCLINetworkManager{logger: logger}
 }
 
