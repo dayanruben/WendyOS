@@ -11,9 +11,10 @@ import (
 // PickerItem represents a selectable row in the device picker.
 type PickerItem struct {
 	// Display columns rendered in the table.
-	Name    string
-	Type    string // "LAN", "Bluetooth", "External", etc.
-	Address string
+	Name        string
+	Description string // optional secondary text rendered dimmed
+	Type        string // "LAN", "Bluetooth", "External", etc.
+	Address     string
 
 	// Value is the opaque payload returned when this item is selected.
 	Value interface{}
@@ -85,7 +86,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PickerAddMsg:
 		for _, item := range msg.Items {
-			key := item.Type + ":" + item.Address
+			key := item.Name + ":" + item.Type + ":" + item.Address
 			if m.seen[key] {
 				continue
 			}
@@ -135,8 +136,17 @@ func (m PickerModel) View() string {
 			style = pickerCursor
 		}
 
-		line := fmt.Sprintf("%s%-24s %-12s %s", cursor, item.Name, item.Type, item.Address)
-		sb.WriteString(style.Render(line) + "\n")
+		var line string
+		if item.Type == "" && item.Address == "" {
+			line = fmt.Sprintf("%s%s", cursor, item.Name)
+		} else {
+			line = fmt.Sprintf("%s%-24s %-12s %s", cursor, item.Name, item.Type, item.Address)
+		}
+		sb.WriteString(style.Render(line))
+		if item.Description != "" {
+			sb.WriteString(" " + pickerHint.Render(item.Description))
+		}
+		sb.WriteString("\n")
 	}
 
 	if m.scanning {
