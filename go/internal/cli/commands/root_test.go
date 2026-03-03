@@ -13,6 +13,7 @@ func TestRootCommand_HasAllSubcommands(t *testing.T) {
 		"run",
 		"build",
 		"init",
+		"project",
 		"discover",
 		"device",
 		"os",
@@ -86,7 +87,8 @@ func TestRootCommand_Help(t *testing.T) {
 	expectedTexts := []string{
 		"Wendy",
 		"edge computing",
-		"Available Commands",
+		"Project Commands",
+		"Manage Your Devices",
 		"Flags",
 	}
 	for _, text := range expectedTexts {

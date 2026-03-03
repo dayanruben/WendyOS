@@ -29,24 +29,77 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname")
 
-	root.AddCommand(
-		newRunCmd(),
-		newBuildCmd(),
-		newInitCmd(),
-		newDiscoverCmd(),
-		newDeviceCmd(),
-		newOSCmd(),
-		newAppsCmd(),
-		newWifiCmd(),
-		newAudioCmd(),
-		newHardwareCmd(),
-		newBluetoothCmd(),
-		newAuthCmd(),
-		newTelemetryCmd(),
-		newCacheCmd(),
-		newUpdateCmd(),
-		newInfoCmd(),
+	root.AddGroup(
+		&cobra.Group{ID: "project", Title: "Project Commands:"},
+		&cobra.Group{ID: "cloud", Title: "Manage Your Cloud:"},
+		&cobra.Group{ID: "devices", Title: "Manage Your Devices:"},
+		&cobra.Group{ID: "misc", Title: "Misc.:"},
 	)
+
+	// Project Commands
+	runCmd := newRunCmd()
+	runCmd.GroupID = "project"
+	buildCmd := newBuildCmd()
+	buildCmd.GroupID = "project"
+	initCmd := newInitCmd()
+	initCmd.GroupID = "project"
+	projectCmd := newProjectCmd()
+	projectCmd.GroupID = "project"
+
+	// Cloud Commands
+	authCmd := newAuthCmd()
+	authCmd.GroupID = "cloud"
+
+	// Device Commands
+	deviceCmd := newDeviceCmd()
+	deviceCmd.GroupID = "devices"
+	discoverCmd := newDiscoverCmd()
+	discoverCmd.GroupID = "devices"
+	osCmd := newOSCmd()
+	osCmd.GroupID = "devices"
+	appsCmd := newAppsCmd()
+	appsCmd.GroupID = "devices"
+	wifiCmd := newWifiCmd()
+	wifiCmd.GroupID = "devices"
+	audioCmd := newAudioCmd()
+	audioCmd.GroupID = "devices"
+	bluetoothCmd := newBluetoothCmd()
+	bluetoothCmd.GroupID = "devices"
+	hardwareCmd := newHardwareCmd()
+	hardwareCmd.GroupID = "devices"
+	telemetryCmd := newTelemetryCmd()
+	telemetryCmd.GroupID = "devices"
+
+	// Misc Commands
+	cacheCmd := newCacheCmd()
+	cacheCmd.GroupID = "misc"
+	updateCmd := newUpdateCmd()
+	updateCmd.GroupID = "misc"
+	infoCmd := newInfoCmd()
+	infoCmd.GroupID = "misc"
+
+	root.AddCommand(
+		runCmd,
+		buildCmd,
+		initCmd,
+		projectCmd,
+		authCmd,
+		deviceCmd,
+		discoverCmd,
+		osCmd,
+		appsCmd,
+		wifiCmd,
+		audioCmd,
+		bluetoothCmd,
+		hardwareCmd,
+		telemetryCmd,
+		cacheCmd,
+		updateCmd,
+		infoCmd,
+	)
+
+	root.SetHelpCommandGroupID("misc")
+	root.SetCompletionCommandGroupID("misc")
 
 	root.Version = version.Version
 	return root

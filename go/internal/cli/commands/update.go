@@ -10,7 +10,7 @@ import (
 	"github.com/wendylabsinc/wendy/internal/shared/version"
 )
 
-const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy/releases/latest"
+const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent/releases/latest"
 
 func newUpdateCmd() *cobra.Command {
 	return &cobra.Command{

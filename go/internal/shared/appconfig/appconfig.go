@@ -24,8 +24,8 @@ const (
 	EntitlementGPIO      = "gpio"
 )
 
-// validEntitlementTypes is the set of all recognized entitlement type strings.
-var validEntitlementTypes = []string{
+// ValidEntitlementTypes is the set of all recognized entitlement type strings.
+var ValidEntitlementTypes = []string{
 	EntitlementNetwork,
 	EntitlementBluetooth,
 	EntitlementVideo,
@@ -101,7 +101,7 @@ func (c *AppConfig) Validate() error {
 		if e.Type == "" {
 			return fmt.Errorf("entitlement[%d]: type is required", i)
 		}
-		if !slices.Contains(validEntitlementTypes, e.Type) {
+		if !slices.Contains(ValidEntitlementTypes, e.Type) {
 			return fmt.Errorf("entitlement[%d]: unknown type %q", i, e.Type)
 		}
 

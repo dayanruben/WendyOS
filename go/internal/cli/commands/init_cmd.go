@@ -17,12 +17,16 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init [app-id]",
 		Short: "Initialize a new Wendy project",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			appID := args[0]
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("getting working directory: %w", err)
+			}
+
+			appID := filepath.Base(cwd)
+			if len(args) > 0 {
+				appID = args[0]
 			}
 
 			// Check if wendy.json already exists.
