@@ -164,7 +164,7 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 		}
 	}
 	if d.External != nil {
-		types = append(types, "WiFi")
+		types = append(types, "LAN (Lite)")
 	}
 	return strings.Join(types, ", ")
 }

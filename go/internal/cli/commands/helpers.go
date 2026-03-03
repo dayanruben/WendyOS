@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
 	"golang.org/x/term"
 )
 
@@ -35,6 +37,35 @@ func hostPort(host string, port int) string {
 		return fmt.Sprintf("[%s]:%d", host, port)
 	}
 	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// resolveLANVersions queries each LAN device's gRPC endpoint concurrently to
+// populate AgentVersion, OS, OSVersion, and CPUArchitecture.
+func resolveLANVersions(ctx context.Context, devices []models.LANDevice) {
+	var wg sync.WaitGroup
+	for i := range devices {
+		wg.Add(1)
+		go func(d *models.LANDevice) {
+			defer wg.Done()
+			addr := hostPort(d.Hostname, d.Port)
+			queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			conn, err := grpcclient.Connect(queryCtx, addr)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			resp, err := conn.AgentService.GetAgentVersion(queryCtx, &agentpb.GetAgentVersionRequest{})
+			if err != nil {
+				return
+			}
+			d.AgentVersion = resp.GetVersion()
+			d.OS = resp.GetOs()
+			d.OSVersion = resp.GetOsVersion()
+			d.CPUArchitecture = resp.GetCpuArchitecture()
+		}(&devices[i])
+	}
+	wg.Wait()
 }
 
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
@@ -291,6 +322,9 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			collection = &models.DevicesCollection{}
 		}
 
+		// Resolve agent versions for LAN devices.
+		resolveLANVersions(discoverCtx, collection.LANDevices)
+
 		// Discover external provider devices. Microwasm devices are added
 		// to the collection so MergedDevices() can merge them with BLE Lite.
 		var nonWendyLiteExternals []struct {
@@ -350,7 +384,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		for _, ext := range nonWendyLiteExternals {
 			extItems = append(extItems, tui.PickerItem{
 				Name:    ext.device.DisplayName,
-				Type:    "External",
+				Type:    ext.provider.DisplayName(),
 				Address: fmt.Sprintf("%s: %s", ext.device.ProviderKey, ext.device.ID),
 				Value:   &pickerEntry{externalDevice: ext.device, provider: ext.provider},
 			})
