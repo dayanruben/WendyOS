@@ -30,8 +30,9 @@ func TestAnalyticsCommand_StatusOutput(t *testing.T) {
 	root.SetErr(buf)
 	root.SetArgs([]string{"analytics", "status"})
 
-	// Set env to get predictable output
+	// Set env to get predictable output and avoid writing to real home.
 	t.Setenv("WENDY_ANALYTICS", "false")
+	t.Setenv("HOME", t.TempDir())
 
 	err := root.Execute()
 	if err != nil {

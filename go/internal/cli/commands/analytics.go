@@ -57,6 +57,10 @@ func newAnalyticsDisableCmd() *cobra.Command {
 				return err
 			}
 
+			// Disable analytics in-memory for the current process so that
+			// no further events are emitted during this invocation.
+			analytics.Disable()
+
 			cmd.Println("Analytics disabled.")
 			return nil
 		},

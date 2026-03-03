@@ -8,6 +8,7 @@ import (
 
 func TestDisabledViaEnvVar(t *testing.T) {
 	t.Setenv("WENDY_ANALYTICS", "false")
+	t.Setenv("HOME", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: &config.AnalyticsConfig{Enabled: true},
@@ -21,6 +22,7 @@ func TestDisabledViaEnvVar(t *testing.T) {
 
 func TestDisabledViaConfig(t *testing.T) {
 	t.Setenv("WENDY_ANALYTICS", "")
+	t.Setenv("HOME", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: &config.AnalyticsConfig{Enabled: false},
@@ -34,6 +36,7 @@ func TestDisabledViaConfig(t *testing.T) {
 
 func TestEnabledByDefaultWhenNil(t *testing.T) {
 	t.Setenv("WENDY_ANALYTICS", "")
+	t.Setenv("HOME", t.TempDir())
 
 	cfg := &config.Config{
 		Analytics: nil,
@@ -43,8 +46,6 @@ func TestEnabledByDefaultWhenNil(t *testing.T) {
 	if !firstRun {
 		t.Error("expected firstRun to be true when Analytics is nil")
 	}
-	// enabled is set to true, but client may fail to init (no network in tests).
-	// We just verify the enabled flag was set correctly before client init.
 }
 
 func TestEnvOverride(t *testing.T) {
@@ -61,6 +62,7 @@ func TestEnvOverride(t *testing.T) {
 
 func TestTrackNoOpWhenDisabled(t *testing.T) {
 	t.Setenv("WENDY_ANALYTICS", "false")
+	t.Setenv("HOME", t.TempDir())
 
 	cfg := &config.Config{}
 	Init(cfg)

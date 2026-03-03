@@ -25,9 +25,9 @@ var (
 	distinctID string
 )
 
-// Init initializes analytics. If disabled by env var or config, tracking is a no-op.
-// Returns true if this is the first run (config.Analytics was nil), so the caller
-// can display a notice.
+// Init initializes analytics. If disabled by env var, config, or missing API key,
+// tracking is a no-op. Returns true if this is the first run (config.Analytics
+// was nil) AND the env var does not override, so the caller can display a notice.
 func Init(cfg *config.Config) (firstRun bool) {
 	// Env var overrides everything
 	if strings.EqualFold(os.Getenv("WENDY_ANALYTICS"), "false") {
@@ -92,6 +92,12 @@ func Close() {
 		_ = client.Close()
 		client = nil
 	}
+}
+
+// Disable turns off analytics for the current process and closes the client.
+func Disable() {
+	enabled = false
+	Close()
 }
 
 // Enabled reports whether analytics is currently enabled.
