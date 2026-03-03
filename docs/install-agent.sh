@@ -111,58 +111,63 @@ if [[ "$ARCH" == "unsupported" ]]; then
   exit 1
 fi
 
-TAG=$(resolve_version)
-if [[ -z "$TAG" ]]; then
-  echo "Error: Could not determine latest version."
-  exit 1
-fi
-
-# Strip leading 'v' for the version used in artifact filenames.
-VERSION="${TAG#v}"
-
-echo "Detected: Arch=${ARCH}"
-echo "Version:  ${TAG}"
-echo ""
-
-TMPDIR_DL=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_DL"' EXIT
-
 if command -v apt-get &>/dev/null; then
-  ARTIFACT="wendy-agent_${VERSION}_${ARCH}.deb"
-  URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
-  echo "APT detected. Will install ${ARTIFACT} via dpkg."
+  echo "APT detected. Will add the Wendy repository and install wendy-agent."
   confirm "Proceed?"
 
-  echo "Downloading ${URL}..."
-  download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
-  dpkg -i "${TMPDIR_DL}/${ARTIFACT}" || apt-get install -f -y
+  echo "Adding Wendy APT repository..."
+  echo "deb [trusted=yes] https://us-central1-apt.pkg.dev/projects/cloud-c7e56 wendy-apt main" \
+    > /etc/apt/sources.list.d/wendy.list
+  apt-get update
+  apt-get install -y wendy-agent
 
 elif command -v dnf &>/dev/null; then
-  ARTIFACT="wendy-agent-${VERSION}-1.$(uname -m).rpm"
-  URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
-  echo "DNF detected. Will install ${ARTIFACT}."
+  echo "DNF detected. Will add the Wendy repository and install wendy-agent."
   confirm "Proceed?"
 
-  echo "Downloading ${URL}..."
-  download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
-  dnf install -y "${TMPDIR_DL}/${ARTIFACT}"
+  echo "Adding Wendy YUM repository..."
+  cat > /etc/yum.repos.d/wendy.repo <<'REPO'
+[wendy]
+name=Wendy Repository
+baseurl=https://us-central1-yum.pkg.dev/projects/cloud-c7e56/wendy-yum
+enabled=1
+gpgcheck=0
+REPO
+  dnf makecache
+  dnf install -y wendy-agent
 
 elif command -v yum &>/dev/null; then
-  ARTIFACT="wendy-agent-${VERSION}-1.$(uname -m).rpm"
-  URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
-  echo "YUM detected. Will install ${ARTIFACT}."
+  echo "YUM detected. Will add the Wendy repository and install wendy-agent."
   confirm "Proceed?"
 
-  echo "Downloading ${URL}..."
-  download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
-  yum install -y "${TMPDIR_DL}/${ARTIFACT}"
+  echo "Adding Wendy YUM repository..."
+  cat > /etc/yum.repos.d/wendy.repo <<'REPO'
+[wendy]
+name=Wendy Repository
+baseurl=https://us-central1-yum.pkg.dev/projects/cloud-c7e56/wendy-yum
+enabled=1
+gpgcheck=0
+REPO
+  yum makecache
+  yum install -y wendy-agent
 
 else
+  # No package manager — fall back to downloading the tarball from GitHub.
+  TAG=$(resolve_version)
+  if [[ -z "$TAG" ]]; then
+    echo "Error: Could not determine latest version."
+    exit 1
+  fi
+  VERSION="${TAG#v}"
+
   ARTIFACT="wendy-agent-linux-${ARCH}-${VERSION}.tar.gz"
   URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
   echo "No package manager detected. Will download ${ARTIFACT}"
   echo "  and install '${BINARY_NAME}' to ${INSTALL_DIR}"
   confirm "Proceed?"
+
+  TMPDIR_DL=$(mktemp -d)
+  trap 'rm -rf "$TMPDIR_DL"' EXIT
 
   echo "Downloading ${URL}..."
   download "$URL" "${TMPDIR_DL}/${ARTIFACT}"

@@ -146,40 +146,50 @@ if [[ "$OS" == "darwin" ]]; then
 
 # ===== Linux =====
 elif [[ "$OS" == "linux" ]]; then
-  TMPDIR_DL=$(mktemp -d)
-  trap 'rm -rf "$TMPDIR_DL"' EXIT
-
   if command -v apt-get &>/dev/null; then
-    ARTIFACT="wendy-cli_${VERSION}_${ARCH}.deb"
-    URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
-    echo "APT detected. Will install ${ARTIFACT} via dpkg."
+    echo "APT detected. Will add the Wendy repository and install wendy-cli."
     confirm "Proceed?"
 
-    echo "Downloading ${URL}..."
-    download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
-    sudo dpkg -i "${TMPDIR_DL}/${ARTIFACT}" || sudo apt-get install -f -y
+    echo "Adding Wendy APT repository..."
+    echo "deb [trusted=yes] https://us-central1-apt.pkg.dev/projects/cloud-c7e56 wendy-apt main" \
+      | sudo tee /etc/apt/sources.list.d/wendy.list >/dev/null
+    sudo apt-get update
+    sudo apt-get install -y wendy-cli
 
   elif command -v dnf &>/dev/null; then
-    ARTIFACT="wendy-cli-${VERSION}-1.$(uname -m).rpm"
-    URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
-    echo "DNF detected. Will install ${ARTIFACT}."
+    echo "DNF detected. Will add the Wendy repository and install wendy-cli."
     confirm "Proceed?"
 
-    echo "Downloading ${URL}..."
-    download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
-    sudo dnf install -y "${TMPDIR_DL}/${ARTIFACT}"
+    echo "Adding Wendy YUM repository..."
+    sudo tee /etc/yum.repos.d/wendy.repo >/dev/null <<'REPO'
+[wendy]
+name=Wendy Repository
+baseurl=https://us-central1-yum.pkg.dev/projects/cloud-c7e56/wendy-yum
+enabled=1
+gpgcheck=0
+REPO
+    sudo dnf makecache
+    sudo dnf install -y wendy-cli
 
   elif command -v yum &>/dev/null; then
-    ARTIFACT="wendy-cli-${VERSION}-1.$(uname -m).rpm"
-    URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
-    echo "YUM detected. Will install ${ARTIFACT}."
+    echo "YUM detected. Will add the Wendy repository and install wendy-cli."
     confirm "Proceed?"
 
-    echo "Downloading ${URL}..."
-    download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
-    sudo yum install -y "${TMPDIR_DL}/${ARTIFACT}"
+    echo "Adding Wendy YUM repository..."
+    sudo tee /etc/yum.repos.d/wendy.repo >/dev/null <<'REPO'
+[wendy]
+name=Wendy Repository
+baseurl=https://us-central1-yum.pkg.dev/projects/cloud-c7e56/wendy-yum
+enabled=1
+gpgcheck=0
+REPO
+    sudo yum makecache
+    sudo yum install -y wendy-cli
 
   else
+    TMPDIR_DL=$(mktemp -d)
+    trap 'rm -rf "$TMPDIR_DL"' EXIT
+
     ARTIFACT="wendy-cli-linux-${ARCH}-${VERSION}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
     echo "Will download ${ARTIFACT}"
