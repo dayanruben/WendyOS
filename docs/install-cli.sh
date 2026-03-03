@@ -118,6 +118,11 @@ fi
 # Strip leading 'v' for the version used in artifact filenames.
 VERSION="${TAG#v}"
 
+# --- Escalate to root on Linux (macOS uses sudo selectively, Windows doesn't need it) ---
+if [[ "$OS" == "linux" && "$(id -u)" -ne 0 ]]; then
+  exec sudo bash "$0" "$@"
+fi
+
 echo "Detected: OS=${OS} Arch=${ARCH}"
 echo "Version:  ${TAG}"
 echo ""
@@ -152,46 +157,46 @@ elif [[ "$OS" == "linux" ]]; then
 
     echo "Adding Wendy APT repository..."
     # Ensure gnupg is available for key import
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq ca-certificates curl gnupg >/dev/null
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates curl gnupg >/dev/null
     # Import the Google Artifact Registry GPG key
-    sudo mkdir -p /usr/share/keyrings
+    mkdir -p /usr/share/keyrings
     curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg \
-      | sudo gpg --dearmor --yes -o /usr/share/keyrings/wendy-archive-keyring.gpg
+      | gpg --dearmor --yes -o /usr/share/keyrings/wendy-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/wendy-archive-keyring.gpg] https://us-central1-apt.pkg.dev/projects/cloud-c7e56 wendy-apt main" \
-      | sudo tee /etc/apt/sources.list.d/wendy.list >/dev/null
-    sudo apt-get update
-    sudo apt-get install -y wendy
+      > /etc/apt/sources.list.d/wendy.list
+    apt-get update
+    apt-get install -y wendy
 
   elif command -v dnf &>/dev/null; then
     echo "DNF detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
     echo "Adding Wendy YUM repository..."
-    sudo tee /etc/yum.repos.d/wendy.repo >/dev/null <<'REPO'
+    cat > /etc/yum.repos.d/wendy.repo <<'REPO'
 [wendy]
 name=Wendy Repository
 baseurl=https://us-central1-yum.pkg.dev/projects/cloud-c7e56/wendy-yum
 enabled=1
 gpgcheck=0
 REPO
-    sudo dnf makecache
-    sudo dnf install -y wendy
+    dnf makecache
+    dnf install -y wendy
 
   elif command -v yum &>/dev/null; then
     echo "YUM detected. Will add the Wendy repository and install wendy."
     confirm "Proceed?"
 
     echo "Adding Wendy YUM repository..."
-    sudo tee /etc/yum.repos.d/wendy.repo >/dev/null <<'REPO'
+    cat > /etc/yum.repos.d/wendy.repo <<'REPO'
 [wendy]
 name=Wendy Repository
 baseurl=https://us-central1-yum.pkg.dev/projects/cloud-c7e56/wendy-yum
 enabled=1
 gpgcheck=0
 REPO
-    sudo yum makecache
-    sudo yum install -y wendy
+    yum makecache
+    yum install -y wendy
 
   else
     TMPDIR_DL=$(mktemp -d)
@@ -206,7 +211,7 @@ REPO
     echo "Downloading ${URL}..."
     download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
     tar -xzf "${TMPDIR_DL}/${ARTIFACT}" -C "$TMPDIR_DL"
-    sudo install -m 755 "${TMPDIR_DL}/wendy-cli-linux-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    install -m 755 "${TMPDIR_DL}/wendy-cli-linux-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
   fi
 
 # ===== Windows (Git Bash / MSYS2) =====

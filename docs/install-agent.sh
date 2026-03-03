@@ -182,13 +182,8 @@ else
   install -m 755 "${TMPDIR_DL}/wendy-agent-linux-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 fi
 
-# --- Enable and start the service if systemd is available ---
-if command -v systemctl &>/dev/null; then
-  echo ""
-  echo "Enabling and starting wendy-agent service..."
-  systemctl daemon-reload
-  systemctl enable --now wendy-agent || true
-fi
+# The .deb/.rpm postinstall scripts handle systemctl enable/start automatically.
+# No additional service activation is needed here.
 
 # --- Verify ---
 echo ""
