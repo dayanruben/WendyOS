@@ -416,29 +416,29 @@ jobs:
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*dbus"
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*systemd"
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*ca-certificates"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "usr/lib/systemd/system/wendy-agent.service"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "usr/lib/systemd/system/wendyos-dev-registry.service"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "usr/lib/systemd/system/wendyos-dev-registry-import.service"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "usr/bin/wendyos-dev-registry"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "usr/share/wendyos/offline-images/containerd-registry.tar"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "etc/default/wendy-agent"
-          dpkg-deb -c "$WENDY_AGENT_DEB" | grep -q "etc/avahi/services/wendy-agent.service"
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "usr/lib/systemd/system/wendy-agent.service" > /dev/null
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "usr/lib/systemd/system/wendyos-dev-registry.service" > /dev/null
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "usr/lib/systemd/system/wendyos-dev-registry-import.service" > /dev/null
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "usr/bin/wendyos-dev-registry" > /dev/null
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "usr/share/wendyos/offline-images/containerd-registry.tar" > /dev/null
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "etc/default/wendy-agent" > /dev/null
+          dpkg-deb -c "$WENDY_AGENT_DEB" | grep "etc/avahi/services/wendy-agent.service" > /dev/null
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*avahi-daemon"
 
-          rpm -qp --requires "$WENDY_RPM" | grep -q "^usbutils"
-          rpm -qp --requires "$WENDY_RPM" | grep -q "^ca-certificates"
-          rpm -qp --requires "$WENDY_AGENT_RPM" | grep -q "^containerd"
-          rpm -qp --requires "$WENDY_AGENT_RPM" | grep -q "^dbus"
-          rpm -qp --requires "$WENDY_AGENT_RPM" | grep -q "^systemd"
-          rpm -qp --requires "$WENDY_AGENT_RPM" | grep -q "^ca-certificates"
-          rpm -qp --requires "$WENDY_AGENT_RPM" | grep -q "^avahi"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/usr/lib/systemd/system/wendy-agent.service"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/usr/lib/systemd/system/wendyos-dev-registry.service"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/usr/lib/systemd/system/wendyos-dev-registry-import.service"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/usr/bin/wendyos-dev-registry"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/usr/share/wendyos/offline-images/containerd-registry.tar"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/etc/default/wendy-agent"
-          rpm -qpl "$WENDY_AGENT_RPM" | grep -q "/etc/avahi/services/wendy-agent.service"
+          rpm -qp --requires "$WENDY_RPM" | grep "^usbutils" > /dev/null
+          rpm -qp --requires "$WENDY_RPM" | grep "^ca-certificates" > /dev/null
+          rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^containerd" > /dev/null
+          rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^dbus" > /dev/null
+          rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^systemd" > /dev/null
+          rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^ca-certificates" > /dev/null
+          rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^avahi" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendy-agent.service" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendyos-dev-registry.service" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendyos-dev-registry-import.service" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/bin/wendyos-dev-registry" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/share/wendyos/offline-images/containerd-registry.tar" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/default/wendy-agent" > /dev/null
+          rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/avahi/services/wendy-agent.service" > /dev/null
 
       - name: Upload .deb packages
         uses: actions/upload-artifact@v4
