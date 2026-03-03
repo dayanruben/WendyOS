@@ -121,8 +121,8 @@ type resolveConfig struct {
 	excludeBluetooth    bool
 }
 
-// ExcludeBluetooth prevents Bluetooth/BLE devices from appearing in the
-// interactive device picker.
+// ExcludeBluetooth prevents BLE-only devices (with no LAN or external endpoint)
+// from appearing in the interactive device picker.
 func ExcludeBluetooth() resolveOption {
 	return func(c *resolveConfig) {
 		c.excludeBluetooth = true
