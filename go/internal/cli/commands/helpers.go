@@ -121,8 +121,8 @@ type resolveConfig struct {
 	excludeBluetooth    bool
 }
 
-// ExcludeBluetooth prevents BLE-only devices (with no LAN or external endpoint)
-// from appearing in the interactive device picker.
+// ExcludeBluetooth skips the BLE scan and filters out BLE-only devices
+// (those with no LAN or external endpoint) from the interactive device picker.
 func ExcludeBluetooth() resolveOption {
 	return func(c *resolveConfig) {
 		c.excludeBluetooth = true
@@ -277,8 +277,15 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		discoverCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 
-		// Discover LAN/USB/Ethernet/BLE devices.
+		// Discover LAN/USB/Ethernet devices (and BLE unless excluded).
 		opts := discovery.DiscoveryOptions{Timeout: 5 * time.Second}
+		if excludeBluetooth {
+			opts.Types = []models.InterfaceType{
+				models.InterfaceUSB,
+				models.InterfaceEthernet,
+				models.InterfaceLAN,
+			}
+		}
 		collection, _ := discovery.Discover(discoverCtx, opts)
 		if collection == nil {
 			collection = &models.DevicesCollection{}

@@ -55,7 +55,8 @@ cd go
 go build -o wendy ./cmd/wendy
 ```
 
-On macOS, build with CGO enabled for Bluetooth (BLE) support:
+On macOS, CGO is required (for CoreBluetooth). It is enabled by default when
+using the standard Go toolchain, but if you have explicitly disabled it:
 
 ```sh
 cd go
