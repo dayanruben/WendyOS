@@ -1,13 +1,18 @@
 package commands
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -218,35 +223,177 @@ func scanWiFiNetworks(ctx context.Context, conn *grpcclient.AgentConnection) ([]
 	return resp.GetNetworks(), nil
 }
 
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type githubReleaseFull struct {
+	TagName    string               `json:"tag_name"`
+	Prerelease bool                 `json:"prerelease"`
+	Assets     []githubReleaseAsset `json:"assets"`
+}
+
+func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	if !nightly {
+		resp, err := client.Get(githubReleasesURL)
+		if err != nil {
+			return nil, fmt.Errorf("fetching latest release: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+		}
+
+		var release githubReleaseFull
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			return nil, fmt.Errorf("decoding release: %w", err)
+		}
+		return &release, nil
+	}
+
+	// For nightly, list releases and find the latest prerelease.
+	resp, err := client.Get("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	if err != nil {
+		return nil, fmt.Errorf("fetching releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var releases []githubReleaseFull
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("decoding releases: %w", err)
+	}
+
+	for _, r := range releases {
+		if r.Prerelease {
+			return &r, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no nightly (prerelease) found")
+}
+
+func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
+	client := &http.Client{Timeout: 5 * time.Minute}
+
+	resp, err := client.Get(asset.BrowserDownloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("downloading asset: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("opening gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading tar: %w", err)
+		}
+
+		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(hdr.Name, "wendy-agent") {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("reading binary from tar: %w", err)
+			}
+			return data, nil
+		}
+	}
+
+	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
+}
+
 func newDeviceUpdateCmd() *cobra.Command {
 	var binaryPath string
+	var nightly bool
 
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update the agent binary on the target device",
-		Long:  "Streams a new agent binary to the device and performs an atomic replacement.",
+		Long:  "Downloads the latest agent binary from GitHub and uploads it to the device. Use --binary to provide a local binary instead.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			if binaryPath == "" {
-				return fmt.Errorf("--binary flag is required; specify the path to the agent binary for the target platform")
-			}
-
-			// Read the binary file.
-			binaryData, err := os.ReadFile(binaryPath)
+			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"))
 			if err != nil {
-				return fmt.Errorf("reading binary: %w", err)
+				return err
+			}
+			defer conn.Close()
+
+			var binaryData []byte
+
+			if binaryPath != "" {
+				binaryData, err = os.ReadFile(binaryPath)
+				if err != nil {
+					return fmt.Errorf("reading binary: %w", err)
+				}
+			} else {
+				// Auto-download: detect arch, fetch release, download binary.
+				fmt.Println("Detecting device architecture...")
+				versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+				if err != nil {
+					return fmt.Errorf("getting device info: %w", err)
+				}
+
+				arch := versionResp.GetCpuArchitecture()
+				if arch == "" {
+					return fmt.Errorf("device did not report CPU architecture; use --binary to provide the binary manually")
+				}
+				fmt.Printf("Device architecture: %s\n", arch)
+
+				releaseType := "stable"
+				if nightly {
+					releaseType = "nightly"
+				}
+				fmt.Printf("Fetching latest %s release...\n", releaseType)
+
+				release, err := fetchAgentRelease(nightly)
+				if err != nil {
+					return fmt.Errorf("fetching release: %w", err)
+				}
+				fmt.Printf("Found release: %s\n", release.TagName)
+
+				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
+				assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
+				var matchedAsset *githubReleaseAsset
+				for _, a := range release.Assets {
+					if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
+						matchedAsset = &a
+						break
+					}
+				}
+				if matchedAsset == nil {
+					return fmt.Errorf("no asset found for linux/%s in release %s", arch, release.TagName)
+				}
+
+				fmt.Printf("Downloading %s...\n", matchedAsset.Name)
+				binaryData, err = downloadAgentBinary(*matchedAsset)
+				if err != nil {
+					return fmt.Errorf("downloading binary: %w", err)
+				}
 			}
 
 			// Compute SHA256.
 			h := sha256.Sum256(binaryData)
 			sha256Hash := hex.EncodeToString(h[:])
-
-			conn, err := connectToAgent(ctx)
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
 
 			s := tui.NewSpinner("Uploading agent binary...")
 			p := tea.NewProgram(s)
@@ -272,7 +419,8 @@ func newDeviceUpdateCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to the agent binary to upload")
+	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download)")
+	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build")
 
 	return cmd
 }

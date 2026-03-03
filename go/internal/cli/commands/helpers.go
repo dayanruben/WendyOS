@@ -73,7 +73,12 @@ func resolveDeviceAddress() (string, error) {
 // connectToAgent establishes a gRPC connection to the target device.
 // If no device is specified via --device or config default, an interactive
 // device picker is presented (unless running in --json mode).
-func connectToAgent(ctx context.Context) (*grpcclient.AgentConnection, error) {
+func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.AgentConnection, error) {
+	cfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	addr, err := resolveDeviceAddress()
 	if err == nil {
 		return grpcclient.Connect(ctx, addr)
@@ -84,7 +89,7 @@ func connectToAgent(ctx context.Context) (*grpcclient.AgentConnection, error) {
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	target, pickErr := pickDevice(ctx, nil)
+	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys)
 	if pickErr != nil {
 		return nil, pickErr
 	}
