@@ -102,11 +102,6 @@ jobs:
             goarch: arm64
             product: wendy
             cmd: wendy
-          - artifact-name: wendy-cli-darwin-arm64
-            goos: darwin
-            goarch: arm64
-            product: wendy
-            cmd: wendy
           - artifact-name: wendy-cli-windows-amd64
             goos: windows
             goarch: amd64
@@ -152,6 +147,56 @@ jobs:
             ARCHIVE="${{ matrix.artifact-name }}-${VERSION}.tar.gz"
             tar -czvf "$ARCHIVE" ${{ matrix.artifact-name }}/
           fi
+          echo "archive=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.archive }}
+          path: ${{ env.archive }}
+          retention-days: 14
+          if-no-files-found: error
+
+  build-go-macos:
+    name: ${{ matrix.artifact-name }}
+    runs-on: macos-15
+    needs: [determine-version]
+    strategy:
+      matrix:
+        include:
+          - artifact-name: wendy-cli-darwin-arm64
+            goarch: arm64
+          - artifact-name: wendy-cli-darwin-amd64
+            goarch: amd64
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/internal/shared/version.Version=${VERSION}"
+          mkdir -p ../${{ matrix.artifact-name }}
+          go build -ldflags "${LDFLAGS}" -o ../${{ matrix.artifact-name }}/wendy ./cmd/wendy
+
+      - name: Create archive
+        working-directory: .
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          ARCHIVE="${{ matrix.artifact-name }}-${VERSION}.tar.gz"
+          tar -czvf "$ARCHIVE" ${{ matrix.artifact-name }}/
           echo "archive=$ARCHIVE" >> $GITHUB_ENV
 
       - name: Upload artifact
@@ -466,7 +511,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [determine-version, build, package-linux]
+    needs: [determine-version, build, build-go-macos, package-linux]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
     steps:
       - name: Download artifact
