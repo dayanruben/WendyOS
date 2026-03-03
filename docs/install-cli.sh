@@ -151,8 +151,13 @@ elif [[ "$OS" == "linux" ]]; then
     confirm "Proceed?"
 
     echo "Adding Wendy APT repository..."
+    # Ensure gnupg is available for key import
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq ca-certificates curl gnupg >/dev/null
+    # Import the Google Artifact Registry GPG key
+    sudo mkdir -p /usr/share/keyrings
     curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg \
-      | sudo gpg --dearmor -o /usr/share/keyrings/wendy-archive-keyring.gpg
+      | sudo gpg --dearmor --yes -o /usr/share/keyrings/wendy-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/wendy-archive-keyring.gpg] https://us-central1-apt.pkg.dev/projects/cloud-c7e56 wendy-apt main" \
       | sudo tee /etc/apt/sources.list.d/wendy.list >/dev/null
     sudo apt-get update

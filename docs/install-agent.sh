@@ -116,9 +116,13 @@ if command -v apt-get &>/dev/null; then
   confirm "Proceed?"
 
   echo "Adding Wendy APT repository..."
+  # Ensure gnupg is available for key import
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl gnupg >/dev/null
   # Import the Google Artifact Registry GPG key
+  mkdir -p /usr/share/keyrings
   curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg \
-    | gpg --dearmor -o /usr/share/keyrings/wendy-archive-keyring.gpg
+    | gpg --dearmor --yes -o /usr/share/keyrings/wendy-archive-keyring.gpg
   echo "deb [signed-by=/usr/share/keyrings/wendy-archive-keyring.gpg] https://us-central1-apt.pkg.dev/projects/cloud-c7e56 wendy-apt main" \
     > /etc/apt/sources.list.d/wendy.list
   apt-get update
