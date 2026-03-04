@@ -21,6 +21,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/internal/agent/dbusproxy"
 	localoci "github.com/wendylabsinc/wendy/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/internal/agent/services"
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
@@ -35,15 +36,17 @@ const DefaultAddress = "/run/containerd/containerd.sock"
 
 // Client wraps the containerd SDK client and implements services.ContainerdClient.
 type Client struct {
-	client    *containerd.Client
-	logger    *zap.Logger
-	namespace string
-	mu        sync.Mutex
+	client       *containerd.Client
+	logger       *zap.Logger
+	namespace    string
+	mu           sync.Mutex
+	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
 }
 
 // NewClient creates a new containerd SDK client connected to the given Unix
 // socket address. If address is empty, DefaultAddress is used.
-func NewClient(logger *zap.Logger, address string) (*Client, error) {
+// proxyMgr may be nil if xdg-dbus-proxy is not available.
+func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
 	if address == "" {
 		address = DefaultAddress
 	}
@@ -54,14 +57,19 @@ func NewClient(logger *zap.Logger, address string) (*Client, error) {
 	}
 
 	return &Client{
-		client:    c,
-		logger:    logger,
-		namespace: "default",
+		client:       c,
+		logger:       logger,
+		namespace:    "default",
+		proxyManager: proxyMgr,
 	}, nil
 }
 
-// Close releases the underlying containerd client connection.
+// Close releases the underlying containerd client connection and stops all
+// D-Bus proxy processes.
 func (c *Client) Close() error {
+	if c.proxyManager != nil {
+		c.proxyManager.StopAll()
+	}
 	return c.client.Close()
 }
 
@@ -327,7 +335,10 @@ func (c *Client) CreateContainer(ctx context.Context, req *agentpb.CreateContain
 	}
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:wendy-agent:%s", appName)
 
-	if err := localoci.ApplyEntitlements(spec, appCfg); err != nil {
+	opts := localoci.ApplyOptions{
+		DBusProxyAvailable: c.proxyManager != nil,
+	}
+	if err := localoci.ApplyEntitlements(spec, appCfg, opts); err != nil {
 		return fmt.Errorf("applying entitlements: %w", err)
 	}
 
@@ -340,6 +351,17 @@ func (c *Client) CreateContainer(ctx context.Context, req *agentpb.CreateContain
 			_, _ = task.Delete(ctx, containerd.WithProcessKill)
 		}
 		_ = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		// Stop old D-Bus proxy if any.
+		if c.proxyManager != nil {
+			_ = c.proxyManager.Stop(appName)
+		}
+	}
+
+	// Start D-Bus proxy if bluetooth entitlement is present.
+	if c.proxyManager != nil && hasBluetooth(appCfg) {
+		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
+			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
+		}
 	}
 
 	// Get the image handle from the local store, or pull from registry.
@@ -572,6 +594,11 @@ func (c *Client) StopContainer(ctx context.Context, appName string) error {
 		return fmt.Errorf("deleting task for %q: %w", appName, err)
 	}
 
+	// Stop D-Bus proxy if running.
+	if c.proxyManager != nil {
+		_ = c.proxyManager.Stop(appName)
+	}
+
 	c.logger.Info("Container stopped", zap.String("app_name", appName))
 	return nil
 }
@@ -609,6 +636,11 @@ func (c *Client) DeleteContainer(ctx context.Context, appName string, deleteImag
 	// Delete the container and its snapshot.
 	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return fmt.Errorf("deleting container %q: %w", appName, err)
+	}
+
+	// Stop D-Bus proxy if running.
+	if c.proxyManager != nil {
+		_ = c.proxyManager.Stop(appName)
 	}
 
 	c.logger.Info("Container deleted", zap.String("app_name", appName))
@@ -695,4 +727,14 @@ func streamReader(r io.Reader, ch chan<- services.ContainerOutput, buildOutput f
 			return
 		}
 	}
+}
+
+// hasBluetooth returns true if the app config includes a bluetooth entitlement.
+func hasBluetooth(cfg *appconfig.AppConfig) bool {
+	for _, ent := range cfg.Entitlements {
+		if ent.Type == appconfig.EntitlementBluetooth {
+			return true
+		}
+	}
+	return false
 }
