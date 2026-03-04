@@ -274,7 +274,7 @@ func (f *espFlasher) spiAttach() error {
 // spiSetParams configures SPI flash parameters.
 func (f *espFlasher) spiSetParams(totalSize uint32) error {
 	data := make([]byte, 24)
-	binary.LittleEndian.PutUint32(data[0:4], 0)        // id
+	binary.LittleEndian.PutUint32(data[0:4], 0)         // id
 	binary.LittleEndian.PutUint32(data[4:8], totalSize) // total size
 	binary.LittleEndian.PutUint32(data[8:12], 64*1024)  // block size
 	binary.LittleEndian.PutUint32(data[12:16], 4*1024)  // sector size
