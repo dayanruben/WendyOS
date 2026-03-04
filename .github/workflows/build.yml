@@ -336,6 +336,7 @@ jobs:
             --vendor "Wendy Labs Inc." \
             --category "devel" \
             --depends "containerd" \
+            --depends "nerdctl" \
             --depends "dbus" \
             --depends "systemd" \
             --depends "ca-certificates" \
@@ -387,6 +388,7 @@ jobs:
             --vendor "Wendy Labs Inc." \
             --category "Development/Tools" \
             --depends "containerd" \
+            --depends "nerdctl" \
             --depends "dbus" \
             --depends "systemd" \
             --depends "ca-certificates" \
