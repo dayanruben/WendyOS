@@ -210,6 +210,51 @@ func TestApplyEntitlements_Bluetooth(t *testing.T) {
 	}
 }
 
+// TestBluetoothEntitlementDoesNotExposeNetworkManager verifies that enabling
+// only the Bluetooth entitlement does not give the container unrestricted
+// access to the D-Bus system bus. Mounting the raw host D-Bus socket
+// (/var/run/dbus, /run/dbus) lets the container talk to every D-Bus service,
+// including NetworkManager — effectively granting root-level network control
+// to a container that only asked for Bluetooth.
+func TestBluetoothEntitlementDoesNotExposeNetworkManager(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "bt-only-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementBluetooth},
+		},
+	}
+
+	if err := ApplyEntitlements(spec, cfg); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// The raw host D-Bus system socket must NOT be bind-mounted into the
+	// container. Doing so exposes every D-Bus service (NetworkManager,
+	// systemd, polkit, etc.) — not just BlueZ. D-Bus access should be
+	// filtered/proxied so only org.bluez is reachable.
+	for _, m := range spec.Mounts {
+		if m.Source == "/var/run/dbus" || m.Source == "/run/dbus" {
+			t.Errorf("Bluetooth entitlement bind-mounts raw D-Bus system socket %q -> %q; "+
+				"this exposes NetworkManager and other privileged D-Bus services. "+
+				"D-Bus access must be scoped to BlueZ only (org.bluez).",
+				m.Source, m.Destination)
+		}
+	}
+
+	// The network namespace must remain intact — Bluetooth should not
+	// alter network isolation.
+	if !hasNamespace(spec, "network") {
+		t.Error("Bluetooth-only entitlement removed the network namespace")
+	}
+
+	// CAP_NET_ADMIN must not be granted by Bluetooth alone.
+	if spec.Process.Capabilities != nil &&
+		slices.Contains(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN") {
+		t.Error("Bluetooth entitlement should not grant CAP_NET_ADMIN")
+	}
+}
+
 func TestApplyEntitlements_Video(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
