@@ -6,12 +6,32 @@ import (
 	"os"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/internal/cli/commands"
 )
 
 func main() {
 	cmd := commands.NewRootCmd()
-	if err := cmd.Execute(); err != nil {
+	err := cmd.Execute()
+
+	// Track the executed command after it completes, so we know success/failure.
+	if activeCmd, _, findErr := cmd.Find(os.Args[1:]); findErr == nil && activeCmd != nil {
+		success := "true"
+		if err != nil {
+			success = "false"
+		}
+		props := map[string]string{
+			"command": activeCmd.CommandPath(),
+			"success": success,
+		}
+		analytics.Track("command_executed", props)
+		if err != nil {
+			analytics.Track("command_error", props)
+		}
+	}
+	analytics.Close()
+
+	if err != nil {
 		if errors.Is(err, commands.ErrUserCancelled) {
 			os.Exit(0)
 		}

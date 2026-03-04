@@ -99,6 +99,8 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 		return fmt.Errorf("discovery failed: %w", err)
 	}
 
+	resolveLANVersions(ctx, collection.LANDevices)
+
 	if shouldIncludeExternal(opts) {
 		collection.ExternalDevices = discoverExternalDevices(ctx)
 	}
@@ -119,8 +121,11 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 
 	work := func() tea.Msg {
 		collection, err := discovery.Discover(ctx, opts)
-		if err == nil && includeExternal {
-			collection.ExternalDevices = discoverExternalDevices(ctx)
+		if err == nil {
+			resolveLANVersions(ctx, collection.LANDevices)
+			if includeExternal {
+				collection.ExternalDevices = discoverExternalDevices(ctx)
+			}
 		}
 		return tui.SpinnerDoneMsg{Result: collection, Err: err}
 	}
@@ -220,6 +225,7 @@ func (m discoverModel) scanEthernet() tea.Cmd {
 func (m discoverModel) scanLAN() tea.Cmd {
 	return func() tea.Msg {
 		devices, _ := discovery.DiscoverLAN(m.ctx, m.opts.Timeout)
+		resolveLANVersions(m.ctx, devices)
 		return lanScanMsg{devices: devices}
 	}
 }
@@ -343,7 +349,11 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 			continue
 		}
 		addr := fmt.Sprintf("%s: %s", d.ProviderKey, d.ID)
-		rows = append(rows, []string{d.DisplayName, "External", addr, "", d.AgentVersion})
+		typeName := d.ProviderKey
+		if p := providers.ProviderForKey(d.ProviderKey); p != nil {
+			typeName = p.DisplayName()
+		}
+		rows = append(rows, []string{d.DisplayName, typeName, addr, "", d.AgentVersion})
 	}
 
 	sort.Slice(rows, func(i, j int) bool {

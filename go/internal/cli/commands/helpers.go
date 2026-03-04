@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
 	"golang.org/x/term"
 )
 
@@ -35,6 +37,35 @@ func hostPort(host string, port int) string {
 		return fmt.Sprintf("[%s]:%d", host, port)
 	}
 	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// resolveLANVersions queries each LAN device's gRPC endpoint concurrently to
+// populate AgentVersion, OS, OSVersion, and CPUArchitecture.
+func resolveLANVersions(ctx context.Context, devices []models.LANDevice) {
+	var wg sync.WaitGroup
+	for i := range devices {
+		wg.Add(1)
+		go func(d *models.LANDevice) {
+			defer wg.Done()
+			addr := hostPort(d.Hostname, d.Port)
+			queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			conn, err := grpcclient.Connect(queryCtx, addr)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			resp, err := conn.AgentService.GetAgentVersion(queryCtx, &agentpb.GetAgentVersionRequest{})
+			if err != nil {
+				return
+			}
+			d.AgentVersion = resp.GetVersion()
+			d.OS = resp.GetOs()
+			d.OSVersion = resp.GetOsVersion()
+			d.CPUArchitecture = resp.GetCpuArchitecture()
+		}(&devices[i])
+	}
+	wg.Wait()
 }
 
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
@@ -89,7 +120,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys)
+	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.excludeBluetooth)
 	if pickErr != nil {
 		return nil, pickErr
 	}
@@ -118,6 +149,15 @@ type resolveOption func(*resolveConfig)
 
 type resolveConfig struct {
 	excludeProviderKeys map[string]bool
+	excludeBluetooth    bool
+}
+
+// ExcludeBluetooth skips the BLE scan and filters out BLE-only devices
+// (those with no LAN or external endpoint) from the interactive device picker.
+func ExcludeBluetooth() resolveOption {
+	return func(c *resolveConfig) {
+		c.excludeBluetooth = true
+	}
 }
 
 // ExcludeProviders prevents the named provider keys from appearing in the
@@ -180,7 +220,7 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	return pickDevice(ctx, cfg.excludeProviderKeys)
+	return pickDevice(ctx, cfg.excludeProviderKeys, cfg.excludeBluetooth)
 }
 
 // ensureAppConfig loads wendy.json from cfgPath. If the file does not exist
@@ -259,7 +299,7 @@ type pickerEntry struct {
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
 // excludeProviders hides the named provider keys from the picker.
-func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*SelectedDevice, error) {
+func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBluetooth bool) (*SelectedDevice, error) {
 	picker := tui.NewPicker()
 	p := tea.NewProgram(picker)
 
@@ -268,12 +308,22 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 		discoverCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 
-		// Discover LAN/USB/Ethernet/BLE devices.
+		// Discover LAN/USB/Ethernet devices (and BLE unless excluded).
 		opts := discovery.DiscoveryOptions{Timeout: 5 * time.Second}
+		if excludeBluetooth {
+			opts.Types = []models.InterfaceType{
+				models.InterfaceUSB,
+				models.InterfaceEthernet,
+				models.InterfaceLAN,
+			}
+		}
 		collection, _ := discovery.Discover(discoverCtx, opts)
 		if collection == nil {
 			collection = &models.DevicesCollection{}
 		}
+
+		// Resolve agent versions for LAN devices.
+		resolveLANVersions(discoverCtx, collection.LANDevices)
 
 		// Discover external provider devices. Microwasm devices are added
 		// to the collection so MergedDevices() can merge them with BLE Lite.
@@ -306,6 +356,10 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 		var items []tui.PickerItem
 		for i := range merged {
 			d := &merged[i]
+			// Skip BLE-only devices when Bluetooth is excluded.
+			if excludeBluetooth && d.LAN == nil && d.External == nil {
+				continue
+			}
 			name := d.DisplayName
 			if d.AgentVersion != "" {
 				name += " v" + d.AgentVersion
@@ -330,7 +384,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool) (*Selecte
 		for _, ext := range nonWendyLiteExternals {
 			extItems = append(extItems, tui.PickerItem{
 				Name:    ext.device.DisplayName,
-				Type:    "External",
+				Type:    ext.provider.DisplayName(),
 				Address: fmt.Sprintf("%s: %s", ext.device.ProviderKey, ext.device.ID),
 				Value:   &pickerEntry{externalDevice: ext.device, provider: ext.provider},
 			})
