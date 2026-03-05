@@ -283,15 +283,17 @@ func applyVideo(spec *Spec) {
 		Access: "rwm",
 	})
 
-	// Mount all /dev/video* devices.
+	// Mount /dev/video* devices that exist on the host.
 	for i := 0; i < 16; i++ {
 		devPath := fmt.Sprintf("/dev/video%d", i)
-		spec.Mounts = append(spec.Mounts, Mount{
-			Destination: devPath,
-			Source:      devPath,
-			Type:        "bind",
-			Options:     []string{"rbind", "nosuid", "noexec"},
-		})
+		if _, err := os.Stat(devPath); err == nil {
+			spec.Mounts = append(spec.Mounts, Mount{
+				Destination: devPath,
+				Source:      devPath,
+				Type:        "bind",
+				Options:     []string{"rbind", "nosuid", "noexec"},
+			})
+		}
 	}
 }
 
