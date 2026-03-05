@@ -81,11 +81,21 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	// Debug mode requires host networking for remote debugger access (gdb/lldb).
-	if opts.debug && !appCfg.HasEntitlement(appconfig.EntitlementNetwork) {
-		appCfg.Entitlements = append(appCfg.Entitlements, appconfig.Entitlement{
-			Type: appconfig.EntitlementNetwork,
-			Mode: "host",
-		})
+	if opts.debug {
+		foundNetwork := false
+		for i, e := range appCfg.Entitlements {
+			if e.Type == appconfig.EntitlementNetwork {
+				appCfg.Entitlements[i].Mode = "host"
+				foundNetwork = true
+				break
+			}
+		}
+		if !foundNetwork {
+			appCfg.Entitlements = append(appCfg.Entitlements, appconfig.Entitlement{
+				Type: appconfig.EntitlementNetwork,
+				Mode: "host",
+			})
+		}
 	}
 
 	// Step 2: Resolve the target device.

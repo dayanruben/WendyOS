@@ -426,24 +426,23 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				if err == nil && len(devices) > 0 {
 					var items []tui.PickerItem
 					for i := range devices {
-						d := devices[i]
 						if prov.Key() == "wendy-lite" {
 							items = append(items, tui.PickerItem{
-								Name:    d.DisplayName,
+								Name:    devices[i].DisplayName,
 								Type:    "LAN (Lite)",
-								Address: d.ConnectionInfo["ip"],
+								Address: devices[i].ConnectionInfo["ip"],
 								Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
-									DisplayName:     d.DisplayName,
-									CPUArchitecture: d.CPUArchitecture,
-									External:        &d,
+									DisplayName:     devices[i].DisplayName,
+									CPUArchitecture: devices[i].CPUArchitecture,
+									External:        &devices[i],
 								}},
 							})
 						} else {
 							items = append(items, tui.PickerItem{
-								Name:    d.DisplayName,
+								Name:    devices[i].DisplayName,
 								Type:    prov.DisplayName(),
-								Address: fmt.Sprintf("%s: %s", d.ProviderKey, d.ID),
-								Value:   &pickerEntry{externalDevice: &d, provider: prov},
+								Address: fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								Value:   &pickerEntry{externalDevice: &devices[i], provider: prov},
 							})
 						}
 					}
@@ -469,22 +468,21 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				if err == nil && len(bleDevices) > 0 {
 					var items []tui.PickerItem
 					for i := range bleDevices {
-						d := bleDevices[i]
 						connType := "Bluetooth"
-						if !d.IsWendyAgent() {
+						if !bleDevices[i].IsWendyAgent() {
 							connType = "BLE (Lite)"
 						}
 						items = append(items, tui.PickerItem{
-							Name:    d.DisplayName,
+							Name:    bleDevices[i].DisplayName,
 							Type:    connType,
-							Address: d.Address,
+							Address: bleDevices[i].Address,
 							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
-								DisplayName:     d.DisplayName,
-								AgentVersion:    d.AgentVersion,
-								OS:              d.OS,
-								OSVersion:       d.OSVersion,
-								CPUArchitecture: d.CPUArchitecture,
-								Bluetooth:       &d,
+								DisplayName:     bleDevices[i].DisplayName,
+								AgentVersion:    bleDevices[i].AgentVersion,
+								OS:              bleDevices[i].OS,
+								OSVersion:       bleDevices[i].OSVersion,
+								CPUArchitecture: bleDevices[i].CPUArchitecture,
+								Bluetooth:       &bleDevices[i],
 							}},
 						})
 					}

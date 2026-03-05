@@ -291,8 +291,6 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	if err != nil {
 		return fmt.Errorf("loading existing TLS config: %w", err)
 	}
-	tlsCfg.InsecureSkipVerify = true
-
 	var refreshTransportCreds grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
 		refreshTransportCreds = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))

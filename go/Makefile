@@ -60,7 +60,7 @@ msi-windows-amd64: build-cli-windows-amd64
 
 msi-windows-arm64: build-cli-windows-arm64
 	wixl -D Version=$(MSI_VERSION) -D ExePath=bin/wendy-windows-arm64.exe \
-	     -a x64 -o bin/wendy-windows-arm64.msi $(WXS)
+	     -a arm64 -o bin/wendy-windows-arm64.msi $(WXS)
 
 # Run all tests
 test:

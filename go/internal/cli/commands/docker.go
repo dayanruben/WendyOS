@@ -494,5 +494,8 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 // registryHost formats a host:port for use in a registry image reference,
 // wrapping IPv6 addresses in brackets as required by RFC 3986.
 func registryHost(host string, port int) string {
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
 	return fmt.Sprintf("%s:%d", host, port)
 }

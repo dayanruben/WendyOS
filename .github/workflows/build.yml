@@ -493,9 +493,15 @@ jobs:
             MSI_VERSION="0.0.0"
           fi
 
+          # Map matrix arch to wixl architecture
+          case "${{ matrix.arch }}" in
+            amd64) MSI_ARCH="x64" ;;
+            arm64) MSI_ARCH="arm64" ;;
+          esac
+
           wixl -D Version="$MSI_VERSION" \
                -D ExePath="wendy-cli-windows-${{ matrix.goarch }}/wendy.exe" \
-               -a x64 \
+               -a "$MSI_ARCH" \
                -o "wendy-cli-windows-${{ matrix.goarch }}-${VERSION}.msi" \
                go/installer/windows/wendy.wxs
 
