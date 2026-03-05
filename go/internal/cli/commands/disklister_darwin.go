@@ -20,17 +20,6 @@ type drive struct {
 
 // listExternalDrives uses diskutil to find external removable drives on macOS.
 func listExternalDrives() ([]drive, error) {
-	out, err := exec.Command("diskutil", "list", "-plist", "external").Output()
-	if err != nil {
-		// Fallback: parse text output.
-		return listExternalDrivesText()
-	}
-
-	// If plist output is empty or has no disks, try text fallback.
-	if len(out) == 0 {
-		return listExternalDrivesText()
-	}
-
 	return listExternalDrivesText()
 }
 

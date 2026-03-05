@@ -241,8 +241,17 @@ func scaffoldProject(dir, appID, target, language string) error {
 	}
 }
 
+// pythonPackageName converts an app ID to a valid Python package name
+// by replacing hyphens and dots with underscores.
+func pythonPackageName(appID string) string {
+	r := strings.NewReplacer("-", "_", ".", "_", " ", "_")
+	return r.Replace(appID)
+}
+
 // initPythonUVProject creates a uv-based Python project.
 func initPythonUVProject(dir, appID string) error {
+	pkgName := pythonPackageName(appID)
+
 	// Create pyproject.toml for uv.
 	pyprojectPath := filepath.Join(dir, "pyproject.toml")
 	if _, err := os.Stat(pyprojectPath); os.IsNotExist(err) {
@@ -254,7 +263,7 @@ dependencies = []
 
 [project.scripts]
 %s = "%s:main"
-`, appID, appID, appID)
+`, appID, pkgName, pkgName)
 
 		if err := os.WriteFile(pyprojectPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("creating pyproject.toml: %w", err)
@@ -262,7 +271,7 @@ dependencies = []
 	}
 
 	// Create source package.
-	srcDir := filepath.Join(dir, appID)
+	srcDir := filepath.Join(dir, pkgName)
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		return fmt.Errorf("creating source directory: %w", err)
 	}
@@ -314,7 +323,7 @@ COPY . .
 RUN uv sync --frozen
 
 CMD ["uv", "run", "%s"]
-`, appID)
+`, pkgName)
 
 		if err := os.WriteFile(dockerPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("creating Dockerfile: %w", err)

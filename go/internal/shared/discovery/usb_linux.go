@@ -27,8 +27,9 @@ func discoverUSB(ctx context.Context) ([]models.USBDevice, error) {
 		line := scanner.Text()
 
 		isWendy := strings.Contains(strings.ToLower(line), "wendy")
-		// Check for Espressif ESP32-C6 VID:PID (303a:1001).
-		isESP32 := strings.Contains(line, "303a:1001")
+		// Check for Espressif ESP32-C6 VID:PID.
+		esp32Match := strings.TrimPrefix(models.ESP32VendorID, "0x") + ":" + strings.TrimPrefix(models.ESP32ProductID, "0x")
+		isESP32 := strings.Contains(strings.ToLower(line), esp32Match)
 
 		if !isWendy && !isESP32 {
 			continue

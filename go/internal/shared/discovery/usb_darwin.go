@@ -107,8 +107,16 @@ func collectUSBDevices(items []spUSBItem, devices *[]models.USBDevice) {
 
 // isESP32Device checks if the VID/PID matches an Espressif ESP32-C6.
 func isESP32Device(vendorID, productID string) bool {
-	vid := strings.ToLower(strings.Fields(vendorID)[0])
-	pid := strings.ToLower(strings.Fields(productID)[0])
+	vidFields := strings.Fields(vendorID)
+	if len(vidFields) == 0 {
+		return false
+	}
+	pidFields := strings.Fields(productID)
+	if len(pidFields) == 0 {
+		return false
+	}
+	vid := strings.ToLower(vidFields[0])
+	pid := strings.ToLower(pidFields[0])
 	return vid == models.ESP32VendorID && pid == models.ESP32ProductID
 }
 

@@ -17,7 +17,7 @@ func newOSCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newOSUpdateCmd())
-	cmd.AddCommand(newOSInstallCmd())
+	addOSInstallCmd(cmd)
 	return cmd
 }
 

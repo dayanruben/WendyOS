@@ -66,10 +66,29 @@ func listExternalDrives() ([]drive, error) {
 
 // unmountDisk unmounts all partitions on a disk before writing.
 func unmountDisk(devPath string) error {
-	// Unmount all partitions: umount /dev/sdX*
-	cmd := exec.Command("sudo", "umount", devPath+"*")
-	cmd.Run() //nolint:errcheck — may fail if not mounted, that's fine
+	// Enumerate partitions via lsblk and unmount each one.
+	out, err := exec.Command("lsblk", "--json", "-o", "NAME,MOUNTPOINT", devPath).Output()
+	if err != nil {
+		// If lsblk fails, the disk may not be mounted at all.
+		return nil
+	}
+
+	var result lsblkOutput
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil
+	}
+
+	for _, dev := range result.Blockdevices {
+		unmountLsblkDevice(dev)
+	}
 	return nil
+}
+
+func unmountLsblkDevice(dev lsblkDevice) {
+	if dev.Mountpoint != "" {
+		partPath := "/dev/" + dev.Name
+		exec.Command("sudo", "umount", partPath).Run() //nolint:errcheck
+	}
 }
 
 // writeImageToDisk writes an image file to a block device using dd.

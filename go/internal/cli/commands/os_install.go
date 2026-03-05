@@ -1,3 +1,5 @@
+//go:build darwin || linux
+
 package commands
 
 import (
@@ -215,7 +217,10 @@ func downloadImage(img *imageInfo) (string, error) {
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
-				tmpFile.Write(buf[:n]) //nolint:errcheck
+				if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
+					p.Send(tui.ProgressDoneMsg{Err: writeErr})
+					return
+				}
 				downloaded += int64(n)
 				if total > 0 {
 					pct := float64(downloaded) / float64(total)

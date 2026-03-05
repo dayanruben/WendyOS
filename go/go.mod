@@ -14,6 +14,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/posthog/posthog-go v1.10.0
 	github.com/spf13/cobra v1.10.2
+	go.bug.st/serial v1.6.4
 	go.uber.org/zap v1.27.1
 	golang.org/x/term v0.40.0
 	google.golang.org/grpc v1.79.1
@@ -79,7 +80,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	go.bug.st/serial v1.6.4 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
