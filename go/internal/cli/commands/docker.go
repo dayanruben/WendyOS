@@ -2,11 +2,11 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
@@ -302,14 +302,20 @@ func installWasmSwiftSDK() error {
 	return nil
 }
 
-// findSwiftProduct determines the executable target name from Package.swift.
-// Falls back to the directory name.
+// findSwiftProduct determines the product name from Package.swift using
+// `swift package dump-package`. Falls back to the directory name.
 func findSwiftProduct(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, "Package.swift"))
+	cmd := exec.Command("swift", "package", "dump-package")
+	cmd.Dir = dir
+	out, err := cmd.Output()
 	if err == nil {
-		re := regexp.MustCompile(`\.executableTarget\(\s*name:\s*"([^"]+)"`)
-		if m := re.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
+		var manifest struct {
+			Products []struct {
+				Name string `json:"name"`
+			} `json:"products"`
+		}
+		if json.Unmarshal(out, &manifest) == nil && len(manifest.Products) == 1 {
+			return manifest.Products[0].Name
 		}
 	}
 	return filepath.Base(dir)
