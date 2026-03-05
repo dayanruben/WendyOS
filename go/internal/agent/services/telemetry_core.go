@@ -13,7 +13,7 @@ import (
 // TelemetryCore is a zapcore.Core that publishes log entries to a
 // TelemetryBroadcaster as OTEL log records. This bridges the agent's
 // internal zap logger to the telemetry stream so that agent logs are
-// visible via `wendy telemetry logs --service wendy-agent`.
+// visible via `wendy device logs --service wendy-agent`.
 type TelemetryCore struct {
 	broadcaster *TelemetryBroadcaster
 	level       zapcore.Level

@@ -353,8 +353,8 @@ echo ""
 echo -e "${BOLD}Phase 7: Telemetry${RESET}"
 
 # Streaming command — run with a short timeout; both success and timeout are OK
-printf "  %-50s " "wendy telemetry logs (3s timeout)"
-TELEM_OUTPUT=$(timeout 3 "$WENDY" telemetry logs --device "$HOSTNAME" 2>&1)
+printf "  %-50s " "wendy device logs (3s timeout)"
+TELEM_OUTPUT=$(timeout 3 "$WENDY" device logs --device "$HOSTNAME" 2>&1)
 TELEM_RC=$?
 # exit 124 = timeout reached, which is fine for a streaming command
 if [[ $TELEM_RC -eq 0 ]] || [[ $TELEM_RC -eq 124 ]]; then
