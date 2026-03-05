@@ -85,6 +85,28 @@ func resolveLANVersions(ctx context.Context, devices []models.LANDevice) []model
 	return reachable
 }
 
+// resolveLANVersion queries a single LAN device's gRPC endpoint to populate
+// version metadata. Returns the enriched device and true if reachable.
+func resolveLANVersion(ctx context.Context, dev models.LANDevice) (models.LANDevice, bool) {
+	addr := hostPort(dev.Hostname, dev.Port)
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	conn, err := connectWithAutoTLS(queryCtx, addr)
+	if err != nil {
+		return dev, false
+	}
+	defer conn.Close()
+	resp, err := conn.AgentService.GetAgentVersion(queryCtx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return dev, false
+	}
+	dev.AgentVersion = resp.GetVersion()
+	dev.OS = resp.GetOs()
+	dev.OSVersion = resp.GetOsVersion()
+	dev.CPUArchitecture = resp.GetCpuArchitecture()
+	return dev, true
+}
+
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
 type SelectedDevice struct {
 	// Exactly one of Agent/Bluetooth/External is set.
@@ -352,105 +374,134 @@ type pickerEntry struct {
 
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
+// LAN discovery runs continuously so devices that come online after the
+// initial scan still appear in the picker.
 // excludeProviders hides the named provider keys from the picker.
 func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBluetooth bool) (*SelectedDevice, error) {
 	picker := tui.NewPicker()
 	p := tea.NewProgram(picker)
 
-	// Run discovery in the background, feeding results to the TUI.
+	// Cancel continuous discovery when the picker exits.
+	discoverCtx, discoverCancel := context.WithCancel(ctx)
+
+	// Continuous LAN discovery — devices appear as they're found.
+	lanCh := make(chan models.LANDevice, 16)
+	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
 	go func() {
-		discoverCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
-
-		// Discover LAN/USB/Ethernet devices (and BLE unless excluded).
-		opts := discovery.DiscoveryOptions{Timeout: 5 * time.Second}
-		if excludeBluetooth {
-			opts.Types = []models.InterfaceType{
-				models.InterfaceUSB,
-				models.InterfaceEthernet,
-				models.InterfaceLAN,
-			}
-		}
-		collection, _ := discovery.Discover(discoverCtx, opts)
-		if collection == nil {
-			collection = &models.DevicesCollection{}
-		}
-
-		// Resolve agent versions for LAN devices (filters out unreachable ones).
-		collection.LANDevices = resolveLANVersions(discoverCtx, collection.LANDevices)
-
-		// Discover external provider devices. Microwasm devices are added
-		// to the collection so MergedDevices() can merge them with BLE Lite.
-		var nonWendyLiteExternals []struct {
-			device   *models.ExternalDevice
-			provider providers.DeviceProvider
-		}
-		for _, prov := range providers.AvailableProviders() {
-			if excludeProviders[prov.Key()] {
+		for dev := range lanCh {
+			dev, reachable := resolveLANVersion(discoverCtx, dev)
+			if !reachable {
 				continue
 			}
-			devices, err := prov.DiscoverDevices(discoverCtx)
-			if err != nil || len(devices) == 0 {
-				continue
+			name := dev.DisplayName
+			if dev.AgentVersion != "" {
+				name += " v" + dev.AgentVersion
 			}
-			if prov.Key() == "wendy-lite" {
-				collection.ExternalDevices = append(collection.ExternalDevices, devices...)
-			} else {
-				for i := range devices {
-					nonWendyLiteExternals = append(nonWendyLiteExternals, struct {
-						device   *models.ExternalDevice
-						provider providers.DeviceProvider
-					}{device: &devices[i], provider: prov})
-				}
-			}
-		}
-
-		// Build merged picker items (LAN + BLE + wendy-lite).
-		merged := collection.MergedDevices()
-		var items []tui.PickerItem
-		for i := range merged {
-			d := &merged[i]
-			// Skip BLE-only devices when Bluetooth is excluded.
-			if excludeBluetooth && d.LAN == nil && d.External == nil {
-				continue
-			}
-			name := d.DisplayName
-			if d.AgentVersion != "" {
-				name += " v" + d.AgentVersion
-			}
-			addr := d.Address()
-			if d.Port() > 0 {
-				addr = hostPort(addr, d.Port())
-			}
-			items = append(items, tui.PickerItem{
+			lanDev := dev // copy for stable pointer
+			p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
 				Name:    name,
-				Type:    d.ConnectionTypes(),
-				Address: addr,
-				Value:   &pickerEntry{mergedDevice: d},
-			})
+				Type:    "LAN",
+				Address: hostPort(dev.Hostname, dev.Port),
+				Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+					DisplayName:     dev.DisplayName,
+					AgentVersion:    dev.AgentVersion,
+					OS:              dev.OS,
+					OSVersion:       dev.OSVersion,
+					CPUArchitecture: dev.CPUArchitecture,
+					LAN:             &lanDev,
+				}},
+			}}})
 		}
-		if len(items) > 0 {
-			p.Send(tui.PickerAddMsg{Items: items})
-		}
-
-		// Add remaining non-wendy-lite external devices.
-		var extItems []tui.PickerItem
-		for _, ext := range nonWendyLiteExternals {
-			extItems = append(extItems, tui.PickerItem{
-				Name:    ext.device.DisplayName,
-				Type:    ext.provider.DisplayName(),
-				Address: fmt.Sprintf("%s: %s", ext.device.ProviderKey, ext.device.ID),
-				Value:   &pickerEntry{externalDevice: ext.device, provider: ext.provider},
-			})
-		}
-		if len(extItems) > 0 {
-			p.Send(tui.PickerAddMsg{Items: extItems})
-		}
-
-		p.Send(tui.PickerDoneMsg{})
 	}()
 
+	// Continuous provider discovery — re-scan every 3 seconds.
+	for _, prov := range providers.AvailableProviders() {
+		if excludeProviders[prov.Key()] {
+			continue
+		}
+		prov := prov
+		go func() {
+			for {
+				devices, err := prov.DiscoverDevices(discoverCtx)
+				if err == nil && len(devices) > 0 {
+					var items []tui.PickerItem
+					for i := range devices {
+						d := devices[i]
+						if prov.Key() == "wendy-lite" {
+							items = append(items, tui.PickerItem{
+								Name:    d.DisplayName,
+								Type:    "LAN (Lite)",
+								Address: d.ConnectionInfo["ip"],
+								Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+									DisplayName:     d.DisplayName,
+									CPUArchitecture: d.CPUArchitecture,
+									External:        &d,
+								}},
+							})
+						} else {
+							items = append(items, tui.PickerItem{
+								Name:    d.DisplayName,
+								Type:    prov.DisplayName(),
+								Address: fmt.Sprintf("%s: %s", d.ProviderKey, d.ID),
+								Value:   &pickerEntry{externalDevice: &d, provider: prov},
+							})
+						}
+					}
+					if len(items) > 0 {
+						p.Send(tui.PickerAddMsg{Items: items})
+					}
+				}
+
+				select {
+				case <-discoverCtx.Done():
+					return
+				case <-time.After(3 * time.Second):
+				}
+			}
+		}()
+	}
+
+	// Continuous Bluetooth discovery — re-scan every 5 seconds.
+	if !excludeBluetooth {
+		go func() {
+			for {
+				bleDevices, err := discovery.DiscoverBluetooth(discoverCtx, true)
+				if err == nil && len(bleDevices) > 0 {
+					var items []tui.PickerItem
+					for i := range bleDevices {
+						d := bleDevices[i]
+						connType := "Bluetooth"
+						if !d.IsWendyAgent() {
+							connType = "BLE (Lite)"
+						}
+						items = append(items, tui.PickerItem{
+							Name:    d.DisplayName,
+							Type:    connType,
+							Address: d.Address,
+							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+								DisplayName:     d.DisplayName,
+								AgentVersion:    d.AgentVersion,
+								OS:              d.OS,
+								OSVersion:       d.OSVersion,
+								CPUArchitecture: d.CPUArchitecture,
+								Bluetooth:       &d,
+							}},
+						})
+					}
+					p.Send(tui.PickerAddMsg{Items: items})
+				}
+
+				select {
+				case <-discoverCtx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}()
+	}
+
 	finalModel, err := p.Run()
+	discoverCancel() // stop all background discovery
 	if err != nil {
 		return nil, fmt.Errorf("device picker: %w", err)
 	}
