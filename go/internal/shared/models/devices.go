@@ -18,6 +18,12 @@ const (
 	InterfaceExternal  InterfaceType = "external"
 )
 
+// ESP32 USB identifiers (Espressif ESP32-C6).
+const (
+	ESP32VendorID  = "0x303a"
+	ESP32ProductID = "0x1001"
+)
+
 // USBDevice represents a USB-connected Wendy device.
 type USBDevice struct {
 	Name              string `json:"name"`
@@ -30,6 +36,7 @@ type USBDevice struct {
 	Hostname          string `json:"hostname,omitempty"`
 	AgentVersion      string `json:"agentVersion,omitempty"`
 	IsWendyDevice     bool   `json:"isWendyDevice"`
+	IsESP32           bool   `json:"isESP32,omitempty"`
 }
 
 // HumanReadable returns a human-friendly string describing this USB device.
@@ -164,7 +171,7 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 		}
 	}
 	if d.External != nil {
-		types = append(types, "WiFi")
+		types = append(types, "LAN (Lite)")
 	}
 	return strings.Join(types, ", ")
 }
@@ -254,11 +261,11 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 		}
 	}
 
-	// Merge microwasm external devices by name. These represent the same
+	// Merge wendy-lite external devices by name. These represent the same
 	// physical Wendy Lite hardware discovered via mDNS (WiFi) instead of BLE.
 	for i := range c.ExternalDevices {
 		d := &c.ExternalDevices[i]
-		if d.ProviderKey != "microwasm" {
+		if d.ProviderKey != "wendy-lite" {
 			continue
 		}
 		key := strings.ToLower(d.DisplayName)

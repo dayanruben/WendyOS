@@ -3,7 +3,9 @@ package commands
 
 import (
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/version"
 )
 
@@ -22,6 +24,27 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			providers.Initialize(cmd.Context())
+
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+
+			firstRun := analytics.Init(cfg)
+			if firstRun {
+				cmd.PrintErrln("Attention: The Wendy CLI collects anonymous analytics.")
+				cmd.PrintErrln("They help us understand which commands are used most, identify common errors, and prioritize improvements.")
+				cmd.PrintErrln("Analytics are enabled by default. If you'd like to opt-out, use the following command:")
+				cmd.PrintErrln("  wendy analytics disable")
+				cmd.PrintErrln("Or, set the following environment variable:")
+				cmd.PrintErrln("  WENDY_ANALYTICS=false")
+
+				cfg.Analytics = &config.AnalyticsConfig{Enabled: true}
+				if err := config.Save(cfg); err != nil {
+					return err
+				}
+			}
+
 			return nil
 		},
 	}
@@ -65,9 +88,6 @@ func NewRootCmd() *cobra.Command {
 	bluetoothCmd.GroupID = "devices"
 	hardwareCmd := newHardwareCmd()
 	hardwareCmd.GroupID = "devices"
-	telemetryCmd := newTelemetryCmd()
-	telemetryCmd.GroupID = "devices"
-
 	// Misc Commands
 	cacheCmd := newCacheCmd()
 	cacheCmd.GroupID = "misc"
@@ -75,6 +95,8 @@ func NewRootCmd() *cobra.Command {
 	updateCmd.GroupID = "misc"
 	infoCmd := newInfoCmd()
 	infoCmd.GroupID = "misc"
+	analyticsCmd := newAnalyticsCmd()
+	analyticsCmd.GroupID = "misc"
 
 	root.AddCommand(
 		runCmd,
@@ -89,10 +111,10 @@ func NewRootCmd() *cobra.Command {
 		audioCmd,
 		bluetoothCmd,
 		hardwareCmd,
-		telemetryCmd,
 		cacheCmd,
 		updateCmd,
 		infoCmd,
+		analyticsCmd,
 	)
 
 	root.SetHelpCommandGroupID("misc")

@@ -67,10 +67,12 @@ func newDiscoverCmd() *cobra.Command {
 	return cmd
 }
 
-// discoverExternalDevices queries all available providers for their devices.
+// discoverExternalDevices queries all registered providers for their devices.
+// This uses AllProviders (not just available ones) so devices are discoverable
+// even when the build toolchain isn't installed.
 func discoverExternalDevices(ctx context.Context) []models.ExternalDevice {
 	var all []models.ExternalDevice
-	for _, p := range providers.AvailableProviders() {
+	for _, p := range providers.AllProviders() {
 		devices, err := p.DiscoverDevices(ctx)
 		if err != nil {
 			continue
@@ -99,6 +101,8 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 		return fmt.Errorf("discovery failed: %w", err)
 	}
 
+	collection.LANDevices = resolveLANVersions(ctx, collection.LANDevices)
+
 	if shouldIncludeExternal(opts) {
 		collection.ExternalDevices = discoverExternalDevices(ctx)
 	}
@@ -119,8 +123,11 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 
 	work := func() tea.Msg {
 		collection, err := discovery.Discover(ctx, opts)
-		if err == nil && includeExternal {
-			collection.ExternalDevices = discoverExternalDevices(ctx)
+		if err == nil {
+			collection.LANDevices = resolveLANVersions(ctx, collection.LANDevices)
+			if includeExternal {
+				collection.ExternalDevices = discoverExternalDevices(ctx)
+			}
 		}
 		return tui.SpinnerDoneMsg{Result: collection, Err: err}
 	}
@@ -220,6 +227,7 @@ func (m discoverModel) scanEthernet() tea.Cmd {
 func (m discoverModel) scanLAN() tea.Cmd {
 	return func() tea.Msg {
 		devices, _ := discovery.DiscoverLAN(m.ctx, m.opts.Timeout)
+		devices = resolveLANVersions(m.ctx, devices)
 		return lanScanMsg{devices: devices}
 	}
 }
@@ -338,12 +346,16 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 		rows = append(rows, []string{d.DisplayName, "Ethernet", d.IPAddress, "", d.AgentVersion})
 	}
 	for _, d := range collection.ExternalDevices {
-		// Microwasm devices are merged with BLE Lite in MergedDevices().
-		if d.ProviderKey == "microwasm" {
+		// Wendy Lite devices are merged with BLE Lite in MergedDevices().
+		if d.ProviderKey == "wendy-lite" {
 			continue
 		}
 		addr := fmt.Sprintf("%s: %s", d.ProviderKey, d.ID)
-		rows = append(rows, []string{d.DisplayName, "External", addr, "", d.AgentVersion})
+		typeName := d.ProviderKey
+		if p := providers.ProviderForKey(d.ProviderKey); p != nil {
+			typeName = p.DisplayName()
+		}
+		rows = append(rows, []string{d.DisplayName, typeName, addr, "", d.AgentVersion})
 	}
 
 	sort.Slice(rows, func(i, j int) bool {

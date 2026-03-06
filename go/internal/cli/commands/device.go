@@ -1,21 +1,29 @@
 package commands
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/version"
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
 )
 
 func newDeviceCmd() *cobra.Command {
@@ -30,6 +38,9 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceUpdateCmd(),
+		newDeviceLogsCmd(),
+		newDeviceDashboardCmd(),
+		newDeviceTelemetryStreamCmd(),
 		newWifiCmd(),
 	)
 
@@ -86,22 +97,51 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-default [hostname]",
 		Short: "Set the default device hostname",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var device string
+			if len(args) > 0 {
+				device = args[0]
+			} else {
+				sel, err := pickDeviceForDefault(cmd.Context())
+				if err != nil {
+					return err
+				}
+				device = sel
+			}
+
 			cfg, err := config.Load()
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
-			cfg.DefaultDevice = args[0]
+			cfg.DefaultDevice = device
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
 
-			fmt.Printf("Default device set to: %s\n", args[0])
+			fmt.Printf("Default device set to: %s\n", device)
 			return nil
 		},
 	}
+}
+
+// pickDeviceForDefault runs the interactive device picker and returns a
+// hostname or provider key suitable for storing as the default device.
+func pickDeviceForDefault(ctx context.Context) (string, error) {
+	selected, err := pickDevice(ctx, nil, false)
+	if err != nil {
+		return "", err
+	}
+	defer selected.Close()
+
+	if selected.Agent != nil {
+		return selected.Agent.Host, nil
+	}
+	if selected.External != nil {
+		return selected.External.ProviderKey, nil
+	}
+	return "", fmt.Errorf("no device selected")
 }
 
 func newDeviceUnsetDefaultCmd() *cobra.Command {
@@ -218,35 +258,649 @@ func scanWiFiNetworks(ctx context.Context, conn *grpcclient.AgentConnection) ([]
 	return resp.GetNetworks(), nil
 }
 
-func newDeviceUpdateCmd() *cobra.Command {
-	var binaryPath string
+func newDeviceLogsCmd() *cobra.Command {
+	var appName string
+	var serviceName string
+	var minSeverity int32
 
 	cmd := &cobra.Command{
-		Use:   "update",
-		Short: "Update the agent binary on the target device",
-		Long:  "Streams a new agent binary to the device and performs an atomic replacement.",
+		Use:   "logs",
+		Short: "Stream logs from containers on the device",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-
-			if binaryPath == "" {
-				return fmt.Errorf("--binary flag is required; specify the path to the agent binary for the target platform")
-			}
-
-			// Read the binary file.
-			binaryData, err := os.ReadFile(binaryPath)
-			if err != nil {
-				return fmt.Errorf("reading binary: %w", err)
-			}
-
-			// Compute SHA256.
-			h := sha256.Sum256(binaryData)
-			sha256Hash := hex.EncodeToString(h[:])
-
 			conn, err := connectToAgent(ctx)
 			if err != nil {
 				return err
 			}
 			defer conn.Close()
+
+			req := &agentpb.StreamLogsRequest{}
+			if appName != "" {
+				req.AppName = &appName
+			}
+			if serviceName != "" {
+				req.ServiceName = &serviceName
+			}
+			if minSeverity > 0 {
+				req.MinSeverity = &minSeverity
+			}
+			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
+			if err != nil {
+				return fmt.Errorf("starting log stream: %w", err)
+			}
+
+			for {
+				resp, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return fmt.Errorf("receiving logs: %w", err)
+				}
+
+				logs := resp.GetLogs()
+				if logs == nil {
+					continue
+				}
+
+				for _, rl := range logs.GetResourceLogs() {
+					svcName := resourceServiceName(rl.GetResource())
+					for _, sl := range rl.GetScopeLogs() {
+						for _, lr := range sl.GetLogRecords() {
+							if jsonOutput {
+								printLogRecordJSON(svcName, lr)
+							} else {
+								printLogRecord(svcName, lr)
+							}
+						}
+					}
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&appName, "app", "", "Filter by application name")
+	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
+	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity level")
+
+	return cmd
+}
+
+var (
+	logTraceStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	logDebugStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	logInfoStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("34"))
+	logWarnStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	logErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	logFatalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	logTimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	logAppStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	logMetaStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+)
+
+func severityLabel(sev otelpb.SeverityNumber) (string, lipgloss.Style) {
+	switch {
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+		return "FATAL", logFatalStyle
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+		return "ERROR", logErrorStyle
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+		return "WARN ", logWarnStyle
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+		return "INFO ", logInfoStyle
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
+		return "DEBUG", logDebugStyle
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE:
+		return "TRACE", logTraceStyle
+	default:
+		return "     ", logInfoStyle
+	}
+}
+
+func resourceServiceName(res *otelpb.Resource) string {
+	if res == nil {
+		return ""
+	}
+	for _, attr := range res.GetAttributes() {
+		if attr.GetKey() == "service.name" {
+			return attr.GetValue().GetStringValue()
+		}
+	}
+	return ""
+}
+
+func anyValueString(v *otelpb.AnyValue) string {
+	if v == nil {
+		return ""
+	}
+	switch v.Value.(type) {
+	case *otelpb.AnyValue_StringValue:
+		return v.GetStringValue()
+	case *otelpb.AnyValue_IntValue:
+		return fmt.Sprintf("%d", v.GetIntValue())
+	case *otelpb.AnyValue_DoubleValue:
+		return fmt.Sprintf("%g", v.GetDoubleValue())
+	case *otelpb.AnyValue_BoolValue:
+		return fmt.Sprintf("%t", v.GetBoolValue())
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func printLogRecordJSON(service string, lr *otelpb.LogRecord) {
+	entry := map[string]any{
+		"timestamp": time.Unix(0, int64(lr.GetTimeUnixNano())).UTC().Format(time.RFC3339Nano),
+		"severity":  lr.GetSeverityText(),
+	}
+	if service != "" {
+		entry["service"] = service
+	}
+	if body := lr.GetBody(); body != nil {
+		entry["body"] = body.GetStringValue()
+	}
+	if attrs := lr.GetAttributes(); len(attrs) > 0 {
+		meta := make(map[string]string, len(attrs))
+		for _, kv := range attrs {
+			meta[kv.GetKey()] = anyValueString(kv.GetValue())
+		}
+		entry["attributes"] = meta
+	}
+	data, _ := json.Marshal(entry)
+	fmt.Println(string(data))
+}
+
+func printLogRecord(service string, lr *otelpb.LogRecord) {
+	ts := time.Unix(0, int64(lr.GetTimeUnixNano())).Local().Format("15:04:05.000")
+	label, style := severityLabel(lr.GetSeverityNumber())
+
+	var b strings.Builder
+	b.WriteString(logTimeStyle.Render(ts))
+	b.WriteByte(' ')
+	b.WriteString(style.Render(label))
+	if service != "" {
+		b.WriteByte(' ')
+		b.WriteString(logAppStyle.Render("[" + service + "]"))
+	}
+
+	body := lr.GetBody()
+	if body != nil {
+		b.WriteByte(' ')
+		b.WriteString(body.GetStringValue())
+	}
+
+	attrs := lr.GetAttributes()
+	if len(attrs) > 0 {
+		b.WriteByte(' ')
+		for i, kv := range attrs {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(logMetaStyle.Render(kv.GetKey() + "=" + anyValueString(kv.GetValue())))
+		}
+	}
+
+	fmt.Println(b.String())
+}
+
+func newDeviceTelemetryStreamCmd() *cobra.Command {
+	var appName string
+	var serviceName string
+
+	cmd := &cobra.Command{
+		Use:   "telemetry-stream",
+		Short: "Stream all telemetry data (logs, metrics, traces) as JSONL",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			enc := json.NewEncoder(os.Stdout)
+
+			var mu sync.Mutex
+			emit := func(v any) {
+				mu.Lock()
+				defer mu.Unlock()
+				enc.Encode(v) //nolint:errcheck
+			}
+
+			var wg sync.WaitGroup
+			errc := make(chan error, 3)
+
+			// Stream logs.
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				logReq := &agentpb.StreamLogsRequest{}
+				if appName != "" {
+					logReq.AppName = &appName
+				}
+				if serviceName != "" {
+					logReq.ServiceName = &serviceName
+				}
+				stream, err := conn.TelemetryService.StreamLogs(ctx, logReq)
+				if err != nil {
+					errc <- fmt.Errorf("starting log stream: %w", err)
+					return
+				}
+				for {
+					resp, err := stream.Recv()
+					if err == io.EOF {
+						return
+					}
+					if err != nil {
+						errc <- fmt.Errorf("receiving logs: %w", err)
+						return
+					}
+					logs := resp.GetLogs()
+					if logs == nil {
+						continue
+					}
+					for _, rl := range logs.GetResourceLogs() {
+						res := kvMapFromResource(rl.GetResource())
+						svc := res["service.name"]
+						for _, sl := range rl.GetScopeLogs() {
+							for _, lr := range sl.GetLogRecords() {
+								sev, sevNum := severityTextAndNumber(lr.GetSeverityNumber())
+								emit(telemetryLogEntry{
+									Type:           "log",
+									Timestamp:      formatNanoUTC(lr.GetTimeUnixNano()),
+									TimestampNano:  lr.GetTimeUnixNano(),
+									Severity:       sev,
+									SeverityNumber: sevNum,
+									Service:        svc,
+									Resource:       res,
+									Body:           anyValueString(lr.GetBody()),
+									Attributes:     kvMapFromKeyValues(lr.GetAttributes()),
+								})
+							}
+						}
+					}
+				}
+			}()
+
+			// Stream metrics.
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				metricReq := &agentpb.StreamMetricsRequest{}
+				if appName != "" {
+					metricReq.AppName = &appName
+				}
+				if serviceName != "" {
+					metricReq.ServiceName = &serviceName
+				}
+				stream, err := conn.TelemetryService.StreamMetrics(ctx, metricReq)
+				if err != nil {
+					errc <- fmt.Errorf("starting metrics stream: %w", err)
+					return
+				}
+				for {
+					resp, err := stream.Recv()
+					if err == io.EOF {
+						return
+					}
+					if err != nil {
+						errc <- fmt.Errorf("receiving metrics: %w", err)
+						return
+					}
+					metrics := resp.GetMetrics()
+					if metrics == nil {
+						continue
+					}
+					for _, rm := range metrics.GetResourceMetrics() {
+						res := kvMapFromResource(rm.GetResource())
+						svc := res["service.name"]
+						for _, sm := range rm.GetScopeMetrics() {
+							for _, m := range sm.GetMetrics() {
+								emit(telemetryMetricEntry{
+									Type:        "metric",
+									Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+									Service:     svc,
+									Resource:    res,
+									Name:        m.GetName(),
+									Description: m.GetDescription(),
+									Unit:        m.GetUnit(),
+								})
+							}
+						}
+					}
+				}
+			}()
+
+			// Stream traces.
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				traceReq := &agentpb.StreamTracesRequest{}
+				if appName != "" {
+					traceReq.AppName = &appName
+				}
+				if serviceName != "" {
+					traceReq.ServiceName = &serviceName
+				}
+				stream, err := conn.TelemetryService.StreamTraces(ctx, traceReq)
+				if err != nil {
+					errc <- fmt.Errorf("starting traces stream: %w", err)
+					return
+				}
+				for {
+					resp, err := stream.Recv()
+					if err == io.EOF {
+						return
+					}
+					if err != nil {
+						errc <- fmt.Errorf("receiving traces: %w", err)
+						return
+					}
+					traces := resp.GetTraces()
+					if traces == nil {
+						continue
+					}
+					for _, rs := range traces.GetResourceSpans() {
+						res := kvMapFromResource(rs.GetResource())
+						svc := res["service.name"]
+						for _, ss := range rs.GetScopeSpans() {
+							for _, span := range ss.GetSpans() {
+								emit(telemetryTraceEntry{
+									Type:             "trace",
+									Timestamp:        formatNanoUTC(span.GetStartTimeUnixNano()),
+									TimestampNano:    span.GetStartTimeUnixNano(),
+									EndTimestamp:     formatNanoUTC(span.GetEndTimeUnixNano()),
+									EndTimestampNano: span.GetEndTimeUnixNano(),
+									Service:          svc,
+									Resource:         res,
+									Name:             span.GetName(),
+									Kind:             span.GetKind().String(),
+									TraceID:          hex.EncodeToString(span.GetTraceId()),
+									SpanID:           hex.EncodeToString(span.GetSpanId()),
+									ParentSpanID:     hex.EncodeToString(span.GetParentSpanId()),
+									Attributes:       kvMapFromKeyValues(span.GetAttributes()),
+								})
+							}
+						}
+					}
+				}
+			}()
+
+			// Wait for all goroutines, return first error if any.
+			go func() {
+				wg.Wait()
+				close(errc)
+			}()
+
+			for err := range errc {
+				if err != nil && ctx.Err() == nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&appName, "app", "", "Filter by application name")
+	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
+
+	return cmd
+}
+
+type telemetryLogEntry struct {
+	Type           string            `json:"type"`
+	Timestamp      string            `json:"timestamp"`
+	TimestampNano  uint64            `json:"timestampNano"`
+	Severity       string            `json:"severity"`
+	SeverityNumber int32             `json:"severityNumber"`
+	Service        string            `json:"service"`
+	Resource       map[string]string `json:"resource"`
+	Body           string            `json:"body"`
+	Attributes     map[string]string `json:"attributes"`
+}
+
+type telemetryMetricEntry struct {
+	Type        string            `json:"type"`
+	Timestamp   string            `json:"timestamp"`
+	Service     string            `json:"service"`
+	Resource    map[string]string `json:"resource"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+}
+
+type telemetryTraceEntry struct {
+	Type             string            `json:"type"`
+	Timestamp        string            `json:"timestamp"`
+	TimestampNano    uint64            `json:"timestampNano"`
+	EndTimestamp     string            `json:"endTimestamp"`
+	EndTimestampNano uint64            `json:"endTimestampNano"`
+	Service          string            `json:"service"`
+	Resource         map[string]string `json:"resource"`
+	Name             string            `json:"name"`
+	Kind             string            `json:"kind"`
+	TraceID          string            `json:"traceId"`
+	SpanID           string            `json:"spanId"`
+	ParentSpanID     string            `json:"parentSpanId,omitempty"`
+	Attributes       map[string]string `json:"attributes"`
+}
+
+func formatNanoUTC(nanos uint64) string {
+	return time.Unix(0, int64(nanos)).UTC().Format(time.RFC3339Nano)
+}
+
+func severityTextAndNumber(sev otelpb.SeverityNumber) (string, int32) {
+	num := int32(sev)
+	switch {
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+		return "FATAL", num
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+		return "ERROR", num
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+		return "WARN", num
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+		return "INFO", num
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
+		return "DEBUG", num
+	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE:
+		return "TRACE", num
+	default:
+		return "UNSPECIFIED", num
+	}
+}
+
+func kvMapFromResource(res *otelpb.Resource) map[string]string {
+	m := make(map[string]string)
+	if res == nil {
+		return m
+	}
+	for _, attr := range res.GetAttributes() {
+		m[attr.GetKey()] = anyValueString(attr.GetValue())
+	}
+	return m
+}
+
+func kvMapFromKeyValues(kvs []*otelpb.KeyValue) map[string]string {
+	m := make(map[string]string)
+	for _, kv := range kvs {
+		m[kv.GetKey()] = anyValueString(kv.GetValue())
+	}
+	return m
+}
+
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type githubReleaseFull struct {
+	TagName    string               `json:"tag_name"`
+	Prerelease bool                 `json:"prerelease"`
+	Assets     []githubReleaseAsset `json:"assets"`
+}
+
+func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	if !nightly {
+		resp, err := client.Get(githubReleasesURL)
+		if err != nil {
+			return nil, fmt.Errorf("fetching latest release: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+		}
+
+		var release githubReleaseFull
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			return nil, fmt.Errorf("decoding release: %w", err)
+		}
+		return &release, nil
+	}
+
+	// For nightly, list releases and find the latest prerelease.
+	resp, err := client.Get("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	if err != nil {
+		return nil, fmt.Errorf("fetching releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var releases []githubReleaseFull
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("decoding releases: %w", err)
+	}
+
+	for _, r := range releases {
+		if r.Prerelease {
+			return &r, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no nightly (prerelease) found")
+}
+
+func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
+	client := &http.Client{Timeout: 5 * time.Minute}
+
+	resp, err := client.Get(asset.BrowserDownloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("downloading asset: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("opening gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading tar: %w", err)
+		}
+
+		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(hdr.Name, "wendy-agent") {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("reading binary from tar: %w", err)
+			}
+			return data, nil
+		}
+	}
+
+	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
+}
+
+func newDeviceUpdateCmd() *cobra.Command {
+	var binaryPath string
+	var nightly bool
+
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update the agent binary on the target device",
+		Long:  "Downloads the latest agent binary from GitHub and uploads it to the device. Use --binary to provide a local binary instead.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), ExcludeBluetooth())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			var binaryData []byte
+
+			if binaryPath != "" {
+				binaryData, err = os.ReadFile(binaryPath)
+				if err != nil {
+					return fmt.Errorf("reading binary: %w", err)
+				}
+			} else {
+				// Auto-download: detect arch, fetch release, download binary.
+				fmt.Println("Detecting device architecture...")
+				versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+				if err != nil {
+					return fmt.Errorf("getting device info: %w", err)
+				}
+
+				arch := versionResp.GetCpuArchitecture()
+				if arch == "" {
+					return fmt.Errorf("device did not report CPU architecture; use --binary to provide the binary manually")
+				}
+				fmt.Printf("Device architecture: %s\n", arch)
+
+				releaseType := "stable"
+				if nightly {
+					releaseType = "nightly"
+				}
+				fmt.Printf("Fetching latest %s release...\n", releaseType)
+
+				release, err := fetchAgentRelease(nightly)
+				if err != nil {
+					return fmt.Errorf("fetching release: %w", err)
+				}
+				fmt.Printf("Found release: %s\n", release.TagName)
+
+				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
+				assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
+				var matchedAsset *githubReleaseAsset
+				for _, a := range release.Assets {
+					if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
+						matchedAsset = &a
+						break
+					}
+				}
+				if matchedAsset == nil {
+					return fmt.Errorf("no asset found for linux/%s in release %s", arch, release.TagName)
+				}
+
+				fmt.Printf("Downloading %s...\n", matchedAsset.Name)
+				binaryData, err = downloadAgentBinary(*matchedAsset)
+				if err != nil {
+					return fmt.Errorf("downloading binary: %w", err)
+				}
+			}
+
+			// Compute SHA256.
+			h := sha256.Sum256(binaryData)
+			sha256Hash := hex.EncodeToString(h[:])
 
 			s := tui.NewSpinner("Uploading agent binary...")
 			p := tea.NewProgram(s)
@@ -272,7 +926,8 @@ func newDeviceUpdateCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to the agent binary to upload")
+	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download)")
+	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build")
 
 	return cmd
 }
