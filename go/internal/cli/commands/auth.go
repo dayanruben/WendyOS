@@ -21,7 +21,7 @@ import (
 )
 
 const defaultCloudDashboard = "https://dashboard.wendy.sh"
-const defaultCloudGRPC = "api.wendy.sh:443"
+const defaultCloudGRPC = "wendy-cloud-services-114319063177.us-central1.run.app:443"
 
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
