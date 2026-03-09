@@ -184,7 +184,7 @@ func TestApplyEntitlements_Persist(t *testing.T) {
 	}
 }
 
-func TestApplyEntitlements_Bluetooth_Fallback(t *testing.T) {
+func TestApplyEntitlements_Bluetooth_NoProxy(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "test-app",
@@ -197,23 +197,16 @@ func TestApplyEntitlements_Bluetooth_Fallback(t *testing.T) {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
-	// Fallback should mount host D-Bus sockets directly.
-	if !hasMountDest(spec, "/var/run/dbus") {
-		t.Error("bluetooth fallback did not add /var/run/dbus mount")
+	// Without the proxy, raw host D-Bus sockets must NOT be mounted
+	// (they expose NetworkManager and other privileged services).
+	if hasMountDest(spec, "/var/run/dbus") {
+		t.Error("bluetooth without proxy should not mount /var/run/dbus")
 	}
-	if !hasMountDest(spec, "/run/dbus") {
-		t.Error("bluetooth fallback did not add /run/dbus mount")
-	}
-
-	// Verify source is the host path.
-	for _, m := range spec.Mounts {
-		if m.Destination == "/var/run/dbus" {
-			if m.Source != "/var/run/dbus" {
-				t.Errorf("fallback /var/run/dbus source = %q, want /var/run/dbus", m.Source)
-			}
-		}
+	if hasMountDest(spec, "/run/dbus") {
+		t.Error("bluetooth without proxy should not mount /run/dbus")
 	}
 
+	// The env var should still be set so apps know the expected path.
 	if !hasEnv(spec, "DBUS_SYSTEM_BUS_ADDRESS") {
 		t.Error("bluetooth entitlement did not set DBUS_SYSTEM_BUS_ADDRESS")
 	}
@@ -272,7 +265,7 @@ func TestBluetoothEntitlementDoesNotExposeNetworkManager(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg); err != nil {
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -320,9 +313,16 @@ func TestApplyEntitlements_Video(t *testing.T) {
 		t.Error("video entitlement did not add GID 44")
 	}
 
-	// Should mount /dev/video0.
-	if !hasMountDest(spec, "/dev/video0") {
-		t.Error("video entitlement did not add /dev/video0 mount")
+	// Should add a cgroup rule for V4L2 devices (major 81).
+	foundV4L2Rule := false
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Major != nil && *d.Major == 81 && d.Allow {
+			foundV4L2Rule = true
+			break
+		}
+	}
+	if !foundV4L2Rule {
+		t.Error("video entitlement did not add V4L2 cgroup device rule (major 81)")
 	}
 }
 

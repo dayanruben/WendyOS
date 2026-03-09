@@ -338,6 +338,17 @@ func (c *Client) CreateContainer(ctx context.Context, req *agentpb.CreateContain
 			_, _ = task.Delete(ctx, containerd.WithProcessKill)
 		}
 		_ = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		// Stop old D-Bus proxy if any.
+		if c.proxyManager != nil {
+			_ = c.proxyManager.Stop(appName)
+		}
+	}
+
+	// Start D-Bus proxy if bluetooth entitlement is present.
+	if c.proxyManager != nil && hasBluetooth(appCfg) {
+		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
+			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
+		}
 	}
 
 	// Get the image handle from the local store, or pull from registry.
@@ -428,53 +439,6 @@ func (c *Client) CreateContainer(ctx context.Context, req *agentpb.CreateContain
 		return fmt.Errorf("applying entitlements: %w", err)
 	}
 
-	// Delete any pre-existing container with the same name.
-	if existing, err := c.client.LoadContainer(ctx, appName); err == nil {
-		c.logger.Info("Removing existing container", zap.String("app_name", appName))
-		// Try to stop/kill the task first.
-		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
-			_ = task.Kill(ctx, syscall.SIGKILL)
-			_, _ = task.Delete(ctx, containerd.WithProcessKill)
-		}
-		_ = existing.Delete(ctx, containerd.WithSnapshotCleanup)
-		// Stop old D-Bus proxy if any.
-		if c.proxyManager != nil {
-			_ = c.proxyManager.Stop(appName)
-		}
-	}
-
-	// Start D-Bus proxy if bluetooth entitlement is present.
-	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
-			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
-		}
-	}
-
-	// Get the image handle from the local store, or pull from registry.
-	image, err := c.client.GetImage(ctx, imageName)
-	if err != nil {
-		c.logger.Info("Image not in local store, attempting pull from registry",
-			zap.String("image", imageName),
-		)
-		image, err = c.client.Pull(ctx, imageName,
-			containerd.WithPullUnpack,
-		)
-		if err != nil {
-			return fmt.Errorf("getting/pulling image %q: %w", imageName, err)
-		}
-	}
-
-	// Unpack the image into the snapshotter if not already done.
-	unpacked, err := image.IsUnpacked(ctx, "")
-	if err != nil {
-		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
-	}
-	if !unpacked {
-		c.logger.Info("Unpacking image", zap.String("image", imageName))
-		if err := image.Unpack(ctx, ""); err != nil {
-			return fmt.Errorf("unpacking image %q: %w", imageName, err)
-		}
-	}
 	// If the app has a GPU entitlement, apply the NVIDIA CDI spec to get
 	// platform-correct library mounts (paths vary across Jetson models).
 	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {

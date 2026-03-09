@@ -331,23 +331,12 @@ func applyBluetooth(spec *Spec, appID string, proxyAvailable bool) {
 			Type:        "bind",
 			Options:     []string{"rbind", "nosuid", "noexec"},
 		})
-	} else {
-		// Fallback: mount host D-Bus sockets directly (unfiltered).
-		spec.Mounts = append(spec.Mounts,
-			Mount{
-				Destination: "/var/run/dbus",
-				Source:      "/var/run/dbus",
-				Type:        "bind",
-				Options:     []string{"rbind", "nosuid", "noexec"},
-			},
-			Mount{
-				Destination: "/run/dbus",
-				Source:      "/run/dbus",
-				Type:        "bind",
-				Options:     []string{"rbind", "nosuid", "noexec"},
-			},
-		)
 	}
+	// When the proxy is not available, we intentionally skip mounting the
+	// raw host D-Bus sockets. Mounting /var/run/dbus or /run/dbus directly
+	// exposes every D-Bus service (NetworkManager, systemd, polkit, etc.)
+	// giving the container root-level network control. Bluetooth access
+	// requires xdg-dbus-proxy to scope D-Bus visibility to org.bluez only.
 
 	spec.Process.Env = append(spec.Process.Env,
 		"DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket",
