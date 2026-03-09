@@ -1,6 +1,8 @@
 package oci
 
 import (
+	"errors"
+	"os"
 	"slices"
 	"testing"
 
@@ -323,6 +325,17 @@ func TestApplyEntitlements_Video(t *testing.T) {
 	}
 	if !foundV4L2Rule {
 		t.Error("video entitlement did not add V4L2 cgroup device rule (major 81)")
+	}
+
+	// Should mount /dev/video0 when it exists on the host.
+	if _, err := os.Stat("/dev/video0"); err == nil {
+		if !hasMountDest(spec, "/dev/video0") {
+			t.Error("video entitlement did not add /dev/video0 mount")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat /dev/video0: %v", err)
+	} else {
+		t.Skip("/dev/video0 not present on this host")
 	}
 }
 
