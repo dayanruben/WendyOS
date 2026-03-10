@@ -1,4 +1,5 @@
 import ArgumentParser
+import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import GRPCServiceLifecycle
@@ -45,9 +46,18 @@ struct WendyAgent: AsyncParsableCommand {
             services: services
         )
 
+        let bonjour = BonjourAdvertiser(
+            port: port,
+            displayName: ProcessInfo.processInfo.hostName,
+            deviceID: ProcessInfo.processInfo.hostName
+        )
+
         let serviceGroup = ServiceGroup(
             configuration: .init(
-                services: [.init(service: server)],
+                services: [
+                    .init(service: server),
+                    .init(service: bonjour),
+                ],
                 gracefulShutdownSignals: [.sigint, .sigterm],
                 logger: logger
             )

@@ -1,3 +1,4 @@
+import Foundation
 import GRPCCore
 import WendyAgentGRPC
 
@@ -20,7 +21,17 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: ServerRequest<Wendy_Agent_Services_V1_GetAgentVersionRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetAgentVersionResponse> {
-        fatalError("not implemented")
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+        var response = Wendy_Agent_Services_V1_GetAgentVersionResponse()
+        response.version = "0.0.0-dev"
+        response.os = "macOS"
+        response.osVersion = "\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
+        #if arch(arm64)
+        response.cpuArchitecture = "aarch64"
+        #elseif arch(x86_64)
+        response.cpuArchitecture = "x86_64"
+        #endif
+        return ServerResponse(message: response)
     }
 
     func listWiFiNetworks(
