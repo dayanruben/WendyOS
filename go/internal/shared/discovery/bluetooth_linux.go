@@ -2,9 +2,6 @@
 
 package discovery
 
-// RunBLECheck is a no-op on Linux (no CoreBluetooth entitlement issues).
-func RunBLECheck() int { return 0 }
-
 import (
 	"bufio"
 	"context"
@@ -26,6 +23,9 @@ const (
 	// wendyL2CAPPSM is the L2CAP PSM used for gRPC-over-BLE.
 	wendyL2CAPPSM = 128
 )
+
+// RunBLECheck is a no-op on Linux (no CoreBluetooth entitlement issues).
+func RunBLECheck() int { return 0 }
 
 // discoverBluetooth uses bluetoothctl to scan for WendyOS BLE devices on Linux.
 // If activeScan is true, an LE scan runs for up to 5 seconds before listing devices.

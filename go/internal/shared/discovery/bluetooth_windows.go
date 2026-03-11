@@ -2,9 +2,6 @@
 
 package discovery
 
-// RunBLECheck is a no-op on Windows (no CoreBluetooth entitlement issues).
-func RunBLECheck() int { return 0 }
-
 import (
 	"context"
 	"encoding/json"
@@ -19,6 +16,9 @@ const (
 	wendyLiteBLEServiceUUID = "00004e57-454e-4459-0001-000000000000"
 	wendyL2CAPPSM           = 128
 )
+
+// RunBLECheck is a no-op on Windows (no CoreBluetooth entitlement issues).
+func RunBLECheck() int { return 0 }
 
 // discoverBluetooth queries Windows for known Bluetooth devices with "Wendy" in the name.
 // Unlike macOS (CoreBluetooth) and Linux (bluetoothctl), this cannot perform active
