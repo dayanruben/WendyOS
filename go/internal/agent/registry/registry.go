@@ -681,10 +681,10 @@ func (r containerdRegistry) PushManifest(ctx context.Context, repo string, tag s
 	}
 
 	manifestChildren := struct {
-		Manifests []ociregistry.Descriptor  `json:"manifests"`
-		Config    *ociregistry.Descriptor   `json:"config"`
-		Layers    []ociregistry.Descriptor  `json:"layers"`
-		Subject   *ociregistry.Descriptor   `json:"subject"`
+		Manifests []ociregistry.Descriptor `json:"manifests"`
+		Config    *ociregistry.Descriptor  `json:"config"`
+		Layers    []ociregistry.Descriptor `json:"layers"`
+		Subject   *ociregistry.Descriptor  `json:"subject"`
 	}{}
 	if err := json.Unmarshal(contents, &manifestChildren); err != nil {
 		return ociregistry.Descriptor{}, err
