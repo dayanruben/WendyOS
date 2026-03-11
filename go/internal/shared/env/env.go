@@ -20,7 +20,16 @@ func DiscoverExternalInterval() time.Duration {
 }
 
 func Analytics() bool {
-	return !strings.EqualFold(strings.TrimSpace(os.Getenv("WENDY_ANALYTICS")), "false")
+	v := strings.TrimSpace(os.Getenv("WENDY_ANALYTICS"))
+	switch strings.ToLower(v) {
+	case "", "true":
+		return true
+	case "false":
+		return false
+	default:
+		log.Printf("WARNING: invalid WENDY_ANALYTICS=%q, expected \"true\" or \"false\", defaulting to true", v)
+		return true
+	}
 }
 
 func SystemdServiceName() string {
