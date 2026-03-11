@@ -46,6 +46,10 @@ func parseDuration(key string, fallback time.Duration) time.Duration {
 		log.Printf("WARNING: invalid %s=%q, using default %s", key, v, fallback)
 		return fallback
 	}
+	if d <= 0 {
+		log.Printf("WARNING: non-positive %s=%q, using default %s", key, v, fallback)
+		return fallback
+	}
 	return d
 }
 

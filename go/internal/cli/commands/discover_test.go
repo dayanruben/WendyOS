@@ -26,6 +26,8 @@ func TestEnvDiscoverIntervals(t *testing.T) {
 		{"ethernet custom", "WENDY_DISCOVER_ETHERNET_INTERVAL", "500ms", env.DiscoverEthernetInterval, 500 * time.Millisecond},
 		{"external default", "WENDY_DISCOVER_EXTERNAL_INTERVAL", "", env.DiscoverExternalInterval, 5 * time.Second},
 		{"external custom", "WENDY_DISCOVER_EXTERNAL_INTERVAL", "10s", env.DiscoverExternalInterval, 10 * time.Second},
+		{"usb zero", "WENDY_DISCOVER_USB_INTERVAL", "0s", env.DiscoverUSBInterval, 3 * time.Second},
+		{"usb negative", "WENDY_DISCOVER_USB_INTERVAL", "-1s", env.DiscoverUSBInterval, 3 * time.Second},
 	}
 
 	for _, tt := range tests {
@@ -71,10 +73,10 @@ func TestDelayThen_ActuallyDelays(t *testing.T) {
 }
 
 func TestDiscoverModel_UpdateReturnsDelayedCmd(t *testing.T) {
-	// Use zero intervals so the test doesn't actually sleep.
-	t.Setenv("WENDY_DISCOVER_USB_INTERVAL", "0s")
-	t.Setenv("WENDY_DISCOVER_ETHERNET_INTERVAL", "0s")
-	t.Setenv("WENDY_DISCOVER_EXTERNAL_INTERVAL", "0s")
+	// Use tiny intervals so the test doesn't actually sleep.
+	t.Setenv("WENDY_DISCOVER_USB_INTERVAL", "1ms")
+	t.Setenv("WENDY_DISCOVER_ETHERNET_INTERVAL", "1ms")
+	t.Setenv("WENDY_DISCOVER_EXTERNAL_INTERVAL", "1ms")
 
 	m := newDiscoverModel(context.Background(), defaultOpts())
 
