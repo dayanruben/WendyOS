@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/internal/shared/env"
 )
 
 const (
@@ -111,13 +112,7 @@ func SetDeviceCapabilities(spec *Spec, appName string) {
 
 	// Configure cgroupsPath: use WENDY_SYSTEMD_SERVICE_NAME env var or default to "edge-agent".
 	path := strings.ReplaceAll(appName, "-", "_")
-	serviceName := "edge-agent"
-	if envVal := os.Getenv("WENDY_SYSTEMD_SERVICE_NAME"); envVal != "" {
-		trimmed := strings.TrimSpace(envVal)
-		if trimmed != "" {
-			serviceName = trimmed
-		}
-	}
+	serviceName := env.SystemdServiceName()
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", serviceName, path)
 
 	// Add cgroup namespace.

@@ -14,6 +14,7 @@ import (
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/internal/shared/env"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
 )
 
@@ -277,11 +278,11 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case usbScanMsg:
 		m.collection.USBDevices = msg.devices
 		m.hasResults = true
-		return m, m.scanUSB()
+		return m, delayThen(env.DiscoverUSBInterval(), m.scanUSB())
 	case ethScanMsg:
 		m.collection.EthernetInterfaces = msg.devices
 		m.hasResults = true
-		return m, m.scanEthernet()
+		return m, delayThen(env.DiscoverEthernetInterval(), m.scanEthernet())
 	case lanScanMsg:
 		m.collection.LANDevices = msg.devices
 		m.hasResults = true
@@ -293,10 +294,17 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case extScanMsg:
 		m.collection.ExternalDevices = msg.devices
 		m.hasResults = true
-		return m, m.scanExternal()
+		return m, delayThen(env.DiscoverExternalInterval(), m.scanExternal())
 	}
 
 	return m, nil
+}
+
+func delayThen(d time.Duration, cmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(d)
+		return cmd()
+	}
 }
 
 var (

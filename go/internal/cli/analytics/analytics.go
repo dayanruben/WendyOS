@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/posthog/posthog-go"
 	"github.com/wendylabsinc/wendy/internal/shared/config"
+	"github.com/wendylabsinc/wendy/internal/shared/env"
 	"github.com/wendylabsinc/wendy/internal/shared/version"
 )
 
@@ -32,7 +33,7 @@ var (
 // was nil) AND the env var does not override, so the caller can display a notice.
 func Init(cfg *config.Config) (firstRun bool) {
 	// Env var overrides everything
-	if strings.EqualFold(os.Getenv("WENDY_ANALYTICS"), "false") {
+	if !env.Analytics() {
 		enabled = false
 		return false
 	}
@@ -110,7 +111,7 @@ func Enabled() bool {
 
 // EnvOverride reports whether the WENDY_ANALYTICS env var is set to "false".
 func EnvOverride() bool {
-	return strings.EqualFold(os.Getenv("WENDY_ANALYTICS"), "false")
+	return !env.Analytics()
 }
 
 func loadOrCreateID() (string, error) {
