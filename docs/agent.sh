@@ -48,11 +48,9 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-# --- Require root ---
+# --- Escalate to root ---
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Error: This installer must be run as root."
-  echo "  Try: sudo bash install-agent.sh"
-  exit 1
+  exec sudo bash "$0" "$@"
 fi
 
 # --- Detect Architecture ---
@@ -97,7 +95,7 @@ download() {
 confirm() {
   if [[ "$YES" == true ]]; then return 0; fi
   printf "%s [y/N] " "$1"
-  read -r answer
+  read -r answer </dev/tty
   case "$answer" in
     [yY]|[yY][eE][sS]) return 0 ;;
     *) echo "Aborted."; exit 1 ;;
