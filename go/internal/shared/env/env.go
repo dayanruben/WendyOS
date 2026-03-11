@@ -20,7 +20,7 @@ func DiscoverExternalInterval() time.Duration {
 }
 
 func Analytics() bool {
-	return !strings.EqualFold(os.Getenv("WENDY_ANALYTICS"), "false")
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv("WENDY_ANALYTICS")), "false")
 }
 
 func SystemdServiceName() string {
@@ -45,6 +45,7 @@ func stringOrDefault(key, fallback string) string {
 		if trimmed := strings.TrimSpace(v); trimmed != "" {
 			return trimmed
 		}
+		log.Printf("WARNING: blank %s=%q, using default %s", key, v, fallback)
 	}
 	return fallback
 }
