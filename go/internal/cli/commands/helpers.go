@@ -197,7 +197,14 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 
 	addr, err := resolveDeviceAddress()
 	if err == nil {
-		return connectWithAutoTLS(ctx, addr)
+		conn, connErr := connectWithAutoTLS(ctx, addr)
+		if connErr != nil {
+			return nil, connErr
+		}
+		if !cfg.suppressProvisioningHint {
+			suggestProvisioning(conn)
+		}
+		return conn, nil
 	}
 
 	// No device configured — fall back to interactive picker.
@@ -211,7 +218,9 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	}
 
 	if target.Agent != nil {
-		// If the picker used plaintext, try to upgrade to mTLS.
+		if !cfg.suppressProvisioningHint {
+			suggestProvisioning(target.Agent)
+		}
 		return target.Agent, nil
 	}
 
@@ -241,7 +250,15 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 			mtlsAddr := hostPort(host, port+1)
 			conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, certInfo)
 			if tlsErr == nil {
-				return conn, nil
+				// grpc.NewClient is lazy — verify the connection actually
+				// works with a fast probe before committing to mTLS.
+				probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+				cancel()
+				if probeErr == nil {
+					return conn, nil
+				}
+				conn.Close()
 			}
 			// mTLS failed — fall back to plaintext.
 		}
@@ -249,16 +266,34 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 	return grpcclient.Connect(ctx, plaintextAddr)
 }
 
+// suggestProvisioning prints a hint when the connection is not using mTLS,
+// nudging the user to provision the device.
+func suggestProvisioning(conn *grpcclient.AgentConnection) {
+	if conn.IsMTLS || jsonOutput {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Hint: connected without mTLS. Run 'wendy device setup' to provision this device.\n")
+}
+
 // loadCLICert returns the first available certificate from the CLI config, or nil.
 func loadCLICert() *config.CertificateInfo {
+	auth := loadCLIAuth()
+	if auth == nil {
+		return nil
+	}
+	cert := auth.Certificates[0]
+	return &cert
+}
+
+// loadCLIAuth returns the first auth entry that has certificates, or nil.
+func loadCLIAuth() *config.AuthConfig {
 	cfg, err := config.Load()
 	if err != nil || len(cfg.Auth) == 0 {
 		return nil
 	}
 	for _, auth := range cfg.Auth {
 		if len(auth.Certificates) > 0 {
-			cert := auth.Certificates[0]
-			return &cert
+			return &auth
 		}
 	}
 	return nil
@@ -268,8 +303,17 @@ func loadCLICert() *config.CertificateInfo {
 type resolveOption func(*resolveConfig)
 
 type resolveConfig struct {
-	excludeProviderKeys map[string]bool
-	excludeBluetooth    bool
+	excludeProviderKeys      map[string]bool
+	excludeBluetooth         bool
+	suppressProvisioningHint bool
+}
+
+// SuppressProvisioningHint prevents connectToAgent from printing the
+// "run 'wendy device setup'" hint when connected without mTLS.
+func SuppressProvisioningHint() resolveOption {
+	return func(c *resolveConfig) {
+		c.suppressProvisioningHint = true
+	}
 }
 
 // ExcludeBluetooth skips the BLE scan and filters out BLE-only devices
