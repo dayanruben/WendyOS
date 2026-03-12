@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +123,45 @@ func TestDiscoverModel_Init(t *testing.T) {
 	cmd := m.Init()
 	if cmd == nil {
 		t.Error("expected non-nil Init cmd (batch of scan commands)")
+	}
+}
+
+func TestDiscoverModel_TableNavigation(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts())
+
+	updated, _ := m.Update(usbScanMsg{devices: []models.USBDevice{
+		{DisplayName: "alpha"},
+		{DisplayName: "beta"},
+	}})
+	um := updated.(discoverModel)
+
+	if um.table.Cursor() != 0 {
+		t.Fatalf("expected cursor to start at row 0, got %d", um.table.Cursor())
+	}
+
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyDown})
+	um = updated.(discoverModel)
+
+	if um.table.Cursor() != 1 {
+		t.Fatalf("expected cursor to move to row 1, got %d", um.table.Cursor())
+	}
+}
+
+func TestRenderDeviceTable(t *testing.T) {
+	collection := &models.DevicesCollection{
+		LANDevices: []models.LANDevice{{
+			DisplayName:  "wendy-alpha",
+			IPAddress:    "192.168.1.10",
+			Port:         8443,
+			AgentVersion: "1.2.3",
+		}},
+	}
+
+	output := renderDeviceTable(collection)
+	for _, want := range []string{"Name", "Type", "Address", "Port", "Version", "wendy-alpha", "LAN", "192.168.1.10", "8443", "1.2.3"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, output)
+		}
 	}
 }
 

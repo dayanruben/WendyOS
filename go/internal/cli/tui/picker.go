@@ -1,9 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
+	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -40,62 +40,71 @@ type PickerModel struct {
 	Title string // header line, e.g. "Select a device"
 
 	// MergeItem is called when a new item shares a DedupKey with an existing
-	// item. The caller can update existing in place (type, address, value, …).
+	// item. The caller can update existing in place (type, address, value, ...).
 	// If nil, duplicate items are silently dropped.
 	MergeItem func(existing *PickerItem, incoming PickerItem)
 
 	items    []PickerItem
-	seenIdx  map[string]int // dedup key → index in items
-	cursor   int
+	seenIdx  map[string]int // dedup key -> index in items
+	table    bubbleTable.Model
 	selected *PickerItem
 	scanning bool
 	quitting bool
+	height   int
 }
 
 // NewPicker creates a new picker model with the default "Select a device" title.
 func NewPicker() PickerModel {
-	return PickerModel{
+	m := PickerModel{
 		Title:    "Select a device",
 		seenIdx:  make(map[string]int),
+		table:    newPickerTable(),
 		scanning: true,
 	}
+	m.refreshTable()
+	return m
 }
 
 // NewPickerWithTitle creates a new picker model with a custom title.
 func NewPickerWithTitle(title string) PickerModel {
-	return PickerModel{
+	m := PickerModel{
 		Title:    title,
 		seenIdx:  make(map[string]int),
+		table:    newPickerTable(),
 		scanning: true,
 	}
+	m.refreshTable()
+	return m
 }
 
 func (m PickerModel) Init() tea.Cmd { return nil }
 
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		m.refreshTable()
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.items)-1 {
-				m.cursor++
-			}
 		case "enter":
-			if len(m.items) > 0 && m.cursor < len(m.items) {
-				item := m.items[m.cursor]
+			cursor := m.table.Cursor()
+			if len(m.items) > 0 && cursor >= 0 && cursor < len(m.items) {
+				item := m.items[cursor]
 				m.selected = &item
 				return m, tea.Quit
 			}
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
+		default:
+			var cmd tea.Cmd
+			m.table, cmd = m.table.Update(msg)
+			return m, cmd
 		}
 
 	case PickerAddMsg:
+		changed := false
 		for _, item := range msg.Items {
 			key := strings.ToLower(item.DedupKey)
 			if key == "" {
@@ -104,11 +113,16 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if idx, ok := m.seenIdx[key]; ok {
 				if m.MergeItem != nil {
 					m.MergeItem(&m.items[idx], item)
+					changed = true
 				}
 				continue
 			}
 			m.seenIdx[key] = len(m.items)
 			m.items = append(m.items, item)
+			changed = true
+		}
+		if changed {
+			m.refreshTable()
 		}
 
 	case PickerDoneMsg:
@@ -121,8 +135,6 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 var (
 	pickerTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	pickerHint     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	pickerCursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Bold(true)
-	pickerNormal   = lipgloss.NewStyle()
 	pickerScanning = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 )
 
@@ -137,37 +149,17 @@ func (m PickerModel) View() string {
 
 	if len(m.items) == 0 {
 		if m.scanning {
-			sb.WriteString(pickerScanning.Render("  Scanning for devices...") + "\n")
+			sb.WriteString(pickerScanning.Render("  Scanning...") + "\n")
 		} else {
-			sb.WriteString(pickerHint.Render("  No devices found.") + "\n")
+			sb.WriteString(pickerHint.Render("  No options found.") + "\n")
 		}
 		return sb.String()
 	}
 
-	// Render as a simple list with a cursor indicator.
-	for i, item := range m.items {
-		cursor := "  "
-		style := pickerNormal
-		if i == m.cursor {
-			cursor = "> "
-			style = pickerCursor
-		}
-
-		var line string
-		if item.Type == "" && item.Address == "" {
-			line = fmt.Sprintf("%s%s", cursor, item.Name)
-		} else {
-			line = fmt.Sprintf("%s%-24s %-16s %s", cursor, item.Name, item.Type, item.Address)
-		}
-		sb.WriteString(style.Render(line))
-		if item.Description != "" {
-			sb.WriteString(" " + pickerHint.Render(item.Description))
-		}
-		sb.WriteString("\n")
-	}
+	sb.WriteString(m.table.View() + "\n")
 
 	if m.scanning {
-		sb.WriteString("\n" + pickerScanning.Render("  Scanning...") + "\n")
+		sb.WriteString("\n" + pickerScanning.Render("  Scanning for more results...") + "\n")
 	}
 
 	return sb.String()
@@ -181,4 +173,127 @@ func (m PickerModel) Cancelled() bool {
 // Selected returns the item the user chose, or nil if they quit without selecting.
 func (m PickerModel) Selected() *PickerItem {
 	return m.selected
+}
+
+type pickerColumnDef struct {
+	title    string
+	minWidth int
+	maxWidth int
+	value    func(PickerItem) string
+	required bool
+}
+
+var pickerColumnDefs = []pickerColumnDef{
+	{
+		title:    "Name",
+		minWidth: 18,
+		maxWidth: 28,
+		value: func(item PickerItem) string {
+			return item.Name
+		},
+		required: true,
+	},
+	{
+		title:    "Type",
+		minWidth: 12,
+		maxWidth: 18,
+		value: func(item PickerItem) string {
+			return item.Type
+		},
+	},
+	{
+		title:    "Address",
+		minWidth: 14,
+		maxWidth: 28,
+		value: func(item PickerItem) string {
+			return item.Address
+		},
+	},
+	{
+		title:    "Description",
+		minWidth: 20,
+		maxWidth: 48,
+		value: func(item PickerItem) string {
+			return item.Description
+		},
+	},
+}
+
+func newPickerTable() bubbleTable.Model {
+	return NewBubbleTable(true, nil)
+}
+
+func (m *PickerModel) refreshTable() {
+	activeCols := pickerActiveColumns(m.items)
+	rows := pickerRows(m.items, activeCols)
+	m.table.SetColumns(pickerColumns(rows, activeCols))
+	m.table.SetRows(rows)
+	if len(rows) > 0 && m.table.Cursor() < 0 {
+		m.table.SetCursor(0)
+	}
+	m.table.SetWidth(pickerTableWidth(m.table.Columns()))
+	m.table.SetHeight(pickerTableHeight(len(rows), m.height))
+}
+
+func pickerActiveColumns(items []PickerItem) []pickerColumnDef {
+	var active []pickerColumnDef
+	for _, def := range pickerColumnDefs {
+		if def.required {
+			active = append(active, def)
+			continue
+		}
+		for _, item := range items {
+			if def.value(item) != "" {
+				active = append(active, def)
+				break
+			}
+		}
+	}
+	return active
+}
+
+func pickerRows(items []PickerItem, cols []pickerColumnDef) []bubbleTable.Row {
+	rows := make([]bubbleTable.Row, 0, len(items))
+	for _, item := range items {
+		row := make(bubbleTable.Row, 0, len(cols))
+		for _, col := range cols {
+			row = append(row, col.value(item))
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func pickerColumns(rows []bubbleTable.Row, defs []pickerColumnDef) []bubbleTable.Column {
+	cols := make([]bubbleTable.Column, len(defs))
+	for i, def := range defs {
+		width := lipgloss.Width(def.title)
+		for _, row := range rows {
+			if i >= len(row) {
+				continue
+			}
+			width = max(width, lipgloss.Width(row[i]))
+		}
+		width += 2
+		width = max(width, def.minWidth)
+		width = min(width, def.maxWidth)
+		cols[i] = bubbleTable.Column{Title: def.title, Width: width}
+	}
+	return cols
+}
+
+func pickerTableWidth(cols []bubbleTable.Column) int {
+	total := 0
+	for _, col := range cols {
+		total += col.Width + 2
+	}
+	return total
+}
+
+func pickerTableHeight(rowCount, windowHeight int) int {
+	height := max(rowCount+1, 4)
+	if windowHeight > 0 {
+		return min(height, max(windowHeight-5, 4))
+	}
+	return min(height, 12)
 }
