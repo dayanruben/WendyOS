@@ -625,8 +625,9 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 }
 
 // buildAndPushImage builds a Docker image for the specified platform and pushes
-// it directly to the given registry using docker buildx. The registry is accessed
-// over plain HTTP (insecure).
+// it directly to the given registry using docker buildx. The registry transport
+// is conditional: plain HTTP for plaintext devices, and TLS/mTLS for provisioned
+// devices when useMTLS is enabled.
 func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform string, streamOutput *os.File, useMTLS bool) error {
 	builder, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS)
 	if err != nil {
