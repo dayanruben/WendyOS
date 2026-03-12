@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -184,19 +185,24 @@ type discoverModel struct {
 	ctx             context.Context
 	opts            discovery.DiscoveryOptions
 	collection      *models.DevicesCollection
+	table           bubbleTable.Model
 	quitting        bool
 	hasResults      bool
 	err             error
 	includeExternal bool
+	windowHeight    int
 }
 
 func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions) discoverModel {
-	return discoverModel{
+	m := discoverModel{
 		ctx:             ctx,
 		opts:            opts,
 		collection:      &models.DevicesCollection{},
+		table:           newDiscoverTable(true),
 		includeExternal: shouldIncludeExternal(opts),
 	}
+	m.refreshTable()
+	return m
 }
 
 func (m discoverModel) shouldDiscover(t models.InterfaceType) bool {
@@ -269,31 +275,43 @@ func (m discoverModel) Init() tea.Cmd {
 
 func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.windowHeight = msg.Height
+		m.refreshTable()
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
 		}
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		return m, cmd
 	case usbScanMsg:
 		m.collection.USBDevices = msg.devices
 		m.hasResults = true
+		m.refreshTable()
 		return m, delayThen(env.DiscoverUSBInterval(), m.scanUSB())
 	case ethScanMsg:
 		m.collection.EthernetInterfaces = msg.devices
 		m.hasResults = true
+		m.refreshTable()
 		return m, delayThen(env.DiscoverEthernetInterval(), m.scanEthernet())
 	case lanScanMsg:
 		m.collection.LANDevices = msg.devices
 		m.hasResults = true
+		m.refreshTable()
 		return m, m.scanLAN()
 	case btScanMsg:
 		m.collection.BluetoothDevices = msg.devices
 		m.hasResults = true
+		m.refreshTable()
 		return m, m.scanBluetooth()
 	case extScanMsg:
 		m.collection.ExternalDevices = msg.devices
 		m.hasResults = true
+		m.refreshTable()
 		return m, delayThen(env.DiscoverExternalInterval(), m.scanExternal())
 	}
 
@@ -319,14 +337,14 @@ func (m discoverModel) View() string {
 
 	var sb strings.Builder
 
-	sb.WriteString(scanStyle.Render("⟳ Scanning for WendyOS devices...") + dimStyle.Render(" (press q or Ctrl+C to stop)") + "\n\n")
+	sb.WriteString(scanStyle.Render("⟳ Scanning for WendyOS devices...") + dimStyle.Render(" (use arrows to navigate, press q or Ctrl+C to stop)") + "\n\n")
 
 	if m.err != nil {
 		sb.WriteString(fmt.Sprintf("Error: %v\n", m.err))
 	}
 
 	if !m.collection.IsEmpty() {
-		sb.WriteString(renderDeviceTable(m.collection))
+		sb.WriteString(m.table.View() + "\n")
 	} else if m.hasResults {
 		sb.WriteString(dimStyle.Render("No devices found yet...") + "\n")
 	}
@@ -334,24 +352,59 @@ func (m discoverModel) View() string {
 	return sb.String()
 }
 
+func (m *discoverModel) refreshTable() {
+	rows := discoverTableRows(m.collection)
+	m.table.SetColumns(discoverTableColumns(rows))
+	m.table.SetRows(rows)
+	if len(rows) > 0 && m.table.Cursor() < 0 {
+		m.table.SetCursor(0)
+	}
+	m.table.SetWidth(discoverTableWidth(m.table.Columns()))
+	m.table.SetHeight(discoverTableHeight(len(rows), m.windowHeight, true))
+}
+
 // --- shared table rendering ---
 
 func renderDeviceTable(collection *models.DevicesCollection) string {
-	headers := []string{"Name", "Type", "Address", "Port", "Version"}
-	var rows [][]string
+	rows := discoverTableRows(collection)
+	if len(rows) == 0 {
+		return ""
+	}
+
+	t := newDiscoverTable(false)
+	t.SetColumns(discoverTableColumns(rows))
+	t.SetRows(rows)
+	t.SetWidth(discoverTableWidth(t.Columns()))
+	t.SetHeight(discoverTableHeight(len(rows), 0, false))
+
+	return t.View() + "\n"
+}
+
+var (
+	discoverTableHeaders   = []string{"Name", "Type", "Address", "Port", "Version"}
+	discoverTableMinWidths = []int{12, 12, 14, 6, 10}
+	discoverTableMaxWidths = []int{28, 18, 28, 8, 16}
+)
+
+func newDiscoverTable(interactive bool) bubbleTable.Model {
+	return tui.NewBubbleTable(interactive, discoverTableColumns(nil))
+}
+
+func discoverTableRows(collection *models.DevicesCollection) []bubbleTable.Row {
+	var rows []bubbleTable.Row
 
 	for _, d := range collection.USBDevices {
-		rows = append(rows, []string{d.DisplayName, "USB", d.Hostname, "", d.AgentVersion})
+		rows = append(rows, bubbleTable.Row{d.DisplayName, "USB", d.Hostname, "", d.AgentVersion})
 	}
 	for _, d := range collection.MergedDevices() {
 		port := ""
 		if d.Port() > 0 {
 			port = fmt.Sprintf("%d", d.Port())
 		}
-		rows = append(rows, []string{d.DisplayName, d.ConnectionTypes(), d.Address(), port, d.AgentVersion})
+		rows = append(rows, bubbleTable.Row{d.DisplayName, d.ConnectionTypes(), d.Address(), port, d.AgentVersion})
 	}
 	for _, d := range collection.EthernetInterfaces {
-		rows = append(rows, []string{d.DisplayName, "Ethernet", d.IPAddress, "", d.AgentVersion})
+		rows = append(rows, bubbleTable.Row{d.DisplayName, "Ethernet", d.IPAddress, "", d.AgentVersion})
 	}
 	for _, d := range collection.ExternalDevices {
 		// Wendy Lite devices are merged with BLE Lite in MergedDevices().
@@ -363,7 +416,7 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 		if p := providers.ProviderForKey(d.ProviderKey); p != nil {
 			typeName = p.DisplayName()
 		}
-		rows = append(rows, []string{d.DisplayName, typeName, addr, "", d.AgentVersion})
+		rows = append(rows, bubbleTable.Row{d.DisplayName, typeName, addr, "", d.AgentVersion})
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -373,5 +426,44 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 		return strings.ToLower(rows[i][0]) < strings.ToLower(rows[j][0])
 	})
 
-	return tui.RenderTable(headers, rows)
+	return rows
+}
+
+func discoverTableColumns(rows []bubbleTable.Row) []bubbleTable.Column {
+	cols := make([]bubbleTable.Column, len(discoverTableHeaders))
+	for i, title := range discoverTableHeaders {
+		width := lipgloss.Width(title)
+		for _, row := range rows {
+			if i >= len(row) {
+				continue
+			}
+			width = max(width, lipgloss.Width(row[i]))
+		}
+		width += 2
+		width = max(width, discoverTableMinWidths[i])
+		width = min(width, discoverTableMaxWidths[i])
+		cols[i] = bubbleTable.Column{Title: title, Width: width}
+	}
+	return cols
+}
+
+func discoverTableWidth(cols []bubbleTable.Column) int {
+	total := 0
+	for _, col := range cols {
+		total += col.Width + 2
+	}
+	return total
+}
+
+func discoverTableHeight(rowCount, windowHeight int, interactive bool) int {
+	height := rowCount + 1
+	if !interactive {
+		return max(height, 1)
+	}
+
+	height = max(height, 4)
+	if windowHeight > 0 {
+		return min(height, max(windowHeight-4, 4))
+	}
+	return min(height, 12)
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,10 @@ const (
 
 	langSwift  = "swift"
 	langPython = "python"
+
+	assistantClaude = "claude"
+	assistantCodex  = "codex"
+	assistantSkip   = "skip"
 )
 
 // Languages available per target platform.
@@ -48,6 +53,32 @@ type entitlementQuestion struct {
 	description string
 }
 
+type initOptions struct {
+	appID               string
+	target              string
+	language            string
+	entitlements        []string
+	noExtraEntitlements bool
+	gpioPins            string
+	i2cDevice           string
+	persistName         string
+	persistPath         string
+	assistant           string
+	installClaudeSkills bool
+
+	appIDSet               bool
+	targetSet              bool
+	languageSet            bool
+	entitlementsSet        bool
+	noExtraEntitlementsSet bool
+	gpioPinsSet            bool
+	i2cDeviceSet           bool
+	persistNameSet         bool
+	persistPathSet         bool
+	assistantSet           bool
+	installClaudeSkillsSet bool
+}
+
 // Questions for WendyOS devices.
 var wendyOSEntitlementQuestions = []entitlementQuestion{
 	{"Will your app run AI or GPU-accelerated workloads?", appconfig.EntitlementGPU, "GPU access for AI inference or compute"},
@@ -61,29 +92,93 @@ var wendyOSEntitlementQuestions = []entitlementQuestion{
 }
 
 func newInitCmd() *cobra.Command {
+	var opts initOptions
+
 	cmd := &cobra.Command{
 		Use:   "init [app-id]",
 		Short: "Initialize a new Wendy project",
 		Long:  "Interactively create a new Wendy project with scaffolding, entitlements, and optional AI assistant setup.",
-		Args:  cobra.MaximumNArgs(1),
+		Example: `  # Interactive wizard
+  wendy init
+
+  # Fully non-interactive WendyOS Python app with persist storage
+  wendy init \
+    --app-id demo-app \
+    --target wendyos \
+    --language python \
+    --entitlement gpu,usb,persist \
+    --persist-name demo-data \
+    --persist-path /data \
+    --assistant skip
+
+  # Fully non-interactive WendyOS app with GPIO and I2C entitlements
+  wendy init \
+    --app-id edge-sensors \
+    --target wendyos \
+    --language swift \
+    --entitlement gpio,i2c \
+    --gpio-pins 17,27,22 \
+    --i2c-device /dev/i2c-1 \
+    --assistant skip
+
+  # Wendy Lite defaults to Swift; use this to avoid entitlement prompts
+  wendy init \
+    --app-id lite-app \
+    --target wendy-lite \
+    --no-extra-entitlements \
+    --assistant skip
+
+  # Start Claude after init and install Wendy skills automatically
+  wendy init \
+    --app-id ai-app \
+    --target wendyos \
+    --language python \
+    --entitlement gpu,audio \
+    --assistant claude \
+    --install-claude-skills`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInitWizard(args)
+			opts.appIDSet = cmd.Flags().Changed("app-id")
+			opts.targetSet = cmd.Flags().Changed("target")
+			opts.languageSet = cmd.Flags().Changed("language")
+			opts.entitlementsSet = cmd.Flags().Changed("entitlement")
+			opts.noExtraEntitlementsSet = cmd.Flags().Changed("no-extra-entitlements")
+			opts.gpioPinsSet = cmd.Flags().Changed("gpio-pins")
+			opts.i2cDeviceSet = cmd.Flags().Changed("i2c-device")
+			opts.persistNameSet = cmd.Flags().Changed("persist-name")
+			opts.persistPathSet = cmd.Flags().Changed("persist-path")
+			opts.assistantSet = cmd.Flags().Changed("assistant")
+			opts.installClaudeSkillsSet = cmd.Flags().Changed("install-claude-skills")
+
+			return runInitWizard(args, opts)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
+	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos or wendy-lite")
+	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: swift or python")
+	cmd.Flags().StringSliceVar(&opts.entitlements, "entitlement", nil, "App entitlement to enable (repeatable or comma-separated)")
+	cmd.Flags().BoolVar(&opts.noExtraEntitlements, "no-extra-entitlements", false, "Skip entitlement prompts and use only the default network entitlement")
+	cmd.Flags().StringVar(&opts.gpioPins, "gpio-pins", "", "GPIO pins for the gpio entitlement (comma-separated, e.g. 17,27,22)")
+	cmd.Flags().StringVar(&opts.i2cDevice, "i2c-device", "", "I2C device path for the i2c entitlement (e.g. /dev/i2c-1)")
+	cmd.Flags().StringVar(&opts.persistName, "persist-name", "", "Container ID for the persist entitlement")
+	cmd.Flags().StringVar(&opts.persistPath, "persist-path", "", "Mount path for the persist entitlement (e.g. /data)")
+	cmd.Flags().StringVar(&opts.assistant, "assistant", "", "AI assistant to launch after init: claude, codex, or skip")
+	cmd.Flags().BoolVar(&opts.installClaudeSkills, "install-claude-skills", false, "Install Wendy Claude skills before launching Claude")
 
 	return cmd
 }
 
-func runInitWizard(args []string) error {
+func runInitWizard(args []string, opts initOptions) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
 	// Determine app ID.
-	appID := filepath.Base(cwd)
-	if len(args) > 0 {
-		appID = args[0]
+	appID, err := resolveInitAppID(cwd, args, opts)
+	if err != nil {
+		return err
 	}
 
 	cfgPath := filepath.Join(cwd, "wendy.json")
@@ -91,28 +186,26 @@ func runInitWizard(args []string) error {
 		return fmt.Errorf("wendy.json already exists in %s", cwd)
 	}
 
+	if err := validateInitAssistantOptions(opts); err != nil {
+		return err
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	// Step 1: Pick target device.
-	fmt.Println()
-	target, err := pickFromItems("What is your target device?", []tui.PickerItem{
-		{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS},
-		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite},
-	})
+	target, err := resolveInitTarget(opts)
 	if err != nil {
 		return err
 	}
 
 	// Step 2: Pick language (constrained by target).
-	fmt.Println()
-	language, err := pickInitLanguage(target)
+	language, err := resolveInitLanguage(target, opts)
 	if err != nil {
 		return err
 	}
 
 	// Step 3: Interactive entitlement questions.
-	fmt.Println()
-	entitlements, err := askEntitlementQuestions(reader, target, language)
+	entitlements, err := resolveInitEntitlements(reader, target, language, opts)
 	if err != nil {
 		return err
 	}
@@ -153,12 +246,76 @@ func runInitWizard(args []string) error {
 	}
 
 	// Step 6: Offer AI assistant session.
-	fmt.Println()
-	if err := offerAIAssistant(reader, appID, target, language, entitlements); err != nil {
+	if err := resolveInitAssistant(reader, appID, target, language, entitlements, opts); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func resolveInitAppID(cwd string, args []string, opts initOptions) (string, error) {
+	appID := filepath.Base(cwd)
+	if len(args) > 0 {
+		appID = args[0]
+	}
+	if opts.appIDSet {
+		if len(args) > 0 && args[0] != opts.appID {
+			return "", fmt.Errorf("app ID mismatch: positional argument %q does not match --app-id %q", args[0], opts.appID)
+		}
+		return opts.appID, nil
+	}
+	return appID, nil
+}
+
+func resolveInitTarget(opts initOptions) (string, error) {
+	if opts.targetSet {
+		target := normalizeInitChoice(opts.target)
+		if !isValidInitTarget(target) {
+			return "", fmt.Errorf("invalid target %q (valid: %s, %s)", opts.target, targetWendyOS, targetWendyLite)
+		}
+		return target, nil
+	}
+
+	fmt.Println()
+	return pickFromItems("What is your target device?", []tui.PickerItem{
+		{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS},
+		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite},
+	})
+}
+
+func resolveInitLanguage(target string, opts initOptions) (string, error) {
+	if opts.languageSet {
+		language := normalizeInitChoice(opts.language)
+		if !isValidInitLanguage(language) {
+			return "", fmt.Errorf("invalid language %q (valid: %s, %s)", opts.language, langSwift, langPython)
+		}
+		if err := validateInitLanguage(target, language); err != nil {
+			return "", err
+		}
+		return language, nil
+	}
+
+	fmt.Println()
+	return pickInitLanguage(target)
+}
+
+func resolveInitEntitlements(reader *bufio.Reader, target, language string, opts initOptions) ([]appconfig.Entitlement, error) {
+	if initEntitlementsProvided(opts) {
+		return buildInitEntitlementsFromFlags(target, opts)
+	}
+
+	fmt.Println()
+	return askEntitlementQuestions(reader, target, language)
+}
+
+func resolveInitAssistant(reader *bufio.Reader, appID, target, language string, entitlements []appconfig.Entitlement, opts initOptions) error {
+	if opts.assistantSet {
+		choice := normalizeInitChoice(opts.assistant)
+		return runAIAssistantChoice(choice, appID, target, language, entitlements, opts.installClaudeSkills, nil)
+	}
+
+	fmt.Println()
+	return offerAIAssistant(reader, appID, target, language, entitlements)
 }
 
 func pickInitLanguage(target string) (string, error) {
@@ -218,6 +375,122 @@ func askEntitlementQuestions(reader *bufio.Reader, target, language string) ([]a
 	}
 
 	return entitlements, nil
+}
+
+func initEntitlementsProvided(opts initOptions) bool {
+	return opts.entitlementsSet || opts.noExtraEntitlementsSet || opts.gpioPinsSet || opts.i2cDeviceSet || opts.persistNameSet || opts.persistPathSet
+}
+
+func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfig.Entitlement, error) {
+	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}
+	seen := map[string]bool{appconfig.EntitlementNetwork: true}
+
+	if opts.noExtraEntitlements {
+		if opts.entitlementsSet || opts.gpioPinsSet || opts.i2cDeviceSet || opts.persistNameSet || opts.persistPathSet {
+			return nil, fmt.Errorf("--no-extra-entitlements cannot be combined with entitlement-specific flags")
+		}
+		return entitlements, nil
+	}
+
+	rawTypes := append([]string{}, opts.entitlements...)
+	if opts.gpioPinsSet {
+		rawTypes = append(rawTypes, appconfig.EntitlementGPIO)
+	}
+	if opts.i2cDeviceSet {
+		rawTypes = append(rawTypes, appconfig.EntitlementI2C)
+	}
+	if opts.persistNameSet || opts.persistPathSet {
+		rawTypes = append(rawTypes, appconfig.EntitlementPersist)
+	}
+
+	for _, rawType := range rawTypes {
+		entType := normalizeInitChoice(rawType)
+		if entType == "" {
+			continue
+		}
+		if !slices.Contains(appconfig.ValidEntitlementTypes, entType) {
+			return nil, fmt.Errorf("invalid entitlement %q", rawType)
+		}
+		if target == targetWendyLite && entType != appconfig.EntitlementNetwork {
+			return nil, fmt.Errorf("%s does not support the %q entitlement", targetWendyLite, entType)
+		}
+		if seen[entType] {
+			continue
+		}
+
+		ent := appconfig.Entitlement{Type: entType}
+		switch entType {
+		case appconfig.EntitlementPersist:
+			if strings.TrimSpace(opts.persistName) == "" || strings.TrimSpace(opts.persistPath) == "" {
+				return nil, fmt.Errorf("persist entitlement requires both --persist-name and --persist-path")
+			}
+			ent.Name = strings.TrimSpace(opts.persistName)
+			ent.Path = strings.TrimSpace(opts.persistPath)
+		case appconfig.EntitlementI2C:
+			if strings.TrimSpace(opts.i2cDevice) == "" {
+				return nil, fmt.Errorf("i2c entitlement requires --i2c-device")
+			}
+			ent.Device = strings.TrimSpace(opts.i2cDevice)
+		case appconfig.EntitlementGPIO:
+			if strings.TrimSpace(opts.gpioPins) == "" {
+				return nil, fmt.Errorf("gpio entitlement requires --gpio-pins")
+			}
+			pins, err := parsePins(opts.gpioPins)
+			if err != nil {
+				return nil, err
+			}
+			ent.Pins = pins
+		}
+
+		entitlements = append(entitlements, ent)
+		seen[entType] = true
+	}
+
+	return entitlements, nil
+}
+
+func normalizeInitChoice(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func isValidInitTarget(target string) bool {
+	return target == targetWendyOS || target == targetWendyLite
+}
+
+func isValidInitLanguage(language string) bool {
+	return language == langSwift || language == langPython
+}
+
+func validateInitLanguage(target, language string) error {
+	if target == targetWendyLite && language != langSwift {
+		return fmt.Errorf("%s requires %s", targetWendyLite, langSwift)
+	}
+	return nil
+}
+
+func isValidInitAssistant(choice string) bool {
+	return choice == assistantClaude || choice == assistantCodex || choice == assistantSkip
+}
+
+func validateInitAssistantOptions(opts initOptions) error {
+	if opts.installClaudeSkillsSet && (!opts.assistantSet || normalizeInitChoice(opts.assistant) != assistantClaude) {
+		return fmt.Errorf("--install-claude-skills requires --assistant=%s", assistantClaude)
+	}
+	if !opts.assistantSet {
+		return nil
+	}
+
+	choice := normalizeInitChoice(opts.assistant)
+	if !isValidInitAssistant(choice) {
+		return fmt.Errorf("invalid assistant %q (valid: %s, %s, %s)", opts.assistant, assistantClaude, assistantCodex, assistantSkip)
+	}
+	if choice == assistantSkip {
+		return nil
+	}
+	if !isCommandAvailable(choice) {
+		return fmt.Errorf("%s is not installed or not on PATH", choice)
+	}
+	return nil
 }
 
 func promptYesNo(reader *bufio.Reader, question string) (bool, error) {
@@ -369,25 +642,7 @@ func offerAIAssistant(reader *bufio.Reader, appID, target, language string, enti
 		return err
 	}
 
-	if choice == "skip" {
-		fmt.Println("\nYour project is ready! Run `wendy run` to build and deploy.")
-		return nil
-	}
-
-	// For Claude, offer to install the Wendy skills plugin.
-	if choice == "claude" {
-		installWendySkills(reader)
-	}
-
-	prompt := buildAssistantPrompt(appID, target, language, entitlements)
-
-	fmt.Printf("\nStarting %s with project context...\n", choice)
-
-	cmd := exec.Command(choice, prompt)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runAIAssistantChoice(choice, appID, target, language, entitlements, false, reader)
 }
 
 const wendySkillsMarketplace = "wendylabsinc/claude-skills"
@@ -396,7 +651,7 @@ const wendySkillsPluginName = "wendy@claude-skills"
 // installWendySkills checks if the Wendy skills plugin is installed and offers
 // to install it if missing. This gives Claude expert knowledge about Wendy
 // development.
-func installWendySkills(reader *bufio.Reader) {
+func installWendySkills(reader *bufio.Reader, autoInstall bool) {
 	// Check if the plugin is already installed by looking at the plugin list output.
 	out, err := exec.Command("claude", "plugin", "list").Output()
 	if err != nil {
@@ -411,12 +666,14 @@ func installWendySkills(reader *bufio.Reader) {
 	fmt.Println("building and deploying apps to WendyOS and Wendy Lite devices.")
 	fmt.Println()
 
-	install, err := promptYesNo(reader, "Install Wendy skills for Claude Code?")
-	if err != nil || !install {
-		return
-	}
+	if !autoInstall {
+		install, err := promptYesNo(reader, "Install Wendy skills for Claude Code?")
+		if err != nil || !install {
+			return
+		}
 
-	fmt.Println()
+		fmt.Println()
+	}
 
 	// Add the marketplace if not already present.
 	addMarketplace := exec.Command("claude", "plugin", "marketplace", "add", wendySkillsMarketplace)
@@ -439,6 +696,36 @@ func installWendySkills(reader *bufio.Reader) {
 	}
 
 	fmt.Println("  Wendy skills installed successfully!")
+}
+
+func runAIAssistantChoice(choice, appID, target, language string, entitlements []appconfig.Entitlement, installClaudeSkills bool, reader *bufio.Reader) error {
+	if choice == assistantSkip {
+		fmt.Println("\nYour project is ready! Run `wendy run` to build and deploy.")
+		return nil
+	}
+
+	if !isCommandAvailable(choice) {
+		return fmt.Errorf("%s is not installed or not on PATH", choice)
+	}
+
+	if choice == assistantClaude {
+		switch {
+		case installClaudeSkills:
+			installWendySkills(nil, true)
+		case reader != nil:
+			installWendySkills(reader, false)
+		}
+	}
+
+	prompt := buildAssistantPrompt(appID, target, language, entitlements)
+
+	fmt.Printf("\nStarting %s with project context...\n", choice)
+
+	cmd := exec.Command(choice, prompt)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func buildAssistantPrompt(appID, target, language string, entitlements []appconfig.Entitlement) string {

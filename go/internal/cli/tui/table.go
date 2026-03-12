@@ -1,21 +1,29 @@
 package tui
 
 import (
+	bubbleTable "github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 )
 
 var (
+	tableHeaderForeground = lipgloss.Color("230")
+	tableHeaderBackground = lipgloss.Color("29")
+	tableBorderColor      = lipgloss.Color("36")
+	tableSelectedBg       = lipgloss.Color("22")
+	tableSelectedFg       = lipgloss.Color("230")
+
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("229")).
+			Foreground(tableHeaderForeground).
+			Background(tableHeaderBackground).
 			Padding(0, 1)
 
 	cellStyle = lipgloss.NewStyle().
 			Padding(0, 1)
 
 	borderStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(tableBorderColor)
 )
 
 // RenderTable renders a styled table with the given headers and rows.
@@ -40,4 +48,35 @@ func RenderTable(headers []string, rows [][]string) string {
 	}
 
 	return t.Render() + "\n"
+}
+
+// BubbleTableStyles returns the shared emerald styling for Bubble Tea tables.
+func BubbleTableStyles(interactive bool) bubbleTable.Styles {
+	styles := bubbleTable.DefaultStyles()
+	styles.Header = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(tableHeaderForeground).
+		Background(tableHeaderBackground).
+		Padding(0, 1)
+	styles.Cell = lipgloss.NewStyle().Padding(0, 1)
+	if interactive {
+		styles.Selected = lipgloss.NewStyle().
+			Foreground(tableSelectedFg).
+			Background(tableSelectedBg).
+			Bold(true)
+	} else {
+		styles.Selected = lipgloss.NewStyle()
+	}
+	return styles
+}
+
+// NewBubbleTable creates a Bubble Tea table using the shared emerald styling.
+func NewBubbleTable(interactive bool, columns []bubbleTable.Column) bubbleTable.Model {
+	opts := []bubbleTable.Option{bubbleTable.WithFocused(interactive)}
+	if len(columns) > 0 {
+		opts = append(opts, bubbleTable.WithColumns(columns))
+	}
+	t := bubbleTable.New(opts...)
+	t.SetStyles(BubbleTableStyles(interactive))
+	return t
 }
