@@ -139,10 +139,13 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		architecture = "arm64"
 	}
 
-	product := findSwiftProduct(cwd)
+	product, err := findSwiftProduct(cwd)
+	if err != nil {
+		return err
+	}
 
 	cliLogln("Building Swift container image for %s (%s)...", product, architecture)
-	if err := buildSwiftContainerImage(ctx, cwd, product, conn.Host, architecture); err != nil {
+	if err := buildSwiftContainerImage(ctx, cwd, product, conn.Host, architecture, conn.IsMTLS); err != nil {
 		return fmt.Errorf("building Swift container image: %w", err)
 	}
 	cliLogln("Build and push completed.")
@@ -250,7 +253,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	// For Swift projects, resolve the actual executable product name from
 	// Package.swift rather than using the wendy.json app ID.
 	if p.CanBuild(projectPath) {
-		if swiftProduct := findSwiftProduct(projectPath); swiftProduct != "" {
+		if swiftProduct, err := findSwiftProduct(projectPath); err == nil {
 			product = swiftProduct
 		}
 	}
@@ -364,7 +367,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
 
 	cliLogln("Building and pushing Docker image for %s...", platform)
-	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, os.Stdout); err != nil {
+	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, os.Stdout, conn.IsMTLS); err != nil {
 		return fmt.Errorf("building and pushing Docker image: %w", err)
 	}
 	cliLogln("Build and push completed.")
@@ -372,7 +375,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Inject debugpy for Python remote debugging.
 	if appCfg.Language == "python" {
 		cliLogln("Injecting debugpy for remote debugging...")
-		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, os.Stdout); err != nil {
+		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, os.Stdout, conn.IsMTLS); err != nil {
 			return fmt.Errorf("injecting debugpy: %w", err)
 		}
 	}
