@@ -114,6 +114,11 @@
 
 #pragma mark - Result building
 
+- (void)waitForReady:(int)timeoutSeconds {
+    dispatch_semaphore_wait(self.readySem,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeoutSeconds * NSEC_PER_SEC));
+}
+
 - (WendyBLEScanResult)buildResult {
     NSArray<NSDictionary *> *values = [self.discovered allValues];
     int count = (int)values.count;
@@ -144,8 +149,7 @@ int wendy_ble_check(void) {
         // CoreBluetooth communicates with bluetoothd via XPC, so we must wait
         // for the state update to actually fire — not just create the manager.
         WendyBLEScanner *scanner = [[WendyBLEScanner alloc] init];
-        dispatch_semaphore_wait(scanner.readySem,
-            dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        [scanner waitForReady:5];
         return scanner.isReady ? 0 : 1;
     }
 }
@@ -155,8 +159,7 @@ WendyBLEScanResult wendy_ble_scan(int scan_seconds) {
         WendyBLEScanner *scanner = [[WendyBLEScanner alloc] init];
 
         // Wait for the Bluetooth adapter to become ready (up to 5 seconds).
-        dispatch_semaphore_wait(scanner.readySem,
-            dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        [scanner waitForReady:5];
 
         if (!scanner.isReady) {
             return (WendyBLEScanResult){NULL, 0, NULL};

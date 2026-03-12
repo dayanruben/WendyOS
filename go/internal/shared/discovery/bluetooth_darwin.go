@@ -43,10 +43,10 @@ func RunBLECheck() int {
 // UUID and returns them sorted by RSSI (strongest first).
 func discoverBluetooth(ctx context.Context, activeScan bool) ([]models.BluetoothDevice, error) {
 	// Run a one-time subprocess check to test CoreBluetooth access.
-	// We re-exec the wendy binary with __ble-check; because exec replaces
-	// the process image, the child gets a fresh Obj-C runtime and can safely
-	// call CoreBluetooth APIs. If the child is killed (SIGABRT from a
-	// sandboxed terminal) or exits non-zero, BLE is unavailable.
+	// We spawn a subprocess by re-invoking the wendy binary with __ble-check
+	// so that the child gets a fresh Obj-C runtime and can safely call
+	// CoreBluetooth APIs. If the child is killed (SIGABRT from a sandboxed
+	// terminal) or exits non-zero, BLE is unavailable.
 	bleCheckOnce.Do(func() {
 		exe, err := os.Executable()
 		if err != nil {

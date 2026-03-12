@@ -105,17 +105,15 @@ func NewRootCmd() *cobra.Command {
 	analyticsCmd := newAnalyticsCmd()
 	analyticsCmd.GroupID = "misc"
 
-	// Hidden command used as a subprocess to test CoreBluetooth access.
-	// The main process re-execs itself with this command; because exec
-	// replaces the process image, the child gets a fresh Obj-C runtime
-	// and can safely probe CoreBluetooth without risking SIGABRT in the
-	// parent.
+	// Hidden command used by a subprocess to test CoreBluetooth access.
+	// The main process spawns a child process that runs this command so
+	// the child gets a fresh Obj-C runtime and can safely probe
+	// CoreBluetooth without risking SIGABRT in the long-lived parent.
 	bleCheckCmd := &cobra.Command{
 		Use:    "__ble-check",
 		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Run: func(cmd *cobra.Command, args []string) {
 			os.Exit(discovery.RunBLECheck())
-			return nil
 		},
 	}
 
