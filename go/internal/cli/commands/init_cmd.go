@@ -250,16 +250,35 @@ func runInitWizard(args []string, opts initOptions) error {
 }
 
 func resolveInitAppID(cwd string, args []string, opts initOptions) (string, error) {
-	appID := filepath.Base(cwd)
+	rawAppID := filepath.Base(cwd)
 	if len(args) > 0 {
-		appID = args[0]
+		rawAppID = args[0]
 	}
+
 	if opts.appIDSet {
-		if len(args) > 0 && args[0] != opts.appID {
-			return "", fmt.Errorf("app ID mismatch: positional argument %q does not match --app-id %q", args[0], opts.appID)
+		flagAppID := strings.TrimSpace(opts.appID)
+		if flagAppID == "" {
+			return "", fmt.Errorf("app ID cannot be empty or whitespace")
 		}
-		return opts.appID, nil
+
+		if len(args) > 0 {
+			positionalAppID := strings.TrimSpace(args[0])
+			if positionalAppID == "" {
+				return "", fmt.Errorf("app ID positional argument cannot be empty or whitespace")
+			}
+			if positionalAppID != flagAppID {
+				return "", fmt.Errorf("app ID mismatch: positional argument %q does not match --app-id %q", args[0], opts.appID)
+			}
+		}
+
+		return flagAppID, nil
 	}
+
+	appID := strings.TrimSpace(rawAppID)
+	if appID == "" {
+		return "", fmt.Errorf("could not infer a valid app ID; please provide a non-empty value via --app-id or as a positional argument")
+	}
+
 	return appID, nil
 }
 
@@ -388,7 +407,20 @@ func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfi
 		return entitlements, nil
 	}
 
-	rawTypes := append([]string{}, opts.entitlements...)
+	rawTypes := make([]string, 0, len(opts.entitlements)+3)
+	parsedEntitlementFlag := false
+	for _, rawType := range opts.entitlements {
+		entType := normalizeInitChoice(rawType)
+		if entType == "" {
+			continue
+		}
+		parsedEntitlementFlag = true
+		rawTypes = append(rawTypes, entType)
+	}
+	if opts.entitlementsSet && !parsedEntitlementFlag {
+		return nil, fmt.Errorf("--entitlement requires at least one valid entitlement type")
+	}
+
 	if opts.gpioPinsSet {
 		rawTypes = append(rawTypes, appconfig.EntitlementGPIO)
 	}
@@ -401,9 +433,6 @@ func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfi
 
 	for _, rawType := range rawTypes {
 		entType := normalizeInitChoice(rawType)
-		if entType == "" {
-			continue
-		}
 		if !slices.Contains(appconfig.ValidEntitlementTypes, entType) {
 			return nil, fmt.Errorf("invalid entitlement %q", rawType)
 		}

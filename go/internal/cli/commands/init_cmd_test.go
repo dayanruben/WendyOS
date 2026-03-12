@@ -61,6 +61,70 @@ func TestInitCommand_HelpIncludesExamples(t *testing.T) {
 	}
 }
 
+func TestResolveInitAppID_RejectsWhitespaceFlag(t *testing.T) {
+	_, err := resolveInitAppID("/tmp/demo-app", nil, initOptions{
+		appID:    "   ",
+		appIDSet: true,
+	})
+	if err == nil {
+		t.Fatal("expected empty --app-id to fail")
+	}
+	if got := err.Error(); got != "app ID cannot be empty or whitespace" {
+		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestResolveInitAppID_TrimsExplicitFlag(t *testing.T) {
+	appID, err := resolveInitAppID("/tmp/demo-app", nil, initOptions{
+		appID:    "  demo-app  ",
+		appIDSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitAppID: %v", err)
+	}
+	if appID != "demo-app" {
+		t.Fatalf("appID = %q, want %q", appID, "demo-app")
+	}
+}
+
+func TestBuildInitEntitlementsFromFlags_RejectsEmptyEntitlementFlag(t *testing.T) {
+	_, err := buildInitEntitlementsFromFlags(targetWendyOS, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"", "   "},
+	})
+	if err == nil {
+		t.Fatal("expected empty --entitlement to fail")
+	}
+	if got := err.Error(); got != "--entitlement requires at least one valid entitlement type" {
+		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestBuildInitEntitlementsFromFlags_IgnoresEmptyEntriesWhenValidEntitlementsExist(t *testing.T) {
+	entitlements, err := buildInitEntitlementsFromFlags(targetWendyOS, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"gpu", "", " usb "},
+	})
+	if err != nil {
+		t.Fatalf("buildInitEntitlementsFromFlags: %v", err)
+	}
+
+	gotTypes := map[string]bool{}
+	for _, ent := range entitlements {
+		gotTypes[ent.Type] = true
+	}
+
+	for _, want := range []string{
+		appconfig.EntitlementNetwork,
+		appconfig.EntitlementGPU,
+		appconfig.EntitlementUSB,
+	} {
+		if !gotTypes[want] {
+			t.Fatalf("expected entitlement %q in %+v", want, entitlements)
+		}
+	}
+}
+
 func TestInitCommand_NonInteractiveFlagsCreateProject(t *testing.T) {
 	tempDir := t.TempDir()
 	prevWD, err := os.Getwd()
