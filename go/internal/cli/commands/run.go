@@ -83,6 +83,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// Debug mode requires host networking for remote debugger access (gdb/lldb).
 	// Python apps also need host networking for debugpy.
 	if opts.debug {
+		appCfg.Debug = true
 		foundNetwork := false
 		for i, e := range appCfg.Entitlements {
 			if e.Type == appconfig.EntitlementNetwork {

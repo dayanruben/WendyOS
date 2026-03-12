@@ -418,8 +418,8 @@ func (c *Client) CreateContainer(ctx context.Context, req *agentpb.CreateContain
 		args = []string{"/bin/sh"}
 	}
 
-	// Wrap Python commands with debugpy for remote debugging.
-	if appCfg.Language == "python" {
+	// Wrap Python commands with debugpy for remote debugging (only in debug mode).
+	if appCfg.Debug && appCfg.Language == "python" {
 		args = wrapWithDebugpy(args)
 	}
 
