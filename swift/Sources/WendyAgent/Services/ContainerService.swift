@@ -7,6 +7,7 @@ import WendyAgentGRPC
 
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
     private let appsDir: String
+    private let blobsDir: String
     private let broadcaster: TelemetryBroadcaster
     private let executablePath: String
     private let logger = Logger(label: "sh.wendy.agent.container")
@@ -21,14 +22,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         self.executablePath = executablePath
         self.sandboxProfilePath = sandboxProfilePath
 
-        let dir = appsDir ?? {
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            return "\(home)/Library/Application Support/wendy-agent/apps"
-        }()
-        self.appsDir = dir
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let baseDir = "\(home)/Library/Application Support/wendy-agent"
 
-        // Ensure the apps directory exists.
+        let dir = appsDir ?? "\(baseDir)/apps"
+        self.appsDir = dir
+        self.blobsDir = "\(baseDir)/blobs"
+
+        // Ensure directories exist.
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: "\(blobsDir)/sha256", withIntermediateDirectories: true)
     }
 
     // MARK: - Implemented
@@ -38,17 +41,49 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_CreateContainerResponse> {
         let appName = request.message.appName
-        let binaryName = request.message.imageName
-        logger.info("CreateContainer called", metadata: ["app_name": "\(appName)", "image_name": "\(binaryName)"])
+        let imageName = request.message.imageName
+        logger.info("CreateContainer called", metadata: ["app_name": "\(appName)", "image_name": "\(imageName)"])
 
-        // If imageName is set and a matching binary was uploaded, register the app directory.
-        if !binaryName.isEmpty {
+        if imageName.hasPrefix("sha256:") {
+            // OCI image: parse manifest → config → extract layer.
             let appDir = "\(appsDir)/\(appName)"
+            try FileManager.default.createDirectory(atPath: appDir, withIntermediateDirectories: true)
+
+            // Read manifest blob.
+            let manifestData = try readBlob(digest: imageName)
+            let manifest = try JSONDecoder().decode(OCIManifest.self, from: manifestData)
+
+            // Read config blob → extract entrypoint.
+            let configData = try readBlob(digest: manifest.config.digest)
+            let config = try JSONDecoder().decode(OCIImageConfig.self, from: configData)
+
+            guard let entrypoint = config.config?.Entrypoint, let firstEntry = entrypoint.first else {
+                throw RPCError(code: .invalidArgument, message: "OCI config has no entrypoint")
+            }
+            // Strip leading "./" from entrypoint to get the binary name.
+            let binaryName = firstEntry.hasPrefix("./") ? String(firstEntry.dropFirst(2)) : firstEntry
+
+            // Extract layer tarball into app directory.
+            guard let layerDesc = manifest.layers.first else {
+                throw RPCError(code: .invalidArgument, message: "OCI manifest has no layers")
+            }
+            try extractTarGz(blobDigest: layerDesc.digest, to: appDir)
+
             let binaryPath = "\(appDir)/\(binaryName)"
+            guard FileManager.default.fileExists(atPath: binaryPath) else {
+                throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath) after extraction")
+            }
+
+            appDirs[appName] = (dir: appDir, binaryName: binaryName)
+            logger.info("OCI image unpacked", metadata: ["app_name": "\(appName)", "binary": "\(binaryName)"])
+        } else if !imageName.isEmpty {
+            // Legacy: imageName is the binary name directly.
+            let appDir = "\(appsDir)/\(appName)"
+            let binaryPath = "\(appDir)/\(imageName)"
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath)")
             }
-            appDirs[appName] = (dir: appDir, binaryName: binaryName)
+            appDirs[appName] = (dir: appDir, binaryName: imageName)
             logger.info("Registered app directory", metadata: ["app_name": "\(appName)", "binary": "\(binaryPath)"])
         }
 
@@ -231,60 +266,72 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: StreamingServerRequest<Wendy_Agent_Services_V1_WriteLayerRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_WriteLayerResponse> {
-        // Digest format: "<appName>:<filename>:sha256:<hash>"
-        var appName = ""
-        var filename = ""
-        var expectedHash = ""
+        var digestStr = ""
         var accumulated = Data()
 
         for try await message in request.messages {
-            // Parse digest from the first message that carries it.
-            if !message.digest.isEmpty && appName.isEmpty {
-                let parts = message.digest.split(separator: ":", maxSplits: 3).map(String.init)
-                guard parts.count == 4, parts[2] == "sha256" else {
-                    throw RPCError(code: .invalidArgument, message: "Invalid digest format: expected <appName>:<filename>:sha256:<hash>")
-                }
-                appName = parts[0]
-                filename = parts[1]
-                expectedHash = parts[3]
-                logger.info("WriteLayer started", metadata: ["app_name": "\(appName)", "filename": "\(filename)"])
+            if !message.digest.isEmpty && digestStr.isEmpty {
+                digestStr = message.digest
             }
             if !message.data.isEmpty {
                 accumulated.append(message.data)
             }
         }
 
-        guard !appName.isEmpty else {
+        guard !digestStr.isEmpty else {
             throw RPCError(code: .invalidArgument, message: "No digest received in WriteLayer stream")
         }
 
-        // Verify SHA256.
-        let computedHash = SHA256.hash(data: accumulated)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        guard computedHash == expectedHash else {
-            throw RPCError(
-                code: .dataLoss,
-                message: "SHA256 mismatch: expected \(expectedHash), got \(computedHash)"
-            )
+        // Detect format: "sha256:<hex>" (OCI, 2 parts) vs "<app>:<file>:sha256:<hex>" (legacy, 4 parts).
+        let parts = digestStr.split(separator: ":", maxSplits: 3).map(String.init)
+
+        if parts.count == 2 && parts[0] == "sha256" {
+            // OCI blob format.
+            let expectedHash = parts[1]
+            let computedHash = SHA256.hash(data: accumulated)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            guard computedHash == expectedHash else {
+                throw RPCError(code: .dataLoss, message: "SHA256 mismatch: expected \(expectedHash), got \(computedHash)")
+            }
+
+            let blobPath = "\(blobsDir)/sha256/\(expectedHash)"
+            try accumulated.write(to: URL(fileURLWithPath: blobPath))
+
+            logger.info("WriteLayer completed (OCI blob)", metadata: [
+                "digest": "\(digestStr)",
+                "size": "\(accumulated.count)",
+            ])
+        } else if parts.count == 4 && parts[2] == "sha256" {
+            // Legacy format: "<appName>:<filename>:sha256:<hash>".
+            let appName = parts[0]
+            let filename = parts[1]
+            let expectedHash = parts[3]
+
+            let computedHash = SHA256.hash(data: accumulated)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            guard computedHash == expectedHash else {
+                throw RPCError(code: .dataLoss, message: "SHA256 mismatch: expected \(expectedHash), got \(computedHash)")
+            }
+
+            let appDir = "\(appsDir)/\(appName)"
+            try FileManager.default.createDirectory(atPath: appDir, withIntermediateDirectories: true)
+            let filePath = "\(appDir)/\(filename)"
+            try accumulated.write(to: URL(fileURLWithPath: filePath))
+
+            if filename != "sandbox.sb" {
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: filePath)
+            }
+
+            logger.info("WriteLayer completed (legacy)", metadata: [
+                "app_name": "\(appName)",
+                "filename": "\(filename)",
+                "size": "\(accumulated.count)",
+            ])
+        } else {
+            throw RPCError(code: .invalidArgument, message: "Invalid digest format: \(digestStr)")
         }
-
-        // Write to disk.
-        let appDir = "\(appsDir)/\(appName)"
-        try FileManager.default.createDirectory(atPath: appDir, withIntermediateDirectories: true)
-        let filePath = "\(appDir)/\(filename)"
-        try accumulated.write(to: URL(fileURLWithPath: filePath))
-
-        // Set executable permission if this is not the sandbox profile.
-        if filename != "sandbox.sb" {
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: filePath)
-        }
-
-        logger.info("WriteLayer completed", metadata: [
-            "app_name": "\(appName)",
-            "filename": "\(filename)",
-            "size": "\(accumulated.count)",
-        ])
 
         return StreamingServerResponse { _ in
             return Metadata()
@@ -306,6 +353,27 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     // MARK: - Helpers
+
+    private func readBlob(digest: String) throws -> Data {
+        // digest is "sha256:<hex>" — map to blobsDir/sha256/<hex>.
+        let blobPath = "\(blobsDir)/\(digest.replacingOccurrences(of: ":", with: "/"))"
+        guard let data = FileManager.default.contents(atPath: blobPath) else {
+            throw RPCError(code: .notFound, message: "Blob not found at \(blobPath)")
+        }
+        return data
+    }
+
+    private func extractTarGz(blobDigest: String, to destDir: String) throws {
+        let blobPath = "\(blobsDir)/\(blobDigest.replacingOccurrences(of: ":", with: "/"))"
+        let process = Foundation.Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["-xzf", blobPath, "-C", destDir]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw RPCError(code: .internalError, message: "tar extraction failed with status \(process.terminationStatus)")
+        }
+    }
 
     private static func broadcastLog(
         broadcaster: TelemetryBroadcaster,

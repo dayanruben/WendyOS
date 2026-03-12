@@ -2,8 +2,6 @@ package commands
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -276,8 +274,8 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	return nil
 }
 
-// runMacOSWithAgent builds a Swift project locally and uploads the binary
-// to a macOS device running the Swift wendy-agent via WriteLayer.
+// runMacOSWithAgent builds a Swift project locally, packages it as an OCI
+// image, uploads the blobs via WriteLayer, and creates/starts the container.
 func runMacOSWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	// Verify CPU architecture matches.
 	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
@@ -311,26 +309,35 @@ func runMacOSWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return fmt.Errorf("binary not found at %s: %w", binaryPath, err)
 	}
 
-	// Upload binary via WriteLayer.
-	cliLogln("Uploading %s to device...", product)
-	if err := uploadFileViaWriteLayer(ctx, conn, appCfg.AppID, product, binaryPath); err != nil {
-		return fmt.Errorf("uploading binary: %w", err)
-	}
-
-	// Upload sandbox profile if present.
+	// Build OCI image from the binary (and optional sandbox profile).
 	sandboxPath := filepath.Join(cwd, "sandbox.sb")
+	sandboxArg := ""
 	if _, err := os.Stat(sandboxPath); err == nil {
-		cliLogln("Uploading sandbox profile...")
-		if err := uploadFileViaWriteLayer(ctx, conn, appCfg.AppID, "sandbox.sb", sandboxPath); err != nil {
-			return fmt.Errorf("uploading sandbox profile: %w", err)
-		}
+		sandboxArg = sandboxPath
 	}
 
+	cliLogln("Building OCI image...")
+	layerBlob, configBlob, manifestBlob, err := buildMacOSOCIImage(binaryPath, sandboxArg, product, runtime.GOARCH)
+	if err != nil {
+		return fmt.Errorf("building OCI image: %w", err)
+	}
+
+	// Upload blobs via WriteLayer: layer, config, manifest.
+	cliLogln("Uploading OCI image...")
+	if err := uploadBlob(ctx, conn, layerBlob.Digest, layerBlob.Data); err != nil {
+		return fmt.Errorf("uploading layer blob: %w", err)
+	}
+	if err := uploadBlob(ctx, conn, configBlob.Digest, configBlob.Data); err != nil {
+		return fmt.Errorf("uploading config blob: %w", err)
+	}
+	if err := uploadBlob(ctx, conn, manifestBlob.Digest, manifestBlob.Data); err != nil {
+		return fmt.Errorf("uploading manifest blob: %w", err)
+	}
 	cliLogln("Upload completed.")
 
-	// Create container.
+	// Create container with manifest digest as image name.
 	createReq := &agentpb.CreateContainerRequest{
-		ImageName: product,
+		ImageName: manifestBlob.Digest,
 		AppName:   appCfg.AppID,
 	}
 
@@ -405,60 +412,6 @@ func runMacOSWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 
 	cliLogln("\nApplication %s stopped.", appCfg.AppID)
-	return nil
-}
-
-// uploadFileViaWriteLayer uploads a file to the device agent using the
-// WriteLayer streaming RPC. The digest encodes the app name, filename, and
-// SHA256 hash: "<appName>:<filename>:sha256:<hash>".
-func uploadFileViaWriteLayer(ctx context.Context, conn *grpcclient.AgentConnection, appName, filename, filePath string) error {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("reading file: %w", err)
-	}
-
-	hash := sha256.Sum256(data)
-	digest := fmt.Sprintf("%s:%s:sha256:%s", appName, filename, hex.EncodeToString(hash[:]))
-
-	stream, err := conn.ContainerService.WriteLayer(ctx)
-	if err != nil {
-		return fmt.Errorf("opening WriteLayer stream: %w", err)
-	}
-
-	const chunkSize = 64 * 1024
-	for offset := 0; offset < len(data); offset += chunkSize {
-		end := offset + chunkSize
-		if end > len(data) {
-			end = len(data)
-		}
-
-		req := &agentpb.WriteLayerRequest{
-			Data: data[offset:end],
-		}
-		// Send digest only on the first chunk.
-		if offset == 0 {
-			req.Digest = digest
-		}
-
-		if err := stream.Send(req); err != nil {
-			return fmt.Errorf("sending chunk: %w", err)
-		}
-	}
-
-	if err := stream.CloseSend(); err != nil {
-		return fmt.Errorf("closing send: %w", err)
-	}
-
-	// Drain responses (the server sends none but we need to wait for completion).
-	for {
-		if _, err := stream.Recv(); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("receiving response: %w", err)
-		}
-	}
-
 	return nil
 }
 
