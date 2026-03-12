@@ -112,7 +112,9 @@ func writeImageToDisk(imagePath string, d drive, progressFn func(written int64))
 	}
 
 	// Use rdisk for faster raw writes on macOS.
-	cmd := exec.Command("sudo", "dd", fmt.Sprintf("if=%s", imagePath), fmt.Sprintf("of=%s", d.RawPath), "bs=4m")
+	// conv=sync pads the final partial block with zeros so the write is
+	// sector-aligned, which raw devices require.
+	cmd := exec.Command("sudo", "dd", fmt.Sprintf("if=%s", imagePath), fmt.Sprintf("of=%s", d.RawPath), "bs=4m", "conv=sync")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("writing image: %s\n%s", err, string(out))
 	}
