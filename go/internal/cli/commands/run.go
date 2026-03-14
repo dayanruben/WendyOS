@@ -307,13 +307,13 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	// Swift projects without a Dockerfile: cross-compile on the host and
 	// build a Docker image, bypassing the provider's normal Build method.
 	if projectType == "swift" {
-		if dp, ok := p.(*providers.DockerProvider); ok {
+		if ib, ok := p.(providers.ImageBuilder); ok {
 			cliLogln("Building Swift project for %s...", p.DisplayName())
 			imageName, err := buildSwiftDockerImage(ctx, projectPath, product)
 			if err != nil {
 				return fmt.Errorf("building Swift Docker image: %w", err)
 			}
-			app = dp.BuildFromImage(device, product, imageName)
+			app = ib.BuildFromImage(device, product, imageName)
 		}
 	}
 

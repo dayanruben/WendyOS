@@ -57,6 +57,12 @@ type RunOutput struct {
 	Data []byte
 }
 
+// ImageBuilder is optionally implemented by providers that can create a
+// BuiltApp from a pre-built container image (e.g. after cross-compilation).
+type ImageBuilder interface {
+	BuildFromImage(device models.ExternalDevice, product, imageName string) *BuiltApp
+}
+
 // ContainerManager is optionally implemented by providers that support
 // managing container lifecycle (list, start, stop, remove).
 type ContainerManager interface {

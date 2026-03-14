@@ -702,9 +702,9 @@ func buildSwiftDockerImage(ctx context.Context, dir, product string) (string, er
 	showBinCmd := exec.CommandContext(ctx, "swiftly", "run", "+"+defaultSwiftVersion, "swift",
 		"build", "-c", "release", "--swift-sdk="+sdk, "--show-bin-path")
 	showBinCmd.Dir = dir
-	out, err := showBinCmd.Output()
+	out, err := showBinCmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("swift build --show-bin-path: %w", err)
+		return "", fmt.Errorf("swift build --show-bin-path: %w\n%s", err, string(out))
 	}
 	binDir := strings.TrimSpace(string(out))
 	srcBin := filepath.Join(binDir, product)
@@ -716,21 +716,22 @@ func buildSwiftDockerImage(ctx context.Context, dir, product string) (string, er
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Copy the cross-compiled binary into the temp build context.
-	dstBin := filepath.Join(tmpDir, product)
+	// Copy the cross-compiled binary to a fixed name to avoid Dockerfile
+	// issues with special characters in Swift product names.
+	dstBin := filepath.Join(tmpDir, "app")
 	if err := copyBinary(srcBin, dstBin); err != nil {
 		return "", fmt.Errorf("copying binary: %w", err)
 	}
 
-	// Write a minimal Dockerfile.
-	dockerfile := fmt.Sprintf("FROM swift:%s-slim\nCOPY %s /usr/local/bin/%s\nCMD [\"%s\"]\n",
-		defaultSwiftVersion, product, product, product)
+	// Write a minimal Dockerfile using the fixed binary name.
+	dockerfile := fmt.Sprintf("FROM swift:%s-slim\nCOPY app /usr/local/bin/app\nCMD [\"app\"]\n",
+		defaultSwiftVersion)
 	if err := os.WriteFile(filepath.Join(tmpDir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
 		return "", fmt.Errorf("writing Dockerfile: %w", err)
 	}
 
-	// Build the Docker image.
-	imageName := strings.ToLower(product) + ":latest"
+	// Build the Docker image with a sanitised name.
+	imageName := sanitizeDockerImageName(product) + ":latest"
 	dockerCmd := exec.CommandContext(ctx, "docker", "build", "-t", imageName, ".")
 	dockerCmd.Dir = tmpDir
 	dockerCmd.Stdout = os.Stdout
@@ -742,7 +743,26 @@ func buildSwiftDockerImage(ctx context.Context, dir, product string) (string, er
 	return imageName, nil
 }
 
-// copyBinary copies a file from src to dst, preserving executable permissions.
+// sanitizeDockerImageName produces a valid Docker image reference component
+// from an arbitrary string (e.g. a Swift product name).
+func sanitizeDockerImageName(name string) string {
+	name = strings.ToLower(name)
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	result := strings.Trim(b.String(), "-.")
+	if result == "" {
+		return "wendy-app"
+	}
+	return result
+}
+
+// copyBinary copies a file from src to dst with mode 0755.
 func copyBinary(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -754,8 +774,10 @@ func copyBinary(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, in)
-	return err
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
