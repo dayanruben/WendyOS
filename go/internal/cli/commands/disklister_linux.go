@@ -83,7 +83,9 @@ func listDrivesLinux(removableOnly bool) ([]drive, error) {
 			Name:        dev.Name,
 			Size:        humanize.Bytes(uint64(sizeBytes)),
 			SizeBytes:   sizeBytes,
-			IsRemovable: dev.Removable == "1",
+			// IsRemovable reflects our external-ness predicate so downstream code
+			// sees the same classification used to include this device.
+			IsRemovable: isExternal,
 		})
 	}
 
