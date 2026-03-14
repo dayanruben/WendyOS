@@ -72,7 +72,7 @@ func newOSListDrivesCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&all, "all", false, "List all drives, not just external/removable")
+	cmd.Flags().BoolVar(&all, "all", false, "List all external/physical drives, not just removable ones")
 
 	return cmd
 }
