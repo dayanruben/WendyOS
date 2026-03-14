@@ -93,10 +93,13 @@ func getDiskInfo(devPath string) (*diskInfo, error) {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "Disk Size:") {
 			info.size = strings.TrimSpace(strings.TrimPrefix(line, "Disk Size:"))
-			// Parse byte count from e.g. "31.9 GB (31914983424 Bytes)..."
+			// Parse byte count from e.g. "31.9 GB (31,914,983,424 Bytes)..."
 			if start := strings.Index(info.size, "("); start != -1 {
 				if end := strings.Index(info.size[start:], " Bytes"); end != -1 {
-					fmt.Sscanf(info.size[start+1:start+end], "%d", &info.sizeBytes)
+					rawBytes := info.size[start+1 : start+end]
+					// diskutil may include thousands separators (commas); remove them before parsing.
+					rawBytes = strings.ReplaceAll(rawBytes, ",", "")
+					fmt.Sscanf(rawBytes, "%d", &info.sizeBytes)
 				}
 			}
 		}
