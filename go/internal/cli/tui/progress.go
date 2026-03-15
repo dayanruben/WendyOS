@@ -36,6 +36,7 @@ type ProgressModel struct {
 // NewProgress creates a new ProgressModel with the given title.
 func NewProgress(title string) ProgressModel {
 	p := progress.New(progress.WithGradient(string(Emerald400), string(Emerald700)))
+	p.PercentFormat = " %5.2f%%"
 	return ProgressModel{
 		progress: p,
 		title:    title,
