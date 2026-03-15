@@ -5,7 +5,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -76,26 +75,11 @@ func newOSCacheClearCmd() *cobra.Command {
 				return err
 			}
 
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				if os.IsNotExist(err) {
-					fmt.Println("Cache is already empty.")
-					return nil
-				}
-				return fmt.Errorf("reading cache: %w", err)
+			if err := os.RemoveAll(dir); err != nil {
+				return fmt.Errorf("clearing OS image cache: %w", err)
 			}
 
-			var removed int
-			for _, entry := range entries {
-				if entry.IsDir() {
-					continue
-				}
-				if err := os.Remove(filepath.Join(dir, entry.Name())); err == nil {
-					removed++
-				}
-			}
-
-			fmt.Printf("Cleared %d cached image(s).\n", removed)
+			fmt.Println("OS image cache cleared.")
 			return nil
 		},
 	}

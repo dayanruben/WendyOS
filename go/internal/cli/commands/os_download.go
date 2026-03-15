@@ -5,7 +5,6 @@ package commands
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"os"
 	"sort"
 	"strings"
@@ -34,40 +33,10 @@ func newOSDownloadCmd() *cobra.Command {
 }
 
 func runOSDownload(flagVersion string, overwrite bool) error {
-	fmt.Println("Fetching available devices...")
-
-	linuxDevices, err := getAvailableDevices()
-	if err != nil {
-		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
-	}
-
-	// Build device picker (Linux devices only — ESP32 firmware isn't cached this way).
-	var items []tui.PickerItem
-	deviceMap := make(map[string]deviceInfo)
-
-	for _, dev := range linuxDevices {
-		if dev.LatestVersion == "" {
-			continue
-		}
-		deviceMap[dev.Key] = dev
-		items = append(items, tui.PickerItem{
-			Name:        dev.Name,
-			Description: fmt.Sprintf("(latest: %s)", dev.LatestVersion),
-			Value:       dev.Key,
-		})
-	}
-
-	if len(items) == 0 {
-		return fmt.Errorf("no devices available")
-	}
-
-	fmt.Println()
-	selectedKey, err := pickFromItems("Select a device", items)
+	selectedKey, dev, err := pickLinuxDevice()
 	if err != nil {
 		return err
 	}
-
-	dev := deviceMap[selectedKey]
 
 	// Resolve version — use flag, or pick interactively from available versions.
 	version := flagVersion

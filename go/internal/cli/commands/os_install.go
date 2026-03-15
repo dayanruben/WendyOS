@@ -107,6 +107,43 @@ type pickerDevice struct {
 	Manifest   *deviceManifest // cached manifest for Linux devices
 }
 
+// pickLinuxDevice fetches available Linux devices from the manifest and presents
+// an interactive picker. Returns the selected device key and its deviceInfo.
+func pickLinuxDevice() (string, deviceInfo, error) {
+	fmt.Println("Fetching available devices...")
+
+	devices, err := getAvailableDevices()
+	if err != nil {
+		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
+	}
+
+	var items []tui.PickerItem
+	deviceMap := make(map[string]deviceInfo)
+
+	for _, dev := range devices {
+		if dev.LatestVersion == "" {
+			continue
+		}
+		deviceMap[dev.Key] = dev
+		items = append(items, tui.PickerItem{
+			Name:        dev.Name,
+			Description: fmt.Sprintf("(latest: %s)", dev.LatestVersion),
+			Value:       dev.Key,
+		})
+	}
+
+	if len(items) == 0 {
+		return "", deviceInfo{}, fmt.Errorf("no devices available")
+	}
+
+	fmt.Println()
+	key, err := pickFromItems("Select a device", items)
+	if err != nil {
+		return "", deviceInfo{}, err
+	}
+	return key, deviceMap[key], nil
+}
+
 func runOSInstall(ctx context.Context, nightly bool) error {
 	fmt.Println("Fetching available devices...")
 
