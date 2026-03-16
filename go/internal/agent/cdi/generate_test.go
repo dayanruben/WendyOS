@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 	"go.uber.org/zap/zaptest/observer"
 )
 
@@ -30,6 +29,7 @@ func TestEnsureNVIDIACDISpec_SkipsWhenSpecExists(t *testing.T) {
 	}
 
 	ensureNVIDIACDISpecInternal(logger, []string{existingSpec}, tmpDir, filepath.Join(tmpDir, "out.yaml"),
+		func() bool { return true },
 		func(string) (string, error) { return "/usr/bin/nvidia-ctk", nil },
 		mockRun,
 	)
@@ -46,15 +46,11 @@ func TestEnsureNVIDIACDISpec_SkipsWhenSpecExists(t *testing.T) {
 	}
 }
 
-func TestEnsureNVIDIACDISpec_SkipsWhenNoCTK(t *testing.T) {
+func TestEnsureNVIDIACDISpec_SkipsWhenNoHardware(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputPath := filepath.Join(tmpDir, "nvidia.yaml")
 
-	// Create a fake /dev/nvidia marker so hardware detection passes.
-	fakeDevDir := filepath.Join(tmpDir, "dev")
-	os.MkdirAll(fakeDevDir, 0755)
-
-	core, _ := observer.New(zap.DebugLevel)
+	core, logs := observer.New(zap.DebugLevel)
 	logger := zap.New(core)
 
 	commandCalled := false
@@ -63,10 +59,47 @@ func TestEnsureNVIDIACDISpec_SkipsWhenNoCTK(t *testing.T) {
 		return nil, nil
 	}
 
-	// Override hardware detection by providing spec paths that don't exist and a lookPath that fails.
 	ensureNVIDIACDISpecInternal(logger,
 		[]string{filepath.Join(tmpDir, "nonexistent.yaml")},
 		tmpDir, outputPath,
+		func() bool { return false },
+		func(string) (string, error) { return "/usr/bin/nvidia-ctk", nil },
+		mockRun,
+	)
+
+	if commandCalled {
+		t.Error("expected nvidia-ctk to NOT be called when no hardware detected")
+	}
+
+	found := false
+	for _, entry := range logs.All() {
+		if entry.Message == "No NVIDIA hardware detected, skipping CDI spec generation" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected debug log about no NVIDIA hardware")
+	}
+}
+
+func TestEnsureNVIDIACDISpec_SkipsWhenNoCTK(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "nvidia.yaml")
+
+	core, logs := observer.New(zap.DebugLevel)
+	logger := zap.New(core)
+
+	commandCalled := false
+	mockRun := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		commandCalled = true
+		return nil, nil
+	}
+
+	ensureNVIDIACDISpecInternal(logger,
+		[]string{filepath.Join(tmpDir, "nonexistent.yaml")},
+		tmpDir, outputPath,
+		func() bool { return true },
 		func(string) (string, error) { return "", errors.New("not found") },
 		mockRun,
 	)
@@ -75,21 +108,24 @@ func TestEnsureNVIDIACDISpec_SkipsWhenNoCTK(t *testing.T) {
 		t.Error("expected nvidia-ctk to NOT be called when it's not in PATH")
 	}
 
-	// On macOS dev machines there's no NVIDIA hardware, so it may skip before checking ctk.
-	// Both outcomes are correct.
+	found := false
+	for _, entry := range logs.All() {
+		if entry.Message == "nvidia-ctk not found in PATH, cannot generate CDI spec (GPU containers will use minimal device mounting)" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning log about missing nvidia-ctk")
+	}
 }
 
 func TestEnsureNVIDIACDISpec_CallsCTKWithCorrectArgs(t *testing.T) {
-	// This test only makes sense on a system with NVIDIA hardware.
-	// We skip if no NVIDIA hardware is detected.
-	if !hasNVIDIAHardware() {
-		t.Skip("no NVIDIA hardware detected, skipping nvidia-ctk invocation test")
-	}
-
 	tmpDir := t.TempDir()
 	outputPath := filepath.Join(tmpDir, "nvidia.yaml")
 
-	logger := zaptest.NewLogger(t)
+	core, _ := observer.New(zap.DebugLevel)
+	logger := zap.New(core)
 
 	var capturedName string
 	var capturedArgs []string
@@ -102,6 +138,7 @@ func TestEnsureNVIDIACDISpec_CallsCTKWithCorrectArgs(t *testing.T) {
 	ensureNVIDIACDISpecInternal(logger,
 		[]string{filepath.Join(tmpDir, "nonexistent.yaml")},
 		tmpDir, outputPath,
+		func() bool { return true },
 		func(string) (string, error) { return "/usr/bin/nvidia-ctk", nil },
 		mockRun,
 	)
@@ -122,10 +159,6 @@ func TestEnsureNVIDIACDISpec_CallsCTKWithCorrectArgs(t *testing.T) {
 }
 
 func TestEnsureNVIDIACDISpec_HandlesCommandFailure(t *testing.T) {
-	if !hasNVIDIAHardware() {
-		t.Skip("no NVIDIA hardware detected")
-	}
-
 	tmpDir := t.TempDir()
 	outputPath := filepath.Join(tmpDir, "nvidia.yaml")
 
@@ -139,6 +172,7 @@ func TestEnsureNVIDIACDISpec_HandlesCommandFailure(t *testing.T) {
 	ensureNVIDIACDISpecInternal(logger,
 		[]string{filepath.Join(tmpDir, "nonexistent.yaml")},
 		tmpDir, outputPath,
+		func() bool { return true },
 		func(string) (string, error) { return "/usr/bin/nvidia-ctk", nil },
 		mockRun,
 	)

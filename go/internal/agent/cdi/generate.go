@@ -23,7 +23,7 @@ const cdiOutputPath = "/var/run/cdi/nvidia.yaml"
 // attempts to generate it by running `nvidia-ctk cdi generate`.
 // It is idempotent and non-fatal: errors are logged but do not stop the agent.
 func EnsureNVIDIACDISpec(logger *zap.Logger) {
-	ensureNVIDIACDISpecInternal(logger, cdiSpecPaths, cdiOutputDir, cdiOutputPath, exec.LookPath, execCommandContext)
+	ensureNVIDIACDISpecInternal(logger, cdiSpecPaths, cdiOutputDir, cdiOutputPath, hasNVIDIAHardware, exec.LookPath, execCommandContext)
 }
 
 // execCommandContext is the default implementation that runs a real command.
@@ -37,6 +37,7 @@ func ensureNVIDIACDISpecInternal(
 	specPaths []string,
 	outputDir string,
 	outputPath string,
+	hasHardware func() bool,
 	lookPath func(string) (string, error),
 	runCommand func(ctx context.Context, name string, args ...string) ([]byte, error),
 ) {
@@ -49,7 +50,7 @@ func ensureNVIDIACDISpecInternal(
 	}
 
 	// Detect NVIDIA hardware.
-	if !hasNVIDIAHardware() {
+	if !hasHardware() {
 		logger.Debug("No NVIDIA hardware detected, skipping CDI spec generation")
 		return
 	}
