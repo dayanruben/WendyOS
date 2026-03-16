@@ -172,9 +172,24 @@ var wendySDKChecksums = map[string]string{
 	"aarch64": "ef8fa5a2eda766e3b1df791dc175bbf87f570b9cc6f95ada1fe7643a327e087e",
 }
 
+// ensureSwiftVersion makes sure the required Swift toolchain is installed via swiftly.
+// If the version is already present this is a no-op.
+func ensureSwiftVersion() error {
+	cmd := exec.Command("swiftly", "install", defaultSwiftVersion)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("installing Swift %s via swiftly: %w", defaultSwiftVersion, err)
+	}
+	return nil
+}
+
 // buildSwiftContainerImage builds a Swift package and pushes the container image
 // directly to the device's registry using swift-container-plugin.
 func buildSwiftContainerImage(ctx context.Context, dir, product, registryHost, architecture string, useMTLS bool) error {
+	if err := ensureSwiftVersion(); err != nil {
+		return err
+	}
 	if err := ensureContainerPlugin(dir); err != nil {
 		return err
 	}
@@ -682,6 +697,10 @@ func registryHost(host string, port int) string {
 // have a Dockerfile, as an alternative to swift-container-plugin (which only
 // supports pushing to registries).
 func buildSwiftDockerImage(ctx context.Context, dir, product string) (string, error) {
+	if err := ensureSwiftVersion(); err != nil {
+		return "", err
+	}
+
 	arch := runtime.GOARCH
 	sdk, err := findSwiftSDK(arch)
 	if err != nil {
