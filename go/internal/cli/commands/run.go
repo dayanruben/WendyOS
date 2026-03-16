@@ -62,6 +62,10 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 		case *agentpb.CreateContainerProgressResponse_Completed:
 			completed = true
 		}
+
+		if completed {
+			break
+		}
 	}
 
 	if !completed {
