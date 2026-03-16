@@ -165,6 +165,49 @@ func TestGeneratePythonDockerfile_FallbackEntrypoint(t *testing.T) {
 	}
 }
 
+func TestRegistryHost_IPv4(t *testing.T) {
+	got := registryHost("192.168.1.5", 5000)
+	if got != "192.168.1.5:5000" {
+		t.Errorf("registryHost IPv4 = %q, want %q", got, "192.168.1.5:5000")
+	}
+}
+
+func TestRegistryHost_IPv6Global(t *testing.T) {
+	got := registryHost("2001:db8::1", 5000)
+	if got != "[2001:db8::1]:5000" {
+		t.Errorf("registryHost IPv6 global = %q, want %q", got, "[2001:db8::1]:5000")
+	}
+}
+
+func TestRegistryHost_IPv6LinkLocalWithZone(t *testing.T) {
+	got := registryHost("fe80::2ecf:67ff:feba:6cca%en0", 5000)
+	// Zone ID must be stripped — it's host-specific and unusable in containers.
+	if got != "[fe80::2ecf:67ff:feba:6cca]:5000" {
+		t.Errorf("registryHost IPv6 link-local+zone = %q, want %q", got, "[fe80::2ecf:67ff:feba:6cca]:5000")
+	}
+}
+
+func TestRegistryHost_IPv6LinkLocalNoZone(t *testing.T) {
+	got := registryHost("fe80::1", 5000)
+	if got != "[fe80::1]:5000" {
+		t.Errorf("registryHost IPv6 link-local no zone = %q, want %q", got, "[fe80::1]:5000")
+	}
+}
+
+func TestResolveRegistryIP_StripZone(t *testing.T) {
+	got := resolveRegistryIP("fe80::1%eth0")
+	if got != "fe80::1" {
+		t.Errorf("resolveRegistryIP zone = %q, want %q", got, "fe80::1")
+	}
+}
+
+func TestResolveRegistryIP_IPv4Passthrough(t *testing.T) {
+	got := resolveRegistryIP("10.0.0.1")
+	if got != "10.0.0.1" {
+		t.Errorf("resolveRegistryIP IPv4 = %q, want %q", got, "10.0.0.1")
+	}
+}
+
 func TestEnsureSwiftVersion_AlreadyInstalled(t *testing.T) {
 	original := execCommandContext
 	t.Cleanup(func() { execCommandContext = original })
