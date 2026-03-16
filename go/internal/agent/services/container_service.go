@@ -138,7 +138,15 @@ func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContai
 		return status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
 	}
 
-	if err := s.containerd.CreateContainer(stream.Context(), req, appCfg); err != nil {
+	onProgress := func(p *agentpb.CreateContainerProgress) {
+		_ = stream.Send(&agentpb.CreateContainerProgressResponse{
+			ResponseType: &agentpb.CreateContainerProgressResponse_Progress{
+				Progress: p,
+			},
+		})
+	}
+
+	if err := s.containerd.CreateContainerWithProgress(stream.Context(), req, appCfg, onProgress); err != nil {
 		return status.Errorf(codes.Internal, "failed to create container: %v", err)
 	}
 
