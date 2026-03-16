@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -184,6 +186,18 @@ type btScanMsg struct {
 }
 type extScanMsg struct{ devices []models.ExternalDevice }
 
+// discoverDeviceInfo is the JSON structure copied to the clipboard.
+type discoverDeviceInfo struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Address string `json:"address"`
+	Port    string `json:"port,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// flashClearMsg is sent after a delay to clear the flash message.
+type flashClearMsg struct{}
+
 type discoverModel struct {
 	ctx             context.Context
 	opts            discovery.DiscoveryOptions
@@ -195,6 +209,7 @@ type discoverModel struct {
 	includeExternal bool
 	windowHeight    int
 	bleWarning      string
+	flashMessage    string
 }
 
 func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions) discoverModel {
@@ -288,6 +303,47 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
+		case "enter":
+			rows := discoverTableRows(m.collection)
+			cursor := m.table.Cursor()
+			if len(rows) > 0 && cursor >= 0 && cursor < len(rows) {
+				row := rows[cursor]
+				info := discoverDeviceInfo{
+					Name:    row[0],
+					Type:    row[1],
+					Address: row[2],
+					Port:    row[3],
+					Version: row[4],
+				}
+				if data, err := json.MarshalIndent(info, "", "  "); err == nil {
+					if copyToClipboard(string(data)) == nil {
+						m.flashMessage = "Copied device info as JSON to clipboard."
+						return m, clearFlashAfter(5 * time.Second)
+					}
+				}
+			}
+			return m, nil
+		case "a":
+			rows := discoverTableRows(m.collection)
+			if len(rows) > 0 {
+				var all []discoverDeviceInfo
+				for _, row := range rows {
+					all = append(all, discoverDeviceInfo{
+						Name:    row[0],
+						Type:    row[1],
+						Address: row[2],
+						Port:    row[3],
+						Version: row[4],
+					})
+				}
+				if data, err := json.MarshalIndent(all, "", "  "); err == nil {
+					if copyToClipboard(string(data)) == nil {
+						m.flashMessage = "Copied all devices as JSON to clipboard."
+						return m, clearFlashAfter(5 * time.Second)
+					}
+				}
+			}
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
@@ -322,6 +378,8 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hasResults = true
 		m.refreshTable()
 		return m, delayThen(env.DiscoverExternalInterval(), m.scanExternal())
+	case flashClearMsg:
+		m.flashMessage = ""
 	}
 
 	return m, nil
@@ -346,7 +404,7 @@ func (m discoverModel) View() string {
 
 	var sb strings.Builder
 
-	sb.WriteString(scanStyle.Render("⟳ Scanning for WendyOS devices...") + dimStyle.Render(" (use arrows to navigate, press q or Ctrl+C to stop)") + "\n")
+	sb.WriteString(scanStyle.Render("⟳ Scanning for WendyOS devices...") + dimStyle.Render(" (↑/↓ navigate, enter copy, a copy all, q quit)") + "\n")
 
 	if m.bleWarning != "" {
 		sb.WriteString(dimStyle.Render("  Bluetooth: "+m.bleWarning) + "\n")
@@ -362,6 +420,11 @@ func (m discoverModel) View() string {
 		sb.WriteString(m.table.View() + "\n")
 	} else if m.hasResults {
 		sb.WriteString(dimStyle.Render("No devices found yet...") + "\n")
+	}
+
+	if m.flashMessage != "" {
+		flashStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent)
+		sb.WriteString("\n" + flashStyle.Render("  "+m.flashMessage) + "\n")
 	}
 
 	return sb.String()
@@ -481,4 +544,27 @@ func discoverTableHeight(rowCount, windowHeight int, interactive bool) int {
 		return min(height, max(windowHeight-4, 4))
 	}
 	return min(height, 12)
+}
+
+// clearFlashAfter returns a tea.Cmd that sends flashClearMsg after the given duration.
+func clearFlashAfter(d time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(d)
+		return flashClearMsg{}
+	}
+}
+
+// copyToClipboard writes text to the system clipboard.
+func copyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "linux":
+		cmd = exec.Command("xclip", "-selection", "clipboard")
+	default:
+		return fmt.Errorf("clipboard not supported on %s", runtime.GOOS)
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }

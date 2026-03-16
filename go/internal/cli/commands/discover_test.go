@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,93 @@ func TestRenderDeviceTable(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
+	}
+}
+
+func TestDiscoverDeviceInfo_JSONSingleDevice(t *testing.T) {
+	info := discoverDeviceInfo{
+		Name:    "wendyos-brave-phoenix",
+		Type:    "LAN",
+		Address: "192.168.1.42",
+		Port:    "50051",
+		Version: "2026.03.16-163942",
+	}
+
+	data, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if parsed["name"] != "wendyos-brave-phoenix" {
+		t.Errorf("name = %v", parsed["name"])
+	}
+	if parsed["address"] != "192.168.1.42" {
+		t.Errorf("address = %v", parsed["address"])
+	}
+}
+
+func TestDiscoverDeviceInfo_OmitsEmptyFields(t *testing.T) {
+	info := discoverDeviceInfo{
+		Name:    "wendyos-test",
+		Type:    "USB",
+		Address: "192.168.55.100",
+	}
+
+	data, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if _, ok := parsed["port"]; ok {
+		t.Error("empty port should be omitted")
+	}
+	if _, ok := parsed["version"]; ok {
+		t.Error("empty version should be omitted")
+	}
+}
+
+func TestDiscoverDeviceInfo_AllDevicesArray(t *testing.T) {
+	all := []discoverDeviceInfo{
+		{Name: "device-1", Type: "LAN", Address: "192.168.1.1", Port: "50051"},
+		{Name: "device-2", Type: "USB", Address: "192.168.55.100"},
+	}
+
+	data, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed []map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 devices, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "device-1" {
+		t.Errorf("first device name = %v", parsed[0]["name"])
+	}
+}
+
+func TestDiscoverModel_FlashClearMsg(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts())
+	m.flashMessage = "test flash"
+
+	updated, _ := m.Update(flashClearMsg{})
+	um := updated.(discoverModel)
+	if um.flashMessage != "" {
+		t.Errorf("flashMessage should be cleared, got %q", um.flashMessage)
 	}
 }
 
