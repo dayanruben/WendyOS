@@ -6,15 +6,24 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+)
+
+var (
+	// Styled icons for static (non-interactive) table output.
+	stateIconRunning = lipgloss.NewStyle().Foreground(tui.Emerald400).Render("●")
+	stateIconStopped = lipgloss.NewStyle().Foreground(tui.ColorDim).Render("●")
 )
 
 func newAppsCmd() *cobra.Command {
@@ -111,13 +120,13 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 		return nil
 	}
 
-	headers := []string{"Name", "Version", "State", "Failures"}
+	headers := []string{"", "Name", "Version", "Failures"}
 	var rows [][]string
 	for _, c := range containers {
 		rows = append(rows, []string{
+			stateIcon(c.GetRunningState().String()),
 			c.GetAppName(),
 			c.GetAppVersion(),
-			c.GetRunningState().String(),
 			fmt.Sprintf("%d", c.GetFailureCount()),
 		})
 	}
@@ -145,10 +154,10 @@ func appsListProvider(ctx context.Context, cm providers.ContainerManager) error 
 		return nil
 	}
 
-	headers := []string{"Name", "Image", "State", "Status"}
+	headers := []string{"", "Name", "Image", "Status"}
 	var rows [][]string
 	for _, c := range containers {
-		rows = append(rows, []string{c.Name, c.Image, c.State, c.Status})
+		rows = append(rows, []string{stateIcon(c.State), c.Name, c.Image, c.Status})
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
@@ -338,6 +347,27 @@ func newAppsRemoveCmd() *cobra.Command {
 	return cmd
 }
 
+// stateIcon returns a colored dot for the given state string (for static tables).
+func stateIcon(state string) string {
+	switch strings.ToLower(state) {
+	case "running":
+		return stateIconRunning
+	default:
+		return stateIconStopped
+	}
+}
+
+// stateIconPlain returns a plain unicode dot for use in interactive (bubbles) tables
+// where ANSI styling in cell content breaks width calculation and selection.
+func stateIconPlain(state string) string {
+	switch strings.ToLower(state) {
+	case "running":
+		return "●"
+	default:
+		return "○"
+	}
+}
+
 // appInfo holds the display information for an app returned by the agent or provider.
 type appInfo struct {
 	Name    string
@@ -412,13 +442,9 @@ func pickApp(ctx context.Context, target *SelectedDevice, title string) (string,
 	go func() {
 		var items []tui.PickerItem
 		for _, app := range apps {
-			desc := app.State
-			if app.Version != "" {
-				desc = app.Version + " · " + desc
-			}
 			items = append(items, tui.PickerItem{
-				Name:        app.Name,
-				Description: desc,
+				Name:        stateIconPlain(app.State) + " " + app.Name,
+				Description: app.Version,
 				Value:       app.Name,
 			})
 		}
