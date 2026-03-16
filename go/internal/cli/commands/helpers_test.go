@@ -2,11 +2,15 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
 )
@@ -104,6 +108,78 @@ func TestResolveLANAgentVersionFallsBackAcrossAddresses(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("resolveLANAgentVersion() calls = %v, want %v", calls, wantCalls)
+	}
+}
+
+// setTempConfig writes a Config to a temp dir and sets HOME so config.Load
+// reads from it. It returns a cleanup function that restores the original HOME.
+func setTempConfig(t *testing.T, cfg *config.Config) func() {
+	t.Helper()
+	origHome := os.Getenv("HOME")
+	tmp := t.TempDir()
+	wendyDir := filepath.Join(tmp, ".wendy")
+	if err := os.MkdirAll(wendyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wendyDir, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Setenv("HOME", tmp)
+	return func() { os.Setenv("HOME", origHome) }
+}
+
+func TestResolveDeviceAddress_Flag(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = "my-device.local"
+
+	addr, isDefault, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isDefault {
+		t.Fatal("expected isDefault=false when --device flag is set")
+	}
+	if addr != "my-device.local:50051" {
+		t.Fatalf("addr = %q, want %q", addr, "my-device.local:50051")
+	}
+}
+
+func TestResolveDeviceAddress_DefaultDevice(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = ""
+
+	cleanup := setTempConfig(t, &config.Config{DefaultDevice: "wendy-thor.local"})
+	defer cleanup()
+
+	addr, isDefault, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isDefault {
+		t.Fatal("expected isDefault=true when using default device from config")
+	}
+	if addr != "wendy-thor.local:50051" {
+		t.Fatalf("addr = %q, want %q", addr, "wendy-thor.local:50051")
+	}
+}
+
+func TestResolveDeviceAddress_NoDevice(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = ""
+
+	cleanup := setTempConfig(t, &config.Config{})
+	defer cleanup()
+
+	_, _, err := resolveDeviceAddress()
+	if err == nil {
+		t.Fatal("expected error when no device is specified")
 	}
 }
 
