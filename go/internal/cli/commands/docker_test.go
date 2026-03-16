@@ -219,6 +219,13 @@ func TestEnsureSwiftVersion_InstallFails(t *testing.T) {
 }
 
 func TestEnsureSwiftVersion_Cancellation(t *testing.T) {
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
