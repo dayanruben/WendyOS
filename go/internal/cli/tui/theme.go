@@ -3,7 +3,7 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 // Emerald color palette.
-var (
+const (
 	Emerald50  = lipgloss.Color("#ecfdf5")
 	Emerald100 = lipgloss.Color("#d1fae5")
 	Emerald200 = lipgloss.Color("#a7f3d0")

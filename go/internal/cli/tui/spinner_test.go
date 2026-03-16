@@ -173,11 +173,11 @@ func TestProgressModel_ViewByteCounter(t *testing.T) {
 	updated := model.(ProgressModel)
 
 	view := updated.View()
-	if !strings.Contains(view, "26.0 GB") {
-		t.Errorf("view should contain written bytes '26.0 GB', got: %q", view)
+	if !strings.Contains(view, "26.0 GiB") {
+		t.Errorf("view should contain written bytes '26.0 GiB', got: %q", view)
 	}
-	if !strings.Contains(view, "59.0 GB") {
-		t.Errorf("view should contain total bytes '59.0 GB', got: %q", view)
+	if !strings.Contains(view, "59.0 GiB") {
+		t.Errorf("view should contain total bytes '59.0 GiB', got: %q", view)
 	}
 	if !strings.Contains(view, "/") {
 		t.Errorf("view should contain '/' separator for byte counter, got: %q", view)
@@ -196,7 +196,7 @@ func TestProgressModel_ViewNoByteCounterWhenZero(t *testing.T) {
 	updated := model.(ProgressModel)
 
 	view := updated.View()
-	if strings.Contains(view, "GB") || strings.Contains(view, "MB") || strings.Contains(view, "KB") {
+	if strings.Contains(view, "GiB") || strings.Contains(view, "MiB") || strings.Contains(view, "KiB") {
 		t.Errorf("view should not contain byte info when Written/Total are zero, got: %q", view)
 	}
 }
@@ -218,10 +218,10 @@ func TestProgressModel_DoneRendersFullBytes(t *testing.T) {
 
 	view := updated.View()
 	// Done state should show total/total (not written/total).
-	// Both sides should be "1000.0 MB".
-	count := strings.Count(view, "1000.0 MB")
+	// Both sides should be "1000.0 MiB".
+	count := strings.Count(view, "1000.0 MiB")
 	if count != 2 {
-		t.Errorf("done view should show total/total (two instances of '1000.0 MB'), got: %q", view)
+		t.Errorf("done view should show total/total (two instances of '1000.0 MiB'), got: %q", view)
 	}
 }
 
@@ -232,12 +232,12 @@ func TestFormatBytes(t *testing.T) {
 	}{
 		{0, "0 B"},
 		{512, "512 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1024 * 1024, "1.0 MB"},
-		{500 * 1024 * 1024, "500.0 MB"},
-		{1024 * 1024 * 1024, "1.0 GB"},
-		{int64(10.5 * 1024 * 1024 * 1024), "10.5 GB"},
+		{1024, "1.0 KiB"},
+		{1536, "1.5 KiB"},
+		{1024 * 1024, "1.0 MiB"},
+		{500 * 1024 * 1024, "500.0 MiB"},
+		{1024 * 1024 * 1024, "1.0 GiB"},
+		{int64(10.5 * 1024 * 1024 * 1024), "10.5 GiB"},
 	}
 
 	for _, tt := range tests {

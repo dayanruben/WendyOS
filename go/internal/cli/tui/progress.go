@@ -10,7 +10,7 @@ import (
 
 // ProgressUpdateMsg updates the progress bar percentage.
 // Written and Total are optional; when both are non-zero the view renders
-// a byte counter like "4.00%  (420.0 MB / 10.5 GB)".
+// a byte counter like "4.00%  (420.0 MiB / 10.5 GiB)".
 type ProgressUpdateMsg struct {
 	Percent float64
 	Written int64
@@ -103,20 +103,20 @@ func (m ProgressModel) View() string {
 	return fmt.Sprintf("%s\n%s%s\n", m.title, m.progress.ViewAs(m.percent), byteInfo)
 }
 
-// formatBytes returns a human-readable byte string.
+// formatBytes returns a human-readable byte string using binary (1024-based) units.
 func formatBytes(b int64) string {
 	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
+		kib = 1024
+		mib = 1024 * kib
+		gib = 1024 * mib
 	)
 	switch {
-	case b >= gb:
-		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
-	case b >= mb:
-		return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
-	case b >= kb:
-		return fmt.Sprintf("%.1f KB", float64(b)/float64(kb))
+	case b >= gib:
+		return fmt.Sprintf("%.1f GiB", float64(b)/float64(gib))
+	case b >= mib:
+		return fmt.Sprintf("%.1f MiB", float64(b)/float64(mib))
+	case b >= kib:
+		return fmt.Sprintf("%.1f KiB", float64(b)/float64(kib))
 	default:
 		return fmt.Sprintf("%d B", b)
 	}
