@@ -473,15 +473,15 @@ func newDeviceLogsCmd() *cobra.Command {
 }
 
 var (
-	logTraceStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	logTraceStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 	logDebugStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	logInfoStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("34"))
+	logInfoStyle  = lipgloss.NewStyle().Foreground(tui.Emerald400)
 	logWarnStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	logErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	logFatalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	logTimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	logAppStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	logMetaStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	logTimeStyle  = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	logAppStyle   = lipgloss.NewStyle().Foreground(tui.Emerald300)
+	logMetaStyle  = lipgloss.NewStyle().Foreground(tui.ColorDim)
 )
 
 func severityLabel(sev otelpb.SeverityNumber) (string, lipgloss.Style) {

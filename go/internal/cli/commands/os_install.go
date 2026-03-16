@@ -304,7 +304,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	go func() {
 		writeErr := writeImageToDisk(imagePath, targetDrive, func(written int64) {
 			if totalSize > 0 {
-				wp.Send(tui.ProgressUpdateMsg{Percent: float64(written) / float64(totalSize)})
+				wp.Send(tui.ProgressUpdateMsg{
+					Percent: float64(written) / float64(totalSize),
+					Written: written,
+					Total:   totalSize,
+				})
 			}
 		})
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
@@ -363,8 +367,11 @@ func downloadImage(img *imageInfo) (string, error) {
 				}
 				downloaded += int64(n)
 				if total > 0 {
-					pct := float64(downloaded) / float64(total)
-					p.Send(tui.ProgressUpdateMsg{Percent: pct})
+					p.Send(tui.ProgressUpdateMsg{
+						Percent: float64(downloaded) / float64(total),
+						Written: downloaded,
+						Total:   total,
+					})
 				}
 			}
 			if readErr == io.EOF {
@@ -426,12 +433,21 @@ func extractImageFromZipWithProgress(zipPath string) (string, error) {
 		}
 
 		totalSize := int64(f.UncompressedSize64)
+		if totalSize == 0 {
+			// Some zip writers don't populate UncompressedSize64;
+			// fall back to FileInfo which may use the 32-bit field.
+			totalSize = f.FileInfo().Size()
+		}
 
 		prog := tui.NewProgress("Extracting image...")
 		p := tea.NewProgram(prog)
 
 		go func() {
-			buf := make([]byte, 64*1024)
+			// Brief pause so Bubble Tea can initialize the terminal
+			// before we start sending updates. Without this, fast local
+			// I/O can queue all messages before the TUI renders.
+			time.Sleep(50 * time.Millisecond)
+			buf := make([]byte, 1*1024*1024) // 1 MiB chunks for visible progress
 			var extracted int64
 			for {
 				n, readErr := rc.Read(buf)
@@ -442,7 +458,11 @@ func extractImageFromZipWithProgress(zipPath string) (string, error) {
 					}
 					extracted += int64(n)
 					if totalSize > 0 {
-						p.Send(tui.ProgressUpdateMsg{Percent: float64(extracted) / float64(totalSize)})
+						p.Send(tui.ProgressUpdateMsg{
+							Percent: float64(extracted) / float64(totalSize),
+							Written: extracted,
+							Total:   totalSize,
+						})
 					}
 				}
 				if readErr == io.EOF {

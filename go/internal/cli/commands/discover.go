@@ -335,8 +335,8 @@ func delayThen(d time.Duration, cmd tea.Cmd) tea.Cmd {
 }
 
 var (
-	dimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	scanStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	dimStyle  = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	scanStyle = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 )
 
 func (m discoverModel) View() string {
