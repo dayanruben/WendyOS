@@ -60,6 +60,9 @@ func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*a
 func (m *mockContainerdClient) CreateContainer(_ context.Context, _ *agentpb.CreateContainerRequest, _ *appconfig.AppConfig) error {
 	return m.createErr
 }
+func (m *mockContainerdClient) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, _ ProgressFunc) error {
+	return m.CreateContainer(ctx, req, appCfg)
+}
 func (m *mockContainerdClient) StartContainer(_ context.Context, _ string) (<-chan ContainerOutput, error) {
 	if m.startErr != nil {
 		return nil, m.startErr

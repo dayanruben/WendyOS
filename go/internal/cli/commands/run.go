@@ -38,6 +38,7 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 		return fmt.Errorf("creating container: %w", err)
 	}
 
+	completed := false
 	for {
 		resp, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -53,16 +54,19 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 			case agentpb.CreateContainerProgress_UNPACKING:
 				cliLog("Pulling and unpacking image on device...")
 			case agentpb.CreateContainerProgress_CREATING_CONTAINER:
-				fmt.Print("\r")
+				fmt.Print("\033[2K\r")
 				cliLog("Creating container...")
 			case agentpb.CreateContainerProgress_COMPLETE:
-				fmt.Print("\r")
+				fmt.Print("\033[2K\r")
 			}
 		case *agentpb.CreateContainerProgressResponse_Completed:
-			return nil
+			completed = true
 		}
 	}
 
+	if !completed {
+		return fmt.Errorf("creating container: progress stream ended without completion")
+	}
 	return nil
 }
 

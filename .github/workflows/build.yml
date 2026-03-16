@@ -890,4 +890,8 @@ jobs:
               --publisher "Wendy Labs" `
               --submit `
               --token $token
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "wingetcreate new failed with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
           }

@@ -139,11 +139,13 @@ func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContai
 	}
 
 	onProgress := func(p *agentpb.CreateContainerProgress) {
-		_ = stream.Send(&agentpb.CreateContainerProgressResponse{
+		if err := stream.Send(&agentpb.CreateContainerProgressResponse{
 			ResponseType: &agentpb.CreateContainerProgressResponse_Progress{
 				Progress: p,
 			},
-		})
+		}); err != nil {
+			s.logger.Warn("failed to send progress update", zap.Error(err))
+		}
 	}
 
 	if err := s.containerd.CreateContainerWithProgress(stream.Context(), req, appCfg, onProgress); err != nil {
