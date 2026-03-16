@@ -185,15 +185,6 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, host, architect
 		return err
 	}
 
-	// Resolve hostname to IP so swift-container-plugin can reach the device
-	// registry even when the hostname is only resolvable via mDNS or Tailscale.
-	resolvedHost := host
-	if net.ParseIP(host) == nil {
-		if addrs, err := net.LookupHost(host); err == nil && len(addrs) > 0 {
-			resolvedHost = addrs[0]
-		}
-	}
-
 	swiftArgs := []string{
 		"package",
 		"--swift-sdk=" + sdk,
@@ -201,7 +192,7 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, host, architect
 		"build-container-image",
 		"--from=swift:" + defaultSwiftVersion + "-slim",
 		"--product=" + product,
-		"--repository=" + resolvedHost + ":5000/" + strings.ToLower(product),
+		"--repository=" + registryHost(host, 5000) + "/" + strings.ToLower(product),
 		"--architecture=" + architecture,
 	}
 
