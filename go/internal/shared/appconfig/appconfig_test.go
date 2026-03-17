@@ -189,6 +189,93 @@ func TestValidate_AllEntitlementTypes(t *testing.T) {
 	}
 }
 
+func TestLoadFromFile_WithPostRun(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.webapp",
+		"entitlements": [{"type": "network"}],
+		"postRun": {
+			"cli": "open http://${WENDY_HOSTNAME}:3000",
+			"agent": "xdg-open http://localhost:3000"
+		}
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.PostRun == nil {
+		t.Fatal("PostRun is nil, expected non-nil")
+	}
+	if cfg.PostRun.CLI != "open http://${WENDY_HOSTNAME}:3000" {
+		t.Errorf("PostRun.CLI = %q, want %q", cfg.PostRun.CLI, "open http://${WENDY_HOSTNAME}:3000")
+	}
+	if cfg.PostRun.Agent != "xdg-open http://localhost:3000" {
+		t.Errorf("PostRun.Agent = %q, want %q", cfg.PostRun.Agent, "xdg-open http://localhost:3000")
+	}
+}
+
+func TestLoadFromFile_WithoutPostRun(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.app",
+		"entitlements": [{"type": "gpu"}]
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.PostRun != nil {
+		t.Errorf("PostRun = %+v, want nil", cfg.PostRun)
+	}
+}
+
+func TestLoadFromFile_PostRunCLIOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.app",
+		"postRun": {
+			"cli": "echo hello"
+		}
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.PostRun == nil {
+		t.Fatal("PostRun is nil")
+	}
+	if cfg.PostRun.CLI != "echo hello" {
+		t.Errorf("PostRun.CLI = %q, want %q", cfg.PostRun.CLI, "echo hello")
+	}
+	if cfg.PostRun.Agent != "" {
+		t.Errorf("PostRun.Agent = %q, want empty", cfg.PostRun.Agent)
+	}
+}
+
 func TestValidateJSON_UnknownKeys(t *testing.T) {
 	data := []byte(`{
 		"appId": "com.example.app",

@@ -65,8 +65,15 @@ type AppConfig struct {
 	Platform     string        `json:"platform,omitempty"`
 	Language     string        `json:"language,omitempty"`
 	Entitlements []Entitlement `json:"entitlements,omitempty"`
-	Python       *PythonConfig `json:"python,omitempty"`
-	Debug        bool          `json:"debug,omitempty"`
+	PostRun      *PostRunConfig `json:"postRun,omitempty"`
+	Python       *PythonConfig  `json:"python,omitempty"`
+	Debug        bool           `json:"debug,omitempty"`
+}
+
+// PostRunConfig holds optional commands to execute after the container starts.
+type PostRunConfig struct {
+	CLI   string `json:"cli,omitempty"`   // Command to run on the developer's machine
+	Agent string `json:"agent,omitempty"` // Command to run on the device
 }
 
 // PythonConfig holds Python-specific configuration.

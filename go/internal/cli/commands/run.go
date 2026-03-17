@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -290,6 +291,8 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", appCfg.AppID)
+		// Fire-and-forget: post-run outlives the CLI process.
+		startPostRunCLI(context.Background(), appCfg, conn.Host)
 		return nil
 	}
 
@@ -305,6 +308,9 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 
 	cliLogln("Application %s started.", appCfg.AppID)
+
+	// Post-run tied to runCtx so Ctrl+C kills it.
+	postRunCmd := startPostRunCLI(runCtx, appCfg, conn.Host)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -336,6 +342,9 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		}
 	}
 
+	if postRunCmd != nil {
+		_ = postRunCmd.Wait()
+	}
 	cliLogln("\nApplication %s stopped.", appCfg.AppID)
 	return nil
 }
@@ -548,6 +557,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", appCfg.AppID)
+		// Fire-and-forget: post-run outlives the CLI process.
+		startPostRunCLI(context.Background(), appCfg, conn.Host)
 		return nil
 	}
 
@@ -563,6 +574,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 
 	cliLogln("Application %s started.", appCfg.AppID)
+
+	// Post-run tied to runCtx so Ctrl+C kills it.
+	postRunCmd := startPostRunCLI(runCtx, appCfg, conn.Host)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -594,8 +608,41 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		}
 	}
 
+	if postRunCmd != nil {
+		_ = postRunCmd.Wait()
+	}
 	cliLogln("\nApplication %s stopped.", appCfg.AppID)
 	return nil
+}
+
+// startPostRunCLI expands environment variables in the post-run command and
+// spawns it as a child process. The returned *exec.Cmd can be used to wait on
+// or kill the process. Returns nil if there is no CLI post-run command.
+func startPostRunCLI(ctx context.Context, appCfg *appconfig.AppConfig, hostname string) *exec.Cmd {
+	if appCfg.PostRun == nil || appCfg.PostRun.CLI == "" {
+		return nil
+	}
+
+	expanded := os.Expand(appCfg.PostRun.CLI, func(key string) string {
+		switch key {
+		case "WENDY_HOSTNAME":
+			return hostname
+		case "WENDY_APP_ID":
+			return appCfg.AppID
+		default:
+			return os.Getenv(key)
+		}
+	})
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", expanded)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		cliLogln("Warning: post-run command failed to start: %v", err)
+		return nil
+	}
+	cliLogln("Post-run: %s", expanded)
+	return cmd
 }
 
 // resolveRestartPolicy converts the flag options into a protobuf RestartPolicy.
