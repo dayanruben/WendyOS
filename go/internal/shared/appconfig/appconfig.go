@@ -65,9 +65,21 @@ type AppConfig struct {
 	Platform     string        `json:"platform,omitempty"`
 	Language     string        `json:"language,omitempty"`
 	Entitlements []Entitlement `json:"entitlements,omitempty"`
-	Hooks        *HooksConfig   `json:"hooks,omitempty"`
-	Python       *PythonConfig  `json:"python,omitempty"`
-	Debug        bool           `json:"debug,omitempty"`
+	Readiness    *ReadinessConfig `json:"readiness,omitempty"`
+	Hooks        *HooksConfig    `json:"hooks,omitempty"`
+	Python       *PythonConfig   `json:"python,omitempty"`
+	Debug        bool            `json:"debug,omitempty"`
+}
+
+// ReadinessConfig defines a probe the CLI uses to determine when the app is ready.
+type ReadinessConfig struct {
+	TCPSocket      *TCPSocketProbe `json:"tcpSocket,omitempty"`
+	TimeoutSeconds int             `json:"timeoutSeconds,omitempty"` // Default 30
+}
+
+// TCPSocketProbe checks readiness by dialing a TCP port.
+type TCPSocketProbe struct {
+	Port int `json:"port"`
 }
 
 // HooksConfig holds optional lifecycle hook commands.

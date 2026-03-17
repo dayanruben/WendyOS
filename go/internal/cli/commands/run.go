@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -291,6 +293,10 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", appCfg.AppID)
+		// Wait for readiness before firing hook.
+		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+			cliLogln("Warning: %v", err)
+		}
 		// Fire-and-forget: post-run outlives the CLI process.
 		startPostStartHook(context.Background(), appCfg, conn.Host)
 		return nil
@@ -309,9 +315,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 
 	cliLogln("Application %s started.", appCfg.AppID)
 
-	// Post-run tied to runCtx so Ctrl+C kills it.
-	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
-
+	// Set up Ctrl+C handler first so readiness polling is cancellable.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	go func() {
@@ -322,6 +326,16 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		})
 		runCancel()
 	}()
+
+	// Wait for readiness before firing hook.
+	if err := waitForReadiness(runCtx, appCfg.Readiness, conn.Host); err != nil {
+		if runCtx.Err() == nil {
+			cliLogln("Warning: %v", err)
+		}
+	}
+
+	// Post-start hook tied to runCtx so Ctrl+C kills it.
+	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
 
 	for {
 		resp, recvErr := stream.Recv()
@@ -557,6 +571,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", appCfg.AppID)
+		// Wait for readiness before firing hook.
+		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+			cliLogln("Warning: %v", err)
+		}
 		// Fire-and-forget: post-run outlives the CLI process.
 		startPostStartHook(context.Background(), appCfg, conn.Host)
 		return nil
@@ -575,9 +593,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	cliLogln("Application %s started.", appCfg.AppID)
 
-	// Post-run tied to runCtx so Ctrl+C kills it.
-	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
-
+	// Set up Ctrl+C handler first so readiness polling is cancellable.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	go func() {
@@ -588,6 +604,16 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		})
 		runCancel()
 	}()
+
+	// Wait for readiness before firing hook.
+	if err := waitForReadiness(runCtx, appCfg.Readiness, conn.Host); err != nil {
+		if runCtx.Err() == nil {
+			cliLogln("Warning: %v", err)
+		}
+	}
+
+	// Post-start hook tied to runCtx so Ctrl+C kills it.
+	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
 
 	for {
 		resp, recvErr := stream.Recv()
@@ -613,6 +639,44 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 	cliLogln("\nApplication %s stopped.", appCfg.AppID)
 	return nil
+}
+
+// waitForReadiness polls the readiness probe until it passes or the context is
+// cancelled. Returns nil on success, context error on timeout/cancellation.
+func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostname string) error {
+	if cfg == nil || cfg.TCPSocket == nil {
+		return nil
+	}
+
+	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	addr := fmt.Sprintf("%s:%d", hostname, cfg.TCPSocket.Port)
+	cliLogln("Waiting for %s to be ready...", addr)
+
+	deadline := time.Now().Add(timeout)
+	probeCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			conn.Close()
+			cliLogln("Ready.")
+			return nil
+		}
+
+		select {
+		case <-probeCtx.Done():
+			return fmt.Errorf("readiness probe timed out after %s waiting for %s", timeout, addr)
+		case <-ticker.C:
+		}
+	}
 }
 
 // startPostStartHook expands environment variables in the postStart CLI hook

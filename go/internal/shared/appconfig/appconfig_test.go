@@ -283,6 +283,41 @@ func TestLoadFromFile_HooksPostStartCLIOnly(t *testing.T) {
 	}
 }
 
+func TestLoadFromFile_WithReadiness(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.app",
+		"readiness": {
+			"tcpSocket": { "port": 3002 },
+			"timeoutSeconds": 15
+		}
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	if cfg.Readiness == nil {
+		t.Fatal("Readiness is nil")
+	}
+	if cfg.Readiness.TCPSocket == nil {
+		t.Fatal("Readiness.TCPSocket is nil")
+	}
+	if cfg.Readiness.TCPSocket.Port != 3002 {
+		t.Errorf("Readiness.TCPSocket.Port = %d, want 3002", cfg.Readiness.TCPSocket.Port)
+	}
+	if cfg.Readiness.TimeoutSeconds != 15 {
+		t.Errorf("Readiness.TimeoutSeconds = %d, want 15", cfg.Readiness.TimeoutSeconds)
+	}
+}
+
 func TestValidateJSON_UnknownKeys(t *testing.T) {
 	data := []byte(`{
 		"appId": "com.example.app",
