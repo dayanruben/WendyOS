@@ -14,13 +14,15 @@ Run CI integration tests against a real WendyOS device. Each test deploys a
 minimal app that exercises a specific entitlement and verifies it works.
 
 Tests:
-  swift-hello         Basic Swift containerized deployment (no entitlements)
-  swift-network       Swift with network entitlement (WiFi connectivity)
-  swift-bluetooth     Swift with bluetooth entitlement
-  python-hello        Basic Python deployment (no entitlements)
-  python-network      Python with network entitlement (WiFi connectivity)
-  python-gpu          Python with GPU entitlement (CUDA verification)
-  python-bluetooth    Python with bluetooth entitlement
+  swift-hello           Basic Swift containerized deployment (no entitlements)
+  swift-network         Swift with network entitlement (WiFi connectivity)
+  swift-bluetooth       Swift with bluetooth entitlement
+  python-hello          Basic Python deployment (no entitlements)
+  python-network        Python with network entitlement (WiFi connectivity)
+  python-gpu            Python with GPU entitlement (CUDA verification)
+  python-bluetooth      Python with bluetooth entitlement
+  python-no-network     Verify network is blocked WITHOUT entitlement
+  python-no-bluetooth   Verify bluetooth is blocked WITHOUT entitlement
 
 Device Selection:
   If --hostname is not provided, the script auto-discovers a device on the
@@ -160,6 +162,8 @@ ALL_TESTS=(
     python-network
     python-gpu
     python-bluetooth
+    python-no-network
+    python-no-bluetooth
 )
 
 # If specific tests were requested via -t, filter the list.
