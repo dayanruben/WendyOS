@@ -38,7 +38,9 @@ func discoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 		dev, err := dnssdResolve(resolveCtx, inst)
 		resolveCancel()
 		if err != nil {
-			continue
+			// Resolve failed (e.g. no TXT records) — fall back to
+			// a device derived from the browse instance name.
+			dev = deviceFromBrowse(inst)
 		}
 
 		key := fmt.Sprintf("%s-%s-%d", dev.DisplayName, dev.Hostname, dev.Port)
@@ -61,7 +63,7 @@ type browseResult struct {
 // It uses a short settle timer: once the first result arrives, it waits up to
 // 500ms for more results before returning. This avoids waiting for the full timeout.
 func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
-	cmd := exec.CommandContext(ctx, "dns-sd", "-B", serviceType, "local.")
+	cmd := exec.CommandContext(ctx, "dns-sd", "-B", serviceType, "local")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -200,20 +202,29 @@ func dnssdResolve(ctx context.Context, inst browseResult) (models.LANDevice, err
 		id = displayName
 	}
 
-	ipAddr := ""
-	if addrs, err := net.LookupHost(hostname); err == nil && len(addrs) > 0 {
-		ipAddr = addrs[0]
-	}
-
 	return models.LANDevice{
 		ID:            id,
 		DisplayName:   displayName,
 		Hostname:      hostname,
-		IPAddress:     ipAddr,
 		Port:          port,
 		InterfaceType: string(models.InterfaceLAN),
 		IsWendyDevice: true,
 	}, nil
+}
+
+// deviceFromBrowse builds a LANDevice from browse results alone, without
+// resolving via dns-sd -L. Used as a fallback when resolve fails (e.g.
+// the service has no TXT records).
+func deviceFromBrowse(inst browseResult) models.LANDevice {
+	hostname := inst.instanceName + ".local"
+	return models.LANDevice{
+		ID:            inst.instanceName,
+		DisplayName:   inst.instanceName,
+		Hostname:      hostname,
+		Port:          50051,
+		InterfaceType: string(models.InterfaceLAN),
+		IsWendyDevice: true,
+	}
 }
 
 // discoverLANContinuous keeps dns-sd -B running and sends each newly
@@ -221,7 +232,7 @@ func dnssdResolve(ctx context.Context, inst browseResult) (models.LANDevice, err
 func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 	defer close(ch)
 
-	cmd := exec.CommandContext(ctx, "dns-sd", "-B", wendyServiceType, "local.")
+	cmd := exec.CommandContext(ctx, "dns-sd", "-B", wendyServiceType, "local")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return
@@ -256,7 +267,7 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 		dev, err := dnssdResolve(resolveCtx, inst)
 		resolveCancel()
 		if err != nil {
-			continue
+			dev = deviceFromBrowse(inst)
 		}
 
 		select {
