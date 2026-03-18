@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+	"net/url"
+	"path"
 )
 
 // firmwareAsset holds the resolved .bin asset info from the GCS manifest.
@@ -15,6 +17,18 @@ type firmwareAsset struct {
 	Size        int64
 	Version     string
 }
+}
+
+// deriveAssetName prefers the basename from the manifest URL/path, falling back to the legacy synthesized name.
+func deriveAssetName(downloadURL, chip string) string {
+	if downloadURL != "" {
+		if u, err := url.Parse(downloadURL); err == nil {
+			if base := path.Base(u.Path); base != "" && base != "/" && base != "." {
+				return base
+			}
+		}
+	}
+	return fmt.Sprintf("wendy-lite-%s.bin", chip)
 }
 
 // fetchFirmwareFromManifest finds the latest firmware for a chip from the GCS manifest.
@@ -69,7 +83,7 @@ func fetchFirmwareFromManifest(chip string, nightly bool) (*firmwareAsset, error
 	}
 
 	return &firmwareAsset{
-		Name:        fmt.Sprintf("wendy-lite-%s.bin", chip),
+		Name:        deriveAssetName(info.DownloadURL, chip),
 		DownloadURL: info.DownloadURL,
 		Size:        info.ImageSize,
 		Version:     targetVersion,
