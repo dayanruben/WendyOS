@@ -157,7 +157,7 @@ func getImageInfo(dm *deviceManifest, ver string) (*imageInfo, error) {
 
 // firmwareManifest contains version info for a specific chip.
 type firmwareManifest struct {
-	ChipID   string                        `json:"chip_id"`
+	ChipID   string                         `json:"chip_id"`
 	Versions map[string]firmwareVersionInfo `json:"versions"`
 }
 
