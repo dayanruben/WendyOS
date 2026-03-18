@@ -17,7 +17,6 @@ type firmwareAsset struct {
 	Size        int64
 	Version     string
 }
-}
 
 // deriveAssetName prefers the basename from the manifest URL/path, falling back to the legacy synthesized name.
 func deriveAssetName(downloadURL, chip string) string {
