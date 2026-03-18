@@ -318,6 +318,56 @@ func TestLoadFromFile_WithReadiness(t *testing.T) {
 	}
 }
 
+func TestValidate_ReadinessInvalidPort(t *testing.T) {
+	tests := []struct {
+		name string
+		port int
+	}{
+		{"zero port", 0},
+		{"negative port", -1},
+		{"port too high", 70000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID: "com.example.app",
+				Readiness: &ReadinessConfig{
+					TCPSocket: &TCPSocketProbe{Port: tt.port},
+				},
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Error("Validate() expected error for invalid port, got nil")
+			}
+		})
+	}
+}
+
+func TestValidate_ReadinessNegativeTimeout(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Readiness: &ReadinessConfig{
+			TCPSocket:      &TCPSocketProbe{Port: 3000},
+			TimeoutSeconds: -5,
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate() expected error for negative timeout, got nil")
+	}
+}
+
+func TestValidate_ReadinessValidConfig(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Readiness: &ReadinessConfig{
+			TCPSocket:      &TCPSocketProbe{Port: 3002},
+			TimeoutSeconds: 30,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
 func TestValidateJSON_UnknownKeys(t *testing.T) {
 	data := []byte(`{
 		"appId": "com.example.app",

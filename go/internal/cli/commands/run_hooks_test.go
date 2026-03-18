@@ -2,12 +2,27 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 )
+
+func testPort(t *testing.T, ln net.Listener) int {
+	t.Helper()
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("Atoi(%q): %v", portStr, err)
+	}
+	return port
+}
 
 func TestWaitForReadiness_NilConfig(t *testing.T) {
 	err := waitForReadiness(context.Background(), nil, "localhost")
@@ -25,18 +40,13 @@ func TestWaitForReadiness_NilTCPSocket(t *testing.T) {
 }
 
 func TestWaitForReadiness_PortAlreadyListening(t *testing.T) {
-	// Start a TCP listener on a random port.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to start listener: %v", err)
 	}
 	defer ln.Close()
 
-	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
-	var port int
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
-	}
+	port := testPort(t, ln)
 
 	cfg := &appconfig.ReadinessConfig{
 		TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
@@ -56,25 +66,19 @@ func TestWaitForReadiness_PortAlreadyListening(t *testing.T) {
 }
 
 func TestWaitForReadiness_PortBecomesAvailable(t *testing.T) {
-	// Find a free port by binding and immediately closing.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to find free port: %v", err)
 	}
 	addr := ln.Addr().String()
-	_, portStr, _ := net.SplitHostPort(addr)
-	var port int
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
-	}
-	ln.Close() // Port is now free (nothing listening).
+	port := testPort(t, ln)
+	ln.Close()
 
 	cfg := &appconfig.ReadinessConfig{
 		TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
 		TimeoutSeconds: 10,
 	}
 
-	// Start listening after a short delay.
 	go func() {
 		time.Sleep(1 * time.Second)
 		l, err := net.Listen("tcp", addr)
@@ -82,7 +86,6 @@ func TestWaitForReadiness_PortBecomesAvailable(t *testing.T) {
 			return
 		}
 		defer l.Close()
-		// Keep listening until test completes.
 		<-time.After(10 * time.Second)
 	}()
 
@@ -93,7 +96,6 @@ func TestWaitForReadiness_PortBecomesAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	// Should take ~1s (the delay) plus polling interval.
 	if elapsed < 500*time.Millisecond || elapsed > 5*time.Second {
 		t.Errorf("took %v, expected ~1-2s", elapsed)
 	}
@@ -101,7 +103,7 @@ func TestWaitForReadiness_PortBecomesAvailable(t *testing.T) {
 
 func TestWaitForReadiness_Timeout(t *testing.T) {
 	cfg := &appconfig.ReadinessConfig{
-		TCPSocket:      &appconfig.TCPSocketProbe{Port: 19999}, // Nothing listening.
+		TCPSocket:      &appconfig.TCPSocketProbe{Port: 19999},
 		TimeoutSeconds: 2,
 	}
 
@@ -135,6 +137,10 @@ func TestWaitForReadiness_ContextCancelled(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error after context cancellation, got nil")
+	}
+	// Should return context.Canceled, not a timeout error.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
 	}
 	if elapsed > 3*time.Second {
 		t.Errorf("took %v, expected ~500ms (context cancel)", elapsed)

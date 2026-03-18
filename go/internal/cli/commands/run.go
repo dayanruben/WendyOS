@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -546,6 +547,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 	}
 
+	// Cancel runCtx to terminate the postStart hook if it's still running,
+	// then wait for it to exit so we don't leave orphan processes.
+	runCancel()
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
 	}
@@ -554,7 +558,8 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 }
 
 // waitForReadiness polls the readiness probe until it passes or the context is
-// cancelled. Returns nil on success, context error on timeout/cancellation.
+// cancelled. Returns nil on success, the parent context error on cancellation,
+// or a timeout error if the probe deadline expires.
 func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostname string) error {
 	if cfg == nil || cfg.TCPSocket == nil {
 		return nil
@@ -565,18 +570,18 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 		timeout = 30 * time.Second
 	}
 
-	addr := fmt.Sprintf("%s:%d", hostname, cfg.TCPSocket.Port)
+	addr := net.JoinHostPort(hostname, fmt.Sprintf("%d", cfg.TCPSocket.Port))
 	cliLogln("Waiting for %s to be ready...", addr)
 
-	deadline := time.Now().Add(timeout)
-	probeCtx, cancel := context.WithDeadline(ctx, deadline)
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	dialer := net.Dialer{Timeout: 2 * time.Second}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		conn, err := dialer.DialContext(probeCtx, "tcp", addr)
 		if err == nil {
 			conn.Close()
 			cliLogln("Ready.")
@@ -585,10 +590,23 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 
 		select {
 		case <-probeCtx.Done():
+			// Distinguish parent cancellation (Ctrl+C) from probe timeout.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("readiness probe timed out after %s waiting for %s", timeout, addr)
 		case <-ticker.C:
 		}
 	}
+}
+
+// shellCommand returns the platform-appropriate shell and flag for running a
+// command string. On Windows it uses cmd.exe /C; everywhere else sh -c.
+func shellCommand() (string, string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", "/C"
+	}
+	return "sh", "-c"
 }
 
 // startPostStartHook expands environment variables in the postStart CLI hook
@@ -610,7 +628,8 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 		}
 	})
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", expanded)
+	shell, flag := shellCommand()
+	cmd := execCommandContext(ctx, shell, flag, expanded)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

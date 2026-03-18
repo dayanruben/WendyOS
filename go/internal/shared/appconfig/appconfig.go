@@ -168,6 +168,18 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if c.Readiness != nil {
+		if c.Readiness.TCPSocket != nil {
+			port := c.Readiness.TCPSocket.Port
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("readiness.tcpSocket.port must be between 1 and 65535, got %d", port)
+			}
+		}
+		if c.Readiness.TimeoutSeconds < 0 {
+			return fmt.Errorf("readiness.timeoutSeconds must not be negative, got %d", c.Readiness.TimeoutSeconds)
+		}
+	}
+
 	return nil
 }
 
