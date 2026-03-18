@@ -42,6 +42,11 @@ func fetchFirmwareFromManifest(chip string, nightly bool) (*firmwareAsset, error
 		return nil, fmt.Errorf("fetching firmware manifest for %s: %w", chip, err)
 	}
 
+	// Validate that the firmware manifest matches the requested chip.
+	if fm.ChipID != "" && fm.ChipID != chip {
+		return nil, fmt.Errorf("firmware manifest chip ID %q does not match requested chip %q", fm.ChipID, chip)
+	}
+
 	// Find the target version
 	var targetVersion string
 	if nightly {
