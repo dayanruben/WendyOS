@@ -893,8 +893,12 @@ func resolveHostPreferRoutable(hostname string) string {
 }
 
 // findIPv4ViaNeighborTable tries to find the IPv4 address of a device known
-// by its IPv6 link-local address. It correlates MAC addresses between the
-// IPv6 neighbor table (NDP) and the IPv4 neighbor table (ARP).
+// by its IPv6 link-local address. It looks up the network interface from the
+// NDP table, then finds any IPv4 neighbor on that same interface. This works
+// because USB point-to-point links typically have only one peer.
+//
+// Note: MAC correlation is not used because USB RNDIS/ECM adapters often
+// assign different MACs to the IPv4 and IPv6 virtual interfaces.
 // Returns "" if no IPv4 address can be found.
 func findIPv4ViaNeighborTable(ipv6LinkLocal string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -911,33 +915,32 @@ func findIPv4ViaNeighborTable(ipv6LinkLocal string) string {
 }
 
 // findIPv4NeighborDarwin looks up the IPv4 address for a device on macOS.
-// It finds the device's MAC address from the NDP table, then searches
-// the ARP table for an IPv4 entry with the same MAC on the same interface.
+// It finds the interface from the NDP table, then returns the first IPv4
+// neighbor on that interface.
 func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
-	// Step 1: Find MAC address and interface from NDP table.
+	// Step 1: Find the interface from the NDP table.
 	// ndp -an output: "fe80::1%en6  aa:bb:cc:dd:ee:ff  en6  23h49m  S  R"
 	ndpOut, err := exec.CommandContext(ctx, "ndp", "-an").Output()
 	if err != nil {
 		return ""
 	}
 
-	var mac, iface string
+	var iface string
 	for _, line := range strings.Split(string(ndpOut), "\n") {
 		if !strings.Contains(line, ipv6LinkLocal) {
 			continue
 		}
 		fields := strings.Fields(line)
 		if len(fields) >= 3 {
-			mac = fields[1]
 			iface = fields[2]
 		}
 		break
 	}
-	if mac == "" || mac == "(incomplete)" || iface == "" {
+	if iface == "" {
 		return ""
 	}
 
-	// Step 2: Find IPv4 with the same MAC in ARP table on the same interface.
+	// Step 2: Find any IPv4 neighbor on the same interface.
 	// arp -an -i en6 output: "? (169.254.189.250) at aa:bb:cc:dd:ee:ff on en6 ..."
 	arpOut, err := exec.CommandContext(ctx, "arp", "-an", "-i", iface).Output()
 	if err != nil {
@@ -945,9 +948,6 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 	}
 
 	for _, line := range strings.Split(string(arpOut), "\n") {
-		if !strings.Contains(line, mac) {
-			continue
-		}
 		start := strings.Index(line, "(")
 		end := strings.Index(line, ")")
 		if start >= 0 && end > start {
@@ -962,37 +962,34 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 }
 
 // findIPv4NeighborLinux looks up the IPv4 address for a device on Linux.
-// It finds the device's MAC and interface from the IPv6 neighbor table,
-// then searches the IPv4 neighbor table for a matching MAC.
+// It finds the interface from the IPv6 neighbor table, then returns the
+// first IPv4 neighbor on that interface.
 func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
-	// Step 1: Find MAC and interface from ip -6 neigh.
+	// Step 1: Find the interface from ip -6 neigh.
 	// Output: "fe80::1 dev eth0 lladdr aa:bb:cc:dd:ee:ff STALE"
 	neighOut, err := exec.CommandContext(ctx, "ip", "-6", "neigh", "show").Output()
 	if err != nil {
 		return ""
 	}
 
-	var mac, iface string
+	var iface string
 	for _, line := range strings.Split(string(neighOut), "\n") {
 		if !strings.Contains(line, ipv6LinkLocal) {
 			continue
 		}
 		fields := strings.Fields(line)
 		for i, f := range fields {
-			if f == "lladdr" && i+1 < len(fields) {
-				mac = fields[i+1]
-			}
 			if f == "dev" && i+1 < len(fields) {
 				iface = fields[i+1]
 			}
 		}
 		break
 	}
-	if mac == "" || iface == "" {
+	if iface == "" {
 		return ""
 	}
 
-	// Step 2: Find IPv4 with same MAC on the same interface.
+	// Step 2: Find any IPv4 neighbor on the same interface.
 	// Output: "169.254.189.250 dev usb0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
 	arpOut, err := exec.CommandContext(ctx, "ip", "-4", "neigh", "show", "dev", iface).Output()
 	if err != nil {
@@ -1000,9 +997,6 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 	}
 
 	for _, line := range strings.Split(string(arpOut), "\n") {
-		if !strings.Contains(line, mac) {
-			continue
-		}
 		fields := strings.Fields(line)
 		if len(fields) > 0 {
 			if parsed, parseErr := netip.ParseAddr(fields[0]); parseErr == nil && parsed.Is4() {
