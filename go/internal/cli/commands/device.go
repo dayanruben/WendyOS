@@ -1148,23 +1148,30 @@ func newDeviceUpdateCmd() *cobra.Command {
 			h := sha256.Sum256(binaryData)
 			sha256Hash := hex.EncodeToString(h[:])
 
-			s := tui.NewSpinner("Uploading agent binary...")
-			p := tea.NewProgram(s)
+			if isInteractiveTerminal() && !jsonOutput {
+				s := tui.NewSpinner("Uploading agent binary...")
+				p := tea.NewProgram(s)
 
-			go func() {
-				uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)
-				p.Send(tui.SpinnerDoneMsg{Err: uploadErr})
-			}()
+				go func() {
+					uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)
+					p.Send(tui.SpinnerDoneMsg{Err: uploadErr})
+				}()
 
-			finalModel, runErr := p.Run()
-			if runErr != nil {
-				return fmt.Errorf("TUI error: %w", runErr)
-			}
+				finalModel, runErr := p.Run()
+				if runErr != nil {
+					return fmt.Errorf("TUI error: %w", runErr)
+				}
 
-			model := finalModel.(tui.SpinnerModel)
-			_, updateErr := model.Result()
-			if updateErr != nil {
-				return updateErr
+				model := finalModel.(tui.SpinnerModel)
+				_, updateErr := model.Result()
+				if updateErr != nil {
+					return updateErr
+				}
+			} else {
+				fmt.Println("Uploading agent binary...")
+				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
+					return err
+				}
 			}
 
 			fmt.Println("Agent updated successfully.")
