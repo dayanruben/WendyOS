@@ -10,9 +10,11 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"strconv"
@@ -1016,7 +1018,12 @@ func resolveHostPreferRoutable(hostname string) string {
 // assign different MACs to the IPv4 and IPv6 virtual interfaces.
 // Returns "" if no IPv4 address can be found.
 func findIPv4ViaNeighborTable(ipv6LinkLocal string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Use a context that is canceled on interrupt signals (e.g., Ctrl+C),
+	// while still enforcing a maximum 2-second timeout for the lookup.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(sigCtx, 2*time.Second)
 	defer cancel()
 
 	switch runtime.GOOS {
