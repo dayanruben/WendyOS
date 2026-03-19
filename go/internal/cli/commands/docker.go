@@ -1032,14 +1032,34 @@ func findIPv4ViaNeighborTable(ipv6LinkLocal string) string {
 	ctx, cancel := context.WithTimeout(sigCtx, 2*time.Second)
 	defer cancel()
 
+	var candidate string
 	switch runtime.GOOS {
 	case "darwin":
-		return findIPv4NeighborDarwin(ctx, ipv6LinkLocal)
+		candidate = findIPv4NeighborDarwin(ctx, ipv6LinkLocal)
 	case "linux":
-		return findIPv4NeighborLinux(ctx, ipv6LinkLocal)
+		candidate = findIPv4NeighborLinux(ctx, ipv6LinkLocal)
 	default:
 		return ""
 	}
+
+	if candidate == "" {
+		return ""
+	}
+
+	addr, err := netip.ParseAddr(candidate)
+	if err != nil || !addr.Is4() {
+		return ""
+	}
+
+	// Only accept IPv4 link-local (169.254.0.0/16) addresses here to reduce
+	// the risk of correlating the IPv6 link-local to the wrong peer on
+	// multi-peer interfaces (e.g., Wi-Fi/Ethernet).
+	linkLocalPrefix := netip.PrefixFrom(netip.AddrFrom4([4]byte{169, 254, 0, 0}), 16)
+	if !linkLocalPrefix.Contains(addr) {
+		return ""
+	}
+
+	return addr.String()
 }
 
 // findIPv4NeighborDarwin looks up the IPv4 address for a device on macOS.
