@@ -916,7 +916,7 @@ func findIPv4ViaNeighborTable(ipv6LinkLocal string) string {
 
 // findIPv4NeighborDarwin looks up the IPv4 address for a device on macOS.
 // It finds the interface from the NDP table, then returns the first IPv4
-// neighbor on that interface.
+// neighbor on that interface that isn't a local address.
 func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 	// Step 1: Find the interface from the NDP table.
 	// ndp -an output: "fe80::1%en6  aa:bb:cc:dd:ee:ff  en6  23h49m  S  R"
@@ -940,7 +940,21 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 		return ""
 	}
 
-	// Step 2: Find any IPv4 neighbor on the same interface.
+	// Build a set of local IPv4 addresses on this interface so we can
+	// skip them. The ARP table includes "permanent" entries for the
+	// host's own addresses which must not be returned as the device IP.
+	localAddrs := make(map[string]bool)
+	if netIface, ifErr := net.InterfaceByName(iface); ifErr == nil {
+		if addrs, addrErr := netIface.Addrs(); addrErr == nil {
+			for _, a := range addrs {
+				if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil {
+					localAddrs[ipNet.IP.String()] = true
+				}
+			}
+		}
+	}
+
+	// Step 2: Find a non-local IPv4 neighbor on the same interface.
 	// arp -an -i en6 output: "? (169.254.189.250) at aa:bb:cc:dd:ee:ff on en6 ..."
 	arpOut, err := exec.CommandContext(ctx, "arp", "-an", "-i", iface).Output()
 	if err != nil {
@@ -952,6 +966,9 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 		end := strings.Index(line, ")")
 		if start >= 0 && end > start {
 			ip := line[start+1 : end]
+			if localAddrs[ip] {
+				continue
+			}
 			if parsed, parseErr := netip.ParseAddr(ip); parseErr == nil && parsed.Is4() {
 				return ip
 			}
@@ -963,7 +980,7 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 
 // findIPv4NeighborLinux looks up the IPv4 address for a device on Linux.
 // It finds the interface from the IPv6 neighbor table, then returns the
-// first IPv4 neighbor on that interface.
+// first non-local IPv4 neighbor on that interface.
 func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 	// Step 1: Find the interface from ip -6 neigh.
 	// Output: "fe80::1 dev eth0 lladdr aa:bb:cc:dd:ee:ff STALE"
@@ -989,7 +1006,19 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 		return ""
 	}
 
-	// Step 2: Find any IPv4 neighbor on the same interface.
+	// Build a set of local IPv4 addresses on this interface.
+	localAddrs := make(map[string]bool)
+	if netIface, ifErr := net.InterfaceByName(iface); ifErr == nil {
+		if addrs, addrErr := netIface.Addrs(); addrErr == nil {
+			for _, a := range addrs {
+				if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil {
+					localAddrs[ipNet.IP.String()] = true
+				}
+			}
+		}
+	}
+
+	// Step 2: Find a non-local IPv4 neighbor on the same interface.
 	// Output: "169.254.189.250 dev usb0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
 	arpOut, err := exec.CommandContext(ctx, "ip", "-4", "neigh", "show", "dev", iface).Output()
 	if err != nil {
@@ -999,8 +1028,12 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 	for _, line := range strings.Split(string(arpOut), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 0 {
-			if parsed, parseErr := netip.ParseAddr(fields[0]); parseErr == nil && parsed.Is4() {
-				return fields[0]
+			ip := fields[0]
+			if localAddrs[ip] {
+				continue
+			}
+			if parsed, parseErr := netip.ParseAddr(ip); parseErr == nil && parsed.Is4() {
+				return ip
 			}
 		}
 	}
