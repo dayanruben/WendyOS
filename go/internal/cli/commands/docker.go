@@ -1075,13 +1075,18 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 
 	var iface string
 	for _, line := range strings.Split(string(ndpOut), "\n") {
-		if !strings.Contains(line, ipv6LinkLocal) {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) >= 3 {
-			iface = fields[2]
+		addrField := fields[0]
+		if idx := strings.Index(addrField, "%"); idx >= 0 {
+			addrField = addrField[:idx]
 		}
+		if addrField != ipv6LinkLocal {
+			continue
+		}
+		iface = fields[2]
 		break
 	}
 	if iface == "" {
