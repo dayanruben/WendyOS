@@ -23,6 +23,11 @@ import (
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
 )
 
+// neighborExecCommandContext is an overridable wrapper around exec.CommandContext
+// used by neighbor-table helpers. Tests can replace this variable to stub
+// command execution and outputs.
+var neighborExecCommandContext = exec.CommandContext
+
 // requireRegistryAuth checks whether the device's registry requires mTLS
 // authentication and verifies the CLI has the necessary certs.
 // Returns an error if the device is provisioned but no CLI certs are available.
@@ -1042,7 +1047,7 @@ func findIPv4ViaNeighborTable(ipv6LinkLocal string) string {
 func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 	// Step 1: Find the interface from the NDP table.
 	// ndp -an output: "fe80::1%en6  aa:bb:cc:dd:ee:ff  en6  23h49m  S  R"
-	ndpOut, err := exec.CommandContext(ctx, "ndp", "-an").Output()
+	ndpOut, err := neighborExecCommandContext(ctx, "ndp", "-an").Output()
 	if err != nil {
 		return ""
 	}
@@ -1078,7 +1083,7 @@ func findIPv4NeighborDarwin(ctx context.Context, ipv6LinkLocal string) string {
 
 	// Step 2: Find a non-local IPv4 neighbor on the same interface.
 	// arp -an -i en6 output: "? (169.254.189.250) at aa:bb:cc:dd:ee:ff on en6 ..."
-	arpOut, err := exec.CommandContext(ctx, "arp", "-an", "-i", iface).Output()
+	arpOut, err := neighborExecCommandContext(ctx, "arp", "-an", "-i", iface).Output()
 	if err != nil {
 		return ""
 	}
