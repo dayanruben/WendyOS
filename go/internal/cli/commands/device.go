@@ -1189,7 +1189,15 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}
 
 			if jsonOutput {
-				fmt.Println(`{"status":"success","message":"Agent updated successfully."}`)
+				resp := map[string]string{
+					"status":  "success",
+					"message": "Agent updated successfully.",
+				}
+				b, err := json.Marshal(resp)
+				if err != nil {
+					return fmt.Errorf("failed to marshal JSON response: %w", err)
+				}
+				fmt.Println(string(b))
 			} else {
 				fmt.Println("Agent updated successfully.")
 			}
