@@ -83,3 +83,20 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 
 	return networks, nil
 }
+
+// lookupKeychainPassword attempts to retrieve a saved WiFi password from the
+// macOS System Keychain using the `security` command. Returns ("", nil) if the
+// SSID is not found or the user denies the authorization prompt.
+func lookupKeychainPassword(ssid string) (string, error) {
+	cmd := exec.Command("/usr/bin/security", "find-generic-password",
+		"-D", "AirPort network password",
+		"-a", ssid,
+		"-w",
+	)
+	output, err := cmd.Output()
+	if err != nil {
+		// Not found or user denied — not an error we need to surface.
+		return "", nil
+	}
+	return strings.TrimSpace(string(output)), nil
+}

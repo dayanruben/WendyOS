@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -11,6 +13,7 @@ import (
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"golang.org/x/term"
 )
 
 func newWifiCmd() *cobra.Command {
@@ -112,6 +115,35 @@ func newWifiConnectCmd() *cobra.Command {
 					return pickErr
 				}
 				ssid = picked
+			}
+
+			// If no password provided and terminal is interactive, offer keychain
+			// lookup or fall back to manual entry.
+			if password == "" && term.IsTerminal(int(os.Stdin.Fd())) {
+				fmt.Printf("Look up password for '%s' from keychain? (macOS will ask for permission) [Y/n] ", ssid)
+				var answer string
+				fmt.Scanln(&answer)
+				answer = strings.TrimSpace(strings.ToLower(answer))
+
+				if answer == "" || answer == "y" || answer == "yes" {
+					if kp, err := lookupKeychainPassword(ssid); err == nil && kp != "" {
+						fmt.Println("Using saved password from keychain.")
+						password = kp
+					} else {
+						fmt.Println("No saved password found in keychain.")
+					}
+				}
+
+				// If still no password, prompt for manual entry.
+				if password == "" {
+					fmt.Print("Password (leave empty for open networks): ")
+					passwordBytes, readErr := term.ReadPassword(int(os.Stdin.Fd()))
+					fmt.Println()
+					if readErr != nil {
+						return fmt.Errorf("reading password: %w", readErr)
+					}
+					password = string(passwordBytes)
+				}
 			}
 
 			// BLE WendyOS agent path (protobuf over L2CAP)
