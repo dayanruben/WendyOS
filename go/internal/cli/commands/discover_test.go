@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -346,4 +347,92 @@ func TestDiscoverModel_FlashClearMsg(t *testing.T) {
 
 func defaultOpts() discovery.DiscoveryOptions {
 	return discovery.DiscoveryOptions{Timeout: time.Second}
+}
+
+func TestCopyToClipboard_FallsBackOnRunFailure(t *testing.T) {
+	origLookPath := execLookPath
+	origCommand := execCommand
+	origWriter := clipboardWriter
+	t.Cleanup(func() {
+		execLookPath = origLookPath
+		execCommand = origCommand
+		clipboardWriter = origWriter
+	})
+
+	// All tools are "found" by LookPath.
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+
+	callCount := 0
+	// First tool fails, second succeeds.
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		callCount++
+		if callCount == 1 {
+			// Return a command that will fail (false always exits 1).
+			return exec.Command("false")
+		}
+		// Return a command that succeeds (true always exits 0).
+		return exec.Command("true")
+	}
+
+	err := copyToClipboard("hello")
+	if err != nil {
+		t.Fatalf("expected success after fallback, got: %v", err)
+	}
+	if callCount < 2 {
+		t.Errorf("expected at least 2 tool attempts, got %d", callCount)
+	}
+}
+
+func TestCopyToClipboard_AllToolsFailReportsErrors(t *testing.T) {
+	origLookPath := execLookPath
+	origCommand := execCommand
+	origWriter := clipboardWriter
+	t.Cleanup(func() {
+		execLookPath = origLookPath
+		execCommand = origCommand
+		clipboardWriter = origWriter
+	})
+
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("false")
+	}
+
+	err := copyToClipboard("hello")
+	if err == nil {
+		t.Fatal("expected error when all tools fail")
+	}
+	if !strings.Contains(err.Error(), "all clipboard tools failed") {
+		t.Errorf("error should mention all tools failed, got: %v", err)
+	}
+}
+
+func TestCopyToClipboard_NoToolsFound(t *testing.T) {
+	origLookPath := execLookPath
+	origCommand := execCommand
+	origWriter := clipboardWriter
+	t.Cleanup(func() {
+		execLookPath = origLookPath
+		execCommand = origCommand
+		clipboardWriter = origWriter
+	})
+
+	execLookPath = func(file string) (string, error) {
+		return "", fmt.Errorf("not found")
+	}
+
+	err := copyToClipboard("hello")
+	if err == nil {
+		t.Fatal("expected error when no tools found")
+	}
+	if !strings.Contains(err.Error(), "no clipboard tool found") {
+		t.Errorf("error should list candidates, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "install one of") {
+		t.Errorf("error should suggest installation, got: %v", err)
+	}
 }

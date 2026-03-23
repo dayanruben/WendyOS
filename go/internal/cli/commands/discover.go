@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -572,6 +573,10 @@ type clipboardCandidate struct {
 	args []string
 }
 
+// execLookPath and execCommand are package-level variables so tests can stub them.
+var execLookPath = exec.LookPath
+var execCommand = exec.Command
+
 // copyToClipboard writes text to the system clipboard using platform tools.
 func copyToClipboard(text string) error {
 	var candidates []clipboardCandidate
@@ -593,16 +598,27 @@ func copyToClipboard(text string) error {
 	default:
 		return fmt.Errorf("clipboard not supported on %s; copy the output manually", runtime.GOOS)
 	}
+	var errs []string
 	for _, c := range candidates {
-		if _, err := exec.LookPath(c.name); err != nil {
+		if _, err := execLookPath(c.name); err != nil {
 			continue
 		}
-		cmd := exec.Command(c.name, c.args...)
+		var stderr bytes.Buffer
+		cmd := execCommand(c.name, c.args...)
 		cmd.Stdin = strings.NewReader(text)
+		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("clipboard write failed: %w", err)
+			detail := stderr.String()
+			if detail == "" {
+				detail = err.Error()
+			}
+			errs = append(errs, fmt.Sprintf("%s: %s", c.name, strings.TrimSpace(detail)))
+			continue
 		}
 		return nil
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("all clipboard tools failed: %s", strings.Join(errs, "; "))
 	}
 	names := make([]string, len(candidates))
 	for i, c := range candidates {
