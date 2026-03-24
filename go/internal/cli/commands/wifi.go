@@ -142,7 +142,7 @@ func newWifiConnectCmd() *cobra.Command {
 					if readErr != nil {
 						return fmt.Errorf("reading password: %w", readErr)
 					}
-					password = string(passwordBytes)
+					password = strings.TrimSpace(string(passwordBytes))
 				}
 			}
 
