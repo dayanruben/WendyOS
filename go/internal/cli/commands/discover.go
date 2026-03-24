@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -566,26 +567,62 @@ func clearFlashAfter(d time.Duration) tea.Cmd {
 // It is a package-level variable so tests can replace it.
 var clipboardWriter = copyToClipboard
 
+// clipboardCandidate describes a clipboard tool and its arguments.
+type clipboardCandidate struct {
+	name string
+	args []string
+}
+
+// execLookPath and execCommand are package-level variables so tests can stub them.
+var execLookPath = exec.LookPath
+var execCommand = exec.Command
+
 // copyToClipboard writes text to the system clipboard using platform tools.
 func copyToClipboard(text string) error {
-	var name string
-	var args []string
+	var candidates []clipboardCandidate
 	switch runtime.GOOS {
 	case "darwin":
-		name = "pbcopy"
+		candidates = []clipboardCandidate{
+			{name: "pbcopy"},
+		}
 	case "linux":
-		name = "xclip"
-		args = []string{"-selection", "clipboard"}
+		candidates = []clipboardCandidate{
+			{name: "wl-copy"},
+			{name: "xclip", args: []string{"-selection", "clipboard"}},
+			{name: "xsel", args: []string{"--clipboard", "--input"}},
+		}
+	case "windows":
+		candidates = []clipboardCandidate{
+			{name: "clip.exe"},
+		}
 	default:
 		return fmt.Errorf("clipboard not supported on %s; copy the output manually", runtime.GOOS)
 	}
-	if _, err := exec.LookPath(name); err != nil {
-		return fmt.Errorf("%s not found; install it to enable clipboard copy", name)
+	var errs []string
+	for _, c := range candidates {
+		if _, err := execLookPath(c.name); err != nil {
+			continue
+		}
+		var stderr bytes.Buffer
+		cmd := execCommand(c.name, c.args...)
+		cmd.Stdin = strings.NewReader(text)
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			detail := stderr.String()
+			if detail == "" {
+				detail = err.Error()
+			}
+			errs = append(errs, fmt.Sprintf("%s: %s", c.name, strings.TrimSpace(detail)))
+			continue
+		}
+		return nil
 	}
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = strings.NewReader(text)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("clipboard write failed: %w", err)
+	if len(errs) > 0 {
+		return fmt.Errorf("all clipboard tools failed: %s", strings.Join(errs, "; "))
 	}
-	return nil
+	names := make([]string, len(candidates))
+	for i, c := range candidates {
+		names[i] = c.name
+	}
+	return fmt.Errorf("no clipboard tool found; install one of: %s", strings.Join(names, ", "))
 }
