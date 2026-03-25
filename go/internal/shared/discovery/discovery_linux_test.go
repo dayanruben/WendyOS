@@ -44,8 +44,8 @@ func TestParseAvahiTXT(t *testing.T) {
 			"standard TXT",
 			`"displayname=Calm Zinnia" "name=calm-zinnia" "wendyosdevice=769dc651"`,
 			map[string]string{
-				"displayname":  "Calm Zinnia",
-				"name":         "calm-zinnia",
+				"displayname":   "Calm Zinnia",
+				"name":          "calm-zinnia",
 				"wendyosdevice": "769dc651",
 			},
 		},
@@ -72,11 +72,11 @@ func TestParseAvahiTXT(t *testing.T) {
 
 func TestParseAvahiResolveLine(t *testing.T) {
 	tests := []struct {
-		name    string
-		line    string
-		wantOK  bool
-		wantID  string
-		wantIP  string
+		name     string
+		line     string
+		wantOK   bool
+		wantID   string
+		wantIP   string
 		wantPort int
 	}{
 		{
