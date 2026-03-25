@@ -29,7 +29,7 @@ func discoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 			// Filter out entries that don't match the queried service type.
 			// hashicorp/mdns can return unrelated mDNS responders (e.g. iPhones
 			// advertising _remotepairing._tcp).
-			if !strings.Contains(entry.Name, wendyServiceType) {
+			if !mdnsEntryMatchesServiceType(entry.Name, wendyServiceType) {
 				continue
 			}
 

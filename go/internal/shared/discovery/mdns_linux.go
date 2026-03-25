@@ -28,7 +28,7 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 		for entry := range entriesCh {
 			// Filter out entries that don't match the queried service type.
 			// hashicorp/mdns can return unrelated mDNS responders.
-			if !strings.Contains(entry.Name, serviceType) {
+			if !mdnsEntryMatchesServiceType(entry.Name, serviceType) {
 				continue
 			}
 
