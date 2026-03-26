@@ -120,7 +120,7 @@ func newWifiConnectCmd() *cobra.Command {
 
 			// If no password provided and terminal is interactive, offer keychain
 			// lookup (macOS only) or fall back to manual entry.
-			if password == "" && term.IsTerminal(int(os.Stdin.Fd())) {
+			if !cmd.Flags().Changed("password") && term.IsTerminal(int(os.Stdin.Fd())) {
 				if supportsKeychainLookup {
 					fmt.Printf("Look up password for '%s' from keychain? (macOS will ask for permission) [Y/n] ", ssid)
 					reader := bufio.NewReader(os.Stdin)
