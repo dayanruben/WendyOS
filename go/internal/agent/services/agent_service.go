@@ -367,8 +367,20 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	}
 
 	sendProgress("downloading", 0)
+	cmdName := "mender"
+	if _, err := exec.LookPath("mender-update"); err == nil {
+		cmdName = "mender-update"
+	} else if _, err := exec.LookPath("mender"); err != nil {
+		return stream.Send(&agentpb.UpdateOSResponse{
+			ResponseType: &agentpb.UpdateOSResponse_Failed_{
+				Failed: &agentpb.UpdateOSResponse_Failed{
+					ErrorMessage: "mender CLI not found (tried 'mender-update' and 'mender')",
+				},
+			},
+		})
+	}
 
-	cmd := exec.CommandContext(stream.Context(), "mender", "install", req.GetArtifactUrl())
+	cmd := exec.CommandContext(stream.Context(), cmdName, "install", req.GetArtifactUrl())
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
