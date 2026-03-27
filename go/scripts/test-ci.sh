@@ -129,7 +129,8 @@ echo ""
 
 if [[ -z "$HOSTNAME" ]]; then
     echo -e "${BOLD}==> Auto-discovering device...${RESET}"
-    DISCOVER_JSON=$("$WENDY" discover --json --timeout 5s 2>&1)
+    DISCOVER_JSON=$("$WENDY" discover --json --timeout 5s 2>/tmp/wendy-discover-stderr.txt)
+    cat /tmp/wendy-discover-stderr.txt >&2 || true
     DISCOVERED_HOST=$(echo "$DISCOVER_JSON" | jq -r '.lanDevices[0].hostname // empty' 2>/dev/null)
     if [[ -z "$DISCOVERED_HOST" ]]; then
         echo -e "${RED}ERROR: No LAN device found via 'wendy discover --json --timeout 5s'${RESET}"
