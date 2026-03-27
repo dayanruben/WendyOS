@@ -93,7 +93,7 @@ jobs:
       run:
         working-directory: go
     env:
-      INPUT_HOSTNAME: ${{ inputs.hostname }}
+      INPUT_HOSTNAME: ${{ inputs.hostname || 'wendy-SER9.local' }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
       - uses: actions/checkout@v6
