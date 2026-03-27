@@ -262,7 +262,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return err
 	}
 
-	registryAddr, proxyCleanup, err := resolveRegistry(ctx, conn.Host, 5000)
+	registryAddr, proxyCleanup, err := resolveRegistryForSwift(ctx, conn.Host, 5000)
 	if err != nil {
 		return err
 	}
