@@ -71,6 +71,23 @@ The container receives:
 - Membership in the `input` group (GID 105) for device permissions
 - A cgroup device rule allowing access to input devices (major 13)
 
+### Device discovery
+
+Event device numbers (`/dev/input/event0`, `event1`, etc.) are assigned dynamically and can change across reboots. Use the stable symlinks under `/dev/input/by-id/` to identify devices reliably:
+
+```
+/dev/input/by-id/usb-USBKey_Chip_USBKey_Module_202730041341-event-kbd
+```
+
+### When to use input vs USB
+
+| Entitlement | Access | Use case |
+|-------------|--------|----------|
+| `input` | `/dev/input/` (Linux input subsystem) | Reading HID events — barcode scanners, keyboards, game controllers |
+| `usb` | `/dev/bus/usb` (raw USB) | Low-level USB communication — custom protocols, firmware updates, libusb |
+
+Most USB HID devices (scanners, keyboards) should use `input`. You only need `usb` if your app talks raw USB protocols.
+
 ## USB
 
 The USB entitlement allows the container to access USB devices.
