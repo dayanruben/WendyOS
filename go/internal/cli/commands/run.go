@@ -40,7 +40,7 @@ func cliLogln(format string, args ...any) {
 }
 
 func cliNotice(format string, args ...any) {
-	fmt.Println(cliNoticeStyle.Render(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(os.Stderr, cliNoticeStyle.Render(fmt.Sprintf(format, args...)))
 }
 
 // createContainerWithProgress calls CreateContainerWithProgress and prints
@@ -572,6 +572,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 						RequestType: &agentpb.AttachContainerRequest_StdinData{StdinData: buf[:n]},
 					}); sendErr != nil {
 						cliNotice("Notice: stdin detached (%v)", sendErr)
+						_ = attachStream.CloseSend()
 						return
 					}
 				}

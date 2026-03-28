@@ -222,6 +222,7 @@ func newAppsStartCmd() *cobra.Command {
 									RequestType: &agentpb.AttachContainerRequest_StdinData{StdinData: buf[:n]},
 								}); sendErr != nil {
 									cliNotice("Notice: stdin detached (%v)", sendErr)
+									_ = attachStream.CloseSend()
 									return
 								}
 							}

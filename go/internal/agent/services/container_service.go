@@ -283,8 +283,11 @@ func (s *ContainerService) streamContainerOutput(
 func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agentpb.AttachContainerRequest, agentpb.RunContainerLayersResponse]) error {
 	// First message must identify the app.
 	first, err := stream.Recv()
+	if err == io.EOF {
+		return status.Error(codes.InvalidArgument, "missing first attach message")
+	}
 	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "receiving attach request: %v", err)
+		return err
 	}
 	appName := first.GetAppName()
 	if appName == "" {
