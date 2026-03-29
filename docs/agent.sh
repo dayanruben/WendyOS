@@ -157,6 +157,24 @@ REPO
   $SUDO yum makecache
   $SUDO yum install -y wendy-agent
 
+elif command -v pacman &>/dev/null; then
+  echo "Pacman detected. Will install wendy-agent from the AUR."
+  confirm "Proceed?"
+
+  if command -v yay &>/dev/null; then
+    yay -S --noconfirm wendy-agent
+  elif command -v paru &>/dev/null; then
+    paru -S --noconfirm wendy-agent
+  else
+    echo "No AUR helper (yay/paru) found. Installing with makepkg..."
+    $SUDO pacman -S --needed --noconfirm base-devel git
+    TMPDIR_AUR=$(mktemp -d)
+    trap 'rm -rf "$TMPDIR_AUR"' EXIT
+    git clone https://aur.archlinux.org/wendy-agent.git "$TMPDIR_AUR/wendy-agent"
+    cd "$TMPDIR_AUR/wendy-agent"
+    makepkg -si --noconfirm
+  fi
+
 else
   # No package manager — fall back to downloading the tarball from GitHub
   # and manually installing the binary, systemd services, and dev registry.

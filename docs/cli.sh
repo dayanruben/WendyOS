@@ -199,6 +199,24 @@ REPO
     $SUDO yum makecache
     $SUDO yum install -y wendy
 
+  elif command -v pacman &>/dev/null; then
+    echo "Pacman detected. Will install wendy from the AUR."
+    confirm "Proceed?"
+
+    if command -v yay &>/dev/null; then
+      yay -S --noconfirm wendy
+    elif command -v paru &>/dev/null; then
+      paru -S --noconfirm wendy
+    else
+      echo "No AUR helper (yay/paru) found. Installing with makepkg..."
+      $SUDO pacman -S --needed --noconfirm base-devel git
+      TMPDIR_AUR=$(mktemp -d)
+      trap 'rm -rf "$TMPDIR_AUR"' EXIT
+      git clone https://aur.archlinux.org/wendy.git "$TMPDIR_AUR/wendy"
+      cd "$TMPDIR_AUR/wendy"
+      makepkg -si --noconfirm
+    fi
+
   else
     TMPDIR_DL=$(mktemp -d)
     trap 'rm -rf "$TMPDIR_DL"' EXIT
