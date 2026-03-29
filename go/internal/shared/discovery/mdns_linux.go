@@ -60,7 +60,20 @@ func browseMDNSAvahi(ctx context.Context, serviceType string, timeout time.Durat
 		services = append(services, svc)
 	}
 
-	_ = cmd.Wait()
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+
+	// If the context timed out, return whatever we collected.
+	if browseCtx.Err() == context.DeadlineExceeded {
+		return services, nil
+	}
+
+	// If avahi-browse failed at runtime (e.g. avahi-daemon not running),
+	// fall back to hashicorp/mdns.
+	if scanErr != nil || waitErr != nil {
+		return browseMDNSHashicorp(ctx, serviceType, timeout)
+	}
+
 	return services, nil
 }
 
@@ -80,7 +93,10 @@ func parseAvahiMDNSService(line string) (MDNSService, bool) {
 	instanceName := avahiUnescape(fields[3])
 	hostname := strings.TrimSuffix(fields[6], ".")
 	ipAddr := fields[7]
-	port, _ := strconv.Atoi(fields[8])
+	port, err := strconv.Atoi(fields[8])
+	if err != nil || port < 1 || port > 65535 {
+		return MDNSService{}, false
+	}
 
 	// IPv6 link-local addresses need a zone ID (%iface) to be routable.
 	if addr, err := netip.ParseAddr(ipAddr); err == nil && addr.Is6() && addr.IsLinkLocalUnicast() {
