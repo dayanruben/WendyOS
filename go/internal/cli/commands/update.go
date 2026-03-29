@@ -7,10 +7,54 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/version"
 )
 
 const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent/releases/latest"
+
+const cliUpdateCheckInterval = 24 * time.Hour
+
+// cliUpdateNoticeCh receives the latest version string when a background update
+// check finds a newer release. Buffered so the goroutine never blocks.
+var cliUpdateNoticeCh = make(chan string, 1)
+
+// scheduleCLIUpdateCheck records the check timestamp and launches a goroutine
+// that fetches the latest release. If a newer version is found it sends it to
+// cliUpdateNoticeCh for PersistentPostRunE to display.
+func scheduleCLIUpdateCheck(cfg *config.Config) {
+	cfg.LastCLIUpdateCheck = time.Now().UTC().Format(time.RFC3339)
+	_ = config.Save(cfg)
+
+	go func() {
+		latest, err := checkLatestRelease()
+		if err != nil {
+			return
+		}
+		if version.CompareVersions(latest, version.Version) > 0 {
+			select {
+			case cliUpdateNoticeCh <- latest:
+			default:
+			}
+		}
+	}()
+}
+
+// dueCLIUpdateCheck returns true when the CLI is a released build and enough
+// time has passed since the last check.
+func dueCLIUpdateCheck(cfg *config.Config) bool {
+	if version.Version == "dev" {
+		return false
+	}
+	if cfg.LastCLIUpdateCheck == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, cfg.LastCLIUpdateCheck)
+	if err != nil {
+		return true
+	}
+	return time.Since(t) >= cliUpdateCheckInterval
+}
 
 func newUpdateCmd() *cobra.Command {
 	return &cobra.Command{
