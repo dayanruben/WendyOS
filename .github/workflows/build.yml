@@ -582,11 +582,12 @@ jobs:
           URL="https://github.com/${REPO}/releases/tag/${VERSION}"
 
           if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            DESC=$'## Update the agent on your device\n```\nwendy device update --nightly\n```'
             PAYLOAD=$(jq -n \
               --arg content "🌙 **New nightly build**: **${VERSION}**" \
               --arg title "Nightly ${VERSION}" \
               --arg url "$URL" \
-              --arg desc "## Update the agent on your device\n\`\`\`\nwendy device update --nightly\n\`\`\`" \
+              --arg desc "$DESC" \
               --arg footer "${REPO} • ${VERSION}" \
               '{content: $content, embeds: [{title: $title, url: $url, description: $desc, color: 8421504, footer: {text: $footer}}]}')
             curl -sS -X POST -H "Content-Type: application/json" \
