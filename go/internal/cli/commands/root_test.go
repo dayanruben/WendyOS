@@ -22,7 +22,6 @@ func TestRootCommand_HasAllSubcommands(t *testing.T) {
 		"bluetooth",
 		"auth",
 		"cache",
-		"update",
 		"info",
 		"analytics",
 	}
