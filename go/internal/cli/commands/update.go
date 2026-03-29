@@ -66,7 +66,6 @@ func dueCLIUpdateCheck(cfg *config.Config) bool {
 	return now.Sub(t) >= cliUpdateCheckInterval
 }
 
-
 type githubRelease struct {
 	TagName string `json:"tag_name"`
 }
