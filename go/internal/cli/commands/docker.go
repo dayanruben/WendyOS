@@ -223,10 +223,13 @@ func ensureSwiftVersion(ctx context.Context) error {
 		return err
 	}
 
+	out := &dimWriter{}
 	cmd := execCommandContext(ctx, "swiftly", "install", defaultSwiftVersion)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	out.Flush()
+	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
 		}
