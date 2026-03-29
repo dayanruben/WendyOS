@@ -35,7 +35,7 @@ sudo apt install ./wendy_<version>_<arch>.deb
 Fedora/RHEL (`.rpm`):
 
 ```sh
-sudo rpm -i wendy-<version>.<arch>.rpm
+sudo dnf install ./wendy-<version>.<arch>.rpm
 ```
 
 Arch Linux (AUR):
@@ -57,7 +57,7 @@ sudo apt install ./wendy-agent_<version>_<arch>.deb
 Fedora/RHEL (`.rpm`):
 
 ```sh
-sudo rpm -i wendy-agent-<version>.<arch>.rpm
+sudo dnf install ./wendy-agent-<version>.<arch>.rpm
 ```
 
 Arch Linux (AUR):
@@ -68,4 +68,4 @@ yay -S wendy-agent
 
 ## Pre-built Binaries
 
-Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/wendylabsinc/wendy-agent/releases) page.
+Pre-built CLI binaries for Linux, macOS, and Windows, and agent binaries for Linux, are available on the [Releases](https://github.com/wendylabsinc/wendy-agent/releases) page.

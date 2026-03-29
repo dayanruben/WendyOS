@@ -147,7 +147,7 @@ To debug an app, use the `--debug` flag:
 wendy run --debug
 ```
 
-This enables host networking and injects a remote debugger. For Python apps, `debugpy` listens on port `5678`.
+This enables host networking for remote debugger access. For Python apps, `debugpy` is automatically injected and listens on port `5678`.
 
 ## Analytics
 
