@@ -63,6 +63,14 @@ wendy-dev run
 wendy-dev discover --json
 ```
 
+You can do the same for the agent:
+
+```sh
+wendy-agent-dev() {
+  (cd /path/to/wendy-agent/go && go run ./cmd/wendy-agent "$@")
+}
+```
+
 ## Setting Up the Device
 
 The device needs to run the `wendy-agent`. We provide pre-built [WendyOS](https://wendy.sh) images for the Raspberry Pi and the NVIDIA Jetson Orin Nano. These are preconfigured for remote debugging and have the wendy-agent preinstalled.
