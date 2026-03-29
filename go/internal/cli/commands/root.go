@@ -52,6 +52,18 @@ func NewRootCmd() *cobra.Command {
 				}
 			}
 
+			if dueCLIUpdateCheck(cfg) {
+				scheduleCLIUpdateCheck(cfg)
+			}
+
+			return nil
+		},
+		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			select {
+			case latest := <-cliUpdateNoticeCh:
+				cmd.PrintErrf("\nA new version of the Wendy CLI is available: %s (you have %s)\nUpdate with: brew upgrade wendy\n", latest, version.Version)
+			default:
+			}
 			return nil
 		},
 	}
@@ -96,8 +108,6 @@ func NewRootCmd() *cobra.Command {
 	// Misc Commands
 	cacheCmd := newCacheCmd()
 	cacheCmd.GroupID = "misc"
-	updateCmd := newUpdateCmd()
-	updateCmd.GroupID = "misc"
 	infoCmd := newInfoCmd()
 	infoCmd.GroupID = "misc"
 	analyticsCmd := newAnalyticsCmd()
@@ -129,7 +139,6 @@ func NewRootCmd() *cobra.Command {
 		bluetoothCmd,
 		hardwareCmd,
 		cacheCmd,
-		updateCmd,
 		infoCmd,
 		analyticsCmd,
 	)
