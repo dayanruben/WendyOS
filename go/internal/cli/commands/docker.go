@@ -614,14 +614,23 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 		}
+		configChanged = true // always inject config into a newly created builder
 	}
 
-	// Inject the real config into the builder container and restart.
-	if err := updateBuilderConfig(ctx, builderName, fullConfig); err != nil {
-		return "", fmt.Errorf("updating builder config: %w", err)
+	// Inject the real config into the builder container and restart only when needed.
+	if configChanged {
+		if err := updateBuilderConfig(ctx, builderName, fullConfig); err != nil {
+			return "", fmt.Errorf("updating builder config: %w", err)
+		}
+		_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
+	} else {
+		// Builder exists with correct config — just ensure it's running.
+		bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+		if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
+		}
 	}
 
-	_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
 	return builderName, nil
 }
 
