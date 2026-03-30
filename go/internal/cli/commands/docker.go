@@ -735,11 +735,12 @@ func copyCertsToBuilder(ctx context.Context, builderName, hostCertDir, container
 // running), writes a new buildkitd.toml into it, and restarts so the updated
 // configuration takes effect.
 func updateBuilderConfig(ctx context.Context, builderName, config string) error {
-	// Bootstrap the builder to ensure the container is running.
+	fmt.Fprintf(os.Stderr, "[buildx] bootstrapping builder %q\n", builderName)
 	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
 	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 	}
+	fmt.Fprintf(os.Stderr, "[buildx] bootstrap done\n")
 
 	containerName := "buildx_buildkit_" + builderName + "0"
 	const containerConfigPath = "/etc/buildkit/buildkitd.toml"
@@ -757,22 +758,27 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 	}
 	tmp.Close()
 
+	fmt.Fprintf(os.Stderr, "[buildx] copying config into container %q\n", containerName)
 	cmd := exec.CommandContext(ctx, "docker", "cp", tmp.Name(), containerName+":"+containerConfigPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("docker cp config: %s: %w", string(out), err)
 	}
 
-	// Restart the container so buildkitd reloads the config.
+	fmt.Fprintf(os.Stderr, "[buildx] restarting container %q\n", containerName)
 	cmd = exec.CommandContext(ctx, "docker", "restart", containerName)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restarting builder: %s: %w", string(out), err)
 	}
+	fmt.Fprintf(os.Stderr, "[buildx] container restarted, waiting for buildkitd\n")
 
-	// Wait for buildkitd to come back up and create its socket after restart.
 	bootstrapAfterRestart := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
 	if out, err := bootstrapAfterRestart.CombinedOutput(); err != nil {
 		return fmt.Errorf("waiting for builder after restart: %s: %w", string(out), err)
 	}
+	fmt.Fprintf(os.Stderr, "[buildx] buildkitd ready, sleeping 3s to stabilize proxy\n")
+
+	time.Sleep(3 * time.Second)
+	fmt.Fprintf(os.Stderr, "[buildx] builder ready\n")
 
 	return nil
 }
@@ -811,6 +817,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	}
 
+	fmt.Fprintf(os.Stderr, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout = streamOutput
