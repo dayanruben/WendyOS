@@ -268,25 +268,22 @@ func TestInitCommand_NoExtraEntitlementsFalseStillPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
 	}
-	prevStdin := os.Stdin
 	t.Cleanup(func() {
 		_ = os.Chdir(prevWD)
-		os.Stdin = prevStdin
 	})
 	if err := os.Chdir(tempDir); err != nil {
 		t.Fatalf("Chdir: %v", err)
 	}
 
-	inputFile := filepath.Join(tempDir, "stdin.txt")
-	if err := os.WriteFile(inputFile, []byte("y\nn\nn\nn\nn\nn\nn\nn\nn\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	// Replace the Bubble Tea promptYesNo with a simple mock that answers
+	// "yes" to the first question (GPU) and "no" to the rest.
+	callCount := 0
+	origPrompt := promptYesNo
+	promptYesNo = func(question string) (bool, error) {
+		callCount++
+		return callCount == 1, nil // first prompt = yes (GPU), rest = no
 	}
-	f, err := os.Open(inputFile)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer f.Close()
-	os.Stdin = f
+	t.Cleanup(func() { promptYesNo = origPrompt })
 
 	cmd := newInitCmd()
 	cmd.SetArgs([]string{

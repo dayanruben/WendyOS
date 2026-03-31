@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -187,8 +186,6 @@ func runInitWizard(args []string, opts initOptions) error {
 		return err
 	}
 
-	reader := bufio.NewReader(os.Stdin)
-
 	// Step 1: Pick target device.
 	target, err := resolveInitTarget(opts)
 	if err != nil {
@@ -202,7 +199,7 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	// Step 3: Interactive entitlement questions.
-	entitlements, err := resolveInitEntitlements(reader, target, language, opts)
+	entitlements, err := resolveInitEntitlements(target, language, opts)
 	if err != nil {
 		return err
 	}
@@ -243,7 +240,7 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	// Step 6: Offer AI assistant session.
-	if err := resolveInitAssistant(reader, appID, target, language, entitlements, opts); err != nil {
+	if err := resolveInitAssistant(appID, target, language, entitlements, opts); err != nil {
 		return err
 	}
 
@@ -315,23 +312,23 @@ func resolveInitLanguage(target string, opts initOptions) (string, error) {
 	return pickInitLanguage(target)
 }
 
-func resolveInitEntitlements(reader *bufio.Reader, target, language string, opts initOptions) ([]appconfig.Entitlement, error) {
+func resolveInitEntitlements(target, language string, opts initOptions) ([]appconfig.Entitlement, error) {
 	if initEntitlementsProvided(opts) {
 		return buildInitEntitlementsFromFlags(target, opts)
 	}
 
 	fmt.Println()
-	return askEntitlementQuestions(reader, target, language)
+	return askEntitlementQuestions(target, language)
 }
 
-func resolveInitAssistant(reader *bufio.Reader, appID, target, language string, entitlements []appconfig.Entitlement, opts initOptions) error {
+func resolveInitAssistant(appID, target, language string, entitlements []appconfig.Entitlement, opts initOptions) error {
 	if opts.assistantSet {
 		choice := normalizeInitChoice(opts.assistant)
-		return runAIAssistantChoice(choice, appID, target, language, entitlements, opts.installClaudeSkills, nil)
+		return runAIAssistantChoice(choice, appID, target, language, entitlements, opts.installClaudeSkills, false)
 	}
 
 	fmt.Println()
-	return offerAIAssistant(reader, appID, target, language, entitlements)
+	return offerAIAssistant(appID, target, language, entitlements)
 }
 
 func pickInitLanguage(target string) (string, error) {
@@ -354,7 +351,7 @@ func pickInitLanguage(target string) (string, error) {
 	}
 }
 
-func askEntitlementQuestions(reader *bufio.Reader, target, language string) ([]appconfig.Entitlement, error) {
+func askEntitlementQuestions(target, language string) ([]appconfig.Entitlement, error) {
 	// Always include network.
 	entitlements := []appconfig.Entitlement{
 		{Type: appconfig.EntitlementNetwork},
@@ -371,7 +368,7 @@ func askEntitlementQuestions(reader *bufio.Reader, target, language string) ([]a
 	fmt.Println()
 
 	for _, q := range wendyOSEntitlementQuestions {
-		answer, err := promptYesNo(reader, q.question)
+		answer, err := promptYesNo(q.question)
 		if err != nil {
 			return nil, err
 		}
@@ -519,14 +516,10 @@ func validateInitAssistantOptions(opts initOptions) error {
 	return nil
 }
 
-func promptYesNo(reader *bufio.Reader, question string) (bool, error) {
-	fmt.Printf("  %s [y/N] ", question)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return false, err
-	}
-	answer := strings.TrimSpace(strings.ToLower(line))
-	return answer == "y" || answer == "yes", nil
+// promptYesNo displays a styled yes/no prompt. It is a variable so tests can
+// replace it with a non-TTY implementation.
+var promptYesNo = func(question string) (bool, error) {
+	return tui.Confirm(question)
 }
 
 func scaffoldProject(dir, appID, target, language string) error {
@@ -633,7 +626,7 @@ CMD ["uv", "run", "%s"]
 	return nil
 }
 
-func offerAIAssistant(reader *bufio.Reader, appID, target, language string, entitlements []appconfig.Entitlement) error {
+func offerAIAssistant(appID, target, language string, entitlements []appconfig.Entitlement) error {
 	// Check which AI assistants are available.
 	hasClaude := isCommandAvailable("claude")
 	hasCodex := isCommandAvailable("codex")
@@ -668,7 +661,7 @@ func offerAIAssistant(reader *bufio.Reader, appID, target, language string, enti
 		return err
 	}
 
-	return runAIAssistantChoice(choice, appID, target, language, entitlements, false, reader)
+	return runAIAssistantChoice(choice, appID, target, language, entitlements, false, true)
 }
 
 const wendySkillsMarketplace = "wendylabsinc/claude-skills"
@@ -677,7 +670,7 @@ const wendySkillsPluginName = "wendy@claude-skills"
 // installWendySkills checks if the Wendy skills plugin is installed and offers
 // to install it if missing. This gives Claude expert knowledge about Wendy
 // development.
-func installWendySkills(reader *bufio.Reader, autoInstall bool) {
+func installWendySkills(autoInstall bool) {
 	// Check if the plugin is already installed by looking at the plugin list output.
 	out, err := exec.Command("claude", "plugin", "list").Output()
 	if err != nil {
@@ -693,7 +686,7 @@ func installWendySkills(reader *bufio.Reader, autoInstall bool) {
 	fmt.Println()
 
 	if !autoInstall {
-		install, err := promptYesNo(reader, "Install Wendy skills for Claude Code?")
+		install, err := promptYesNo("Install Wendy skills for Claude Code?")
 		if err != nil || !install {
 			return
 		}
@@ -724,7 +717,7 @@ func installWendySkills(reader *bufio.Reader, autoInstall bool) {
 	fmt.Println("  Wendy skills installed successfully!")
 }
 
-func runAIAssistantChoice(choice, appID, target, language string, entitlements []appconfig.Entitlement, installClaudeSkills bool, reader *bufio.Reader) error {
+func runAIAssistantChoice(choice, appID, target, language string, entitlements []appconfig.Entitlement, installClaudeSkills bool, interactive bool) error {
 	if choice == assistantSkip {
 		fmt.Println("\nYour project is ready! Run `wendy run` to build and deploy.")
 		return nil
@@ -737,9 +730,9 @@ func runAIAssistantChoice(choice, appID, target, language string, entitlements [
 	if choice == assistantClaude {
 		switch {
 		case installClaudeSkills:
-			installWendySkills(nil, true)
-		case reader != nil:
-			installWendySkills(reader, false)
+			installWendySkills(true)
+		case interactive:
+			installWendySkills(false)
 		}
 	}
 
