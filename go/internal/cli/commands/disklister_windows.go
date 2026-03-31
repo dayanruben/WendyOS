@@ -89,20 +89,17 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 
 	var drives []drive
 	for _, d := range disks {
-		if d.IsReadOnly {
+		if d.IsReadOnly || d.IsSystem {
 			continue
 		}
 
-		isExternal := isExternalBus(d.BusType) || !d.IsSystem
+		external := isExternalBus(d.BusType)
 		if externalOnly {
-			// Never include the system disk.
-			if d.IsSystem {
-				continue
-			}
-			// Include drives on external bus types (USB, SD, MMC), or
-			// non-system drives that are not fixed SSDs/HDDs (catches
-			// built-in PCIE card readers which report as SCSI).
-			if !isExternalBus(d.BusType) && isFixedMedia(d.MediaType) {
+			// Definitely include USB, SD, and MMC bus types.
+			// For other bus types (SCSI, SATA, NVMe, etc.), only include
+			// if it looks like a card reader: non-fixed media and the
+			// friendly name contains "card reader".
+			if !external && !looksLikeCardReader(d) {
 				continue
 			}
 		}
@@ -114,7 +111,7 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 			Name:        d.FriendlyName,
 			Size:        humanize.Bytes(uint64(d.Size)),
 			SizeBytes:   d.Size,
-			IsRemovable: isExternal,
+			IsRemovable: external || looksLikeCardReader(d),
 		})
 	}
 
@@ -141,6 +138,14 @@ func isFixedMedia(mediaType string) bool {
 	default:
 		return false
 	}
+}
+
+// looksLikeCardReader returns true if a non-USB disk appears to be a
+// built-in card reader (e.g., Realtek PCIE readers that report as SCSI).
+// This is a heuristic: non-fixed media + name contains "card reader".
+func looksLikeCardReader(d psDisk) bool {
+	return !isFixedMedia(d.MediaType) &&
+		strings.Contains(strings.ToLower(d.FriendlyName), "card reader")
 }
 
 // getVolumesForDisk returns the drive letters (e.g. ["E", "F"]) for volumes
