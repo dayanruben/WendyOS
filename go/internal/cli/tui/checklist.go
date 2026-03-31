@@ -137,11 +137,11 @@ func (m ChecklistModel) View() string {
 			pointer = clCursor.Render("▸ ")
 			label = clLabelActive.Render("Enable all")
 		}
-		toggle := clOff.Render("No")
+		yes, no := clOff.Render("Yes"), clOn.Render("No")
 		if m.allSelected() {
-			toggle = clOn.Render("Yes")
+			yes, no = clOn.Render("Yes"), clOff.Render("No")
 		}
-		sb.WriteString(fmt.Sprintf("%s%s  %s\n", pointer, toggle, label))
+		sb.WriteString(fmt.Sprintf("%s%s %s  %s\n", pointer, yes, no, label))
 	}
 
 	sb.WriteString(clSeparator.Render("  ───") + "\n")
@@ -156,12 +156,12 @@ func (m ChecklistModel) View() string {
 			label = clLabelActive.Render(item.Label)
 		}
 
-		toggle := clOff.Render("No")
+		yes, no := clOff.Render("Yes"), clOn.Render("No")
 		if item.Selected {
-			toggle = clOn.Render("Yes")
+			yes, no = clOn.Render("Yes"), clOff.Render("No")
 		}
 
-		sb.WriteString(fmt.Sprintf("%s%s  %s", pointer, toggle, label))
+		sb.WriteString(fmt.Sprintf("%s%s %s  %s", pointer, yes, no, label))
 		if item.Description != "" {
 			sb.WriteString("  " + clDesc.Render(item.Description))
 		}
