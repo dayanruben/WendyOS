@@ -259,9 +259,9 @@ func promptEntitlementFields(ent *appconfig.Entitlement) error {
 	switch ent.Type {
 	case appconfig.EntitlementPersist:
 		name, err := tui.PromptText(
-			"Container ID",
+			"App ID",
 			"shared namespace — apps with the same ID can access each other's data",
-			notEmpty("container ID"),
+			notEmpty("app ID"),
 		)
 		if err != nil {
 			return err

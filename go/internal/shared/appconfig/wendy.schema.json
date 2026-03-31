@@ -110,7 +110,7 @@
             "name": {
               "type": "string",
               "minLength": 1,
-              "description": "Container ID — a shared namespace. Apps with the same name can access each other's data."
+              "description": "App ID — a shared namespace. Apps with the same ID can access each other's data."
             },
             "path": {
               "type": "string",
