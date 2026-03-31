@@ -4,7 +4,6 @@ package commands
 
 import (
 	"archive/zip"
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -73,13 +72,11 @@ func runOSInstallDirect(imagePath string, driveID string, force bool) error {
 	}
 
 	if !force {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Printf("Writing will ERASE ALL DATA on %s (%s). Continue? [y/N] ", targetDrive.Name, targetDrive.DevicePath)
-		line, err := reader.ReadString('\n')
+		confirmed, err := tui.Confirm(fmt.Sprintf("Writing will ERASE ALL DATA on %s (%s). Continue?", targetDrive.Name, targetDrive.DevicePath))
 		if err != nil {
 			return err
 		}
-		if answer := strings.TrimSpace(strings.ToLower(line)); answer != "y" && answer != "yes" {
+		if !confirmed {
 			fmt.Println("Cancelled.")
 			return nil
 		}
@@ -258,13 +255,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	targetDrive := driveMap[sel]
 
 	// Confirm destructive write.
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("\nWriting will ERASE ALL DATA on %s (%s). Continue? [y/N] ", targetDrive.Name, targetDrive.DevicePath)
-	line, err := reader.ReadString('\n')
+	fmt.Println()
+	confirmed, err := tui.Confirm(fmt.Sprintf("Writing will ERASE ALL DATA on %s (%s). Continue?", targetDrive.Name, targetDrive.DevicePath))
 	if err != nil {
 		return err
 	}
-	if answer := strings.TrimSpace(strings.ToLower(line)); answer != "y" && answer != "yes" {
+	if !confirmed {
 		fmt.Println("Cancelled.")
 		return nil
 	}
