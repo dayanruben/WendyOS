@@ -31,8 +31,11 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.choice = true
 			m.answered = true
 			return m, tea.Quit
-		case "n", "N", "enter":
+		case "n", "N":
 			m.choice = false
+			m.answered = true
+			return m, tea.Quit
+		case "enter":
 			m.answered = true
 			return m, tea.Quit
 		case "left", "h":
@@ -100,9 +103,12 @@ func Confirm(question string, programOpts ...tea.ProgramOption) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("confirm prompt: %w", err)
 	}
-	model := result.(ConfirmModel)
+	model, ok := result.(ConfirmModel)
+	if !ok {
+		return false, fmt.Errorf("confirm prompt: unexpected model type %T", result)
+	}
 	if model.Cancelled() {
-		return false, fmt.Errorf("cancelled")
+		return false, fmt.Errorf("confirm prompt: cancelled")
 	}
 	return model.Confirmed(), nil
 }

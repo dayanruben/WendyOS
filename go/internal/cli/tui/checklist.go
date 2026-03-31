@@ -133,9 +133,12 @@ func RunChecklist(title string, items []ChecklistItem, programOpts ...tea.Progra
 	if err != nil {
 		return nil, fmt.Errorf("checklist: %w", err)
 	}
-	model := result.(ChecklistModel)
+	model, ok := result.(ChecklistModel)
+	if !ok {
+		return nil, fmt.Errorf("checklist: unexpected model type %T", result)
+	}
 	if model.Cancelled() {
-		return nil, fmt.Errorf("cancelled")
+		return nil, fmt.Errorf("checklist: cancelled")
 	}
 	return model.SelectedItems(), nil
 }
