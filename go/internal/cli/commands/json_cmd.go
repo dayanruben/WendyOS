@@ -38,10 +38,10 @@ func newJSONValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate [path]",
 		Short: "Validate a wendy.json file",
-		Long:  "Validates the wendy.json in the current directory (or at the given path) for required fields, valid entitlement types, and unknown entitlement keys.",
+		Long:  "Validates a wendy.json for required fields, valid entitlement types, and unknown entitlement keys.\nPath can be a file or a directory containing wendy.json. Defaults to the current directory.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := "wendy.json"
+			path := ""
 			if len(args) > 0 {
 				path = args[0]
 			} else {
@@ -49,7 +49,16 @@ func newJSONValidateCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("getting working directory: %w", err)
 				}
-				path = filepath.Join(cwd, "wendy.json")
+				path = cwd
+			}
+
+			// If path is a directory, look for wendy.json inside it.
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			if info.IsDir() {
+				path = filepath.Join(path, "wendy.json")
 			}
 
 			data, err := os.ReadFile(path)
