@@ -295,6 +295,7 @@ func newAppsStopCmd() *cobra.Command {
 
 func newAppsRemoveCmd() *cobra.Command {
 	var force bool
+	var cleanup bool
 
 	cmd := &cobra.Command{
 		Use:   "remove [app-name]",
@@ -331,7 +332,8 @@ func newAppsRemoveCmd() *cobra.Command {
 
 			if target.Agent != nil {
 				_, err = target.Agent.ContainerService.DeleteContainer(ctx, &agentpb.DeleteContainerRequest{
-					AppName: appName,
+					AppName:     appName,
+					DeleteImage: cleanup,
 				})
 				if err != nil {
 					return fmt.Errorf("removing container: %w", err)
@@ -357,6 +359,7 @@ func newAppsRemoveCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&cleanup, "cleanup", false, "Also delete the container image (frees disk space)")
 	return cmd
 }
 
