@@ -91,6 +91,18 @@ func TestOpenBrowserCmd_ValidURL_Fallback(t *testing.T) {
 	}
 }
 
+func TestOpenBrowserCmd_MissingHost(t *testing.T) {
+	cmd := newOpenBrowserCmd()
+	cmd.SetArgs([]string{"http://"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for URL without host")
+	}
+}
+
 func TestOpenBrowserCmd_TooManyArgs(t *testing.T) {
 	cmd := newOpenBrowserCmd()
 	cmd.SetArgs([]string{"https://a.com", "https://b.com"})

@@ -17,12 +17,15 @@ func newOpenBrowserCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rawURL := args[0]
-			parsed, err := url.Parse(rawURL)
+			parsed, err := url.ParseRequestURI(rawURL)
 			if err != nil {
-				return fmt.Errorf("invalid URL: %w", err)
+				return fmt.Errorf("invalid URL %q: %w", rawURL, err)
 			}
 			if parsed.Scheme == "" {
 				return fmt.Errorf("invalid URL %q: missing scheme (e.g. http:// or https://)", rawURL)
+			}
+			if (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host == "" {
+				return fmt.Errorf("invalid URL %q: must include a host (e.g. http://localhost:3000)", rawURL)
 			}
 
 			if err := openBrowser(rawURL); err != nil {
