@@ -223,18 +223,43 @@ func parseDiskNumber(devPath string) (int, error) {
 	return n, nil
 }
 
+// clearDiskPartitions uses PowerShell Clear-Disk to remove all partitions,
+// volumes, and OEM recovery data from the disk. This releases Windows' hold
+// on volumes that have no drive letter (e.g. EFI, recovery, or Jetson
+// partitions) which would otherwise block raw disk writes with "Access denied".
+func clearDiskPartitions(diskNum int) error {
+	script := fmt.Sprintf(
+		"Clear-Disk -Number %d -RemoveData -RemoveOEM -Confirm:$false",
+		diskNum,
+	)
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("clearing disk %d: %s: %w", diskNum, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // writeImageToDisk writes an image file to a physical drive on Windows.
-// It locks and dismounts all volumes on the disk, opens the raw physical
-// device, and writes in 4 MiB chunks with sector-aligned I/O.
+// It clears existing partitions, locks and dismounts remaining volumes,
+// opens the raw physical device, and writes in 4 MiB chunks with
+// sector-aligned I/O.
 func writeImageToDisk(imagePath string, d drive, progressFn func(written int64)) error {
 	diskNum, err := parseDiskNumber(d.DevicePath)
 	if err != nil {
 		return err
 	}
 
-	// Lock and dismount every volume on this disk. We must keep the volume
-	// handles open for the entire duration of the write — closing them would
-	// release the lock and let Windows re-mount the filesystem.
+	// Clear all partitions on the disk first. This is necessary because
+	// disks (e.g. from a prior Jetson flash) may contain many partitions
+	// without drive letters that getVolumesForDisk cannot enumerate. Those
+	// hidden volumes stay mounted and cause "Access is denied" on write.
+	if err := clearDiskPartitions(diskNum); err != nil {
+		return err
+	}
+
+	// Lock and dismount any remaining lettered volumes on this disk. We
+	// must keep the volume handles open for the entire duration of the
+	// write — closing them would release the lock and let Windows re-mount.
 	letters, err := getVolumesForDisk(diskNum)
 	if err != nil {
 		return fmt.Errorf("enumerating volumes: %w", err)
