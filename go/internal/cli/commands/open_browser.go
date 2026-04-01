@@ -26,7 +26,9 @@ func newOpenBrowserCmd() *cobra.Command {
 			}
 
 			if err := openBrowser(rawURL); err != nil {
-				return fmt.Errorf("opening browser: %w", err)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Could not open browser: %v\n", err)
+				fmt.Fprintln(cmd.OutOrStdout(), rawURL)
+				return nil
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Opening %s in default browser...\n", rawURL)
