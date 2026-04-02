@@ -1,8 +1,6 @@
 name: Hardware Integration Tests
 
 on:
-  push:
-    branches: [test/cn/ci-discover-test]
   workflow_dispatch:
     inputs:
       hostname:
@@ -17,11 +15,15 @@ on:
         description: 'Jobs to run: all, discover, integration, gpu (default: all)'
         required: false
         default: 'all'
+      platform:
+        description: 'Platform to run integration tests on: all, macos, linux (default: all)'
+        required: false
+        default: 'all'
 
 jobs:
   discover:
     name: Discover (${{ matrix.runner.name }})
-    if: github.event_name == 'push' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+    if: inputs.jobs == 'all' || inputs.jobs == 'discover'
     runs-on:
       group: wendy-developer
       labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}']
@@ -171,7 +173,7 @@ jobs:
 
   integration-test-linux:
     name: Integration (Linux)
-    if: github.event_name == 'push' || inputs.jobs == 'all' || inputs.jobs == 'integration'
+    if: always() && (inputs.jobs == 'all' || inputs.jobs == 'integration') && (inputs.platform == 'all' || inputs.platform == 'linux')
     needs: integration-test-macos
     runs-on:
       group: wendy-developer
@@ -271,10 +273,8 @@ jobs:
     timeout-minutes: 30
     continue-on-error: true
     if: >-
-      (github.event_name == 'push' || inputs.jobs == 'all' || inputs.jobs == 'gpu') &&
-      (github.event_name == 'push' ||
-      github.event_name == 'schedule' ||
-      inputs.tests == '' ||
+      (inputs.jobs == 'all' || inputs.jobs == 'gpu') &&
+      (inputs.tests == '' ||
       contains(inputs.tests, 'python-gpu'))
     defaults:
       run:
