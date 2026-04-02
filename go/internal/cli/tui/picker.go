@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sort"
 	"strings"
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
@@ -106,10 +107,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PickerAddMsg:
 		changed := false
 		for _, item := range msg.Items {
-			key := strings.ToLower(item.DedupKey)
-			if key == "" {
-				key = strings.ToLower(item.Name)
-			}
+			key := strings.ToLower(pickerItemKey(item))
 			if idx, ok := m.seenIdx[key]; ok {
 				if m.MergeItem != nil {
 					m.MergeItem(&m.items[idx], item)
@@ -224,15 +222,52 @@ func newPickerTable() bubbleTable.Model {
 }
 
 func (m *PickerModel) refreshTable() {
+	// Remember which item the cursor is on so we can restore it after sorting.
+	var cursorKey string
+	if cursor := m.table.Cursor(); cursor >= 0 && cursor < len(m.items) {
+		cursorKey = pickerItemKey(m.items[cursor])
+	}
+
+	// Sort items by name for a stable, predictable display order. Use DedupKey
+	// (the device name without any version suffix) so merge updates that append
+	// a version don't cause items to jump around.
+	sort.SliceStable(m.items, func(i, j int) bool {
+		return strings.ToLower(pickerItemKey(m.items[i])) <
+			strings.ToLower(pickerItemKey(m.items[j]))
+	})
+
+	// Rebuild seenIdx to reflect the new positions after sorting.
+	for k := range m.seenIdx {
+		delete(m.seenIdx, k)
+	}
+	for i, item := range m.items {
+		m.seenIdx[pickerItemKey(item)] = i
+	}
+
 	activeCols := pickerActiveColumns(m.items)
 	rows := pickerRows(m.items, activeCols)
 	m.table.SetColumns(pickerColumns(rows, activeCols))
 	m.table.SetRows(rows)
-	if len(rows) > 0 && m.table.Cursor() < 0 {
+
+	// Restore cursor to the same item, or default to 0 on first render.
+	if cursorKey != "" {
+		if idx, ok := m.seenIdx[cursorKey]; ok {
+			m.table.SetCursor(idx)
+		}
+	} else if len(rows) > 0 && m.table.Cursor() < 0 {
 		m.table.SetCursor(0)
 	}
+
 	m.table.SetWidth(pickerTableWidth(m.table.Columns()))
 	m.table.SetHeight(pickerTableHeight(len(rows), m.height))
+}
+
+// pickerItemKey returns the dedup key for an item (DedupKey, or Name if empty).
+func pickerItemKey(item PickerItem) string {
+	if item.DedupKey != "" {
+		return item.DedupKey
+	}
+	return item.Name
 }
 
 func pickerActiveColumns(items []PickerItem) []pickerColumnDef {
