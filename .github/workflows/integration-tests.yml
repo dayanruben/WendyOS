@@ -107,6 +107,13 @@ jobs:
       - name: Build CLI
         run: make build-cli
 
+      - name: Restart Colima
+        if: runner.os == 'macOS'
+        run: |
+          colima stop 2>/dev/null || true
+          colima start
+          until docker info >/dev/null 2>&1; do sleep 2; done
+
       - name: Run integration tests
         run: |
           TEST_ARGS="-w ./bin/wendy"
