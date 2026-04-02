@@ -1,17 +1,15 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package commands
 
 import (
 	"archive/zip"
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -74,20 +72,18 @@ func runOSInstallDirect(imagePath string, driveID string, force bool) error {
 	}
 
 	if !force {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Printf("Writing will ERASE ALL DATA on %s (%s). Continue? [y/N] ", targetDrive.Name, targetDrive.DevicePath)
-		line, err := reader.ReadString('\n')
+		confirmed, err := tui.Confirm(fmt.Sprintf("Writing will ERASE ALL DATA on %s (%s). Continue?", targetDrive.Name, targetDrive.DevicePath))
 		if err != nil {
 			return err
 		}
-		if answer := strings.TrimSpace(strings.ToLower(line)); answer != "y" && answer != "yes" {
+		if !confirmed {
 			fmt.Println("Cancelled.")
 			return nil
 		}
 	}
 
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
-	fmt.Println("You may be prompted for your password (sudo is required).")
+	fmt.Println(elevationHint())
 	if err := writeImageToDisk(imagePath, *targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
 	}
@@ -259,13 +255,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	targetDrive := driveMap[sel]
 
 	// Confirm destructive write.
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("\nWriting will ERASE ALL DATA on %s (%s). Continue? [y/N] ", targetDrive.Name, targetDrive.DevicePath)
-	line, err := reader.ReadString('\n')
+	fmt.Println()
+	confirmed, err := tui.Confirm(fmt.Sprintf("Writing will ERASE ALL DATA on %s (%s). Continue?", targetDrive.Name, targetDrive.DevicePath))
 	if err != nil {
 		return err
 	}
-	if answer := strings.TrimSpace(strings.ToLower(line)); answer != "y" && answer != "yes" {
+	if !confirmed {
 		fmt.Println("Cancelled.")
 		return nil
 	}
@@ -289,11 +284,10 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 	totalSize := imgStat.Size()
 
-	// Pre-authenticate sudo so the password prompt works on the raw terminal
-	// before we start the Bubble Tea TUI.
-	fmt.Println("You may be prompted for your password (sudo is required).")
-	if err := exec.Command("sudo", "-v").Run(); err != nil {
-		return fmt.Errorf("sudo authentication failed: %w", err)
+	// Pre-authenticate elevated privileges (sudo on Unix, admin check on
+	// Windows) so the prompt works on the raw terminal before the TUI starts.
+	if err := preAuthElevation(); err != nil {
+		return err
 	}
 
 	// Write image to drive with progress bar.
@@ -342,7 +336,13 @@ func downloadImage(img *imageInfo) (string, error) {
 		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	tmpFile, err := os.CreateTemp("", "wendyos-*.img")
+	// Write directly into the OS cache directory so we never land in /tmp
+	// (which is often a size-limited tmpfs on Linux).
+	cacheDir, err := osCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving cache dir: %w", err)
+	}
+	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*.img")
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
@@ -427,7 +427,13 @@ func extractImageFromZipWithProgress(zipPath string) (string, error) {
 		}
 		defer rc.Close()
 
-		tmpFile, err := os.CreateTemp("", "wendyos-*.img")
+		// Write directly into the OS cache directory so we never land in
+		// /tmp (which is often a size-limited tmpfs on Linux).
+		cacheDir, err := osCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("resolving cache dir: %w", err)
+		}
+		tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*.img")
 		if err != nil {
 			return "", fmt.Errorf("creating temp file: %w", err)
 		}
@@ -561,37 +567,14 @@ func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
 		imagePath = extracted
 	}
 
-	// Move into cache.
+	// Move into cache. Both files are in the same cache directory so
+	// Rename is always a same-filesystem operation.
 	if err := os.Rename(imagePath, cached); err != nil {
-		// Rename fails across filesystems; fall back to copy.
-		if cpErr := copyFile(imagePath, cached); cpErr != nil {
-			os.Remove(imagePath)
-			return "", fmt.Errorf("caching image: %w", cpErr)
-		}
 		os.Remove(imagePath)
+		return "", fmt.Errorf("caching image: %w", err)
 	}
 
 	return cached, nil
-}
-
-// copyFile copies src to dst.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
 }
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.

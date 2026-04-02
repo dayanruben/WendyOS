@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -222,10 +223,13 @@ func ensureSwiftVersion(ctx context.Context) error {
 		return err
 	}
 
+	out := &dimWriter{}
 	cmd := execCommandContext(ctx, "swiftly", "install", defaultSwiftVersion)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	out.Flush()
+	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
 		}
@@ -406,9 +410,13 @@ func installWendySwiftSDK(sdkArch string) error {
 
 	cmd := exec.Command("swiftly", "run", "+"+defaultSwiftVersion, "swift", "sdk", "install", url, "--checksum", checksum)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
+		if out := strings.TrimSpace(stderrBuf.String()); out != "" {
+			return fmt.Errorf("installing Swift SDK from %s: %w\n%s", url, err, out)
+		}
 		return fmt.Errorf("installing Swift SDK from %s: %w", url, err)
 	}
 
@@ -428,9 +436,13 @@ func installWasmSwiftSDK() error {
 
 	cmd := exec.Command("swiftly", "run", "+"+defaultSwiftVersion, "swift", "sdk", "install", url, "--checksum", "394040ecd5260e68bb02f6c20aeede733b9b90702c2204e178f3e42413edad2a")
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
+		if out := strings.TrimSpace(stderrBuf.String()); out != "" {
+			return fmt.Errorf("installing Swift WASM SDK from %s: %w\n%s", url, err, out)
+		}
 		return fmt.Errorf("installing Swift WASM SDK from %s: %w", url, err)
 	}
 
@@ -841,6 +853,31 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 	return registryAddr, proxy.Close, nil
 }
 
+// resolveRegistryForSwift is like resolveRegistry but for the Swift container
+// plugin, which runs on the host (not inside a Docker VM). Because the host
+// can resolve mDNS hostnames directly, we pass the original hostname through
+// rather than resolving it to an IP. Only link-local addresses (USB) still
+// need the TCP proxy.
+func resolveRegistryForSwift(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), err error) {
+	resolved := resolveRegistryIP(host)
+	if !isLinkLocalIP(resolved) {
+		// Use the original hostname (or bare IP) directly — mDNS-resolvable on the host.
+		addr := host
+		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
+			addr = "[" + addr + "]"
+		}
+		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
+	}
+
+	// Link-local: same proxy approach as resolveRegistry.
+	target := net.JoinHostPort(host, strconv.Itoa(port))
+	proxy, err := startRegistryProxy(ctx, target)
+	if err != nil {
+		return "", nil, fmt.Errorf("starting registry proxy for link-local device: %w", err)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, nil
+}
+
 // isLinkLocalIP reports whether the given IP string (possibly bracketed) is a
 // link-local unicast address (fe80::/10 for IPv6, 169.254.0.0/16 for IPv4).
 func isLinkLocalIP(ip string) bool {
@@ -982,7 +1019,9 @@ func resolveHostPreferRoutable(hostname string) string {
 		return ""
 	}
 
-	var fallbackLinkLocal string
+	// Scan all addresses before returning — IPv4 may appear after global IPv6
+	// in the list (e.g. net.LookupHost on macOS returns AAAA records first).
+	var globalIPv6, fallbackLinkLocal string
 	for _, a := range addrs {
 		addr, parseErr := netip.ParseAddr(a)
 		if parseErr != nil {
@@ -992,11 +1031,16 @@ func resolveHostPreferRoutable(hostname string) string {
 			return a // IPv4 is always preferred
 		}
 		if !addr.IsLinkLocalUnicast() {
-			return addr.WithZone("").String() // global/ULA IPv6
-		}
-		if fallbackLinkLocal == "" {
+			if globalIPv6 == "" {
+				globalIPv6 = addr.WithZone("").String()
+			}
+		} else if fallbackLinkLocal == "" {
 			fallbackLinkLocal = addr.WithZone("").String()
 		}
+	}
+
+	if globalIPv6 != "" {
+		return globalIPv6
 	}
 
 	// DNS returned only link-local IPv6 — this is unroutable from Docker

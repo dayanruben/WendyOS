@@ -141,7 +141,7 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 // pickDeviceForDefault runs the interactive device picker and returns a
 // hostname or provider key suitable for storing as the default device.
 func pickDeviceForDefault(ctx context.Context) (string, error) {
-	selected, err := pickDevice(ctx, nil, false)
+	selected, err := pickDevice(ctx, nil, false, false)
 	if err != nil {
 		return "", err
 	}
@@ -1085,7 +1085,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), ExcludeBluetooth())
+			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), ExcludeBluetooth(), SuppressUpdateCheck())
 			if err != nil {
 				return err
 			}
@@ -1098,9 +1098,23 @@ func newDeviceUpdateCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("reading binary: %w", err)
 				}
+
+				// Validate the binary's ELF architecture against the device.
+				versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+				if err != nil {
+					return fmt.Errorf("could not query device architecture to verify binary: %w", err)
+				}
+				deviceArch := versionResp.GetCpuArchitecture()
+				if deviceArch != "" {
+					if err := checkELFArchitecture(binaryData, deviceArch); err != nil {
+						return err
+					}
+				}
 			} else {
 				// Auto-download: detect arch, fetch release, download binary.
-				fmt.Println("Detecting device architecture...")
+				if !jsonOutput {
+					fmt.Println("Detecting device architecture...")
+				}
 				versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 				if err != nil {
 					return fmt.Errorf("getting device info: %w", err)
@@ -1110,19 +1124,25 @@ func newDeviceUpdateCmd() *cobra.Command {
 				if arch == "" {
 					return fmt.Errorf("device did not report CPU architecture; use --binary to provide the binary manually")
 				}
-				fmt.Printf("Device architecture: %s\n", arch)
+				if !jsonOutput {
+					fmt.Printf("Device architecture: %s\n", arch)
+				}
 
 				releaseType := "stable"
 				if nightly {
 					releaseType = "nightly"
 				}
-				fmt.Printf("Fetching latest %s release...\n", releaseType)
+				if !jsonOutput {
+					fmt.Printf("Fetching latest %s release...\n", releaseType)
+				}
 
 				release, err := fetchAgentRelease(nightly)
 				if err != nil {
 					return fmt.Errorf("fetching release: %w", err)
 				}
-				fmt.Printf("Found release: %s\n", release.TagName)
+				if !jsonOutput {
+					fmt.Printf("Found release: %s\n", release.TagName)
+				}
 
 				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
 				assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
@@ -1137,7 +1157,9 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("no asset found for linux/%s in release %s", arch, release.TagName)
 				}
 
-				fmt.Printf("Downloading %s...\n", matchedAsset.Name)
+				if !jsonOutput {
+					fmt.Printf("Downloading %s...\n", matchedAsset.Name)
+				}
 				binaryData, err = downloadAgentBinary(*matchedAsset)
 				if err != nil {
 					return fmt.Errorf("downloading binary: %w", err)
@@ -1148,26 +1170,49 @@ func newDeviceUpdateCmd() *cobra.Command {
 			h := sha256.Sum256(binaryData)
 			sha256Hash := hex.EncodeToString(h[:])
 
-			s := tui.NewSpinner("Uploading agent binary...")
-			p := tea.NewProgram(s)
+			if isInteractiveTerminal() && !jsonOutput {
+				s := tui.NewSpinner("Uploading agent binary...")
+				p := tea.NewProgram(s)
 
-			go func() {
-				uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)
-				p.Send(tui.SpinnerDoneMsg{Err: uploadErr})
-			}()
+				go func() {
+					uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)
+					p.Send(tui.SpinnerDoneMsg{Err: uploadErr})
+				}()
 
-			finalModel, runErr := p.Run()
-			if runErr != nil {
-				return fmt.Errorf("TUI error: %w", runErr)
+				finalModel, runErr := p.Run()
+				if runErr != nil {
+					return fmt.Errorf("TUI error: %w", runErr)
+				}
+
+				model := finalModel.(tui.SpinnerModel)
+				_, updateErr := model.Result()
+				if updateErr != nil {
+					return updateErr
+				}
+			} else if !jsonOutput {
+				fmt.Println("Uploading agent binary...")
+				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
+					return err
+				}
+			} else {
+				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
+					return err
+				}
 			}
 
-			model := finalModel.(tui.SpinnerModel)
-			_, updateErr := model.Result()
-			if updateErr != nil {
-				return updateErr
+			if jsonOutput {
+				resp := map[string]string{
+					"status":  "success",
+					"message": "Agent updated successfully.",
+				}
+				b, err := json.Marshal(resp)
+				if err != nil {
+					return fmt.Errorf("failed to marshal JSON response: %w", err)
+				}
+				fmt.Println(string(b))
+			} else {
+				fmt.Println("Agent updated successfully.")
 			}
-
-			fmt.Println("Agent updated successfully.")
 			return nil
 		},
 	}
@@ -1178,7 +1223,61 @@ func newDeviceUpdateCmd() *cobra.Command {
 	return cmd
 }
 
-// deviceUpdateUpload streams the binary data to the agent's UpdateAgent RPC.
+// checkELFArchitecture reads the ELF e_machine field from data and returns an
+// error if it does not match the device's reported GOARCH (e.g. "amd64", "arm64").
+// Non-ELF binaries (e.g. scripts) are accepted without complaint.
+func checkELFArchitecture(data []byte, deviceArch string) error {
+	// Only amd64 and arm64 are supported targets.
+	switch deviceArch {
+	case "amd64", "arm64":
+		// supported, continue
+	default:
+		return fmt.Errorf("device reports unsupported architecture %q; only amd64 and arm64 are supported", deviceArch)
+	}
+
+	// ELF magic + header fields up to e_machine occupy 20 bytes.
+	if len(data) < 20 {
+		return nil
+	}
+	if data[0] != 0x7f || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
+		return nil // not an ELF binary — skip check
+	}
+
+	// Respect EI_DATA (byte 5) when reading the 2-byte e_machine field at offset 18.
+	const (
+		elfDataLittle = 1 // ELFDATA2LSB
+		elfDataBig    = 2 // ELFDATA2MSB
+
+		emX86_64  = 62  // EM_X86_64  → amd64
+		emAArch64 = 183 // EM_AARCH64 → arm64
+	)
+
+	var machine uint16
+	switch data[5] {
+	case elfDataLittle:
+		machine = uint16(data[18]) | uint16(data[19])<<8
+	case elfDataBig:
+		machine = uint16(data[18])<<8 | uint16(data[19])
+	default:
+		return nil // unknown ELF endianness — skip check
+	}
+
+	var binaryArch string
+	switch machine {
+	case emX86_64:
+		binaryArch = "amd64"
+	case emAArch64:
+		binaryArch = "arm64"
+	default:
+		return nil // unrecognised ELF machine type — let the device decide
+	}
+
+	if binaryArch != deviceArch {
+		return fmt.Errorf("binary is %s but device is %s; provide the correct binary with --binary", binaryArch, deviceArch)
+	}
+	return nil
+}
+
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
 	stream, err := agentService.UpdateAgent(ctx)
 	if err != nil {
