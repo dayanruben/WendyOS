@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/internal/shared/config"
 	"github.com/wendylabsinc/wendy/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/internal/shared/env"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
@@ -370,6 +371,30 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashMessage = "Updating " + row[0] + "..."
 			m.flashIsError = false
 			return m, m.startDeviceUpdateCmd(addr, row[0])
+		case "d":
+			rows := discoverTableRows(m.collection)
+			cursor := m.table.Cursor()
+			if len(rows) > 0 && cursor >= 0 && cursor < len(rows) {
+				deviceName := rows[cursor][0]
+				if cfg, err := config.Load(); err == nil {
+					cfg.DefaultDevice = deviceName
+					_ = config.Save(cfg)
+				}
+				m.flashMessage = "Default device set to: " + deviceName
+				m.flashIsError = false
+				m.refreshTable()
+				return m, clearFlashAfter(3 * time.Second)
+			}
+			return m, nil
+		case "x":
+			if cfg, err := config.Load(); err == nil {
+				cfg.DefaultDevice = ""
+				_ = config.Save(cfg)
+			}
+			m.flashMessage = "Default device cleared."
+			m.flashIsError = false
+			m.refreshTable()
+			return m, clearFlashAfter(3 * time.Second)
 		}
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
@@ -443,7 +468,7 @@ func (m discoverModel) View() string {
 
 	var sb strings.Builder
 
-	hintText := "↑/↓ navigate, enter copy, a copy all, u update, q quit"
+	hintText := "↑/↓ navigate, enter copy, a copy all, u update, d set default, x unset default, q quit"
 	if m.updatingDeviceName != "" {
 		hintText = "updating " + m.updatingDeviceName + "... (q quit)"
 	}
@@ -604,14 +629,27 @@ func newDiscoverTable(interactive bool) bubbleTable.Model {
 func discoverTableRows(collection *models.DevicesCollection) []bubbleTable.Row {
 	var rows []bubbleTable.Row
 
+	// Load default device to show ★ indicator.
+	var defaultDevice string
+	if cfg, err := config.Load(); err == nil {
+		defaultDevice = strings.ToLower(cfg.DefaultDevice)
+	}
+
+	markDefault := func(name string) string {
+		if defaultDevice != "" && strings.ToLower(name) == defaultDevice {
+			return "★ " + name
+		}
+		return name
+	}
+
 	for _, d := range collection.USBDevices {
-		rows = append(rows, bubbleTable.Row{d.DisplayName, "USB", d.Hostname, markOutdated(d.AgentVersion)})
+		rows = append(rows, bubbleTable.Row{markDefault(d.DisplayName), "USB", d.Hostname, markOutdated(d.AgentVersion)})
 	}
 	for _, d := range collection.MergedDevices() {
-		rows = append(rows, bubbleTable.Row{d.DisplayName, d.ConnectionTypes(), d.Address(), markOutdated(d.AgentVersion)})
+		rows = append(rows, bubbleTable.Row{markDefault(d.DisplayName), d.ConnectionTypes(), d.Address(), markOutdated(d.AgentVersion)})
 	}
 	for _, d := range collection.EthernetInterfaces {
-		rows = append(rows, bubbleTable.Row{d.DisplayName, "Ethernet", d.IPAddress, markOutdated(d.AgentVersion)})
+		rows = append(rows, bubbleTable.Row{markDefault(d.DisplayName), "Ethernet", d.IPAddress, markOutdated(d.AgentVersion)})
 	}
 	for _, d := range collection.ExternalDevices {
 		// Wendy Lite devices are merged with BLE Lite in MergedDevices().
@@ -623,7 +661,7 @@ func discoverTableRows(collection *models.DevicesCollection) []bubbleTable.Row {
 		if p := providers.ProviderForKey(d.ProviderKey); p != nil {
 			typeName = p.DisplayName()
 		}
-		rows = append(rows, bubbleTable.Row{d.DisplayName, typeName, addr, markOutdated(d.AgentVersion)})
+		rows = append(rows, bubbleTable.Row{markDefault(d.DisplayName), typeName, addr, markOutdated(d.AgentVersion)})
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
