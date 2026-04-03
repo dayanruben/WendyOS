@@ -28,8 +28,8 @@ the container image.
 - **Content-addressed by SHA256**: only files that are missing or have changed
   are transferred. First deploy is a full upload; subsequent deploys send only
   what changed — typically just the rebuilt binary.
-- **`remotePath` defaults to `localPath`**: the common case requires only
-  `localPath`. An explicit `remotePath` overrides the destination.
+- **`to` defaults to `path`**: the common case requires only
+  `path`. An explicit `to` overrides the destination.
 - **Manifest-driven convergence**: files present on the device but absent from
   the CLI's declared set are deleted after each sync. The working directory
   always converges to exactly what the CLI declared.
@@ -88,16 +88,16 @@ New top-level `files` array. The binary itself is always synced implicitly;
   "version": "1.0.0",
   "language": "swift",
   "files": [
-    { "localPath": "models/gemma-3-27b" },
-    { "localPath": "config/prod.json", "remotePath": "config/app.json" }
+    { "path": "models/gemma-3-27b" },
+    { "path": "config/prod.json", "to": "config/app.json" }
   ]
 }
 ```
 
-- `localPath` — required. Path relative to `wendy.json`. Must not be absolute
+- `path` — required. Path relative to `wendy.json`. Must not be absolute
   or contain `..` components.
-- `remotePath` — optional. Destination path relative to the app's working
-  directory on the device. Defaults to `localPath` (with any leading `./`
+- `to` — optional. Destination path relative to the app's working
+  directory on the device. Defaults to `path` (with any leading `./`
   stripped). Must not be absolute or contain `..` components when provided.
 
 Files with no `files` key continue to work exactly as before.
@@ -199,12 +199,12 @@ CLI                                     Agent
 
 ```go
 // FileSync describes a file or directory to sync to the device's app working
-// directory before the app starts. LocalPath is relative to wendy.json.
-// RemotePath is the destination path relative to the app working directory;
-// it defaults to LocalPath when omitted.
+// directory before the app starts. Path is relative to wendy.json.
+// To is the destination path relative to the app working directory;
+// it defaults to Path when omitted.
 type FileSync struct {
-    LocalPath  string `json:"localPath"`
-    RemotePath string `json:"remotePath,omitempty"`
+    Path string `json:"path"`
+    To   string `json:"to,omitempty"`
 }
 ```
 
@@ -214,8 +214,8 @@ type FileSync struct {
 Files []FileSync `json:"files,omitempty"`
 ```
 
-`Validate()` enforces: `localPath` non-empty, not absolute, no `..`;
-`remotePath` (when set) not absolute, no `..`.
+`Validate()` enforces: `path` non-empty, not absolute, no `..`;
+`to` (when set) not absolute, no `..`.
 
 ### Go — `grpcclient` package
 
@@ -235,10 +235,10 @@ Initialised in `newAgentConnection` alongside the existing service clients.
 
 ```go
 // fileSyncEntry pairs a resolved absolute local root with the effective
-// remote path prefix under the app working directory.
+// destination path prefix under the app working directory.
 type fileSyncEntry struct {
-    localRoot  string // absolute path on the developer's machine
-    remotePath string // relative path prefix on the device
+    localRoot string // absolute path on the developer's machine
+    to        string // relative path prefix on the device
 }
 
 // buildLocalManifest walks root and returns a FileEntry for every regular
@@ -333,9 +333,9 @@ servers for service-level tests. No BDD framework.
 *Touches: `appconfig.go`, `appconfig_test.go`*
 
 Write tests for round-trip JSON of the `files` field: an entry with both
-`localPath` and `remotePath`; an entry with only `localPath` (remote defaults
-to local); all six validation error cases (empty / absolute / dotdot for each
-of `localPath` and `remotePath` when given); existing `wendy.json` files
+`path` and `to`; an entry with only `path` (`to` defaults
+to `path`); all six validation error cases (empty / absolute / dotdot for each
+of `path` and `to` when given); existing `wendy.json` files
 without a `files` key. All fail. Add `FileSync` and extend `Validate()`. Tests
 pass. Nothing acts on files yet — they are declared but inert.
 
@@ -461,12 +461,12 @@ Add:
 
 ```go
 // FileSync describes a file or directory to sync to the device's app working
-// directory before the app starts. LocalPath is relative to wendy.json.
-// RemotePath is the destination relative to the app working directory; it
-// defaults to LocalPath when omitted.
+// directory before the app starts. Path is relative to wendy.json.
+// To is the destination relative to the app working directory; it
+// defaults to Path when omitted.
 type FileSync struct {
-    LocalPath  string `json:"localPath"`
-    RemotePath string `json:"remotePath,omitempty"`
+    Path string `json:"path"`
+    To   string `json:"to,omitempty"`
 }
 ```
 
@@ -474,7 +474,7 @@ Add `Files []FileSync `json:"files,omitempty"`` to `AppConfig`.
 
 ### Effective remote path
 
-When `RemotePath` is empty the effective destination equals `LocalPath` with
+When `To` is empty the effective destination equals `Path` with
 any leading `./` stripped. No additional normalisation — the value is used
 verbatim as a relative path under the app working directory.
 
@@ -482,11 +482,11 @@ verbatim as a relative path under the app working directory.
 
 Add to `Validate()`:
 
-- `localPath` must not be empty.
-- `localPath` must not be absolute (must not start with `/`).
-- `localPath` must not contain `..` path components.
-- `remotePath`, if non-empty, must not be absolute.
-- `remotePath`, if non-empty, must not contain `..` path components.
+- `path` must not be empty.
+- `path` must not be absolute (must not start with `/`).
+- `path` must not contain `..` path components.
+- `to`, if non-empty, must not be absolute.
+- `to`, if non-empty, must not contain `..` path components.
 
 ### Example `wendy.json`
 
@@ -496,16 +496,16 @@ Add to `Validate()`:
   "version": "1.0.0",
   "language": "swift",
   "files": [
-    { "localPath": "models/gemma-3-27b" },
-    { "localPath": "config/prod.json", "remotePath": "config/app.json" }
+    { "path": "models/gemma-3-27b" },
+    { "path": "config/prod.json", "to": "config/app.json" }
   ]
 }
 ```
 
 ### Acceptance criteria
 
-- `appconfig_test.go` covers: valid entry with both paths; valid entry with
-  `localPath` only; each validation error case; round-trip JSON serialisation;
+- `appconfig_test.go` covers: valid entry with both keys; valid entry with
+  `path` only; each validation error case; round-trip JSON serialisation;
   existing `wendy.json` files without `files` parse without error.
 
 ---
@@ -610,7 +610,7 @@ func syncFiles(
     ctx context.Context,
     conn *grpcclient.AgentConnection,
     appID string,
-    entries []fileSyncEntry, // {localRoot, remotePath}
+    entries []fileSyncEntry, // {localRoot, to}
 ) error
 ```
 
@@ -621,7 +621,7 @@ root with the effective remote path. Constructed from `appCfg.Files` by
 Protocol:
 
 1. Build the local manifest by walking each `localRoot`, prefixing each file's
-   path with its `remotePath` to produce agent-relative paths.
+   path with its `to` to produce agent-relative paths.
 2. Open a `SyncFiles` bidi stream.
 3. Send `SyncStart{AppId: appID, Manifest: localManifest}`.
 4. Receive `SyncManifest` from the agent.
@@ -657,9 +657,9 @@ Replace `runMacOSWithAgent` with a version that:
 1. Builds the Swift binary (unchanged).
 2. Assembles `entries` for `syncFiles`:
    - Always includes the binary itself (implicit: `localRoot` = build output
-     dir, `remotePath` = product name).
+     dir, `to` = product name).
    - Appends entries from `appCfg.Files`, resolving `localRoot` relative to
-     `cwd` and applying the remote-defaults-to-local rule.
+     `cwd` and applying the `to`-defaults-to-`path` rule.
 3. Calls `syncFiles`.
 4. Calls `CreateContainer` with `Cmd` set to the product name (binary name)
    and `AppName` set to the app ID. No manifest digest. No OCI.
@@ -703,8 +703,8 @@ behaviour, registered in `go/cmd/wendy-agent/main.go`. Storage root:
 read-only bind mount:
 
 ```
-host:  /var/lib/wendy/files/<appId>/<effectiveRemotePath>
-guest: /wendy/files/<effectiveRemotePath>
+host:  /var/lib/wendy/files/<appId>/<effectiveTo>
+guest: /wendy/files/<effectiveTo>
 ```
 
 and injects `WENDY_FILES_DIR=/wendy/files` into the container environment.
