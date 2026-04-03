@@ -112,85 +112,85 @@ syntax = "proto3";
 package wendy.agent.services.v1;
 
 service WendyFileSyncService {
-  // SyncFiles is a bidirectional stream. The CLI sends SyncStart, then
-  // FileChunk/FileCommit pairs for each file to transfer, then closes the
-  // send side. The agent responds with SyncManifest, FileAck per committed
-  // file, then SyncComplete after pruning stale files.
-  rpc SyncFiles(stream SyncFilesRequest) returns (stream SyncFilesResponse);
+  // SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
+  // FileSyncChunk/FileSyncCommit pairs for each file to transfer, then closes
+  // the send side. The agent responds with FileSyncManifest, FileSyncAck per
+  // committed file, then FileSyncComplete after pruning stale files.
+  rpc SyncFiles(stream FileSyncRequest) returns (stream FileSyncResponse);
 }
 
-// FileEntry describes a single file in a manifest.
-message FileEntry {
+// FileSyncEntry describes a single file in a manifest.
+message FileSyncEntry {
   string path   = 1; // relative to app working directory
   int64  size   = 2;
   string sha256 = 3;
   uint32 mode   = 4; // unix file permissions (e.g. 0755)
 }
 
-message SyncFilesRequest {
+message FileSyncRequest {
   oneof request_type {
-    SyncStart  start  = 1;
-    FileChunk  chunk  = 2;
-    FileCommit commit = 3;
+    FileSyncStart  start  = 1;
+    FileSyncChunk  chunk  = 2;
+    FileSyncCommit commit = 3;
   }
 }
 
-// SyncStart opens a sync session for the given app. The CLI sends its local
-// manifest so the agent can reply with what it already has.
-message SyncStart {
-  string             app_id   = 1;
-  repeated FileEntry manifest = 2;
+// FileSyncStart opens a sync session for the given app. The CLI sends its
+// local manifest so the agent can reply with what it already has.
+message FileSyncStart {
+  string                app_id   = 1;
+  repeated FileSyncEntry manifest = 2;
 }
 
-// FileChunk carries a slice of a file being transferred.
-message FileChunk {
+// FileSyncChunk carries a slice of a file being transferred.
+message FileSyncChunk {
   string path = 1; // relative to app working directory
   bytes  data = 2;
 }
 
-// FileCommit signals the end of a single file transfer.
-message FileCommit {
+// FileSyncCommit signals the end of a single file transfer.
+message FileSyncCommit {
   string path   = 1;
   string sha256 = 2;
   int64  size   = 3;
 }
 
-message SyncFilesResponse {
+message FileSyncResponse {
   oneof response_type {
-    SyncManifest manifest = 1;
-    FileAck      ack      = 2;
-    SyncComplete complete = 3;
+    FileSyncManifest manifest = 1;
+    FileSyncAck      ack      = 2;
+    FileSyncComplete complete = 3;
   }
 }
 
-// SyncManifest is the agent's reply to SyncStart: what it already has.
-message SyncManifest {
-  repeated FileEntry files = 1;
+// FileSyncManifest is the agent's reply to FileSyncStart: what it already has.
+message FileSyncManifest {
+  repeated FileSyncEntry files = 1;
 }
 
-// FileAck confirms a file was written successfully.
-message FileAck {
+// FileSyncAck confirms a file was written successfully.
+message FileSyncAck {
   string path = 1;
 }
 
-// SyncComplete signals that the agent has pruned stale files and the session
-// is done.
-message SyncComplete {}
+// FileSyncComplete signals that the agent has pruned stale files and the
+// session is done.
+message FileSyncComplete {}
 ```
 
 **Session protocol (happy path):**
 
 ```
 CLI                                     Agent
- │── SyncStart{appId, localManifest} ──▶│
- │◀── SyncManifest{agentFiles} ─────────│
- │                                      │  (diff computed on CLI side)
- │── FileChunk{path, data[0..N]} ──────▶│  (repeated for each chunk)
- │── FileCommit{path, sha256, size} ───▶│
- │◀── FileAck{path} ────────────────────│  (per file)
- │       ...                            │
- │── (stream EOF / CloseSend) ─────────▶│
- │◀── SyncComplete{} ───────────────────│  (after stale-file pruning)
+ │── FileSyncStart{appId, manifest} ────▶│
+ │◀── FileSyncManifest{files} ───────────│
+ │                                       │  (diff computed on CLI side)
+ │── FileSyncChunk{path, data[0..N]} ───▶│  (repeated for each chunk)
+ │── FileSyncCommit{path, sha256, size} ▶│
+ │◀── FileSyncAck{path} ─────────────────│  (per file)
+ │       ...                             │
+ │── (stream EOF / CloseSend) ──────────▶│
+ │◀── FileSyncComplete{} ────────────────│  (after stale-file pruning)
 ```
 
 ### Go — `appconfig` package
@@ -198,11 +198,11 @@ CLI                                     Agent
 **File:** `go/internal/shared/appconfig/appconfig.go`
 
 ```go
-// FileSync describes a file or directory to sync to the device's app working
+// FileSyncEntry describes a file or directory to sync to the device's app working
 // directory before the app starts. Path is relative to wendy.json.
 // To is the destination path relative to the app working directory;
 // it defaults to Path when omitted.
-type FileSync struct {
+type FileSyncEntry struct {
     Path string `json:"path"`
     To   string `json:"to,omitempty"`
 }
@@ -211,7 +211,7 @@ type FileSync struct {
 `AppConfig` gains:
 
 ```go
-Files []FileSync `json:"files,omitempty"`
+Files []FileSyncEntry `json:"files,omitempty"`
 ```
 
 `Validate()` enforces: `path` non-empty, not absolute, no `..`;
@@ -241,14 +241,14 @@ type fileSyncEntry struct {
     to        string // relative path prefix on the device
 }
 
-// buildLocalManifest walks root and returns a FileEntry for every regular
+// buildLocalManifest walks root and returns a FileSyncEntry for every regular
 // file: path relative to root, size, SHA256 hex, and Unix mode.
-func buildLocalManifest(root string) ([]agentpb.FileEntry, error)
+func buildLocalManifest(root string) ([]agentpb.FileSyncEntry, error)
 
 // diffManifests returns the remote-relative paths of files that are missing
 // from the agent's manifest or whose SHA256 differs. Agent-only files are
 // not included — the agent handles deletions itself.
-func diffManifests(local, remote []agentpb.FileEntry) []string
+func diffManifests(local, remote []agentpb.FileSyncEntry) []string
 
 // syncFiles drives a complete SyncFiles session for the given entries.
 // It builds the combined local manifest, exchanges it with the agent,
@@ -290,27 +290,27 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncServiceServiceProtoc
 
     /// gRPC handler — single entry point for the SyncFiles bidi stream.
     func syncFiles(
-        requestStream: GRPCAsyncRequestStream<Wendy_Agent_Services_V1_SyncFilesRequest>,
-        responseStream: GRPCAsyncResponseStreamWriter<Wendy_Agent_Services_V1_SyncFilesResponse>,
+        requestStream: GRPCAsyncRequestStream<Wendy_Agent_Services_V1_FileSyncRequest>,
+        responseStream: GRPCAsyncResponseStreamWriter<Wendy_Agent_Services_V1_FileSyncResponse>,
         context: GRPCAsyncServerCallContext
     ) async throws
 
     // Internal helper exposed for unit testing:
-    /// Walks workDir and returns a FileEntry for every non-.tmp regular file.
-    func buildManifest(at workDir: URL) throws -> [Wendy_Agent_Services_V1_FileEntry]
+    /// Walks workDir and returns a FileSyncEntry for every non-.tmp regular file.
+    func buildManifest(at workDir: URL) throws -> [Wendy_Agent_Services_V1_FileSyncEntry]
 }
 ```
 
 Working directory root: `<appsBase>/<appId>/`
 
 Handler sequence:
-- **`SyncStart`** → walk working directory, return `SyncManifest`.
-- **`FileChunk`** → append to `<workDir>/<path>.tmp` (creating parents as needed).
-- **`FileCommit`** → verify SHA256 + size; set mode; atomic rename to
-  `<workDir>/<path>`; send `FileAck`. On mismatch, delete `.tmp` and return
+- **`FileSyncStart`** → walk working directory, return `FileSyncManifest`.
+- **`FileSyncChunk`** → append to `<workDir>/<path>.tmp` (creating parents as needed).
+- **`FileSyncCommit`** → verify SHA256 + size; set mode; atomic rename to
+  `<workDir>/<path>`; send `FileSyncAck`. On mismatch, delete `.tmp` and return
   an error.
 - **Stream EOF** → delete files in agent's opening manifest but absent from
-  CLI's declared set; send `SyncComplete`.
+  CLI's declared set; send `FileSyncComplete`.
 
 ---
 
@@ -336,7 +336,7 @@ Write tests for round-trip JSON of the `files` field: an entry with both
 `path` and `to`; an entry with only `path` (`to` defaults
 to `path`); all six validation error cases (empty / absolute / dotdot for each
 of `path` and `to` when given); existing `wendy.json` files
-without a `files` key. All fail. Add `FileSync` and extend `Validate()`. Tests
+without a `files` key. All fail. Add `FileSyncEntry` and extend `Validate()`. Tests
 pass. Nothing acts on files yet — they are declared but inert.
 
 ---
@@ -357,8 +357,8 @@ calls it yet.
 
 *Touches: `swift/Sources/WendyAgent/Services/FileSyncService.swift`*
 
-Write tests for the `SyncStart` → `SyncManifest` handshake: an empty working
-directory returns an empty `SyncManifest`; a pre-seeded directory returns the
+Write tests for the `FileSyncStart` → `FileSyncManifest` handshake: an empty working
+directory returns an empty `FileSyncManifest`; a pre-seeded directory returns the
 correct entries. All fail. Stand up `FileSyncService` with this first
 exchange. Tests pass. The CLI can now ask the device what it has.
 
@@ -368,10 +368,10 @@ exchange. Tests pass. The CLI can now ask the device what it has.
 
 *Touches: `swift/Sources/WendyAgent/Services/FileSyncService.swift`*
 
-Write tests for the full happy path: `SyncStart` + `FileChunk`(s) +
-`FileCommit` → `FileAck`, file present at the correct path with correct
+Write tests for the full happy path: `FileSyncStart` + `FileSyncChunk`(s) +
+`FileSyncCommit` → `FileSyncAck`, file present at the correct path with correct
 content and mode; nested paths work (parent dirs created automatically). All
-fail. Implement `FileChunk` and `FileCommit` handling with temp-file + atomic
+fail. Implement `FileSyncChunk` and `FileSyncCommit` handling with temp-file + atomic
 rename. Tests pass.
 
 ---
@@ -380,7 +380,7 @@ rename. Tests pass.
 
 *Touches: `swift/Sources/WendyAgent/Services/FileSyncService.swift`*
 
-Write tests: a `FileCommit` with a wrong SHA256 returns an error, no file
+Write tests: a `FileSyncCommit` with a wrong SHA256 returns an error, no file
 appears at the destination, no `.tmp` remains. Fail. Add SHA256 verification
 on commit with temp-file cleanup on mismatch. Pass.
 
@@ -391,8 +391,8 @@ on commit with temp-file cleanup on mismatch. Pass.
 *Touches: `swift/Sources/WendyAgent/Services/FileSyncService.swift`*
 
 Write a test: pre-seed the working directory with `old.bin`; send a
-`SyncStart` whose manifest omits it; after stream EOF the file is gone and
-`SyncComplete` is received. Fail. Implement the deletion pass on stream close.
+`FileSyncStart` whose manifest omits it; after stream EOF the file is gone and
+`FileSyncComplete` is received. Fail. Implement the deletion pass on stream close.
 Pass.
 
 ---
@@ -415,7 +415,7 @@ included in transfer list). All fail. Implement both functions. Pass.
 Write tests for `syncFiles` using a fake `WendyFileSyncServiceClient`:
 all diffed files are transferred; an unchanged file is not re-sent; a file
 that changes mid-transfer (streaming hash ≠ manifest hash) causes an
-immediate error with no `FileCommit` sent. All fail. Implement `syncFiles`.
+immediate error with no `FileSyncCommit` sent. All fail. Implement `syncFiles`.
 Pass.
 
 ---
@@ -425,7 +425,7 @@ Pass.
 *Touches: `filesync.go`, `filesync_test.go`*
 
 Write tests: progress callback receives the correct total byte count, per-file
-sizes, and a file-counter increment on each `FileAck`; no output when the diff
+sizes, and a file-counter increment on each `FileSyncAck`; no output when the diff
 is empty. Fail. Add progress tracking. Pass.
 
 ---
@@ -460,17 +460,17 @@ device's app working directory and where they should land within it.
 Add:
 
 ```go
-// FileSync describes a file or directory to sync to the device's app working
+// FileSyncEntry describes a file or directory to sync to the device's app working
 // directory before the app starts. Path is relative to wendy.json.
 // To is the destination relative to the app working directory; it
 // defaults to Path when omitted.
-type FileSync struct {
+type FileSyncEntry struct {
     Path string `json:"path"`
     To   string `json:"to,omitempty"`
 }
 ```
 
-Add `Files []FileSync `json:"files,omitempty"`` to `AppConfig`.
+Add `Files []FileSyncEntry `json:"files,omitempty"`` to `AppConfig`.
 
 ### Effective remote path
 
@@ -546,33 +546,33 @@ Working directory root: `<appsBase>/<appId>`
 
 **`SyncFiles`** handler:
 
-**`SyncStart`** — resolve `workDir = <appsBase>/<appId>`. Walk it (if it
+**`FileSyncStart`** — resolve `workDir = <appsBase>/<appId>`. Walk it (if it
 exists) with `FileManager`, skipping `*.tmp` files, and produce a
-`SyncManifest`. Compute SHA256 by streaming each file in 64 KiB reads — no
-full-file buffering. Send the `SyncManifest` response.
+`FileSyncManifest`. Compute SHA256 by streaming each file in 64 KiB reads —
+no full-file buffering. Send the `FileSyncManifest` response.
 
-**`FileChunk`** — write the chunk to `<workDir>/<path>.tmp`, creating parent
-directories as needed.
+**`FileSyncChunk`** — write the chunk to `<workDir>/<path>.tmp`, creating
+parent directories as needed.
 
-**`FileCommit`** — flush the temp file, verify SHA256 and size, set file
+**`FileSyncCommit`** — flush the temp file, verify SHA256 and size, set file
 permissions from the manifest entry's `mode`, atomic rename to
-`<workDir>/<path>`. Send `FileAck`. On error, remove the temp file before
+`<workDir>/<path>`. Send `FileSyncAck`. On error, remove the temp file before
 returning.
 
-**Stream EOF** — collect `SyncStart` manifest paths into a set; delete any
-files present in the agent's opening manifest but absent from that set. Send
-`SyncComplete`.
+**Stream EOF** — collect `FileSyncStart` manifest paths into a set; delete
+any files present in the agent's opening manifest but absent from that set.
+Send `FileSyncComplete`.
 
-Extract `buildManifest(at:) -> [FileEntry]` as a standalone helper — it is
+Extract `buildManifest(at:) -> [FileSyncEntry]` as a standalone helper — it is
 also exercised directly in unit tests.
 
 ### Acceptance criteria
 
-- `SyncStart` against empty dir → empty `SyncManifest`.
-- `SyncStart` + chunks + commit for a small binary → file at correct path with
-  correct content and mode `0755`.
-- `SyncStart` manifest omitting a pre-existing file → file deleted after EOF.
-- `FileCommit` with wrong SHA256 → error, no file at destination, no `.tmp`.
+- `FileSyncStart` against empty dir → empty `FileSyncManifest`.
+- `FileSyncStart` + chunks + commit for a small binary → file at correct path
+  with correct content and mode `0755`.
+- `FileSyncStart` manifest omitting a pre-existing file → file deleted after EOF.
+- `FileSyncCommit` with wrong SHA256 → error, no file at destination, no `.tmp`.
 - Interrupted stream (closed mid-chunks) → live file unchanged, no `.tmp`
   after next successful sync.
 
@@ -587,7 +587,7 @@ the OCI image packaging used by the macOS native deploy path.
 
 **File:** `go/internal/cli/commands/filesync.go` (new)
 
-`buildLocalManifest(root string) ([]agentpb.FileEntry, error)`:
+`buildLocalManifest(root string) ([]agentpb.FileSyncEntry, error)`:
 
 - `fs.WalkDir` over `root`.
 - For each regular file: stream through `sha256.New()` in 64 KiB reads, record
@@ -597,7 +597,7 @@ the OCI image packaging used by the macOS native deploy path.
 
 ### Diff computation
 
-`diffManifests(local, remote []agentpb.FileEntry) []string`:
+`diffManifests(local, remote []agentpb.FileSyncEntry) []string`:
 
 - Build a map of remote entries by path.
 - Return paths of local files missing from remote or whose SHA256 differs.
@@ -623,15 +623,15 @@ Protocol:
 1. Build the local manifest by walking each `localRoot`, prefixing each file's
    path with its `to` to produce agent-relative paths.
 2. Open a `SyncFiles` bidi stream.
-3. Send `SyncStart{AppId: appID, Manifest: localManifest}`.
-4. Receive `SyncManifest` from the agent.
+3. Send `FileSyncStart{AppId: appID, Manifest: localManifest}`.
+4. Receive `FileSyncManifest` from the agent.
 5. Compute diff. If empty, close stream and return — print "Files up to date."
-6. For each file to transfer: open it, stream in 256 KiB `FileChunk` messages,
-   computing SHA256 on-the-fly. After the last chunk, compare the on-the-fly
-   hash against the manifest entry hash. If they differ, the file changed
-   during transfer — return an error without sending `FileCommit`. If they
-   match, send `FileCommit` and wait for `FileAck`.
-7. Send stream EOF. Agent prunes stale files and sends `SyncComplete`.
+6. For each file to transfer: open it, stream in 256 KiB `FileSyncChunk`
+   messages, computing SHA256 on-the-fly. After the last chunk, compare the
+   on-the-fly hash against the manifest entry hash. If they differ, the file
+   changed during transfer — return an error without sending `FileSyncCommit`.
+   If they match, send `FileSyncCommit` and wait for `FileSyncAck`.
+7. Send stream EOF. Agent prunes stale files and sends `FileSyncComplete`.
 
 Two verification layers: the CLI catches mid-transfer mutations (manifest hash
 vs. streaming hash); the agent catches transit corruption (committed hash vs.
@@ -644,7 +644,7 @@ diff). Display:
 
 - Current file: name, bytes sent / file size, percentage.
 - Overall: aggregate bytes sent / total bytes, percentage.
-- File counter: "file N of M" updated on each `FileAck`.
+- File counter: "file N of M" updated on each `FileSyncAck`.
 
 Show nothing when the diff is empty.
 
