@@ -132,15 +132,24 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
                     }
                     temporaryURLs.removeValue(forKey: relativePath)
 
-                    // Verify SHA256 and size.
-                    guard let temporaryData = FileManager.default.contents(atPath: temporaryURL.path) else {
+                    // Verify SHA256 and size by streaming in 64 KiB reads.
+                    guard let readHandle = FileHandle(forReadingAtPath: temporaryURL.path) else {
                         throw RPCError(
                             code: .internalError,
                             message: "Temporary file missing for \(relativePath)"
                         )
                     }
+                    defer { try? readHandle.close() }
 
-                    let actualSize = Int64(temporaryData.count)
+                    var hasher = SHA256()
+                    var actualSize: Int64 = 0
+                    while true {
+                        let chunk = readHandle.readData(ofLength: 64 * 1024)
+                        if chunk.isEmpty { break }
+                        hasher.update(data: chunk)
+                        actualSize += Int64(chunk.count)
+                    }
+
                     if actualSize != commit.size {
                         try? FileManager.default.removeItem(at: temporaryURL)
                         throw RPCError(
@@ -150,7 +159,7 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
                         )
                     }
 
-                    let computedHash = SHA256.hash(data: temporaryData)
+                    let computedHash = hasher.finalize()
                         .map { String(format: "%02x", $0) }.joined()
                     if computedHash != commit.sha256 {
                         try? FileManager.default.removeItem(at: temporaryURL)
