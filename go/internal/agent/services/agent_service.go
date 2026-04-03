@@ -67,6 +67,12 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.OsVersion = &v
 	}
 
+	// Read hardware platform identifier if available.
+	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
+		v := strings.TrimSpace(string(data))
+		resp.DeviceType = &v
+	}
+
 	return resp, nil
 }
 
@@ -108,6 +114,11 @@ func detectFeatureset() []string {
 	// Camera: same as video for now but could be refined.
 	if _, err := os.Stat("/dev/video0"); err == nil {
 		features = append(features, "camera")
+	}
+
+	// Mender OTA: check for mender-update binary.
+	if _, found := resolveMenderBinary(); found {
+		features = append(features, "mender")
 	}
 
 	return features
@@ -367,20 +378,19 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	}
 
 	sendProgress("downloading", 0)
-	cmdName := "mender"
-	if _, err := exec.LookPath("mender-update"); err == nil {
-		cmdName = "mender-update"
-	} else if _, err := exec.LookPath("mender"); err != nil {
+	cmdName, found := resolveMenderBinary()
+	if !found {
 		return stream.Send(&agentpb.UpdateOSResponse{
 			ResponseType: &agentpb.UpdateOSResponse_Failed_{
 				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: "mender CLI not found (tried 'mender-update' and 'mender')",
+					ErrorMessage: "mender-update binary not found",
 				},
 			},
 		})
 	}
 
 	cmd := exec.CommandContext(stream.Context(), cmdName, "install", req.GetArtifactUrl())
+	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -486,13 +496,70 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 
 	sendProgress("finalizing", 100)
 
-	return stream.Send(&agentpb.UpdateOSResponse{
+	if err := stream.Send(&agentpb.UpdateOSResponse{
 		ResponseType: &agentpb.UpdateOSResponse_Completed_{
 			Completed: &agentpb.UpdateOSResponse_Completed{
 				RebootRequired: true,
 			},
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	if err := rebootSystem(); err != nil {
+		s.logger.Error("Failed to reboot after OS update", zap.Error(err))
+	}
+
+	return nil
+}
+
+// envWithPath returns os.Environ() with the PATH entry replaced by the given value.
+// This ensures PATH is set exactly once (not duplicated), which matters because
+// getenv on Linux returns the first match — appending would leave the original in place.
+func envWithPath(path string) []string {
+	env := os.Environ()
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = "PATH=" + path
+			return env
+		}
+	}
+	return append(env, "PATH="+path)
+}
+
+// resolveMenderBinary finds the mender-update binary by checking PATH and
+// known installation directories (/usr/bin, /bin). Returns the resolved path
+// and whether it was found. mender-update is preferred over legacy mender.
+func resolveMenderBinary() (string, bool) {
+	candidates := []string{"mender-update", "/usr/bin/mender-update", "/bin/mender-update", "mender", "/usr/bin/mender", "/bin/mender"}
+	for _, c := range candidates {
+		if path, err := exec.LookPath(c); err == nil {
+			return path, true
+		}
+		if _, err := os.Stat(c); err == nil {
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// CommitMenderUpdate runs "mender-update commit" on startup to confirm a
+// pending Mender A/B update. If not committed, Mender rolls back on next reboot.
+// This is a no-op if mender-update is not installed.
+func CommitMenderUpdate(logger *zap.Logger) {
+	binary, found := resolveMenderBinary()
+	if !found {
+		return
+	}
+	cmd := exec.Command(binary, "commit")
+	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Exit code 2 means "nothing to commit" — not an error.
+		logger.Debug("mender-update commit", zap.String("output", strings.TrimSpace(string(out))), zap.Error(err))
+		return
+	}
+	logger.Info("Committed Mender update", zap.String("output", strings.TrimSpace(string(out))))
 }
 
 // CleanupOldBackups removes agent binary backups older than 48 hours.

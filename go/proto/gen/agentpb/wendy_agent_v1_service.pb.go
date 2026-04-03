@@ -511,8 +511,10 @@ type GetAgentVersionResponse struct {
 	CpuArchitecture string   `protobuf:"bytes,4,opt,name=cpu_architecture,json=cpuArchitecture,proto3" json:"cpu_architecture,omitempty"`
 	PublicKey       *string  `protobuf:"bytes,5,opt,name=public_key,json=publicKey,proto3,oneof" json:"public_key,omitempty"`
 	Featureset      []string `protobuf:"bytes,6,rep,name=featureset,proto3" json:"featureset,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Hardware platform read from /etc/wendyos/device-type (only present on WendyOS)
+	DeviceType    *string `protobuf:"bytes,7,opt,name=device_type,json=deviceType,proto3,oneof" json:"device_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetAgentVersionResponse) Reset() {
@@ -585,6 +587,13 @@ func (x *GetAgentVersionResponse) GetFeatureset() []string {
 		return x.Featureset
 	}
 	return nil
+}
+
+func (x *GetAgentVersionResponse) GetDeviceType() string {
+	if x != nil && x.DeviceType != nil {
+		return *x.DeviceType
+	}
+	return ""
 }
 
 // Request message for listing WiFi networks

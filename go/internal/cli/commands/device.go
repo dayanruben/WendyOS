@@ -80,6 +80,7 @@ func newDeviceVersionCmd() *cobra.Command {
 					"os":              resp.GetOs(),
 					"osVersion":       resp.GetOsVersion(),
 					"cpuArchitecture": resp.GetCpuArchitecture(),
+					"deviceType":      resp.GetDeviceType(),
 					"cliVersion":      version.Version,
 				}, "", "  ")
 				if err != nil {
@@ -92,6 +93,9 @@ func newDeviceVersionCmd() *cobra.Command {
 			fmt.Printf("Agent Version: %s\n", resp.GetVersion())
 			fmt.Printf("OS: %s %s\n", resp.GetOs(), resp.GetOsVersion())
 			fmt.Printf("Architecture: %s\n", resp.GetCpuArchitecture())
+			if dt := resp.GetDeviceType(); dt != "" {
+				fmt.Printf("Device Type: %s\n", dt)
+			}
 			fmt.Printf("CLI Version: %s\n", version.Version)
 
 			if cmp := version.CompareVersions(version.Version, resp.GetVersion()); cmp > 0 {

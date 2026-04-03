@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -45,7 +47,7 @@ so the device can download it directly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			// Determine the artifact URL: local path or remote URL.
+			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
 				return fmt.Errorf("provide either a local artifact path or --artifact-url, not both")
 			}
@@ -55,6 +57,40 @@ so the device can download it directly.`,
 				return err
 			}
 			defer conn.Close()
+
+			// Check that the device has mender-update support.
+			versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+			if err != nil {
+				return fmt.Errorf("checking device capabilities: %w", err)
+			}
+			hasMender := false
+			for _, f := range versionResp.GetFeatureset() {
+				if f == "mender" {
+					hasMender = true
+					break
+				}
+			}
+			if !hasMender {
+				return fmt.Errorf("device does not support OTA updates (mender-update not found)")
+			}
+
+			// No artifact provided — try to auto-detect from device type, then picker.
+			if len(args) == 0 && artifactURL == "" {
+				deviceType := versionResp.GetDeviceType()
+				if deviceType != "" {
+					url, autoErr := getLatestOTAURLForDeviceType(deviceType)
+					if autoErr == nil {
+						artifactURL = url
+					}
+				}
+				if artifactURL == "" {
+					url, pickErr := pickOTAArtifactURL()
+					if pickErr != nil {
+						return pickErr
+					}
+					artifactURL = url
+				}
+			}
 
 			// If a local path is provided, resolve and serve it.
 			if len(args) > 0 {
@@ -155,7 +191,12 @@ so the device can download it directly.`,
 				return model.Err()
 			}
 
-			fmt.Println("WendyOS update completed successfully.")
+			deviceHost := conn.Host
+			fmt.Println("WendyOS update applied. Device is rebooting...")
+			if err := waitForDeviceOnline(deviceHost); err != nil {
+				return err
+			}
+			fmt.Println("Device is back online.")
 			return nil
 		},
 	}
@@ -203,6 +244,121 @@ func artifactURLPath(filePath string) string {
 	h := sha256.New()
 	h.Write([]byte(filePath))
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+// pickOTAArtifactURL interactively picks a device and version from the GCS
+// manifest and returns the Mender artifact URL for the selected version.
+func pickOTAArtifactURL() (string, error) {
+	fmt.Println("Fetching available devices...")
+
+	devices, err := getAvailableDevices()
+	if err != nil {
+		return "", fmt.Errorf("fetching device manifest: %w", err)
+	}
+
+	// Filter to devices that have at least one version with an OTA artifact.
+	var items []tui.PickerItem
+	deviceMap := make(map[string]deviceInfo)
+	for _, dev := range devices {
+		if dev.Manifest == nil {
+			continue
+		}
+		for _, v := range dev.Manifest.Versions {
+			if v.OTAUpdatePath != "" {
+				deviceMap[dev.Key] = dev
+				items = append(items, tui.PickerItem{
+					Name:        dev.Name,
+					Description: fmt.Sprintf("(latest: %s)", dev.LatestVersion),
+					Value:       dev.Key,
+				})
+				break
+			}
+		}
+	}
+	if len(items) == 0 {
+		return "", fmt.Errorf("no devices with OTA update support found in manifest")
+	}
+
+	fmt.Println()
+	key, err := pickFromItems("Select a device", items)
+	if err != nil {
+		return "", err
+	}
+	dev := deviceMap[key]
+
+	// Filter versions to those that have an OTA artifact.
+	var versionItems []tui.PickerItem
+	for ver, v := range dev.Manifest.Versions {
+		if v.OTAUpdatePath == "" {
+			continue
+		}
+		desc := ""
+		if v.IsLatest {
+			desc = "latest"
+		} else if v.IsNightly {
+			desc = "nightly"
+		}
+		versionItems = append(versionItems, tui.PickerItem{
+			Name:        ver,
+			Description: desc,
+			Value:       ver,
+		})
+	}
+
+	fmt.Println()
+	ver, err := pickFromItems("Select a version", versionItems)
+	if err != nil {
+		return "", err
+	}
+
+	return getOTAUpdateURL(dev.Manifest, ver)
+}
+
+// waitForDeviceOnline polls the device until it responds to GetAgentVersion,
+// or until a 5-minute timeout expires. Shows a spinner while waiting.
+func waitForDeviceOnline(host string) error {
+	addr := hostPort(host, defaultAgentPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	spin := tui.NewSpinner("Waiting for device to come back online...")
+	p := tea.NewProgram(spin)
+
+	go func() {
+		// Give the device a few seconds to begin rebooting before polling.
+		time.Sleep(5 * time.Second)
+
+		for {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+			conn, err := connectWithAutoTLS(probeCtx, addr)
+			probeCancel()
+			if err == nil {
+				probeCtx2, probeCancel2 := context.WithTimeout(ctx, 3*time.Second)
+				_, probeErr := conn.AgentService.GetAgentVersion(probeCtx2, &agentpb.GetAgentVersionRequest{})
+				probeCancel2()
+				conn.Close()
+				if probeErr == nil {
+					p.Send(tui.SpinnerDoneMsg{})
+					return
+				}
+			}
+
+			select {
+			case <-ctx.Done():
+				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("timed out waiting for device to come back online")})
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+	_, spinErr := finalModel.(tui.SpinnerModel).Result()
+	return spinErr
 }
 
 // localIPForHost returns the local IP address used to reach the given host.
