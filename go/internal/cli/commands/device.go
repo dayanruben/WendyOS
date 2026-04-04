@@ -53,6 +53,7 @@ func newDeviceCmd() *cobra.Command {
 		newWifiCmd(),
 		newAppsCmd(),
 		newVolumesCmd(),
+		newAudioCmd(),
 	)
 
 	return cmd
