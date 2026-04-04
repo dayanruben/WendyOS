@@ -73,8 +73,8 @@ func newAppsListCmd() *cobra.Command {
 }
 
 func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error {
-	// Interactive dashboard when stdout is a TTY and --json is not set.
-	if !jsonOutput && term.IsTerminal(int(os.Stdout.Fd())) {
+	// Interactive dashboard when stdin/stdout are interactive and --json is not set.
+	if !jsonOutput && isInteractiveTerminal() {
 		return runAppsDashboard(ctx, conn)
 	}
 

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -74,20 +75,6 @@ func buildDashboardRows(
 		rows[i] = row
 	}
 	return rows
-}
-
-// formatBytes converts a byte count to a human-readable string using SI units.
-func formatBytes(n int64) string {
-	switch {
-	case n >= 1_000_000_000:
-		return fmt.Sprintf("%.1f GB", float64(n)/1_000_000_000)
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.1f MB", float64(n)/1_000_000)
-	case n >= 1_000:
-		return fmt.Sprintf("%.1f kB", float64(n)/1_000)
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
 }
 
 // --- Message types ---
@@ -230,14 +217,26 @@ func (m appsDashboardModel) runContainersPoll() {
 			return
 		}
 		var containers []*agentpb.AppContainer
+		var recvErr error
 		for {
 			resp, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
+				recvErr = err
 				break
 			}
 			if c := resp.GetContainer(); c != nil {
 				containers = append(containers, c)
 			}
+		}
+		if recvErr != nil {
+			select {
+			case m.containersCh <- appsDashContainersMsg{err: recvErr}:
+			case <-m.ctx.Done():
+			}
+			return
 		}
 		select {
 		case m.containersCh <- appsDashContainersMsg{containers: containers}:
@@ -479,8 +478,11 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				for {
 					_, err := stream.Recv()
-					if err != nil {
+					if err == io.EOF {
 						break
+					}
+					if err != nil {
+						return appsDashActionResultMsg{err: fmt.Errorf("starting %s: %w", appName, err)}
 					}
 				}
 				return appsDashActionResultMsg{text: fmt.Sprintf("Started %s", appName)}
