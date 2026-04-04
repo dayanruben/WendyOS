@@ -12,8 +12,8 @@ func newOpenBrowserCmd() *cobra.Command {
 		Use:   "open-browser <url>",
 		Short: "Open a URL in the default browser",
 		Long:  "Open a URL in the default browser. Works on macOS, Linux, and Windows.\nUseful in wendy.json postStart hooks for cross-platform browser opening.",
-		Example: `  wendy open-browser http://localhost:3000
-  wendy open-browser https://example.com`,
+		Example: `  wendy utils open-browser http://localhost:3000
+  wendy utils open-browser https://example.com`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rawURL := args[0]

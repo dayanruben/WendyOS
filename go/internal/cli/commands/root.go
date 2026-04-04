@@ -115,8 +115,8 @@ func NewRootCmd() *cobra.Command {
 	infoCmd.GroupID = "misc"
 	analyticsCmd := newAnalyticsCmd()
 	analyticsCmd.GroupID = "misc"
-	openBrowserCmd := newOpenBrowserCmd()
-	openBrowserCmd.GroupID = "misc"
+	utilsCmd := newUtilsCmd()
+	utilsCmd.GroupID = "misc"
 
 	// Hidden command used by a subprocess to test CoreBluetooth access.
 	// The main process spawns a child process that runs this command so
@@ -147,7 +147,7 @@ func NewRootCmd() *cobra.Command {
 		cacheCmd,
 		infoCmd,
 		analyticsCmd,
-		openBrowserCmd,
+		utilsCmd,
 	)
 
 	root.SetHelpCommandGroupID("misc")

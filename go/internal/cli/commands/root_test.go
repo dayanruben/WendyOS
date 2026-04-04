@@ -24,7 +24,7 @@ func TestRootCommand_HasAllSubcommands(t *testing.T) {
 		"cache",
 		"info",
 		"analytics",
-		"open-browser",
+		"utils",
 	}
 
 	cmds := root.Commands()
