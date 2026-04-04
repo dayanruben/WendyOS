@@ -196,4 +196,3 @@ func newVolumesRemoveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
 	return cmd
 }
-

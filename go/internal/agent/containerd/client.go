@@ -12,8 +12,8 @@ import (
 
 	cgroupv1 "github.com/containerd/cgroups/v3/cgroup1/stats"
 	cgroupv2 "github.com/containerd/cgroups/v3/cgroup2/stats"
-	"github.com/containerd/containerd/api/types"
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
+	"github.com/containerd/containerd/api/types"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
