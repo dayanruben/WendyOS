@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,7 +9,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/config"
@@ -67,35 +67,35 @@ func newCacheListCmd() *cobra.Command {
 				path := filepath.Join(cacheDir, entry.Name())
 				if entry.IsDir() && entry.Name() == "os-images" {
 					imgs, err := os.ReadDir(path)
-					if err == nil {
-						for _, img := range imgs {
-							if img.IsDir() {
-								continue
-							}
-							imgPath := filepath.Join(path, img.Name())
-							imgInfo, err := img.Info()
-							var imgSize int64
-							if err == nil {
-								imgSize = imgInfo.Size()
-							}
-							items = append(items, cacheEntry{
-								name: "os-images/" + img.Name(),
-								path: imgPath,
-								size: imgSize,
-							})
+					if err != nil {
+						return fmt.Errorf("reading os-images cache directory: %w", err)
+					}
+					for _, img := range imgs {
+						if img.IsDir() {
+							continue
 						}
+						imgPath := filepath.Join(path, img.Name())
+						imgInfo, err := img.Info()
+						if err != nil {
+							return fmt.Errorf("reading os-images cache entry info for %q: %w", img.Name(), err)
+						}
+						items = append(items, cacheEntry{
+							name: "os-images/" + img.Name(),
+							path: imgPath,
+							size: imgInfo.Size(),
+						})
 					}
 					continue
 				}
 				size, err := entrySize(path)
 				if err != nil {
-					size = 0
+					return fmt.Errorf("determining cache entry size for %s: %w", entry.Name(), err)
 				}
 				items = append(items, cacheEntry{name: entry.Name(), path: path, size: size})
 			}
 
-			// Interactive mode when stdout is a terminal.
-			if term.IsTerminal(int(os.Stdout.Fd())) {
+			// Interactive mode when stdin and stdout are both terminals.
+			if isInteractiveTerminal() {
 				checkItems := make([]tui.ChecklistItem, len(items))
 				for i, item := range items {
 					checkItems[i] = tui.ChecklistItem{
@@ -109,14 +109,23 @@ func newCacheListCmd() *cobra.Command {
 				cl.SelectAllLabel = "Delete all"
 				selected, err := tui.RunChecklistModel(cl, tea.WithOutput(os.Stderr))
 				if err != nil {
-					return nil // cancelled
+					if errors.Is(err, tui.ErrCancelled) {
+						return nil
+					}
+					return err
 				}
 				if len(selected) == 0 {
 					return nil
 				}
 
 				confirmed, err := tui.Confirm(fmt.Sprintf("Delete %d item(s)?", len(selected)), tea.WithOutput(os.Stderr))
-				if err != nil || !confirmed {
+				if err != nil {
+					if errors.Is(err, tui.ErrCancelled) {
+						return nil
+					}
+					return err
+				}
+				if !confirmed {
 					return nil
 				}
 

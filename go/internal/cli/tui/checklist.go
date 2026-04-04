@@ -165,6 +165,9 @@ func (m ChecklistModel) View() string {
 		pointer := "  "
 
 		if item.Locked {
+			if row == m.cursor {
+				pointer = clCursor.Render("▸ ")
+			}
 			label := clLockedLabel.Render(item.Label)
 			protected := clLocked.Render("[protected]")
 			sb.WriteString(fmt.Sprintf("%s%s  %s", pointer, protected, label))
