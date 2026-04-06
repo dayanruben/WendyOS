@@ -78,7 +78,10 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 }
 
 // SetDeviceCapabilities adds standard device capabilities plus the cgroup
-// mount/namespace wiring needed for device-aware workloads.
+// mount/namespace wiring needed for device-aware workloads. Callers are still
+// responsible for adding explicit device cgroup allow rules for each
+// entitlement they enable; this helper intentionally does not add a generic
+// allow-all devices rule.
 func SetDeviceCapabilities(spec *Spec, appName string) {
 	caps := []string{
 		"CAP_CHOWN",
@@ -313,7 +316,7 @@ func applyVideo(spec *Spec) {
 		Destination: "/dev",
 		Source:      "/dev",
 		Type:        "bind",
-		Options:     []string{"rbind", "rw", "nosuid"},
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
 	})
 }
 

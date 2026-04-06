@@ -212,6 +212,22 @@ func TestApplyEntitlements_Audio(t *testing.T) {
 	if !hasEnv(spec, "PIPEWIRE_RUNTIME_DIR") {
 		t.Error("audio entitlement did not set PIPEWIRE_RUNTIME_DIR")
 	}
+
+	// Audio should remain constrained to explicit sound-device rules even
+	// though it calls SetDeviceCapabilities().
+	foundSoundRule := false
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Major != nil && *d.Major == 116 && d.Allow {
+			foundSoundRule = true
+			break
+		}
+	}
+	if !foundSoundRule {
+		t.Error("audio entitlement did not add sound cgroup device rule (major 116)")
+	}
+	if hasAllowAllDeviceRule(spec) {
+		t.Error("audio entitlement should not add a generic allow-all device cgroup rule")
+	}
 }
 
 func TestApplyEntitlements_Persist(t *testing.T) {
@@ -403,6 +419,9 @@ func TestApplyEntitlements_Video(t *testing.T) {
 	}
 	if !slices.Contains(devMount.Options, "rw") {
 		t.Error("video entitlement /dev mount missing rw option")
+	}
+	if !slices.Contains(devMount.Options, "noexec") {
+		t.Error("video entitlement /dev mount missing noexec option")
 	}
 }
 
