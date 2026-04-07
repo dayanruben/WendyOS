@@ -59,9 +59,13 @@ type templateVariable struct {
 }
 
 // fetchRepoMeta downloads and parses meta.json from the templates repo.
-func fetchRepoMeta() (*repoMeta, error) {
+// If branch is empty, it defaults to templateRepoBranch ("main").
+func fetchRepoMeta(branch string) (*repoMeta, error) {
+	if branch == "" {
+		branch = templateRepoBranch
+	}
 	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/meta.json",
-		templateRepoOwner, templateRepoName, templateRepoBranch)
+		templateRepoOwner, templateRepoName, branch)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)
@@ -94,9 +98,13 @@ func isTemplateLanguage(language string, meta *repoMeta) bool {
 // downloadTemplateArchive fetches the templates repo tarball and extracts
 // the files for {language}/{templateName}/ into a map of relative path -> content.
 // It also returns the parsed template.json manifest.
-func downloadTemplateArchive(language, templateName string) (map[string][]byte, *templateManifest, error) {
+// If branch is empty, it defaults to templateRepoBranch ("main").
+func downloadTemplateArchive(language, templateName, branch string) (map[string][]byte, *templateManifest, error) {
+	if branch == "" {
+		branch = templateRepoBranch
+	}
 	url := fmt.Sprintf("https://github.com/%s/%s/archive/refs/heads/%s.tar.gz",
-		templateRepoOwner, templateRepoName, templateRepoBranch)
+		templateRepoOwner, templateRepoName, branch)
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(url)
