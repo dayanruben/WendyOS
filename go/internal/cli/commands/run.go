@@ -420,14 +420,14 @@ func runMacOSWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// Assemble file sync entries.
 	// The binary is always included.
 	syncEntries := []fileSyncEntry{
-		{localRoot: binaryPath, remotePath: product},
+		{localPath: binaryPath, remotePath: product},
 	}
 
 	// Include sandbox.sb if present.
 	sandboxPath := filepath.Join(cwd, "sandbox.sb")
 	if _, err := os.Stat(sandboxPath); err == nil {
 		syncEntries = append(syncEntries, fileSyncEntry{
-			localRoot:  sandboxPath,
+			localPath:  sandboxPath,
 			remotePath: "sandbox.sb",
 		})
 	}
@@ -436,7 +436,7 @@ func runMacOSWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	for _, f := range appCfg.Files {
 		localAbs := filepath.Join(cwd, f.Path)
 		syncEntries = append(syncEntries, fileSyncEntry{
-			localRoot:  localAbs,
+			localPath:  localAbs,
 			remotePath: effectiveRemotePath(f.Path, f.To),
 		})
 	}

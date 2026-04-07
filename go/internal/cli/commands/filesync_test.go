@@ -286,7 +286,7 @@ func TestSyncFiles_AllDiffedFilesTransferred(t *testing.T) {
 	defer cleanup()
 
 	entries := []fileSyncEntry{
-		{localRoot: filepath.Join(dir, "MyApp"), remotePath: "MyApp"},
+		{localPath: filepath.Join(dir, "MyApp"), remotePath: "MyApp"},
 	}
 
 	if err := syncFiles(context.Background(), conn, "sh.wendy.MyApp", entries); err != nil {
@@ -332,7 +332,7 @@ func TestSyncFiles_UnchangedFileNotReSent(t *testing.T) {
 	defer cleanup()
 
 	entries := []fileSyncEntry{
-		{localRoot: filepath.Join(dir, "MyApp"), remotePath: "MyApp"},
+		{localPath: filepath.Join(dir, "MyApp"), remotePath: "MyApp"},
 	}
 
 	if err := syncFiles(context.Background(), conn, "sh.wendy.MyApp", entries); err != nil {
@@ -348,7 +348,7 @@ func TestSyncFiles_UnchangedFileNotReSent(t *testing.T) {
 }
 
 func TestSyncFiles_DirectoryEntry_AllFilesTransferredWithPrefix(t *testing.T) {
-	// A fileSyncEntry whose localRoot is a directory: every file under it
+	// A fileSyncEntry whose localPath is a directory: every file under it
 	// should be transferred with the remotePath prefix.
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
@@ -366,7 +366,7 @@ func TestSyncFiles_DirectoryEntry_AllFilesTransferredWithPrefix(t *testing.T) {
 	defer cleanup()
 
 	entries := []fileSyncEntry{
-		{localRoot: dir, remotePath: "data"},
+		{localPath: dir, remotePath: "data"},
 	}
 
 	if err := syncFiles(context.Background(), conn, "sh.wendy.App", entries); err != nil {
@@ -402,7 +402,7 @@ func TestSyncFiles_ProgressReportedPerFile(t *testing.T) {
 	defer cleanup()
 
 	entries := []fileSyncEntry{
-		{localRoot: dir, remotePath: ""},
+		{localPath: dir, remotePath: ""},
 	}
 
 	// syncFiles should succeed and produce acks for both files.
@@ -430,7 +430,7 @@ func TestSyncFiles_NothingToSyncPrintsUpToDate(t *testing.T) {
 	conn, cleanup := startFakeServer(t, srv)
 	defer cleanup()
 
-	entries := []fileSyncEntry{{localRoot: filepath.Join(dir, "app"), remotePath: "app"}}
+	entries := []fileSyncEntry{{localPath: filepath.Join(dir, "app"), remotePath: "app"}}
 
 	// Should complete without error.
 	if err := syncFiles(context.Background(), conn, "sh.wendy.App", entries); err != nil {

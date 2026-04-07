@@ -19,10 +19,10 @@ import (
 )
 
 // fileSyncEntry pairs an absolute local path with its effective remote destination.
-//   - If localRoot is a regular file, remotePath is the full agent-relative path.
-//   - If localRoot is a directory, remotePath is the agent-relative prefix (may be empty).
+//   - If localPath is a regular file, remotePath is the full agent-relative path.
+//   - If localPath is a directory, remotePath is the agent-relative prefix (may be empty).
 type fileSyncEntry struct {
-	localRoot  string // absolute path on the developer's machine (file or dir)
+	localPath  string // absolute path on the developer's machine (file or dir)
 	remotePath string // agent-relative path (full path for file; prefix for dir)
 }
 
@@ -304,22 +304,22 @@ func buildCombinedManifest(entries []fileSyncEntry) ([]*agentpb.FileSyncEntry, m
 	localFiles := make(map[string]string)
 
 	for _, e := range entries {
-		info, err := os.Stat(e.localRoot)
+		info, err := os.Stat(e.localPath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("stat %s: %w", e.localRoot, err)
+			return nil, nil, fmt.Errorf("stat %s: %w", e.localPath, err)
 		}
 
 		if !info.IsDir() {
 			// Single file: compute the entry directly.
 			agentPath := e.remotePath
 			h := sha256.New()
-			f, err := os.Open(e.localRoot)
+			f, err := os.Open(e.localPath)
 			if err != nil {
-				return nil, nil, fmt.Errorf("open %s: %w", e.localRoot, err)
+				return nil, nil, fmt.Errorf("open %s: %w", e.localPath, err)
 			}
 			if _, err := io.Copy(h, f); err != nil {
 				f.Close()
-				return nil, nil, fmt.Errorf("hashing %s: %w", e.localRoot, err)
+				return nil, nil, fmt.Errorf("hashing %s: %w", e.localPath, err)
 			}
 			f.Close()
 
@@ -329,12 +329,12 @@ func buildCombinedManifest(entries []fileSyncEntry) ([]*agentpb.FileSyncEntry, m
 				Sha256: hex.EncodeToString(h.Sum(nil)),
 				Mode:   uint32(info.Mode()),
 			})
-			localFiles[agentPath] = e.localRoot
+			localFiles[agentPath] = e.localPath
 		} else {
 			// Directory: walk and prefix paths.
-			subEntries, err := buildLocalManifest(e.localRoot)
+			subEntries, err := buildLocalManifest(e.localPath)
 			if err != nil {
-				return nil, nil, fmt.Errorf("building manifest for %s: %w", e.localRoot, err)
+				return nil, nil, fmt.Errorf("building manifest for %s: %w", e.localPath, err)
 			}
 			for _, se := range subEntries {
 				relPath := se.Path
@@ -346,7 +346,7 @@ func buildCombinedManifest(entries []fileSyncEntry) ([]*agentpb.FileSyncEntry, m
 				}
 				se.Path = agentPath
 				manifest = append(manifest, se)
-				localFiles[agentPath] = filepath.Join(e.localRoot, relPath)
+				localFiles[agentPath] = filepath.Join(e.localPath, relPath)
 			}
 		}
 	}
