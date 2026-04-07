@@ -79,6 +79,7 @@ type AppConfig struct {
 	Version      string           `json:"version,omitempty"`
 	Platform     string           `json:"platform,omitempty"`
 	Language     string           `json:"language,omitempty"`
+	Scheme       string           `json:"scheme,omitempty"`
 	Entitlements []Entitlement    `json:"entitlements,omitempty"`
 	Readiness    *ReadinessConfig `json:"readiness,omitempty"`
 	Hooks        *HooksConfig     `json:"hooks,omitempty"`

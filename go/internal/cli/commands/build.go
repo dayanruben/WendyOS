@@ -183,7 +183,8 @@ func detectProjectTypeWithLanguage(dir, language string) string {
 	case "swift":
 		return "swift"
 	}
-	return detectProjectType(dir)
+	t, _ := detectProjectType(dir) // ignore multiple-xcodeproj error for picker pre-filtering
+	return t
 }
 
 func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform string) error {
@@ -196,6 +197,8 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		return buildPythonProject(dir, imageName, platform)
 	case "swift":
 		return buildSwiftProject(dir, appID, platform)
+	case "xcode":
+		return fmt.Errorf("Xcode projects are built automatically by 'wendy run'; the 'wendy build' command does not support the xcode type")
 	default:
 		return fmt.Errorf("unknown project type; add a Dockerfile, Package.swift, or requirements.txt")
 	}
