@@ -14,7 +14,7 @@ The older `FileHandle.write(_:)` doesn't declare throws, but on failure it silen
 **#4 — `.tmp` suffix collision** ✅ resolved
 Using `destURL.path + ".tmp"` is fragile — if the relative path already ends in `.tmp` (e.g. `foo.tmp`), it collides with the exclusion rule in `buildManifest`, and a future upload of that file will be silently excluded from manifests. Use a separate temp directory or a UUID-named scratch file instead.
 
-**#5 — Path traversal not validated**
+**#5 — Path traversal not validated** ✅ resolved
 `chunk.path` and `commit.path` from the client are appended to `workDir` without checking for `..` components. A malicious or buggy client could escape the app directory.
 
 **#6 — Pruning uses the pre-session agent manifest**
