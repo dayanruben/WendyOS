@@ -44,5 +44,5 @@ Synchronous call inside a structured concurrency task group. It parks a thread f
 
 ## WendyAgent.swift
 
-**#11 — Duplicated apps base path**
+**#11 — Duplicated apps base path** ✅ resolved
 `FileSyncService` and `ContainerService` each independently default to `~/Library/Application Support/wendy-agent/apps`. A single path constant should be shared between them; otherwise a misconfiguration silently splits the data.
