@@ -17,7 +17,7 @@ Using `destURL.path + ".tmp"` is fragile — if the relative path already ends i
 **#5 — Path traversal not validated** ✅ resolved
 `chunk.path` and `commit.path` from the client are appended to `workDir` without checking for `..` components. A malicious or buggy client could escape the app directory.
 
-**#6 — Pruning uses the pre-session agent manifest**
+**#6 — Pruning uses the pre-session agent manifest** ✅ resolved
 Stale-file deletion is based on `agentManifest` built before the session ran, not the actual post-session directory state. If a file was newly created by a bad chunk/commit sequence that was then cleaned up, or if there are pre-existing temp files that slipped through, the pruning set is wrong. Recompute or track what was actually written.
 
 ---
