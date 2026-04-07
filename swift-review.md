@@ -27,17 +27,17 @@ Stale-file deletion is based on `agentManifest` built before the session ran, no
 **#7 — `try! process.run()`** ✅ resolved
 Force-try in a production gRPC handler. A missing binary or bad `executableURL` will crash the agent process entirely. Replace with `try process.run()` and propagate as an `RPCError`.
 
-**#8 — `WriteLayer` accumulates the whole layer in memory**
+**#8 — `WriteLayer` accumulates the whole layer in memory** ⚠️ out of scope
 Same pattern as #2 — large OCI layers will OOM the agent.
 
-**#9 — `process.waitUntilExit()` blocks a Swift concurrency thread**
+**#9 — `process.waitUntilExit()` blocks a Swift concurrency thread** ⚠️ out of scope
 Synchronous call inside a structured concurrency task group. It parks a thread for the entire lifetime of the child process, starving the cooperative thread pool. Use `withCheckedContinuation` + `terminationHandler`, as is done correctly in `extractTarGz`.
 
 ---
 
 ## AgentService.swift
 
-**#10 — Reachable RPCs use `fatalError` instead of `.unimplemented`**
+**#10 — Reachable RPCs use `fatalError` instead of `.unimplemented`** ⚠️ out of scope
 `runContainer` and `updateAgent` are reachable RPCs — a client calling either will crash the agent. Stubs should throw `RPCError(code: .unimplemented, ...)` like the unimplemented methods in `ContainerService` do.
 
 ---
