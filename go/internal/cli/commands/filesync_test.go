@@ -114,14 +114,14 @@ func TestBuildLocalManifest_SHA256Correctness(t *testing.T) {
 // ---- diffManifests tests ----
 
 func TestDiffManifests_Identical(t *testing.T) {
-	local := []*agentpb.FileSyncEntry{
+	local := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc", Size: 10},
 		{Path: "config.json", Sha256: "def", Size: 5},
-	}
-	remote := []*agentpb.FileSyncEntry{
+	}}
+	remote := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc", Size: 10},
 		{Path: "config.json", Sha256: "def", Size: 5},
-	}
+	}}
 	result := diffManifests(local, remote)
 	if len(result) != 0 {
 		t.Errorf("expected empty diff for identical manifests, got %v", result)
@@ -129,13 +129,13 @@ func TestDiffManifests_Identical(t *testing.T) {
 }
 
 func TestDiffManifests_MissingFromRemote(t *testing.T) {
-	local := []*agentpb.FileSyncEntry{
+	local := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc"},
 		{Path: "new.bin", Sha256: "xyz"},
-	}
-	remote := []*agentpb.FileSyncEntry{
+	}}
+	remote := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc"},
-	}
+	}}
 	result := diffManifests(local, remote)
 	if len(result) != 1 || result[0] != "new.bin" {
 		t.Errorf("expected [new.bin], got %v", result)
@@ -143,12 +143,12 @@ func TestDiffManifests_MissingFromRemote(t *testing.T) {
 }
 
 func TestDiffManifests_SHA256Differs(t *testing.T) {
-	local := []*agentpb.FileSyncEntry{
+	local := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "newHash"},
-	}
-	remote := []*agentpb.FileSyncEntry{
+	}}
+	remote := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "oldHash"},
-	}
+	}}
 	result := diffManifests(local, remote)
 	if len(result) != 1 || result[0] != "app" {
 		t.Errorf("expected [app], got %v", result)
@@ -158,13 +158,13 @@ func TestDiffManifests_SHA256Differs(t *testing.T) {
 func TestDiffManifests_RemoteOnlyFileNotIncluded(t *testing.T) {
 	// A file present on the agent but not in the local manifest should
 	// not appear in the transfer list (the agent handles deletions).
-	local := []*agentpb.FileSyncEntry{
+	local := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc"},
-	}
-	remote := []*agentpb.FileSyncEntry{
+	}}
+	remote := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc"},
 		{Path: "stale.bin", Sha256: "zzz"},
-	}
+	}}
 	result := diffManifests(local, remote)
 	if len(result) != 0 {
 		t.Errorf("expected empty diff (agent-only file not in transfer list), got %v", result)
@@ -172,10 +172,10 @@ func TestDiffManifests_RemoteOnlyFileNotIncluded(t *testing.T) {
 }
 
 func TestDiffManifests_EmptyRemote(t *testing.T) {
-	local := []*agentpb.FileSyncEntry{
+	local := &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{
 		{Path: "app", Sha256: "abc"},
 		{Path: "config.json", Sha256: "def"},
-	}
+	}}
 	result := diffManifests(local, nil)
 	if len(result) != 2 {
 		t.Errorf("expected 2 entries to transfer against empty remote, got %v", result)

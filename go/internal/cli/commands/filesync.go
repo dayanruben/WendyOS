@@ -77,14 +77,14 @@ func buildLocalManifest(root string) ([]*agentpb.FileSyncEntry, error) {
 // diffManifests returns the agent-relative paths of files that are missing from
 // the agent's manifest or whose SHA256 differs from the local manifest.
 // Agent-only files (stale files) are not included; the agent handles deletions.
-func diffManifests(local, remote []*agentpb.FileSyncEntry) []string {
-	remoteByPath := make(map[string]string, len(remote)) // path → sha256
-	for _, e := range remote {
+func diffManifests(local, remote *agentpb.FileSyncManifest) []string {
+	remoteByPath := make(map[string]string, len(remote.GetFiles())) // path → sha256
+	for _, e := range remote.GetFiles() {
 		remoteByPath[e.Path] = e.Sha256
 	}
 
 	var toTransfer []string
-	for _, e := range local {
+	for _, e := range local.GetFiles() {
 		if remoteHash, ok := remoteByPath[e.Path]; !ok || remoteHash != e.Sha256 {
 			toTransfer = append(toTransfer, e.Path)
 		}
@@ -123,7 +123,7 @@ func syncFiles(
 		RequestType: &agentpb.FileSyncRequest_Start{
 			Start: &agentpb.FileSyncStart{
 				AppId:    appID,
-				Manifest: &agentpb.FileSyncManifest{Files: localManifest},
+				Manifest: localManifest,
 			},
 		},
 	}); err != nil {
@@ -139,10 +139,9 @@ func syncFiles(
 	if !ok {
 		return fmt.Errorf("expected FileSyncManifest, got %T", resp.ResponseType)
 	}
-	agentManifest := agentManifestMsg.Manifest.GetFiles()
 
 	// Compute diff.
-	toTransfer := diffManifests(localManifest, agentManifest)
+	toTransfer := diffManifests(localManifest, agentManifestMsg.Manifest)
 
 	if len(toTransfer) == 0 {
 		// Nothing to transfer. Close stream and wait for complete.
@@ -163,8 +162,8 @@ func syncFiles(
 	}
 
 	// Compute total bytes to transfer for progress display.
-	localByPath := make(map[string]*agentpb.FileSyncEntry, len(localManifest))
-	for _, e := range localManifest {
+	localByPath := make(map[string]*agentpb.FileSyncEntry, len(localManifest.GetFiles()))
+	for _, e := range localManifest.GetFiles() {
 		localByPath[e.Path] = e
 	}
 	var totalBytes int64
@@ -297,10 +296,10 @@ func syncFiles(
 
 // buildCombinedManifest assembles the local manifest from all fileSyncEntry values
 // and returns:
-//   - the combined []*agentpb.FileSyncEntry for the FileSyncStart message
+//   - the combined FileSyncManifest for the FileSyncStart message
 //   - a map from agent-relative path → absolute local path (for chunk transfer)
-func buildCombinedManifest(entries []fileSyncEntry) ([]*agentpb.FileSyncEntry, map[string]string, error) {
-	var manifest []*agentpb.FileSyncEntry
+func buildCombinedManifest(entries []fileSyncEntry) (*agentpb.FileSyncManifest, map[string]string, error) {
+	var files []*agentpb.FileSyncEntry
 	localFiles := make(map[string]string)
 
 	for _, e := range entries {
@@ -323,7 +322,7 @@ func buildCombinedManifest(entries []fileSyncEntry) ([]*agentpb.FileSyncEntry, m
 			}
 			f.Close()
 
-			manifest = append(manifest, &agentpb.FileSyncEntry{
+			files = append(files, &agentpb.FileSyncEntry{
 				Path:   agentPath,
 				Size:   info.Size(),
 				Sha256: hex.EncodeToString(h.Sum(nil)),
@@ -345,13 +344,13 @@ func buildCombinedManifest(entries []fileSyncEntry) ([]*agentpb.FileSyncEntry, m
 					agentPath = relPath
 				}
 				se.Path = agentPath
-				manifest = append(manifest, se)
+				files = append(files, se)
 				localFiles[agentPath] = filepath.Join(e.localPath, relPath)
 			}
 		}
 	}
 
-	return manifest, localFiles, nil
+	return &agentpb.FileSyncManifest{Files: files}, localFiles, nil
 }
 
 // printFileSyncProgress prints a single-line progress update for the current file.
