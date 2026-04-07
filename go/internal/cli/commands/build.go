@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
 	"golang.org/x/term"
 )
@@ -198,7 +200,7 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 	case "swift":
 		return buildSwiftProject(dir, appID, platform)
 	case "xcode":
-		return fmt.Errorf("Xcode projects are built automatically by 'wendy run'; the 'wendy build' command does not support the xcode type")
+		return buildXcodeProject(ctx, dir, option.File)
 	default:
 		return fmt.Errorf("unknown project type; add a Dockerfile, Package.swift, or requirements.txt")
 	}
@@ -269,6 +271,71 @@ func buildPythonProject(dir, imageName, platform string) error {
 	}
 
 	return err
+}
+
+func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
+	// Resolve scheme: honour wendy.json override, then auto-detect.
+	scheme := ""
+	if cfg, err := appconfig.LoadFromFile(filepath.Join(dir, "wendy.json")); err == nil {
+		scheme = cfg.Scheme
+	}
+	if scheme == "" {
+		var err error
+		scheme, err = findXcodeScheme(ctx, dir)
+		if err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("Building Xcode project %s (scheme: %s)...\n", xcodeproj, scheme)
+
+	cmd := execCommandContext(ctx, "xcodebuild",
+		"-project", xcodeproj,
+		"-scheme", scheme,
+		"-configuration", "Release",
+		"-derivedDataPath", ".xcode/",
+	)
+	cmd.Dir = dir
+
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			if errors.Is(err, exec.ErrNotFound) {
+				return fmt.Errorf("xcodebuild is required but not found in PATH; install Xcode from the App Store")
+			}
+			return err
+		}
+		fmt.Println("Build completed successfully.")
+		return nil
+	}
+
+	s := tui.NewSpinner("Building Xcode project...")
+	p := tea.NewProgram(s)
+
+	go func() {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if errors.Is(err, exec.ErrNotFound) {
+			err = fmt.Errorf("xcodebuild is required but not found in PATH; install Xcode from the App Store")
+		}
+		p.Send(tui.SpinnerDoneMsg{Err: err})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	model := finalModel.(tui.SpinnerModel)
+	_, buildErr := model.Result()
+	if buildErr != nil {
+		return buildErr
+	}
+
+	fmt.Println("Build completed successfully.")
+	return nil
 }
 
 func buildSwiftProject(dir, appID, platform string) error {

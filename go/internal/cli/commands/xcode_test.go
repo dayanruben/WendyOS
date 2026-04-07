@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,174 @@ import (
 
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 )
+
+// ---------------------------------------------------------------------------
+// buildXcodeProject
+// ---------------------------------------------------------------------------
+
+func TestBuildXcodeProject_SchemeFromWendyJSON(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a wendy.json with an explicit scheme.
+	cfg := map[string]string{"appId": "myapp", "scheme": "MyScheme"}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	var gotArgs []string
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		gotArgs = append([]string{name}, args...)
+		return exec.CommandContext(ctx, "true")
+	}
+
+	if err := buildXcodeProject(context.Background(), dir, "MyApp.xcodeproj"); err != nil {
+		t.Fatalf("buildXcodeProject error: %v", err)
+	}
+
+	// Scheme from wendy.json must be passed to xcodebuild.
+	if len(gotArgs) == 0 || gotArgs[0] != "xcodebuild" {
+		t.Fatalf("expected xcodebuild invocation, got %v", gotArgs)
+	}
+	schemeIdx := -1
+	for i, a := range gotArgs {
+		if a == "-scheme" && i+1 < len(gotArgs) {
+			schemeIdx = i + 1
+		}
+	}
+	if schemeIdx < 0 {
+		t.Fatal("xcodebuild called without -scheme")
+	}
+	if gotArgs[schemeIdx] != "MyScheme" {
+		t.Errorf("-scheme = %q; want %q", gotArgs[schemeIdx], "MyScheme")
+	}
+}
+
+func TestBuildXcodeProject_SchemeAutoDetected(t *testing.T) {
+	dir := t.TempDir()
+	// No wendy.json — scheme must be auto-detected via xcodebuild -list.
+
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	var calls [][]string
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		// First call is xcodebuild -list -json (scheme discovery).
+		if len(args) > 0 && args[0] == "-list" {
+			script := `echo '{"project":{"schemes":["AutoScheme"]}}'`
+			return exec.CommandContext(ctx, "sh", "-c", script)
+		}
+		// Second call is the actual xcodebuild build.
+		return exec.CommandContext(ctx, "true")
+	}
+
+	if err := buildXcodeProject(context.Background(), dir, "MyApp.xcodeproj"); err != nil {
+		t.Fatalf("buildXcodeProject error: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 xcodebuild calls (list + build), got %d: %v", len(calls), calls)
+	}
+	// Second call must pass the auto-detected scheme.
+	buildCall := calls[1]
+	schemeIdx := -1
+	for i, a := range buildCall {
+		if a == "-scheme" && i+1 < len(buildCall) {
+			schemeIdx = i + 1
+		}
+	}
+	if schemeIdx < 0 {
+		t.Fatal("xcodebuild build call missing -scheme")
+	}
+	if buildCall[schemeIdx] != "AutoScheme" {
+		t.Errorf("-scheme = %q; want %q", buildCall[schemeIdx], "AutoScheme")
+	}
+}
+
+func TestBuildXcodeProject_CorrectFlags(t *testing.T) {
+	dir := t.TempDir()
+
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	var buildArgs []string
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "-list" {
+			script := `echo '{"project":{"schemes":["S"]}}'`
+			return exec.CommandContext(ctx, "sh", "-c", script)
+		}
+		buildArgs = append([]string{name}, args...)
+		return exec.CommandContext(ctx, "true")
+	}
+
+	const xp = "Hello.xcodeproj"
+	if err := buildXcodeProject(context.Background(), dir, xp); err != nil {
+		t.Fatalf("buildXcodeProject error: %v", err)
+	}
+
+	want := map[string]string{
+		"-project":       xp,
+		"-configuration": "Release",
+		"-derivedDataPath": ".xcode/",
+	}
+	for flag, val := range want {
+		found := false
+		for i, a := range buildArgs {
+			if a == flag && i+1 < len(buildArgs) && buildArgs[i+1] == val {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("xcodebuild missing %s %s in args: %v", flag, val, buildArgs)
+		}
+	}
+}
+
+func TestBuildXcodeProject_XcodebuildMissing(t *testing.T) {
+	dir := t.TempDir()
+
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist-12345")
+	}
+
+	err := buildXcodeProject(context.Background(), dir, "MyApp.xcodeproj")
+	if err == nil {
+		t.Fatal("expected error when xcodebuild missing, got nil")
+	}
+	// Either the scheme-discovery step or the build step surfaces the error.
+	if !strings.Contains(err.Error(), "xcodebuild") {
+		t.Errorf("expected 'xcodebuild' in error, got: %v", err)
+	}
+}
+
+func TestBuildXcodeProject_BuildFails(t *testing.T) {
+	dir := t.TempDir()
+
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "-list" {
+			script := `echo '{"project":{"schemes":["S"]}}'`
+			return exec.CommandContext(ctx, "sh", "-c", script)
+		}
+		return exec.CommandContext(ctx, "false")
+	}
+
+	err := buildXcodeProject(context.Background(), dir, "MyApp.xcodeproj")
+	if err == nil {
+		t.Fatal("expected error when xcodebuild fails, got nil")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // findXcodeProj
