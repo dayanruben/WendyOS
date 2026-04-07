@@ -119,7 +119,7 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
                     }
 
                     temporaryHandles[relativePath]!.seekToEndOfFile()
-                    temporaryHandles[relativePath]!.write(chunk.data)
+                    try temporaryHandles[relativePath]!.write(contentsOf: chunk.data)
 
                 case .commit(let commit):
                     let relativePath = commit.path
