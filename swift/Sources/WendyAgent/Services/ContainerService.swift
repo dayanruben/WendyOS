@@ -273,7 +273,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        try! process.run()
+        do {
+            try process.run()
+        } catch {
+            throw RPCError(code: .internalError, message: "Failed to launch process at \(binaryPath): \(error)")
+        }
         runningProcesses[appName] = process
         logger.info("Process started", metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"])
 
