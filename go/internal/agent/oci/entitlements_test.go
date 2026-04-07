@@ -3,8 +3,8 @@ package oci
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"os/user"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"testing"
