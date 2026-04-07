@@ -110,7 +110,7 @@ struct RunSessionTests {
 
         var startMsg = Wendy_Agent_Services_V1_FileSyncStart()
         startMsg.appID = appID
-        startMsg.manifest = []
+        startMsg.manifest = .with { _ in }
         var startReq = Wendy_Agent_Services_V1_FileSyncRequest()
         startReq.requestType = .start(startMsg)
 
@@ -154,7 +154,7 @@ struct RunSessionTests {
 
         var startMsg = Wendy_Agent_Services_V1_FileSyncStart()
         startMsg.appID = appID
-        startMsg.manifest = []
+        startMsg.manifest = .with { _ in }
         var startReq = Wendy_Agent_Services_V1_FileSyncRequest()
         startReq.requestType = .start(startMsg)
 
@@ -193,7 +193,7 @@ struct RunSessionTests {
 
         var startMsg = Wendy_Agent_Services_V1_FileSyncStart()
         startMsg.appID = appID
-        startMsg.manifest = [manifestEntry]
+        startMsg.manifest = .with { $0.files = [manifestEntry] }
 
         var chunk = Wendy_Agent_Services_V1_FileSyncChunk()
         chunk.path = "MyApp"
@@ -261,7 +261,7 @@ struct RunSessionTests {
 
         var startMsg = Wendy_Agent_Services_V1_FileSyncStart()
         startMsg.appID = appID
-        startMsg.manifest = [manifestEntry]
+        startMsg.manifest = .with { $0.files = [manifestEntry] }
 
         var chunk = Wendy_Agent_Services_V1_FileSyncChunk()
         chunk.path = "config/app.json"
@@ -305,7 +305,7 @@ struct RunSessionTests {
 
         var startMsg = Wendy_Agent_Services_V1_FileSyncStart()
         startMsg.appID = appID
-        startMsg.manifest = []
+        startMsg.manifest = .with { _ in }
 
         var chunk = Wendy_Agent_Services_V1_FileSyncChunk()
         chunk.path = "app"
@@ -360,7 +360,7 @@ struct RunSessionTests {
         // Sync with empty CLI manifest.
         var startMsg = Wendy_Agent_Services_V1_FileSyncStart()
         startMsg.appID = appID
-        startMsg.manifest = []
+        startMsg.manifest = .with { _ in }
         var req0 = Wendy_Agent_Services_V1_FileSyncRequest()
         req0.requestType = .start(startMsg)
 

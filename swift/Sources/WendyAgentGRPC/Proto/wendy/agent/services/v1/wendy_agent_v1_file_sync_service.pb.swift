@@ -98,11 +98,20 @@ public struct Wendy_Agent_Services_V1_FileSyncStart: Sendable {
 
   public var appID: String = String()
 
-  public var manifest: [Wendy_Agent_Services_V1_FileSyncEntry] = []
+  public var manifest: Wendy_Agent_Services_V1_FileSyncManifest {
+    get {_manifest ?? Wendy_Agent_Services_V1_FileSyncManifest()}
+    set {_manifest = newValue}
+  }
+  /// Returns true if `manifest` has been explicitly set.
+  public var hasManifest: Bool {self._manifest != nil}
+  /// Clears the value of `manifest`. Subsequent reads from it will return its default value.
+  public mutating func clearManifest() {self._manifest = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _manifest: Wendy_Agent_Services_V1_FileSyncManifest? = nil
 }
 
 /// FileSyncChunk carries a slice of a file being transferred.
@@ -363,25 +372,29 @@ extension Wendy_Agent_Services_V1_FileSyncStart: SwiftProtobuf.Message, SwiftPro
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.appID) }()
-      case 2: try { try decoder.decodeRepeatedMessageField(value: &self.manifest) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._manifest) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
     if !self.appID.isEmpty {
       try visitor.visitSingularStringField(value: self.appID, fieldNumber: 1)
     }
-    if !self.manifest.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.manifest, fieldNumber: 2)
-    }
+    try { if let v = self._manifest {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_FileSyncStart, rhs: Wendy_Agent_Services_V1_FileSyncStart) -> Bool {
     if lhs.appID != rhs.appID {return false}
-    if lhs.manifest != rhs.manifest {return false}
+    if lhs._manifest != rhs._manifest {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

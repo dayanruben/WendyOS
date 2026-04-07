@@ -29,8 +29,8 @@ message FileSyncRequest {
 // FileSyncStart opens a sync session for the given app. The CLI sends its
 // local manifest so the agent can reply with what it already has.
 message FileSyncStart {
-  string                 app_id   = 1;
-  repeated FileSyncEntry manifest = 2;
+  string           app_id   = 1;
+  FileSyncManifest manifest = 2;
 }
 
 // FileSyncChunk carries a slice of a file being transferred.

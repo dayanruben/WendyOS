@@ -58,7 +58,7 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
         }
 
         let appID = startMsg.appID
-        let cliManifest = startMsg.manifest
+        let cliManifest = startMsg.manifest.files
         let workDir = appsBase.appendingPathComponent(appID)
 
         // Ensure working directory exists.

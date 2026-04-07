@@ -193,7 +193,7 @@ func (*FileSyncRequest_Commit) isFileSyncRequest_RequestType() {}
 type FileSyncStart struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	Manifest      []*FileSyncEntry       `protobuf:"bytes,2,rep,name=manifest,proto3" json:"manifest,omitempty"`
+	Manifest      *FileSyncManifest      `protobuf:"bytes,2,opt,name=manifest,proto3" json:"manifest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -235,7 +235,7 @@ func (x *FileSyncStart) GetAppId() string {
 	return ""
 }
 
-func (x *FileSyncStart) GetManifest() []*FileSyncEntry {
+func (x *FileSyncStart) GetManifest() *FileSyncManifest {
 	if x != nil {
 		return x.Manifest
 	}
@@ -596,10 +596,10 @@ const file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_rawDes
 	"\x05start\x18\x01 \x01(\v2&.wendy.agent.services.v1.FileSyncStartH\x00R\x05start\x12>\n" +
 	"\x05chunk\x18\x02 \x01(\v2&.wendy.agent.services.v1.FileSyncChunkH\x00R\x05chunk\x12A\n" +
 	"\x06commit\x18\x03 \x01(\v2'.wendy.agent.services.v1.FileSyncCommitH\x00R\x06commitB\x0e\n" +
-	"\frequest_type\"j\n" +
+	"\frequest_type\"m\n" +
 	"\rFileSyncStart\x12\x15\n" +
-	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12B\n" +
-	"\bmanifest\x18\x02 \x03(\v2&.wendy.agent.services.v1.FileSyncEntryR\bmanifest\"7\n" +
+	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12E\n" +
+	"\bmanifest\x18\x02 \x01(\v2).wendy.agent.services.v1.FileSyncManifestR\bmanifest\"7\n" +
 	"\rFileSyncChunk\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\"P\n" +
@@ -648,7 +648,7 @@ var file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_depIdxs 
 	2, // 0: wendy.agent.services.v1.FileSyncRequest.start:type_name -> wendy.agent.services.v1.FileSyncStart
 	3, // 1: wendy.agent.services.v1.FileSyncRequest.chunk:type_name -> wendy.agent.services.v1.FileSyncChunk
 	4, // 2: wendy.agent.services.v1.FileSyncRequest.commit:type_name -> wendy.agent.services.v1.FileSyncCommit
-	0, // 3: wendy.agent.services.v1.FileSyncStart.manifest:type_name -> wendy.agent.services.v1.FileSyncEntry
+	6, // 3: wendy.agent.services.v1.FileSyncStart.manifest:type_name -> wendy.agent.services.v1.FileSyncManifest
 	6, // 4: wendy.agent.services.v1.FileSyncResponse.manifest:type_name -> wendy.agent.services.v1.FileSyncManifest
 	7, // 5: wendy.agent.services.v1.FileSyncResponse.ack:type_name -> wendy.agent.services.v1.FileSyncAck
 	8, // 6: wendy.agent.services.v1.FileSyncResponse.complete:type_name -> wendy.agent.services.v1.FileSyncComplete

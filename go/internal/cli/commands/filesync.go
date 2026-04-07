@@ -123,7 +123,7 @@ func syncFiles(
 		RequestType: &agentpb.FileSyncRequest_Start{
 			Start: &agentpb.FileSyncStart{
 				AppId:    appID,
-				Manifest: localManifest,
+				Manifest: &agentpb.FileSyncManifest{Files: localManifest},
 			},
 		},
 	}); err != nil {
