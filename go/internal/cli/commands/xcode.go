@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
@@ -40,7 +41,10 @@ func runXcodebuild(ctx context.Context, dir string, args ...string) error {
 
 	fmt.Fprintf(logFile, "xcodebuild %s\n%s\n\n", strings.Join(args, " "), time.Now().Format(time.RFC3339))
 
-	fmt.Printf("  .xcode/build.log  —  tail -f .xcode/build.log\n")
+	hintStyle := lipgloss.NewStyle().Foreground(tui.ColorDim)
+	fmt.Println()
+	fmt.Println(hintStyle.Render("  tail -f .xcode/build.log"))
+	fmt.Println()
 
 	cmd := execCommandContext(ctx, "xcodebuild", args...)
 	cmd.Dir = dir
