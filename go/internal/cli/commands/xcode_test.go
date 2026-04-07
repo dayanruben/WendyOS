@@ -31,12 +31,12 @@ func TestRunXcodebuild_CreatesLogFile(t *testing.T) {
 		t.Fatalf("runXcodebuild error: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".xcode", "build.log"))
+	data, err := os.ReadFile(filepath.Join(dir, ".xcode", "xcodebuild.log"))
 	if err != nil {
-		t.Fatalf("build.log not created: %v", err)
+		t.Fatalf("xcodebuild.log not created: %v", err)
 	}
 	if !strings.Contains(string(data), "xcodebuild output") {
-		t.Errorf("build.log does not contain command output; got:\n%s", data)
+		t.Errorf("xcodebuild.log does not contain command output; got:\n%s", data)
 	}
 }
 
@@ -53,13 +53,13 @@ func TestRunXcodebuild_LogFileContainsHeader(t *testing.T) {
 		t.Fatalf("runXcodebuild error: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".xcode", "build.log"))
+	data, err := os.ReadFile(filepath.Join(dir, ".xcode", "xcodebuild.log"))
 	if err != nil {
-		t.Fatalf("build.log not created: %v", err)
+		t.Fatalf("xcodebuild.log not created: %v", err)
 	}
 	// Header must contain the args and a timestamp.
 	if !strings.Contains(string(data), "-scheme") {
-		t.Errorf("build.log header missing args; got:\n%s", data)
+		t.Errorf("xcodebuild.log header missing args; got:\n%s", data)
 	}
 }
 
@@ -69,7 +69,7 @@ func TestRunXcodebuild_TruncatesLogOnEachRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pre-populate the log with stale content.
-	if err := os.WriteFile(filepath.Join(dir, ".xcode", "build.log"), []byte("stale content"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".xcode", "xcodebuild.log"), []byte("stale content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,12 +83,12 @@ func TestRunXcodebuild_TruncatesLogOnEachRun(t *testing.T) {
 		t.Fatalf("runXcodebuild error: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".xcode", "build.log"))
+	data, err := os.ReadFile(filepath.Join(dir, ".xcode", "xcodebuild.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "stale content") {
-		t.Error("build.log still contains stale content from previous run")
+		t.Error("xcodebuild.log still contains stale content from previous run")
 	}
 }
 

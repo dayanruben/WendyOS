@@ -22,7 +22,7 @@ import (
 )
 
 // runXcodebuild invokes xcodebuild with the given arguments, routing all
-// output to .xcode/build.log. It prints a single "follow along" line before
+// output to .xcode/xcodebuild.log. It prints a single "follow along" line before
 // starting so the user can open a second terminal and tail the log. On a TTY
 // a spinner is shown; on a non-TTY the process runs silently. The log file is
 // truncated at the start of each build so it always reflects the latest run.
@@ -32,7 +32,7 @@ func runXcodebuild(ctx context.Context, dir string, args ...string) error {
 		return fmt.Errorf("creating .xcode directory: %w", err)
 	}
 
-	logPath := filepath.Join(logDir, "build.log")
+	logPath := filepath.Join(logDir, "xcodebuild.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return fmt.Errorf("creating build log: %w", err)
@@ -43,7 +43,7 @@ func runXcodebuild(ctx context.Context, dir string, args ...string) error {
 
 	hintStyle := lipgloss.NewStyle().Foreground(tui.ColorDim)
 	fmt.Println()
-	fmt.Println(hintStyle.Render("  tail -f .xcode/build.log"))
+	fmt.Println(hintStyle.Render("  tail -f .xcode/xcodebuild.log"))
 	fmt.Println()
 
 	cmd := execCommandContext(ctx, "xcodebuild", args...)

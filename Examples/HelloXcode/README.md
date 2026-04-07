@@ -11,11 +11,11 @@ wendy run
 
 `wendy` detects `HelloXcode.xcodeproj`, discovers the `HelloXcode` scheme,
 builds with `xcodebuild -configuration Release`, and syncs the binary to
-the target device. Build output is written to `.xcode/build.log`; follow
+the target device. Build output is written to `.xcode/xcodebuild.log`; follow
 along in a second terminal with:
 
 ```
-tail -f .xcode/build.log
+tail -f .xcode/xcodebuild.log
 ```
 
 ## wendy.json options
