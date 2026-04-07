@@ -6,7 +6,7 @@ import OpenTelemetryGRPC
 import WendyAgentGRPC
 
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
-    private let appsDirectory: String
+    private let appsBase: URL
     private let blobsDirectory: String
     private let broadcaster: TelemetryBroadcaster
     private let executablePath: String
@@ -35,7 +35,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         broadcaster: TelemetryBroadcaster,
         executablePath: String,
         sandboxProfilePath: String? = nil,
-        appsDirectory: String? = nil,
+        appsBase: URL? = nil,
         dockerAvailable: Bool = false
     ) {
         self.broadcaster = broadcaster
@@ -46,12 +46,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let baseDirectory = "\(home)/Library/Application Support/wendy-agent"
 
-        let directory = appsDirectory ?? "\(baseDirectory)/apps"
-        self.appsDirectory = directory
+        self.appsBase = appsBase ?? URL(fileURLWithPath: "\(baseDirectory)/apps")
         self.blobsDirectory = "\(baseDirectory)/blobs"
 
         // Ensure directories exist.
-        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: self.appsBase, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: "\(blobsDirectory)/sha256", withIntermediateDirectories: true)
     }
 
@@ -107,7 +106,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         if imageName.hasPrefix("sha256:") {
             // OCI image: parse manifest → config → extract layer.
-            let appDirectory = "\(appsDirectory)/\(appName)"
+            let appDirectory = appsBase.appendingPathComponent(appName).path
             try FileManager.default.createDirectory(atPath: appDirectory, withIntermediateDirectories: true)
 
             // Read manifest blob.
@@ -139,7 +138,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             logger.info("OCI image unpacked", metadata: ["app_name": "\(appName)", "binary": "\(binaryName)"])
         } else if !imageName.isEmpty {
             // Legacy: imageName is the binary name directly.
-            let appDirectory = "\(appsDirectory)/\(appName)"
+            let appDirectory = appsBase.appendingPathComponent(appName).path
             let binaryPath = "\(appDirectory)/\(imageName)"
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath)")
@@ -153,7 +152,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 // Nothing to register — container will fall back to --appPath.
                 return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
             }
-            let appDirectory = "\(appsDirectory)/\(appName)"
+            let appDirectory = appsBase.appendingPathComponent(appName).path
             let binaryPath = "\(appDirectory)/\(cmd)"
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(
@@ -519,7 +518,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 throw RPCError(code: .dataLoss, message: "SHA256 mismatch: expected \(expectedHash), got \(computedHash)")
             }
 
-            let appDirectory = "\(appsDirectory)/\(appName)"
+            let appDirectory = appsBase.appendingPathComponent(appName).path
             try FileManager.default.createDirectory(atPath: appDirectory, withIntermediateDirectories: true)
             let filePath = "\(appDirectory)/\(filename)"
             try accumulated.write(to: URL(fileURLWithPath: filePath))

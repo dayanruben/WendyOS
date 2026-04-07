@@ -56,18 +56,22 @@ struct WendyAgent: AsyncParsableCommand {
             logger.info("Docker not found, Linux container support disabled")
         }
 
+        let appsBase = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/wendy-agent/apps")
+
         let services: [any RegistrableRPCService] = [
             AgentService(),
             ContainerService(
                 broadcaster: broadcaster,
                 executablePath: appPath,
                 sandboxProfilePath: sandboxProfile.isEmpty ? nil : sandboxProfile,
+                appsBase: appsBase,
                 dockerAvailable: dockerAvailable
             ),
             AudioService(),
             ProvisioningService(),
             TelemetryService(broadcaster: broadcaster),
-            FileSyncService(),
+            FileSyncService(appsBase: appsBase),
         ]
 
         let server = GRPCServer(
