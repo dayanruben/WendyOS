@@ -41,7 +41,7 @@ func runXcodebuild(ctx context.Context, dir string, args ...string) error {
 
 	fmt.Fprintf(logFile, "xcodebuild %s\n%s\n\n", strings.Join(args, " "), time.Now().Format(time.RFC3339))
 
-	hintStyle := lipgloss.NewStyle().Foreground(tui.ColorDim)
+	hintStyle := lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 	fmt.Println()
 	fmt.Println(hintStyle.Render("  tail -f .xcode/xcodebuild.log"))
 	fmt.Println()
