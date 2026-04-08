@@ -33,13 +33,13 @@ type deviceManifest struct {
 
 // deviceVersion describes one OS image version.
 type deviceVersion struct {
-	Path              string `json:"path"`
-	SizeBytes         int64  `json:"size_bytes"`
-	Checksum          string `json:"checksum"`
-	IsLatest          bool   `json:"is_latest"`
-	IsNightly         bool   `json:"is_nightly"`
-	OTAUpdatePath     string `json:"ota_update_path"`
-	OTAUpdateChecksum string `json:"ota_update_checksum"`
+	Path               string `json:"path"`
+	SizeBytes          int64  `json:"size_bytes"`
+	Checksum           string `json:"checksum"`
+	IsLatest           bool   `json:"is_latest"`
+	IsNightly          bool   `json:"is_nightly"`
+	OTAUpdatePath      string `json:"ota_update_path"`
+	OTAUpdateChecksum  string `json:"ota_update_checksum"`
 	OTAUpdateSizeBytes int64  `json:"ota_update_size_bytes"`
 }
 
