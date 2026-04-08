@@ -9,18 +9,20 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private let appsBase: URL
     private let blobsDirectory: String
     private let broadcaster: TelemetryBroadcaster
+    private struct NativeLaunchInfo {
+        let directory: String
+        let binaryName: String
+        let args: [String]
+        let currentDirectory: String?
+    }
+
     private let executablePath: String
     private let logger = Logger(label: "sh.wendy.agent.container")
     private var runningProcesses: [String: Foundation.Process] = [:]
     private let sandboxProfilePath: String?
 
-    /// Maps app name → (appDirectory, binaryName, args, currentDirectory) for native apps uploaded via file sync or layers.
-    private var appDirectories: [String: (
-        directory: String,
-        binaryName: String,
-        args: [String],
-        currentDirectory: String?
-    )] = [:]
+    /// Maps app name → native launch metadata for apps uploaded via file sync or layers.
+    private var appDirectories: [String: NativeLaunchInfo] = [:]
 
     /// Docker backend for Linux containers. Nil when Docker is not available.
     private let dockerBackend: DockerContainerBackend?
@@ -139,7 +141,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath) after extraction")
             }
 
-            appDirectories[appName] = (
+            appDirectories[appName] = NativeLaunchInfo(
                 directory: appDirectory,
                 binaryName: binaryName,
                 args: [],
@@ -153,7 +155,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath)")
             }
-            appDirectories[appName] = (
+            appDirectories[appName] = NativeLaunchInfo(
                 directory: appDirectory,
                 binaryName: imageName,
                 args: [],
@@ -175,7 +177,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     message: "Binary not found at \(binaryPath). Run 'wendy run' to sync files first."
                 )
             }
-            appDirectories[appName] = (
+            appDirectories[appName] = NativeLaunchInfo(
                 directory: appDirectory,
                 binaryName: cmd,
                 args: Array(request.message.userArgs),
