@@ -15,6 +15,9 @@ service WendyContainerService {
     rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
     rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse);
     rpc ListContainers(ListContainersRequest) returns (stream ListContainersResponse);
+    rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+    rpc RemoveVolume(RemoveVolumeRequest) returns (RemoveVolumeResponse);
+    rpc ListContainerStats(ListContainerStatsRequest) returns (ListContainerStatsResponse);
 }
 
 message ListContainersRequest {}
@@ -149,6 +152,46 @@ message DeleteContainerRequest {
 
     // Optionally delete the container image as well (useful for freeing space)
     bool delete_image = 2;
+
+    // Optionally delete persistent volumes at /var/lib/wendy/volumes/
+    bool delete_volumes = 3;
 }
 
 message DeleteContainerResponse {}
+
+// --- Volume management ---
+
+message ListVolumesRequest {}
+
+message VolumeInfo {
+    string name = 1;
+    string path = 2;
+    int64 size_bytes = 3;
+    // RFC 3339 UTC (directory mtime — may update when files are added/removed)
+    string created_at = 4;
+    repeated string used_by = 5;
+}
+
+message ListVolumesResponse {
+    repeated VolumeInfo volumes = 1;
+}
+
+message RemoveVolumeRequest {
+    string name = 1;
+}
+
+message RemoveVolumeResponse {}
+
+// --- Container stats ---
+
+message ContainerStats {
+    string app_name = 1;
+    int64 memory_bytes = 2;   // current cgroup memory usage
+    int64 storage_bytes = 3;  // container image content size only (excludes writable layer/snapshot usage)
+}
+
+message ListContainerStatsRequest {}
+
+message ListContainerStatsResponse {
+    repeated ContainerStats stats = 1;
+}
