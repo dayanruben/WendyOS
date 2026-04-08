@@ -362,6 +362,68 @@ func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agent
 // "  10%" or "50% 5120 kB" or "Installing:  75%".
 var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
 
+// enableJetsonRootfsAB ensures rootfs A/B redundancy is configured on NVIDIA
+// Jetson devices by writing the required UEFI EFI variables. It is a no-op on
+// non-Jetson hardware (detected by the absence of nvbootctrl).
+//
+// The caller must be running as root; the function returns an error if the
+// device appears to be a Jetson but the prerequisite APP_b partition is absent.
+func enableJetsonRootfsAB(logger *zap.Logger) error {
+	const guid = "781e084c-a330-417c-b678-38e696380cb9"
+	const efivarsDir = "/sys/firmware/efi/efivars"
+
+	nvbootctrl, err := exec.LookPath("nvbootctrl")
+	if err != nil {
+		// Not a Jetson device — nothing to do.
+		return nil
+	}
+
+	if _, err := os.Stat(efivarsDir); err != nil {
+		return fmt.Errorf("EFI vars not accessible at %s", efivarsDir)
+	}
+
+	if _, err := os.Stat("/dev/disk/by-partlabel/APP_b"); err != nil {
+		return fmt.Errorf("APP_b partition not found — device needs reflashing for rootfs A/B support")
+	}
+
+	// Exit code 0 means A/B is NOT yet enabled; non-zero means already enabled.
+	checkCmd := exec.Command(nvbootctrl, "-t", "rootfs", "is-rootfs-ab-enabled")
+	if err := checkCmd.Run(); err != nil {
+		logger.Info("Jetson rootfs A/B already enabled, skipping EFI var setup")
+		return nil
+	}
+
+	logger.Info("Enabling Jetson rootfs A/B redundancy")
+
+	writeVar := func(name, hexValue string) error {
+		path := fmt.Sprintf("%s/%s-%s", efivarsDir, name, guid)
+		if _, err := os.Stat(path); err == nil {
+			logger.Info("EFI var already exists, skipping", zap.String("name", name))
+			return nil
+		}
+		// EFI variable format: 4-byte attributes header + value bytes.
+		// Attributes: 0x07 = NV|BS|RT (non-volatile, boot-service, runtime-service).
+		data := append([]byte{0x07, 0x00, 0x00, 0x00}, []byte(hexValue)...)
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			return fmt.Errorf("writing EFI var %s: %w", name, err)
+		}
+		logger.Info("EFI var written", zap.String("name", name))
+		return nil
+	}
+
+	// RootfsRedundancyLevel = 1, RootfsRetryCountMax = 3.
+	if err := writeVar("RootfsRedundancyLevel", "\x01\x00\x00\x00"); err != nil {
+		return err
+	}
+	if err := writeVar("RootfsRetryCountMax", "\x03\x00\x00\x00"); err != nil {
+		return err
+	}
+
+	out, _ := exec.Command(nvbootctrl, "-t", "rootfs", "dump-slots-info").CombinedOutput()
+	logger.Info("Jetson rootfs A/B enabled", zap.String("slots_info", strings.TrimSpace(string(out))))
+	return nil
+}
+
 // UpdateOS streams OS update progress using mender.
 func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
 	s.logger.Info("UpdateOS started", zap.String("artifact_url", req.GetArtifactUrl()))
@@ -372,6 +434,16 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 				Progress: &agentpb.UpdateOSResponse_Progress{
 					Phase:   phase,
 					Percent: percent,
+				},
+			},
+		})
+	}
+
+	if err := enableJetsonRootfsAB(s.logger); err != nil {
+		return stream.Send(&agentpb.UpdateOSResponse{
+			ResponseType: &agentpb.UpdateOSResponse_Failed_{
+				Failed: &agentpb.UpdateOSResponse_Failed{
+					ErrorMessage: fmt.Sprintf("Jetson A/B setup failed: %v", err),
 				},
 			},
 		})
