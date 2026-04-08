@@ -34,14 +34,15 @@ const defaultAgentPort = 50051
 
 const lanAddressProbeTimeout = 1500 * time.Millisecond
 
-var getAgentVersionAtAddress = func(ctx context.Context, address string) (*agentpb.GetAgentVersionResponse, error) {
+var getAgentVersionAtAddress = func(ctx context.Context, address string) (bool, *agentpb.GetAgentVersionResponse, error) {
 	conn, err := connectWithAutoTLS(ctx, address)
 	if err != nil {
-		return nil, err
+		return false, nil, err
 	}
 	defer conn.Close()
 
-	return conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	return conn.IsMTLS, resp, err
 }
 
 // ErrUserCancelled is returned when the user cancels an interactive prompt (e.g. Ctrl+C).
@@ -95,15 +96,16 @@ func preferredLANAddress(dev models.LANDevice) string {
 }
 
 // resolveLANAgentVersion tries the discovered LAN addresses in order and
-// returns the first one that answers GetAgentVersion.
-func resolveLANAgentVersion(ctx context.Context, dev models.LANDevice) (string, *agentpb.GetAgentVersionResponse, error) {
+// returns the first one that answers GetAgentVersion, along with whether that
+// connection used mTLS.
+func resolveLANAgentVersion(ctx context.Context, dev models.LANDevice) (string, bool, *agentpb.GetAgentVersionResponse, error) {
 	var lastErr error
 	for _, address := range lanAgentAddresses(dev) {
 		attemptCtx, cancel := context.WithTimeout(ctx, lanAddressProbeTimeout)
-		resp, err := getAgentVersionAtAddress(attemptCtx, address)
+		isMTLS, resp, err := getAgentVersionAtAddress(attemptCtx, address)
 		cancel()
 		if err == nil {
-			return address, resp, nil
+			return address, isMTLS, resp, nil
 		}
 		lastErr = err
 	}
@@ -111,7 +113,7 @@ func resolveLANAgentVersion(ctx context.Context, dev models.LANDevice) (string, 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no LAN address available for %q", dev.DisplayName)
 	}
-	return "", nil, lastErr
+	return "", false, nil, lastErr
 }
 
 // resolveLANVersions queries each LAN device's gRPC endpoint concurrently to
@@ -127,7 +129,7 @@ func resolveLANVersions(ctx context.Context, devices []models.LANDevice) []model
 	for i := range devices {
 		go func(idx int) {
 			d := &devices[idx]
-			_, resp, err := resolveLANAgentVersion(ctx, *d)
+			_, _, resp, err := resolveLANAgentVersion(ctx, *d)
 			if err != nil {
 				ch <- &indexedResult{index: idx}
 				return
@@ -149,17 +151,17 @@ func resolveLANVersions(ctx context.Context, devices []models.LANDevice) []model
 }
 
 // resolveLANVersion queries a single LAN device's gRPC endpoint to populate
-// version metadata and returns the enriched device.
-func resolveLANVersion(ctx context.Context, dev models.LANDevice) (models.LANDevice, error) {
-	_, resp, err := resolveLANAgentVersion(ctx, dev)
+// version metadata. It also returns whether that connection used mTLS.
+func resolveLANVersion(ctx context.Context, dev models.LANDevice) (models.LANDevice, bool, error) {
+	_, isMTLS, resp, err := resolveLANAgentVersion(ctx, dev)
 	if err != nil {
-		return dev, err
+		return dev, false, err
 	}
 	dev.AgentVersion = resp.GetVersion()
 	dev.OS = resp.GetOs()
 	dev.OSVersion = resp.GetOsVersion()
 	dev.CPUArchitecture = resp.GetCpuArchitecture()
-	return dev, nil
+	return dev, isMTLS, nil
 }
 
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
@@ -298,27 +300,15 @@ func isInteractiveTerminal() bool {
 }
 
 // handleDefaultDeviceRecovery runs the recovery flow after a default device
-// connection failure. It may return a new connection via the device picker,
-// clear the default, or propagate the original error.
-func handleDefaultDeviceRecovery(ctx context.Context, hostname string, origErr error, excludeProviders map[string]bool, excludeBluetooth bool) (*SelectedDevice, error) {
-	choice := promptDefaultDeviceRecovery(hostname)
-	switch choice {
-	case recoveryDiscover:
-		return pickDevice(ctx, excludeProviders, excludeBluetooth, false)
-	case recoveryUnsetDefault:
-		cfg, err := config.Load()
-		if err != nil {
-			return nil, fmt.Errorf("loading config: %w", err)
-		}
-		cfg.DefaultDevice = ""
-		if err := config.Save(cfg); err != nil {
-			return nil, fmt.Errorf("saving config: %w", err)
-		}
-		fmt.Println("Default device cleared.")
-		return nil, ErrDefaultCleared
-	default:
-		return nil, origErr
-	}
+// connection failure. Shows a warning and immediately opens the device picker
+// where the user can select a new device and optionally set/unset default
+// via 'd'/'x' shortcuts.
+func handleDefaultDeviceRecovery(ctx context.Context, hostname string, _ error, excludeProviders map[string]bool, excludeBluetooth bool) (*SelectedDevice, error) {
+	warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	fmt.Println(warnStyle.Render(fmt.Sprintf("⚠ Default device %q is unreachable.", hostname)))
+	fmt.Println()
+
+	return pickDevice(ctx, excludeProviders, excludeBluetooth, false)
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
@@ -826,6 +816,30 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 	return newCfg, nil
 }
 
+// pickerItemDeviceID extracts a hostname or provider key from a picker item,
+// suitable for storing as the default device (must be resolvable by resolveDeviceAddress).
+func pickerItemDeviceID(item tui.PickerItem) string {
+	entry, ok := item.Value.(*pickerEntry)
+	if !ok {
+		return ""
+	}
+	// For LAN devices, use the mDNS hostname (matches what pickDeviceForDefault returns).
+	if entry.mergedDevice != nil && entry.mergedDevice.LAN != nil {
+		addr := entry.mergedDevice.LAN.Hostname
+		if addr == "" {
+			addr = entry.mergedDevice.LAN.IPAddress
+		}
+		return addr
+	}
+	if entry.externalDevice != nil {
+		return entry.externalDevice.ProviderKey
+	}
+	if entry.mergedDevice != nil && entry.mergedDevice.External != nil {
+		return entry.mergedDevice.External.ProviderKey
+	}
+	return ""
+}
+
 // pickerEntry is the value stored in each PickerItem.
 type pickerEntry struct {
 	mergedDevice   *models.DiscoveredDevice
@@ -880,6 +894,12 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 
 	// Rebuild the type string from the merged transports.
 	existing.Type = md.ConnectionTypes()
+
+	// Propagate security status: LAN probes determine mTLS, BLE doesn't. Once
+	// we know a device is insecure (or secure), update the existing item.
+	if nd.LAN != nil {
+		existing.Insecure = incoming.Insecure
+	}
 }
 
 // pickDevice runs an interactive TUI that discovers devices across all
@@ -890,6 +910,30 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	picker := tui.NewPicker()
 	picker.MergeItem = mergePickerItem
+
+	// Load current default device to show ★ indicator.
+	if loadedCfg, err := config.Load(); err == nil && loadedCfg.DefaultDevice != "" {
+		picker.DefaultKey = strings.ToLower(loadedCfg.DefaultDevice)
+	}
+
+	// Allow 'd' to set default and 'x' to unset default from the picker.
+	picker.OnSetDefault = func(item tui.PickerItem) {
+		deviceID := pickerItemDeviceID(item)
+		if deviceID == "" {
+			return
+		}
+		if cfg, err := config.Load(); err == nil {
+			cfg.DefaultDevice = deviceID
+			_ = config.Save(cfg)
+		}
+	}
+	picker.OnUnsetDefault = func() {
+		if cfg, err := config.Load(); err == nil {
+			cfg.DefaultDevice = ""
+			_ = config.Save(cfg)
+		}
+	}
+
 	p := tea.NewProgram(picker)
 
 	// Cancel continuous discovery when the picker exits.
@@ -898,28 +942,50 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// Continuous LAN discovery — devices appear as they're found.
 	lanCh := make(chan models.LANDevice, 16)
 	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
+	sendLANItem := func(dev models.LANDevice, insecure bool) {
+		name := dev.DisplayName
+		if dev.AgentVersion != "" {
+			name += " v" + dev.AgentVersion
+		}
+		devCopy := dev
+		p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
+			Name:     name,
+			Type:     "LAN",
+			Address:  preferredLANAddress(dev),
+			DedupKey: dev.DisplayName,
+			Insecure: insecure,
+			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+				DisplayName:     dev.DisplayName,
+				AgentVersion:    dev.AgentVersion,
+				OS:              dev.OS,
+				OSVersion:       dev.OSVersion,
+				CPUArchitecture: dev.CPUArchitecture,
+				LAN:             &devCopy,
+			}},
+		}}})
+	}
 	go func() {
-		for dev := range lanCh {
-			dev, _ = resolveLANVersion(discoverCtx, dev)
-			name := dev.DisplayName
-			if dev.AgentVersion != "" {
-				name += " v" + dev.AgentVersion
+		for rawDev := range lanCh {
+			resolved, isMTLS, err := resolveLANVersion(discoverCtx, rawDev)
+			sendLANItem(resolved, err == nil && !isMTLS)
+			if err != nil {
+				// Version probe failed on first attempt. Retry in background so
+				// the version appears once the device becomes responsive, without
+				// requiring it to be rediscovered via mDNS.
+				go func(d models.LANDevice) {
+					for attempt := 0; attempt < 5; attempt++ {
+						select {
+						case <-discoverCtx.Done():
+							return
+						case <-time.After(2 * time.Second):
+						}
+						if updated, isMTLS, retryErr := resolveLANVersion(discoverCtx, d); retryErr == nil {
+							sendLANItem(updated, !isMTLS)
+							return
+						}
+					}
+				}(rawDev)
 			}
-			lanDev := dev // copy for stable pointer
-			p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
-				Name:     name,
-				Type:     "LAN",
-				Address:  preferredLANAddress(dev),
-				DedupKey: dev.DisplayName,
-				Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
-					DisplayName:     dev.DisplayName,
-					AgentVersion:    dev.AgentVersion,
-					OS:              dev.OS,
-					OSVersion:       dev.OSVersion,
-					CPUArchitecture: dev.CPUArchitecture,
-					LAN:             &lanDev,
-				}},
-			}}})
 		}
 	}()
 
@@ -1033,7 +1099,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	if entry.mergedDevice != nil {
 		d := entry.mergedDevice
 		if d.LAN != nil {
-			addr, _, err := resolveLANAgentVersion(ctx, *d.LAN)
+			addr, _, _, err := resolveLANAgentVersion(ctx, *d.LAN)
 			if err != nil {
 				// LAN metadata lookups can fail on provisioned devices without CLI certs.
 				// In that case, still try the preferred address once before falling back.
