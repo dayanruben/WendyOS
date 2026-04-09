@@ -324,7 +324,7 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
                         metadata: ["path": "\(commit.path)", "app_id": "\(appID)"]
                     )
 
-                case .setMode(let setMode):
+                case .chmod(let chmod):
                     guard activeTransfer == nil else {
                         throw RPCError(
                             code: .invalidArgument,
@@ -332,56 +332,56 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
                         )
                     }
 
-                    let entry = try manifestEntry(for: setMode.path)
-                    let destinationURL = try validatedDestination(for: setMode.path, in: workDir)
+                    let entry = try manifestEntry(for: chmod.path)
+                    let destinationURL = try validatedDestination(for: chmod.path, in: workDir)
 
-                    guard !finalizedPaths.contains(setMode.path) else {
+                    guard !finalizedPaths.contains(chmod.path) else {
                         throw RPCError(
                             code: .invalidArgument,
-                            message: "Path already finalized: \(setMode.path)"
+                            message: "Path already finalized: \(chmod.path)"
                         )
                     }
-                    guard setMode.sha256.count == sha256Length else {
+                    guard chmod.sha256.count == sha256Length else {
                         throw RPCError(
                             code: .invalidArgument,
-                            message: "Mode update SHA256 must be exactly 32 bytes for \(setMode.path)"
+                            message: "Mode update SHA256 must be exactly 32 bytes for \(chmod.path)"
                         )
                     }
-                    guard setMode.size == entry.size else {
+                    guard chmod.size == entry.size else {
                         throw RPCError(
                             code: .invalidArgument,
-                            message: "Mode update size mismatch for \(setMode.path)"
+                            message: "Mode update size mismatch for \(chmod.path)"
                         )
                     }
-                    guard setMode.sha256 == entry.sha256 else {
+                    guard chmod.sha256 == entry.sha256 else {
                         throw RPCError(
                             code: .invalidArgument,
-                            message: "Mode update SHA256 mismatch for \(setMode.path)"
+                            message: "Mode update SHA256 mismatch for \(chmod.path)"
                         )
                     }
-                    guard setMode.mode == entry.mode else {
+                    guard chmod.mode == entry.mode else {
                         throw RPCError(
                             code: .invalidArgument,
-                            message: "Mode update mode mismatch for \(setMode.path)"
+                            message: "Mode update mode mismatch for \(chmod.path)"
                         )
                     }
                     guard FileManager.default.fileExists(atPath: destinationURL.path) else {
                         throw RPCError(
                             code: .notFound,
-                            message: "Cannot apply mode update because \(setMode.path) does not exist"
+                            message: "Cannot apply mode update because \(chmod.path) does not exist"
                         )
                     }
 
                     try FileManager.default.setAttributes(
-                        [.posixPermissions: Int(setMode.mode)],
+                        [.posixPermissions: Int(chmod.mode)],
                         ofItemAtPath: destinationURL.path
                     )
-                    finalizedPaths.insert(setMode.path)
-                    try await sendAck(for: setMode.path)
+                    finalizedPaths.insert(chmod.path)
+                    try await sendAck(for: chmod.path)
 
                     logger.info(
                         "File mode updated",
-                        metadata: ["path": "\(setMode.path)", "app_id": "\(appID)"]
+                        metadata: ["path": "\(chmod.path)", "app_id": "\(appID)"]
                     )
 
                 case .start, nil:

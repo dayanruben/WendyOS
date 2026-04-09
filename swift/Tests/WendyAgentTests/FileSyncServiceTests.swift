@@ -516,7 +516,7 @@ struct RunSessionTests {
         let responses = try await runSession(
             messages: [
                 startRequest(appID: appID, manifest: manifest),
-                setModeRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: sha256Digest(content)),
+                chmodRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: sha256Digest(content)),
             ],
             appsBase: appsBaseURL
         )
@@ -542,7 +542,7 @@ struct RunSessionTests {
         await expectRunSessionFailure(
             messages: [
                 startRequest(appID: "sh.wendy.TestApp", manifest: manifest),
-                setModeRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: digest),
+                chmodRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: digest),
             ],
             appsBase: URL(fileURLWithPath: appsBase)
         )
@@ -563,7 +563,7 @@ struct RunSessionTests {
             messages: [
                 startRequest(appID: "sh.wendy.TestApp", manifest: manifest),
                 chunkRequest(path: "a", data: contentA, sequence: 0, cumulativeSize: 5, sha256: sha256Digest(contentA)),
-                setModeRequest(path: "b", mode: 0o755, size: 5, sha256: sha256Digest(contentB)),
+                chmodRequest(path: "b", mode: 0o755, size: 5, sha256: sha256Digest(contentB)),
             ],
             appsBase: URL(fileURLWithPath: appsBase)
         )
@@ -588,8 +588,8 @@ struct RunSessionTests {
         await expectRunSessionFailure(
             messages: [
                 startRequest(appID: appID, manifest: manifest),
-                setModeRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: digest),
-                setModeRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: digest),
+                chmodRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: digest),
+                chmodRequest(path: "config.json", mode: 0o755, size: Int64(content.count), sha256: digest),
             ],
             appsBase: appsBaseURL
         )
@@ -788,20 +788,20 @@ private func commitRequest(
     return request
 }
 
-private func setModeRequest(
+private func chmodRequest(
     path: String,
     mode: UInt32,
     size: Int64,
     sha256: Data
 ) -> Wendy_Agent_Services_V1_FileSyncRequest {
-    var setMode = Wendy_Agent_Services_V1_FileSyncSetMode()
-    setMode.path = path
-    setMode.mode = mode
-    setMode.size = size
-    setMode.sha256 = sha256
+    var chmod = Wendy_Agent_Services_V1_FileSyncChmod()
+    chmod.path = path
+    chmod.mode = mode
+    chmod.size = size
+    chmod.sha256 = sha256
 
     var request = Wendy_Agent_Services_V1_FileSyncRequest()
-    request.requestType = .setMode(setMode)
+    request.requestType = .chmod(chmod)
     return request
 }
 

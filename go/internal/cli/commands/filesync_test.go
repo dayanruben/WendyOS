@@ -224,13 +224,13 @@ func (s *fakeSyncServer) SyncFiles(stream agentpb.WendyFileSyncService_SyncFiles
 			if err := stream.Send(&resp); err != nil {
 				return err
 			}
-		case *agentpb.FileSyncRequest_SetMode:
+		case *agentpb.FileSyncRequest_Chmod:
 			s.mu.Lock()
-			s.modeUpdatedPaths = append(s.modeUpdatedPaths, r.SetMode.Path)
+			s.modeUpdatedPaths = append(s.modeUpdatedPaths, r.Chmod.Path)
 			s.mu.Unlock()
 			var resp agentpb.FileSyncResponse
 			resp.ResponseType = &agentpb.FileSyncResponse_Ack{
-				Ack: &agentpb.FileSyncAck{Path: r.SetMode.Path},
+				Ack: &agentpb.FileSyncAck{Path: r.Chmod.Path},
 			}
 			if err := stream.Send(&resp); err != nil {
 				return err
@@ -533,8 +533,8 @@ func TestSyncFiles_DeterministicOperationOrder(t *testing.T) {
 		switch msg := r.RequestType.(type) {
 		case *agentpb.FileSyncRequest_Commit:
 			gotOrder = append(gotOrder, "commit:"+msg.Commit.Path)
-		case *agentpb.FileSyncRequest_SetMode:
-			gotOrder = append(gotOrder, "mode:"+msg.SetMode.Path)
+		case *agentpb.FileSyncRequest_Chmod:
+			gotOrder = append(gotOrder, "mode:"+msg.Chmod.Path)
 		}
 	}
 	wantOrder := []string{"commit:b.bin", "commit:c.bin", "mode:a.bin"}
@@ -617,7 +617,7 @@ func TestSyncFiles_NothingToSyncPrintsUpToDate(t *testing.T) {
 	}
 	for _, r := range srv.snapshotRequests() {
 		switch r.RequestType.(type) {
-		case *agentpb.FileSyncRequest_Commit, *agentpb.FileSyncRequest_Chunk, *agentpb.FileSyncRequest_SetMode:
+		case *agentpb.FileSyncRequest_Commit, *agentpb.FileSyncRequest_Chunk, *agentpb.FileSyncRequest_Chmod:
 			t.Fatal("unexpected chunk, commit, or mode update when nothing to sync")
 		}
 	}

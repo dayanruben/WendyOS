@@ -78,12 +78,12 @@ public struct Wendy_Agent_Services_V1_FileSyncRequest: Sendable {
     set {requestType = .commit(newValue)}
   }
 
-  public var setMode: Wendy_Agent_Services_V1_FileSyncSetMode {
+  public var chmod: Wendy_Agent_Services_V1_FileSyncChmod {
     get {
-      if case .setMode(let v)? = requestType {return v}
-      return Wendy_Agent_Services_V1_FileSyncSetMode()
+      if case .chmod(let v)? = requestType {return v}
+      return Wendy_Agent_Services_V1_FileSyncChmod()
     }
-    set {requestType = .setMode(newValue)}
+    set {requestType = .chmod(newValue)}
   }
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -92,7 +92,7 @@ public struct Wendy_Agent_Services_V1_FileSyncRequest: Sendable {
     case start(Wendy_Agent_Services_V1_FileSyncStart)
     case chunk(Wendy_Agent_Services_V1_FileSyncChunk)
     case commit(Wendy_Agent_Services_V1_FileSyncCommit)
-    case setMode(Wendy_Agent_Services_V1_FileSyncSetMode)
+    case chmod(Wendy_Agent_Services_V1_FileSyncChmod)
 
   }
 
@@ -166,8 +166,8 @@ public struct Wendy_Agent_Services_V1_FileSyncCommit: Sendable {
   public init() {}
 }
 
-/// FileSyncSetMode applies a metadata-only mode change for an unchanged file.
-public struct Wendy_Agent_Services_V1_FileSyncSetMode: Sendable {
+/// FileSyncChmod applies a metadata-only mode change for an unchanged file.
+public struct Wendy_Agent_Services_V1_FileSyncChmod: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -318,7 +318,7 @@ extension Wendy_Agent_Services_V1_FileSyncEntry: SwiftProtobuf.Message, SwiftPro
 
 extension Wendy_Agent_Services_V1_FileSyncRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}start\0\u{1}chunk\0\u{1}commit\0\u{3}set_mode\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}start\0\u{1}chunk\0\u{1}commit\0\u{1}chmod\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -366,16 +366,16 @@ extension Wendy_Agent_Services_V1_FileSyncRequest: SwiftProtobuf.Message, SwiftP
         }
       }()
       case 4: try {
-        var v: Wendy_Agent_Services_V1_FileSyncSetMode?
+        var v: Wendy_Agent_Services_V1_FileSyncChmod?
         var hadOneofValue = false
         if let current = self.requestType {
           hadOneofValue = true
-          if case .setMode(let m) = current {v = m}
+          if case .chmod(let m) = current {v = m}
         }
         try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.requestType = .setMode(v)
+          self.requestType = .chmod(v)
         }
       }()
       default: break
@@ -401,8 +401,8 @@ extension Wendy_Agent_Services_V1_FileSyncRequest: SwiftProtobuf.Message, SwiftP
       guard case .commit(let v)? = self.requestType else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
     }()
-    case .setMode?: try {
-      guard case .setMode(let v)? = self.requestType else { preconditionFailure() }
+    case .chmod?: try {
+      guard case .chmod(let v)? = self.requestType else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
     }()
     case nil: break
@@ -546,8 +546,8 @@ extension Wendy_Agent_Services_V1_FileSyncCommit: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncSetMode: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".FileSyncSetMode"
+extension Wendy_Agent_Services_V1_FileSyncChmod: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".FileSyncChmod"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}path\0\u{1}mode\0\u{1}size\0\u{1}sha256\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -581,7 +581,7 @@ extension Wendy_Agent_Services_V1_FileSyncSetMode: SwiftProtobuf.Message, SwiftP
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_FileSyncSetMode, rhs: Wendy_Agent_Services_V1_FileSyncSetMode) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_FileSyncChmod, rhs: Wendy_Agent_Services_V1_FileSyncChmod) -> Bool {
     if lhs.path != rhs.path {return false}
     if lhs.mode != rhs.mode {return false}
     if lhs.size != rhs.size {return false}

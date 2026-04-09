@@ -97,7 +97,7 @@ type FileSyncRequest struct {
 	//	*FileSyncRequest_Start
 	//	*FileSyncRequest_Chunk
 	//	*FileSyncRequest_Commit
-	//	*FileSyncRequest_SetMode
+	//	*FileSyncRequest_Chmod
 	RequestType   isFileSyncRequest_RequestType `protobuf_oneof:"request_type"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -167,10 +167,10 @@ func (x *FileSyncRequest) GetCommit() *FileSyncCommit {
 	return nil
 }
 
-func (x *FileSyncRequest) GetSetMode() *FileSyncSetMode {
+func (x *FileSyncRequest) GetChmod() *FileSyncChmod {
 	if x != nil {
-		if x, ok := x.RequestType.(*FileSyncRequest_SetMode); ok {
-			return x.SetMode
+		if x, ok := x.RequestType.(*FileSyncRequest_Chmod); ok {
+			return x.Chmod
 		}
 	}
 	return nil
@@ -192,8 +192,8 @@ type FileSyncRequest_Commit struct {
 	Commit *FileSyncCommit `protobuf:"bytes,3,opt,name=commit,proto3,oneof"`
 }
 
-type FileSyncRequest_SetMode struct {
-	SetMode *FileSyncSetMode `protobuf:"bytes,4,opt,name=set_mode,json=setMode,proto3,oneof"`
+type FileSyncRequest_Chmod struct {
+	Chmod *FileSyncChmod `protobuf:"bytes,4,opt,name=chmod,proto3,oneof"`
 }
 
 func (*FileSyncRequest_Start) isFileSyncRequest_RequestType() {}
@@ -202,7 +202,7 @@ func (*FileSyncRequest_Chunk) isFileSyncRequest_RequestType() {}
 
 func (*FileSyncRequest_Commit) isFileSyncRequest_RequestType() {}
 
-func (*FileSyncRequest_SetMode) isFileSyncRequest_RequestType() {}
+func (*FileSyncRequest_Chmod) isFileSyncRequest_RequestType() {}
 
 // FileSyncStart opens a sync session for the given app. The CLI sends its
 // local manifest so the agent can reply with what it already has.
@@ -397,8 +397,8 @@ func (x *FileSyncCommit) GetSize() int64 {
 	return 0
 }
 
-// FileSyncSetMode applies a metadata-only mode change for an unchanged file.
-type FileSyncSetMode struct {
+// FileSyncChmod applies a metadata-only mode change for an unchanged file.
+type FileSyncChmod struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	Mode          uint32                 `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
@@ -408,20 +408,20 @@ type FileSyncSetMode struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *FileSyncSetMode) Reset() {
-	*x = FileSyncSetMode{}
+func (x *FileSyncChmod) Reset() {
+	*x = FileSyncChmod{}
 	mi := &file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FileSyncSetMode) String() string {
+func (x *FileSyncChmod) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FileSyncSetMode) ProtoMessage() {}
+func (*FileSyncChmod) ProtoMessage() {}
 
-func (x *FileSyncSetMode) ProtoReflect() protoreflect.Message {
+func (x *FileSyncChmod) ProtoReflect() protoreflect.Message {
 	mi := &file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -433,33 +433,33 @@ func (x *FileSyncSetMode) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FileSyncSetMode.ProtoReflect.Descriptor instead.
-func (*FileSyncSetMode) Descriptor() ([]byte, []int) {
+// Deprecated: Use FileSyncChmod.ProtoReflect.Descriptor instead.
+func (*FileSyncChmod) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *FileSyncSetMode) GetPath() string {
+func (x *FileSyncChmod) GetPath() string {
 	if x != nil {
 		return x.Path
 	}
 	return ""
 }
 
-func (x *FileSyncSetMode) GetMode() uint32 {
+func (x *FileSyncChmod) GetMode() uint32 {
 	if x != nil {
 		return x.Mode
 	}
 	return 0
 }
 
-func (x *FileSyncSetMode) GetSize() int64 {
+func (x *FileSyncChmod) GetSize() int64 {
 	if x != nil {
 		return x.Size
 	}
 	return 0
 }
 
-func (x *FileSyncSetMode) GetSha256() []byte {
+func (x *FileSyncChmod) GetSha256() []byte {
 	if x != nil {
 		return x.Sha256
 	}
@@ -701,12 +701,12 @@ const file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_rawDes
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\fR\x06sha256\x12\x12\n" +
-	"\x04mode\x18\x04 \x01(\rR\x04mode\"\xab\x02\n" +
+	"\x04mode\x18\x04 \x01(\rR\x04mode\"\xa4\x02\n" +
 	"\x0fFileSyncRequest\x12>\n" +
 	"\x05start\x18\x01 \x01(\v2&.wendy.agent.services.v1.FileSyncStartH\x00R\x05start\x12>\n" +
 	"\x05chunk\x18\x02 \x01(\v2&.wendy.agent.services.v1.FileSyncChunkH\x00R\x05chunk\x12A\n" +
-	"\x06commit\x18\x03 \x01(\v2'.wendy.agent.services.v1.FileSyncCommitH\x00R\x06commit\x12E\n" +
-	"\bset_mode\x18\x04 \x01(\v2(.wendy.agent.services.v1.FileSyncSetModeH\x00R\asetModeB\x0e\n" +
+	"\x06commit\x18\x03 \x01(\v2'.wendy.agent.services.v1.FileSyncCommitH\x00R\x06commit\x12>\n" +
+	"\x05chmod\x18\x04 \x01(\v2&.wendy.agent.services.v1.FileSyncChmodH\x00R\x05chmodB\x0e\n" +
 	"\frequest_type\"m\n" +
 	"\rFileSyncStart\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12E\n" +
@@ -720,8 +720,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_rawDes
 	"\x0eFileSyncCommit\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
 	"\x06sha256\x18\x02 \x01(\fR\x06sha256\x12\x12\n" +
-	"\x04size\x18\x03 \x01(\x03R\x04size\"e\n" +
-	"\x0fFileSyncSetMode\x12\x12\n" +
+	"\x04size\x18\x03 \x01(\x03R\x04size\"c\n" +
+	"\rFileSyncChmod\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\rR\x04mode\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x12\x16\n" +
@@ -758,7 +758,7 @@ var file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_goTypes 
 	(*FileSyncStart)(nil),    // 2: wendy.agent.services.v1.FileSyncStart
 	(*FileSyncChunk)(nil),    // 3: wendy.agent.services.v1.FileSyncChunk
 	(*FileSyncCommit)(nil),   // 4: wendy.agent.services.v1.FileSyncCommit
-	(*FileSyncSetMode)(nil),  // 5: wendy.agent.services.v1.FileSyncSetMode
+	(*FileSyncChmod)(nil),    // 5: wendy.agent.services.v1.FileSyncChmod
 	(*FileSyncResponse)(nil), // 6: wendy.agent.services.v1.FileSyncResponse
 	(*FileSyncManifest)(nil), // 7: wendy.agent.services.v1.FileSyncManifest
 	(*FileSyncAck)(nil),      // 8: wendy.agent.services.v1.FileSyncAck
@@ -768,7 +768,7 @@ var file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_depIdxs 
 	2,  // 0: wendy.agent.services.v1.FileSyncRequest.start:type_name -> wendy.agent.services.v1.FileSyncStart
 	3,  // 1: wendy.agent.services.v1.FileSyncRequest.chunk:type_name -> wendy.agent.services.v1.FileSyncChunk
 	4,  // 2: wendy.agent.services.v1.FileSyncRequest.commit:type_name -> wendy.agent.services.v1.FileSyncCommit
-	5,  // 3: wendy.agent.services.v1.FileSyncRequest.set_mode:type_name -> wendy.agent.services.v1.FileSyncSetMode
+	5,  // 3: wendy.agent.services.v1.FileSyncRequest.chmod:type_name -> wendy.agent.services.v1.FileSyncChmod
 	7,  // 4: wendy.agent.services.v1.FileSyncStart.manifest:type_name -> wendy.agent.services.v1.FileSyncManifest
 	7,  // 5: wendy.agent.services.v1.FileSyncResponse.manifest:type_name -> wendy.agent.services.v1.FileSyncManifest
 	8,  // 6: wendy.agent.services.v1.FileSyncResponse.ack:type_name -> wendy.agent.services.v1.FileSyncAck
@@ -792,7 +792,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_init() 
 		(*FileSyncRequest_Start)(nil),
 		(*FileSyncRequest_Chunk)(nil),
 		(*FileSyncRequest_Commit)(nil),
-		(*FileSyncRequest_SetMode)(nil),
+		(*FileSyncRequest_Chmod)(nil),
 	}
 	file_wendy_agent_services_v1_wendy_agent_v1_file_sync_service_proto_msgTypes[6].OneofWrappers = []any{
 		(*FileSyncResponse_Manifest)(nil),

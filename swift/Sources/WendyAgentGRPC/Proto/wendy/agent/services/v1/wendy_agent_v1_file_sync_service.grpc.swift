@@ -67,7 +67,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService {
         /// >
         /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
         /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-        /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+        /// > FileSyncChmod requests for metadata-only updates, then closes the send
         /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
         /// > file, then FileSyncComplete after pruning stale files.
         ///
@@ -98,7 +98,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService {
         /// >
         /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
         /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-        /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+        /// > FileSyncChmod requests for metadata-only updates, then closes the send
         /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
         /// > file, then FileSyncComplete after pruning stale files.
         ///
@@ -127,7 +127,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService {
         /// >
         /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
         /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-        /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+        /// > FileSyncChmod requests for metadata-only updates, then closes the send
         /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
         /// > file, then FileSyncComplete after pruning stale files.
         ///
@@ -205,7 +205,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService {
         /// >
         /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
         /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-        /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+        /// > FileSyncChmod requests for metadata-only updates, then closes the send
         /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
         /// > file, then FileSyncComplete after pruning stale files.
         ///
@@ -249,7 +249,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService {
         /// >
         /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
         /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-        /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+        /// > FileSyncChmod requests for metadata-only updates, then closes the send
         /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
         /// > file, then FileSyncComplete after pruning stale files.
         ///
@@ -290,7 +290,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService.ClientProtocol {
     /// >
     /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
     /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-    /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+    /// > FileSyncChmod requests for metadata-only updates, then closes the send
     /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
     /// > file, then FileSyncComplete after pruning stale files.
     ///
@@ -325,7 +325,7 @@ extension Wendy_Agent_Services_V1_WendyFileSyncService.ClientProtocol {
     /// >
     /// > SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
     /// > FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
-    /// > FileSyncSetMode requests for metadata-only updates, then closes the send
+    /// > FileSyncChmod requests for metadata-only updates, then closes the send
     /// > side. The agent responds with FileSyncManifest, FileSyncAck per finalized
     /// > file, then FileSyncComplete after pruning stale files.
     ///

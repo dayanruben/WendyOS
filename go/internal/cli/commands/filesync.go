@@ -338,8 +338,8 @@ func syncFiles(
 	for _, change := range diff.modeOnly {
 		cliLogln("mode changed: %s %04o -> %04o", change.path, change.oldMode, change.newMode)
 		if err := stream.Send(&agentpb.FileSyncRequest{
-			RequestType: &agentpb.FileSyncRequest_SetMode{
-				SetMode: &agentpb.FileSyncSetMode{
+			RequestType: &agentpb.FileSyncRequest_Chmod{
+				Chmod: &agentpb.FileSyncChmod{
 					Path:   change.path,
 					Mode:   change.entry.Mode,
 					Size:   change.entry.Size,
