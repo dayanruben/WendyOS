@@ -27,9 +27,10 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WendyFileSyncServiceClient interface {
 	// SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
-	// FileSyncChunk/FileSyncCommit pairs for each file to transfer, then closes
-	// the send side. The agent responds with FileSyncManifest, FileSyncAck per
-	// committed file, then FileSyncComplete after pruning stale files.
+	// FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
+	// FileSyncSetMode requests for metadata-only updates, then closes the send
+	// side. The agent responds with FileSyncManifest, FileSyncAck per finalized
+	// file, then FileSyncComplete after pruning stale files.
 	SyncFiles(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[FileSyncRequest, FileSyncResponse], error)
 }
 
@@ -59,9 +60,10 @@ type WendyFileSyncService_SyncFilesClient = grpc.BidiStreamingClient[FileSyncReq
 // for forward compatibility.
 type WendyFileSyncServiceServer interface {
 	// SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
-	// FileSyncChunk/FileSyncCommit pairs for each file to transfer, then closes
-	// the send side. The agent responds with FileSyncManifest, FileSyncAck per
-	// committed file, then FileSyncComplete after pruning stale files.
+	// FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
+	// FileSyncSetMode requests for metadata-only updates, then closes the send
+	// side. The agent responds with FileSyncManifest, FileSyncAck per finalized
+	// file, then FileSyncComplete after pruning stale files.
 	SyncFiles(grpc.BidiStreamingServer[FileSyncRequest, FileSyncResponse]) error
 	mustEmbedUnimplementedWendyFileSyncServiceServer()
 }

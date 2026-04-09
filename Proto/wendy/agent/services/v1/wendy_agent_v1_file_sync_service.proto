@@ -4,9 +4,10 @@ package wendy.agent.services.v1;
 
 service WendyFileSyncService {
   // SyncFiles is a bidirectional stream. The CLI sends FileSyncStart, then
-  // FileSyncChunk/FileSyncCommit pairs for each file to transfer, then closes
-  // the send side. The agent responds with FileSyncManifest, FileSyncAck per
-  // committed file, then FileSyncComplete after pruning stale files.
+  // FileSyncChunk/FileSyncCommit pairs for content transfers, then optional
+  // FileSyncSetMode requests for metadata-only updates, then closes the send
+  // side. The agent responds with FileSyncManifest, FileSyncAck per finalized
+  // file, then FileSyncComplete after pruning stale files.
   rpc SyncFiles(stream FileSyncRequest) returns (stream FileSyncResponse);
 }
 
@@ -14,15 +15,16 @@ service WendyFileSyncService {
 message FileSyncEntry {
   string path   = 1; // relative to app working directory
   int64  size   = 2;
-  string sha256 = 3;
+  bytes  sha256 = 3; // exactly 32 bytes
   uint32 mode   = 4; // unix file permissions (e.g. 0755)
 }
 
 message FileSyncRequest {
   oneof request_type {
-    FileSyncStart  start  = 1;
-    FileSyncChunk  chunk  = 2;
-    FileSyncCommit commit = 3;
+    FileSyncStart   start    = 1;
+    FileSyncChunk   chunk    = 2;
+    FileSyncCommit  commit   = 3;
+    FileSyncSetMode set_mode = 4;
   }
 }
 
@@ -33,17 +35,29 @@ message FileSyncStart {
   FileSyncManifest manifest = 2;
 }
 
-// FileSyncChunk carries a slice of a file being transferred.
+// FileSyncChunk carries a slice of a file being transferred along with the
+// cumulative post-chunk state for immediate validation.
 message FileSyncChunk {
-  string path = 1; // relative to app working directory
-  bytes  data = 2;
+  string path            = 1; // relative to app working directory
+  bytes  data            = 2;
+  uint64 sequence        = 3;
+  int64  cumulative_size = 4;
+  bytes  sha256          = 5; // exactly 32 bytes
 }
 
 // FileSyncCommit signals the end of a single file transfer.
 message FileSyncCommit {
   string path   = 1;
-  string sha256 = 2;
+  bytes  sha256 = 2; // exactly 32 bytes
   int64  size   = 3;
+}
+
+// FileSyncSetMode applies a metadata-only mode change for an unchanged file.
+message FileSyncSetMode {
+  string path   = 1;
+  uint32 mode   = 2;
+  int64  size   = 3;
+  bytes  sha256 = 4; // exactly 32 bytes
 }
 
 message FileSyncResponse {

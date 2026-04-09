@@ -287,6 +287,27 @@ Add/update tests for:
 9. Update Swift and Go tests
 10. Run end-to-end validation on large files
 
+## Progress
+
+- [x] Update `Proto/wendy/agent/services/v1/wendy_agent_v1_file_sync_service.proto`
+- [x] Regenerate Go and Swift protobuf/gRPC bindings
+- [ ] Update Go CLI manifest + diffing logic
+- [ ] Update Go CLI chunk sending and mode-only update sending
+- [ ] Refactor Swift `FileSyncService` state machine
+- [ ] Implement chunk validation before write
+- [ ] Remove commit-time reread/rehash
+- [ ] Implement mode-only handling
+- [ ] Update Swift and Go tests
+- [ ] Run end-to-end validation on large files
+
+## Implementation log
+
+### 2026-04-09 — Protocol and bindings
+
+- Changed all file-sync SHA256 fields from text hex strings to raw `bytes` so both runtimes can validate exact 32-byte digests without repeated hex encoding/decoding.
+- Extended `FileSyncChunk` with `sequence`, `cumulative_size`, and cumulative `sha256`, and added `FileSyncSetMode` for metadata-only updates.
+- Regenerated both Go and Swift bindings immediately after the proto edit so later CLI/agent changes could stay mechanical and reviewable.
+
 ## Expected outcome
 
 - no post-transfer reread on the Swift agent
