@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
@@ -219,6 +220,7 @@ func syncFiles(
 	fileCount := len(diff.contentTransfers)
 	fileIdx := 0
 	var sentBytes int64
+	transferStart := time.Now()
 
 	if fileCount > 0 {
 		cliLogln("Syncing files...")
@@ -282,7 +284,7 @@ func syncFiles(
 						return fmt.Errorf("sending chunk for %s: %w", agentPath, err)
 					}
 					printFileSyncProgress(isTTY, fileDisplayName, fileSent, entry.Size,
-						sentBytes, totalBytes, fileIdx+1, fileCount)
+						sentBytes, time.Since(transferStart), fileIdx+1, fileCount)
 					sequence++
 				}
 				if readErr == io.EOF {
@@ -457,7 +459,7 @@ func buildCombinedManifest(entries []fileSyncEntry) (*agentpb.FileSyncManifest, 
 
 // printFileSyncProgress prints a single-line progress update for the current file.
 // On a TTY it overwrites the current line; otherwise it prints a new line.
-func printFileSyncProgress(isTTY bool, name string, fileSent, fileTotal, totalSent, grandTotal int64, fileIdx, fileCount int) {
+func printFileSyncProgress(isTTY bool, name string, fileSent, fileTotal, totalSent int64, elapsed time.Duration, fileIdx, fileCount int) {
 	pct := 0.0
 	if fileTotal > 0 {
 		pct = float64(fileSent) / float64(fileTotal) * 100
@@ -470,11 +472,12 @@ func printFileSyncProgress(isTTY bool, name string, fileSent, fileTotal, totalSe
 		displayName = "..." + displayName[len(displayName)-maxNameLen+3:]
 	}
 
-	line := fmt.Sprintf("  %-36s %8s / %-8s %5.1f%%   [%d/%d]",
+	line := fmt.Sprintf("  %-36s %8s / %-8s %5.1f%% %9s   [%d/%d]",
 		displayName,
 		humanize.Bytes(uint64(fileSent)),
 		humanize.Bytes(uint64(fileTotal)),
 		pct,
+		formatTransferRate(totalSent, elapsed),
 		fileIdx, fileCount,
 	)
 
@@ -483,6 +486,17 @@ func printFileSyncProgress(isTTY bool, name string, fileSent, fileTotal, totalSe
 	} else {
 		fmt.Println(line)
 	}
+}
+
+func formatTransferRate(bytesSent int64, elapsed time.Duration) string {
+	if bytesSent <= 0 || elapsed <= 0 {
+		return "0 B/s"
+	}
+	rate := float64(bytesSent) / elapsed.Seconds()
+	if rate < 1 {
+		return "<1 B/s"
+	}
+	return humanize.Bytes(uint64(rate)) + "/s"
 }
 
 // effectiveRemotePath returns the effective destination path on the device for

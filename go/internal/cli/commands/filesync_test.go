@@ -558,6 +558,28 @@ func TestSyncFiles_DeterministicOperationOrder(t *testing.T) {
 	}
 }
 
+func TestFormatTransferRate(t *testing.T) {
+	if got := formatTransferRate(0, time.Second); got != "0 B/s" {
+		t.Fatalf("formatTransferRate(0, 1s) = %q, want %q", got, "0 B/s")
+	}
+	if got := formatTransferRate(1536, time.Second); got != "1.5 kB/s" {
+		t.Fatalf("formatTransferRate(1536, 1s) = %q, want %q", got, "1.5 kB/s")
+	}
+}
+
+func TestPrintFileSyncProgress_IncludesTransferRate(t *testing.T) {
+	output := captureStdout(t, func() {
+		printFileSyncProgress(false, "a.bin", 1024, 2048, 1536, time.Second, 1, 2)
+	})
+
+	if !strings.Contains(output, "1.5 kB/s") {
+		t.Fatalf("stdout missing transfer rate: %q", output)
+	}
+	if !strings.Contains(output, "a.bin") {
+		t.Fatalf("stdout missing file name: %q", output)
+	}
+}
+
 func TestSyncFiles_ProgressReportedPerFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.bin"), []byte("aaaa"), 0o644); err != nil {
@@ -591,6 +613,9 @@ func TestSyncFiles_ProgressReportedPerFile(t *testing.T) {
 	}
 	if !strings.Contains(output, "b.bin") {
 		t.Fatalf("stdout missing b.bin progress line: %q", output)
+	}
+	if !strings.Contains(output, "/s") {
+		t.Fatalf("stdout missing transfer rate: %q", output)
 	}
 	if !strings.Contains(output, "Total: 8 B in 2 file(s)") {
 		t.Fatalf("stdout missing total line: %q", output)
