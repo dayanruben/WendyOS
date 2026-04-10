@@ -56,6 +56,31 @@ struct ContainerServiceTests {
 
         #expect(stdout == expectedPath)
     }
+
+    @Test("listContainerStats reports registered apps with zeroed stats")
+    func listContainerStatsReportsRegisteredApps() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.Stats"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writePrintPWDScript(to: appDirectory.appendingPathComponent("printpwd.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "printpwd.sh")
+        let stats = try await listContainerStats(service: service)
+
+        #expect(stats.count == 1)
+        #expect(stats.first?.appName == appID)
+        #expect(stats.first?.memoryBytes == 0)
+        #expect(stats.first?.storageBytes == 0)
+    }
 }
 
 // MARK: - Helpers
@@ -139,6 +164,19 @@ private func startAppAndCollectStdout(
     }
 
     return stdoutText
+}
+
+private func listContainerStats(
+    service: ContainerService
+) async throws -> [Wendy_Agent_Services_V1_ContainerStats] {
+    let response = try await service.listContainerStats(
+        request: ServerRequest(
+            metadata: [:],
+            message: Wendy_Agent_Services_V1_ListContainerStatsRequest()
+        ),
+        context: makeServerContext(method: "ListContainerStats")
+    )
+    return try response.message.stats
 }
 
 private func makeServerContext(method: String) -> ServerContext {

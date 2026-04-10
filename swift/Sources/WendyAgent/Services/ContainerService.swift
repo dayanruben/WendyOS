@@ -522,6 +522,24 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
     }
 
+    func listContainerStats(
+        request: ServerRequest<Wendy_Agent_Services_V1_ListContainerStatsRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse> {
+        let appNames = Set(appDirectories.keys)
+            .union(runningProcesses.keys)
+            .union(dockerApps)
+            .sorted()
+
+        var response = Wendy_Agent_Services_V1_ListContainerStatsResponse()
+        response.stats = appNames.map { appName in
+            var stats = Wendy_Agent_Services_V1_ContainerStats()
+            stats.appName = appName
+            return stats
+        }
+        return ServerResponse(message: response)
+    }
+
     // MARK: - Unimplemented
 
     func attachContainer(
