@@ -58,6 +58,13 @@ func newBuildCmd() *cobra.Command {
 				if cfgErr == nil {
 					product = appCfg.AppID
 				}
+				// For Swift projects, resolve the actual product name from Package.swift
+				// rather than using the directory name (which may differ in casing).
+				if _, err := os.Stat(filepath.Join(cwd, "Package.swift")); err == nil {
+					if swiftProduct, err := findSwiftProduct(cwd); err == nil {
+						product = swiftProduct
+					}
+				}
 
 				fmt.Printf("Building with %s provider...\n", target.Provider.DisplayName())
 				app, err := target.Provider.Build(cmd.Context(), *target.External, cwd, product, false)

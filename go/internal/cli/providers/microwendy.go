@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
@@ -21,6 +22,13 @@ const (
 
 	// microWendyServiceType is the mDNS service type advertised by ESP32 Wendy devices.
 	microWendyServiceType = "_wendy._tcp"
+
+	// Currently supported SDK for WASI on Wendy Lite.
+	// This also works for older projects that expected to build for wasm32-unknown-none-wasm
+	microWendySwiftVersion = "6.3"
+	microWendySwiftSDK     = "swift-6.3-RELEASE_wasm-embedded"
+	microWendySwiftTarget  = "wasm32-unknown-wasip1"
+	microWendyInstallGrace = 3 * time.Second
 )
 
 // microWendyBuildContext is stored in BuiltApp.Context for WASM builds.
@@ -101,14 +109,36 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("swift build (wasm): %w", err)
+		return nil, fmt.Errorf("swift build (wasi): %w", err)
 	}
 
-	config := "debug"
-	if !debug {
-		config = "release"
+	binArgs := []string{
+		"run", "+" + microWendySwiftVersion, "swift", "build",
+		"--swift-sdk", microWendySwiftSDK,
+		"--triple", microWendySwiftTarget,
+		"--product", product,
+		"--show-bin-path",
 	}
+	if !debug {
+		binArgs = append(binArgs, "-c", "release")
+	}
+	binCmd := exec.CommandContext(ctx, "swiftly", binArgs...)
+	binCmd.Dir = projectPath
+	binCmd.Stderr = os.Stderr
+	out, err := binCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("swift build --show-bin-path: %w", err)
+	}
+
+	binDir := strings.TrimSpace(string(out))
+	if binDir == "" {
+		return nil, fmt.Errorf("swift build --show-bin-path returned an empty path for %s", product)
+	}
+
 	wasmPath := filepath.Join(projectPath, ".build", swifttoolchain.WasmTargetTriple, config, product+".wasm")
+	if _, err := os.Stat(wasmPath); err != nil {
+		return nil, fmt.Errorf("expected WASM output at %s: %w", wasmPath, err)
+	}
 
 	// Collect IPs of all known devices for unicast delivery.
 	var targetIPs []string
@@ -143,10 +173,23 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 
 	mux := http.NewServeMux()
+	fetchCh := make(chan string, 1)
 	mux.HandleFunc("/app.wasm", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/wasm")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(wasmData)))
-		w.Write(wasmData)
+		if _, writeErr := w.Write(wasmData); writeErr != nil {
+			return
+		}
+
+		host, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+		if splitErr != nil {
+			host = r.RemoteAddr
+		}
+
+		select {
+		case fetchCh <- host:
+		default:
+		}
 	})
 
 	listener, err := net.Listen("tcp", ":0")
@@ -177,7 +220,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	reloadMsg := fmt.Sprintf("WENDY_RELOAD %s:%d", localIP, httpPort)
 	go func() {
 		// Brief delay to ensure the HTTP server is fully ready.
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 
 		// Unicast to discovered device IPs.
 		for _, ip := range bc.TargetIPs {
@@ -194,7 +237,41 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}()
 
 	if detach {
-		return nil
+		timeout := time.NewTimer(15 * time.Second)
+		defer timeout.Stop()
+
+		for {
+			select {
+			case fetchedBy := <-fetchCh:
+				if !matchesKnownTarget(fetchedBy, bc.TargetIPs) {
+					continue
+				}
+				output <- RunOutput{
+					Type: RunOutputStdout,
+					Data: []byte(fmt.Sprintf("Wendy Lite fetched app.wasm from %s\n", fetchedBy)),
+				}
+
+				installTimer := time.NewTimer(microWendyInstallGrace)
+				output <- RunOutput{
+					Type: RunOutputStdout,
+					Data: []byte(fmt.Sprintf("Terminating server in %s seconds\n", microWendyInstallGrace)),
+				}
+
+				select {
+				case <-installTimer.C:
+					return nil
+				case <-serveCtx.Done():
+					if !installTimer.Stop() {
+						<-installTimer.C
+					}
+					return nil
+				}
+			case <-timeout.C:
+				return fmt.Errorf("wendy-lite provider: timed out waiting for device download")
+			case <-serveCtx.Done():
+				return nil
+			}
+		}
 	}
 
 	// Block until context is cancelled (Ctrl+C).
@@ -244,4 +321,18 @@ func sendUDPBroadcast(port int, msg string) {
 	}
 	defer conn.Close()
 	conn.Write([]byte(msg))
+}
+
+func matchesKnownTarget(remoteHost string, targetIPs []string) bool {
+	if len(targetIPs) == 0 {
+		return true
+	}
+
+	for _, targetIP := range targetIPs {
+		if remoteHost == targetIP {
+			return true
+		}
+	}
+
+	return false
 }
