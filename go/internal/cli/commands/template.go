@@ -3,6 +3,7 @@ package commands
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,13 +69,18 @@ type templateVariable struct {
 
 // fetchRepoMeta downloads and parses meta.json from the templates repo.
 // If branch is empty, it defaults to templateRepoBranch ("main").
-func fetchRepoMeta(branch string) (*repoMeta, error) {
+// If ctx is cancelled, the in-flight request is aborted.
+func fetchRepoMeta(ctx context.Context, branch string) (*repoMeta, error) {
 	branch = resolveTemplateBranch(branch)
 	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/meta.json",
 		templateRepoOwner, templateRepoName, branch)
 
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetching template registry (branch %q): %w", branch, err)
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching template registry (branch %q): %w", branch, err)
 	}
@@ -134,19 +140,24 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 // It also returns the parsed template.json manifest.
 // If branch is empty, it defaults to templateRepoBranch ("main").
 // If onProgress is non-nil, it is invoked as the response body is read.
-func downloadTemplateArchive(language, templateName, branch string, onProgress progressCallback) (map[string][]byte, *templateManifest, error) {
+// If ctx is cancelled, the in-flight request is aborted.
+func downloadTemplateArchive(ctx context.Context, language, templateName, branch string, onProgress progressCallback) (map[string][]byte, *templateManifest, error) {
 	branch = resolveTemplateBranch(branch)
 	url := fmt.Sprintf("https://github.com/%s/%s/archive/refs/heads/%s.tar.gz",
 		templateRepoOwner, templateRepoName, branch)
-	return downloadTemplateArchiveFromURL(url, branch, language, templateName, onProgress)
+	return downloadTemplateArchiveFromURL(ctx, url, branch, language, templateName, onProgress)
 }
 
 // downloadTemplateArchiveFromURL is the testable core of downloadTemplateArchive:
 // it performs the HTTP GET against the caller-supplied URL and delegates
 // tarball parsing to extractTemplateArchive.
-func downloadTemplateArchiveFromURL(url, branch, language, templateName string, onProgress progressCallback) (map[string][]byte, *templateManifest, error) {
+func downloadTemplateArchiveFromURL(ctx context.Context, url, branch, language, templateName string, onProgress progressCallback) (map[string][]byte, *templateManifest, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("downloading template (branch %q): %w", branch, err)
+	}
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("downloading template (branch %q): %w", branch, err)
 	}
@@ -162,9 +173,15 @@ func downloadTemplateArchiveFromURL(url, branch, language, templateName string, 
 
 	var reader io.Reader = resp.Body
 	if onProgress != nil {
+		// Normalize ContentLength to the progressCallback contract:
+		// http.Response.ContentLength is -1 when unknown, but callers expect 0.
+		total := resp.ContentLength
+		if total < 0 {
+			total = 0
+		}
 		reader = &progressReader{
 			r:          resp.Body,
-			total:      resp.ContentLength,
+			total:      total,
 			onProgress: onProgress,
 		}
 	}

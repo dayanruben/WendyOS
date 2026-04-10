@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,7 +176,7 @@ func TestDownloadTemplateArchiveFromURL_InvokesProgressCallback(t *testing.T) {
 		lastTot = total
 	}
 
-	files, manifest, err := downloadTemplateArchiveFromURL(srv.URL, "main", "rust", "simple-api", cb)
+	files, manifest, err := downloadTemplateArchiveFromURL(context.Background(), srv.URL, "main", "rust", "simple-api", cb)
 	if err != nil {
 		t.Fatalf("downloadTemplateArchiveFromURL: %v", err)
 	}
@@ -198,6 +200,53 @@ func TestDownloadTemplateArchiveFromURL_InvokesProgressCallback(t *testing.T) {
 	}
 }
 
+// TestDownloadTemplateArchiveFromURL_UnknownContentLengthNormalized verifies
+// that when the server doesn't send Content-Length (chunked/unknown length),
+// the progress callback receives total=0 rather than -1. This is the
+// progressCallback doc contract.
+func TestDownloadTemplateArchiveFromURL_UnknownContentLengthNormalized(t *testing.T) {
+	archive := buildTestTarball(t, "templates-main", "rust", "simple-api", map[string]string{
+		"template.json": `{"name":"simple-api"}`,
+		"main.rs":       "fn main() {}\n",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Force chunked transfer encoding so ContentLength == -1 on the
+		// client side.
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		half := len(archive) / 2
+		_, _ = w.Write(archive[:half])
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write(archive[half:])
+	}))
+	t.Cleanup(srv.Close)
+
+	var (
+		mu       sync.Mutex
+		sawTotal int64 = -99 // sentinel so we can tell if callback ran
+	)
+	cb := func(written, total int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		sawTotal = total
+	}
+
+	_, _, err := downloadTemplateArchiveFromURL(context.Background(), srv.URL, "main", "rust", "simple-api", cb)
+	if err != nil {
+		t.Fatalf("downloadTemplateArchiveFromURL: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if sawTotal < 0 {
+		t.Errorf("progress callback received total = %d, want 0 (normalized from unknown)", sawTotal)
+	}
+}
+
 func TestDownloadTemplateArchiveFromURL_NilCallbackIsSafe(t *testing.T) {
 	archive := buildTestTarball(t, "templates-main", "rust", "simple-api", map[string]string{
 		"template.json": `{"name":"simple-api"}`,
@@ -209,7 +258,7 @@ func TestDownloadTemplateArchiveFromURL_NilCallbackIsSafe(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	files, manifest, err := downloadTemplateArchiveFromURL(srv.URL, "main", "rust", "simple-api", nil)
+	files, manifest, err := downloadTemplateArchiveFromURL(context.Background(), srv.URL, "main", "rust", "simple-api", nil)
 	if err != nil {
 		t.Fatalf("downloadTemplateArchiveFromURL with nil callback: %v", err)
 	}
@@ -221,13 +270,35 @@ func TestDownloadTemplateArchiveFromURL_NilCallbackIsSafe(t *testing.T) {
 	}
 }
 
+// TestDownloadTemplateArchiveFromURL_CancelledContext verifies that a
+// cancelled context aborts the HTTP request rather than blocking forever.
+func TestDownloadTemplateArchiveFromURL_CancelledContext(t *testing.T) {
+	// Server that hangs until the client disconnects. It never sends a
+	// response body, so only a cancelled context can unblock the client.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel before the call so it aborts immediately
+
+	_, _, err := downloadTemplateArchiveFromURL(ctx, srv.URL, "main", "rust", "simple-api", nil)
+	if err == nil {
+		t.Fatal("expected cancelled context to produce an error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %q, want it to mention cancellation", err.Error())
+	}
+}
+
 func TestDownloadTemplateArchiveFromURL_404MentionsBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(srv.Close)
 
-	_, _, err := downloadTemplateArchiveFromURL(srv.URL, "nonexistent-branch", "rust", "simple-api", nil)
+	_, _, err := downloadTemplateArchiveFromURL(context.Background(), srv.URL, "nonexistent-branch", "rust", "simple-api", nil)
 	if err == nil {
 		t.Fatal("expected 404 to return an error")
 	}
@@ -279,5 +350,6 @@ func keys(m map[string][]byte) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }

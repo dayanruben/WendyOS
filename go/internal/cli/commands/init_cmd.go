@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -479,39 +480,63 @@ func metaTemplateNames(meta *repoMeta) string {
 
 // fetchRepoMetaWithUI wraps fetchRepoMeta with a bubbletea spinner when
 // stdout is a TTY. In non-interactive contexts it falls back to a plain
-// printf so logs stay readable.
+// printf so logs stay readable. If the user cancels (q / ctrl+c) the
+// in-flight HTTP request is aborted and ErrUserCancelled is returned.
 func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
 	if !isInteractiveTerminal() {
 		fmt.Println("Fetching template registry...")
-		return fetchRepoMeta(branch)
+		return fetchRepoMeta(context.Background(), branch)
 	}
 
-	spin := tui.NewSpinner("Fetching template registry...")
-	prog := tea.NewProgram(spin)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	var meta *repoMeta
-	var fetchErr error
+	prog := tea.NewProgram(tui.NewSpinner("Fetching template registry..."))
+
+	var (
+		meta     *repoMeta
+		fetchErr error
+		done     = make(chan struct{})
+	)
 	go func() {
-		meta, fetchErr = fetchRepoMeta(branch)
+		defer close(done)
+		meta, fetchErr = fetchRepoMeta(ctx, branch)
 		prog.Send(tui.SpinnerDoneMsg{Err: fetchErr})
 	}()
 
-	if _, err := prog.Run(); err != nil {
+	finalModel, err := prog.Run()
+	if err != nil {
+		cancel()
+		<-done
 		return nil, fmt.Errorf("spinner TUI: %w", err)
 	}
+
+	// If the user quit before the fetch completed, cancel the request and
+	// wait for the goroutine to finish so we don't leak it.
+	if sm, ok := finalModel.(tui.SpinnerModel); ok && !sm.Done() {
+		cancel()
+		<-done
+		return nil, ErrUserCancelled
+	}
+
+	<-done
 	return meta, fetchErr
 }
 
 // downloadTemplateArchiveWithUI wraps downloadTemplateArchive with a
 // bubbletea progress bar when stdout is a TTY. In non-interactive contexts
-// it falls back to plain text.
+// it falls back to plain text. If the user cancels (q / ctrl+c) the
+// in-flight HTTP request is aborted and ErrUserCancelled is returned.
 func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]byte, *templateManifest, error) {
 	title := fmt.Sprintf("Downloading template %q for %s (branch: %s)", tmpl, language, resolveTemplateBranch(branch))
 
 	if !isInteractiveTerminal() {
 		fmt.Printf("\n%s...\n", title)
-		return downloadTemplateArchive(language, tmpl, branch, nil)
+		return downloadTemplateArchive(context.Background(), language, tmpl, branch, nil)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	prog := tea.NewProgram(tui.NewProgress(title))
 
@@ -519,9 +544,11 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 		files    map[string][]byte
 		manifest *templateManifest
 		dlErr    error
+		done     = make(chan struct{})
 	)
 	go func() {
-		files, manifest, dlErr = downloadTemplateArchive(language, tmpl, branch, func(written, total int64) {
+		defer close(done)
+		files, manifest, dlErr = downloadTemplateArchive(ctx, language, tmpl, branch, func(written, total int64) {
 			if total > 0 {
 				prog.Send(tui.ProgressUpdateMsg{
 					Percent: float64(written) / float64(total),
@@ -533,9 +560,25 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 		prog.Send(tui.ProgressDoneMsg{Err: dlErr})
 	}()
 
-	if _, err := prog.Run(); err != nil {
+	finalModel, err := prog.Run()
+	if err != nil {
+		cancel()
+		<-done
 		return nil, nil, fmt.Errorf("progress TUI: %w", err)
 	}
+
+	// If the user quit via q / ctrl+c, ProgressModel.Err() returns
+	// context.Canceled. Cancel the in-flight request and surface
+	// ErrUserCancelled so the caller doesn't dereference nil manifest/files.
+	if pm, ok := finalModel.(tui.ProgressModel); ok {
+		if errors.Is(pm.Err(), context.Canceled) {
+			cancel()
+			<-done
+			return nil, nil, ErrUserCancelled
+		}
+	}
+
+	<-done
 	return files, manifest, dlErr
 }
 
