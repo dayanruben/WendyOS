@@ -31,6 +31,7 @@ const (
 	WendyContainerService_ListContainers_FullMethodName              = "/wendy.agent.services.v1.WendyContainerService/ListContainers"
 	WendyContainerService_ListVolumes_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/ListVolumes"
 	WendyContainerService_RemoveVolume_FullMethodName                = "/wendy.agent.services.v1.WendyContainerService/RemoveVolume"
+	WendyContainerService_ListContainerStats_FullMethodName          = "/wendy.agent.services.v1.WendyContainerService/ListContainerStats"
 )
 
 // WendyContainerServiceClient is the client API for WendyContainerService service.
@@ -49,6 +50,7 @@ type WendyContainerServiceClient interface {
 	ListContainers(ctx context.Context, in *ListContainersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ListContainersResponse], error)
 	ListVolumes(ctx context.Context, in *ListVolumesRequest, opts ...grpc.CallOption) (*ListVolumesResponse, error)
 	RemoveVolume(ctx context.Context, in *RemoveVolumeRequest, opts ...grpc.CallOption) (*RemoveVolumeResponse, error)
+	ListContainerStats(ctx context.Context, in *ListContainerStatsRequest, opts ...grpc.CallOption) (*ListContainerStatsResponse, error)
 }
 
 type wendyContainerServiceClient struct {
@@ -230,6 +232,16 @@ func (c *wendyContainerServiceClient) RemoveVolume(ctx context.Context, in *Remo
 	return out, nil
 }
 
+func (c *wendyContainerServiceClient) ListContainerStats(ctx context.Context, in *ListContainerStatsRequest, opts ...grpc.CallOption) (*ListContainerStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListContainerStatsResponse)
+	err := c.cc.Invoke(ctx, WendyContainerService_ListContainerStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyContainerServiceServer is the server API for WendyContainerService service.
 // All implementations must embed UnimplementedWendyContainerServiceServer
 // for forward compatibility.
@@ -246,6 +258,7 @@ type WendyContainerServiceServer interface {
 	ListContainers(*ListContainersRequest, grpc.ServerStreamingServer[ListContainersResponse]) error
 	ListVolumes(context.Context, *ListVolumesRequest) (*ListVolumesResponse, error)
 	RemoveVolume(context.Context, *RemoveVolumeRequest) (*RemoveVolumeResponse, error)
+	ListContainerStats(context.Context, *ListContainerStatsRequest) (*ListContainerStatsResponse, error)
 	mustEmbedUnimplementedWendyContainerServiceServer()
 }
 
@@ -291,6 +304,9 @@ func (UnimplementedWendyContainerServiceServer) ListVolumes(context.Context, *Li
 }
 func (UnimplementedWendyContainerServiceServer) RemoveVolume(context.Context, *RemoveVolumeRequest) (*RemoveVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveVolume not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) ListContainerStats(context.Context, *ListContainerStatsRequest) (*ListContainerStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListContainerStats not implemented")
 }
 func (UnimplementedWendyContainerServiceServer) mustEmbedUnimplementedWendyContainerServiceServer() {}
 func (UnimplementedWendyContainerServiceServer) testEmbeddedByValue()                               {}
@@ -472,6 +488,24 @@ func _WendyContainerService_RemoveVolume_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyContainerService_ListContainerStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListContainerStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyContainerServiceServer).ListContainerStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyContainerService_ListContainerStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyContainerServiceServer).ListContainerStats(ctx, req.(*ListContainerStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyContainerService_ServiceDesc is the grpc.ServiceDesc for WendyContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -498,6 +532,10 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveVolume",
 			Handler:    _WendyContainerService_RemoveVolume_Handler,
+		},
+		{
+			MethodName: "ListContainerStats",
+			Handler:    _WendyContainerService_ListContainerStats_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -428,12 +428,23 @@ public struct Wendy_Agent_Services_V1_GetAgentVersionResponse: Sendable {
 
   public var featureset: [String] = []
 
+  /// Hardware platform identifier read from /etc/wendyos/device-type (only present on WendyOS)
+  public var deviceType: String {
+    get {_deviceType ?? String()}
+    set {_deviceType = newValue}
+  }
+  /// Returns true if `deviceType` has been explicitly set.
+  public var hasDeviceType: Bool {self._deviceType != nil}
+  /// Clears the value of `deviceType`. Subsequent reads from it will return its default value.
+  public mutating func clearDeviceType() {self._deviceType = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _osVersion: String? = nil
   fileprivate var _publicKey: String? = nil
+  fileprivate var _deviceType: String? = nil
 }
 
 /// Request message for listing WiFi networks
@@ -1613,7 +1624,7 @@ extension Wendy_Agent_Services_V1_GetAgentVersionRequest: SwiftProtobuf.Message,
 
 extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetAgentVersionResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}os_version\0\u{1}os\0\u{3}cpu_architecture\0\u{3}public_key\0\u{1}featureset\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}os_version\0\u{1}os\0\u{3}cpu_architecture\0\u{3}public_key\0\u{1}featureset\0\u{3}device_type\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1627,6 +1638,7 @@ extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message
       case 4: try { try decoder.decodeSingularStringField(value: &self.cpuArchitecture) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self._publicKey) }()
       case 6: try { try decoder.decodeRepeatedStringField(value: &self.featureset) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self._deviceType) }()
       default: break
       }
     }
@@ -1655,6 +1667,9 @@ extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message
     if !self.featureset.isEmpty {
       try visitor.visitRepeatedStringField(value: self.featureset, fieldNumber: 6)
     }
+    try { if let v = self._deviceType {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 7)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1665,6 +1680,7 @@ extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message
     if lhs.cpuArchitecture != rhs.cpuArchitecture {return false}
     if lhs._publicKey != rhs._publicKey {return false}
     if lhs.featureset != rhs.featureset {return false}
+    if lhs._deviceType != rhs._deviceType {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
