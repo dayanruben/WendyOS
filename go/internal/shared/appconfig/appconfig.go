@@ -42,6 +42,10 @@ var ValidEntitlementTypes = []string{
 	EntitlementInput,
 }
 
+var deprecatedEntitlementReplacements = map[string]string{
+	EntitlementVideo: EntitlementCamera,
+}
+
 // allowedKeys maps each entitlement type to the set of JSON keys that are valid for it.
 var allowedKeys = map[string][]string{
 	EntitlementNetwork:   {"type", "mode"},
@@ -112,6 +116,12 @@ type Entitlement struct {
 	Path   string `json:"path,omitempty"`   // Persist
 	Device string `json:"device,omitempty"` // I2C
 	Pins   []int  `json:"pins,omitempty"`   // GPIO
+}
+
+// DeprecatedEntitlementReplacement reports the preferred replacement for a deprecated entitlement type.
+func DeprecatedEntitlementReplacement(entType string) (string, bool) {
+	replacement, ok := deprecatedEntitlementReplacements[entType]
+	return replacement, ok
 }
 
 // HasEntitlement reports whether the config contains an entitlement of the given type.
@@ -219,6 +229,13 @@ func ValidateJSON(data []byte) []string {
 		var entType string
 		if err := json.Unmarshal(typeRaw, &entType); err != nil {
 			continue
+		}
+
+		if replacement, ok := DeprecatedEntitlementReplacement(entType); ok {
+			warnings = append(warnings, fmt.Sprintf(
+				"entitlement[%d]: %q is deprecated; use %q instead",
+				i, entType, replacement,
+			))
 		}
 
 		allowed, ok := allowedKeys[entType]
