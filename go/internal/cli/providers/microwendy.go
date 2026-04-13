@@ -91,12 +91,7 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		return nil, err
 	}
 
-	sdk, err := swifttoolchain.FindSwiftSDK("wasm32")
-	if err != nil {
-		return nil, fmt.Errorf("finding Swift SDK: %w", err)
-	}
-
-	args := []string{"build", "--swift-sdk=" + sdk, "--triple", swifttoolchain.WasmTargetTriple}
+	args := []string{"build", "--triple", swifttoolchain.WasmTargetTriple}
 	if !debug {
 		args = append(args, "-c", "release")
 	}
