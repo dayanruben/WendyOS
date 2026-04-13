@@ -105,23 +105,17 @@ jobs:
       - name: Build CLI
         run: make build-cli
 
-      - name: Restart Colima
+      - name: Prepare Docker
         run: |
-          LIMA_HOME=~/.colima/_lima limactl stop --force colima 2>/dev/null || true
-          colima stop 2>/dev/null || true
-          colima start
-          until docker info >/dev/null 2>&1; do sleep 2; done
-          echo "Waiting for LAN routing to stabilize..."
-          sleep 15
-
-      - name: Diagnose device connectivity
-        run: |
-          echo "==> wendy device version for each discovered device:"
-          DISCOVER_JSON=$(./bin/wendy discover --json --timeout 10s 2>/dev/null)
-          echo "$DISCOVER_JSON" | jq -r '.lanDevices[].hostname // empty' | while read -r host; do
-            echo "--- $host ---"
-            ./bin/wendy device version --device "$host" 2>&1 || true
-          done
+          if ! docker info >/dev/null 2>&1; then
+            echo "Docker not available, starting Colima..."
+            colima start
+            until docker info >/dev/null 2>&1; do sleep 2; done
+          else
+            echo "Docker already available, skipping Colima restart"
+          fi
+          docker buildx rm wendy --force 2>/dev/null || true
+          docker system prune -f 2>/dev/null || true
 
       - name: Run integration tests
         run: |
