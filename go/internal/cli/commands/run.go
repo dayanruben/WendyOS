@@ -22,6 +22,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
@@ -30,6 +31,7 @@ import (
 
 var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
+var execCommandContext = exec.CommandContext
 
 // dimWriter writes each line rendered through cliStyle (dim/background).
 // Incomplete lines are buffered until a newline or Flush is called.
@@ -477,11 +479,11 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		architecture = "arm64"
 	}
 
-	if err := ensureSwiftVersion(ctx); err != nil {
+	if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 		return err
 	}
 
-	product, err := findSwiftProduct(cwd)
+	product, err := swifttoolchain.FindSwiftProduct(cwd)
 	if err != nil {
 		return err
 	}
@@ -568,17 +570,17 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 	// Resolve Swift product name from Package.swift.
 	if projectType == "swift" {
-		if err := ensureSwiftVersion(ctx); err != nil {
+		if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 			return err
 		}
-		swiftProduct, err := findSwiftProduct(projectPath)
+		swiftProduct, err := swifttoolchain.FindSwiftProduct(projectPath)
 		if err != nil {
 			return fmt.Errorf("could not determine Swift product: %w", err)
 		}
 		product = swiftProduct
 	} else if p.CanBuild(projectPath) {
 		// Dockerfile exists — try to use Swift product name if Package.swift is also present.
-		if swiftProduct, err := findSwiftProduct(projectPath); err == nil {
+		if swiftProduct, err := swifttoolchain.FindSwiftProduct(projectPath); err == nil {
 			product = swiftProduct
 		}
 	}

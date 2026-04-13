@@ -6,10 +6,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
 )
@@ -36,7 +36,7 @@ func (p *MicroWendyProvider) Key() string         { return "wendy-lite" }
 func (p *MicroWendyProvider) DisplayName() string { return "Micro Wendy (WASM)" }
 
 func (p *MicroWendyProvider) IsAvailable(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "swiftly", "--version")
+	cmd := swifttoolchain.ExecCommandContext(ctx, "swiftly", "--version")
 	return cmd.Run() == nil
 }
 
@@ -87,14 +87,20 @@ func (p *MicroWendyProvider) CanBuild(projectPath string) bool {
 }
 
 func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
-	args := []string{
-		"run", "+6.2.3", "swift", "build",
-		"--triple", "wasm32-unknown-none-wasm",
+	if err := swifttoolchain.EnsureSwiftVersion(ctx, os.Stdout, os.Stderr); err != nil {
+		return nil, err
 	}
+
+	sdk, err := swifttoolchain.FindSwiftSDK("wasm32")
+	if err != nil {
+		return nil, fmt.Errorf("finding Swift SDK: %w", err)
+	}
+
+	args := []string{"build", "--swift-sdk=" + sdk, "--triple", swifttoolchain.WasmTargetTriple}
 	if !debug {
 		args = append(args, "-c", "release")
 	}
-	cmd := exec.CommandContext(ctx, "swiftly", args...)
+	cmd := swifttoolchain.SwiftCommandContext(ctx, args...)
 	cmd.Dir = projectPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -106,7 +112,7 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 	if !debug {
 		config = "release"
 	}
-	wasmPath := filepath.Join(projectPath, ".build", "wasm32-unknown-none-wasm", config, product+".wasm")
+	wasmPath := filepath.Join(projectPath, ".build", swifttoolchain.WasmTargetTriple, config, product+".wasm")
 
 	// Collect IPs of all known devices for unicast delivery.
 	var targetIPs []string
