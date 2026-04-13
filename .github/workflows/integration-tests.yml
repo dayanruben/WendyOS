@@ -163,11 +163,27 @@ jobs:
           for device in "${DEVICES[@]}"; do
             echo ""
             echo "==> Testing device: $device"
-            echo "==> Network diagnostics for $device:"
-            route -n get "$device" 2>/dev/null || true
-            arp -n "$device" 2>/dev/null || true
-            nc -zw 5 "$device" 50051 2>&1 && echo "nc port 50051: OK" || echo "nc port 50051: FAILED"
-            nc -zw 5 "$device" 5000  2>&1 && echo "nc port 5000: OK"  || echo "nc port 5000: FAILED"
+
+            # Resolve to IP for diagnostics
+            IP=$(python3 -c "import socket; print(socket.gethostbyname('$device'))" 2>/dev/null || echo "")
+            echo "Resolved: $device -> ${IP:-FAILED}"
+
+            echo "==> Connectivity diagnostics:"
+            echo "--- routing ---"
+            route -n get ${IP:-$device} 2>&1 || true
+            echo "--- interfaces ---"
+            ifconfig | grep -E "^[a-z]|inet " || true
+            echo "--- nc (hostname) ---"
+            nc -zw 5 "$device" 50051 2>&1 && echo "OK" || echo "FAILED"
+            echo "--- nc (IP) ---"
+            nc -zw 5 "$IP" 50051 2>&1 && echo "OK" || echo "FAILED"
+            echo "--- curl (IP) ---"
+            curl -s --connect-timeout 5 "http://${IP}:50051/" 2>&1 | head -3 || true
+            echo "--- python socket (IP) ---"
+            python3 -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('${IP}', 50051)); print('OK'); s.close()" 2>&1 || true
+            echo "--- wendy device version (IP) ---"
+            ./bin/wendy device version --device "$IP" 2>&1 || true
+
             scripts/test-ci.sh $TEST_ARGS -h "$device" || OVERALL_FAIL=1
             docker buildx rm wendy --force 2>/dev/null || true
           done
