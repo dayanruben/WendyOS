@@ -136,6 +136,17 @@ Keep the Swift package as the home for:
 - existing generated gRPC/protobuf targets
 - tests
 
+The package file and directory structure should remain as close as possible to what exists today.
+
+That means:
+
+- keep `swift/Package.swift` as the package root
+- keep `swift/Sources/WendyAgent/` as the main shared source directory
+- keep `swift/Sources/WendyAgent/Docker/` as-is
+- keep `swift/Sources/WendyAgent/Services/` as-is
+- keep generated targets and tests in their current locations
+- add only the minimum new files and directories needed to split the CLI frontend from the shared library
+
 ### Xcode app
 
 Create a separate native macOS app target/project for **WendyAgentApp** instead of trying to make the app itself a SwiftPM executable target.
@@ -205,16 +216,16 @@ We should consider this plan successful when:
 
 ### Naming conventions
 
-Default naming should be `WendyAgent` / `Wendy Agent` across the library, CLI frontend, and app. Add qualifiers such as “CLI frontend”, “library”, or “app” only when needed for clarity.
+Use these names consistently:
 
-For internal Swift target/module identifiers, disambiguation is still required where the toolchain demands unique names:
-
-- Swift package library target/module: `WendyAgent`
-- Swift package CLI target/module: `WendyAgentCLI` only because package target names must be unique
+- shared library: `WendyAgent`
+- CLI target/module: `WendyAgentCLI`
 - executable product: `wendy-agent`
-- app code module: `WendyAgentApp` only because the app cannot share a module name with the imported `WendyAgent` library
+- macOS app project name: `WendyAgentApp`
+- macOS app target name: `WendyAgentApp`
+- macOS app display name shown to users: `WendyAgent`
 
-This keeps the public/product naming unified as WendyAgent while allowing internal module names to remain unambiguous.
+The library and app intentionally use different code/project identifiers so the app can import the package cleanly without naming collisions.
 
 ### Swift package products
 
@@ -290,24 +301,21 @@ targets: [
 
 ### Shared library source layout
 
-Recommended source layout inside the Swift package:
+Recommended source layout inside the Swift package, kept as close as possible to the current structure:
 
 ```text
 swift/
   Sources/
     WendyAgent/
-      Core/
-        Agent.swift
-        AgentConfiguration.swift
-        AgentState.swift
-        AgentEvent.swift
-        AgentRunInfo.swift
-        AgentDirectories.swift
-        AgentLogging.swift
-      Bootstrap/
-        AgentAssembly.swift
-        AgentEnvironment.swift
-        AgentServices.swift
+      WendyAgent.swift
+      AgentConfiguration.swift
+      AgentState.swift
+      AgentEvent.swift
+      AgentRunInfo.swift
+      AgentDirectories.swift
+      AgentLogging.swift
+      AgentAssembly.swift
+      AgentEnvironment.swift
       Docker/
         DockerCLI.swift
         DockerContainerBackend.swift
@@ -326,11 +334,10 @@ swift/
 
 Notes:
 
-- do not use an `Internal/` folder
-- keep the folder structure shallow: `category/file.swift`
-- avoid arbitrarily deep hierarchies
-- keep the public API concentrated in the `Core/` category
-- existing service code can mostly be migrated with minimal logic changes
+- keep `WendyAgent/Docker/` and `WendyAgent/Services/` in place
+- add new shared-library files at the top level of `Sources/WendyAgent/`
+- do not introduce new package subtrees such as `Core/`, `Bootstrap/`, or `Internal/`
+- prefer minimal movement of existing files so the refactor stays easy to review
 
 ### CLI source layout
 
@@ -340,11 +347,10 @@ Recommended CLI layout:
 swift/
   Sources/
     WendyAgentCLI/
-      CLI/
-        main.swift
-        CLIOptions.swift
-        CLILogging.swift
-        CLISignalHandling.swift
+      main.swift
+      CLIOptions.swift
+      CLILogging.swift
+      CLISignalHandling.swift
 ```
 
 The CLI should be intentionally thin and mostly limited to:
@@ -362,8 +368,8 @@ Recommended layout:
 
 ```text
 macos/
-  Wendy Agent.xcodeproj
-  Wendy Agent/
+  WendyAgentApp.xcodeproj
+  WendyAgentApp/
     App/
       WendyAgentApp.swift
     Model/
@@ -391,11 +397,11 @@ Layout rule:
 
 Recommended Xcode naming:
 
-- project name: `Wendy Agent`
-- app target display name: `Wendy Agent`
-- product name: `Wendy Agent`
-- Dock/app name: `Wendy Agent`
-- internal Swift module name: `WendyAgentApp` only for compiler/module disambiguation
+- project name: `WendyAgentApp`
+- app target name: `WendyAgentApp`
+- product/module name: `WendyAgentApp`
+- app display name: `WendyAgent`
+- Dock/app name: `WendyAgent`
 
 The app should import the local Swift package module `WendyAgent`.
 
@@ -775,12 +781,12 @@ Today, `swift/Sources/WendyAgent/WendyAgent.swift` effectively combines:
 ### Proposed migration
 
 1. move the runtime assembly logic out of the current `WendyAgent.swift`
-2. place public lifecycle/configuration types in the new shared `WendyAgent` library surface
-3. keep implementation-heavy service code in shallow category folders such as `Bootstrap/`, `Docker/`, and `Services/`
-4. create `swift/Sources/WendyAgentCLI/` for the new CLI wrapper target used by the WendyAgent CLI frontend
+2. place public lifecycle/configuration types in the shared `WendyAgent` library surface at the top level of `Sources/WendyAgent/`
+3. keep existing `Docker/` and `Services/` directories in place with minimal movement
+4. create `swift/Sources/WendyAgentCLI/` for the new CLI wrapper target used by the Wendy Agent CLI frontend
 5. make the old CLI behavior call into the shared `Agent` actor
 
-This sequence allows the CLI to continue working while proving out the shared boundary needed by the macOS app.
+This sequence allows the CLI to continue working while proving out the shared boundary needed by the macOS app without significantly reshaping the package.
 
 ## API design principles
 
