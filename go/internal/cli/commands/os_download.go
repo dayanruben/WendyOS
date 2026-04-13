@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/internal/shared/version"
 )
 
 func newOSDownloadCmd() *cobra.Command {
@@ -94,12 +95,14 @@ func pickVersion(dev deviceInfo) (string, error) {
 		return "", fmt.Errorf("no versions available for %s", dev.Name)
 	}
 
-	// Collect and sort versions (newest first by string sort, reversed).
+	// Collect and sort versions newest-first using semantic comparison.
 	var versions []string
 	for v := range dev.Manifest.Versions {
 		versions = append(versions, v)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(versions)))
+	sort.Slice(versions, func(i, j int) bool {
+		return version.CompareVersions(versions[i], versions[j]) > 0
+	})
 
 	var items []tui.PickerItem
 	for _, v := range versions {
