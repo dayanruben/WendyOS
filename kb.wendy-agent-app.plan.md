@@ -4,6 +4,16 @@
 
 Replace the current SwiftUI `MenuBarExtra`-based menu with a native AppKit status bar item and `NSMenu` so the app uses standard macOS menu rendering and supports reliable menu item icons/state presentation.
 
+This migration should follow these constraints:
+
+- AppKit only for the menu bar UI
+- all UI created in code
+- no Auto Layout
+- no storyboards
+- no xibs
+- classic MVC
+- no View Models
+
 ## Why switch
 
 The current implementation in:
@@ -29,9 +39,34 @@ If the requirement is "native Mac menus", AppKit is the right foundation:
 
 ## Target architecture
 
-### 1. Replace `MenuBarExtra` with an AppKit coordinator
+### 1. Use a code-only AppKit app lifecycle
 
-Introduce an AppKit-backed controller object responsible for:
+Move the menu bar app lifecycle to AppKit instead of keeping the SwiftUI `App`
+entry point around as glue.
+
+Suggested new file:
+
+- `swift/WendyAgentApp/AppDelegate.swift`
+
+Suggested type:
+
+- `@main final class AppDelegate: NSObject, NSApplicationDelegate`
+
+Responsibilities:
+
+- own the `WendyAgent`
+- own the current `WendyAgentStatus`
+- start and stop observation
+- create the menu controller
+- forward status updates into the menu controller
+- terminate the app cleanly
+
+This keeps the app in a classic AppKit shape and avoids mixing SwiftUI app
+lifecycle concerns into an otherwise native menu implementation.
+
+### 2. Replace `MenuBarExtra` with an AppKit controller
+
+Introduce an AppKit controller responsible for:
 
 - creating the `NSStatusItem`
 - configuring its button image/title
@@ -41,11 +76,11 @@ Introduce an AppKit-backed controller object responsible for:
 
 Suggested new file:
 
-- `swift/WendyAgentApp/AppKitStatusController.swift`
+- `swift/WendyAgentApp/StatusMenuController.swift`
 
 Suggested type:
 
-- `final class AppKitStatusController: NSObject`
+- `final class StatusMenuController: NSObject`
 
 Core responsibilities:
 
@@ -55,32 +90,9 @@ Core responsibilities:
 - expose `func setQuitHandler(_:)`
 - rebuild menu contents when status changes
 
-### 2. Keep the SwiftUI `App` entry point, but only as app lifecycle glue
-
-Retain `@main struct WendyAgentApp: App`, but remove `MenuBarExtra` from `body`.
-
-Instead:
-
-- use a minimal `Settings { EmptyView() }` or similar scene placeholder
-- create/manage `AppKitStatusController` from the app lifecycle
-- continue owning:
-  - `WendyAgent`
-  - `WendyAgentStatus`
-  - status observation
-  - quit flow
-
-`WendyAgentApp.swift` should become responsible for:
-
-- bootstrapping agent state observation
-- passing status updates to the AppKit controller
-- terminating the app cleanly
-
 ### 3. Stop using SwiftUI for the popup menu contents
 
-`WendyAgentMenu.swift` should either be:
-
-- removed entirely, or
-- reduced to status label helpers if any string mapping is worth reusing
+`WendyAgentMenu.swift` should be removed entirely.
 
 The actual menu contents should be built with AppKit:
 
@@ -97,6 +109,51 @@ Example target menu structure:
    - disabled detail row(s) showing the error message
 3. separator
 4. `Quit WendyAgent`
+
+## Architectural rules
+
+### Code-only UI
+
+Do not use:
+
+- storyboards
+- xibs
+- Interface Builder
+
+All AppKit objects should be created in code.
+
+For this menu-based app that means:
+
+- create `NSStatusItem` in code
+- create `NSMenu` in code
+- create every `NSMenuItem` in code
+- if any custom `NSView` is ever needed, instantiate it directly in code
+
+### No Auto Layout
+
+Do not introduce Auto Layout constraints for this migration.
+
+For the current plan, that is straightforward because `NSStatusItem` and `NSMenu`
+mostly rely on AppKit's native sizing behavior. If a custom `NSView` is added
+later, size and position it with explicit frames and manual layout code.
+
+### Classic MVC only
+
+Use classic AppKit MVC:
+
+- **Model**: `WendyAgent`, `WendyAgentStatus`, and related domain state
+- **View**: `NSStatusItem`, `NSMenu`, `NSMenuItem`, optional `NSImage`
+- **Controller**: `AppDelegate`, `StatusMenuController`, and any small action
+  handlers
+
+Do not add a View Model layer. Presentation decisions such as status title,
+icon name, or whether an error message should be shown can live either:
+
+- in the controller as private helpers, or
+- in a small internal extension on `WendyAgentStatus`
+
+The app is simple enough that adding View Models would create extra indirection
+without solving a real problem.
 
 ## Native menu representation strategy
 
@@ -228,15 +285,41 @@ Use **two complete assets** if a distinct error state is needed in the menu bar 
 
 ## Concrete implementation steps
 
-### Step 1: add an AppKit controller
+### Step 1: add an AppKit app delegate
 
 Create:
 
-- `swift/WendyAgentApp/AppKitStatusController.swift`
+- `swift/WendyAgentApp/AppDelegate.swift`
 
 Implement:
 
-- `final class AppKitStatusController: NSObject`
+- `@main final class AppDelegate: NSObject, NSApplicationDelegate`
+- `private let agent = WendyAgent()`
+- `private var status: WendyAgentStatus = .idle`
+- `private var statusObservation: WendyObservation?`
+- `private var isQuitting = false`
+- `private let statusMenuController = StatusMenuController(status: .idle)`
+
+Methods:
+
+- `func applicationDidFinishLaunching(_:)`
+- `func applicationWillTerminate(_:)` if needed
+- `private func bootstrapIfNeeded()`
+- `private func updateStatus(_:)`
+- `@objc private func quitSelected()` or similar quit entry point
+
+This file should act as the top-level application controller in a classic MVC
+setup.
+
+### Step 2: add the status menu controller
+
+Create:
+
+- `swift/WendyAgentApp/StatusMenuController.swift`
+
+Implement:
+
+- `final class StatusMenuController: NSObject`
 - `private let statusItem: NSStatusItem`
 - `private var onQuit: (() -> Void)?`
 - `private var currentStatus: WendyAgentStatus`
@@ -250,7 +333,9 @@ Methods:
 - `private func updateStatusButton()`
 - `@objc private func quitSelected()`
 
-### Step 2: build native menu items
+Keep this controller focused on AppKit menu presentation and user actions.
+
+### Step 3: build native menu items in code
 
 Inside `rebuildMenu()`:
 
@@ -262,9 +347,12 @@ Inside `rebuildMenu()`:
 - append Quit item with action/target
 - assign menu to `statusItem.menu`
 
-### Step 3: move string/status mapping into a shared helper
+Do not use nib-backed menu items or custom views loaded from Interface Builder.
 
-To avoid duplication, define small internal helpers either in the controller or a separate file:
+### Step 4: keep presentation helpers small and local
+
+To avoid duplication, define small internal helpers either in the controller or a
+separate file:
 
 - `var menuTitle: String`
 - `var menuImageName: String`
@@ -276,37 +364,21 @@ Suggested file if extracted:
 
 - `swift/WendyAgentApp/WendyAgentStatus+MenuPresentation.swift`
 
-### Step 4: refactor `WendyAgentApp.swift`
+This helper is still part of the model/presentation boundary. It is **not** a
+View Model.
 
-Change `body` from `MenuBarExtra` to a placeholder scene, for example:
+### Step 5: remove the SwiftUI app entry point and menu views
 
-- `Settings { EmptyView() }`
+After AppKit is wired up:
 
-Add stored state for the controller, e.g.:
+- remove `MenuBarExtra`
+- remove the SwiftUI `App` entry point
+- delete `WendyAgentMenu`
+- delete `WendyAgentStatusItem`
 
-- `private let statusController = AppKitStatusController(status: .idle)`
+Files likely removed or replaced:
 
-On app startup:
-
-- set quit handler on the controller
-- start bootstrap task
-- update the controller whenever `status` changes
-
-Possible hooks:
-
-- initialize controller with the current state
-- call `statusController.update(status:)` inside the status observation callback
-- also call it when local `status` changes during startup/shutdown
-
-### Step 5: remove SwiftUI menu views
-
-After AppKit is working:
-
-- delete or stop referencing `WendyAgentMenu`
-- delete or stop referencing `WendyAgentStatusItem`
-
-If no longer needed, remove:
-
+- `swift/WendyAgentApp/WendyAgentApp.swift`
 - `swift/WendyAgentApp/WendyAgentMenu.swift`
 
 ### Step 6: add assets for menu status icons
@@ -337,13 +409,14 @@ These should be tiny dot icons optimized for `NSMenuItem.image`.
 
 ## Suggested rollout order
 
-1. create `AppKitStatusController`
-2. wire `NSStatusItem` with a static menu and Quit action
-3. connect live status updates
-4. add native status row and failure detail row
-5. remove `MenuBarExtra`
-6. clean up unused SwiftUI menu code
-7. optionally add alternate menu bar icon for error state
+1. create `AppDelegate` and switch the app lifecycle to AppKit
+2. create `StatusMenuController`
+3. wire `NSStatusItem` with a static menu and Quit action
+4. connect live status updates
+5. add native status row and failure detail row
+6. remove `MenuBarExtra` and the SwiftUI menu views
+7. add status icon assets for menu rows
+8. optionally add alternate menu bar icon for error state
 
 ## Risks / tradeoffs
 
@@ -364,9 +437,13 @@ These should be tiny dot icons optimized for `NSMenuItem.image`.
 
 Proceed with an AppKit migration based on:
 
+- `NSApplicationDelegate` as the app entry point
 - `NSStatusItem`
 - `NSMenu`
 - asset-backed status dot icons
 - simple disabled status rows
+- code-only UI construction
+- no Auto Layout
+- classic MVC with no View Models
 
 This fits the product direction better than continuing to push custom SwiftUI layouts through `MenuBarExtra`.
