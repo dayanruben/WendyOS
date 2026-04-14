@@ -2,7 +2,6 @@ import AppKit
 import WendyAgent
 
 @MainActor
-@main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let agent = WendyAgent()
     private var status: WendyAgentStatus = .idle
