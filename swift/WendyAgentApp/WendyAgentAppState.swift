@@ -10,16 +10,26 @@ final class WendyAgentAppState: ObservableObject {
 
     init(agent: WendyAgent = WendyAgent()) {
         self.agent = agent
-        self.observationTask = Task {
-            let updates = await agent.statusUpdates()
-            for await status in updates {
-                self.status = status
+        self.statusObservationTask = Task { [weak self] in
+            let observation = await agent.observeStatus { [weak self] status in
+                Task { @MainActor [weak self] in
+                    self?.status = status
+                }
+            }
+
+            await MainActor.run {
+                self?.statusObservation = observation
             }
         }
     }
 
     deinit {
-        self.observationTask?.cancel()
+        self.statusObservationTask?.cancel()
+        if let statusObservation {
+            Task {
+                await statusObservation.cancel()
+            }
+        }
     }
 
     func startIfNeeded() {
@@ -38,6 +48,10 @@ final class WendyAgentAppState: ObservableObject {
         guard self.quitTask == nil else { return }
 
         self.quitTask = Task {
+            if let statusObservation = self.statusObservation {
+                await statusObservation.cancel()
+                self.statusObservation = nil
+            }
             await self.agent.stop()
             NSApplication.shared.terminate(nil)
         }
@@ -46,7 +60,8 @@ final class WendyAgentAppState: ObservableObject {
     // MARK: - Private
 
     private let agent: WendyAgent
-    private var observationTask: Task<Void, Never>?
+    private var statusObservation: WendyObservation?
+    private var statusObservationTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
     private var quitTask: Task<Void, Never>?
 }
