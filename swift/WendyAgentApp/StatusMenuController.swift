@@ -3,9 +3,6 @@ import WendyAgent
 
 @MainActor
 final class StatusMenuController: NSObject {
-    private static let statusBarIconSize = NSSize(width: 22.5, height: 22.5)
-    private static let menuDotSize = NSSize(width: 12.5, height: 12.5)
-
     init(status: WendyAgentStatus) {
         self.currentStatus = status
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -78,16 +75,13 @@ final class StatusMenuController: NSObject {
 
     private func makeButtonImage() -> NSImage? {
         if let image = NSImage(named: NSImage.Name("StatusIcon"))?.copy() as? NSImage {
-            image.size = Self.statusBarIconSize
             return image
         }
 
-        let image = NSImage(
+        return NSImage(
             systemSymbolName: "diamond.fill",
             accessibilityDescription: "WendyAgent"
         )
-        image?.size = Self.statusBarIconSize
-        return image
     }
 
     private func makeStatusImage(for status: WendyAgentStatus) -> NSImage? {
@@ -96,7 +90,6 @@ final class StatusMenuController: NSObject {
         }
 
         image.isTemplate = false
-        image.size = Self.menuDotSize
         return image
     }
 
