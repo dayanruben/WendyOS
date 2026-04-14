@@ -1,45 +1,61 @@
+import AppKit
 import SwiftUI
+import WendyAgent
 
 @main
 struct WendyAgentApp: App {
-    @StateObject private var appState: WendyAgentAppState
+    @State private var status: WendyAgentStatus = .idle
+    @State private var statusObservation: WendyObservation?
+    @State private var hasBootstrapped = false
+    @State private var isQuitting = false
 
-    init() {
-        let appState = WendyAgentAppState()
-        self._appState = StateObject(wrappedValue: appState)
-        appState.startIfNeeded()
-    }
+    private let agent = WendyAgent()
 
     var body: some Scene {
         MenuBarExtra {
-            switch self.appState.status {
-            case .failed(let message):
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Divider()
-            case .idle, .starting, .running, .stopping, .stopped:
-                EmptyView()
-            }
-
-            Button("Quit WendyAgent") {
-                self.appState.quit()
-            }
-            .keyboardShortcut("q")
+            WendyAgentMenu(status: self.status, onQuit: self.quit)
         } label: {
-            ZStack(alignment: .topTrailing) {
-                Image("StatusIcon")
-
-                if case .failed = self.appState.status {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .red)
-                        .font(.system(size: 8, weight: .bold))
-                        .offset(x: 4, y: -4)
+            WendyAgentStatusItem(status: self.status)
+                .task {
+                    await self.bootstrapIfNeeded()
                 }
-            }
-            .help("WendyAgent")
         }
+    }
+
+    @MainActor
+    private func bootstrapIfNeeded() async {
+        guard !self.hasBootstrapped else { return }
+        self.hasBootstrapped = true
+
+        self.statusObservation = await self.agent.observeStatus { status in
+            Task { @MainActor in
+                self.status = status
+            }
+        }
+
+        do {
+            try await self.agent.start()
+        } catch {
+            // WendyAgent publishes failure state directly.
+        }
+    }
+
+    @MainActor
+    private func quit() {
+        guard !self.isQuitting else { return }
+        self.isQuitting = true
+
+        Task {
+            await self.cancelStatusObservation()
+            await self.agent.stop()
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    @MainActor
+    private func cancelStatusObservation() async {
+        guard let statusObservation = self.statusObservation else { return }
+        self.statusObservation = nil
+        await statusObservation.cancel()
     }
 }
