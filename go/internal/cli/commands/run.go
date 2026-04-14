@@ -392,12 +392,18 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 	switch buildType {
 	case "docker":
-		if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
+		marker := filepath.Join(dir, "Dockerfile")
+		if _, err := os.Stat(marker); err == nil {
 			return "docker", nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("checking for %s: %w", marker, err)
 		}
 	case "swift":
-		if _, err := os.Stat(filepath.Join(dir, "Package.swift")); err == nil {
+		marker := filepath.Join(dir, "Package.swift")
+		if _, err := os.Stat(marker); err == nil {
 			return "swift", nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("checking for %s: %w", marker, err)
 		}
 	}
 
@@ -512,8 +518,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		return err
 	}
 
-	// Swift projects without a Dockerfile use swift-container-plugin to push
-	// directly to the device's registry, bypassing the Docker build pipeline.
+	// Swift projects use swift-container-plugin to push directly to the
+	// device's registry, bypassing the Docker build pipeline, when
+	// --build-type=swift explicitly selects that path or when no Dockerfile
+	// is present.
 	if projectType == "swift" {
 		if normalizeBuildType(opts.buildType) == "swift" {
 			return runSwiftWithAgent(ctx, conn, cwd, appCfg, opts)

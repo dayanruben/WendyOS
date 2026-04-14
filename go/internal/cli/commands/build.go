@@ -219,7 +219,7 @@ func buildOptionForType(options []BuildOption, requestedType string) (*BuildOpti
 			}
 		}
 		if len(matches) > 1 {
-			return nil, fmt.Errorf("multiple Dockerfiles detected (%s); keep only one Dockerfile or run in an interactive terminal to choose", strings.Join(buildOptionLabels(matches), ", "))
+			return nil, fmt.Errorf("multiple Dockerfiles detected (%s); keep only one Dockerfile or omit --build-type to choose interactively", strings.Join(buildOptionLabels(matches), ", "))
 		}
 	}
 

@@ -160,6 +160,22 @@ func TestResolveRunProjectType_InvalidOverride(t *testing.T) {
 	}
 }
 
+func TestResolveRunProjectType_PropagatesMarkerStatErrors(t *testing.T) {
+	dir := t.TempDir()
+	notDir := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(notDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveRunProjectType(notDir, "docker")
+	if err == nil {
+		t.Fatal("expected stat error for invalid project path")
+	}
+	if !strings.Contains(err.Error(), "checking for") {
+		t.Fatalf("expected wrapped stat error, got %v", err)
+	}
+}
+
 func TestGeneratePythonDockerfile_WithRequirements(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("flask"), 0o644); err != nil {
