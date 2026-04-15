@@ -1,10 +1,10 @@
 #!/bin/bash
-# Run from the swift/ directory (alongside Package.swift).
+# Run from anywhere inside the swift/ directory tree.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR/../WendyAgentCore"
 
 PROTO_DIR="../Proto"
 
