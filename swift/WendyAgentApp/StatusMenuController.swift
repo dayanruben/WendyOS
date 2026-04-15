@@ -5,7 +5,7 @@ import WendyAgent
 final class StatusMenuController: NSObject {
     init(agent: WendyAgent) {
         self.agent = agent
-        self.currentStatus = .idle
+        self.currentStatus = agent.status
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
@@ -15,10 +15,8 @@ final class StatusMenuController: NSObject {
     }
 
     func start() async {
-        self.statusObservation = await self.agent.observeStatus { [weak self] status in
-            Task { @MainActor in
-                self?.update(status: status)
-            }
+        self.statusObservation = self.agent.observeStatus { @MainActor [weak self] status in
+            self?.update(status: status)
         }
 
         do {

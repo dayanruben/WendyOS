@@ -7,7 +7,8 @@ import OpenTelemetryGRPC
 import ServiceLifecycle
 import WendyAgentGRPC
 
-public actor WendyAgent {
+@MainActor
+public final class WendyAgent {
     public let configuration: WendyAgentConfiguration
     public private(set) var status: WendyAgentStatus = .idle
 
@@ -147,7 +148,7 @@ public actor WendyAgent {
     }
 
     public func observeStatus(
-        _ observer: @escaping @Sendable (WendyAgentStatus) -> Void
+        _ observer: @escaping @isolated(any) @Sendable (WendyAgentStatus) -> Void
     ) -> WendyObservation {
         let observerID = self.statusObservationRegistry.register(observer, initialValue: self.status)
         self.scheduleStatusObservation(for: observerID)
@@ -220,44 +221,25 @@ public actor WendyAgent {
     ) {
         guard self.statusObservationTasks[observerID] == nil else { return }
 
-        let task = Task {
+        let task = Task { @MainActor in
             await self.runStatusObservation(for: observerID)
         }
         self.statusObservationTasks[observerID] = task
     }
 
-    private nonisolated func runStatusObservation(
+    private func runStatusObservation(
         for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID
     ) async {
-        while let delivery = await self.beginStatusObservationDelivery(for: observerID) {
-            delivery.observer(delivery.value)
+        while let delivery = self.statusObservationRegistry.beginDelivery(for: observerID) {
+            await delivery.observer(delivery.value)
 
-            let shouldContinue = await self.finishStatusObservationDelivery(
+            let shouldContinue = self.statusObservationRegistry.finishDelivery(
                 for: observerID,
                 delivered: delivery.value
             )
             guard shouldContinue else { break }
         }
 
-        await self.clearStatusObservationTask(for: observerID)
-    }
-
-    private func beginStatusObservationDelivery(
-        for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID
-    ) -> WendyObservationRegistry<WendyAgentStatus>.Delivery? {
-        self.statusObservationRegistry.beginDelivery(for: observerID)
-    }
-
-    private func finishStatusObservationDelivery(
-        for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID,
-        delivered status: WendyAgentStatus
-    ) -> Bool {
-        self.statusObservationRegistry.finishDelivery(for: observerID, delivered: status)
-    }
-
-    private func clearStatusObservationTask(
-        for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID
-    ) {
         self.statusObservationTasks.removeValue(forKey: observerID)
     }
 

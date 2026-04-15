@@ -1,7 +1,7 @@
 import Foundation
 
 internal struct WendyObservationRegistry<Value: Sendable> {
-    internal typealias Observer = @Sendable (Value) -> Void
+    internal typealias Observer = @isolated(any) @Sendable (Value) -> Void
     internal typealias ObserverID = UUID
 
     internal struct Delivery: Sendable {
