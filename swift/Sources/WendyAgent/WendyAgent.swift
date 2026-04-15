@@ -148,13 +148,13 @@ public final class WendyAgent {
     }
 
     public func observeStatus(
-        _ observer: @escaping @isolated(any) @Sendable (WendyAgentStatus) -> Void
+        _ handler: @escaping @isolated(any) @Sendable (WendyAgentStatus) -> Void
     ) -> WendyObservation {
-        let observerID = self.statusObservationRegistry.register(observer, initialValue: self.status)
-        self.scheduleStatusObservation(for: observerID)
+        let observationID = self.statusObservationRegistry.register(handler, initialValue: self.status)
+        self.scheduleStatusObservation(for: observationID)
 
         return WendyObservation { [self] in
-            await self.cancelStatusObservation(for: observerID)
+            await self.cancelStatusObservation(for: observationID)
         }
     }
 
@@ -174,7 +174,7 @@ public final class WendyAgent {
     private var runTaskMonitor: Task<Void, Never>?
     private var runIdentifier: UInt64 = 0
     private var statusObservationRegistry = WendyObservationRegistry<WendyAgentStatus>(areEquivalent: ==)
-    private var statusObservationTasks: [WendyObservationRegistry<WendyAgentStatus>.ObserverID: Task<Void, Never>] = [:]
+    private var statusObservationTasks: [WendyObservationRegistry<WendyAgentStatus>.ObservationID: Task<Void, Never>] = [:]
 
     private func monitorRunTask(_ runTask: Task<Void, Error>, runIdentifier: UInt64) async {
         do {
@@ -210,44 +210,44 @@ public final class WendyAgent {
     private func updateStatus(_ status: WendyAgentStatus) {
         self.status = status
 
-        let observerIDs = self.statusObservationRegistry.enqueue(status)
-        for observerID in observerIDs {
-            self.scheduleStatusObservation(for: observerID)
+        let observationIDs = self.statusObservationRegistry.enqueue(status)
+        for observationID in observationIDs {
+            self.scheduleStatusObservation(for: observationID)
         }
     }
 
     private func scheduleStatusObservation(
-        for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID
+        for observationID: WendyObservationRegistry<WendyAgentStatus>.ObservationID
     ) {
-        guard self.statusObservationTasks[observerID] == nil else { return }
+        guard self.statusObservationTasks[observationID] == nil else { return }
 
         let task = Task { @MainActor in
-            await self.runStatusObservation(for: observerID)
+            await self.runStatusObservation(for: observationID)
         }
-        self.statusObservationTasks[observerID] = task
+        self.statusObservationTasks[observationID] = task
     }
 
     private func runStatusObservation(
-        for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID
+        for observationID: WendyObservationRegistry<WendyAgentStatus>.ObservationID
     ) async {
-        while let delivery = self.statusObservationRegistry.beginDelivery(for: observerID) {
-            await delivery.observer(delivery.value)
+        while let delivery = self.statusObservationRegistry.beginDelivery(for: observationID) {
+            await delivery.handler(delivery.value)
 
             let shouldContinue = self.statusObservationRegistry.finishDelivery(
-                for: observerID,
+                for: observationID,
                 delivered: delivery.value
             )
             guard shouldContinue else { break }
         }
 
-        self.statusObservationTasks.removeValue(forKey: observerID)
+        self.statusObservationTasks.removeValue(forKey: observationID)
     }
 
     private func cancelStatusObservation(
-        for observerID: WendyObservationRegistry<WendyAgentStatus>.ObserverID
+        for observationID: WendyObservationRegistry<WendyAgentStatus>.ObservationID
     ) async {
-        self.statusObservationRegistry.removeObserver(observerID)
-        let task = self.statusObservationTasks.removeValue(forKey: observerID)
+        self.statusObservationRegistry.removeObservation(observationID)
+        let task = self.statusObservationTasks.removeValue(forKey: observationID)
         await task?.value
     }
 

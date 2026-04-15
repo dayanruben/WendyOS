@@ -1,11 +1,11 @@
 import Foundation
 
 internal struct WendyObservationRegistry<Value: Sendable> {
-    internal typealias Observer = @isolated(any) @Sendable (Value) -> Void
-    internal typealias ObserverID = UUID
+    internal typealias ObservationHandler = @isolated(any) @Sendable (Value) -> Void
+    internal typealias ObservationID = UUID
 
     internal struct Delivery: Sendable {
-        let observer: Observer
+        let handler: ObservationHandler
         let value: Value
     }
 
@@ -13,57 +13,57 @@ internal struct WendyObservationRegistry<Value: Sendable> {
         self.areEquivalent = areEquivalent
     }
 
-    mutating func register(_ observer: @escaping Observer, initialValue: Value) -> ObserverID {
-        let observerID = ObserverID()
-        self.observers[observerID] = .init(observer: observer)
-        _ = self.enqueue(initialValue, for: observerID)
-        return observerID
+    mutating func register(_ handler: @escaping ObservationHandler, initialValue: Value) -> ObservationID {
+        let observationID = ObservationID()
+        self.observations[observationID] = .init(handler: handler)
+        _ = self.enqueue(initialValue, for: observationID)
+        return observationID
     }
 
-    mutating func enqueue(_ value: Value) -> [ObserverID] {
-        var observerIDs: [ObserverID] = []
-        for observerID in self.observers.keys {
-            if self.enqueue(value, for: observerID) {
-                observerIDs.append(observerID)
+    mutating func enqueue(_ value: Value) -> [ObservationID] {
+        var observationIDs: [ObservationID] = []
+        for observationID in self.observations.keys {
+            if self.enqueue(value, for: observationID) {
+                observationIDs.append(observationID)
             }
         }
-        return observerIDs
+        return observationIDs
     }
 
-    mutating func beginDelivery(for observerID: ObserverID) -> Delivery? {
-        guard var observerState = self.observers[observerID] else { return nil }
-        guard !observerState.pendingValues.isEmpty else {
-            observerState.isDelivering = false
-            self.observers[observerID] = observerState
+    mutating func beginDelivery(for observationID: ObservationID) -> Delivery? {
+        guard var observationState = self.observations[observationID] else { return nil }
+        guard !observationState.pendingValues.isEmpty else {
+            observationState.isDelivering = false
+            self.observations[observationID] = observationState
             return nil
         }
 
-        let value = observerState.pendingValues.removeFirst()
-        observerState.inFlightValue = value
-        self.observers[observerID] = observerState
-        return .init(observer: observerState.observer, value: value)
+        let value = observationState.pendingValues.removeFirst()
+        observationState.inFlightValue = value
+        self.observations[observationID] = observationState
+        return .init(handler: observationState.handler, value: value)
     }
 
-    mutating func finishDelivery(for observerID: ObserverID, delivered value: Value) -> Bool {
-        guard var observerState = self.observers[observerID] else { return false }
+    mutating func finishDelivery(for observationID: ObservationID, delivered value: Value) -> Bool {
+        guard var observationState = self.observations[observationID] else { return false }
 
-        observerState.lastDeliveredValue = value
-        observerState.inFlightValue = nil
+        observationState.lastDeliveredValue = value
+        observationState.inFlightValue = nil
 
-        let shouldContinue = !observerState.pendingValues.isEmpty
-        observerState.isDelivering = shouldContinue
-        self.observers[observerID] = observerState
+        let shouldContinue = !observationState.pendingValues.isEmpty
+        observationState.isDelivering = shouldContinue
+        self.observations[observationID] = observationState
         return shouldContinue
     }
 
-    mutating func removeObserver(_ observerID: ObserverID) {
-        self.observers.removeValue(forKey: observerID)
+    mutating func removeObservation(_ observationID: ObservationID) {
+        self.observations.removeValue(forKey: observationID)
     }
 
     // MARK: - Private
 
-    private struct ObserverState {
-        let observer: Observer
+    private struct ObservationState {
+        let handler: ObservationHandler
         var lastDeliveredValue: Value?
         var inFlightValue: Value?
         var pendingValues: [Value] = []
@@ -71,25 +71,25 @@ internal struct WendyObservationRegistry<Value: Sendable> {
     }
 
     private let areEquivalent: @Sendable (Value, Value) -> Bool
-    private var observers: [ObserverID: ObserverState] = [:]
+    private var observations: [ObservationID: ObservationState] = [:]
 
     @discardableResult
-    private mutating func enqueue(_ value: Value, for observerID: ObserverID) -> Bool {
-        guard var observerState = self.observers[observerID] else { return false }
+    private mutating func enqueue(_ value: Value, for observationID: ObservationID) -> Bool {
+        guard var observationState = self.observations[observationID] else { return false }
 
-        if let lastQueuedValue = observerState.pendingValues.last {
+        if let lastQueuedValue = observationState.pendingValues.last {
             guard !self.areEquivalent(lastQueuedValue, value) else { return false }
-        } else if let inFlightValue = observerState.inFlightValue {
+        } else if let inFlightValue = observationState.inFlightValue {
             guard !self.areEquivalent(inFlightValue, value) else { return false }
-        } else if let lastDeliveredValue = observerState.lastDeliveredValue {
+        } else if let lastDeliveredValue = observationState.lastDeliveredValue {
             guard !self.areEquivalent(lastDeliveredValue, value) else { return false }
         }
 
-        observerState.pendingValues.append(value)
+        observationState.pendingValues.append(value)
 
-        let shouldScheduleDelivery = !observerState.isDelivering
-        observerState.isDelivering = true
-        self.observers[observerID] = observerState
+        let shouldScheduleDelivery = !observationState.isDelivering
+        observationState.isDelivering = true
+        self.observations[observationID] = observationState
         return shouldScheduleDelivery
     }
 }
