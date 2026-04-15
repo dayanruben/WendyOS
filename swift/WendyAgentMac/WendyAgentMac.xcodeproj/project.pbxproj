@@ -34,6 +34,11 @@
 			path = Design;
 			sourceTree = "<group>";
 		};
+		B36D0EDB2F8FE8C70070FEB2 /* Resources */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,11 +56,12 @@
 		B00000000000000000000006 = {
 			isa = PBXGroup;
 			children = (
-				B00000000000000000000005 /* Sources */,
 				B00000000000000000000013 /* Assets */,
-				B00000000000000000000014 /* Design */,
 				B00000000000000000000019 /* Configuration */,
+				B00000000000000000000014 /* Design */,
 				B00000000000000000000007 /* Products */,
+				B36D0EDB2F8FE8C70070FEB2 /* Resources */,
+				B00000000000000000000005 /* Sources */,
 			);
 			sourceTree = "<group>";
 		};
@@ -97,6 +103,7 @@
 				B00000000000000000000005 /* Sources */,
 				B00000000000000000000013 /* Assets */,
 				B00000000000000000000014 /* Design */,
+				B36D0EDB2F8FE8C70070FEB2 /* Resources */,
 			);
 			name = WendyAgentMac;
 			packageProductDependencies = (
@@ -126,7 +133,6 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
-				Base,
 			);
 			mainGroup = B00000000000000000000006;
 			minimizedProjectReferenceProxies = 1;
