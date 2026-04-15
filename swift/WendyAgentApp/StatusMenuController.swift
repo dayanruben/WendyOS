@@ -3,9 +3,11 @@ import WendyAgent
 
 @MainActor
 final class StatusMenuController: NSObject {
-    init(agent: WendyAgent) {
-        self.agent = agent
-        self.currentStatus = agent.status
+    let wendyAgent: WendyAgent
+
+    init(wendyAgent: WendyAgent) {
+        self.wendyAgent = wendyAgent
+        self.currentStatus = wendyAgent.status
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
@@ -15,18 +17,17 @@ final class StatusMenuController: NSObject {
     }
 
     func start() async {
-        self.statusObservation = self.agent.observeStatus { @MainActor [weak self] status in
+        self.statusObservation = self.wendyAgent.observeStatus { @MainActor [weak self] status in
             self?.update(status: status)
         }
 
         do {
-            try await self.agent.start()
+            try await self.wendyAgent.start()
         } catch {
             // WendyAgent publishes failure state directly.
         }
     }
 
-    private let agent: WendyAgent
     private let statusItem: NSStatusItem
     private var currentStatus: WendyAgentStatus
     private var statusObservation: WendyObservation?
@@ -111,7 +112,7 @@ final class StatusMenuController: NSObject {
 
         Task { @MainActor in
             await self.cancelStatusObservation()
-            await self.agent.stop()
+            await self.wendyAgent.stop()
             NSApplication.shared.terminate(nil)
         }
     }

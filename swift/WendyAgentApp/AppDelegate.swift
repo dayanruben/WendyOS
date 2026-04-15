@@ -3,11 +3,11 @@ import WendyAgent
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let agent = WendyAgent()
+    private let wendyAgent = WendyAgent()
     private var statusMenuController: StatusMenuController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let statusMenuController = StatusMenuController(agent: self.agent)
+        let statusMenuController = StatusMenuController(wendyAgent: self.wendyAgent)
         self.statusMenuController = statusMenuController
 
         Task { @MainActor in
