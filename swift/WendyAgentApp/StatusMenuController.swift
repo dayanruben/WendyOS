@@ -3,8 +3,9 @@ import WendyAgent
 
 @MainActor
 final class StatusMenuController: NSObject {
-    init(status: WendyAgentStatus) {
-        self.currentStatus = status
+    init(agent: WendyAgent) {
+        self.agent = agent
+        self.currentStatus = .idle
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
@@ -13,19 +14,31 @@ final class StatusMenuController: NSObject {
         self.rebuildMenu()
     }
 
-    func update(status: WendyAgentStatus) {
+    func start() async {
+        self.statusObservation = await self.agent.observeStatus { [weak self] status in
+            Task { @MainActor in
+                self?.update(status: status)
+            }
+        }
+
+        do {
+            try await self.agent.start()
+        } catch {
+            // WendyAgent publishes failure state directly.
+        }
+    }
+
+    private let agent: WendyAgent
+    private let statusItem: NSStatusItem
+    private var currentStatus: WendyAgentStatus
+    private var statusObservation: WendyObservation?
+    private var isQuitting = false
+
+    private func update(status: WendyAgentStatus) {
         self.currentStatus = status
         self.updateStatusButton()
         self.rebuildMenu()
     }
-
-    func setQuitHandler(_ handler: @escaping () -> Void) {
-        self.onQuit = handler
-    }
-
-    private let statusItem: NSStatusItem
-    private var onQuit: (() -> Void)?
-    private var currentStatus: WendyAgentStatus
 
     private func rebuildMenu() {
         let menu = NSMenu()
@@ -95,6 +108,19 @@ final class StatusMenuController: NSObject {
 
     @objc
     private func quitSelected() {
-        self.onQuit?()
+        guard !self.isQuitting else { return }
+        self.isQuitting = true
+
+        Task { @MainActor in
+            await self.cancelStatusObservation()
+            await self.agent.stop()
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private func cancelStatusObservation() async {
+        guard let statusObservation = self.statusObservation else { return }
+        self.statusObservation = nil
+        await statusObservation.cancel()
     }
 }
