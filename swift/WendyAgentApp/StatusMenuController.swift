@@ -11,21 +11,13 @@ final class StatusMenuController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
-        self.statusItem.isVisible = true
-        self.updateStatusButton()
-        self.rebuildMenu()
-    }
-
-    func start() async {
         self.statusObservation = self.wendyAgent.observeStatus { @MainActor [weak self] status in
             self?.update(status: status)
         }
 
-        do {
-            try await self.wendyAgent.start()
-        } catch {
-            // WendyAgent publishes failure state directly.
-        }
+        self.statusItem.isVisible = true
+        self.updateStatusButton()
+        self.rebuildMenu()
     }
 
     private let statusItem: NSStatusItem

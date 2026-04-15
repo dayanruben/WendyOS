@@ -11,7 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusMenuController = statusMenuController
 
         Task { @MainActor in
-            await statusMenuController.start()
+            do {
+                try await self.wendyAgent.start()
+            } catch {
+                // WendyAgent publishes failure state directly.
+            }
         }
     }
 }
