@@ -1,6 +1,6 @@
 import AppKit
 import OSLog
-import WendyAgent
+import WendyAgentCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {

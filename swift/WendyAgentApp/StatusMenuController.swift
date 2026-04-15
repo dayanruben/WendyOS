@@ -1,5 +1,5 @@
 import AppKit
-import WendyAgent
+import WendyAgentCore
 
 @MainActor
 final class StatusMenuController: NSObject {

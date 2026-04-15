@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "WendyAgent",
+    name: "WendyAgentCore",
     platforms: [
         .macOS(.v15)
     ],
     products: [
-        .library(name: "WendyAgent", targets: ["WendyAgent"]),
+        .library(name: "WendyAgentCore", targets: ["WendyAgentCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.2.1"),
@@ -19,9 +19,9 @@ let package = Package(
     ],
     targets: [
         .testTarget(
-            name: "WendyAgentTests",
+            name: "WendyAgentCoreTests",
             dependencies: [
-                .target(name: "WendyAgent"),
+                .target(name: "WendyAgentCore"),
                 .target(name: "WendyAgentGRPC"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
@@ -29,7 +29,7 @@ let package = Package(
             path: "Tests/WendyAgentTests"
         ),
         .target(
-            name: "WendyAgent",
+            name: "WendyAgentCore",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),

@@ -1,4 +1,4 @@
-import WendyAgent
+import WendyAgentCore
 
 internal extension WendyAgentStatus {
     var menuTitle: String {

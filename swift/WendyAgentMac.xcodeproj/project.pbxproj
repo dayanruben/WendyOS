@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		B00000000000000000000010 /* WendyAgent in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000011 /* WendyAgent */; };
+		B00000000000000000000010 /* WendyAgentCore in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000011 /* WendyAgentCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,7 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B00000000000000000000010 /* WendyAgent in Frameworks */,
+				B00000000000000000000010 /* WendyAgentCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +70,7 @@
 			);
 			name = WendyAgentMac;
 			packageProductDependencies = (
-				B00000000000000000000011 /* WendyAgent */,
+				B00000000000000000000011 /* WendyAgentCore */,
 			);
 			productName = WendyAgentMac;
 			productReference = B00000000000000000000004 /* WendyAgentMac.app */;
@@ -335,10 +335,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		B00000000000000000000011 /* WendyAgent */ = {
+		B00000000000000000000011 /* WendyAgentCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000012 /* XCLocalSwiftPackageReference "." */;
-			productName = WendyAgent;
+			productName = WendyAgentCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

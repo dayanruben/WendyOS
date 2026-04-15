@@ -4,7 +4,7 @@ import GRPCCore
 import Testing
 import WendyAgentGRPC
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 // MARK: - buildManifest tests
 
