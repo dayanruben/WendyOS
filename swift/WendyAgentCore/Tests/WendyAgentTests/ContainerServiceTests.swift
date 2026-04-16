@@ -8,6 +8,48 @@ import WendyAgentGRPC
 
 @Suite("ContainerService.startContainer")
 struct ContainerServiceTests {
+    @Test("app updates are published for create, start, stop, and delete")
+    func appUpdatesArePublishedForLifecycleChanges() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.Lifecycle"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let recorder = AppSnapshotsRecorder()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase),
+            onAppsChanged: { apps in
+                await recorder.record(apps)
+            }
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+        #expect(await recorder.last() == .some([
+            WendyAppInfo(id: appID, kind: .native, status: .stopped, pid: nil)
+        ]))
+
+        try await startApp(service: service, appID: appID)
+        let runningSnapshot = try #require(await recorder.last())
+        #expect(runningSnapshot.count == 1)
+        #expect(runningSnapshot[0].id == appID)
+        #expect(runningSnapshot[0].kind == .native)
+        #expect(runningSnapshot[0].status == .running)
+        #expect(runningSnapshot[0].pid != nil)
+
+        try await stopApp(service: service, appID: appID)
+        #expect(await recorder.last() == .some([
+            WendyAppInfo(id: appID, kind: .native, status: .stopped, pid: nil)
+        ]))
+
+        try await deleteApp(service: service, appID: appID)
+        #expect(await recorder.last() == .some([]))
+    }
+
     @Test("file-sync native launch uses synced app directory as current working directory")
     func fileSyncLaunchUsesSyncedAppDirectoryAsCurrentWorkingDirectory() async throws {
         let appsBase = try makeTempDir()
@@ -85,6 +127,18 @@ struct ContainerServiceTests {
 
 // MARK: - Helpers
 
+private actor AppSnapshotsRecorder {
+    private var snapshots: [[WendyAppInfo]] = []
+
+    func record(_ apps: [WendyAppInfo]) {
+        self.snapshots.append(apps)
+    }
+
+    func last() -> [WendyAppInfo]? {
+        self.snapshots.last
+    }
+}
+
 private final class CollectingWriter<Element: Sendable>: RPCWriterProtocol, @unchecked Sendable {
     private let queue = DispatchQueue(label: "wendy.tests.collecting-writer")
     private var elements: [Element] = []
@@ -125,6 +179,45 @@ private func registerFileSyncApp(
     _ = try await service.createContainer(
         request: ServerRequest(metadata: [:], message: request),
         context: makeServerContext(method: "CreateContainer")
+    )
+}
+
+private func startApp(
+    service: ContainerService,
+    appID: String
+) async throws {
+    var request = Wendy_Agent_Services_V1_StartContainerRequest()
+    request.appName = appID
+
+    _ = try await service.startContainer(
+        request: ServerRequest(metadata: [:], message: request),
+        context: makeServerContext(method: "StartContainer")
+    )
+}
+
+private func stopApp(
+    service: ContainerService,
+    appID: String
+) async throws {
+    var request = Wendy_Agent_Services_V1_StopContainerRequest()
+    request.appName = appID
+
+    _ = try await service.stopContainer(
+        request: ServerRequest(metadata: [:], message: request),
+        context: makeServerContext(method: "StopContainer")
+    )
+}
+
+private func deleteApp(
+    service: ContainerService,
+    appID: String
+) async throws {
+    var request = Wendy_Agent_Services_V1_DeleteContainerRequest()
+    request.appName = appID
+
+    _ = try await service.deleteContainer(
+        request: ServerRequest(metadata: [:], message: request),
+        context: makeServerContext(method: "DeleteContainer")
     )
 }
 
@@ -198,6 +291,15 @@ private func writePrintPWDScript(to url: URL) throws {
 
 private func writeSandboxProfile(to url: URL) throws {
     try "(version 1)\n(allow default)\n".write(to: url, atomically: true, encoding: .utf8)
+}
+
+private func writeSleepScript(to url: URL) throws {
+    try "#!/bin/sh\nwhile true; do\n  sleep 1\ndone\n".write(
+        to: url,
+        atomically: true,
+        encoding: .utf8
+    )
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
 }
 
 private func makeTempDir() throws -> String {

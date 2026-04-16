@@ -11,6 +11,7 @@ public final class WendyAgent {
 
     public let configuration: WendyAgentConfiguration
     public private(set) var status: WendyAgentStatus = .idle
+    public private(set) var apps: [WendyAppInfo] = []
 
     public init(configuration: WendyAgentConfiguration = .init()) {
         self.configuration = configuration
@@ -95,6 +96,17 @@ public final class WendyAgent {
         }
     }
 
+    public func observeApps(
+        _ handler: @escaping @isolated(any) @Sendable ([WendyAppInfo]) -> Void
+    ) -> WendyObservation {
+        let observationID = self.appsObservationRegistry.register(handler, initialValue: self.apps)
+        self.scheduleAppsObservation(for: observationID)
+
+        return WendyObservation { [self] in
+            await self.cancelAppsObservation(for: observationID)
+        }
+    }
+
     // MARK: - Private
 
     private static let bootstrapLogging: Void = {
@@ -109,6 +121,7 @@ public final class WendyAgent {
 
     private var mainServer: PosixGRPCServer?
     private var mainServerTask: Task<Void, Error>?
+    private var containerService: ContainerService?
 
     private var otelServer: PosixGRPCServer?
     private var otelServerTask: Task<Void, Error>?
@@ -121,6 +134,8 @@ public final class WendyAgent {
     private var handlingUnexpectedRuntimeExit = false
     private var statusObservationRegistry = WendyObservationRegistry<WendyAgentStatus>(areEquivalent: ==)
     private var statusObservationTasks: [WendyObservationRegistry<WendyAgentStatus>.ObservationID: Task<Void, Never>] = [:]
+    private var appsObservationRegistry = WendyObservationRegistry<[WendyAppInfo]>(areEquivalent: ==)
+    private var appsObservationTasks: [WendyObservationRegistry<[WendyAppInfo]>.ObservationID: Task<Void, Never>] = [:]
 
     private func prepareDockerIfNeeded() async -> Bool {
         let docker = DockerCLI()
@@ -147,17 +162,23 @@ public final class WendyAgent {
         let appsBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/wendy-agent/apps")
 
+        let containerService = ContainerService(
+            broadcaster: broadcaster,
+            executablePath: self.configuration.appPath,
+            sandboxProfilePath: self.configuration.sandboxProfile.isEmpty
+                ? nil
+                : self.configuration.sandboxProfile,
+            appsBase: appsBase,
+            dockerAvailable: dockerAvailable,
+            onAppsChanged: { [weak self] apps in
+                await self?.updateApps(apps)
+            }
+        )
+        self.containerService = containerService
+
         let services: [any RegistrableRPCService] = [
             AgentService(),
-            ContainerService(
-                broadcaster: broadcaster,
-                executablePath: self.configuration.appPath,
-                sandboxProfilePath: self.configuration.sandboxProfile.isEmpty
-                    ? nil
-                    : self.configuration.sandboxProfile,
-                appsBase: appsBase,
-                dockerAvailable: dockerAvailable
-            ),
+            containerService,
             AudioService(),
             ProvisioningService(),
             TelemetryService(broadcaster: broadcaster),
@@ -298,12 +319,14 @@ public final class WendyAgent {
     private func clearRuntimeState() {
         self.mainServer = nil
         self.mainServerTask = nil
+        self.containerService = nil
         self.otelServer = nil
         self.otelServerTask = nil
         self.bonjourRegistration = nil
         self.bonjourTask = nil
         self.stopMonitorTask()
         self.handlingUnexpectedRuntimeExit = false
+        self.updateApps([])
     }
 
     private func monitorRuntimeTasks(
@@ -415,6 +438,15 @@ public final class WendyAgent {
         }
     }
 
+    private func updateApps(_ apps: [WendyAppInfo]) {
+        self.apps = apps
+
+        let observationIDs = self.appsObservationRegistry.enqueue(apps)
+        for observationID in observationIDs {
+            self.scheduleAppsObservation(for: observationID)
+        }
+    }
+
     private func scheduleStatusObservation(
         for observationID: WendyObservationRegistry<WendyAgentStatus>.ObservationID
     ) {
@@ -447,6 +479,41 @@ public final class WendyAgent {
     ) async {
         self.statusObservationRegistry.removeObservation(observationID)
         let task = self.statusObservationTasks.removeValue(forKey: observationID)
+        await task?.value
+    }
+
+    private func scheduleAppsObservation(
+        for observationID: WendyObservationRegistry<[WendyAppInfo]>.ObservationID
+    ) {
+        guard self.appsObservationTasks[observationID] == nil else { return }
+
+        let task = Task { @MainActor in
+            await self.runAppsObservation(for: observationID)
+        }
+        self.appsObservationTasks[observationID] = task
+    }
+
+    private func runAppsObservation(
+        for observationID: WendyObservationRegistry<[WendyAppInfo]>.ObservationID
+    ) async {
+        while let delivery = self.appsObservationRegistry.beginDelivery(for: observationID) {
+            await delivery.handler(delivery.value)
+
+            let shouldContinue = self.appsObservationRegistry.finishDelivery(
+                for: observationID,
+                delivered: delivery.value
+            )
+            guard shouldContinue else { break }
+        }
+
+        self.appsObservationTasks.removeValue(forKey: observationID)
+    }
+
+    private func cancelAppsObservation(
+        for observationID: WendyObservationRegistry<[WendyAppInfo]>.ObservationID
+    ) async {
+        self.appsObservationRegistry.removeObservation(observationID)
+        let task = self.appsObservationTasks.removeValue(forKey: observationID)
         await task?.value
     }
 

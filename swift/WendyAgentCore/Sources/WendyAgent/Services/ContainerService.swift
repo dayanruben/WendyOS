@@ -9,6 +9,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private let appsBase: URL
     private let blobsDirectory: String
     private let broadcaster: TelemetryBroadcaster
+    private let onAppsChanged: @Sendable ([WendyAppInfo]) async -> Void
     private struct NativeLaunchInfo {
         let directory: String
         let binaryName: String
@@ -19,6 +20,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private let executablePath: String
     private let logger = Logger(label: "sh.wendy.agent.container")
     private var runningProcesses: [String: Foundation.Process] = [:]
+    private var appsByID: [String: WendyApp] = [:]
     private let sandboxProfilePath: String?
 
     /// Maps app name → native launch metadata for apps uploaded via file sync or layers.
@@ -43,9 +45,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         executablePath: String,
         sandboxProfilePath: String? = nil,
         appsBase: URL? = nil,
-        dockerAvailable: Bool = false
+        dockerAvailable: Bool = false,
+        onAppsChanged: @escaping @Sendable ([WendyAppInfo]) async -> Void = { _ in }
     ) {
         self.broadcaster = broadcaster
+        self.onAppsChanged = onAppsChanged
         self.executablePath = executablePath
         self.sandboxProfilePath = sandboxProfilePath
         self.dockerBackend = dockerAvailable ? DockerContainerBackend() : nil
@@ -65,6 +69,62 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             atPath: "\(blobsDirectory)/sha256",
             withIntermediateDirectories: true
         )
+    }
+
+    private func currentAppInfos() -> [WendyAppInfo] {
+        self.appsByID.values.map(\.info).sorted { $0.id < $1.id }
+    }
+
+    private func publishApps() async {
+        await self.onAppsChanged(self.currentAppInfos())
+    }
+
+    private func registerApp(id: String, kind: WendyAppInfo.Kind) async {
+        self.appsByID[id] = WendyApp(
+            info: WendyAppInfo(
+                id: id,
+                kind: kind,
+                status: .stopped,
+                pid: nil
+            ),
+            process: nil
+        )
+        await self.publishApps()
+    }
+
+    private func markAppRunning(
+        id: String,
+        kind: WendyAppInfo.Kind,
+        process: Foundation.Process
+    ) async {
+        self.appsByID[id] = WendyApp(
+            info: WendyAppInfo(
+                id: id,
+                kind: kind,
+                status: .running,
+                pid: process.processIdentifier
+            ),
+            process: process
+        )
+        await self.publishApps()
+    }
+
+    private func markAppStopped(id: String) async {
+        guard var app = self.appsByID[id] else { return }
+        app.info = WendyAppInfo(
+            id: app.info.id,
+            kind: app.info.kind,
+            status: .stopped,
+            pid: nil
+        )
+        app.process = nil
+        self.appsByID[id] = app
+        await self.publishApps()
+    }
+
+    private func removeApp(id: String) async {
+        self.appsByID.removeValue(forKey: id)
+        await self.publishApps()
     }
 
     // MARK: - Implemented
@@ -110,6 +170,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 "Linux container image pulled via Docker",
                 metadata: ["app_name": "\(appName)"]
             )
+            await self.registerApp(id: appName, kind: .container)
             return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
         }
 
@@ -223,6 +284,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
+        await self.registerApp(id: appName, kind: .native)
         return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
     }
 
@@ -249,6 +311,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 appConfig: appConfig
             )
             runningProcesses[appName] = process
+            await self.markAppRunning(id: appName, kind: .container, process: process)
             logger.info(
                 "Docker container started",
                 metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
@@ -360,6 +423,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
         runningProcesses[appName] = process
+        await self.markAppRunning(id: appName, kind: .native, process: process)
         logger.info(
             "Process started",
             metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
@@ -436,12 +500,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             // Also remove from runningProcesses (the docker run process).
             runningProcesses.removeValue(forKey: appName)
             try await dockerBackend.stop(appName: appName)
+            await self.markAppStopped(id: appName)
             logger.info("Docker container stopped", metadata: ["app_name": "\(appName)"])
         } else if let process = runningProcesses.removeValue(forKey: appName) {
             if process.isRunning {
                 process.terminate()
                 process.waitUntilExit()
             }
+            await self.markAppStopped(id: appName)
             logger.info("Process stopped", metadata: ["app_name": "\(appName)"])
         } else {
             logger.warning("No running process found", metadata: ["app_name": "\(appName)"])
@@ -463,6 +529,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             dockerApps.remove(appName)
             dockerImageNames.removeValue(forKey: appName)
             appConfigs.removeValue(forKey: appName)
+            await self.removeApp(id: appName)
             logger.info("Docker container removed", metadata: ["app_name": "\(appName)"])
         } else {
             // Stop if running, then remove.
@@ -472,6 +539,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     process.waitUntilExit()
                 }
             }
+            await self.removeApp(id: appName)
         }
 
         return ServerResponse(message: Wendy_Agent_Services_V1_DeleteContainerResponse())
