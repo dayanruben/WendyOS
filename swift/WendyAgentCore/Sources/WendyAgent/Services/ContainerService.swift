@@ -19,7 +19,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     private let executablePath: String
     private let logger = Logger(label: "sh.wendy.agent.container")
+    private let nativeStopTimeout: Duration = .seconds(5)
     private var appsByID: [String: WendyApp] = [:]
+    private var isStopping = false
     private let sandboxProfilePath: String?
 
     /// Maps app name → native launch metadata for apps uploaded via file sync or layers.
@@ -74,6 +76,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         self.appsByID.values.map(\.info).sorted { $0.id < $1.id }
     }
 
+    func currentAppInfosForTesting() -> [WendyAppInfo] {
+        self.currentAppInfos()
+    }
+
     private func publishApps() async {
         await self.onAppsChanged(self.currentAppInfos())
     }
@@ -84,6 +90,40 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     func launchToken(forAppID id: String) -> UUID? {
         self.appsByID[id]?.launchToken
+    }
+
+    func beginStopping() {
+        self.isStopping = true
+    }
+
+    func stopApp(id: String) async {
+        do {
+            _ = try await self.stopTrackedAppIfRunning(id: id)
+        } catch {
+            self.logger.error(
+                "Failed to stop app",
+                metadata: [
+                    "app_name": "\(id)",
+                    "error": "\(String(describing: error))",
+                ]
+            )
+        }
+    }
+
+    func stopAllApps() async {
+        let runningAppIDs = self.currentAppInfos()
+            .filter { $0.status == .running }
+            .map(\.id)
+
+        for appID in runningAppIDs {
+            await self.stopApp(id: appID)
+        }
+    }
+
+    private func ensureLifecycleMutationsAllowed() throws {
+        guard !self.isStopping else {
+            throw RPCError(code: .failedPrecondition, message: "Wendy Agent is stopping")
+        }
     }
 
     private func registerApp(id: String, kind: WendyAppInfo.Kind) async {
@@ -188,13 +228,31 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             return true
         }
 
+        let exitTask = Self.makeProcessExitTask(process)
+
         if app.info.kind == .container, self.dockerApps.contains(id), let dockerBackend {
             try await dockerBackend.stop(appName: id)
+            let didExit = await Self.waitForProcessExit(exitTask, timeout: self.nativeStopTimeout)
+            if !didExit {
+                self.logger.warning(
+                    "Container stop timed out, force killing attached process",
+                    metadata: ["app_name": "\(id)", "pid": "\(process.processIdentifier)"]
+                )
+                Self.forceKillProcess(process)
+            }
         } else {
             process.terminate()
+            let didExit = await Self.waitForProcessExit(exitTask, timeout: self.nativeStopTimeout)
+            if !didExit {
+                self.logger.warning(
+                    "Native app did not exit after terminate, force killing",
+                    metadata: ["app_name": "\(id)", "pid": "\(process.processIdentifier)"]
+                )
+                Self.forceKillProcess(process)
+            }
         }
 
-        process.waitUntilExit()
+        await exitTask.value
         await self.handleAppTermination(id: id, launchToken: launchToken)
         return true
     }
@@ -202,6 +260,39 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private func removeApp(id: String) async {
         self.appsByID.removeValue(forKey: id)
         await self.publishApps()
+    }
+
+    nonisolated private static func makeProcessExitTask(
+        _ process: Foundation.Process
+    ) -> Task<Void, Never> {
+        Task.detached {
+            process.waitUntilExit()
+        }
+    }
+
+    nonisolated private static func waitForProcessExit(
+        _ exitTask: Task<Void, Never>,
+        timeout: Duration
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await exitTask.value
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return false
+            }
+
+            let didExit = await group.next() ?? false
+            group.cancelAll()
+            return didExit
+        }
+    }
+
+    nonisolated private static func forceKillProcess(_ process: Foundation.Process) {
+        guard process.processIdentifier > 0 else { return }
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
     }
 
     // MARK: - Implemented
@@ -217,6 +308,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             metadata: ["app_name": "\(appName)", "image_name": "\(imageName)"]
         )
 
+        try self.ensureLifecycleMutationsAllowed()
         try await self.stopTrackedAppIfRunning(id: appName)
 
         // Parse app config to determine the target platform.
@@ -362,6 +454,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let appName = request.message.appName
         logger.info("StartContainer called", metadata: ["app_name": "\(appName)"])
 
+        try self.ensureLifecycleMutationsAllowed()
         try await self.stopTrackedAppIfRunning(id: appName)
 
         // Docker backend path for Linux containers.

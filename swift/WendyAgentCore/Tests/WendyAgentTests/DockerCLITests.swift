@@ -40,7 +40,7 @@ struct DockerCLITests {
 
         let docker = DockerCLI(
             executable: scriptURL.path,
-            startupCommandTimeout: .seconds(1)
+            startupCommandTimeout: .seconds(2)
         )
 
         let available = await docker.checkAvailable()

@@ -76,6 +76,9 @@ public final class WendyAgent {
         self.updateStatus(.stopping)
         self.stopMonitorTask()
 
+        await self.containerService?.beginStopping()
+        await self.containerService?.stopAllApps()
+
         await self.stopBonjour()
         await self.stopOTelServer()
         await self.stopMainServer()
@@ -105,6 +108,14 @@ public final class WendyAgent {
         return WendyObservation { [self] in
             await self.cancelAppsObservation(for: observationID)
         }
+    }
+
+    public func stopApp(id: String) async {
+        await self.containerService?.stopApp(id: id)
+    }
+
+    public func stopAllApps() async {
+        await self.containerService?.stopAllApps()
     }
 
     // MARK: - Private
@@ -326,7 +337,6 @@ public final class WendyAgent {
         self.bonjourTask = nil
         self.stopMonitorTask()
         self.handlingUnexpectedRuntimeExit = false
-        self.updateApps([])
     }
 
     private func monitorRuntimeTasks(
@@ -439,6 +449,8 @@ public final class WendyAgent {
     }
 
     private func updateApps(_ apps: [WendyAppInfo]) {
+        guard self.apps != apps else { return }
+
         self.apps = apps
 
         let observationIDs = self.appsObservationRegistry.enqueue(apps)

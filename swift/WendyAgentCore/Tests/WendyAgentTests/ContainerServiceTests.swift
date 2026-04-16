@@ -148,6 +148,148 @@ struct ContainerServiceTests {
         try await stopApp(service: service, appID: appID)
     }
 
+    @Test("stopApp is a no-op for missing and stopped apps")
+    func stopAppIsANoOpForMissingAndStoppedApps() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.StopNoOp"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let recorder = AppSnapshotsRecorder()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase),
+            onAppsChanged: { apps in
+                await recorder.record(apps)
+            }
+        )
+
+        await service.stopApp(id: "missing")
+        #expect(await recorder.count() == 0)
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+        let snapshotCountBefore = await recorder.count()
+        await service.stopApp(id: appID)
+
+        #expect(await recorder.count() == snapshotCountBefore)
+        #expect(await service.appInfo(forAppID: appID) == WendyAppInfo(
+            id: appID,
+            kind: .native,
+            status: .stopped,
+            pid: nil
+        ))
+    }
+
+    @Test("stopAllApps stops running apps and keeps them known")
+    func stopAllAppsStopsRunningAppsAndKeepsThemKnown() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appIDs = ["sh.wendy.tests.StopAllA", "sh.wendy.tests.StopAllB"]
+        let recorder = AppSnapshotsRecorder()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase),
+            onAppsChanged: { apps in
+                await recorder.record(apps)
+            }
+        )
+
+        for appID in appIDs {
+            let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+            try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+            try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+            try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+            try await startApp(service: service, appID: appID)
+        }
+
+        try await waitUntil(description: "apps are running") {
+            let infos = await service.currentAppInfosForTesting()
+            return infos.count == 2 && infos.allSatisfy { $0.status == .running && $0.pid != nil }
+        }
+
+        await service.stopAllApps()
+
+        let stoppedInfos = await service.currentAppInfosForTesting()
+        #expect(stoppedInfos.count == 2)
+        #expect(stoppedInfos.map(\.id) == appIDs)
+        #expect(stoppedInfos.allSatisfy { $0.status == .stopped && $0.pid == nil })
+        #expect((await recorder.last()) == stoppedInfos)
+    }
+
+    @Test("delete of a running app publishes stopped before removal")
+    func deleteOfARunningAppPublishesStoppedBeforeRemoval() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.DeleteRunning"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let recorder = AppSnapshotsRecorder()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase),
+            onAppsChanged: { apps in
+                await recorder.record(apps)
+            }
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+        try await startApp(service: service, appID: appID)
+        try await deleteApp(service: service, appID: appID)
+
+        let snapshots = await recorder.snapshotValues()
+        let stoppedIndex = snapshots.firstIndex(of: [
+            WendyAppInfo(id: appID, kind: .native, status: .stopped, pid: nil)
+        ])
+        let removedIndex = snapshots.firstIndex(of: [])
+
+        #expect(stoppedIndex != nil)
+        #expect(removedIndex != nil)
+        #expect(stoppedIndex! < removedIndex!)
+    }
+
+    @Test("beginStopping rejects create and start mutations")
+    func beginStoppingRejectsCreateAndStartMutations() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.StoppingGate"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        await service.beginStopping()
+
+        do {
+            try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+            Issue.record("Expected createContainer to be rejected while stopping")
+        } catch let error as RPCError {
+            #expect(error.code == .failedPrecondition)
+        }
+
+        do {
+            try await startApp(service: service, appID: appID)
+            Issue.record("Expected startContainer to be rejected while stopping")
+        } catch let error as RPCError {
+            #expect(error.code == .failedPrecondition)
+        }
+    }
+
     @Test("file-sync native launch uses synced app directory as current working directory")
     func fileSyncLaunchUsesSyncedAppDirectoryAsCurrentWorkingDirectory() async throws {
         let appsBase = try makeTempDir()
