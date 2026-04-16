@@ -51,31 +51,33 @@ public final class WendyAgent {
         )
 
         let broadcaster = TelemetryBroadcaster()
+        var mainServerRuntime: MainServerRuntime?
+        var otelServerRuntime: OTelServerRuntime?
+        var bonjourRuntime: BonjourRuntime?
 
         do {
             self.logger.info("Startup stage: telemetry broadcaster initialization")
             let dockerAvailable = await self.prepareDockerIfNeeded()
-            let mainServerRuntime = try await self.startMainServer(
+
+            let startedMainServerRuntime = try await self.startMainServer(
                 dockerAvailable: dockerAvailable,
                 broadcaster: broadcaster
             )
-            self.mainServerRuntime = mainServerRuntime
+            mainServerRuntime = startedMainServerRuntime
 
-            let otelServerRuntime = try await self.startOTelServer(broadcaster: broadcaster)
-            self.otelServerRuntime = otelServerRuntime
+            let startedOTelServerRuntime = try await self.startOTelServer(broadcaster: broadcaster)
+            otelServerRuntime = startedOTelServerRuntime
 
-            let bonjourRuntime = try await self.startBonjour()
-            self.bonjourRuntime = bonjourRuntime
-
-            let runTask = bonjourRuntime.task
+            let startedBonjourRuntime = try await self.startBonjour()
+            bonjourRuntime = startedBonjourRuntime
 
             self.runIdentifier &+= 1
             let runIdentifier = self.runIdentifier
-            self.mainServerRuntime = mainServerRuntime
-            self.otelServerRuntime = otelServerRuntime
-            self.bonjourRuntime = bonjourRuntime
-            self.runTask = runTask
-            self.startMonitorTask(runTask: runTask, runIdentifier: runIdentifier)
+            self.mainServerRuntime = startedMainServerRuntime
+            self.otelServerRuntime = startedOTelServerRuntime
+            self.bonjourRuntime = startedBonjourRuntime
+            self.runTask = startedBonjourRuntime.task
+            self.startMonitorTask(runTask: startedBonjourRuntime.task, runIdentifier: runIdentifier)
 
             self.logger.info(
                 "Listening on port \(self.configuration.port), OTel on port \(self.configuration.otelPort)"
@@ -86,7 +88,11 @@ public final class WendyAgent {
             self.updateStatus(.running)
             self.logger.info("Startup complete: Wendy Agent is running")
         } catch {
-            await self.rollback()
+            await self.rollback(
+                mainServerRuntime: mainServerRuntime,
+                otelServerRuntime: otelServerRuntime,
+                bonjourRuntime: bonjourRuntime
+            )
             throw error
         }
     }
@@ -312,11 +318,11 @@ public final class WendyAgent {
         }
     }
 
-    private func rollback() async {
-        let mainServerRuntime = self.mainServerRuntime
-        let otelServerRuntime = self.otelServerRuntime
-        let bonjourRuntime = self.bonjourRuntime
-
+    private func rollback(
+        mainServerRuntime: MainServerRuntime?,
+        otelServerRuntime: OTelServerRuntime?,
+        bonjourRuntime: BonjourRuntime?
+    ) async {
         mainServerRuntime?.server.beginGracefulShutdown()
         otelServerRuntime?.server.beginGracefulShutdown()
         await bonjourRuntime?.registration.shutdown()
