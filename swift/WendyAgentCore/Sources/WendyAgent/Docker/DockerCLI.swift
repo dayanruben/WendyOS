@@ -8,6 +8,16 @@ import Logging
 /// swift-subprocess.
 struct DockerCLI: Sendable {
     private let logger = Logger(label: "sh.wendy.agent.docker-cli")
+    private let executable: String
+    private let startupCommandTimeout: Duration
+
+    init(
+        executable: String = "docker",
+        startupCommandTimeout: Duration = Self.defaultStartupCommandTimeout
+    ) {
+        self.executable = executable
+        self.startupCommandTimeout = startupCommandTimeout
+    }
 
     // MARK: - Run options
 
@@ -61,7 +71,10 @@ struct DockerCLI: Sendable {
     /// Returns `true` if the `docker` CLI is functional.
     func checkAvailable() async -> Bool {
         do {
-            _ = try await run(arguments: ["version", "--format", "{{.Server.Version}}"])
+            _ = try await run(
+                arguments: ["version", "--format", "{{.Server.Version}}"],
+                timeout: self.startupCommandTimeout
+            )
             return true
         } catch {
             return false
@@ -74,28 +87,38 @@ struct DockerCLI: Sendable {
     /// Uses 5555 instead of the default 5000 to avoid conflicts with macOS
     /// AirPlay Receiver, which binds *:5000 by default on every Mac.
     static let registryPort: UInt16 = 5555
+    private static let defaultStartupCommandTimeout: Duration = .seconds(5)
 
     /// Ensures a local Docker registry container is running on the registry port.
     /// If one named `wendy-registry` already exists and is running, this is a no-op.
     func ensureRegistry() async throws {
         // Check if the registry container is already running.
-        let psOutput = try await run(arguments: [
-            "ps", "--filter", "name=wendy-registry", "--format", "{{.Status}}",
-        ])
+        let psOutput = try await run(
+            arguments: [
+                "ps", "--filter", "name=wendy-registry", "--format", "{{.Status}}",
+            ],
+            timeout: self.startupCommandTimeout
+        )
         if psOutput.contains("Up") {
             return
         }
 
         // Remove stale container if it exists but isn't running.
-        _ = try? await run(arguments: ["rm", "-f", "wendy-registry"])
+        _ = try? await run(
+            arguments: ["rm", "-f", "wendy-registry"],
+            timeout: self.startupCommandTimeout
+        )
 
-        _ = try await run(arguments: [
-            "run", "-d",
-            "-p", "\(Self.registryPort):5000",
-            "--name", "wendy-registry",
-            "--restart", "unless-stopped",
-            "registry:2",
-        ])
+        _ = try await run(
+            arguments: [
+                "run", "-d",
+                "-p", "\(Self.registryPort):5000",
+                "--name", "wendy-registry",
+                "--restart", "unless-stopped",
+                "registry:2",
+            ],
+            timeout: self.startupCommandTimeout
+        )
     }
 
     // MARK: - Image operations
@@ -119,7 +142,7 @@ struct DockerCLI: Sendable {
 
         let process = Foundation.Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["docker"] + allArgs
+        process.arguments = [self.executable] + allArgs
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -178,59 +201,115 @@ struct DockerCLI: Sendable {
 
     /// Run a docker command and return its stdout as a trimmed string.
     @discardableResult
-    private func run(arguments: [String]) async throws -> String {
+    private func run(arguments: [String], timeout: Duration? = nil) async throws -> String {
         let process = Foundation.Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["docker"] + arguments
+        process.arguments = [self.executable] + arguments
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { p in
-                let stdout = String(
-                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-                if p.terminationStatus == 0 {
-                    continuation.resume(returning: stdout)
-                } else {
-                    let stderr = String(
-                        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+        let resultTask = Task<String, Error> {
+            try await withCheckedThrowingContinuation { continuation in
+                process.terminationHandler = { p in
+                    let stdout = String(
+                        data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
                         encoding: .utf8
                     )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    continuation.resume(
-                        throwing: DockerError.commandFailed(
-                            args: arguments,
-                            status: p.terminationStatus,
-                            stderr: stderr
+
+                    if p.terminationStatus == 0 {
+                        continuation.resume(returning: stdout)
+                    } else {
+                        let stderr = String(
+                            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                            encoding: .utf8
+                        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        continuation.resume(
+                            throwing: DockerError.commandFailed(
+                                executable: self.executable,
+                                args: arguments,
+                                status: p.terminationStatus,
+                                stderr: stderr
+                            )
                         )
-                    )
+                    }
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
+        }
+
+        do {
+            guard let timeout else {
+                return try await resultTask.value
             }
+
+            return try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask {
+                    try await resultTask.value
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw DockerError.commandTimedOut(
+                        executable: self.executable,
+                        args: arguments,
+                        timeout: timeout
+                    )
+                }
+
+                guard let result = try await group.next() else {
+                    throw DockerError.commandFailed(
+                        executable: self.executable,
+                        args: arguments,
+                        status: -1,
+                        stderr: "docker command did not produce a result"
+                    )
+                }
+                group.cancelAll()
+                return result
+            }
+        } catch {
+            if case .commandTimedOut = error as? DockerError {
+                self.logger.warning(
+                    "Docker command timed out",
+                    metadata: [
+                        "command": "\(([self.executable] + arguments).joined(separator: " "))",
+                        "timeout": "\(timeout.map { String(describing: $0) } ?? "none")",
+                    ]
+                )
+            }
+
+            if process.isRunning {
+                process.terminate()
+            }
+            resultTask.cancel()
+            _ = try? await resultTask.value
+            throw error
         }
     }
 }
 
 enum DockerError: Error, CustomStringConvertible {
-    case commandFailed(args: [String], status: Int32, stderr: String)
+    case commandFailed(executable: String, args: [String], status: Int32, stderr: String)
+    case commandTimedOut(executable: String, args: [String], timeout: Duration)
 
     var description: String {
         switch self {
-        case .commandFailed(let args, let status, let stderr):
-            let cmd = (["docker"] + args).joined(separator: " ")
+        case .commandFailed(let executable, let args, let status, let stderr):
+            let cmd = ([executable] + args).joined(separator: " ")
             if stderr.isEmpty {
                 return "\(cmd) exited with status \(status)"
             }
             return "\(cmd) exited with status \(status): \(stderr)"
+        case .commandTimedOut(let executable, let args, let timeout):
+            let cmd = ([executable] + args).joined(separator: " ")
+            return "\(cmd) timed out after \(timeout)"
         }
     }
 }
