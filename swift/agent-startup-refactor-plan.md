@@ -430,6 +430,18 @@ obsolete startup artifacts.
 - runtime failure handling is understandable
 - startup logic no longer contains leftover workarounds
 
+### Step 6 progress
+
+- runtime state is now reduced to direct shutdown/task handles for the
+  main gRPC server, local OTel server, and Bonjour advertisement, which
+  lets `WendyAgent` clean up required subsystems uniformly.
+- background monitoring now watches all required runtime tasks instead of
+  only Bonjour, and an unexpected subsystem exit now shuts the remaining
+  pieces down before transitioning status away from `.running`.
+- startup/shutdown logging was trimmed to the key lifecycle milestones:
+  startup began, Docker unavailable/warning, listeners registered,
+  transition to running, unexpected runtime stop, and shutdown complete.
+
 ### Handoff prompt for Step 7
 
 > Continue with Step 7 from `agent-startup-refactor-plan.md`.

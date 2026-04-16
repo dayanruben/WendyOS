@@ -9,19 +9,26 @@ import WendyAgentGRPC
 public final class WendyAgent {
     private typealias PosixGRPCServer = GRPCServer<HTTP2ServerTransport.Posix>
 
-    private struct MainServerRuntime {
-        let server: PosixGRPCServer
+    struct MainServerRuntime {
         let task: Task<Void, Error>
+        let shutdown: () async -> Void
     }
 
-    private struct OTelServerRuntime {
-        let server: PosixGRPCServer
+    struct OTelServerRuntime {
         let task: Task<Void, Error>
+        let shutdown: () async -> Void
     }
 
-    private struct BonjourRuntime {
-        let registration: BonjourRegistration
+    struct BonjourRuntime {
         let task: Task<Void, Error>
+        let shutdown: () async -> Void
+    }
+
+    struct TestHooks {
+        var prepareDockerIfNeeded: (() async -> Bool)?
+        var startMainServer: ((Bool, TelemetryBroadcaster) async throws -> MainServerRuntime)?
+        var startOTelServer: ((TelemetryBroadcaster) async throws -> OTelServerRuntime)?
+        var startBonjour: (() async throws -> BonjourRuntime)?
     }
 
     public let configuration: WendyAgentConfiguration
@@ -29,6 +36,15 @@ public final class WendyAgent {
 
     public init(configuration: WendyAgentConfiguration = .init()) {
         self.configuration = configuration
+        self.testHooks = nil
+    }
+
+    init(
+        configuration: WendyAgentConfiguration = .init(),
+        testHooks: TestHooks
+    ) {
+        self.configuration = configuration
+        self.testHooks = testHooks
     }
 
     public func start() async throws {
@@ -56,7 +72,6 @@ public final class WendyAgent {
         var bonjourRuntime: BonjourRuntime?
 
         do {
-            self.logger.info("Startup stage: telemetry broadcaster initialization")
             let dockerAvailable = await self.prepareDockerIfNeeded()
 
             let startedMainServerRuntime = try await self.startMainServer(
@@ -76,23 +91,29 @@ public final class WendyAgent {
             self.mainServerRuntime = startedMainServerRuntime
             self.otelServerRuntime = startedOTelServerRuntime
             self.bonjourRuntime = startedBonjourRuntime
-            self.runTask = startedBonjourRuntime.task
-            self.startMonitorTask(runTask: startedBonjourRuntime.task, runIdentifier: runIdentifier)
-
-            self.logger.info(
-                "Listening on port \(self.configuration.port), OTel on port \(self.configuration.otelPort)"
+            self.startMonitorTask(
+                mainServerRuntime: startedMainServerRuntime,
+                otelServerRuntime: startedOTelServerRuntime,
+                bonjourRuntime: startedBonjourRuntime,
+                runIdentifier: runIdentifier
             )
 
-            self.logger.info("Startup stage: status transition to running")
-            guard self.runIdentifier == runIdentifier, self.runTask != nil else { return }
+            self.logger.info(
+                "Wendy Agent is running",
+                metadata: [
+                    "grpc_port": "\(self.configuration.port)",
+                    "otel_port": "\(self.configuration.otelPort)",
+                ]
+            )
             self.updateStatus(.running)
-            self.logger.info("Startup complete: Wendy Agent is running")
         } catch {
-            await self.rollback(
+            await self.shutdownRuntime(
                 mainServerRuntime: mainServerRuntime,
                 otelServerRuntime: otelServerRuntime,
                 bonjourRuntime: bonjourRuntime
             )
+            self.clearRuntimeState()
+            self.updateStatus(.failed(Self.errorMessage(for: error)))
             throw error
         }
     }
@@ -111,21 +132,20 @@ public final class WendyAgent {
             return
         }
 
+        self.logger.info("Stopping Wendy Agent")
         self.updateStatus(.stopping)
-        self.runTask = nil
         self.monitorTask?.cancel()
         self.monitorTask = nil
 
-        mainServerRuntime.server.beginGracefulShutdown()
-        otelServerRuntime.server.beginGracefulShutdown()
-        await bonjourRuntime.registration.shutdown()
-
-        _ = try? await mainServerRuntime.task.value
-        _ = try? await otelServerRuntime.task.value
-        _ = try? await bonjourRuntime.task.value
+        await self.shutdownRuntime(
+            mainServerRuntime: mainServerRuntime,
+            otelServerRuntime: otelServerRuntime,
+            bonjourRuntime: bonjourRuntime
+        )
 
         self.clearRuntimeState()
         self.updateStatus(.stopped)
+        self.logger.info("Wendy Agent stopped")
     }
 
     public func observeStatus(
@@ -150,29 +170,27 @@ public final class WendyAgent {
     }()
 
     private let logger = Logger(label: "sh.wendy.agent")
+    private let testHooks: TestHooks?
 
     private var mainServerRuntime: MainServerRuntime?
     private var otelServerRuntime: OTelServerRuntime?
     private var bonjourRuntime: BonjourRuntime?
-    private var runTask: Task<Void, Error>?
     private var monitorTask: Task<Void, Never>?
     private var runIdentifier: UInt64 = 0
+    private var handlingUnexpectedRuntimeExit = false
     private var statusObservationRegistry = WendyObservationRegistry<WendyAgentStatus>(areEquivalent: ==)
     private var statusObservationTasks: [WendyObservationRegistry<WendyAgentStatus>.ObservationID: Task<Void, Never>] = [:]
 
     private func prepareDockerIfNeeded() async -> Bool {
-        let docker = DockerCLI()
+        if let prepareDockerIfNeeded = self.testHooks?.prepareDockerIfNeeded {
+            return await prepareDockerIfNeeded()
+        }
 
-        self.logger.info("Startup stage: Docker availability probe")
+        let docker = DockerCLI()
         let dockerAvailable = await docker.checkAvailable()
         if dockerAvailable {
-            self.logger.info(
-                "Startup stage: Docker local registry startup",
-                metadata: ["registry_port": "\(DockerCLI.registryPort)"]
-            )
             do {
                 try await docker.ensureRegistry()
-                self.logger.info("Startup stage complete: Docker local registry startup")
             } catch {
                 self.logger.warning(
                     "Failed to start Docker registry: \(String(describing: error)). Linux container support disabled."
@@ -189,11 +207,13 @@ public final class WendyAgent {
         dockerAvailable: Bool,
         broadcaster: TelemetryBroadcaster
     ) async throws -> MainServerRuntime {
-        self.logger.info("Startup stage: application support path setup")
+        if let startMainServer = self.testHooks?.startMainServer {
+            return try await startMainServer(dockerAvailable, broadcaster)
+        }
+
         let appsBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/wendy-agent/apps")
 
-        self.logger.info("Startup stage: main Wendy Agent gRPC service construction")
         let services: [any RegistrableRPCService] = [
             AgentService(),
             ContainerService(
@@ -211,10 +231,6 @@ public final class WendyAgent {
             FileSyncService(appsBase: appsBase),
         ]
 
-        self.logger.info(
-            "Startup stage: main Wendy Agent gRPC server creation",
-            metadata: ["grpc_port": "\(self.configuration.port)"]
-        )
         let server = PosixGRPCServer(
             transport: HTTP2ServerTransport.Posix(
                 address: .ipv6(host: "::", port: self.configuration.port),
@@ -223,19 +239,24 @@ public final class WendyAgent {
             services: services
         )
 
-        self.logger.info("Startup stage: main Wendy Agent gRPC server launch")
         let task = Self.makeServeTask(server: server)
 
         do {
             if let address = try await server.listeningAddress {
-                self.logger.info("Startup stage complete: main Wendy Agent gRPC server listening", metadata: [
-                    "grpc_address": "\(address)"
-                ])
+                self.logger.info(
+                    "Main Wendy Agent gRPC server listening",
+                    metadata: ["grpc_address": "\(address)"]
+                )
             } else {
-                self.logger.info("Startup stage complete: main Wendy Agent gRPC server listening")
+                self.logger.info("Main Wendy Agent gRPC server listening")
             }
 
-            return MainServerRuntime(server: server, task: task)
+            return MainServerRuntime(
+                task: task,
+                shutdown: {
+                    server.beginGracefulShutdown()
+                }
+            )
         } catch {
             server.beginGracefulShutdown()
             _ = try? await task.value
@@ -246,17 +267,16 @@ public final class WendyAgent {
     private func startOTelServer(
         broadcaster: TelemetryBroadcaster
     ) async throws -> OTelServerRuntime {
-        self.logger.info("Startup stage: local OpenTelemetry gRPC service construction")
+        if let startOTelServer = self.testHooks?.startOTelServer {
+            return try await startOTelServer(broadcaster)
+        }
+
         let services: [any RegistrableRPCService] = [
             LocalOTelLogsReceiver(broadcaster: broadcaster),
             LocalOTelMetricsReceiver(broadcaster: broadcaster),
             LocalOTelTracesReceiver(broadcaster: broadcaster),
         ]
 
-        self.logger.info(
-            "Startup stage: local OpenTelemetry gRPC server creation",
-            metadata: ["otel_port": "\(self.configuration.otelPort)"]
-        )
         let server = PosixGRPCServer(
             transport: HTTP2ServerTransport.Posix(
                 address: .ipv4(host: "127.0.0.1", port: self.configuration.otelPort),
@@ -265,19 +285,24 @@ public final class WendyAgent {
             services: services
         )
 
-        self.logger.info("Startup stage: local OpenTelemetry gRPC server launch")
         let task = Self.makeServeTask(server: server)
 
         do {
             if let address = try await server.listeningAddress {
-                self.logger.info("Startup stage complete: local OpenTelemetry gRPC server listening", metadata: [
-                    "otel_address": "\(address)"
-                ])
+                self.logger.info(
+                    "Local OpenTelemetry gRPC server listening",
+                    metadata: ["otel_address": "\(address)"]
+                )
             } else {
-                self.logger.info("Startup stage complete: local OpenTelemetry gRPC server listening")
+                self.logger.info("Local OpenTelemetry gRPC server listening")
             }
 
-            return OTelServerRuntime(server: server, task: task)
+            return OTelServerRuntime(
+                task: task,
+                shutdown: {
+                    server.beginGracefulShutdown()
+                }
+            )
         } catch {
             server.beginGracefulShutdown()
             _ = try? await task.value
@@ -286,77 +311,169 @@ public final class WendyAgent {
     }
 
     private func startBonjour() async throws -> BonjourRuntime {
-        self.logger.info("Startup stage: Bonjour advertiser creation")
+        if let startBonjour = self.testHooks?.startBonjour {
+            return try await startBonjour()
+        }
+
         let advertiser = BonjourAdvertiser(
             port: self.configuration.port,
             displayName: ProcessInfo.processInfo.hostName,
             deviceID: ProcessInfo.processInfo.hostName
         )
 
-        self.logger.info("Startup stage: Bonjour advertisement registration")
         let runtime = try await advertiser.start()
-        self.logger.info("Startup stage complete: Bonjour advertisement registered")
+        self.logger.info("Bonjour advertisement registered")
 
-        return BonjourRuntime(registration: runtime.registration, task: runtime.task)
+        return BonjourRuntime(
+            task: runtime.task,
+            shutdown: {
+                await runtime.registration.shutdown()
+            }
+        )
     }
 
-    private func startMonitorTask(runTask: Task<Void, Error>, runIdentifier: UInt64) {
+    private func startMonitorTask(
+        mainServerRuntime: MainServerRuntime,
+        otelServerRuntime: OTelServerRuntime,
+        bonjourRuntime: BonjourRuntime,
+        runIdentifier: UInt64
+    ) {
         self.monitorTask?.cancel()
-        self.monitorTask = Task {
-            await self.monitorRunTask(runTask, runIdentifier: runIdentifier)
-        }
+        self.monitorTask = Self.makeMonitorTask(
+            agent: self,
+            mainServerTask: mainServerRuntime.task,
+            otelServerTask: otelServerRuntime.task,
+            bonjourTask: bonjourRuntime.task,
+            runIdentifier: runIdentifier
+        )
     }
 
-    private func rollback(
+    private func shutdownRuntime(
         mainServerRuntime: MainServerRuntime?,
         otelServerRuntime: OTelServerRuntime?,
         bonjourRuntime: BonjourRuntime?
     ) async {
-        mainServerRuntime?.server.beginGracefulShutdown()
-        otelServerRuntime?.server.beginGracefulShutdown()
-        await bonjourRuntime?.registration.shutdown()
+        await mainServerRuntime?.shutdown()
+        await otelServerRuntime?.shutdown()
+        await bonjourRuntime?.shutdown()
 
-        _ = try? await bonjourRuntime?.task.value
         _ = try? await mainServerRuntime?.task.value
         _ = try? await otelServerRuntime?.task.value
-
-        self.clearRuntimeState()
+        _ = try? await bonjourRuntime?.task.value
     }
 
     private func clearRuntimeState() {
         self.mainServerRuntime = nil
         self.otelServerRuntime = nil
         self.bonjourRuntime = nil
-        self.runTask = nil
         self.monitorTask?.cancel()
         self.monitorTask = nil
+        self.handlingUnexpectedRuntimeExit = false
     }
 
-    private func monitorRunTask(_ runTask: Task<Void, Error>, runIdentifier: UInt64) async {
-        do {
-            try await runTask.value
-            self.finalizeRunTaskIfNeeded(runIdentifier: runIdentifier, error: nil)
-        } catch {
-            self.finalizeRunTaskIfNeeded(runIdentifier: runIdentifier, error: error)
+    private func monitorRuntimeTasks(
+        mainServerTask: Task<Void, Error>,
+        otelServerTask: Task<Void, Error>,
+        bonjourTask: Task<Void, Error>,
+        runIdentifier: UInt64
+    ) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.monitorRuntimeTask(
+                    mainServerTask,
+                    subsystem: "main_grpc",
+                    runIdentifier: runIdentifier
+                )
+            }
+            group.addTask {
+                await self.monitorRuntimeTask(
+                    otelServerTask,
+                    subsystem: "otel_grpc",
+                    runIdentifier: runIdentifier
+                )
+            }
+            group.addTask {
+                await self.monitorRuntimeTask(
+                    bonjourTask,
+                    subsystem: "bonjour",
+                    runIdentifier: runIdentifier
+                )
+            }
+
+            await group.next()
+            group.cancelAll()
         }
     }
 
-    private func finalizeRunTaskIfNeeded(runIdentifier: UInt64, error: (any Error)?) {
-        guard self.runIdentifier == runIdentifier, self.runTask != nil else { return }
+    private func monitorRuntimeTask(
+        _ task: Task<Void, Error>,
+        subsystem: String,
+        runIdentifier: UInt64
+    ) async {
+        do {
+            try await task.value
+            guard !Task.isCancelled else { return }
+            await self.handleUnexpectedRuntimeExit(
+                subsystem: subsystem,
+                error: nil,
+                runIdentifier: runIdentifier
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            await self.handleUnexpectedRuntimeExit(
+                subsystem: subsystem,
+                error: error,
+                runIdentifier: runIdentifier
+            )
+        }
+    }
+
+    private func handleUnexpectedRuntimeExit(
+        subsystem: String,
+        error: (any Error)?,
+        runIdentifier: UInt64
+    ) async {
+        guard !Task.isCancelled,
+              !self.handlingUnexpectedRuntimeExit,
+              self.runIdentifier == runIdentifier,
+              case .running = self.status,
+              let mainServerRuntime = self.mainServerRuntime,
+              let otelServerRuntime = self.otelServerRuntime,
+              let bonjourRuntime = self.bonjourRuntime
+        else {
+            return
+        }
+
+        self.handlingUnexpectedRuntimeExit = true
+
+        if let error {
+            self.logger.error(
+                "Runtime subsystem stopped unexpectedly",
+                metadata: [
+                    "subsystem": "\(subsystem)",
+                    "error": "\(Self.errorMessage(for: error))",
+                ]
+            )
+        } else {
+            self.logger.warning(
+                "Runtime subsystem stopped unexpectedly",
+                metadata: ["subsystem": "\(subsystem)"]
+            )
+        }
+
+        await self.shutdownRuntime(
+            mainServerRuntime: mainServerRuntime,
+            otelServerRuntime: otelServerRuntime,
+            bonjourRuntime: bonjourRuntime
+        )
 
         self.clearRuntimeState()
 
-        switch self.status {
-        case .stopping:
+        if let error {
+            self.updateStatus(.failed(Self.errorMessage(for: error)))
+        } else {
             self.updateStatus(.stopped)
-        case .starting, .running:
-            if let error {
-                self.updateStatus(.failed(Self.errorMessage(for: error)))
-            } else {
-                self.updateStatus(.stopped)
-            }
-        case .idle, .stopped, .failed:
-            break
         }
     }
 
@@ -402,6 +519,23 @@ public final class WendyAgent {
         self.statusObservationRegistry.removeObservation(observationID)
         let task = self.statusObservationTasks.removeValue(forKey: observationID)
         await task?.value
+    }
+
+    nonisolated private static func makeMonitorTask(
+        agent: WendyAgent,
+        mainServerTask: Task<Void, Error>,
+        otelServerTask: Task<Void, Error>,
+        bonjourTask: Task<Void, Error>,
+        runIdentifier: UInt64
+    ) -> Task<Void, Never> {
+        Task.detached {
+            await agent.monitorRuntimeTasks(
+                mainServerTask: mainServerTask,
+                otelServerTask: otelServerTask,
+                bonjourTask: bonjourTask,
+                runIdentifier: runIdentifier
+            )
+        }
     }
 
     nonisolated private static func makeServeTask(server: PosixGRPCServer) -> Task<Void, Error> {
