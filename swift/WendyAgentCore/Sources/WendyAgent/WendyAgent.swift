@@ -18,6 +18,7 @@ public final class WendyAgent {
 
     private struct OTelServerRuntime {
         let server: PosixGRPCServer
+        let task: Task<Void, Error>
     }
 
     private struct BonjourRuntime {
@@ -62,13 +63,12 @@ public final class WendyAgent {
             self.mainServerRuntime = mainServerRuntime
 
             let otelServerRuntime = try await self.startOTelServer(broadcaster: broadcaster)
+            self.otelServerRuntime = otelServerRuntime
+
             let bonjourRuntime = try await self.startBonjour()
 
             self.logger.info("Startup stage: service group creation")
-            let serviceGroup = self.makeServiceGroup(
-                otelServerRuntime: otelServerRuntime,
-                bonjourRuntime: bonjourRuntime
-            )
+            let serviceGroup = self.makeServiceGroup(bonjourRuntime: bonjourRuntime)
 
             self.logger.info("Startup stage: service group launch")
             let runTask = Self.makeRunTask(serviceGroup: serviceGroup)
@@ -102,10 +102,12 @@ public final class WendyAgent {
         }
 
         let mainServerRuntime = self.mainServerRuntime
+        let otelServerRuntime = self.otelServerRuntime
 
         self.updateStatus(.stopping)
 
         mainServerRuntime?.server.beginGracefulShutdown()
+        otelServerRuntime?.server.beginGracefulShutdown()
         await serviceGroup.triggerGracefulShutdown()
 
         var shutdownError: (any Error)?
@@ -119,6 +121,14 @@ public final class WendyAgent {
         if let mainServerRuntime {
             do {
                 try await mainServerRuntime.task.value
+            } catch {
+                shutdownError = shutdownError ?? error
+            }
+        }
+
+        if let otelServerRuntime {
+            do {
+                try await otelServerRuntime.task.value
             } catch {
                 shutdownError = shutdownError ?? error
             }
@@ -265,7 +275,24 @@ public final class WendyAgent {
             services: services
         )
 
-        return OTelServerRuntime(server: server)
+        self.logger.info("Startup stage: local OpenTelemetry gRPC server launch")
+        let task = Self.makeServeTask(server: server)
+
+        do {
+            if let address = try await server.listeningAddress {
+                self.logger.info("Startup stage complete: local OpenTelemetry gRPC server listening", metadata: [
+                    "otel_address": "\(address)"
+                ])
+            } else {
+                self.logger.info("Startup stage complete: local OpenTelemetry gRPC server listening")
+            }
+
+            return OTelServerRuntime(server: server, task: task)
+        } catch {
+            server.beginGracefulShutdown()
+            _ = try? await task.value
+            throw error
+        }
     }
 
     private func startBonjour() async throws -> BonjourRuntime {
@@ -288,9 +315,13 @@ public final class WendyAgent {
 
     private func rollback() async {
         let mainServerRuntime = self.mainServerRuntime
+        let otelServerRuntime = self.otelServerRuntime
 
         mainServerRuntime?.server.beginGracefulShutdown()
+        otelServerRuntime?.server.beginGracefulShutdown()
+
         _ = try? await mainServerRuntime?.task.value
+        _ = try? await otelServerRuntime?.task.value
 
         self.clearRuntimeState()
     }
@@ -306,13 +337,11 @@ public final class WendyAgent {
     }
 
     private func makeServiceGroup(
-        otelServerRuntime: OTelServerRuntime,
         bonjourRuntime: BonjourRuntime
     ) -> ServiceGroup {
         ServiceGroup(
             configuration: .init(
                 services: [
-                    .init(service: otelServerRuntime.server),
                     .init(service: bonjourRuntime.advertiser),
                 ],
                 logger: self.logger
