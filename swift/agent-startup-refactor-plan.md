@@ -470,6 +470,17 @@ Lock in the desired startup/shutdown behavior.
 - behavior is covered well enough to protect the refactor
 - remaining logs/comments reflect the final design
 
+### Step 7 progress
+
+- added focused `WendyAgent` tests using injected startup hooks so the
+  startup/shutdown state machine can be exercised without binding real
+  sockets or relying on Bonjour side effects.
+- coverage now locks in the desired behavior for: delayed readiness
+  before `.running`, Docker unavailability remaining optional, required
+  startup failure preventing `.running`, explicit shutdown returning to
+  `.stopped`, and unexpected runtime exit transitioning away from
+  `.running`.
+
 ### Final handoff prompt
 
 > The startup refactor plan steps are complete. Review the resulting
