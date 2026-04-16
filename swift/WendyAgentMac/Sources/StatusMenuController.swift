@@ -68,18 +68,30 @@ final class StatusMenuController: NSObject {
     private func updateStatusButton() {
         guard let button = self.statusItem.button else { return }
 
-        let image = self.makeButtonImage()
+        let image = self.makeButtonImage(for: self.currentStatus)
         image?.isTemplate = true
 
         button.image = image
-        button.title = image == nil ? "W" : ""
+        button.title = self.buttonTitle(for: self.currentStatus, image: image)
         button.imagePosition = image == nil ? .noImage : .imageOnly
         button.imageScaling = .scaleProportionallyDown
         button.toolTip = "\(self.bundleDisplayName) — \(self.currentStatus.menuTitle)"
         button.setAccessibilityTitle(self.bundleDisplayName)
     }
 
-    private func makeButtonImage() -> NSImage? {
+    private func buttonTitle(for status: WendyAgentStatus, image: NSImage?) -> String {
+        if case .failed = status {
+            return "!"
+        }
+
+        return image == nil ? "W" : ""
+    }
+
+    private func makeButtonImage(for status: WendyAgentStatus) -> NSImage? {
+        if case .failed = status {
+            return nil
+        }
+
         if let image = NSImage(named: NSImage.Name("StatusIcon"))?.copy() as? NSImage {
             return image
         }
