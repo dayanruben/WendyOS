@@ -7,28 +7,15 @@ import WendyAgentGRPC
 
 @MainActor
 public final class WendyAgent {
+    typealias ShutdownAction = @Sendable () async -> Void
+    typealias StartedSubsystem = (task: Task<Void, Error>, shutdown: ShutdownAction)
     private typealias PosixGRPCServer = GRPCServer<HTTP2ServerTransport.Posix>
-
-    struct MainServerRuntime {
-        let task: Task<Void, Error>
-        let shutdown: () async -> Void
-    }
-
-    struct OTelServerRuntime {
-        let task: Task<Void, Error>
-        let shutdown: () async -> Void
-    }
-
-    struct BonjourRuntime {
-        let task: Task<Void, Error>
-        let shutdown: () async -> Void
-    }
 
     struct TestHooks {
         var prepareDockerIfNeeded: (() async -> Bool)?
-        var startMainServer: ((Bool, TelemetryBroadcaster) async throws -> MainServerRuntime)?
-        var startOTelServer: ((TelemetryBroadcaster) async throws -> OTelServerRuntime)?
-        var startBonjour: (() async throws -> BonjourRuntime)?
+        var startMainServer: ((Bool, TelemetryBroadcaster) async throws -> StartedSubsystem)?
+        var startOTelServer: ((TelemetryBroadcaster) async throws -> StartedSubsystem)?
+        var startBonjour: (() async throws -> StartedSubsystem)?
     }
 
     public let configuration: WendyAgentConfiguration
@@ -57,7 +44,6 @@ public final class WendyAgent {
 
         Self.bootstrapLogging
         self.updateStatus(.starting)
-
         self.logger.info(
             "Starting Wendy Agent",
             metadata: [
@@ -66,38 +52,22 @@ public final class WendyAgent {
             ]
         )
 
-        let broadcaster = TelemetryBroadcaster()
-        var mainServerRuntime: MainServerRuntime?
-        var otelServerRuntime: OTelServerRuntime?
-        var bonjourRuntime: BonjourRuntime?
-
         do {
+            let broadcaster = TelemetryBroadcaster()
             let dockerAvailable = await self.prepareDockerIfNeeded()
 
-            let startedMainServerRuntime = try await self.startMainServer(
+            try await self.startMainServer(
                 dockerAvailable: dockerAvailable,
                 broadcaster: broadcaster
             )
-            mainServerRuntime = startedMainServerRuntime
-
-            let startedOTelServerRuntime = try await self.startOTelServer(broadcaster: broadcaster)
-            otelServerRuntime = startedOTelServerRuntime
-
-            let startedBonjourRuntime = try await self.startBonjour()
-            bonjourRuntime = startedBonjourRuntime
+            try await self.startOTelServer(broadcaster: broadcaster)
+            try await self.startBonjour()
 
             self.runIdentifier &+= 1
-            let runIdentifier = self.runIdentifier
-            self.mainServerRuntime = startedMainServerRuntime
-            self.otelServerRuntime = startedOTelServerRuntime
-            self.bonjourRuntime = startedBonjourRuntime
-            self.startMonitorTask(
-                mainServerRuntime: startedMainServerRuntime,
-                otelServerRuntime: startedOTelServerRuntime,
-                bonjourRuntime: startedBonjourRuntime,
-                runIdentifier: runIdentifier
-            )
+            self.handlingUnexpectedRuntimeExit = false
+            self.startMonitorTask(runIdentifier: self.runIdentifier)
 
+            self.updateStatus(.running)
             self.logger.info(
                 "Wendy Agent is running",
                 metadata: [
@@ -105,13 +75,8 @@ public final class WendyAgent {
                     "otel_port": "\(self.configuration.otelPort)",
                 ]
             )
-            self.updateStatus(.running)
         } catch {
-            await self.shutdownRuntime(
-                mainServerRuntime: mainServerRuntime,
-                otelServerRuntime: otelServerRuntime,
-                bonjourRuntime: bonjourRuntime
-            )
+            await self.rollbackStartup()
             self.clearRuntimeState()
             self.updateStatus(.failed(Self.errorMessage(for: error)))
             throw error
@@ -123,25 +88,13 @@ public final class WendyAgent {
             return
         }
 
-        guard let mainServerRuntime = self.mainServerRuntime,
-              let otelServerRuntime = self.otelServerRuntime,
-              let bonjourRuntime = self.bonjourRuntime
-        else {
-            self.clearRuntimeState()
-            self.updateStatus(.stopped)
-            return
-        }
-
         self.logger.info("Stopping Wendy Agent")
         self.updateStatus(.stopping)
-        self.monitorTask?.cancel()
-        self.monitorTask = nil
+        self.stopMonitorTask()
 
-        await self.shutdownRuntime(
-            mainServerRuntime: mainServerRuntime,
-            otelServerRuntime: otelServerRuntime,
-            bonjourRuntime: bonjourRuntime
-        )
+        await self.stopMainServer()
+        await self.stopOTelServer()
+        await self.stopBonjour()
 
         self.clearRuntimeState()
         self.updateStatus(.stopped)
@@ -172,9 +125,18 @@ public final class WendyAgent {
     private let logger = Logger(label: "sh.wendy.agent")
     private let testHooks: TestHooks?
 
-    private var mainServerRuntime: MainServerRuntime?
-    private var otelServerRuntime: OTelServerRuntime?
-    private var bonjourRuntime: BonjourRuntime?
+    private var mainServer: PosixGRPCServer?
+    private var mainServerTask: Task<Void, Error>?
+    private var mainServerShutdownOverride: ShutdownAction?
+
+    private var otelServer: PosixGRPCServer?
+    private var otelServerTask: Task<Void, Error>?
+    private var otelServerShutdownOverride: ShutdownAction?
+
+    private var bonjourRegistration: BonjourRegistration?
+    private var bonjourTask: Task<Void, Error>?
+    private var bonjourShutdownOverride: ShutdownAction?
+
     private var monitorTask: Task<Void, Never>?
     private var runIdentifier: UInt64 = 0
     private var handlingUnexpectedRuntimeExit = false
@@ -206,9 +168,12 @@ public final class WendyAgent {
     private func startMainServer(
         dockerAvailable: Bool,
         broadcaster: TelemetryBroadcaster
-    ) async throws -> MainServerRuntime {
+    ) async throws {
         if let startMainServer = self.testHooks?.startMainServer {
-            return try await startMainServer(dockerAvailable, broadcaster)
+            let started = try await startMainServer(dockerAvailable, broadcaster)
+            self.mainServerTask = started.task
+            self.mainServerShutdownOverride = started.shutdown
+            return
         }
 
         let appsBase = FileManager.default.homeDirectoryForCurrentUser
@@ -251,12 +216,9 @@ public final class WendyAgent {
                 self.logger.info("Main Wendy Agent gRPC server listening")
             }
 
-            return MainServerRuntime(
-                task: task,
-                shutdown: {
-                    server.beginGracefulShutdown()
-                }
-            )
+            self.mainServer = server
+            self.mainServerTask = task
+            self.mainServerShutdownOverride = nil
         } catch {
             server.beginGracefulShutdown()
             _ = try? await task.value
@@ -264,11 +226,28 @@ public final class WendyAgent {
         }
     }
 
+    private func stopMainServer() async {
+        if let shutdownOverride = self.mainServerShutdownOverride {
+            await shutdownOverride()
+        } else {
+            self.mainServer?.beginGracefulShutdown()
+        }
+
+        _ = try? await self.mainServerTask?.value
+
+        self.mainServer = nil
+        self.mainServerTask = nil
+        self.mainServerShutdownOverride = nil
+    }
+
     private func startOTelServer(
         broadcaster: TelemetryBroadcaster
-    ) async throws -> OTelServerRuntime {
+    ) async throws {
         if let startOTelServer = self.testHooks?.startOTelServer {
-            return try await startOTelServer(broadcaster)
+            let started = try await startOTelServer(broadcaster)
+            self.otelServerTask = started.task
+            self.otelServerShutdownOverride = started.shutdown
+            return
         }
 
         let services: [any RegistrableRPCService] = [
@@ -297,12 +276,9 @@ public final class WendyAgent {
                 self.logger.info("Local OpenTelemetry gRPC server listening")
             }
 
-            return OTelServerRuntime(
-                task: task,
-                shutdown: {
-                    server.beginGracefulShutdown()
-                }
-            )
+            self.otelServer = server
+            self.otelServerTask = task
+            self.otelServerShutdownOverride = nil
         } catch {
             server.beginGracefulShutdown()
             _ = try? await task.value
@@ -310,9 +286,26 @@ public final class WendyAgent {
         }
     }
 
-    private func startBonjour() async throws -> BonjourRuntime {
+    private func stopOTelServer() async {
+        if let shutdownOverride = self.otelServerShutdownOverride {
+            await shutdownOverride()
+        } else {
+            self.otelServer?.beginGracefulShutdown()
+        }
+
+        _ = try? await self.otelServerTask?.value
+
+        self.otelServer = nil
+        self.otelServerTask = nil
+        self.otelServerShutdownOverride = nil
+    }
+
+    private func startBonjour() async throws {
         if let startBonjour = self.testHooks?.startBonjour {
-            return try await startBonjour()
+            let started = try await startBonjour()
+            self.bonjourTask = started.task
+            self.bonjourShutdownOverride = started.shutdown
+            return
         }
 
         let advertiser = BonjourAdvertiser(
@@ -324,50 +317,65 @@ public final class WendyAgent {
         let runtime = try await advertiser.start()
         self.logger.info("Bonjour advertisement registered")
 
-        return BonjourRuntime(
-            task: runtime.task,
-            shutdown: {
-                await runtime.registration.shutdown()
-            }
-        )
+        self.bonjourRegistration = runtime.registration
+        self.bonjourTask = runtime.task
+        self.bonjourShutdownOverride = nil
     }
 
-    private func startMonitorTask(
-        mainServerRuntime: MainServerRuntime,
-        otelServerRuntime: OTelServerRuntime,
-        bonjourRuntime: BonjourRuntime,
-        runIdentifier: UInt64
-    ) {
-        self.monitorTask?.cancel()
+    private func stopBonjour() async {
+        if let shutdownOverride = self.bonjourShutdownOverride {
+            await shutdownOverride()
+        } else {
+            await self.bonjourRegistration?.shutdown()
+        }
+
+        _ = try? await self.bonjourTask?.value
+
+        self.bonjourRegistration = nil
+        self.bonjourTask = nil
+        self.bonjourShutdownOverride = nil
+    }
+
+    private func startMonitorTask(runIdentifier: UInt64) {
+        guard let mainServerTask = self.mainServerTask,
+              let otelServerTask = self.otelServerTask,
+              let bonjourTask = self.bonjourTask
+        else {
+            return
+        }
+
+        self.stopMonitorTask()
         self.monitorTask = Self.makeMonitorTask(
             agent: self,
-            mainServerTask: mainServerRuntime.task,
-            otelServerTask: otelServerRuntime.task,
-            bonjourTask: bonjourRuntime.task,
+            mainServerTask: mainServerTask,
+            otelServerTask: otelServerTask,
+            bonjourTask: bonjourTask,
             runIdentifier: runIdentifier
         )
     }
 
-    private func shutdownRuntime(
-        mainServerRuntime: MainServerRuntime?,
-        otelServerRuntime: OTelServerRuntime?,
-        bonjourRuntime: BonjourRuntime?
-    ) async {
-        await mainServerRuntime?.shutdown()
-        await otelServerRuntime?.shutdown()
-        await bonjourRuntime?.shutdown()
+    private func stopMonitorTask() {
+        self.monitorTask?.cancel()
+        self.monitorTask = nil
+    }
 
-        _ = try? await mainServerRuntime?.task.value
-        _ = try? await otelServerRuntime?.task.value
-        _ = try? await bonjourRuntime?.task.value
+    private func rollbackStartup() async {
+        await self.stopMainServer()
+        await self.stopOTelServer()
+        await self.stopBonjour()
     }
 
     private func clearRuntimeState() {
-        self.mainServerRuntime = nil
-        self.otelServerRuntime = nil
-        self.bonjourRuntime = nil
-        self.monitorTask?.cancel()
-        self.monitorTask = nil
+        self.mainServer = nil
+        self.mainServerTask = nil
+        self.mainServerShutdownOverride = nil
+        self.otelServer = nil
+        self.otelServerTask = nil
+        self.otelServerShutdownOverride = nil
+        self.bonjourRegistration = nil
+        self.bonjourTask = nil
+        self.bonjourShutdownOverride = nil
+        self.stopMonitorTask()
         self.handlingUnexpectedRuntimeExit = false
     }
 
@@ -437,10 +445,7 @@ public final class WendyAgent {
         guard !Task.isCancelled,
               !self.handlingUnexpectedRuntimeExit,
               self.runIdentifier == runIdentifier,
-              case .running = self.status,
-              let mainServerRuntime = self.mainServerRuntime,
-              let otelServerRuntime = self.otelServerRuntime,
-              let bonjourRuntime = self.bonjourRuntime
+              case .running = self.status
         else {
             return
         }
@@ -462,12 +467,9 @@ public final class WendyAgent {
             )
         }
 
-        await self.shutdownRuntime(
-            mainServerRuntime: mainServerRuntime,
-            otelServerRuntime: otelServerRuntime,
-            bonjourRuntime: bonjourRuntime
-        )
-
+        await self.stopMainServer()
+        await self.stopOTelServer()
+        await self.stopBonjour()
         self.clearRuntimeState()
 
         if let error {

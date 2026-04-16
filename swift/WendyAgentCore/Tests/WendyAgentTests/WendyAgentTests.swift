@@ -21,15 +21,15 @@ struct WendyAgentTests {
                 prepareDockerIfNeeded: { true },
                 startMainServer: { _, _ in
                     await mainReady.wait()
-                    return makeMainServerRuntime(main)
+                    return makeStartedSubsystem(main)
                 },
                 startOTelServer: { _ in
                     await otelReady.wait()
-                    return makeOTelServerRuntime(otel)
+                    return makeStartedSubsystem(otel)
                 },
                 startBonjour: {
                     await bonjourReady.wait()
-                    return makeBonjourRuntime(bonjour)
+                    return makeStartedSubsystem(bonjour)
                 }
             )
         )
@@ -71,10 +71,10 @@ struct WendyAgentTests {
                 prepareDockerIfNeeded: { false },
                 startMainServer: { dockerAvailable, _ in
                     await dockerAvailability.set(dockerAvailable)
-                    return makeMainServerRuntime(main)
+                    return makeStartedSubsystem(main)
                 },
-                startOTelServer: { _ in makeOTelServerRuntime(otel) },
-                startBonjour: { makeBonjourRuntime(bonjour) }
+                startOTelServer: { _ in makeStartedSubsystem(otel) },
+                startBonjour: { makeStartedSubsystem(bonjour) }
             )
         )
 
@@ -96,11 +96,11 @@ struct WendyAgentTests {
         let agent = WendyAgent(
             testHooks: WendyAgent.TestHooks(
                 prepareDockerIfNeeded: { true },
-                startMainServer: { _, _ in makeMainServerRuntime(main) },
+                startMainServer: { _, _ in makeStartedSubsystem(main) },
                 startOTelServer: { _ in throw startupError },
                 startBonjour: {
                     Issue.record("Bonjour should not start after OTel startup failure")
-                    return makeBonjourRuntime(ControlledComponent(name: "bonjour"))
+                    return makeStartedSubsystem(ControlledComponent(name: "bonjour"))
                 }
             )
         )
@@ -123,9 +123,9 @@ struct WendyAgentTests {
         let agent = WendyAgent(
             testHooks: WendyAgent.TestHooks(
                 prepareDockerIfNeeded: { true },
-                startMainServer: { _, _ in makeMainServerRuntime(main) },
-                startOTelServer: { _ in makeOTelServerRuntime(otel) },
-                startBonjour: { makeBonjourRuntime(bonjour) }
+                startMainServer: { _, _ in makeStartedSubsystem(main) },
+                startOTelServer: { _ in makeStartedSubsystem(otel) },
+                startBonjour: { makeStartedSubsystem(bonjour) }
             )
         )
 
@@ -149,9 +149,9 @@ struct WendyAgentTests {
         let agent = WendyAgent(
             testHooks: WendyAgent.TestHooks(
                 prepareDockerIfNeeded: { true },
-                startMainServer: { _, _ in makeMainServerRuntime(main) },
-                startOTelServer: { _ in makeOTelServerRuntime(otel) },
-                startBonjour: { makeBonjourRuntime(bonjour) }
+                startMainServer: { _, _ in makeStartedSubsystem(main) },
+                startOTelServer: { _ in makeStartedSubsystem(otel) },
+                startBonjour: { makeStartedSubsystem(bonjour) }
             )
         )
 
@@ -314,44 +314,12 @@ private func waitUntil(
     throw TestAgentError("Timed out waiting for condition")
 }
 
-private func makeMainServerRuntime(_ component: ControlledComponent) -> WendyAgent.MainServerRuntime {
+private func makeStartedSubsystem(_ component: ControlledComponent) -> WendyAgent.StartedSubsystem {
     let taskController = component.taskController
     let shutdowns = component.shutdowns
     let name = component.name
 
-    return WendyAgent.MainServerRuntime(
-        task: Task {
-            try await taskController.wait()
-        },
-        shutdown: {
-            await shutdowns.record(name)
-            await taskController.finish()
-        }
-    )
-}
-
-private func makeOTelServerRuntime(_ component: ControlledComponent) -> WendyAgent.OTelServerRuntime {
-    let taskController = component.taskController
-    let shutdowns = component.shutdowns
-    let name = component.name
-
-    return WendyAgent.OTelServerRuntime(
-        task: Task {
-            try await taskController.wait()
-        },
-        shutdown: {
-            await shutdowns.record(name)
-            await taskController.finish()
-        }
-    )
-}
-
-private func makeBonjourRuntime(_ component: ControlledComponent) -> WendyAgent.BonjourRuntime {
-    let taskController = component.taskController
-    let shutdowns = component.shutdowns
-    let name = component.name
-
-    return WendyAgent.BonjourRuntime(
+    return (
         task: Task {
             try await taskController.wait()
         },
