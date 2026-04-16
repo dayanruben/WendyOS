@@ -37,10 +37,10 @@
   </g>
 
   <g>
-    <path d="M434 64L678 64L960 346L960 590Z" fill="#000000" opacity="0.14"/>
-    <path d="M416 64L660 64L960 364L960 608Z" fill="url(#betaRibbon)"/>
-    <path d="M494 64L564 64L960 460L960 530Z" fill="url(#betaRibbonShine)" opacity="0.6"/>
-    <text x="754" y="292" transform="rotate(45 754 292)" text-anchor="middle" dominant-baseline="middle" font-family="SF Pro Display, Inter, Helvetica Neue, Arial, sans-serif" font-size="92" font-weight="800" letter-spacing="10" fill="#7c2d12" opacity="0.24">BETA</text>
-    <text x="746" y="284" transform="rotate(45 746 284)" text-anchor="middle" dominant-baseline="middle" font-family="SF Pro Display, Inter, Helvetica Neue, Arial, sans-serif" font-size="92" font-weight="800" letter-spacing="10" fill="#ffffff">BETA</text>
+    <path d="M590 64L346 64L64 346L64 590Z" fill="#000000" opacity="0.14"/>
+    <path d="M608 64L364 64L64 364L64 608Z" fill="url(#betaRibbon)"/>
+    <path d="M530 64L460 64L64 460L64 530Z" fill="url(#betaRibbonShine)" opacity="0.6"/>
+    <text x="270" y="292" transform="rotate(-45 270 292)" text-anchor="middle" dominant-baseline="middle" font-family="SF Pro Display, Inter, Helvetica Neue, Arial, sans-serif" font-size="92" font-weight="800" letter-spacing="10" fill="#7c2d12" opacity="0.24">BETA</text>
+    <text x="278" y="284" transform="rotate(-45 278 284)" text-anchor="middle" dominant-baseline="middle" font-family="SF Pro Display, Inter, Helvetica Neue, Arial, sans-serif" font-size="92" font-weight="800" letter-spacing="10" fill="#ffffff">BETA</text>
   </g>
 </svg>
