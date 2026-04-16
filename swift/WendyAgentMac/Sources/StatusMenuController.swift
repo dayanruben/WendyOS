@@ -10,12 +10,15 @@ final class StatusMenuController: NSObject {
         self.bundleDisplayName = AppDisplayName.resolve(from: bundle)
         self.currentStatus = wendyAgent.status
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.menu = NSMenu()
         super.init()
 
         self.statusObservation = self.wendyAgent.observeStatus { @MainActor [weak self] status in
             self?.update(status: status)
         }
 
+        self.menu.autoenablesItems = false
+        self.statusItem.menu = self.menu
         self.statusItem.isVisible = true
         self.updateStatusButton()
         self.rebuildMenu()
@@ -23,6 +26,7 @@ final class StatusMenuController: NSObject {
 
     private let bundleDisplayName: String
     private let statusItem: NSStatusItem
+    private let menu: NSMenu
     private var currentStatus: WendyAgentStatus
     private var statusObservation: WendyObservation?
     private var isQuitting = false
@@ -34,8 +38,7 @@ final class StatusMenuController: NSObject {
     }
 
     private func rebuildMenu() {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
+        self.menu.removeAllItems()
 
         let statusItem = NSMenuItem(
             title: self.currentStatus.menuTitle,
@@ -44,15 +47,15 @@ final class StatusMenuController: NSObject {
         )
         statusItem.image = self.makeStatusImage(for: self.currentStatus)
         statusItem.isEnabled = false
-        menu.addItem(statusItem)
+        self.menu.addItem(statusItem)
 
         for detail in self.currentStatus.menuFailureDetails {
             let detailItem = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
             detailItem.isEnabled = false
-            menu.addItem(detailItem)
+            self.menu.addItem(detailItem)
         }
 
-        menu.addItem(.separator())
+        self.menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
             title: "Quit \(self.bundleDisplayName)",
@@ -60,9 +63,7 @@ final class StatusMenuController: NSObject {
             keyEquivalent: "q"
         )
         quitItem.target = self
-        menu.addItem(quitItem)
-
-        self.statusItem.menu = menu
+        self.menu.addItem(quitItem)
     }
 
     private func updateStatusButton() {
