@@ -13,6 +13,7 @@ public final class WendyAgent {
 
     private struct MainServerRuntime {
         let server: PosixGRPCServer
+        let task: Task<Void, Error>
     }
 
     private struct OTelServerRuntime {
@@ -31,7 +32,12 @@ public final class WendyAgent {
     }
 
     public func start() async throws {
-        guard self.runTask == nil else { return }
+        switch self.status {
+        case .idle, .stopped, .failed:
+            break
+        case .starting, .running, .stopping:
+            return
+        }
 
         Self.bootstrapLogging
         self.updateStatus(.starting)
@@ -53,12 +59,13 @@ public final class WendyAgent {
                 dockerAvailable: dockerAvailable,
                 broadcaster: broadcaster
             )
+            self.mainServerRuntime = mainServerRuntime
+
             let otelServerRuntime = try await self.startOTelServer(broadcaster: broadcaster)
             let bonjourRuntime = try await self.startBonjour()
 
             self.logger.info("Startup stage: service group creation")
             let serviceGroup = self.makeServiceGroup(
-                mainServerRuntime: mainServerRuntime,
                 otelServerRuntime: otelServerRuntime,
                 bonjourRuntime: bonjourRuntime
             )
@@ -94,16 +101,30 @@ public final class WendyAgent {
             return
         }
 
+        let mainServerRuntime = self.mainServerRuntime
+
         self.updateStatus(.stopping)
 
+        mainServerRuntime?.server.beginGracefulShutdown()
         await serviceGroup.triggerGracefulShutdown()
+
+        var shutdownError: (any Error)?
 
         do {
             try await runTask.value
-            self.finalizeRunTaskIfNeeded(runIdentifier: self.runIdentifier, error: nil)
         } catch {
-            self.finalizeRunTaskIfNeeded(runIdentifier: self.runIdentifier, error: error)
+            shutdownError = error
         }
+
+        if let mainServerRuntime {
+            do {
+                try await mainServerRuntime.task.value
+            } catch {
+                shutdownError = shutdownError ?? error
+            }
+        }
+
+        self.finalizeRunTaskIfNeeded(runIdentifier: self.runIdentifier, error: shutdownError)
     }
 
     public func observeStatus(
@@ -202,7 +223,24 @@ public final class WendyAgent {
             services: services
         )
 
-        return MainServerRuntime(server: server)
+        self.logger.info("Startup stage: main Wendy Agent gRPC server launch")
+        let task = Self.makeServeTask(server: server)
+
+        do {
+            if let address = try await server.listeningAddress {
+                self.logger.info("Startup stage complete: main Wendy Agent gRPC server listening", metadata: [
+                    "grpc_address": "\(address)"
+                ])
+            } else {
+                self.logger.info("Startup stage complete: main Wendy Agent gRPC server listening")
+            }
+
+            return MainServerRuntime(server: server, task: task)
+        } catch {
+            server.beginGracefulShutdown()
+            _ = try? await task.value
+            throw error
+        }
     }
 
     private func startOTelServer(
@@ -249,6 +287,11 @@ public final class WendyAgent {
     }
 
     private func rollback() async {
+        let mainServerRuntime = self.mainServerRuntime
+
+        mainServerRuntime?.server.beginGracefulShutdown()
+        _ = try? await mainServerRuntime?.task.value
+
         self.clearRuntimeState()
     }
 
@@ -263,14 +306,12 @@ public final class WendyAgent {
     }
 
     private func makeServiceGroup(
-        mainServerRuntime: MainServerRuntime,
         otelServerRuntime: OTelServerRuntime,
         bonjourRuntime: BonjourRuntime
     ) -> ServiceGroup {
         ServiceGroup(
             configuration: .init(
                 services: [
-                    .init(service: mainServerRuntime.server),
                     .init(service: otelServerRuntime.server),
                     .init(service: bonjourRuntime.advertiser),
                 ],
@@ -354,6 +395,12 @@ public final class WendyAgent {
     nonisolated private static func makeRunTask(serviceGroup: ServiceGroup) -> Task<Void, Error> {
         Task {
             try await serviceGroup.run()
+        }
+    }
+
+    nonisolated private static func makeServeTask(server: PosixGRPCServer) -> Task<Void, Error> {
+        Task {
+            try await server.serve()
         }
     }
 

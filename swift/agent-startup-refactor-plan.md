@@ -279,6 +279,20 @@ returns once the server is actually ready.
 - main server startup has a real readiness point
 - the helper can be used as one step in future sequential startup
 
+### Step 3 progress
+
+- `startMainServer(...)` now launches `server.serve()` in its own task,
+  awaits `server.listeningAddress`, and returns only after the main gRPC
+  listener has actually bound.
+- `MainServerRuntime` now retains both the `GRPCServer` instance and its
+  long-lived serve task so later steps can shut it down and monitor it
+  explicitly.
+- The main gRPC server is no longer started indirectly through the
+  `ServiceGroup`; the temporary `ServiceGroup` container now only carries
+  the not-yet-refactored OTel and Bonjour services.
+- Startup rollback and shutdown paths now gracefully stop the already
+  started main gRPC server instead of just dropping stored state.
+
 ### Handoff prompt for Step 4
 
 > Continue with Step 4 from `agent-startup-refactor-plan.md`.
