@@ -9,7 +9,7 @@ final class StatusMenuController: NSObject {
         self.wendyAgent = wendyAgent
         self.bundleDisplayName = AppDisplayName.resolve(from: bundle)
         self.currentStatus = wendyAgent.status
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
         self.statusObservation = self.wendyAgent.observeStatus { @MainActor [weak self] status in
@@ -73,7 +73,7 @@ final class StatusMenuController: NSObject {
 
         button.image = image
         button.title = self.buttonTitle(for: self.currentStatus, image: image)
-        button.imagePosition = image == nil ? .noImage : .imageOnly
+        button.imagePosition = self.buttonImagePosition(for: self.currentStatus, image: image)
         button.imageScaling = .scaleProportionallyDown
         button.toolTip = "\(self.bundleDisplayName) — \(self.currentStatus.menuTitle)"
         button.setAccessibilityTitle(self.bundleDisplayName)
@@ -87,11 +87,19 @@ final class StatusMenuController: NSObject {
         return image == nil ? "W" : ""
     }
 
-    private func makeButtonImage(for status: WendyAgentStatus) -> NSImage? {
-        if case .failed = status {
-            return nil
+    private func buttonImagePosition(for status: WendyAgentStatus, image: NSImage?) -> NSControl.ImagePosition {
+        guard image != nil else {
+            return .noImage
         }
 
+        if case .failed = status {
+            return .imageLeading
+        }
+
+        return .imageOnly
+    }
+
+    private func makeButtonImage(for status: WendyAgentStatus) -> NSImage? {
         if let image = NSImage(named: NSImage.Name("StatusIcon"))?.copy() as? NSImage {
             return image
         }
