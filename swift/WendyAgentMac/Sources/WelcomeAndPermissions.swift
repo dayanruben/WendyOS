@@ -7,7 +7,7 @@ import ServiceManagement
 
 @MainActor
 @Observable
-final class Onboarding: NSObject, CBCentralManagerDelegate {
+final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
     enum Permission: CaseIterable, Hashable {
         case bluetooth
         case camera
@@ -58,7 +58,7 @@ final class Onboarding: NSObject, CBCentralManagerDelegate {
 
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "sh.wendy.WendyAgentMac",
-        category: "Onboarding"
+        category: "WelcomeAndPermissions"
     )
 
     var launchAtLoginEnabled: Bool
@@ -82,7 +82,7 @@ final class Onboarding: NSObject, CBCentralManagerDelegate {
         self.refreshPermissionStatuses()
     }
 
-    var shouldShowOnboarding: Bool {
+    var shouldShowWelcomeAndPermissions: Bool {
         self.currentBluetoothStatus() == .pending
             || self.currentCameraStatus() == .pending
             || self.currentMicrophoneStatus() == .pending

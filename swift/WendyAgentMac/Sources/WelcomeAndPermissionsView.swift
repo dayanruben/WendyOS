@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-struct OnboardingView: View {
-    @Bindable var onboarding: Onboarding
+struct WelcomeAndPermissionsView: View {
+    @Bindable var welcomeAndPermissions: WelcomeAndPermissions
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -17,15 +17,15 @@ struct OnboardingView: View {
             Toggle(
                 "Open Wendy Agent automatically when you log in",
                 isOn: Binding(
-                    get: { self.onboarding.launchAtLoginEnabled },
-                    set: { self.onboarding.setLaunchAtLoginEnabled($0) }
+                    get: { self.welcomeAndPermissions.launchAtLoginEnabled },
+                    set: { self.welcomeAndPermissions.setLaunchAtLoginEnabled($0) }
                 )
             )
         }
         .padding(28)
         .frame(width: 620, alignment: .topLeading)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            self.onboarding.refresh()
+            self.welcomeAndPermissions.refresh()
         }
     }
 
@@ -50,7 +50,7 @@ struct OnboardingView: View {
 
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            ForEach(Onboarding.Permission.allCases, id: \.self) { permission in
+            ForEach(WelcomeAndPermissions.Permission.allCases, id: \.self) { permission in
                 self.permissionRow(permission)
             }
         }
@@ -62,8 +62,8 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder
-    private func permissionRow(_ permission: Onboarding.Permission) -> some View {
-        let status = self.onboarding.status(for: permission)
+    private func permissionRow(_ permission: WelcomeAndPermissions.Permission) -> some View {
+        let status = self.welcomeAndPermissions.status(for: permission)
 
         HStack(spacing: 12) {
             Image(systemName: permission.systemImage)
@@ -80,7 +80,7 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if self.onboarding.requestingPermission == permission {
+            if self.welcomeAndPermissions.requestingPermission == permission {
                 ProgressView()
                     .controlSize(.small)
                     .frame(minWidth: 72, alignment: .trailing)
@@ -92,26 +92,26 @@ struct OnboardingView: View {
 
     @ViewBuilder
     private func permissionAction(
-        status: Onboarding.PermissionStatus,
-        permission: Onboarding.Permission
+        status: WelcomeAndPermissions.PermissionStatus,
+        permission: WelcomeAndPermissions.Permission
     ) -> some View {
         switch status {
         case .pending:
             Button("Allow") {
                 Task { @MainActor in
-                    await self.onboarding.requestPermission(permission)
+                    await self.welcomeAndPermissions.requestPermission(permission)
                 }
             }
-            .disabled(self.onboarding.isWorking)
+            .disabled(self.welcomeAndPermissions.isWorking)
         case .allowed:
             Label("Allowed", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.subheadline)
         case .denied:
             Button("Open System Settings…") {
-                self.onboarding.openSystemSettings(for: permission)
+                self.welcomeAndPermissions.openSystemSettings(for: permission)
             }
-            .disabled(self.onboarding.isWorking)
+            .disabled(self.welcomeAndPermissions.isWorking)
         case .restricted:
             Label("Restricted", systemImage: "xmark.circle.fill")
                 .foregroundStyle(.red)
