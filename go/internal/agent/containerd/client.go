@@ -473,17 +473,17 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:wendy-agent:%s", appName)
 
+	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
+	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
+	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
+		c.applyCDIGPU(spec)
+	}
+
 	opts := localoci.ApplyOptions{
 		DBusProxyAvailable: c.proxyManager != nil,
 	}
 	if err := localoci.ApplyEntitlements(spec, appCfg, opts); err != nil {
 		return fmt.Errorf("applying entitlements: %w", err)
-	}
-
-	// If the app has a GPU entitlement, apply the NVIDIA CDI spec to get
-	// platform-correct library mounts (paths vary across Jetson models).
-	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
-		c.applyCDIGPU(spec)
 	}
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
