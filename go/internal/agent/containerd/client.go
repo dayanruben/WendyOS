@@ -528,8 +528,6 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 
 	// nvidia-ctk in CSV mode generates a device named "all".
 	// Try that first, then fall back to the first device in the spec.
-	// nvidia-ctk in CSV mode generates a device named "all".
-	// Try that first, then fall back to the first device in the spec.
 	if err := cdi.ApplyCDIDevice(spec, cdiSpec, "all"); err == nil {
 		c.logger.Info("Applied NVIDIA CDI spec for GPU access")
 		return
