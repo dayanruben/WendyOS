@@ -216,8 +216,8 @@ func TestBuildXcodeProject_CorrectFlags(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"-project":       xp,
-		"-configuration": "Release",
+		"-project":         xp,
+		"-configuration":   "Release",
 		"-derivedDataPath": ".xcode/",
 	}
 	for flag, val := range want {
