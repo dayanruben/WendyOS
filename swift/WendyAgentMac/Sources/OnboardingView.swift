@@ -3,7 +3,6 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Bindable var onboarding: Onboarding
-    let closeWindow: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -22,9 +21,6 @@ struct OnboardingView: View {
                     set: { self.onboarding.setLaunchAtLoginEnabled($0) }
                 )
             )
-
-            Spacer(minLength: 0)
-            self.footer
         }
         .padding(28)
         .frame(width: 620, height: 500)
@@ -63,23 +59,6 @@ struct OnboardingView: View {
             RoundedRectangle(cornerRadius: 14)
                 .fill(.quaternary.opacity(0.4))
         )
-    }
-
-    private var footer: some View {
-        HStack(spacing: 12) {
-            Button("Close") {
-                self.closeWindow()
-            }
-
-            Spacer()
-
-            Button("Finish") {
-                self.onboarding.finish()
-                self.closeWindow()
-            }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!self.onboarding.canFinish || self.onboarding.isWorking)
-        }
     }
 
     @ViewBuilder

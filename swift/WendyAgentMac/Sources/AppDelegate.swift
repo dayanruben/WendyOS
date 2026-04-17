@@ -74,10 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Stat
             return
         }
 
-        let rootView = OnboardingView(onboarding: self.onboarding) { [weak self] in
-            self?.closeOnboardingWindow()
-        }
-
+        let rootView = OnboardingView(onboarding: self.onboarding)
         let hostingController = NSHostingController(rootView: rootView)
 
         let onboardingWindow = NSWindow(
@@ -100,8 +97,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Stat
         onboardingWindow.makeKeyAndOrderFront(nil)
     }
 
-    private func closeOnboardingWindow() {
-        self.onboardingWindow?.close()
-        self.onboardingWindow = nil
-    }
 }

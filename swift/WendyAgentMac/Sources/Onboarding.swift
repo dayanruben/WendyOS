@@ -54,7 +54,6 @@ final class Onboarding: NSObject, CBCentralManagerDelegate {
         case restricted
     }
 
-    private static let completedOnboardingKey = "hasSeenOnboarding"
     private static let launchAtLoginEnabledKey = "launchAtLoginEnabled"
 
     private let logger = Logger(
@@ -84,7 +83,9 @@ final class Onboarding: NSObject, CBCentralManagerDelegate {
     }
 
     var shouldShowOnboarding: Bool {
-        !UserDefaults.standard.bool(forKey: Self.completedOnboardingKey)
+        self.currentBluetoothStatus() == .pending
+            || self.currentCameraStatus() == .pending
+            || self.currentMicrophoneStatus() == .pending
     }
 
     var canFinish: Bool {
@@ -141,10 +142,6 @@ final class Onboarding: NSObject, CBCentralManagerDelegate {
         case .microphone:
             return self.microphoneStatus
         }
-    }
-
-    func finish() {
-        UserDefaults.standard.set(true, forKey: Self.completedOnboardingKey)
     }
 
     func openSystemSettings(for permission: Permission) {
