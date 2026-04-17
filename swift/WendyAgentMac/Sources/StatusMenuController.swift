@@ -2,11 +2,22 @@ import AppKit
 import WendyAgentCore
 
 @MainActor
+protocol StatusMenuControllerDelegate: AnyObject {
+    func statusMenuControllerDidSelectWelcomeAndPermissions(_ controller: StatusMenuController)
+    func statusMenuControllerDidSelectQuit(_ controller: StatusMenuController)
+}
+
+@MainActor
 final class StatusMenuController: NSObject {
     let wendyAgent: WendyAgent
 
-    init(wendyAgent: WendyAgent, bundle: Bundle = .main) {
+    init(
+        wendyAgent: WendyAgent,
+        delegate: StatusMenuControllerDelegate? = nil,
+        bundle: Bundle = .main
+    ) {
         self.wendyAgent = wendyAgent
+        self.delegate = delegate
         self.bundleDisplayName = AppDisplayName.resolve(from: bundle)
         self.currentStatus = wendyAgent.status
         self.currentApps = wendyAgent.apps
@@ -28,6 +39,8 @@ final class StatusMenuController: NSObject {
         self.rebuildMenu()
     }
 
+    weak var delegate: StatusMenuControllerDelegate?
+
     private let bundleDisplayName: String
     private let statusItem: NSStatusItem
     private let menu: NSMenu
@@ -35,7 +48,6 @@ final class StatusMenuController: NSObject {
     private var currentApps: [WendyAppInfo]
     private var statusObservation: WendyObservation?
     private var appsObservation: WendyObservation?
-    private var isQuitting = false
 
     private var runningApps: [WendyAppInfo] {
         self.currentApps
@@ -68,6 +80,14 @@ final class StatusMenuController: NSObject {
         self.menu.addItem(.separator())
         self.addRunningAppsSection()
         self.menu.addItem(.separator())
+
+        let welcomeItem = NSMenuItem(
+            title: "Welcome & Permissions…",
+            action: #selector(self.welcomeAndPermissionsSelected),
+            keyEquivalent: ""
+        )
+        welcomeItem.target = self
+        self.menu.addItem(welcomeItem)
 
         let quitItem = NSMenuItem(
             title: "Quit \(self.bundleDisplayName)",
@@ -188,16 +208,18 @@ final class StatusMenuController: NSObject {
         return image
     }
 
+    func invalidate() async {
+        await self.cancelObservations()
+    }
+
+    @objc
+    private func welcomeAndPermissionsSelected() {
+        self.delegate?.statusMenuControllerDidSelectWelcomeAndPermissions(self)
+    }
+
     @objc
     private func quitSelected() {
-        guard !self.isQuitting else { return }
-        self.isQuitting = true
-
-        Task { @MainActor in
-            await self.cancelObservations()
-            await self.wendyAgent.stop()
-            NSApplication.shared.terminate(nil)
-        }
+        self.delegate?.statusMenuControllerDidSelectQuit(self)
     }
 
     private func cancelObservations() async {

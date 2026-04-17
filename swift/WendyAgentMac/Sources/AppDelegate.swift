@@ -1,26 +1,25 @@
 import AppKit
-import AVFoundation
-import CoreBluetooth
 import OSLog
-import ServiceManagement
+import SwiftUI
 import WendyAgentCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, CBCentralManagerDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, StatusMenuControllerDelegate {
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier!,
         category: "AppDelegate"
     )
     private let wendyAgent = WendyAgent()
-    private var statusMenuController: StatusMenuController!
-    private var bluetoothManager: CBCentralManager?
+    private let onboarding = Onboarding()
+    private var statusMenuController: StatusMenuController?
+    private var onboardingWindow: NSWindow?
+    private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        self.registerForLoginItems()
-        self.requestPermissions()
-
-        let statusMenuController = StatusMenuController(wendyAgent: self.wendyAgent)
-        self.statusMenuController = statusMenuController
+        self.statusMenuController = StatusMenuController(
+            wendyAgent: self.wendyAgent,
+            delegate: self
+        )
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -31,42 +30,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CBCentralManagerDelega
                 self.logger.error("Failed to start WendyAgent: \(String(describing: error), privacy: .public)")
             }
         }
-    }
 
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {}
-
-    private func registerForLoginItems() {
-        let loginItemService = SMAppService.mainApp
-
-        do {
-            switch loginItemService.status {
-            case .enabled:
-                self.logger.info("Wendy Agent is already configured to launch at login")
-            case .notRegistered, .requiresApproval, .notFound:
-                try loginItemService.register()
-
-                switch loginItemService.status {
-                case .enabled:
-                    self.logger.info("Configured Wendy Agent to launch at login")
-                case .requiresApproval:
-                    self.logger.notice("Wendy Agent launch at login requires user approval in System Settings")
-                case .notRegistered, .notFound:
-                    self.logger.warning("Wendy Agent launch at login registration did not complete; status: \(String(describing: loginItemService.status), privacy: .public)")
-                @unknown default:
-                    self.logger.warning("Wendy Agent launch at login registration returned an unknown status")
-                }
-            @unknown default:
-                try loginItemService.register()
-                self.logger.info("Configured Wendy Agent to launch at login")
-            }
-        } catch {
-            self.logger.error("Failed to configure Wendy Agent to launch at login: \(String(describing: error), privacy: .public)")
+        if self.onboarding.shouldShowOnboarding {
+            self.showOnboardingWindow()
         }
     }
 
-    private func requestPermissions() {
-        self.bluetoothManager = CBCentralManager(delegate: self, queue: nil)
-        AVCaptureDevice.requestAccess(for: .video) { _ in }
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+    func statusMenuControllerDidSelectWelcomeAndPermissions(_ controller: StatusMenuController) {
+        self.showOnboardingWindow()
+    }
+
+    func statusMenuControllerDidSelectQuit(_ controller: StatusMenuController) {
+        guard !self.isQuitting else { return }
+        self.isQuitting = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            await self.statusMenuController?.invalidate()
+            await self.wendyAgent.stop()
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === self.onboardingWindow
+        else {
+            return
+        }
+
+        self.onboardingWindow = nil
+    }
+
+    private func showOnboardingWindow() {
+        self.onboarding.prepareForPresentation()
+
+        if let onboardingWindow = self.onboardingWindow {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            onboardingWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let rootView = OnboardingView(onboarding: self.onboarding) { [weak self] in
+            self?.closeOnboardingWindow()
+        }
+
+        let hostingController = NSHostingController(rootView: rootView)
+
+        let onboardingWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 500),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+
+        onboardingWindow.title = "Welcome to \(AppDisplayName.current)"
+        onboardingWindow.contentViewController = hostingController
+        onboardingWindow.delegate = self
+        onboardingWindow.center()
+        onboardingWindow.isReleasedWhenClosed = false
+
+        self.onboardingWindow = onboardingWindow
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        onboardingWindow.makeKeyAndOrderFront(nil)
+    }
+
+    private func closeOnboardingWindow() {
+        self.onboardingWindow?.close()
+        self.onboardingWindow = nil
     }
 }
