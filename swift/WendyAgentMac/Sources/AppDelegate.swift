@@ -89,6 +89,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Stat
         onboardingWindow.delegate = self
         onboardingWindow.isReleasedWhenClosed = false
 
+        if let closeButton = onboardingWindow.standardWindowButton(.closeButton) {
+            closeButton.keyEquivalent = "w"
+            closeButton.keyEquivalentModifierMask = [.command]
+        }
+
         self.onboardingWindow = onboardingWindow
 
         self.sizeOnboardingWindowToFit(onboardingWindow)
