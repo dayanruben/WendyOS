@@ -320,6 +320,26 @@ func (c *Client) CreateContainer(ctx context.Context, req *agentpb.CreateContain
 	return c.CreateContainerWithProgress(ctx, req, appCfg, nil)
 }
 
+func toCreateContainerProgress(progress UnpackProgress) *agentpb.CreateContainerProgress {
+	switch progress.Phase {
+	case "start":
+		return &agentpb.CreateContainerProgress{
+			Phase:       agentpb.CreateContainerProgress_UNPACKING,
+			TotalLayers: int32(progress.TotalLayers),
+		}
+	case "layer":
+		return &agentpb.CreateContainerProgress{
+			Phase:          agentpb.CreateContainerProgress_APPLYING_LAYER,
+			LayerIndex:     int32(progress.LayerIndex),
+			TotalLayers:    int32(progress.TotalLayers),
+			LayerSize:      progress.LayerSize,
+			ReusedSnapshot: progress.Reused,
+		}
+	default:
+		return nil
+	}
+}
+
 func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress services.ProgressFunc) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -413,7 +433,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	if !unpacked {
 		c.logger.Info("Unpacking image", zap.String("image", imageName))
-		if err := image.Unpack(ctx, ""); err != nil {
+		if _, err := c.UnpackImage(ctx, imageName, func(progress UnpackProgress) {
+			if mapped := toCreateContainerProgress(progress); mapped != nil {
+				report(mapped)
+			}
+		}); err != nil {
 			return fmt.Errorf("unpacking image %q: %w", imageName, err)
 		}
 	}
