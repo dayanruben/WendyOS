@@ -3,6 +3,7 @@ import SwiftUI
 
 struct WelcomeAndPermissionsView: View {
     @Bindable var welcomeAndPermissions: WelcomeAndPermissions
+    let onPermissionRequestCompleted: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -100,6 +101,7 @@ struct WelcomeAndPermissionsView: View {
             Button("Allow") {
                 Task { @MainActor in
                     await self.welcomeAndPermissions.requestPermission(permission)
+                    self.onPermissionRequestCompleted()
                 }
             }
             .disabled(self.welcomeAndPermissions.isWorking)
