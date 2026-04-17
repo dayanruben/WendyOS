@@ -15,6 +15,7 @@ type ProgressUpdateMsg struct {
 	Percent float64
 	Written int64
 	Total   int64
+	Title   string
 }
 
 // ProgressDoneMsg signals that the progress operation is complete.
@@ -63,6 +64,9 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.percent = msg.Percent
 		m.written = msg.Written
 		m.total = msg.Total
+		if msg.Title != "" {
+			m.title = msg.Title
+		}
 		cmd := m.progress.SetPercent(msg.Percent)
 		return m, cmd
 
