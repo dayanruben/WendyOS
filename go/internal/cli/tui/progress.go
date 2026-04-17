@@ -100,7 +100,11 @@ func (m ProgressModel) View() string {
 
 	if m.done && m.err != nil {
 		if !m.showErr {
-			return fmt.Sprintf("%s\n%s%s\n", m.title, m.progress.ViewAs(m.percent), byteInfo)
+			percent := m.percent
+			if percent >= 1.0 {
+				percent = 0.99
+			}
+			return fmt.Sprintf("%s (failed)\n%s%s\n", m.title, m.progress.ViewAs(percent), byteInfo)
 		}
 		return fmt.Sprintf("Error: %v\n", m.err)
 	}
