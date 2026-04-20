@@ -241,7 +241,6 @@ jobs:
             Then commit and push the changes.`
             });
 
-      - name: Temporary formatting gate disable notice
+      - name: Fail workflow on format issues
         if: steps.format_check.outputs.exit_code != '0'
-        run: |
-          echo "::warning::Swift format issues detected, but this check is temporarily non-blocking so the macOS CI PR can land. We will re-enable this shortly in a follow-up PR."
+        run: exit 1
