@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -188,16 +189,19 @@ func applyWendyConf(logger *zap.Logger, cfgDir string) {
 
 	sections := parseINI(data)
 
-	wifi := sections["wifi"]
-	ssid := wifi["ssid"]
-	if ssid == "" {
-		logger.Warn("wendy.conf [wifi] section has no ssid, skipping WiFi provisioning")
-	} else {
-		if err := network.Connect(context.Background(), ssid, wifi["password"]); err != nil {
-			logger.Error("Failed to connect to WiFi from config partition",
-				zap.String("ssid", ssid), zap.Error(err))
+	if wifi, ok := sections["wifi"]; ok {
+		ssid := wifi["ssid"]
+		if ssid == "" {
+			logger.Warn("wendy.conf [wifi] section has no ssid, skipping WiFi provisioning")
 		} else {
-			logger.Info("Connected to WiFi from config partition", zap.String("ssid", ssid))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := network.Connect(ctx, ssid, wifi["password"]); err != nil {
+				logger.Error("Failed to connect to WiFi from config partition",
+					zap.String("ssid", ssid), zap.Error(err))
+			} else {
+				logger.Info("Connected to WiFi from config partition", zap.String("ssid", ssid))
+			}
 		}
 	}
 

@@ -59,8 +59,8 @@ Flags can be provided progressively — omitted values trigger interactive picke
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Positional direct-install mode is incompatible with manifest-backed flags.
-			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "") {
-				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, or --drive")
+			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || deviceName != "") {
+				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, or --device-name")
 			}
 
 			// --nightly and --version are mutually exclusive.
