@@ -41,7 +41,7 @@ jobs:
           fi
 
   test:
-    name: Test
+    name: Run WendyAgentCore Tests
     runs-on: [self-hosted, macOS]
     needs: [changes]
     if: needs.changes.outputs.swift == 'true'
@@ -81,7 +81,7 @@ jobs:
           swift test
 
   build:
-    name: Build
+    name: Build WendyAgentMac App
     runs-on: [self-hosted, macOS]
     needs: [changes]
     if: needs.changes.outputs.swift == 'true'
@@ -154,7 +154,7 @@ jobs:
             -skipMacroValidation
 
   lint:
-    name: Lint
+    name: Lint Swift Sources
     runs-on: ubuntu-latest
     container: swift:6.2.3
     needs: [changes]
