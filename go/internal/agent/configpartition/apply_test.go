@@ -260,13 +260,13 @@ func TestValidDeviceName(t *testing.T) {
 
 	invalid := []string{
 		"",
-		"ab",                            // too short
-		"1abc",                          // starts with digit
-		"-abc",                          // starts with hyphen
-		"ABC",                           // uppercase
-		"has space",                     // space
-		strings.Repeat("a", 65),         // too long
-		"valid_but_underscore",          // underscore not allowed
+		"ab",                    // too short
+		"1abc",                  // starts with digit
+		"-abc",                  // starts with hyphen
+		"ABC",                   // uppercase
+		"has space",             // space
+		strings.Repeat("a", 65), // too long
+		"valid_but_underscore",  // underscore not allowed
 	}
 	for _, name := range invalid {
 		if validDeviceName(name) {
