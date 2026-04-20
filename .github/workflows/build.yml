@@ -135,7 +135,7 @@ jobs:
           echo "archive=$ARCHIVE" >> $GITHUB_ENV
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -185,7 +185,7 @@ jobs:
           echo "archive=$ARCHIVE" >> $GITHUB_ENV
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.archive }}
           path: ${{ env.archive }}
@@ -396,14 +396,14 @@ jobs:
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/avahi/services/wendy-agent.service" > /dev/null
 
       - name: Upload .deb packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-packages-deb-${{ matrix.arch }}
           path: "*.deb"
           retention-days: 14
 
       - name: Upload .rpm packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-packages-rpm-${{ matrix.arch }}
           path: "*.rpm"
@@ -457,7 +457,7 @@ jobs:
             go/installer/windows/wendy.wxs
 
       - name: Upload MSI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.msi
           path: "wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.msi"
