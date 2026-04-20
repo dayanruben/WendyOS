@@ -709,9 +709,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	platform := "linux/" + architecture
 	deviceType := versionResp.GetDeviceType()
 	buildArgs := map[string]string{
-		"WENDY_DEVICE_TYPE": deviceType,
-		"WENDY_PLATFORM":    wendyPlatform(deviceType),
-		"WENDY_DEBUG":       fmt.Sprintf("%t", opts.debug),
+		"WENDY_PLATFORM": wendyPlatform(deviceType),
+		"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
+	}
+	// Only set WENDY_DEVICE_TYPE when the agent reports it, so Dockerfiles can
+	// apply their own default on older agents where the field is empty.
+	if deviceType != "" {
+		buildArgs["WENDY_DEVICE_TYPE"] = deviceType
 	}
 
 	// Verify auth certs are available if the device's registry requires mTLS.

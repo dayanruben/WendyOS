@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -793,8 +794,15 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		"--cache-from", "type=local,src=" + cacheDir,
 		"--cache-to", "type=local,dest=" + cacheDir,
 	}
-	for k, v := range buildArgs {
-		args = append(args, "--build-arg", k+"="+v)
+	// Sort keys so the argument order is stable across runs, which keeps
+	// build logs reproducible and avoids flakiness in tests that assert args.
+	keys := make([]string, 0, len(buildArgs))
+	for k := range buildArgs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
 	args = append(args,
 		"--output", "type=image,name="+registryImage+",push=true",
