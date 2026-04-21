@@ -101,29 +101,25 @@ type gpuInfo struct {
 func detectGPUInfo() gpuInfo {
 	info := gpuInfo{}
 
-	// Check for NVIDIA GPU via device node.
-	if _, err := os.Stat("/dev/nvidia0"); err == nil {
+	// /etc/nv_tegra_release is the definitive indicator of an NVIDIA Tegra/Jetson
+	// device. Check it first because /dev/nvidia0 is absent on many Jetson configs
+	// where the GPU is an integrated Tegra (e.g. JetPack 5/6 on Orin).
+	if data, err := os.ReadFile("/etc/nv_tegra_release"); err == nil {
+		info.hasGPU = true
+		info.vendor = "nvidia"
+		info.tegraRelease = strings.TrimSpace(string(data))
+	} else if _, err := os.Stat("/dev/nvidia0"); err == nil {
+		// Discrete NVIDIA GPU (no Tegra release file).
 		info.hasGPU = true
 		info.vendor = "nvidia"
 	} else if entries, _ := os.ReadDir("/dev/dri"); len(entries) > 0 {
+		// Generic GPU via DRM — vendor unknown.
 		info.hasGPU = true
 	}
 
-	if !info.hasGPU {
-		return info
+	if info.vendor == "nvidia" {
+		info.cudaVersion = detectCUDAVersion()
 	}
-
-	if info.vendor != "nvidia" {
-		return info
-	}
-
-	// Read NVIDIA Tegra release info.
-	if data, err := os.ReadFile("/etc/nv_tegra_release"); err == nil {
-		info.tegraRelease = strings.TrimSpace(string(data))
-	}
-
-	// Detect CUDA version from the version file or nvcc.
-	info.cudaVersion = detectCUDAVersion()
 
 	return info
 }
