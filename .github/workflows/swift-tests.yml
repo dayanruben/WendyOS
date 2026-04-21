@@ -64,8 +64,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            swift/WendyAgentCore/.build/checkouts
-            swift/WendyAgentCore/.build/repositories
+            swift/Build/SwiftPM/checkouts
+            swift/Build/SwiftPM/repositories
             ~/Library/Caches/org.swift.swiftpm
             ~/.cache/org.swift.swiftpm
           key: swiftpm-${{ runner.os }}-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/WendyAgentCore/Package.resolved') }}
