@@ -235,7 +235,7 @@ jobs:
           SIGNING_IDENTITY: ${{ steps.signing.outputs.signing_identity }}
           NOTARY_PROFILE: ${{ steps.signing.outputs.notary_profile }}
         shell: bash
-        run: bash ./Scripts/ReleaseMacApp.sh
+        run: bash ./Scripts/Build.sh
 
       - name: Upload notarized app bundle
         uses: actions/upload-artifact@v4

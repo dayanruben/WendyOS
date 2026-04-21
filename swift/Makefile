@@ -4,7 +4,7 @@ SHELL := /bin/bash
 
 SWIFT_FORMAT_TARGETS := WendyAgentCore/Sources WendyAgentCore/Tests WendyAgentMac/Sources
 
-.PHONY: help format lint test proto release-mac-app reset-mac-app-settings reset-mac-app-tcc reset-mac-app clean
+.PHONY: help format lint test proto build reset-mac-app-settings reset-mac-app-tcc reset-mac-app clean
 
 help: ## Show this help message
 	@echo 'Usage:'
@@ -28,8 +28,8 @@ proto: ## Generate Swift gRPC code from Proto/
 clean: ## Remove Build/
 	rm -rf Build/
 
-release-mac-app: ## Build, sign, notarize, and package the macOS app
-	VERSION='$(VERSION)' OUTPUT_DIR='$(OUTPUT_DIR)' bash ./Scripts/ReleaseMacApp.sh
+build: ## Build, sign, notarize, and package the macOS app
+	VERSION='$(VERSION)' OUTPUT_DIR='$(OUTPUT_DIR)' bash ./Scripts/Build.sh
 
 reset-mac-app-settings: ## Reset WendyAgentMac preferences/defaults
 	./Scripts/ResetMacAppSettings.sh
