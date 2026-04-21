@@ -276,7 +276,9 @@ jobs:
 
   integration-test-gpu:
     name: Integration (GPU)
-    runs-on: [self-hosted, wendy-agent, gpu]
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64]
     concurrency:
       group: integration-hw-gpu
       cancel-in-progress: false
@@ -303,13 +305,40 @@ jobs:
       - name: Build CLI
         run: make build-cli
 
+      - name: Prepare Docker
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            echo "Docker not available, starting Colima..."
+            colima start
+            until docker info >/dev/null 2>&1; do sleep 2; done
+          else
+            echo "Docker already available, skipping Colima restart"
+          fi
+          docker buildx rm wendy --force 2>/dev/null || true
+          docker system prune -f 2>/dev/null || true
+
       - name: Run GPU integration test
         run: |
-          ARGS="-w ./bin/wendy -t python-gpu"
+          WORKDIR="$(pwd)"
+          SSH_ENV="export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}'"
+          SSH="ssh -o StrictHostKeyChecking=no localhost"
+
           if [[ -n "$INPUT_HOSTNAME" ]]; then
-            ARGS="$ARGS -h $INPUT_HOSTNAME"
+            DEVICE="$INPUT_HOSTNAME"
+          else
+            echo "==> Discovering LAN devices..."
+            DISCOVER_JSON=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy discover --json --timeout 10s" 2>/tmp/wendy-discover-stderr.txt)
+            cat /tmp/wendy-discover-stderr.txt >&2 || true
+            DEVICE=$(echo "$DISCOVER_JSON" | jq -r '.lanDevices[] | select(.capabilities.gpu == true) | .hostname' 2>/dev/null | head -1)
+            if [[ -z "$DEVICE" ]]; then
+              echo "ERROR: No GPU-capable device found via wendy discover"
+              exit 1
+            fi
+            echo "==> Found GPU device: $DEVICE"
           fi
-          scripts/test-ci.sh $ARGS
+
+          $SSH "$SSH_ENV && cd '$WORKDIR' && scripts/test-ci.sh -w ./bin/wendy -t python-gpu -h '$DEVICE'"
+          docker buildx rm wendy --force 2>/dev/null || true
 
       - name: Cleanup
         if: always()
