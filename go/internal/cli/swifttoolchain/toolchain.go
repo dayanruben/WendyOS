@@ -15,15 +15,15 @@ import (
 )
 
 const (
-	DefaultVersion   = "6.3"
-	WendySDKRelease  = "0.4.0"
+	DefaultVersion   = "6.3.1"
+	WendySDKRelease  = "6.3.1-RELEASE"
 	WasmTargetTriple = "wasm32-unknown-none-wasm"
-	wasmSDKChecksum  = "394040ecd5260e68bb02f6c20aeede733b9b90702c2204e178f3e42413edad2a"
+	wasmSDKChecksum  = "bd47baa20771f366d8beed7970afaa30742b2210097afd15f85427226d8f4cf2"
 )
 
 var wendySDKChecksums = map[string]string{
-	"x86_64":  "b5a4d08ad4d4841043727f6671c6aa004da3a2b7f12dc28101d6770c1dc57eb1",
-	"aarch64": "ef8fa5a2eda766e3b1df791dc175bbf87f570b9cc6f95ada1fe7643a327e087e",
+	"x86_64":  "982bb4f1a3632e628d63cf5f7478e7ec12264dd13755b709f6dd40853b56ab92",
+	"aarch64": "506a6f002f3c434af79fb1396c3e13adbd18d8e2b294c7627b93d6fc51f29a34",
 }
 
 var ErrUserCancelled = errors.New("cancelled")

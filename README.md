@@ -56,7 +56,7 @@ go build -o wendy-agent ./cmd/wendy-agent
 
 ### Agent (Swift)
 
-The wendy-agent requires **Swift 6.3** or later. On macOS, install Swift 6.3 via Swiftly or use Xcode with a Swift 6.3 toolchain.
+The wendy-agent requires **Swift 6.3.1** or later. On macOS, install Swift 6.3.1 via Swiftly or use Xcode with a Swift 6.3.1 toolchain.
 
 ### Local Developer Tip
 

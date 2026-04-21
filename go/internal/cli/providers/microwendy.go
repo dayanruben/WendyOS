@@ -25,8 +25,8 @@ const (
 
 	// Currently supported SDK for WASI on Wendy Lite.
 	// This also works for older projects that expected to build for wasm32-unknown-none-wasm
-	microWendySwiftVersion = "6.3"
-	microWendySwiftSDK     = "swift-6.3-RELEASE_wasm-embedded"
+	microWendySwiftVersion = "6.3.1"
+	microWendySwiftSDK     = "swift-6.3.1-RELEASE_wasm-embedded"
 	microWendySwiftTarget  = "wasm32-unknown-wasip1"
 	microWendyInstallGrace = 3 * time.Second
 )
@@ -133,6 +133,11 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 	binDir := strings.TrimSpace(string(out))
 	if binDir == "" {
 		return nil, fmt.Errorf("swift build --show-bin-path returned an empty path for %s", product)
+	}
+
+	config := "debug"
+	if !debug {
+		config = "release"
 	}
 
 	wasmPath := filepath.Join(projectPath, ".build", swifttoolchain.WasmTargetTriple, config, product+".wasm")
