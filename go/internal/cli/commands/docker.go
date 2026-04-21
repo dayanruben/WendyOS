@@ -953,6 +953,21 @@ func registryHost(host string, port int) string {
 func resolveRegistry(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), err error) {
 	resolved := resolveRegistryIP(host)
 
+	// On Linux, buildkitd uses host networking (--driver-opt network=host) and
+	// can reach LAN devices directly. No proxy needed, and host.docker.internal
+	// does not exist on Linux.
+	if runtime.GOOS == "linux" {
+		addr := resolved
+		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
+			addr = "[" + addr + "]"
+		}
+		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
+	}
+
+	// On macOS, buildkitd runs inside the Colima VM and cannot reach LAN devices
+	// directly. Proxy through host.docker.internal so the VM reaches the macOS host,
+	// which then forwards to the device.
+	//
 	// For link-local addresses (USB devices), dial via the original hostname so
 	// the host's resolver supplies the zone ID needed for link-local routing.
 	// For routable LAN addresses, dial the resolved IP directly.
