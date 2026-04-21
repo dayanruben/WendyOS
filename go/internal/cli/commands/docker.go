@@ -458,15 +458,21 @@ func installWasmSwiftSDK() error {
 // returned immediately. When multiple candidates exist and interactive is true
 // a picker is shown; otherwise an error is returned.
 func findSwiftProduct(dir, productOverride string, interactive bool) (string, error) {
+	var stderr bytes.Buffer
 	if productOverride != "" {
 		return productOverride, nil
 	}
 
 	cmd := exec.Command("swiftly", "run", "+"+defaultSwiftVersion, "swift", "package", "dump-package")
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("swift package dump-package failed: %s: %w", strings.TrimSpace(string(out)), err)
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(string(out))
+		}
+		return "", fmt.Errorf("swift package dump-package failed: %s: %w", errMsg, err)
 	}
 
 	// dump-package product type is a JSON object whose key names the kind:
@@ -633,9 +639,12 @@ func removeBuilder(ctx context.Context, name string) {
 // docker cp (not --buildkitd-config) to avoid the host-side TOML parser which
 // cannot handle IPv6 brackets in registry addresses.
 func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string) (string, error) {
-	const builderName = "wendy"
+	builderName := os.Getenv("WENDY_BUILDX_BUILDER")
+	if builderName == "" {
+		builderName = "wendy"
+	}
 
-	appliedPath := filepath.Join(configDir, "buildkitd.applied")
+	appliedPath := filepath.Join(configDir, builderName+".applied")
 
 	fullConfig := buildkitRegistryConfig(registryAddr, true, nil)
 
@@ -659,23 +668,47 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 		}
+		configChanged = true // always inject config into a newly created builder
 	}
 
-	// Inject the real config into the builder container and restart.
-	if err := updateBuilderConfig(ctx, builderName, fullConfig); err != nil {
-		return "", fmt.Errorf("updating builder config: %w", err)
+	// Inject the real config into the builder container and restart only when needed.
+	// Also re-inject if the container was destroyed (e.g. after colima restart) or
+	// was bootstrapped without config injection (default buildkitd.toml lacks http=true).
+	containerName := "buildx_buildkit_" + builderName + "0"
+
+	// Read the config currently applied inside the running container (if any).
+	var liveContainerConfig string
+	if out, err := exec.CommandContext(ctx, "docker", "exec", containerName,
+		"cat", "/etc/buildkit/buildkitd.toml").Output(); err == nil {
+		liveContainerConfig = string(out)
 	}
 
-	_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
+	if configChanged || liveContainerConfig != fullConfig {
+		if err := updateBuilderConfig(ctx, builderName, fullConfig); err != nil {
+			return "", fmt.Errorf("updating builder config: %w", err)
+		}
+		_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
+	} else {
+		// Builder exists with correct config — just ensure it's running.
+		bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+		if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
+		}
+	}
+
 	return builderName, nil
 }
 
 // ensureMTLSBuilder ensures the "wendy-mtls" buildx builder exists with mTLS
 // client certs for the device registry.
 func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string) (string, error) {
-	const builderName = "wendy-mtls"
+	base := os.Getenv("WENDY_BUILDX_BUILDER")
+	if base == "" {
+		base = "wendy"
+	}
+	builderName := base + "-mtls"
 
-	appliedPath := filepath.Join(configDir, "buildkitd-mtls.applied")
+	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
 
 	certInfo := loadCLICert()
 	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {
@@ -771,11 +804,12 @@ func copyCertsToBuilder(ctx context.Context, builderName, hostCertDir, container
 // running), writes a new buildkitd.toml into it, and restarts so the updated
 // configuration takes effect.
 func updateBuilderConfig(ctx context.Context, builderName, config string) error {
-	// Bootstrap the builder to ensure the container is running.
+	fmt.Fprintf(os.Stderr, "[buildx] bootstrapping builder %q\n", builderName)
 	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
 	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 	}
+	fmt.Fprintf(os.Stderr, "[buildx] bootstrap done\n")
 
 	containerName := "buildx_buildkit_" + builderName + "0"
 	const containerConfigPath = "/etc/buildkit/buildkitd.toml"
@@ -793,16 +827,42 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 	}
 	tmp.Close()
 
+	fmt.Fprintf(os.Stderr, "[buildx] copying config into container %q\n", containerName)
 	cmd := exec.CommandContext(ctx, "docker", "cp", tmp.Name(), containerName+":"+containerConfigPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("docker cp config: %s: %w", string(out), err)
 	}
 
-	// Restart the container so buildkitd reloads the config.
+	// Inject a clean Docker config without credsStore so buildkitd (running on
+	// Linux inside Colima) does not call docker-credential-osxkeychain, which
+	// is a macOS binary that does not exist on Linux and causes "signal: killed"
+	// errors when pulling public base images (e.g. python:3.11-slim).
+	fmt.Fprintf(os.Stderr, "[buildx] injecting clean docker config into container %q\n", containerName)
+	injectCmd := exec.CommandContext(ctx, "docker", "exec", containerName,
+		"sh", "-c", `mkdir -p /root/.docker && printf '{"auths":{}}' > /root/.docker/config.json`)
+	if out, err := injectCmd.CombinedOutput(); err != nil {
+		// Non-fatal: log the error but proceed. The credential helper may still
+		// fail for private images, but public images will work without credentials.
+		fmt.Fprintf(os.Stderr, "[buildx] warning: could not inject docker config: %s\n", string(out))
+	} else {
+		fmt.Fprintf(os.Stderr, "[buildx] docker config injected\n")
+	}
+
+	fmt.Fprintf(os.Stderr, "[buildx] restarting container %q\n", containerName)
 	cmd = exec.CommandContext(ctx, "docker", "restart", containerName)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restarting builder: %s: %w", string(out), err)
 	}
+	fmt.Fprintf(os.Stderr, "[buildx] container restarted, waiting for buildkitd\n")
+
+	bootstrapAfterRestart := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+	if out, err := bootstrapAfterRestart.CombinedOutput(); err != nil {
+		return fmt.Errorf("waiting for builder after restart: %s: %w", string(out), err)
+	}
+	fmt.Fprintf(os.Stderr, "[buildx] buildkitd ready, sleeping 3s to stabilize proxy\n")
+
+	time.Sleep(3 * time.Second)
+	fmt.Fprintf(os.Stderr, "[buildx] builder ready\n")
 
 	return nil
 }
@@ -831,6 +891,38 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
 
+	// Use a clean Docker config without a credsStore credential helper.
+	// On macOS, the default config has "credsStore":"osxkeychain". When
+	// docker buildx forwards credentials to buildkitd via the build session,
+	// it calls the credential helper on the host. In CI (launchd agent context),
+	// the Keychain is inaccessible and the helper is killed → "signal: killed".
+	// Public images (e.g. python:3.11-slim) need no credentials; anonymous
+	// pull works fine with an empty auths map.
+	//
+	// We only replace config.json; everything else (cli-plugins, buildx builder
+	// instances, contexts) is symlinked from the original Docker config so that
+	// buildx and the "wendy" builder remain discoverable.
+	origDockerConfig := os.Getenv("DOCKER_CONFIG")
+	if origDockerConfig == "" {
+		origDockerConfig = filepath.Join(home, ".docker")
+	}
+	cleanDockerConfigDir := filepath.Join(home, ".cache", "wendy", "docker-config")
+	if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
+		return fmt.Errorf("creating clean docker config directory: %w", err)
+	}
+	cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
+	if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
+		return fmt.Errorf("writing clean docker config: %w", err)
+	}
+	// Symlink subdirs that docker/buildx need to find plugins and builder state.
+	for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
+		dst := filepath.Join(cleanDockerConfigDir, subdir)
+		if _, err := os.Lstat(dst); err != nil {
+			// best-effort: ignore if source doesn't exist or symlink fails
+			_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
+		}
+	}
+
 	args := []string{
 		"buildx", "build",
 		"--builder", builder,
@@ -853,10 +945,21 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	)
 
+	fmt.Fprintf(os.Stderr, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout = streamOutput
 	cmd.Stderr = streamOutput
+	// Override DOCKER_CONFIG so the buildx client does not call the host
+	// credential helper (osxkeychain) when setting up the build session.
+	// Filter any existing DOCKER_CONFIG first so our value takes effect.
+	baseEnv := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
+			baseEnv = append(baseEnv, e)
+		}
+	}
+	cmd.Env = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker buildx build failed: %w", err)
@@ -884,26 +987,44 @@ func registryHost(host string, port int) string {
 }
 
 // resolveRegistry determines how to reach the device registry from Docker buildx.
-// For routable addresses it returns the direct registry address. For link-local
-// addresses (common with USB-connected devices) it starts a TCP proxy on the
-// host and returns host.docker.internal:<port> so the Docker Desktop VM can push
-// through it — link-local addresses cannot be routed from inside the VM.
+// Buildkitd runs inside the Docker VM (Colima/Docker Desktop) and cannot reach
+// LAN devices directly — only the macOS host can. We always proxy through
+// host.docker.internal so buildkitd can push via the host regardless of whether
+// the address is link-local or a routable LAN IP.
 //
 // The returned cleanup function MUST be called when the build is complete to
 // stop the proxy and release the port.
 func resolveRegistry(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), err error) {
 	resolved := resolveRegistryIP(host)
-	if !isLinkLocalIP(resolved) {
-		return registryHost(host, port), func() {}, nil
+
+	// On Linux, buildkitd uses host networking (--driver-opt network=host) and
+	// can reach LAN devices directly. No proxy needed, and host.docker.internal
+	// does not exist on Linux.
+	if runtime.GOOS == "linux" {
+		addr := resolved
+		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
+			addr = "[" + addr + "]"
+		}
+		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
 	}
 
-	// Link-local address — Docker's VM cannot reach it directly.
-	// Dial via the original hostname so the host's resolver provides the
-	// zone ID (interface scope) needed for link-local routing.
-	target := net.JoinHostPort(host, strconv.Itoa(port))
+	// On macOS, buildkitd runs inside the Colima VM and cannot reach LAN devices
+	// directly. Proxy through host.docker.internal so the VM reaches the macOS host,
+	// which then forwards to the device.
+	//
+	// For link-local addresses (USB devices), dial via the original hostname so
+	// the host's resolver supplies the zone ID needed for link-local routing.
+	// For routable LAN addresses, dial the resolved IP directly.
+	var target string
+	if isLinkLocalIP(resolved) {
+		target = net.JoinHostPort(host, strconv.Itoa(port))
+	} else {
+		target = net.JoinHostPort(resolved, strconv.Itoa(port))
+	}
+
 	proxy, err := startRegistryProxy(ctx, target)
 	if err != nil {
-		return "", nil, fmt.Errorf("starting registry proxy for link-local device: %w", err)
+		return "", nil, fmt.Errorf("starting registry proxy: %w", err)
 	}
 
 	registryAddr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
