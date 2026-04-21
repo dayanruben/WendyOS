@@ -2,6 +2,7 @@ package swifttoolchain
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -107,5 +108,32 @@ func TestEnsureSwiftVersion_Cancellation(t *testing.T) {
 	err := EnsureSwiftVersion(ctx, io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("EnsureSwiftVersion() expected error on cancelled context, got nil")
+	}
+}
+
+func TestFindSwiftSDK_AlreadyInstalled(t *testing.T) {
+	original := execCommandContext
+	t.Cleanup(func() { execCommandContext = original })
+
+	installedSDK := fmt.Sprintf("%s-RELEASE_wendyos_aarch64", DefaultVersion)
+	var calls [][]string
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		calls = append(calls, append([]string{name}, args...))
+		return exec.CommandContext(ctx, "echo", installedSDK)
+	}
+
+	got, err := FindSwiftSDK(context.Background(), "arm64", io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("FindSwiftSDK() unexpected error: %v", err)
+	}
+	if got != installedSDK {
+		t.Fatalf("expected SDK %q, got %q", installedSDK, got)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 command (sdk list), got %d: %v", len(calls), calls)
+	}
+	if calls[0][0] != "swiftly" || calls[0][1] != "run" || calls[0][2] != "+"+DefaultVersion || calls[0][3] != "swift" || calls[0][4] != "sdk" || calls[0][5] != "list" {
+		t.Fatalf("unexpected command: %v", calls[0])
 	}
 }
