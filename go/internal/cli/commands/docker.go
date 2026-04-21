@@ -589,7 +589,10 @@ func removeBuilder(ctx context.Context, name string) {
 // docker cp (not --buildkitd-config) to avoid the host-side TOML parser which
 // cannot handle IPv6 brackets in registry addresses.
 func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string) (string, error) {
-	const builderName = "wendy"
+	builderName := os.Getenv("WENDY_BUILDX_BUILDER")
+	if builderName == "" {
+		builderName = "wendy"
+	}
 
 	appliedPath := filepath.Join(configDir, "buildkitd.applied")
 
@@ -649,9 +652,13 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string)
 // ensureMTLSBuilder ensures the "wendy-mtls" buildx builder exists with mTLS
 // client certs for the device registry.
 func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string) (string, error) {
-	const builderName = "wendy-mtls"
+	base := os.Getenv("WENDY_BUILDX_BUILDER")
+	if base == "" {
+		base = "wendy"
+	}
+	builderName := base + "-mtls"
 
-	appliedPath := filepath.Join(configDir, "buildkitd-mtls.applied")
+	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
 
 	certInfo := loadCLICert()
 	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {

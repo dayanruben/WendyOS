@@ -116,7 +116,7 @@ jobs:
           else
             echo "Docker already available, skipping Colima restart"
           fi
-          docker buildx rm wendy --force 2>/dev/null || true
+          docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
           docker system prune -f 2>/dev/null || true
 
       - name: Run integration tests
@@ -168,12 +168,31 @@ jobs:
             echo "==> Found ${#DEVICES[@]} device(s): ${DEVICES[*]}"
           fi
 
+          # Run the test suite on each device in parallel. Each device gets its
+          # own buildx builder (wendy-0, wendy-1, …) so they don't interfere.
+          declare -a PIDS
           OVERALL_FAIL=0
-          for device in "${DEVICES[@]}"; do
-            echo ""
-            echo "==> Testing device: $device"
-            $SSH "$SSH_ENV && cd '$WORKDIR' && scripts/test-ci.sh $TEST_ARGS -h '$device'" || OVERALL_FAIL=1
-            docker buildx rm wendy --force 2>/dev/null || true
+          for i in "${!DEVICES[@]}"; do
+            device="${DEVICES[$i]}"
+            BUILDER="wendy-$i"
+            echo "==> Starting tests on $device (builder: $BUILDER)"
+            (
+              $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && scripts/test-ci.sh $TEST_ARGS -h '$device'"
+              rc=$?
+              docker buildx rm "$BUILDER" --force 2>/dev/null || true
+              exit $rc
+            ) &
+            PIDS[$i]=$!
+          done
+
+          for i in "${!PIDS[@]}"; do
+            device="${DEVICES[$i]}"
+            if wait "${PIDS[$i]}"; then
+              echo "==> $device: PASSED"
+            else
+              echo "==> $device: FAILED"
+              OVERALL_FAIL=1
+            fi
           done
           exit $OVERALL_FAIL
 
@@ -266,7 +285,7 @@ jobs:
             nc -zw 5 "$device" 50051 2>&1 && echo "nc port 50051: OK" || echo "nc port 50051: FAILED"
             nc -zw 5 "$device" 5000  2>&1 && echo "nc port 5000: OK"  || echo "nc port 5000: FAILED"
             scripts/test-ci.sh $TEST_ARGS -h "$device" || OVERALL_FAIL=1
-            docker buildx rm wendy --force 2>/dev/null || true
+            docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
           done
           exit $OVERALL_FAIL
 
@@ -314,7 +333,7 @@ jobs:
           else
             echo "Docker already available, skipping Colima restart"
           fi
-          docker buildx rm wendy --force 2>/dev/null || true
+          docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
           docker system prune -f 2>/dev/null || true
 
       - name: Run GPU integration test
@@ -338,7 +357,7 @@ jobs:
           fi
 
           $SSH "$SSH_ENV && cd '$WORKDIR' && scripts/test-ci.sh -w ./bin/wendy -t python-gpu -h '$DEVICE'"
-          docker buildx rm wendy --force 2>/dev/null || true
+          docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
 
       - name: Cleanup
         if: always()
