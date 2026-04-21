@@ -26,7 +26,7 @@ const (
 	// Currently supported SDK for WASI on Wendy Lite.
 	// This also works for older projects that expected to build for wasm32-unknown-none-wasm
 	microWendySwiftVersion = "6.3.1"
-	microWendySwiftSDK     = "swift-6.3.1-RELEASE_wasm-embedded"
+	microWendyEmbeddedSDK  = "-embedded"
 	microWendySwiftTarget  = "wasm32-unknown-wasip1"
 	microWendyInstallGrace = 3 * time.Second
 )
@@ -100,7 +100,15 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		return nil, err
 	}
 
-	args := []string{"build", "--triple", swifttoolchain.WasmTargetTriple}
+	sdk, err := swifttoolchain.FindSwiftSDK(ctx, "wasm32", os.Stdout, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasSuffix(sdk, microWendyEmbeddedSDK) {
+		sdk += microWendyEmbeddedSDK
+	}
+
+	args := []string{"build", "--swift-sdk", sdk, "--triple", microWendySwiftTarget}
 	if !debug {
 		args = append(args, "-c", "release")
 	}
@@ -114,7 +122,7 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 
 	binArgs := []string{
 		"run", "+" + microWendySwiftVersion, "swift", "build",
-		"--swift-sdk", microWendySwiftSDK,
+		"--swift-sdk", sdk,
 		"--triple", microWendySwiftTarget,
 		"--product", product,
 		"--show-bin-path",
@@ -140,7 +148,7 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		config = "release"
 	}
 
-	wasmPath := filepath.Join(projectPath, ".build", swifttoolchain.WasmTargetTriple, config, product+".wasm")
+	wasmPath := filepath.Join(projectPath, ".build", microWendySwiftTarget, config, product+".wasm")
 	if _, err := os.Stat(wasmPath); err != nil {
 		return nil, fmt.Errorf("expected WASM output at %s: %w", wasmPath, err)
 	}

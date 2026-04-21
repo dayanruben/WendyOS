@@ -141,7 +141,7 @@ func lookupSwiftSDK(ctx context.Context, sdkArch string, isWasm bool) (string, e
 	if isWasm {
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
-			if strings.Contains(line, "wasm") {
+			if strings.Contains(line, "wasm") && strings.Contains(line, DefaultVersion) {
 				return line, nil
 			}
 		}
