@@ -9,6 +9,9 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/internal/cli/tui"
 )
 
 const (
@@ -22,6 +25,8 @@ var wendySDKChecksums = map[string]string{
 	"x86_64":  "b5a4d08ad4d4841043727f6671c6aa004da3a2b7f12dc28101d6770c1dc57eb1",
 	"aarch64": "ef8fa5a2eda766e3b1df791dc175bbf87f570b9cc6f95ada1fe7643a327e087e",
 }
+
+var ErrUserCancelled = errors.New("cancelled")
 
 var execCommandContext = exec.CommandContext
 var execCommand = exec.Command
@@ -231,16 +236,31 @@ func installWasmSwiftSDK(ctx context.Context, stdout, stderr io.Writer) error {
 }
 
 func FindSwiftProduct(dir string) (string, error) {
+	return FindSwiftProductWithOptions(dir, "", false)
+}
+
+func FindSwiftProductWithOptions(dir, productOverride string, interactive bool) (string, error) {
+	var stderr bytes.Buffer
+	if productOverride != "" {
+		return productOverride, nil
+	}
+
 	cmd := SwiftCommand("package", "dump-package")
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("swift package dump-package failed: %s: %w", strings.TrimSpace(string(out)), err)
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(string(out))
+		}
+		return "", fmt.Errorf("swift package dump-package failed: %s: %w", errMsg, err)
 	}
 
 	var manifest struct {
 		Products []struct {
-			Name string `json:"name"`
+			Name string                     `json:"name"`
+			Type map[string]json.RawMessage `json:"type"`
 		} `json:"products"`
 		Targets []struct {
 			Name string `json:"name"`
@@ -251,28 +271,59 @@ func FindSwiftProduct(dir string) (string, error) {
 		return "", fmt.Errorf("could not parse Package.swift manifest: %w", err)
 	}
 
-	if len(manifest.Products) == 1 {
-		return manifest.Products[0].Name, nil
-	}
-	if len(manifest.Products) > 1 {
-		var productNames []string
-		for _, product := range manifest.Products {
-			productNames = append(productNames, product.Name)
+	var candidates []string
+	for _, product := range manifest.Products {
+		if _, ok := product.Type["executable"]; ok {
+			candidates = append(candidates, product.Name)
 		}
-		return "", fmt.Errorf("Package.swift declares multiple products (%s); wendy run requires a single executable product", strings.Join(productNames, ", "))
 	}
 
-	var execTargets []string
-	for _, target := range manifest.Targets {
-		if target.Type == "executable" {
-			execTargets = append(execTargets, target.Name)
+	if len(candidates) == 0 {
+		for _, target := range manifest.Targets {
+			if target.Type == "executable" {
+				candidates = append(candidates, target.Name)
+			}
 		}
 	}
-	if len(execTargets) == 1 {
-		return execTargets[0], nil
+
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("Package.swift has no executable products or targets")
 	}
-	if len(execTargets) > 1 {
-		return "", fmt.Errorf("Package.swift has multiple executable targets but no products; add an executable product for the target you want to run")
+	if len(candidates) == 1 {
+		return candidates[0], nil
 	}
-	return "", fmt.Errorf("Package.swift has no executable targets or products")
+
+	if !interactive {
+		return "", fmt.Errorf("Package.swift has multiple executable products (%s); use --product to select one", strings.Join(candidates, ", "))
+	}
+
+	picker := tui.NewPickerWithTitle("Select a Swift product")
+	p := tea.NewProgram(picker)
+
+	go func() {
+		var items []tui.PickerItem
+		for _, name := range candidates {
+			n := name
+			items = append(items, tui.PickerItem{Name: n, Value: n})
+		}
+		p.Send(tui.PickerAddMsg{Items: items})
+		p.Send(tui.PickerDoneMsg{})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return "", fmt.Errorf("product picker: %w", err)
+	}
+
+	pm := finalModel.(tui.PickerModel)
+	if pm.Cancelled() {
+		return "", ErrUserCancelled
+	}
+
+	selected := pm.Selected()
+	if selected == nil {
+		return "", fmt.Errorf("no product selected")
+	}
+
+	return selected.Value.(string), nil
 }

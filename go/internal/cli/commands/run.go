@@ -327,6 +327,7 @@ type runOptions struct {
 	restartOnFailure     bool
 	noRestart            bool
 	prefix               string
+	product              string
 	userArgs             []string
 }
 
@@ -351,6 +352,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
 	cmd.Flags().BoolVar(&opts.noRestart, "no-restart", false, "Do not restart on exit")
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to run from instead of the current working directory")
+	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 
 	return cmd
@@ -483,7 +485,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return err
 	}
 
-	product, err := swifttoolchain.FindSwiftProduct(cwd)
+	product, err := findSwiftProduct(cwd, opts.product, !opts.yes && isInteractiveTerminal())
 	if err != nil {
 		return err
 	}
@@ -573,14 +575,14 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 			return err
 		}
-		swiftProduct, err := swifttoolchain.FindSwiftProduct(projectPath)
+		swiftProduct, err := findSwiftProduct(projectPath, opts.product, !opts.yes && isInteractiveTerminal())
 		if err != nil {
 			return fmt.Errorf("could not determine Swift product: %w", err)
 		}
 		product = swiftProduct
 	} else if p.CanBuild(projectPath) {
 		// Dockerfile exists — try to use Swift product name if Package.swift is also present.
-		if swiftProduct, err := swifttoolchain.FindSwiftProduct(projectPath); err == nil {
+		if swiftProduct, err := findSwiftProduct(projectPath, opts.product, false); err == nil {
 			product = swiftProduct
 		}
 	}
@@ -714,10 +716,25 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		"WENDY_PLATFORM": wendyPlatform(deviceType),
 		"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
 	}
-	// Only set WENDY_DEVICE_TYPE when the agent reports it, so Dockerfiles can
-	// apply their own default on older agents where the field is empty.
+	// Only set WENDY_DEVICE_TYPE / GPU args when the agent reports them so
+	// Dockerfiles can apply their own defaults on older agents.
 	if deviceType != "" {
 		buildArgs["WENDY_DEVICE_TYPE"] = deviceType
+	}
+	// WENDY_HAS_GPU is only set when the optional field is present; omitting it
+	// on older agents preserves any Dockerfile ARG default.
+	if versionResp.HasGpu != nil {
+		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
+	}
+	// Remaining GPU build args — only set when the agent reports them.
+	if vendor := versionResp.GetGpuVendor(); vendor != "" {
+		buildArgs["WENDY_GPU_VENDOR"] = vendor
+	}
+	if jv := versionResp.GetJetpackVersion(); jv != "" {
+		buildArgs["WENDY_JETPACK_VERSION"] = jv
+	}
+	if cv := versionResp.GetCudaVersion(); cv != "" {
+		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
 	// Verify auth certs are available if the device's registry requires mTLS.
@@ -738,7 +755,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
 
 	cliLogln("Building and pushing Docker image for %s...", platform)
-	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, buildArgs, os.Stdout, conn.IsMTLS); err != nil {
+	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, buildArgs, os.Stdout, false); err != nil {
 		return fmt.Errorf("building and pushing Docker image: %w", err)
 	}
 	cliLogln("Build and push completed.")
@@ -746,7 +763,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Inject debugpy for Python remote debugging.
 	if opts.debug && appCfg.Language == "python" {
 		cliLogln("Injecting debugpy for remote debugging...")
-		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, buildArgs, os.Stdout, conn.IsMTLS); err != nil {
+		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, buildArgs, os.Stdout, false); err != nil {
 			return fmt.Errorf("injecting debugpy: %w", err)
 		}
 	}

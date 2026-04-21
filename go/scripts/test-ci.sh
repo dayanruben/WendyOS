@@ -59,8 +59,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Add .local suffix if hostname was explicitly provided and missing it.
-if [[ "$HOSTNAME_PROVIDED" == true ]] && [[ "$HOSTNAME" != *.local ]]; then
+# Add .local suffix only for bare mDNS hostnames (no dots or colons).
+# Leave IPs (e.g. 192.168.1.1), FQDNs (device.example.com), and IPv6 alone.
+if [[ "$HOSTNAME_PROVIDED" == true ]] && [[ "$HOSTNAME" != *.local ]] && [[ "$HOSTNAME" != *.* ]] && [[ "$HOSTNAME" != *:* ]]; then
     HOSTNAME="${HOSTNAME}.local"
 fi
 
@@ -113,6 +114,7 @@ if [[ "$WENDY" != "wendy" ]]; then
         echo -e "${RED}ERROR: wendy binary not found or not executable at $WENDY${RESET}"
         exit 1
     fi
+    WENDY="$(cd "$(dirname "$WENDY")" && pwd)/$(basename "$WENDY")"
 else
     if ! command -v wendy &>/dev/null; then
         echo -e "${RED}ERROR: 'wendy' not found on PATH${RESET}"
@@ -129,7 +131,10 @@ echo ""
 
 if [[ -z "$HOSTNAME" ]]; then
     echo -e "${BOLD}==> Auto-discovering device...${RESET}"
-    DISCOVER_JSON=$("$WENDY" discover --json --timeout 5s 2>&1)
+    DISCOVER_STDERR=$(mktemp -t wendy-discover-stderr.XXXXXX)
+    trap 'rm -f "$DISCOVER_STDERR"' EXIT
+    DISCOVER_JSON=$("$WENDY" discover --json --timeout 5s 2>"$DISCOVER_STDERR")
+    cat "$DISCOVER_STDERR" >&2 || true
     DISCOVERED_HOST=$(echo "$DISCOVER_JSON" | jq -r '.lanDevices[0].hostname // empty' 2>/dev/null)
     if [[ -z "$DISCOVERED_HOST" ]]; then
         echo -e "${RED}ERROR: No LAN device found via 'wendy discover --json --timeout 5s'${RESET}"
@@ -142,6 +147,19 @@ if [[ -z "$HOSTNAME" ]]; then
 fi
 
 echo -e "${BOLD}==> Target device: ${HOSTNAME}${RESET}"
+echo ""
+
+# ── Device capability detection ──────────────────────────────────────
+
+DEVICE_HAS_GPU=false
+VERSION_JSON=$("$WENDY" device version --json --device "$HOSTNAME" 2>/dev/null || true)
+if [[ -n "$VERSION_JSON" ]]; then
+    GPU_VAL=$(echo "$VERSION_JSON" | jq -r '.hasGpu // false' 2>/dev/null || true)
+    if [[ "$GPU_VAL" == "true" ]]; then
+        DEVICE_HAS_GPU=true
+    fi
+fi
+echo -e "${BOLD}==> GPU: ${DEVICE_HAS_GPU}${RESET}"
 echo ""
 
 # ── Validate tests directory ─────────────────────────────────────────
@@ -196,6 +214,12 @@ echo ""
 for test_name in "${TESTS[@]}"; do
     test_dir="$TESTS_DIR/$test_name"
 
+    # Skip GPU tests on devices that don't have a GPU.
+    if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_GPU" != "true" ]]; then
+        skip_test "$test_name" "no GPU"
+        continue
+    fi
+
     # Verify directory exists
     if [[ ! -d "$test_dir" ]]; then
         skip_test "$test_name" "no directory"
@@ -219,12 +243,14 @@ for test_name in "${TESTS[@]}"; do
     "$WENDY" apps remove "$app_id" --device "$HOSTNAME" --force &>/dev/null || true
 
     # Deploy and run
-    run_test "$test_name" \
-        bash -c "cd '$test_dir' && '$WENDY' run --device '$HOSTNAME'"
+    pushd "$test_dir" > /dev/null
+    run_test "$test_name" "$WENDY" run --device "$HOSTNAME"
+    popd > /dev/null
 
     # Post-cleanup: stop and remove
     "$WENDY" apps stop "$app_id" --device "$HOSTNAME" &>/dev/null || true
     "$WENDY" apps remove "$app_id" --device "$HOSTNAME" --force &>/dev/null || true
+    docker buildx rm "${WENDY_BUILDX_BUILDER:-wendy}" --force &>/dev/null || true
 done
 
 echo ""
