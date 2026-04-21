@@ -2,8 +2,8 @@ name: Build products and release
 
 on:
   push:
-    branches: [main, kb.wendy-agent-macos-release]
-    # paths: ['go/**', 'swift/**']
+    branches: [main]
+    paths: ['go/**', 'swift/**']
   workflow_dispatch:
     inputs:
       publish:
@@ -617,7 +617,7 @@ jobs:
           prerelease: ${{ needs.determine-version.outputs.is_prerelease == 'true' }}
           make_latest: ${{ needs.determine-version.outputs.is_prerelease == 'false' }}
           files: ${{ env.FILES }}
-          # generate_release_notes: true
+          generate_release_notes: true
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
