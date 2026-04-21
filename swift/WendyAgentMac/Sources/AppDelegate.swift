@@ -46,6 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 
+    func statusMenuControllerDidSelectAbout(_ controller: StatusMenuController) {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApplication.shared.orderFrontStandardAboutPanel(options: [
+            .applicationName: AppDisplayName.current
+        ])
+    }
+
     func statusMenuControllerDidSelectWelcomeAndPermissions(_ controller: StatusMenuController) {
         self.showWelcomeAndPermissionsWindow()
     }

@@ -3,6 +3,7 @@ import WendyAgentCore
 
 @MainActor
 protocol StatusMenuControllerDelegate: AnyObject {
+    func statusMenuControllerDidSelectAbout(_ controller: StatusMenuController)
     func statusMenuControllerDidSelectWelcomeAndPermissions(_ controller: StatusMenuController)
     func statusMenuControllerDidSelectQuit(_ controller: StatusMenuController)
 }
@@ -69,17 +70,13 @@ final class StatusMenuController: NSObject {
     private func rebuildMenu() {
         self.menu.removeAllItems()
 
-        let statusItem = self.makeDisabledMenuItem(title: self.currentStatus.menuTitle)
-        statusItem.image = self.makeStatusImage(for: self.currentStatus)
-        self.menu.addItem(statusItem)
-
-        for detail in self.currentStatus.menuFailureDetails {
-            self.menu.addItem(self.makeDisabledMenuItem(title: detail))
-        }
-
-        self.menu.addItem(.separator())
-        self.addRunningAppsSection()
-        self.menu.addItem(.separator())
+        let aboutItem = NSMenuItem(
+            title: "About \(self.bundleDisplayName)",
+            action: #selector(self.aboutSelected),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        self.menu.addItem(aboutItem)
 
         let welcomeItem = NSMenuItem(
             title: "Welcome & Permissions…",
@@ -88,6 +85,19 @@ final class StatusMenuController: NSObject {
         )
         welcomeItem.target = self
         self.menu.addItem(welcomeItem)
+
+        self.menu.addItem(.separator())
+
+        let statusItem = self.makeDisabledMenuItem(title: self.currentStatus.menuTitle)
+        statusItem.image = self.makeStatusImage(for: self.currentStatus)
+        self.menu.addItem(statusItem)
+
+        for detail in self.currentStatus.menuFailureDetails {
+            self.menu.addItem(self.makeDisabledMenuItem(title: detail))
+        }
+
+        self.addRunningAppsSection()
+        self.menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
             title: "Quit \(self.bundleDisplayName)",
@@ -99,13 +109,7 @@ final class StatusMenuController: NSObject {
     }
 
     private func addRunningAppsSection() {
-        self.menu.addItem(self.makeDisabledMenuItem(title: "Apps:"))
-
         let runningApps = self.runningApps
-        guard !runningApps.isEmpty else {
-            self.menu.addItem(self.makeDisabledMenuItem(title: "—"))
-            return
-        }
 
         for app in runningApps {
             let appItem = NSMenuItem(title: app.id, action: nil, keyEquivalent: "")
@@ -214,6 +218,11 @@ final class StatusMenuController: NSObject {
 
     func invalidate() async {
         await self.cancelObservations()
+    }
+
+    @objc
+    private func aboutSelected() {
+        self.delegate?.statusMenuControllerDidSelectAbout(self)
     }
 
     @objc
