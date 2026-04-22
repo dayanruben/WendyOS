@@ -245,42 +245,66 @@ func ensureContainerPlugin(dir string) error {
 	return nil
 }
 
+// dockerRuntimes lists macOS Docker-compatible runtimes in detection order.
+// Each entry maps a human-readable name to its .app bundle path.
+var dockerRuntimes = []struct{ name, app string }{
+	{"OrbStack", "/Applications/OrbStack.app"},
+	{"Docker Desktop", "/Applications/Docker.app"},
+	{"Rancher Desktop", "/Applications/Rancher Desktop.app"},
+}
+
 // ensureDockerDaemon verifies the Docker daemon is running. On macOS, when
-// running interactively it prompts the user before launching Docker Desktop;
-// in non-interactive mode it launches it automatically. Waits up to 60 s for
-// the daemon to become ready before returning an error.
+// running interactively it prompts the user before launching the installed
+// Docker runtime; in non-interactive mode it launches it automatically.
+// Waits up to 60 s for the daemon to become ready before returning an error.
 func ensureDockerDaemon(ctx context.Context) error {
 	if exec.CommandContext(ctx, "docker", "version").Run() == nil {
 		return nil
 	}
 
 	if runtime.GOOS == "darwin" {
+		runtimeName, appPath := detectDockerRuntime()
+		if appPath == "" {
+			return fmt.Errorf("docker daemon is not running and no supported Docker runtime was found — install Docker Desktop or OrbStack and try again")
+		}
+
 		if isInteractiveTerminalFn() {
-			fmt.Print("Docker Desktop is not running. Launch it now? [Y/n] ")
+			fmt.Printf("%s is not running. Launch it now? [Y/n] ", runtimeName)
 			reader := bufio.NewReader(os.Stdin)
 			answer, _ := reader.ReadString('\n')
 			answer = strings.TrimSpace(strings.ToLower(answer))
 			if answer != "" && answer != "y" && answer != "yes" {
-				return fmt.Errorf("docker daemon is not running — please start Docker Desktop and try again")
+				return fmt.Errorf("docker daemon is not running — please start %s and try again", runtimeName)
 			}
 		}
 
-		fmt.Fprintln(os.Stderr, "[docker] Launching Docker Desktop...")
-		if err := exec.CommandContext(ctx, "open", "-a", "Docker").Run(); err != nil {
-			return fmt.Errorf("docker daemon is not running: could not launch Docker Desktop: %w", err)
+		fmt.Fprintf(os.Stderr, "[docker] Launching %s...\n", runtimeName)
+		if err := exec.CommandContext(ctx, "open", "-a", appPath).Run(); err != nil {
+			return fmt.Errorf("docker daemon is not running: could not launch %s: %w", runtimeName, err)
 		}
 		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
 			time.Sleep(2 * time.Second)
 			if exec.CommandContext(ctx, "docker", "version").Run() == nil {
-				fmt.Fprintln(os.Stderr, "[docker] Docker Desktop is ready")
+				fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", runtimeName)
 				return nil
 			}
 		}
-		return fmt.Errorf("docker daemon did not become ready within 60 seconds — please start Docker Desktop manually")
+		return fmt.Errorf("docker daemon did not become ready within 60 seconds — please start %s manually", runtimeName)
 	}
 
 	return fmt.Errorf("docker daemon is not running — please start Docker before using wendy")
+}
+
+// detectDockerRuntime returns the name and .app path of the first installed
+// Docker-compatible runtime found on macOS, or empty strings if none is found.
+func detectDockerRuntime() (name, appPath string) {
+	for _, rt := range dockerRuntimes {
+		if _, err := os.Stat(rt.app); err == nil {
+			return rt.name, rt.app
+		}
+	}
+	return "", ""
 }
 
 // ensureBuildxBuilder ensures a buildx builder with the docker-container driver
