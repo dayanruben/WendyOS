@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -244,11 +245,52 @@ func ensureContainerPlugin(dir string) error {
 	return nil
 }
 
+// ensureDockerDaemon verifies the Docker daemon is running. On macOS, when
+// running interactively it prompts the user before launching Docker Desktop;
+// in non-interactive mode it launches it automatically. Waits up to 60 s for
+// the daemon to become ready before returning an error.
+func ensureDockerDaemon(ctx context.Context) error {
+	if exec.CommandContext(ctx, "docker", "version").Run() == nil {
+		return nil
+	}
+
+	if runtime.GOOS == "darwin" {
+		if isInteractiveTerminalFn() {
+			fmt.Print("Docker Desktop is not running. Launch it now? [Y/n] ")
+			reader := bufio.NewReader(os.Stdin)
+			answer, _ := reader.ReadString('\n')
+			answer = strings.TrimSpace(strings.ToLower(answer))
+			if answer != "" && answer != "y" && answer != "yes" {
+				return fmt.Errorf("docker daemon is not running — please start Docker Desktop and try again")
+			}
+		}
+
+		fmt.Fprintln(os.Stderr, "[docker] Launching Docker Desktop...")
+		if err := exec.CommandContext(ctx, "open", "-a", "Docker").Run(); err != nil {
+			return fmt.Errorf("docker daemon is not running: could not launch Docker Desktop: %w", err)
+		}
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(2 * time.Second)
+			if exec.CommandContext(ctx, "docker", "version").Run() == nil {
+				fmt.Fprintln(os.Stderr, "[docker] Docker Desktop is ready")
+				return nil
+			}
+		}
+		return fmt.Errorf("docker daemon did not become ready within 60 seconds — please start Docker Desktop manually")
+	}
+
+	return fmt.Errorf("docker daemon is not running — please start Docker before using wendy")
+}
+
 // ensureBuildxBuilder ensures a buildx builder with the docker-container driver
 // exists and returns its name plus the effective registry address to use in
 // image references. For IPv6 addresses, a hostname alias is configured inside
 // the builder container to avoid brackets that break the TOML parser.
 func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool) (builderName, effectiveAddr string, err error) {
+	if err := ensureDockerDaemon(ctx); err != nil {
+		return "", "", err
+	}
 	// Use separate builders for mTLS and plaintext so switching between
 	// provisioned and unprovisioned devices doesn't recreate builders.
 	const containerCertDir = "/etc/buildkit/certs"
