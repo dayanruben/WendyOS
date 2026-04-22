@@ -262,10 +262,14 @@ func ensureDockerDaemon(ctx context.Context) error {
 		return nil
 	}
 
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("docker is not installed — please install Docker Desktop or OrbStack")
+	}
+
 	if runtime.GOOS == "darwin" {
 		runtimeName, appPath := detectDockerRuntime()
 		if appPath == "" {
-			return fmt.Errorf("docker daemon is not running and no supported Docker runtime was found — install Docker Desktop or OrbStack and try again")
+			return fmt.Errorf("no supported Docker runtime found — install Docker Desktop or OrbStack and try again")
 		}
 
 		if isInteractiveTerminalFn() {
@@ -284,7 +288,11 @@ func ensureDockerDaemon(ctx context.Context) error {
 		}
 		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
 			if exec.CommandContext(ctx, "docker", "version").Run() == nil {
 				fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", runtimeName)
 				return nil
