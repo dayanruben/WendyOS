@@ -149,7 +149,7 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 
 	swiftlyPath := filepath.Join(binDir, "swiftly")
 	swiftPath := filepath.Join(binDir, "swift")
-	if err := os.WriteFile(swiftlyPath, []byte("#!/bin/sh\necho '{\"products\":[{\"name\":\"MySwiftApp\"}]}'\n"), 0o755); err != nil {
+	if err := os.WriteFile(swiftlyPath, []byte("#!/bin/sh\necho '{\"products\":[{\"name\":\"MySwiftApp\",\"type\":{\"executable\":null}}]}'\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile swiftly: %v", err)
 	}
 	if err := os.WriteFile(swiftPath, []byte("#!/bin/sh\nif [ \"$1\" = \"build\" ]; then\n  mkdir -p \"$PWD/.build/debug\"\n  printf '#!/bin/sh\\n' > \"$PWD/.build/debug/MySwiftApp\"\n  chmod +x \"$PWD/.build/debug/MySwiftApp\"\n  exit 0\nfi\necho \"unexpected args: $@\" >&2\nexit 1\n"), 0o755); err != nil {
