@@ -201,6 +201,27 @@ func createContainerWithProgressPlain(stream agentpb.WendyContainerService_Creat
 	return nil
 }
 
+func isUnimplementedRPCError(err error) bool {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if status.Code(current) == codes.Unimplemented {
+			return true
+		}
+	}
+	return false
+}
+
+func createContainerWithoutProgress(ctx context.Context, svc agentpb.WendyContainerServiceClient, req *agentpb.CreateContainerRequest) error {
+	if _, err := svc.CreateContainer(ctx, req); err != nil {
+		return fmt.Errorf("creating container: %w", err)
+	}
+	return nil
+}
+
+func fallbackCreateContainerWithoutProgress(ctx context.Context, svc agentpb.WendyContainerServiceClient, req *agentpb.CreateContainerRequest) error {
+	cliNotice("Notice: image pull progress is not supported by this agent; continuing without progress")
+	return createContainerWithoutProgress(ctx, svc, req)
+}
+
 func progressModelUserCancelled(model tea.Model) bool {
 	pm, ok := model.(tui.ProgressModel)
 	return ok && pm.Err() == context.Canceled
@@ -298,13 +319,22 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 
 // createContainerWithProgress calls CreateContainerWithProgress and prints
 // phase updates so the user sees feedback during long image pulls/unpacks.
+// Older agents may not implement the streaming RPC yet, so fall back to the
+// legacy unary CreateContainer call when the server reports Unimplemented.
 func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainerServiceClient, req *agentpb.CreateContainerRequest) error {
 	if !isInteractiveTerminal() {
 		stream, err := svc.CreateContainerWithProgress(ctx, req)
 		if err != nil {
+			if isUnimplementedRPCError(err) {
+				return fallbackCreateContainerWithoutProgress(ctx, svc, req)
+			}
 			return fmt.Errorf("creating container: %w", err)
 		}
-		return createContainerWithProgressPlain(stream)
+		err = createContainerWithProgressPlain(stream)
+		if isUnimplementedRPCError(err) {
+			return fallbackCreateContainerWithoutProgress(ctx, svc, req)
+		}
+		return err
 	}
 
 	progressCtx, cancel := context.WithCancel(ctx)
@@ -312,9 +342,18 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 
 	stream, err := svc.CreateContainerWithProgress(progressCtx, req)
 	if err != nil {
+		if isUnimplementedRPCError(err) {
+			return fallbackCreateContainerWithoutProgress(ctx, svc, req)
+		}
 		return fmt.Errorf("creating container: %w", err)
 	}
-	return createContainerWithProgressTUI(cancel, stream)
+	if err := createContainerWithProgressTUI(cancel, stream); err != nil {
+		if isUnimplementedRPCError(err) {
+			return fallbackCreateContainerWithoutProgress(ctx, svc, req)
+		}
+		return err
+	}
+	return nil
 }
 
 // runOptions holds the parsed flags for the run command.

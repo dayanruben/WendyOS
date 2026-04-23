@@ -21,6 +21,7 @@ import (
 type fakeMacRunState struct {
 	fakeSyncServer
 	createReqs []*agentpb.CreateContainerRequest
+	startReqs  []*agentpb.StartContainerRequest
 }
 
 type fakeMacAgentServer struct {
@@ -39,6 +40,11 @@ type fakeMacContainerServer struct {
 func (s *fakeMacContainerServer) CreateContainer(_ context.Context, req *agentpb.CreateContainerRequest) (*agentpb.CreateContainerResponse, error) {
 	s.state.createReqs = append(s.state.createReqs, proto.Clone(req).(*agentpb.CreateContainerRequest))
 	return &agentpb.CreateContainerResponse{}, nil
+}
+
+func (s *fakeMacContainerServer) StartContainer(req *agentpb.StartContainerRequest, _ grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
+	s.state.startReqs = append(s.state.startReqs, proto.Clone(req).(*agentpb.StartContainerRequest))
+	return nil
 }
 
 func startFakeMacRunServer(t *testing.T, state *fakeMacRunState) (*grpcclient.AgentConnection, func()) {
@@ -193,5 +199,39 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	}
 	if len(got.UserArgs) != 2 || got.UserArgs[0] != "--port" || got.UserArgs[1] != "8080" {
 		t.Fatalf("UserArgs = %v, want %v", got.UserArgs, appCfg.Run.Args)
+	}
+}
+
+func TestStartAndStreamContainer_FallsBackWhenCreateProgressIsUnimplemented(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() { isInteractiveTerminalFn = origInteractive })
+	isInteractiveTerminalFn = func() bool { return false }
+
+	state := &fakeMacRunState{}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+
+	appCfg := &appconfig.AppConfig{AppID: "sh.wendy.LegacyLinuxApp"}
+	createReq := &agentpb.CreateContainerRequest{
+		AppName:   appCfg.AppID,
+		ImageName: "localhost:5000/sh.wendy.legacylinuxapp:latest",
+	}
+
+	err := startAndStreamContainer(context.Background(), conn, appCfg, createReq, runOptions{detach: true})
+	if err != nil {
+		t.Fatalf("startAndStreamContainer: %v", err)
+	}
+
+	if len(state.createReqs) != 1 {
+		t.Fatalf("CreateContainer calls = %d, want 1", len(state.createReqs))
+	}
+	if state.createReqs[0].GetAppName() != appCfg.AppID {
+		t.Fatalf("CreateContainer AppName = %q, want %q", state.createReqs[0].GetAppName(), appCfg.AppID)
+	}
+	if len(state.startReqs) != 1 {
+		t.Fatalf("StartContainer calls = %d, want 1", len(state.startReqs))
+	}
+	if state.startReqs[0].GetAppName() != appCfg.AppID {
+		t.Fatalf("StartContainer AppName = %q, want %q", state.startReqs[0].GetAppName(), appCfg.AppID)
 	}
 }
