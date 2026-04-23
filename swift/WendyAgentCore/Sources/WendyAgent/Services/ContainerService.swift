@@ -652,6 +652,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         let process = Foundation.Process()
+        var environment = ProcessInfo.processInfo.environment
+        // Child stdout/stderr are connected to pipes, not a TTY. Without
+        // unbuffered I/O, Swift's `print()` output may sit in stdio buffers for
+        // a long time (or until exit), which makes `wendy run` appear silent
+        // for long-running native macOS apps like HelloMLX.
+        environment["NSUnbufferedIO"] = "YES"
+        process.environment = environment
         if let profilePath {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
             process.arguments = ["-f", profilePath, binaryPath] + processArgs
