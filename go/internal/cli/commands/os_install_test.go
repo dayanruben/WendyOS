@@ -15,7 +15,7 @@ func TestNewOSInstallCmd_Flags(t *testing.T) {
 		t.Errorf("Use = %q; want %q", cmd.Use, "install [image] [drive]")
 	}
 
-	expectedFlags := []string{"nightly", "force", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi"}
+	expectedFlags := []string{"nightly", "force", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name"}
 	for _, name := range expectedFlags {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing flag %q", name)
@@ -53,7 +53,7 @@ func TestNewOSInstallCmd_PositionalArgsIncompatibleWithFlags(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error when positional args are combined with manifest flags")
 			}
-			expected := "positional [image] [drive] arguments cannot be combined with --device-type, --version, or --drive"
+			expected := "positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, or --device-name"
 			if got := err.Error(); got != expected {
 				t.Errorf("unexpected error: %q; want %q", got, expected)
 			}

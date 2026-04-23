@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
 	"golang.org/x/term"
@@ -57,6 +58,13 @@ func newBuildCmd() *cobra.Command {
 				product := filepath.Base(cwd)
 				if cfgErr == nil {
 					product = appCfg.AppID
+				}
+				// For Swift projects, resolve the actual product name from Package.swift
+				// rather than using the directory name (which may differ in casing).
+				if _, err := os.Stat(filepath.Join(cwd, "Package.swift")); err == nil {
+					if swiftProduct, err := swifttoolchain.FindSwiftProduct(cwd); err == nil {
+						product = swiftProduct
+					}
 				}
 
 				fmt.Printf("Building with %s provider...\n", target.Provider.DisplayName())

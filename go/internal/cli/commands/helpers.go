@@ -108,6 +108,38 @@ func hostPort(host string, port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
+// resolveHostPreferIPv4 resolves a hostname to a concrete IP address,
+// preferring IPv4 over global IPv6. If the input is already an IP address
+// or resolution fails, it returns the input unchanged.
+func resolveHostPreferIPv4(host string) string {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return host // already an IP
+	}
+
+	addrs, err := net.LookupHost(host)
+	if err != nil || len(addrs) == 0 {
+		return host
+	}
+
+	var globalIPv6 string
+	for _, a := range addrs {
+		addr, parseErr := netip.ParseAddr(a)
+		if parseErr != nil {
+			continue
+		}
+		if addr.Is4() {
+			return a
+		}
+		if !addr.IsLinkLocalUnicast() && globalIPv6 == "" {
+			globalIPv6 = addr.WithZone("").String()
+		}
+	}
+	if globalIPv6 != "" {
+		return globalIPv6
+	}
+	return host // only link-local IPv6 found — keep hostname for zone-aware dial
+}
+
 // lanAgentAddresses returns candidate gRPC addresses for a LAN device.
 // Prefer the discovered IP address so commands still work when .local
 // hostname resolution is unavailable on the host machine.

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/internal/shared/models"
@@ -30,6 +32,7 @@ import (
 
 var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
+var execCommandContext = exec.CommandContext
 
 // dimWriter writes each line rendered through cliStyle (dim/background).
 // Incomplete lines are buffered until a newline or Flush is called.
@@ -325,6 +328,7 @@ type runOptions struct {
 	restartOnFailure     bool
 	noRestart            bool
 	prefix               string
+	product              string
 	userArgs             []string
 }
 
@@ -349,6 +353,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
 	cmd.Flags().BoolVar(&opts.noRestart, "no-restart", false, "Do not restart on exit")
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to run from instead of the current working directory")
+	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 
 	return cmd
@@ -477,12 +482,15 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		architecture = "arm64"
 	}
 
-	if err := ensureSwiftVersion(ctx); err != nil {
+	if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 		return err
 	}
 
-	product, err := findSwiftProduct(cwd)
+	product, err := swifttoolchain.FindSwiftProductWithOptions(cwd, opts.product, !opts.yes && isInteractiveTerminal())
 	if err != nil {
+		if errors.Is(err, swifttoolchain.ErrUserCancelled) {
+			return ErrUserCancelled
+		}
 		return err
 	}
 
@@ -493,7 +501,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	defer proxyCleanup()
 
 	cliLogln("Building Swift container image for %s (%s)...", product, architecture)
-	if err := buildSwiftContainerImage(ctx, cwd, product, registryAddr, architecture, conn.IsMTLS); err != nil {
+	if err := buildSwiftContainerImage(ctx, cwd, product, registryAddr, architecture, conn.IsMTLS, &dimWriter{}, os.Stderr); err != nil {
 		return fmt.Errorf("building Swift container image: %w", err)
 	}
 	cliLogln("Build and push completed.")
@@ -568,17 +576,20 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 	// Resolve Swift product name from Package.swift.
 	if projectType == "swift" {
-		if err := ensureSwiftVersion(ctx); err != nil {
+		if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 			return err
 		}
-		swiftProduct, err := findSwiftProduct(projectPath)
+		swiftProduct, err := swifttoolchain.FindSwiftProductWithOptions(projectPath, opts.product, !opts.yes && isInteractiveTerminal())
 		if err != nil {
+			if errors.Is(err, swifttoolchain.ErrUserCancelled) {
+				return ErrUserCancelled
+			}
 			return fmt.Errorf("could not determine Swift product: %w", err)
 		}
 		product = swiftProduct
 	} else if p.CanBuild(projectPath) {
 		// Dockerfile exists — try to use Swift product name if Package.swift is also present.
-		if swiftProduct, err := findSwiftProduct(projectPath); err == nil {
+		if swiftProduct, err := swifttoolchain.FindSwiftProductWithOptions(projectPath, opts.product, false); err == nil {
 			product = swiftProduct
 		}
 	}
@@ -590,7 +601,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if projectType == "swift" {
 		if ib, ok := p.(providers.ImageBuilder); ok {
 			cliLogln("Building Swift project for %s...", p.DisplayName())
-			imageName, err := buildSwiftDockerImage(ctx, projectPath, product)
+			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, &dimWriter{}, os.Stderr)
 			if err != nil {
 				return fmt.Errorf("building Swift Docker image: %w", err)
 			}
@@ -712,10 +723,25 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		"WENDY_PLATFORM": wendyPlatform(deviceType),
 		"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
 	}
-	// Only set WENDY_DEVICE_TYPE when the agent reports it, so Dockerfiles can
-	// apply their own default on older agents where the field is empty.
+	// Only set WENDY_DEVICE_TYPE / GPU args when the agent reports them so
+	// Dockerfiles can apply their own defaults on older agents.
 	if deviceType != "" {
 		buildArgs["WENDY_DEVICE_TYPE"] = deviceType
+	}
+	// WENDY_HAS_GPU is only set when the optional field is present; omitting it
+	// on older agents preserves any Dockerfile ARG default.
+	if versionResp.HasGpu != nil {
+		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
+	}
+	// Remaining GPU build args — only set when the agent reports them.
+	if vendor := versionResp.GetGpuVendor(); vendor != "" {
+		buildArgs["WENDY_GPU_VENDOR"] = vendor
+	}
+	if jv := versionResp.GetJetpackVersion(); jv != "" {
+		buildArgs["WENDY_JETPACK_VERSION"] = jv
+	}
+	if cv := versionResp.GetCudaVersion(); cv != "" {
+		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
 	// Verify auth certs are available if the device's registry requires mTLS.
@@ -736,7 +762,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
 
 	cliLogln("Building and pushing Docker image for %s...", platform)
-	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, buildArgs, os.Stdout, conn.IsMTLS); err != nil {
+	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, buildArgs, os.Stdout, false); err != nil {
 		return fmt.Errorf("building and pushing Docker image: %w", err)
 	}
 	cliLogln("Build and push completed.")
@@ -744,7 +770,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Inject debugpy for Python remote debugging.
 	if opts.debug && appCfg.Language == "python" {
 		cliLogln("Injecting debugpy for remote debugging...")
-		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, buildArgs, os.Stdout, conn.IsMTLS); err != nil {
+		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, buildArgs, os.Stdout, false); err != nil {
 			return fmt.Errorf("injecting debugpy: %w", err)
 		}
 	}
