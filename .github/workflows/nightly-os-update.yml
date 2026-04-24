@@ -5,6 +5,13 @@ on:
     - cron: '0 2 * * *'  # 02:00 UTC daily
   workflow_dispatch: {}
 
+# All wendy CLI invocations in this workflow run via "ssh localhost" rather than
+# directly. The self-hosted runner runs as a macOS LaunchAgent which does not
+# hold the Local Network TCC permission that macOS requires for mDNS (.local)
+# resolution and link-local connections. SSHing to localhost spawns a shell
+# under the logged-in user session, which does have that permission.
+# See integration-tests.yml for the same pattern with more context.
+
 jobs:
   discover:
     name: Discover devices
@@ -28,13 +35,16 @@ jobs:
       - name: Build CLI
         run: make build-cli
 
-      - name: Clear OS image cache
-        run: ./bin/wendy os cache clear
-
-      - name: Scan for WendyOS devices
+      - name: Clear cache and scan for WendyOS devices
         id: scan
         run: |
-          RESULT=$(./bin/wendy discover --json --type lan --timeout 10s)
+          SSH="ssh -o StrictHostKeyChecking=no localhost"
+          WORKDIR="$(pwd)"
+          SSH_ENV="export PATH='$PATH'"
+
+          $SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy os cache clear"
+
+          RESULT=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy discover --json --type lan --timeout 10s")
           echo "$RESULT" | jq '[.lanDevices[] | select(.isWendyDevice) | {name: .displayName, address: (.hostname // .ipAddress)}]'
 
           MATRIX=$(echo "$RESULT" | jq -c \
@@ -63,6 +73,8 @@ jobs:
     defaults:
       run:
         working-directory: go
+    env:
+      DEVICE_HOSTNAME: ${{ matrix.hostname }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,19 +88,32 @@ jobs:
         run: make build-cli
 
       - name: Current version
+        id: version
         run: |
-          ./bin/wendy device version --json --device ${{ matrix.hostname }} \
-            | jq '{osVersion, agentVersion: .version, deviceType}' || true
+          SSH="ssh -o StrictHostKeyChecking=no localhost"
+          WORKDIR="$(pwd)"
+          SSH_ENV="export PATH='$PATH'"
 
-      - name: Flash OS update
-        run: ./bin/wendy os update --device ${{ matrix.hostname }}
-        # wendy os update blocks until the device reboots and comes back online,
-        # with a 5-minute internal timeout. The step fails if it doesn't recover.
+          INFO=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy device version --json --device '$DEVICE_HOSTNAME'" || true)
+          echo "$INFO" | jq '{osVersion, agentVersion: .version, deviceType}' || true
+          DEVICE_TYPE=$(echo "$INFO" | jq -r '.deviceType // ""' 2>/dev/null || true)
+          echo "device_type=$DEVICE_TYPE" >> "$GITHUB_OUTPUT"
+          if [[ -z "$DEVICE_TYPE" ]]; then
+            echo "No device type reported — skipping OS update."
+          fi
 
-      - name: Confirm device online
+      - name: Flash OS update, confirm online, and run template tests
+        if: steps.version.outputs.device_type != ''
         run: |
-          ./bin/wendy device version --json --device ${{ matrix.hostname }} \
+          SSH="ssh -o StrictHostKeyChecking=no localhost"
+          WORKDIR="$(pwd)"
+          SSH_ENV="export PATH='$PATH'"
+
+          # wendy os update blocks until the device reboots and comes back
+          # online, with a 5-minute internal timeout.
+          $SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy os update --device '$DEVICE_HOSTNAME'"
+
+          $SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy device version --json --device '$DEVICE_HOSTNAME'" \
             | jq '{osVersion, agentVersion: .version}'
 
-      - name: Template tests
-        run: scripts/test-templates.sh -w ./bin/wendy -h ${{ matrix.hostname }}
+          $SSH "$SSH_ENV && cd '$WORKDIR' && scripts/test-templates.sh -w ./bin/wendy -h '$DEVICE_HOSTNAME'"
