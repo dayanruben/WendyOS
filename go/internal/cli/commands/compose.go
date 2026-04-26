@@ -24,15 +24,15 @@ type composeConfig struct {
 }
 
 type composeService struct {
-	Image       string      `yaml:"image"`
-	Build       yaml.Node   `yaml:"build"` // string or build object
-	Command     yaml.Node   `yaml:"command"`
-	Environment yaml.Node   `yaml:"environment"` // map or list
-	Ports       []string    `yaml:"ports"`
-	Volumes     []string    `yaml:"volumes"`
-	DependsOn   yaml.Node   `yaml:"depends_on"` // list or map
-	Restart     string      `yaml:"restart"`
-	NetworkMode string      `yaml:"network_mode"`
+	Image       string    `yaml:"image"`
+	Build       yaml.Node `yaml:"build"` // string or build object
+	Command     yaml.Node `yaml:"command"`
+	Environment yaml.Node `yaml:"environment"` // map or list
+	Ports       []string  `yaml:"ports"`
+	Volumes     []string  `yaml:"volumes"`
+	DependsOn   yaml.Node `yaml:"depends_on"` // list or map
+	Restart     string    `yaml:"restart"`
+	NetworkMode string    `yaml:"network_mode"`
 }
 
 type composeBuildConfig struct {
