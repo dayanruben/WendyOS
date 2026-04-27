@@ -3,7 +3,7 @@ import Foundation
 enum AgentVersion {
     static let bundleInfoKey = "WLWendyAgentVersion"
     static let environmentVariable = "WENDY_AGENT_VERSION"
-    static let fallback = "0.0.0-dev"
+    static let fallback = "0000.00.00-000000-dev"
 
     static var current: String {
         self.resolve(
