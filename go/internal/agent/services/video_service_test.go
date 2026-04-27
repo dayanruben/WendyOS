@@ -245,6 +245,11 @@ func TestFindGStreamerEncoder_FallsBackToVP8WhenNoH264Parse(t *testing.T) {
 
 func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	t.Setenv("PATH", "") // ensure gst-launch-1.0 is not found regardless of host installation
+	// Also neutralize the systemd-PATH fallback search so this test is deterministic
+	// on hosts where gst-launch-1.0 happens to live in /usr/bin etc.
+	prev := gstFallbackDirs
+	gstFallbackDirs = nil
+	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(zap.NewNop())
 	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{})
 	if err == nil {

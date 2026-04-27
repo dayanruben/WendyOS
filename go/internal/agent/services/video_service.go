@@ -286,16 +286,39 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 	}
 }
 
+// gstFallbackDirs is the list of directories searched for GStreamer binaries
+// when they are not on PATH. wendy-agent runs as a systemd service whose
+// inherited PATH may omit the standard system bin directories (observed on
+// wendyOS, where a CUDA setup file leaves PATH=/usr/local/cuda-XX/bin:$PATH
+// — the literal "$PATH" not being expanded). Declared as a var so tests can
+// override it.
+var gstFallbackDirs = []string{"/usr/bin", "/usr/local/bin", "/usr/sbin"}
+
+// resolveGSTBinary looks up a GStreamer binary on PATH first, then falls back
+// to known system locations.
+func resolveGSTBinary(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	for _, dir := range gstFallbackDirs {
+		candidate := filepath.Join(dir, name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found; install GStreamer on the device", name)
+}
+
 // streamGStreamer spawns gst-launch-1.0 on the device to encode via the best available
 // encoder and pipes the resulting stream back as VideoFrame chunks.
 func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], path string, req *agentpb.StreamVideoRequest) (runErr error) {
-	gstPath, err := exec.LookPath("gst-launch-1.0")
+	gstPath, err := resolveGSTBinary("gst-launch-1.0")
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "gst-launch-1.0 not found; install GStreamer on the device")
+		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	inspectPath, err := exec.LookPath("gst-inspect-1.0")
+	inspectPath, err := resolveGSTBinary("gst-inspect-1.0")
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "gst-inspect-1.0 not found; install GStreamer on the device")
+		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
 	enc, err := findGStreamerEncoder(inspectPath)
