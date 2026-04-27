@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"go.uber.org/zap"
@@ -130,5 +131,50 @@ func TestVideoService_ListVideoDevices_GlobError(t *testing.T) {
 	}
 	if st.Code() != codes.Internal {
 		t.Errorf("expected codes.Internal, got %v", st.Code())
+	}
+}
+
+func TestBuildFFmpegArgs_Hardware_WithDimensions(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
+	args := buildFFmpegArgs("/dev/video0", req, true)
+	expected := []string{
+		"-f", "v4l2", "-input_format", "h264",
+		"-video_size", "1280x720",
+		"-framerate", "30",
+		"-i", "/dev/video0",
+		"-c:v", "copy",
+		"-f", "h264", "pipe:1",
+	}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("hardware args mismatch\ngot:  %v\nwant: %v", args, expected)
+	}
+}
+
+func TestBuildFFmpegArgs_Software_DefaultsOmitted(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildFFmpegArgs("/dev/video2", req, false)
+	expected := []string{
+		"-f", "v4l2",
+		"-i", "/dev/video2",
+		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+		"-f", "h264", "pipe:1",
+	}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("software args mismatch\ngot:  %v\nwant: %v", args, expected)
+	}
+}
+
+func TestBuildFFmpegArgs_Software_WithFramerate(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{Framerate: 15}
+	args := buildFFmpegArgs("/dev/video0", req, false)
+	expected := []string{
+		"-f", "v4l2",
+		"-framerate", "15",
+		"-i", "/dev/video0",
+		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+		"-f", "h264", "pipe:1",
+	}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("software args with framerate mismatch\ngot:  %v\nwant: %v", args, expected)
 	}
 }
