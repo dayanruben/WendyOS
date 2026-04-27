@@ -89,14 +89,19 @@ func Init(cfg *config.Config) (firstRun bool) {
 	return firstRun
 }
 
-// Track sends an analytics event. No-op if analytics is disabled.
+// Track sends an analytics event. The PostHog enqueue is a no-op when
+// analytics is disabled or uninitialized; the test hook (if any) always
+// fires so test assertions can observe the intended payload regardless of
+// initialization state.
 //
-// Privacy invariant: every value in `properties` must be anonymous. Allowed:
-// canonical command paths (e.g. "wendy device wifi connect"), the top-level
-// command token, success booleans, bounded error-class enums, build flags
-// (cli_version, is_dev_build), and platform metadata (os, arch). Forbidden:
-// flag values, positional arguments, file paths, hostnames, error message
-// text, or anything else derived from user input.
+// Caller contract (not enforced by this function): every value in
+// `properties` must be anonymous. Allowed: canonical command paths (e.g.
+// "wendy device wifi connect"), the top-level command token, success
+// booleans, bounded error-class enums, build flags (cli_version,
+// is_dev_build), and platform metadata (os, arch). Forbidden: flag values,
+// positional arguments, file paths, hostnames, error message text, or
+// anything else derived from user input. The function will happily forward
+// whatever it is given — reviewers must enforce this at call sites.
 func Track(event string, properties map[string]string) {
 	if trackHook != nil {
 		trackHook(event, properties)
@@ -113,6 +118,8 @@ func Track(event string, properties map[string]string) {
 		props.Set(k, v)
 	}
 
+	// Enqueue only errors when the buffer is full or the client is closed —
+	// neither is actionable from a CLI fire-and-forget path.
 	_ = client.Enqueue(posthog.Capture{
 		DistinctId: distinctID,
 		Event:      event,

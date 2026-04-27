@@ -13,6 +13,8 @@ import (
 	"github.com/wendylabsinc/wendy/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/internal/cli/commands"
 	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func main() {
@@ -32,15 +34,17 @@ func main() {
 }
 
 // trackCommand emits a single command_executed analytics event describing the
-// invocation. The schema is documented in Documentation/Analytics.md; in short:
+// invocation. Properties:
 //
-//   - command_name is the canonical cobra path (e.g. "wendy device wifi connect"),
+//   - command_name: canonical cobra path (e.g. "wendy device wifi connect"),
 //     never flag values or positional args.
-//   - command_root is the top-level token (e.g. "device") to give dashboards a
-//     low-cardinality breakdown axis that survives PostHog's 25-row table cap.
-//   - duration_ms is the wall-clock time from process start.
-//   - On failure, error_class is a bounded enum derived from err — never the
-//     error message text, which can leak hostnames or paths.
+//   - command_root: top-level token (e.g. "device") for low-cardinality
+//     breakdowns that survive PostHog's 25-row table cap.
+//   - duration_ms: wall-clock time from process start.
+//   - success: bool serialized as "true"/"false".
+//   - is_dev_build: true when version.Version == "dev".
+//   - error_class (only when err != nil): bounded enum derived from err —
+//     never the error message text, which can leak hostnames or paths.
 func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	if executed == nil {
 		return
@@ -77,6 +81,12 @@ func commandRoot(c *cobra.Command) string {
 // errorClass maps an execution error to a bounded enum suitable for analytics.
 // It must never embed the error message, which can contain hostnames, paths,
 // or other user input.
+//
+// User-cancellation sentinels are checked first so an outer wrap never
+// reclassifies them. gRPC errors are extracted via status.FromError, which
+// walks the wrapped chain — substring matching on err.Error() would miss
+// errors wrapped via fmt.Errorf with a custom prefix or any future change to
+// grpc-go's stringification.
 func errorClass(err error) string {
 	if err == nil {
 		return ""
@@ -84,26 +94,27 @@ func errorClass(err error) string {
 	if errors.Is(err, commands.ErrUserCancelled) || errors.Is(err, commands.ErrDefaultCleared) {
 		return "user_cancelled"
 	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.OK && st.Code() != codes.Unknown {
+		switch st.Code() {
+		case codes.Canceled:
+			return "context_canceled"
+		case codes.DeadlineExceeded:
+			return "grpc_deadline"
+		case codes.Unavailable:
+			return "grpc_unavailable"
+		case codes.Unimplemented:
+			return "grpc_unimplemented"
+		default:
+			return "grpc_other"
+		}
+	}
 	if errors.Is(err, context.Canceled) {
 		return "context_canceled"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "context_deadline"
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "rpc error: code = ") {
-		return "other"
-	}
-	switch {
-	case strings.Contains(msg, "code = Unavailable"):
-		return "grpc_unavailable"
-	case strings.Contains(msg, "code = DeadlineExceeded"):
-		return "grpc_deadline"
-	case strings.Contains(msg, "code = Unimplemented"):
-		return "grpc_unimplemented"
-	default:
-		return "grpc_other"
-	}
+	return "other"
 }
 
 // formatError converts raw gRPC errors into human-readable messages.

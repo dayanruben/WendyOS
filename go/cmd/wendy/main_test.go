@@ -15,6 +15,8 @@ import (
 	"github.com/wendylabsinc/wendy/internal/cli/commands"
 	"github.com/wendylabsinc/wendy/internal/shared/env"
 	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type capturedEvent struct {
@@ -86,16 +88,7 @@ func runWithArgs(t *testing.T, args []string) (*cobra.Command, error) {
 // in the rest of the file fail or no-op.
 func clearCIEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{
-		"CI",
-		"GITHUB_ACTIONS",
-		"GITLAB_CI",
-		"BUILDKITE",
-		"CIRCLECI",
-		"JENKINS_HOME",
-		"TF_BUILD",
-		"TEAMCITY_VERSION",
-	} {
+	for _, key := range env.CIEnvVars {
 		t.Setenv(key, "")
 	}
 }
@@ -209,8 +202,8 @@ func TestTrackCommand_RootOnlyInvocation(t *testing.T) {
 	executed, err := runWithArgs(t, []string{"wendy"})
 	trackCommand(executed, err, time.Millisecond)
 
-	if len(*events) == 0 {
-		t.Fatal("expected at least one event for a bare invocation")
+	if len(*events) != 1 {
+		t.Fatalf("expected exactly 1 event for a bare invocation, got %d", len(*events))
 	}
 	got := (*events)[0].props
 	if got["command_name"] != "wendy" {
@@ -218,6 +211,40 @@ func TestTrackCommand_RootOnlyInvocation(t *testing.T) {
 	}
 	if got["command_root"] != "wendy" {
 		t.Errorf("command_root = %q, want %q", got["command_root"], "wendy")
+	}
+}
+
+func TestCommandRoot_DepthAndNilCases(t *testing.T) {
+	root := newTestRoot()
+	device, _, err := root.Find([]string{"device"})
+	if err != nil || device == nil {
+		t.Fatalf("setup: find device subcommand: %v", err)
+	}
+	wifi, _, err := root.Find([]string{"device", "wifi"})
+	if err != nil || wifi == nil {
+		t.Fatalf("setup: find wifi subcommand: %v", err)
+	}
+	connect, _, err := root.Find([]string{"device", "wifi", "connect"})
+	if err != nil || connect == nil {
+		t.Fatalf("setup: find connect subcommand: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+		want string
+	}{
+		{"nil", nil, ""},
+		{"depth0_root", root, "wendy"},
+		{"depth1_device", device, "device"},
+		{"depth2_wifi", wifi, "device"},
+		{"depth3_connect", connect, "device"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commandRoot(tc.cmd); got != tc.want {
+				t.Errorf("commandRoot = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -286,33 +313,16 @@ func TestErrorClass_Mapping(t *testing.T) {
 		{"nil", nil, ""},
 		{"user_cancelled", commands.ErrUserCancelled, "user_cancelled"},
 		{"default_cleared", commands.ErrDefaultCleared, "user_cancelled"},
+		{"user_cancelled_wrapped", fmt.Errorf("aborted: %w", commands.ErrUserCancelled), "user_cancelled"},
 		{"context_canceled", context.Canceled, "context_canceled"},
 		{"context_deadline", context.DeadlineExceeded, "context_deadline"},
-		{
-			name: "grpc_unavailable",
-			err:  errors.New("connecting to cloud: rpc error: code = Unavailable desc = transport closing"),
-			want: "grpc_unavailable",
-		},
-		{
-			name: "grpc_deadline",
-			err:  errors.New("rpc error: code = DeadlineExceeded desc = ctx done"),
-			want: "grpc_deadline",
-		},
-		{
-			name: "grpc_unimplemented",
-			err:  errors.New("rpc error: code = Unimplemented desc = nope"),
-			want: "grpc_unimplemented",
-		},
-		{
-			name: "grpc_other_code",
-			err:  errors.New("rpc error: code = Internal desc = boom"),
-			want: "grpc_other",
-		},
-		{
-			name: "non_grpc",
-			err:  errors.New("some plain failure"),
-			want: "other",
-		},
+		{"grpc_canceled_status", status.Error(codes.Canceled, "client gone"), "context_canceled"},
+		{"grpc_unavailable_status", status.Error(codes.Unavailable, "transport closing"), "grpc_unavailable"},
+		{"grpc_unavailable_wrapped", fmt.Errorf("connecting to cloud: %w", status.Error(codes.Unavailable, "x")), "grpc_unavailable"},
+		{"grpc_deadline_status", status.Error(codes.DeadlineExceeded, "ctx done"), "grpc_deadline"},
+		{"grpc_unimplemented_status", status.Error(codes.Unimplemented, "nope"), "grpc_unimplemented"},
+		{"grpc_internal", status.Error(codes.Internal, "boom"), "grpc_other"},
+		{"non_grpc", errors.New("some plain failure"), "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := errorClass(tc.err); got != tc.want {
@@ -323,9 +333,9 @@ func TestErrorClass_Mapping(t *testing.T) {
 }
 
 func TestErrorClass_NeverLeaksMessageText(t *testing.T) {
-	// Sanity check: even when the error embeds sensitive substrings, only
-	// the bounded enum value is returned.
-	leaky := fmt.Errorf("rpc error: code = Unavailable desc = could not reach %s", "secret-host.example.com")
+	// Even when the error embeds sensitive substrings, only the bounded
+	// enum value is returned.
+	leaky := status.Error(codes.Unavailable, "could not reach secret-host.example.com")
 	got := errorClass(leaky)
 	if got != "grpc_unavailable" {
 		t.Errorf("errorClass = %q, want %q", got, "grpc_unavailable")

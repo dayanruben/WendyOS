@@ -32,9 +32,10 @@ func Analytics() bool {
 	}
 }
 
-// ciEnvVars are env vars whose presence (with any non-empty value) indicates
-// the process is running inside a CI system.
-var ciEnvVars = []string{
+// CIEnvVars are env vars whose presence (with any non-empty value) indicates
+// the process is running inside a CI system. Exported so tests in other
+// packages can clear them without redefining the list.
+var CIEnvVars = []string{
 	"CI",
 	"GITHUB_ACTIONS",
 	"GITLAB_CI",
@@ -50,7 +51,7 @@ var ciEnvVars = []string{
 // product signal and have historically inflated event volume by orders of
 // magnitude. There is no opt-in flag that re-enables analytics in CI.
 func IsCI() bool {
-	for _, key := range ciEnvVars {
+	for _, key := range CIEnvVars {
 		if strings.TrimSpace(os.Getenv(key)) != "" {
 			return true
 		}

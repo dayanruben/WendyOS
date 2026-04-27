@@ -3,7 +3,7 @@ package env
 import "testing"
 
 func TestIsCI_NoEnvVars(t *testing.T) {
-	for _, key := range ciEnvVars {
+	for _, key := range CIEnvVars {
 		t.Setenv(key, "")
 	}
 	if IsCI() {
@@ -12,9 +12,9 @@ func TestIsCI_NoEnvVars(t *testing.T) {
 }
 
 func TestIsCI_DetectsEachKnownVar(t *testing.T) {
-	for _, key := range ciEnvVars {
+	for _, key := range CIEnvVars {
 		t.Run(key, func(t *testing.T) {
-			for _, other := range ciEnvVars {
+			for _, other := range CIEnvVars {
 				t.Setenv(other, "")
 			}
 			t.Setenv(key, "1")
@@ -26,7 +26,7 @@ func TestIsCI_DetectsEachKnownVar(t *testing.T) {
 }
 
 func TestIsCI_IgnoresWhitespaceOnlyValues(t *testing.T) {
-	for _, key := range ciEnvVars {
+	for _, key := range CIEnvVars {
 		t.Setenv(key, "")
 	}
 	t.Setenv("CI", "   ")
