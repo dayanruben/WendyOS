@@ -4,13 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/leases"
+	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/errdefs"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 )
+
+// unpackLeaseExpiration bounds how long the unpack lease keeps freshly created
+// snapshots and content alive. It must be long enough to apply the largest
+// expected image, but short enough that orphaned leases from a crashed agent
+// don't accumulate indefinitely.
+const unpackLeaseExpiration = 30 * time.Minute
 
 // UnpackProgress reports progress during the image unpack operation.
 type UnpackProgress struct {
@@ -26,30 +35,46 @@ type UnpackProgress struct {
 	Reused bool
 }
 
-// UnpackImage unpacks an image's layers into the snapshotter, returning the
-// snapshot key that should be used as the container's rootfs. It computes
-// chain IDs for each layer and creates snapshots incrementally, reusing
-// existing snapshots when possible.
+// UnpackImage unpacks an image's layers into the snapshotter so that the
+// resulting chain-ID snapshots are present for a subsequent
+// `WithNewSnapshot` call to build a container rootfs from. It computes chain
+// IDs for each layer and creates snapshots incrementally, reusing existing
+// snapshots when possible.
 //
 // The progress callback, if non-nil, is invoked for each phase of the unpack
 // operation to allow callers to report progress upstream.
-func (c *Client) UnpackImage(ctx context.Context, imageName string, progress func(UnpackProgress)) (string, error) {
+//
+// The unpack runs inside a containerd lease and tags each committed snapshot
+// with a `containerd.io/gc.root` label. Without this, containerd's metadata
+// GC can reap a chain-ID snapshot between iterations of the loop — the
+// snapshot has no inbound references until the next layer is committed on
+// top of it — which surfaces as a random-layer "parent snapshot does not
+// exist" failure during `Prepare`.
+func (c *Client) UnpackImage(ctx context.Context, imageName string, progress func(UnpackProgress)) error {
 	ctx = c.withNamespace(ctx)
+
+	ctx, doneLease, err := c.client.WithLease(ctx, leases.WithExpiration(unpackLeaseExpiration))
+	if err != nil {
+		return fmt.Errorf("creating unpack lease: %w", err)
+	}
+	defer func() {
+		// Release on a fresh context so a cancelled caller still tears the
+		// lease down. The lease's expiration is the ultimate backstop.
+		_ = doneLease(context.Background())
+	}()
+
 	cs := c.client.ContentStore()
 	sn := c.client.SnapshotService("")
 
-	// Look up the image to get the manifest descriptor.
 	img, err := c.client.GetImage(ctx, imageName)
 	if err != nil {
-		return "", fmt.Errorf("getting image %q: %w", imageName, err)
+		return fmt.Errorf("getting image %q: %w", imageName, err)
 	}
 
-	target := img.Target()
-
 	// Resolve through index if needed (platform selection).
-	manifest, err := images.Manifest(ctx, cs, target, img.Platform())
+	manifest, err := images.Manifest(ctx, cs, img.Target(), img.Platform())
 	if err != nil {
-		return "", fmt.Errorf("reading manifest for %q: %w", imageName, err)
+		return fmt.Errorf("reading manifest for %q: %w", imageName, err)
 	}
 
 	totalLayers := len(manifest.Layers)
@@ -57,21 +82,16 @@ func (c *Client) UnpackImage(ctx context.Context, imageName string, progress fun
 		progress(UnpackProgress{Phase: "start", TotalLayers: totalLayers})
 	}
 
-	// For each layer, compute the chain ID and ensure a committed snapshot exists.
 	var parentChainID string
 	for i, layerDesc := range manifest.Layers {
 		diffID, err := layerDiffID(ctx, cs, layerDesc)
 		if err != nil {
-			return "", fmt.Errorf("getting diff ID for layer %d: %w", i, err)
+			return fmt.Errorf("getting diff ID for layer %d: %w", i, err)
 		}
 
 		chainID := computeChainID(parentChainID, diffID)
-		snapshotKey := chainID
 
-		// Check if the snapshot already exists (committed).
-		_, err = sn.Stat(ctx, snapshotKey)
-		if err == nil {
-			// Snapshot exists, reuse it.
+		if _, err := sn.Stat(ctx, chainID); err == nil {
 			if progress != nil {
 				progress(UnpackProgress{
 					Phase:       "layer",
@@ -87,45 +107,34 @@ func (c *Client) UnpackImage(ctx context.Context, imageName string, progress fun
 			)
 			parentChainID = chainID
 			continue
+		} else if !errdefs.IsNotFound(err) {
+			return fmt.Errorf("stat snapshot %q: %w", chainID, err)
 		}
 
-		if !errdefs.IsNotFound(err) {
-			return "", fmt.Errorf("stat snapshot %q: %w", snapshotKey, err)
-		}
+		gcRootOpt := snapshots.WithLabels(map[string]string{
+			labelKeyGCRoot: gcTimestamp(),
+		})
 
-		// Snapshot does not exist; create it by preparing from parent.
-		parentKey := ""
-		if parentChainID != "" {
-			parentKey = parentChainID
-		}
-
-		// Prepare the active snapshot (this will be committed).
 		activeKey := fmt.Sprintf("extract-%s-%d", imageName, i)
-		mounts, err := sn.Prepare(ctx, activeKey, parentKey)
+		mounts, err := sn.Prepare(ctx, activeKey, parentChainID, gcRootOpt)
 		if err != nil {
-			// If the active key already exists (from a previous failed attempt), remove and retry.
 			if errdefs.IsAlreadyExists(err) {
 				_ = sn.Remove(ctx, activeKey)
-				mounts, err = sn.Prepare(ctx, activeKey, parentKey)
+				mounts, err = sn.Prepare(ctx, activeKey, parentChainID, gcRootOpt)
 			}
 			if err != nil {
-				return "", fmt.Errorf("preparing snapshot for layer %d: %w", i, err)
+				return fmt.Errorf("preparing snapshot for layer %d: %w", i, err)
 			}
 		}
 
-		// Apply the layer diff onto the snapshot mounts.
-		differ := c.client.DiffService()
-		_, err = differ.Apply(ctx, layerDesc, mounts)
-		if err != nil {
+		if _, err := c.client.DiffService().Apply(ctx, layerDesc, mounts); err != nil {
 			_ = sn.Remove(ctx, activeKey)
-			return "", fmt.Errorf("applying layer %d: %w", i, err)
+			return fmt.Errorf("applying layer %d: %w", i, err)
 		}
 
-		// Commit the snapshot with the chain ID as its key.
-		err = sn.Commit(ctx, snapshotKey, activeKey)
-		if err != nil {
+		if err := sn.Commit(ctx, chainID, activeKey, gcRootOpt); err != nil {
 			if !errdefs.IsAlreadyExists(err) {
-				return "", fmt.Errorf("committing snapshot for layer %d: %w", i, err)
+				return fmt.Errorf("committing snapshot for layer %d: %w", i, err)
 			}
 			// Another process committed it concurrently; clean up our active key.
 			_ = sn.Remove(ctx, activeKey)
@@ -150,30 +159,14 @@ func (c *Client) UnpackImage(ctx context.Context, imageName string, progress fun
 		parentChainID = chainID
 	}
 
-	// Create an ephemeral (active) snapshot for the container's rootfs.
-	ephemeralKey := fmt.Sprintf("wendy-%s-%d", imageName, len(manifest.Layers))
-	_, err = sn.Prepare(ctx, ephemeralKey, parentChainID)
-	if err != nil {
-		if errdefs.IsAlreadyExists(err) {
-			// Remove stale ephemeral and retry.
-			_ = sn.Remove(ctx, ephemeralKey)
-			_, err = sn.Prepare(ctx, ephemeralKey, parentChainID)
-		}
-		if err != nil {
-			return "", fmt.Errorf("preparing ephemeral snapshot: %w", err)
-		}
-	}
-
 	if progress != nil {
 		progress(UnpackProgress{Phase: "complete", TotalLayers: totalLayers})
 	}
 
-	return ephemeralKey, nil
+	return nil
 }
 
 // layerDiffID resolves the uncompressed diff ID for a layer descriptor.
-// It first checks the image config's diff_ids via the content store label,
-// and falls back to using the images.GetDiffID helper.
 func layerDiffID(ctx context.Context, cs content.Store, desc ocispec.Descriptor) (string, error) {
 	diffID, err := images.GetDiffID(ctx, cs, desc)
 	if err != nil {
@@ -182,8 +175,7 @@ func layerDiffID(ctx context.Context, cs content.Store, desc ocispec.Descriptor)
 	return diffID.String(), nil
 }
 
-// images.Manifest resolves a manifest from a descriptor, handling index lookups.
-// This is a thin helper to keep the unpack code clean.
+// readManifest reads and unmarshals an OCI manifest blob from the content store.
 func readManifest(ctx context.Context, cs content.Store, desc ocispec.Descriptor) (*ocispec.Manifest, error) {
 	p, err := content.ReadBlob(ctx, cs, desc)
 	if err != nil {
