@@ -7,14 +7,14 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: StreamingServerRequest<Wendy_Agent_Services_V1_RunContainerRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func updateAgent(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_UpdateAgentRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_UpdateAgentResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func getAgentVersion(
@@ -31,6 +31,8 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
             response.cpuArchitecture = "arm64"
         #elseif arch(x86_64)
             response.cpuArchitecture = "amd64"
+        #else
+            response.cpuArchitecture = "unknown"
         #endif
         return ServerResponse(message: response)
     }
@@ -39,35 +41,63 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: ServerRequest<Wendy_Agent_Services_V1_ListWiFiNetworksRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListWiFiNetworksResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func connectToWiFi(
         request: ServerRequest<Wendy_Agent_Services_V1_ConnectToWiFiRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectToWiFiResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func getWiFiStatus(
         request: ServerRequest<Wendy_Agent_Services_V1_GetWiFiStatusRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetWiFiStatusResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func disconnectWiFi(
         request: ServerRequest<Wendy_Agent_Services_V1_DisconnectWiFiRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_DisconnectWiFiResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
+    }
+
+    func listKnownWiFiNetworks(
+        request: ServerRequest<Wendy_Agent_Services_V1_ListKnownWiFiNetworksRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListKnownWiFiNetworksResponse> {
+        throw UnsupportedRPC.error()
+    }
+
+    func setWiFiNetworkPriority(
+        request: ServerRequest<Wendy_Agent_Services_V1_SetWiFiNetworkPriorityRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetWiFiNetworkPriorityResponse> {
+        throw UnsupportedRPC.error()
+    }
+
+    func reorderKnownWiFiNetworks(
+        request: ServerRequest<Wendy_Agent_Services_V1_ReorderKnownWiFiNetworksRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ReorderKnownWiFiNetworksResponse> {
+        throw UnsupportedRPC.error()
+    }
+
+    func forgetWiFiNetwork(
+        request: ServerRequest<Wendy_Agent_Services_V1_ForgetWiFiNetworkRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ForgetWiFiNetworkResponse> {
+        throw UnsupportedRPC.error()
     }
 
     func listHardwareCapabilities(
         request: ServerRequest<Wendy_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func scanBluetoothPeripherals(
@@ -76,14 +106,14 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> StreamingServerResponse<
         Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse
     > {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func connectBluetoothPeripheral(
         request: ServerRequest<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func disconnectBluetoothPeripheral(
@@ -91,20 +121,20 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse>
     {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func forgetBluetoothPeripheral(
         request: ServerRequest<Wendy_Agent_Services_V1_ForgetBluetoothPeripheralRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func updateOS(
         request: ServerRequest<Wendy_Agent_Services_V1_UpdateOSRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_UpdateOSResponse> {
-        fatalError("not implemented")
+        throw UnsupportedRPC.error()
     }
 }

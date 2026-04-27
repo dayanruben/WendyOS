@@ -747,34 +747,34 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         return ServerResponse(message: response)
     }
 
-    // MARK: - Unimplemented
+    // MARK: - Unsupported on macOS
 
     func attachContainer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_AttachContainerRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
-        throw RPCError(code: .unimplemented, message: "AttachContainer is not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func listVolumes(
         request: ServerRequest<Wendy_Agent_Services_V1_ListVolumesRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListVolumesResponse> {
-        throw RPCError(code: .unimplemented, message: "ListVolumes is not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func removeVolume(
         request: ServerRequest<Wendy_Agent_Services_V1_RemoveVolumeRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_RemoveVolumeResponse> {
-        throw RPCError(code: .unimplemented, message: "RemoveVolume is not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func listLayers(
         request: ServerRequest<Wendy_Agent_Services_V1_ListLayersRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_LayerHeader> {
-        throw RPCError(code: .unimplemented, message: "ListLayers is not implemented")
+        throw UnsupportedRPC.error()
     }
 
     func writeLayer(
@@ -880,17 +880,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> StreamingServerResponse<
         Wendy_Agent_Services_V1_CreateContainerProgressResponse
     > {
-        throw RPCError(
-            code: .unimplemented,
-            message: "CreateContainerWithProgress is not implemented"
-        )
+        throw UnsupportedRPC.error()
     }
 
     func runContainer(
         request: ServerRequest<Wendy_Agent_Services_V1_RunContainerLayersRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
-        throw RPCError(code: .unimplemented, message: "RunContainer is not implemented")
+        throw UnsupportedRPC.error()
     }
 
     // MARK: - Helpers
