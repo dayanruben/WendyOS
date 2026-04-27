@@ -6,13 +6,14 @@ import WendyAgentGRPC
 
 @Suite("Unsupported RPC contract")
 struct UnsupportedRPCTests {
-    @Test("agent service unsupported RPCs use the standardized macOS contract")
+    @Test("agent service unsupported RPCs use contextual macOS messages")
     func agentServiceUnsupportedRPCs() async {
         let service = AgentService()
 
         await assertUnsupportedCases([
             (
                 "RunContainer",
+                "Streaming container upload and execution is currently not supported on macOS.",
                 {
                     _ = try await service.runContainer(
                         request: makeStreamingRequest(
@@ -27,6 +28,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "UpdateAgent",
+                "Updating the agent is currently not supported on macOS.",
                 {
                     _ = try await service.updateAgent(
                         request: makeStreamingRequest(
@@ -41,6 +43,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListWiFiNetworks",
+                "Wi-Fi network scanning is currently not supported on macOS.",
                 {
                     _ = try await service.listWiFiNetworks(
                         request: ServerRequest(
@@ -56,6 +59,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ConnectToWiFi",
+                "Connecting to Wi-Fi networks is currently not supported on macOS.",
                 {
                     _ = try await service.connectToWiFi(
                         request: ServerRequest(
@@ -71,6 +75,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "GetWiFiStatus",
+                "Wi-Fi status reporting is currently not supported on macOS.",
                 {
                     _ = try await service.getWiFiStatus(
                         request: ServerRequest(
@@ -86,6 +91,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "DisconnectWiFi",
+                "Disconnecting from Wi-Fi networks is currently not supported on macOS.",
                 {
                     _ = try await service.disconnectWiFi(
                         request: ServerRequest(
@@ -101,6 +107,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListKnownWiFiNetworks",
+                "Listing saved Wi-Fi networks is currently not supported on macOS.",
                 {
                     _ = try await service.listKnownWiFiNetworks(
                         request: ServerRequest(
@@ -116,6 +123,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "SetWiFiNetworkPriority",
+                "Wi-Fi network priority management is currently not supported on macOS.",
                 {
                     _ = try await service.setWiFiNetworkPriority(
                         request: ServerRequest(
@@ -131,6 +139,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ReorderKnownWiFiNetworks",
+                "Reordering saved Wi-Fi networks is currently not supported on macOS.",
                 {
                     _ = try await service.reorderKnownWiFiNetworks(
                         request: ServerRequest(
@@ -146,6 +155,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ForgetWiFiNetwork",
+                "Removing saved Wi-Fi networks is currently not supported on macOS.",
                 {
                     _ = try await service.forgetWiFiNetwork(
                         request: ServerRequest(
@@ -161,6 +171,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListHardwareCapabilities",
+                "Hardware capability discovery is currently not supported on macOS.",
                 {
                     _ = try await service.listHardwareCapabilities(
                         request: ServerRequest(
@@ -176,6 +187,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ScanBluetoothPeripherals",
+                "Bluetooth scanning is currently not supported on macOS.",
                 {
                     _ = try await service.scanBluetoothPeripherals(
                         request: makeStreamingRequest(
@@ -190,6 +202,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ConnectBluetoothPeripheral",
+                "Connecting Bluetooth peripherals is currently not supported on macOS.",
                 {
                     _ = try await service.connectBluetoothPeripheral(
                         request: ServerRequest(
@@ -205,6 +218,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "DisconnectBluetoothPeripheral",
+                "Disconnecting Bluetooth peripherals is currently not supported on macOS.",
                 {
                     _ = try await service.disconnectBluetoothPeripheral(
                         request: ServerRequest(
@@ -221,6 +235,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ForgetBluetoothPeripheral",
+                "Forgetting Bluetooth peripherals is currently not supported on macOS.",
                 {
                     _ = try await service.forgetBluetoothPeripheral(
                         request: ServerRequest(
@@ -236,6 +251,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "UpdateOS",
+                "Operating system updates are currently not supported on macOS.",
                 {
                     _ = try await service.updateOS(
                         request: ServerRequest(
@@ -252,13 +268,14 @@ struct UnsupportedRPCTests {
         ])
     }
 
-    @Test("audio service unsupported RPCs use the standardized macOS contract")
+    @Test("audio service unsupported RPCs use contextual macOS messages")
     func audioServiceUnsupportedRPCs() async {
         let service = AudioService()
 
         await assertUnsupportedCases([
             (
                 "ListAudioDevices",
+                "Listing audio devices is currently not supported on macOS.",
                 {
                     _ = try await service.listAudioDevices(
                         request: ServerRequest(
@@ -274,6 +291,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "SetDefaultAudioDevice",
+                "Changing the default audio device is currently not supported on macOS.",
                 {
                     _ = try await service.setDefaultAudioDevice(
                         request: ServerRequest(
@@ -289,6 +307,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "StreamAudioLevels",
+                "Streaming audio levels is currently not supported on macOS.",
                 {
                     _ = try await service.streamAudioLevels(
                         request: ServerRequest(
@@ -304,6 +323,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "StreamAudio",
+                "Streaming audio is currently not supported on macOS.",
                 {
                     _ = try await service.streamAudio(
                         request: ServerRequest(
@@ -320,7 +340,7 @@ struct UnsupportedRPCTests {
         ])
     }
 
-    @Test("container service placeholder RPCs use the standardized macOS contract")
+    @Test("container service placeholder RPCs use contextual macOS messages")
     func containerServiceUnsupportedRPCs() async {
         let service = ContainerService(
             broadcaster: TelemetryBroadcaster(),
@@ -330,6 +350,7 @@ struct UnsupportedRPCTests {
         await assertUnsupportedCases([
             (
                 "AttachContainer",
+                "Linux container attach is currently not supported on macOS.",
                 {
                     _ = try await service.attachContainer(
                         request: makeStreamingRequest(
@@ -344,6 +365,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListVolumes",
+                "Container volume management is currently not supported on macOS.",
                 {
                     _ = try await service.listVolumes(
                         request: ServerRequest(
@@ -359,6 +381,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "RemoveVolume",
+                "Removing container volumes is currently not supported on macOS.",
                 {
                     _ = try await service.removeVolume(
                         request: ServerRequest(
@@ -374,6 +397,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListLayers",
+                "Container layer listing is currently not supported on macOS.",
                 {
                     _ = try await service.listLayers(
                         request: ServerRequest(
@@ -389,6 +413,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "CreateContainerWithProgress",
+                "Container creation progress streaming is currently not supported on macOS.",
                 {
                     _ = try await service.createContainerWithProgress(
                         request: ServerRequest(
@@ -404,6 +429,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "RunContainer",
+                "Legacy container streaming execution is currently not supported on macOS. Use the native app lifecycle RPCs instead when applicable.",
                 {
                     _ = try await service.runContainer(
                         request: ServerRequest(
@@ -483,24 +509,34 @@ struct UnsupportedRPCTests {
     }
 }
 
-private typealias UnsupportedCase = (name: String, call: @Sendable () async throws -> Void)
+private typealias UnsupportedCase = (
+    name: String,
+    message: String,
+    call: @Sendable () async throws -> Void
+)
 
 private func assertUnsupportedCases(_ cases: [UnsupportedCase]) async {
     for unsupportedCase in cases {
-        await assertUnsupported(unsupportedCase.name, unsupportedCase.call)
+        await assertUnsupported(
+            unsupportedCase.name,
+            expectedMessage: unsupportedCase.message,
+            unsupportedCase.call
+        )
     }
 }
 
 private func assertUnsupported(
     _ name: String,
+    expectedMessage: String,
     _ call: @escaping @Sendable () async throws -> Void
 ) async {
     do {
         try await call()
         Issue.record("Expected \(name) to be unsupported")
     } catch let error as RPCError {
-        #expect(UnsupportedRPC.isUnsupported(error), "\(name) should use UnsupportedRPC")
-        #expect(error.message == UnsupportedRPC.message)
+        #expect(error.code == .unimplemented)
+        #expect(error.message == expectedMessage)
+        #expect(error.message.contains("not supported on macOS"))
     } catch {
         Issue.record("Expected \(name) to throw RPCError, got \(error)")
     }
