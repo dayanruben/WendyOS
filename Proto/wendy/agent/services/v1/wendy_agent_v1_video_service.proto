@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package wendy.agent.services.v1;
+
+service WendyVideoService {
+    rpc ListVideoDevices(ListVideoDevicesRequest) returns (ListVideoDevicesResponse);
+    rpc StreamVideo(StreamVideoRequest) returns (stream VideoFrame);
+}
+
+message VideoDevice {
+    uint32 id          = 1;
+    string name        = 2;
+    string path        = 3;
+}
+
+message ListVideoDevicesRequest {}
+
+message ListVideoDevicesResponse {
+    repeated VideoDevice devices = 1;
+}
+
+message StreamVideoRequest {
+    uint32 device_id  = 1;
+    uint32 width      = 2;
+    uint32 height     = 3;
+    uint32 framerate  = 4;
+}
+
+message VideoFrame {
+    bytes  data         = 1;
+    uint64 timestamp_ns = 2;
+}
