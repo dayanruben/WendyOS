@@ -34,26 +34,26 @@ const (
 	vidiocQuerybuf  = 0xC0585609
 	vidiocQbuf      = 0xC058560F
 	vidiocDqbuf     = 0xC0585611
-	vidiocStreamon   = 0x40045612
+	vidiocStreamon  = 0x40045612
 	vidiocStreamoff = 0x40045613
 )
 
 // v4l2Format matches struct v4l2_format (208 bytes) for V4L2_BUF_TYPE_VIDEO_CAPTURE.
 type v4l2Format struct {
-	Type        uint32
-	Width       uint32
-	Height      uint32
-	PixelFormat uint32
-	Field       uint32
+	Type         uint32
+	Width        uint32
+	Height       uint32
+	PixelFormat  uint32
+	Field        uint32
 	BytesPerLine uint32
-	SizeImage   uint32
-	Colorspace  uint32
-	Priv        uint32
-	Flags       uint32
-	Enc         uint32
+	SizeImage    uint32
+	Colorspace   uint32
+	Priv         uint32
+	Flags        uint32
+	Enc          uint32
 	Quantization uint32
-	XferFunc    uint32
-	_           [156]byte
+	XferFunc     uint32
+	_            [156]byte
 }
 
 // v4l2ReqBuffers matches struct v4l2_requestbuffers (20 bytes).
@@ -397,28 +397,27 @@ func findGStreamerEncoder(inspectPath string) (gstEncoderResult, error) {
 
 	hasElem := func(name string) bool { return available[name] }
 
-	// H.264 path: h264parse (gst-plugins-bad) is required for proper stream framing.
-	if hasElem("h264parse") {
-		for _, enc := range []string{
-			"v4l2h264enc",  // V4L2 M2M hardware (gst-plugins-good)
-			"omxh264enc",   // OpenMAX hardware (Broadcom, Qualcomm)
-			"avenc_h264",   // libavcodec bridge (gst-libav)
-			"x264enc",      // software (gst-plugins-ugly)
-			"openh264enc",  // software (gst-plugins-bad)
-			"vaapih264enc", // Intel VA-API
-			"nvh264enc",    // NVIDIA
-			"msdkh264enc",  // Intel Media SDK
-		} {
-			if hasElem(enc) {
-				return gstEncoderResult{element: enc, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
-			}
+	// H.264 encoders: no server-side h264parse required — x264enc/omxh264enc/etc.
+	// output annexb H.264 that the client's h264parse can parse directly.
+	for _, enc := range []string{
+		"v4l2h264enc",  // V4L2 M2M hardware (gst-plugins-good)
+		"omxh264enc",   // OpenMAX hardware (Broadcom, Qualcomm)
+		"avenc_h264",   // libavcodec bridge (gst-libav)
+		"x264enc",      // software (gst-plugins-ugly)
+		"openh264enc",  // software (gst-plugins-bad)
+		"vaapih264enc", // Intel VA-API
+		"nvh264enc",    // NVIDIA
+		"msdkh264enc",  // Intel Media SDK
+	} {
+		if hasElem(enc) {
+			return gstEncoderResult{element: enc, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 		}
-		// Dynamic discovery: any element with "h264" and "enc" in the name.
-		for name := range available {
-			lower := strings.ToLower(name)
-			if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") {
-				return gstEncoderResult{element: name, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
-			}
+	}
+	// Dynamic discovery: any element with "h264" and "enc" in the name.
+	for name := range available {
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") {
+			return gstEncoderResult{element: name, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 		}
 	}
 
@@ -479,18 +478,19 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 }
 
 // encoderSegment returns the GStreamer pipeline segment for the given encoder element.
+// H.264 encoders omit server-side h264parse — the annexb output is parsed by the client.
 func encoderSegment(encoder string) string {
 	switch encoder {
 	case "v4l2h264enc":
-		return "v4l2h264enc ! video/x-h264,profile=baseline ! h264parse"
+		return "videoconvert ! v4l2h264enc ! video/x-h264,profile=baseline"
 	case "x264enc":
-		return "x264enc tune=zerolatency ! h264parse"
+		return "videoconvert ! x264enc tune=zerolatency"
 	case "openh264enc":
-		return "openh264enc ! h264parse"
+		return "videoconvert ! openh264enc"
 	case "vp8enc":
 		// webmmux streamable=true writes headers that matroskademux can parse from a pipe.
 		return "videoconvert ! vp8enc deadline=1 ! webmmux streamable=true"
 	default:
-		return encoder + " ! h264parse"
+		return "videoconvert ! " + encoder
 	}
 }
