@@ -36,6 +36,8 @@ const (
 	phaseDeviceName               // text input for device name
 	phaseWifiDetect               // async: detect current SSID
 	phaseWifiQuestion             // "Use [SSID]?" or options menu
+	phaseWifiScanLoading          // spinner while scanning nearby networks
+	phaseWifiNetworkPicker        // pick from scanned networks
 	phaseWifiPassword             // enter password for detected/chosen SSID
 	phaseWifiManualSSID           // enter SSID manually
 	phaseReadyToInstall           // summary before install
@@ -56,6 +58,7 @@ const (
 type (
 	tourDevicesLoadedMsg  struct{ devices []deviceInfo; err error }
 	tourWifiDetectedMsg   struct{ ssid, password string }
+	tourWifiScanDoneMsg   struct{ networks []localWifiNetwork }
 	tourDriveRescanMsg    struct{}
 	tourDiscoveryTickMsg  struct{}
 	tourDiscoveryFoundMsg struct{ addr, name string }
@@ -162,7 +165,9 @@ type tourWizardModel struct {
 	detectedPass string
 	wifiSSID     string
 	wifiPass     string
-	wifiCursor   int // options menu cursor
+	wifiCursor   int              // options menu cursor
+	scanNetworks []localWifiNetwork // results from scanLocalWifiNetworks
+	scanCursor   int
 
 	// device name
 	deviceName string
@@ -240,6 +245,12 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 		m.detectedPass = msg.password
 		m.phase = phaseWifiQuestion
 		m.wifiCursor = 0
+		return m, nil
+
+	case tourWifiScanDoneMsg:
+		m.scanNetworks = msg.networks
+		m.scanCursor = 0
+		m.phase = phaseWifiNetworkPicker
 		return m, nil
 
 	case tourDriveRescanMsg:
@@ -421,8 +432,9 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", " ":
 			switch m.wifiCursor {
-			case 0: // "Yes, use [detectedSSID]" or "Enter SSID manually" if nothing detected
+			case 0:
 				if m.detectedSSID != "" {
+					// "Yes, use [detectedSSID]"
 					m.wifiSSID = m.detectedSSID
 					if m.detectedPass != "" {
 						m.wifiPass = m.detectedPass
@@ -435,30 +447,78 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.input.Focus()
 					}
 				} else {
-					// Manual SSID
+					// "Scan for nearby networks"
+					m.phase = phaseWifiScanLoading
+					return m, scanWifiCmd()
+				}
+			case 1:
+				if m.detectedSSID != "" {
+					// "Scan for a different network"
+					m.phase = phaseWifiScanLoading
+					return m, scanWifiCmd()
+				} else {
+					// "Enter WiFi credentials manually"
 					m.phase = phaseWifiManualSSID
 					m.input.Placeholder = "WiFi network name (SSID)"
 					m.input.EchoMode = textinput.EchoNormal
 					m.input.SetValue("")
 					m.input.Focus()
 				}
-			case 1: // "Enter manually" (if detected) or "Skip WiFi"
+			case 2:
 				if m.detectedSSID != "" {
+					// "Enter WiFi credentials manually"
 					m.phase = phaseWifiManualSSID
 					m.input.Placeholder = "WiFi network name (SSID)"
 					m.input.EchoMode = textinput.EchoNormal
 					m.input.SetValue("")
 					m.input.Focus()
 				} else {
-					// Skip
+					// "Skip WiFi setup"
 					m.wifiSSID = ""
 					m.wifiPass = ""
 					m.phase = phaseReadyToInstall
 				}
-			case 2: // "Skip WiFi" (only if detected != "")
+			case 3:
+				// "Skip WiFi setup" (only when detectedSSID != "")
 				m.wifiSSID = ""
 				m.wifiPass = ""
 				m.phase = phaseReadyToInstall
+			}
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case phaseWifiScanLoading:
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+	case phaseWifiNetworkPicker:
+		switch key {
+		case "up", "k":
+			if m.scanCursor > 0 {
+				m.scanCursor--
+			}
+		case "down", "j":
+			if m.scanCursor < len(m.scanNetworks)-1 {
+				m.scanCursor++
+			}
+		case "enter", " ":
+			if len(m.scanNetworks) > 0 && m.scanCursor < len(m.scanNetworks) {
+				net := m.scanNetworks[m.scanCursor]
+				m.wifiSSID = net.SSID
+				if supportsKeychainLookup {
+					if pwd, err := lookupKeychainPassword(net.SSID); err == nil && pwd != "" {
+						m.wifiPass = pwd
+						m.phase = phaseReadyToInstall
+						return m, nil
+					}
+				}
+				m.phase = phaseWifiPassword
+				m.input.Placeholder = "WiFi password (leave empty for open network)"
+				m.input.EchoMode = textinput.EchoPassword
+				m.input.SetValue("")
+				m.input.Focus()
 			}
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -620,6 +680,10 @@ func (m tourWizardModel) View() string {
 		body = m.viewWifiDetect(inner)
 	case phaseWifiQuestion:
 		body = m.viewWifiQuestion(inner)
+	case phaseWifiScanLoading:
+		body = m.viewWifiScanLoading(inner)
+	case phaseWifiNetworkPicker:
+		body = m.viewWifiNetworkPicker(inner)
 	case phaseWifiPassword, phaseWifiManualSSID:
 		body = m.viewTextInput(inner)
 	case phaseReadyToInstall:
@@ -819,12 +883,14 @@ func wifiQuestionOptions(detected string) []string {
 	if detected != "" {
 		return []string{
 			fmt.Sprintf("Yes, use \"%s\"", detected),
-			"Enter a different network",
+			"Scan for a different network",
+			"Enter WiFi credentials manually",
 			"Skip WiFi setup",
 		}
 	}
 	return []string{
-		"Enter WiFi credentials",
+		"Scan for nearby networks",
+		"Enter WiFi credentials manually",
 		"Skip WiFi setup",
 	}
 }
@@ -848,6 +914,35 @@ func (m tourWizardModel) viewWifiQuestion(w int) string {
 		}
 	}
 	sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
+	return sb.String()
+}
+
+func (m tourWizardModel) viewWifiScanLoading(w int) string {
+	return wizSubStyle.Render("Scanning for nearby WiFi networks…")
+}
+
+func (m tourWizardModel) viewWifiNetworkPicker(w int) string {
+	var sb strings.Builder
+	sb.WriteString(wizTitleStyle.Render("Step 5 — Select WiFi network") + "\n")
+	sb.WriteString(wizSubStyle.Render("Choose the network to provision on your device.") + "\n\n")
+
+	if len(m.scanNetworks) == 0 {
+		sb.WriteString(wizNoticeStyle.Render("No networks found nearby.") + "\n\n")
+		sb.WriteString(wizHintStyle.Render("Press q to go back"))
+	} else {
+		for i, net := range m.scanNetworks {
+			label := net.SSID
+			if net.SignalStrength > 0 {
+				label += fmt.Sprintf("  (%d%%)", net.SignalStrength)
+			}
+			if i == m.scanCursor {
+				sb.WriteString(wizSelectedStyle.Render("▶ "+label) + "\n")
+			} else {
+				sb.WriteString(wizNormalStyle.Render("  "+label) + "\n")
+			}
+		}
+		sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select  ·  q quit"))
+	}
 	return sb.String()
 }
 
@@ -1050,6 +1145,13 @@ func loadDevicesCmd() tea.Cmd {
 	}
 }
 
+func scanWifiCmd() tea.Cmd {
+	return func() tea.Msg {
+		networks, _ := scanLocalWifiNetworks()
+		return tourWifiScanDoneMsg{networks: networks}
+	}
+}
+
 func detectWifiCmd() tea.Cmd {
 	return func() tea.Msg {
 		ssid := detectCurrentWiFiSSID()
@@ -1101,6 +1203,7 @@ func (m tourWizardModel) cmdRunOSInstall() tea.Cmd {
 	args := []string{
 		"os", "install",
 		"--device-type", m.selected.Key,
+		"--version", m.selected.LatestVersion,
 		"--device-name", m.deviceName,
 		"--force",
 	}
