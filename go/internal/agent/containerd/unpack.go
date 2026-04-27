@@ -2,7 +2,6 @@ package containerd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -17,8 +16,9 @@ import (
 
 // unpackLeaseExpiration bounds how long the unpack lease keeps freshly created
 // snapshots and content alive. It must be long enough to apply the largest
-// expected image, but short enough that orphaned leases from a crashed agent
-// don't accumulate indefinitely.
+// expected image, but short enough that a lease orphaned by a crashed agent
+// doesn't pin disk for too long. The expiration is a backstop only — the
+// happy path releases the lease on return.
 const unpackLeaseExpiration = 30 * time.Minute
 
 // UnpackProgress reports progress during the image unpack operation.
@@ -45,11 +45,13 @@ type UnpackProgress struct {
 // operation to allow callers to report progress upstream.
 //
 // The unpack runs inside a containerd lease and tags each committed snapshot
-// with a `containerd.io/gc.root` label. Without this, containerd's metadata
-// GC can reap a chain-ID snapshot between iterations of the loop — the
-// snapshot has no inbound references until the next layer is committed on
-// top of it — which surfaces as a random-layer "parent snapshot does not
-// exist" failure during `Prepare`.
+// with a `containerd.io/gc.root` label. These work as a pair: the lease pins
+// content and snapshots while the unpack is in progress, and the gc.root
+// labels keep committed chain-ID snapshots alive after the lease releases.
+// Without both, containerd's metadata GC could reap a freshly committed
+// chain-ID snapshot before the next layer's `Prepare` references it as a
+// parent — surfacing as a random-layer "parent snapshot does not exist"
+// failure.
 func (c *Client) UnpackImage(ctx context.Context, imageName string, progress func(UnpackProgress)) error {
 	ctx = c.withNamespace(ctx)
 
@@ -59,8 +61,17 @@ func (c *Client) UnpackImage(ctx context.Context, imageName string, progress fun
 	}
 	defer func() {
 		// Release on a fresh context so a cancelled caller still tears the
-		// lease down. The lease's expiration is the ultimate backstop.
-		_ = doneLease(context.Background())
+		// lease down. The namespace is preserved because containerd's lease
+		// service requires it on every request — Background() alone would
+		// fail the NamespaceRequired check and silently leave the lease
+		// pinned until expiration.
+		releaseCtx := c.withNamespace(context.Background())
+		if err := doneLease(releaseCtx); err != nil {
+			c.logger.Warn("Failed to release unpack lease; relying on expiration backstop",
+				zap.Duration("expiration", unpackLeaseExpiration),
+				zap.Error(err),
+			)
+		}
 	}()
 
 	cs := c.client.ContentStore()
@@ -117,44 +128,56 @@ func (c *Client) UnpackImage(ctx context.Context, imageName string, progress fun
 
 		activeKey := fmt.Sprintf("extract-%s-%d", imageName, i)
 		mounts, err := sn.Prepare(ctx, activeKey, parentChainID, gcRootOpt)
-		if err != nil {
-			if errdefs.IsAlreadyExists(err) {
-				_ = sn.Remove(ctx, activeKey)
-				mounts, err = sn.Prepare(ctx, activeKey, parentChainID, gcRootOpt)
-			}
+		if errdefs.IsAlreadyExists(err) {
+			// Stale active key from a prior failed attempt; remove and retry once.
+			c.removeActiveSnapshot(ctx, sn, activeKey, "stale active snapshot before retry", i)
+			mounts, err = sn.Prepare(ctx, activeKey, parentChainID, gcRootOpt)
 			if err != nil {
-				return fmt.Errorf("preparing snapshot for layer %d: %w", i, err)
+				return fmt.Errorf("preparing snapshot for layer %d after retry: %w", i, err)
 			}
+		} else if err != nil {
+			return fmt.Errorf("preparing snapshot for layer %d: %w", i, err)
 		}
 
 		if _, err := c.client.DiffService().Apply(ctx, layerDesc, mounts); err != nil {
-			_ = sn.Remove(ctx, activeKey)
+			c.removeActiveSnapshot(ctx, sn, activeKey, "active snapshot after apply failure", i)
 			return fmt.Errorf("applying layer %d: %w", i, err)
 		}
 
-		if err := sn.Commit(ctx, chainID, activeKey, gcRootOpt); err != nil {
-			if !errdefs.IsAlreadyExists(err) {
-				return fmt.Errorf("committing snapshot for layer %d: %w", i, err)
+		commitErr := sn.Commit(ctx, chainID, activeKey, gcRootOpt)
+		switch {
+		case commitErr == nil:
+			c.logger.Debug("Unpacked layer",
+				zap.Int("layer", i),
+				zap.String("chain_id", chainID),
+				zap.Int64("size", layerDesc.Size),
+			)
+			if progress != nil {
+				progress(UnpackProgress{
+					Phase:       "layer",
+					LayerIndex:  i,
+					TotalLayers: totalLayers,
+					LayerSize:   layerDesc.Size,
+					Reused:      false,
+				})
 			}
-			// Another process committed it concurrently; clean up our active key.
-			_ = sn.Remove(ctx, activeKey)
+		case errdefs.IsAlreadyExists(commitErr):
+			// A concurrent unpack committed the same chain ID first. Our
+			// active key still exists; clean it up and report the layer
+			// as reused rather than freshly unpacked.
+			c.removeActiveSnapshot(ctx, sn, activeKey, "active snapshot after concurrent commit", i)
+			if progress != nil {
+				progress(UnpackProgress{
+					Phase:       "layer",
+					LayerIndex:  i,
+					TotalLayers: totalLayers,
+					LayerSize:   layerDesc.Size,
+					Reused:      true,
+				})
+			}
+		default:
+			return fmt.Errorf("committing snapshot for layer %d: %w", i, commitErr)
 		}
-
-		if progress != nil {
-			progress(UnpackProgress{
-				Phase:       "layer",
-				LayerIndex:  i,
-				TotalLayers: totalLayers,
-				LayerSize:   layerDesc.Size,
-				Reused:      false,
-			})
-		}
-
-		c.logger.Debug("Unpacked layer",
-			zap.Int("layer", i),
-			zap.String("chain_id", chainID),
-			zap.Int64("size", layerDesc.Size),
-		)
 
 		parentChainID = chainID
 	}
@@ -166,6 +189,20 @@ func (c *Client) UnpackImage(ctx context.Context, imageName string, progress fun
 	return nil
 }
 
+// removeActiveSnapshot deletes an active snapshot key as part of error recovery,
+// logging at Warn for any failure other than NotFound (which is benign — the
+// key was never created or has already been swept).
+func (c *Client) removeActiveSnapshot(ctx context.Context, sn snapshots.Snapshotter, key, reason string, layer int) {
+	if err := sn.Remove(ctx, key); err != nil && !errdefs.IsNotFound(err) {
+		c.logger.Warn("Failed to remove active snapshot",
+			zap.String("active_key", key),
+			zap.String("reason", reason),
+			zap.Int("layer", layer),
+			zap.Error(err),
+		)
+	}
+}
+
 // layerDiffID resolves the uncompressed diff ID for a layer descriptor.
 func layerDiffID(ctx context.Context, cs content.Store, desc ocispec.Descriptor) (string, error) {
 	diffID, err := images.GetDiffID(ctx, cs, desc)
@@ -173,17 +210,4 @@ func layerDiffID(ctx context.Context, cs content.Store, desc ocispec.Descriptor)
 		return "", err
 	}
 	return diffID.String(), nil
-}
-
-// readManifest reads and unmarshals an OCI manifest blob from the content store.
-func readManifest(ctx context.Context, cs content.Store, desc ocispec.Descriptor) (*ocispec.Manifest, error) {
-	p, err := content.ReadBlob(ctx, cs, desc)
-	if err != nil {
-		return nil, err
-	}
-	var manifest ocispec.Manifest
-	if err := json.Unmarshal(p, &manifest); err != nil {
-		return nil, err
-	}
-	return &manifest, nil
 }
