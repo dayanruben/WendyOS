@@ -249,6 +249,12 @@ func newAudioListenCmd() *cobra.Command {
 func playRealtimeAudio(ctx context.Context, stream interface {
 	Recv() (*agentpb.AudioChunk, error)
 }, sampleRate, channels uint32) error {
+	if sampleRate == 0 {
+		sampleRate = 48000
+	}
+	if channels == 0 {
+		channels = 1
+	}
 	otoCtx, readyCh, err := oto.NewContext(&oto.NewContextOptions{
 		SampleRate:   int(sampleRate),
 		ChannelCount: int(channels),

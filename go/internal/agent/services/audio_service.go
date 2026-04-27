@@ -99,23 +99,42 @@ func (s *AudioService) listPipeWireDevices(ctx context.Context) ([]*agentpb.Audi
 // listALSADevices falls back to ALSA for audio device enumeration.
 func (s *AudioService) listALSADevices(ctx context.Context) ([]*agentpb.AudioDevice, error) {
 	var devices []*agentpb.AudioDevice
+	var firstErr error
 
-	// List capture devices.
-	cmd := exec.CommandContext(ctx, "arecord", "-l")
-	if output, err := cmd.Output(); err == nil {
-		devices = append(devices, parseALSAOutput(string(output), agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT)...)
+	for _, info := range []struct {
+		bin     string
+		devType agentpb.AudioDeviceType
+	}{
+		{"arecord", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT},
+		{"aplay", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT},
+	} {
+		var stdout, stderr bytes.Buffer
+		cmd := exec.CommandContext(ctx, info.bin, "-l")
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			if firstErr == nil {
+				se := strings.TrimSpace(stderr.String())
+				if se != "" {
+					firstErr = fmt.Errorf("%s -l: %w: %s", info.bin, err, se)
+				} else {
+					firstErr = fmt.Errorf("%s -l: %w", info.bin, err)
+				}
+			}
+			continue
+		}
+		devices = append(devices, parseALSAOutput(stdout.String(), info.devType)...)
 	}
 
-	// List playback devices.
-	cmd = exec.CommandContext(ctx, "aplay", "-l")
-	if output, err := cmd.Output(); err == nil {
-		devices = append(devices, parseALSAOutput(string(output), agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT)...)
+	if len(devices) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
-
 	return devices, nil
 }
 
 // parseALSAOutput parses the output of arecord -l or aplay -l.
+// IDs are encoded as ((card << 8) | device) + 1 so that 0 remains the
+// "unspecified" sentinel used by alsaDeviceArg.
 func parseALSAOutput(output string, devType agentpb.AudioDeviceType) []*agentpb.AudioDevice {
 	var devices []*agentpb.AudioDevice
 	scanner := bufio.NewScanner(strings.NewReader(output))
@@ -124,21 +143,30 @@ func parseALSAOutput(output string, devType agentpb.AudioDeviceType) []*agentpb.
 		if !strings.HasPrefix(line, "card ") {
 			continue
 		}
-		// Parse "card N: Name [Description], device N: ..."
+		// Parse "card N: CardName [Desc], device M: DeviceName [Desc]"
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) < 2 {
 			continue
 		}
-		cardStr := strings.TrimPrefix(parts[0], "card ")
-		cardNum, err := strconv.ParseUint(strings.TrimSpace(cardStr), 10, 32)
+		cardNum, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(parts[0], "card ")), 10, 32)
 		if err != nil {
 			continue
 		}
-		desc := strings.TrimSpace(parts[1])
+		var deviceNum uint64
+		rest := parts[1]
+		if idx := strings.Index(rest, ", device "); idx >= 0 {
+			after := rest[idx+len(", device "):]
+			if ci := strings.Index(after, ":"); ci >= 0 {
+				if d, err := strconv.ParseUint(strings.TrimSpace(after[:ci]), 10, 32); err == nil {
+					deviceNum = d
+				}
+			}
+		}
+		id := ((cardNum << 8) | deviceNum) + 1
 		devices = append(devices, &agentpb.AudioDevice{
-			Id:          uint32(cardNum),
-			Name:        fmt.Sprintf("hw:%d", cardNum),
-			Description: desc,
+			Id:          uint32(id),
+			Name:        fmt.Sprintf("hw:%d,%d", cardNum, deviceNum),
+			Description: strings.TrimSpace(rest),
 			Type:        devType,
 		})
 	}
@@ -313,14 +341,20 @@ func firstALSACaptureCard(ctx context.Context) uint32 {
 }
 
 // alsaDeviceArg returns the arecord -D argument for the given device ID.
-// When id is 0 (unspecified), it auto-selects the first available capture card.
-// plughw is used instead of hw so ALSA's plug layer handles any sample-rate or
-// format conversion — without it, hw: requires an exact hardware-supported rate.
+// IDs from ListAudioDevices are encoded as ((card << 8) | device) + 1; 0 means
+// "unspecified" and triggers auto-selection of the first capture card.
+// plughw is used instead of hw so ALSA's plug layer handles format/rate conversion.
 func alsaDeviceArg(ctx context.Context, id uint32) string {
 	if id == 0 {
 		id = firstALSACaptureCard(ctx)
+		if id == 0 {
+			return "plughw:0,0"
+		}
 	}
-	return fmt.Sprintf("plughw:%d,0", id)
+	encoded := uint64(id) - 1
+	card := encoded >> 8
+	device := encoded & 0xFF
+	return fmt.Sprintf("plughw:%d,%d", card, device)
 }
 
 // StreamAudioLevels streams peak/RMS dB levels for a device.
@@ -360,7 +394,7 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 	if err := cmd.Start(); err != nil {
 		return status.Errorf(codes.Internal, "failed to start audio capture: %v", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
 
 	buf := make([]byte, 48000*2/int(rateHz)) // samples per interval * 2 bytes per sample
 
@@ -425,7 +459,7 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 	if err := cmd.Start(); err != nil {
 		return status.Errorf(codes.Internal, "failed to start audio capture: %v", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
 
 	// Send ~20ms chunks of PCM data.
 	chunkSamples := sampleRate / 50 // 20ms worth of samples
