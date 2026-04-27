@@ -291,7 +291,7 @@ final class Camera: NSObject {
                 continue
             }
 
-            while !Task.isCancelled && windowFrames(within: interval).count < 2 {
+            while !Task.isCancelled && windowFrames(within: interval).count < 1 {
                 try? await Task.sleep(for: .seconds(1))
             }
             if Task.isCancelled { return }
