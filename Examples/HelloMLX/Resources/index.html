@@ -476,6 +476,10 @@
       return date.toLocaleString();
     }
 
+    function formatSquareResolution(value) {
+      return `${value}x${value}`;
+    }
+
     function updatePromptControls() {
       const hasChanges = elements.promptInput.value !== state.promptText;
       state.promptDirty = hasChanges;
@@ -523,7 +527,7 @@
       elements.modelStatus.textContent = payload.model.name
         ? `${payload.model.status} · ${payload.model.name}`
         : payload.model.status;
-      elements.runConfig.textContent = `${payload.run.interval}s window · ${payload.run.fps} fps`;
+      elements.runConfig.textContent = `${payload.run.interval}s window · ${payload.run.fps} fps · ${formatSquareResolution(payload.run.resolution)}`;
       elements.latestRun.textContent = payload.run.latestRunID
         ? `${payload.run.latestRunID} · ${payload.run.isRunningInference ? 'running' : 'idle'}`
         : (payload.run.isRunningInference ? 'Running…' : 'None yet');
@@ -574,7 +578,8 @@
       const card = fragment.querySelector('.run-card');
       card.dataset.runId = run.id;
       fragment.querySelector('.run-time').textContent = formatDate(run.timestamp);
-      fragment.querySelector('.run-frame-count').textContent = `${run.frameCount} frame${run.frameCount === 1 ? '' : 's'}`;
+      const resolution = run.resolution ?? 256;
+      fragment.querySelector('.run-frame-count').textContent = `${run.frameCount} frame${run.frameCount === 1 ? '' : 's'} · ${run.interval}s · ${run.fps} fps · ${formatSquareResolution(resolution)}`;
       fragment.querySelector('.run-prompt').textContent = run.prompt;
       fragment.querySelector('.run-response').textContent = run.response;
 

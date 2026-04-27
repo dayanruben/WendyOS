@@ -38,6 +38,7 @@ struct PromptInfo: Codable {
 struct RunInfo: Codable {
     let interval: Int
     let fps: Int
+    let resolution: Int
     let isRunningInference: Bool
     let latestRunID: String?
     let lastInferenceAt: Date?
@@ -66,6 +67,7 @@ actor AppState {
     private let baseURL: String
     private let interval: Int
     private let fps: Int
+    private let resolution: Int
 
     private var cameraStatus: CameraStatus = .starting
     private var cameraName: String?
@@ -87,6 +89,7 @@ actor AppState {
         self.baseURL = baseURL
         self.interval = config.interval
         self.fps = config.fps
+        self.resolution = config.resolution
         self.modelStatus = config.modelPath == nil ? .notConfigured : .loading
         self.modelName = config.modelPath.map { URL(fileURLWithPath: $0).lastPathComponent }
         self.promptText = config.prompt
@@ -110,6 +113,7 @@ actor AppState {
             run: RunInfo(
                 interval: interval,
                 fps: fps,
+                resolution: resolution,
                 isRunningInference: isRunningInference,
                 latestRunID: latestRunID,
                 lastInferenceAt: lastInferenceAt

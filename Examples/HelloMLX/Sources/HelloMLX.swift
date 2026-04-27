@@ -49,13 +49,13 @@ struct CLIArguments: ParsableCommand {
     var prompt: String = ""
 
     @Option(name: .long, help: "Seconds of camera history to include in each inference pass.")
-    var interval: Int = 5
+    var interval: Int = 2
 
     @Option(name: .long, help: "Frames per second to sample into the buffer.")
-    var fps: Int = 2
+    var fps: Int = 1
 
     @Option(name: .long, help: "Square frame resolution. A value of Y produces YxY frames.")
-    var resolution: Int = 256
+    var resolution: Int = 512
 
     @Option(name: .long, help: "Local port to serve the web UI on.")
     var port: Int = 8080
@@ -343,7 +343,8 @@ final class Camera: NSObject {
                     cameraName: cameraName,
                     modelName: modelName,
                     interval: config.interval,
-                    fps: config.fps
+                    fps: config.fps,
+                    resolution: config.resolution
                 )
                 await state.recordRun(id: run.id, at: run.timestamp)
                 await state.setError(nil)

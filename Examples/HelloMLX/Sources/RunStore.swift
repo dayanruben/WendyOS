@@ -15,6 +15,7 @@ struct PersistedRun: Codable, Sendable {
     let modelName: String?
     let interval: Int
     let fps: Int
+    let resolution: Int?
     let frameCount: Int
     let frames: [PersistedFrame]
 }
@@ -73,7 +74,8 @@ struct RunStore {
         cameraName: String?,
         modelName: String?,
         interval: Int,
-        fps: Int
+        fps: Int,
+        resolution: Int
     ) throws -> PersistedRun {
         let id = RunID.make()
         let directoryURL = runsURL.appendingPathComponent(id, isDirectory: true)
@@ -106,6 +108,7 @@ struct RunStore {
             modelName: modelName,
             interval: interval,
             fps: fps,
+            resolution: resolution,
             frameCount: persistedFrames.count,
             frames: persistedFrames
         )
