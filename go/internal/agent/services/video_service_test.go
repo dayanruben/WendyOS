@@ -141,6 +141,7 @@ func TestBuildFFmpegArgs_Hardware_WithDimensions(t *testing.T) {
 		"-f", "v4l2", "-input_format", "h264",
 		"-video_size", "1280x720",
 		"-framerate", "30",
+		"-nostdin", "-loglevel", "error",
 		"-i", "/dev/video0",
 		"-c:v", "copy",
 		"-f", "h264", "pipe:1",
@@ -155,6 +156,7 @@ func TestBuildFFmpegArgs_Software_DefaultsOmitted(t *testing.T) {
 	args := buildFFmpegArgs("/dev/video2", req, false)
 	expected := []string{
 		"-f", "v4l2",
+		"-nostdin", "-loglevel", "error",
 		"-i", "/dev/video2",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-f", "h264", "pipe:1",
@@ -170,6 +172,7 @@ func TestBuildFFmpegArgs_Software_WithFramerate(t *testing.T) {
 	expected := []string{
 		"-f", "v4l2",
 		"-framerate", "15",
+		"-nostdin", "-loglevel", "error",
 		"-i", "/dev/video0",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-f", "h264", "pipe:1",

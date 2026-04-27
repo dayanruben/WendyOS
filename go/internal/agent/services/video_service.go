@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,7 +99,7 @@ func buildFFmpegArgs(path string, req *agentpb.StreamVideoRequest, hardware bool
 	if req.GetFramerate() > 0 {
 		args = append(args, "-framerate", fmt.Sprintf("%d", req.GetFramerate()))
 	}
-	args = append(args, "-i", path)
+	args = append(args, "-nostdin", "-loglevel", "error", "-i", path)
 	if hardware {
 		args = append(args, "-c:v", "copy")
 	} else {
@@ -125,7 +126,7 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 // runFFmpeg executes ffmpeg with the given args and streams VideoFrame chunks.
 // When detectHW is true and ffmpeg exits within 2 s with no frames sent,
 // returns hwUnavailableError so the caller can retry with software encoding.
-func (s *VideoService) runFFmpeg(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], args []string, detectHW bool) error {
+func (s *VideoService) runFFmpeg(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], args []string, detectHW bool) (runErr error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
@@ -137,12 +138,29 @@ func (s *VideoService) runFFmpeg(ctx context.Context, stream grpc.ServerStreamin
 	if err := cmd.Start(); err != nil {
 		return status.Errorf(codes.Internal, "failed to start ffmpeg: %v", err)
 	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
 
 	startedAt := time.Now()
+	var framesSent int
+	var hwFailed bool
+
+	defer func() {
+		cmd.Process.Kill()               //nolint:errcheck
+		io.Copy(io.Discard, stdout)      // drain so Wait's internal goroutine can exit
+		cmd.Wait()                       //nolint:errcheck
+		// stderrBuf is safe to read after Wait (no concurrent writer)
+		if hwFailed {
+			runErr = hwUnavailableError{msg: fmt.Sprintf("hardware encoder not available (stderr: %s)", strings.TrimSpace(stderrBuf.String()))}
+			return
+		}
+		if runErr == nil {
+			if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+				runErr = status.Errorf(codes.Internal, "ffmpeg: %s", msg)
+			}
+		}
+	}()
+
 	const chunkSize = 16 * 1024
 	buf := make([]byte, chunkSize)
-	var framesSent int
 
 	for {
 		select {
@@ -165,12 +183,10 @@ func (s *VideoService) runFFmpeg(ctx context.Context, stream grpc.ServerStreamin
 		}
 		if readErr != nil {
 			if detectHW && framesSent == 0 && time.Since(startedAt) < 2*time.Second {
-				return hwUnavailableError{msg: fmt.Sprintf("hardware encoder not available (stderr: %s)", strings.TrimSpace(stderrBuf.String()))}
+				hwFailed = true
+				return nil // defer sets hwUnavailableError after Wait
 			}
-			if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
-				return status.Errorf(codes.Internal, "ffmpeg: %s", msg)
-			}
-			return nil
+			return nil // defer checks stderr and sets error if non-empty
 		}
 	}
 }
