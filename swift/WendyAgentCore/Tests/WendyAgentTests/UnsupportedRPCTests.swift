@@ -426,7 +426,7 @@ struct UnsupportedRPCTests {
             AgentVersion.resolve(
                 bundleInfo: [
                     "CFBundleShortVersionString": "1.2.3",
-                    "CFBundleVersion": "123"
+                    "CFBundleVersion": "123",
                 ],
                 environment: [AgentVersion.environmentVariable: "9.9.9"]
             ) == "1.2.3"
@@ -449,7 +449,7 @@ struct UnsupportedRPCTests {
             AgentVersion.resolve(
                 bundleInfo: [
                     "CFBundleShortVersionString": "0000.00.00",
-                    "CFBundleVersion": "00000000000000"
+                    "CFBundleVersion": "00000000000000",
                 ],
                 environment: [AgentVersion.environmentVariable: "3.4.5-test"]
             ) == "3.4.5-test"

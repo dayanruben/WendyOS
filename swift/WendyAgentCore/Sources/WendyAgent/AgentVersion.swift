@@ -15,16 +15,20 @@ enum AgentVersion {
         bundleInfo: [String: Any]?,
         environment: [String: String]
     ) -> String {
-        if let bundleVersion = self.usableVersion(from: bundleInfo?["CFBundleShortVersionString"] as? String)
-        {
+        if let bundleVersion = self.usableVersion(
+            from: bundleInfo?["CFBundleShortVersionString"] as? String
+        ) {
             return bundleVersion
         }
 
-        if let bundleBuildVersion = self.usableVersion(from: bundleInfo?["CFBundleVersion"] as? String) {
+        if let bundleBuildVersion = self.usableVersion(
+            from: bundleInfo?["CFBundleVersion"] as? String
+        ) {
             return bundleBuildVersion
         }
 
-        if let environmentVersion = self.usableVersion(from: environment[self.environmentVariable]) {
+        if let environmentVersion = self.usableVersion(from: environment[self.environmentVariable])
+        {
             return environmentVersion
         }
 
