@@ -239,7 +239,7 @@ jobs:
         run: bash ./Scripts/Build.sh
 
       - name: Upload notarized app bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wendy-agent-macos-app-${{ needs.determine-version.outputs.version }}
           path: ${{ steps.build_wendy_agent_mac_app.outputs.app_path }}
@@ -247,7 +247,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload release zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.build_wendy_agent_mac_app.outputs.artifact_name }}
           path: ${{ steps.build_wendy_agent_mac_app.outputs.artifact_path }}
