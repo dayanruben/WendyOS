@@ -190,7 +190,7 @@ func newAudioListenCmd() *cobra.Command {
 	var deviceID uint32
 	var sampleRate uint32
 	var channels uint32
-	var play bool
+	var stdout bool
 
 	cmd := &cobra.Command{
 		Use:   "listen",
@@ -214,31 +214,30 @@ func newAudioListenCmd() *cobra.Command {
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "Streaming audio (Ctrl+C to stop)...\n")
 
-			if play {
-				return playRealtimeAudio(ctx, stream, sampleRate, channels)
+			if stdout {
+				for {
+					chunk, err := stream.Recv()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						return fmt.Errorf("receiving audio: %w", err)
+					}
+					if _, err := cmd.OutOrStdout().Write(chunk.GetPcmData()); err != nil {
+						return fmt.Errorf("writing audio data: %w", err)
+					}
+				}
+				return nil
 			}
 
-			for {
-				chunk, err := stream.Recv()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					return fmt.Errorf("receiving audio: %w", err)
-				}
-				if _, err := cmd.OutOrStdout().Write(chunk.GetPcmData()); err != nil {
-					return fmt.Errorf("writing audio data: %w", err)
-				}
-			}
-
-			return nil
+			return playRealtimeAudio(ctx, stream, sampleRate, channels)
 		},
 	}
 
 	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Audio device ID")
 	cmd.Flags().Uint32Var(&sampleRate, "sample-rate", 16000, "Sample rate in Hz")
 	cmd.Flags().Uint32Var(&channels, "channels", 1, "Number of audio channels")
-	cmd.Flags().BoolVar(&play, "play", false, "Play audio through local speakers")
+	cmd.Flags().BoolVar(&stdout, "stdout", false, "Write raw PCM to stdout instead of playing")
 
 	return cmd
 }
