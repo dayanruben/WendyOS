@@ -9,7 +9,8 @@ import WendyAgentGRPC
 public final class WendyAgent {
     private typealias PosixGRPCServer = GRPCServer<HTTP2ServerTransport.Posix>
 
-    nonisolated static let version: String = {
+    /// The Wendy Agent version from the main bundle Info.plist.
+    public nonisolated static let version: String = {
         guard
             let version = Bundle.main.object(forInfoDictionaryKey: "WLWendyAgentVersion")
                 as? String,
