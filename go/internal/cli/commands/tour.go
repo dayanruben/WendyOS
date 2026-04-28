@@ -48,7 +48,11 @@ const (
 	phaseBootInstructions               // how to boot the device
 	phaseDiscovering                    // poll mDNS for target device name
 	phaseDeviceFound                    // device came online
-	phaseCreateProject                  // write Python project files
+	phaseCreateProjectPrompt            // "Deploy a sample app?"
+	phaseTemplateLoading                // fetching template list
+	phaseTemplatePicker                 // pick a template
+	phaseTemplateDownloading            // downloading selected template
+	phaseCreateProject                  // write project files
 	phaseRunProject                     // tea.ExecProcess running wendy run
 	phaseAICheck                        // check claude/codex installation
 	phaseCloud                          // cloud ready message
@@ -67,17 +71,26 @@ type (
 		devices []models.LANDevice
 		err     error
 	}
-	tourWifiDetectedMsg   struct{ ssid, password string }
-	tourWifiScanDoneMsg   struct {
+	tourWifiDetectedMsg struct{ ssid, password string }
+	tourWifiScanDoneMsg struct {
 		networks []localWifiNetwork
 		err      error
 	}
-	tourDriveRescanMsg    struct{}
-	tourDiscoveryTickMsg  struct{}
-	tourDiscoveryFoundMsg struct{ addr, name string }
-	tourOSInstallDoneMsg  struct{ err error }
-	tourRunDoneMsg        struct{ err error }
-	tourAICheckDoneMsg    struct{ claudePath, codexPath string }
+	tourDriveRescanMsg       struct{}
+	tourDiscoveryTickMsg     struct{}
+	tourDiscoveryFoundMsg    struct{ addr, name string }
+	tourOSInstallDoneMsg     struct{ err error }
+	tourRunDoneMsg           struct{ err error }
+	tourAICheckDoneMsg       struct{ claudePath, codexPath string }
+	tourTemplateFetchDoneMsg struct {
+		meta *repoMeta
+		err  error
+	}
+	tourTemplateDownloadDoneMsg struct {
+		files    map[string][]byte
+		manifest *templateManifest
+		err      error
+	}
 )
 
 // ─── Python project templates ─────────────────────────────────────────────────
@@ -201,6 +214,14 @@ type tourWizardModel struct {
 	// project
 	projectPath string
 	projectID   string
+
+	// template picker
+	repoMeta         *repoMeta
+	templateItems    []repoMetaTemplate
+	templateCursor   int
+	selectedTemplate string
+	templateFiles    map[string][]byte
+	templateManifest *templateManifest
 
 	// AI tools
 	claudePath string
@@ -334,6 +355,49 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 		m.claudePath = msg.claudePath
 		m.codexPath = msg.codexPath
 		m.phase = phaseAICheck
+		return m, nil
+
+	case tourTemplateFetchDoneMsg:
+		if msg.err != nil {
+			// Fall back to built-in Python project on fetch error.
+			if err := m.createPythonProject(); err != nil {
+				m.err = err
+				m.phase = phaseError
+				return m, nil
+			}
+			m.phase = phaseCreateProject
+			return m, nil
+		}
+		m.repoMeta = msg.meta
+		m.templateItems = nil
+		for _, t := range msg.meta.Templates {
+			if templateTargetMatch(t, targetWendyOS) {
+				m.templateItems = append(m.templateItems, t)
+			}
+		}
+		m.templateCursor = 0
+		m.phase = phaseTemplatePicker
+		return m, nil
+
+	case tourTemplateDownloadDoneMsg:
+		if msg.err != nil {
+			// Fall back to built-in Python project on download error.
+			if err := m.createPythonProject(); err != nil {
+				m.err = err
+				m.phase = phaseError
+				return m, nil
+			}
+			m.phase = phaseCreateProject
+			return m, nil
+		}
+		m.templateFiles = msg.files
+		m.templateManifest = msg.manifest
+		if err := m.createProjectFromTemplate(); err != nil {
+			m.err = err
+			m.phase = phaseError
+			return m, nil
+		}
+		m.phase = phaseCreateProject
 		return m, nil
 
 	case tea.KeyMsg:
@@ -628,15 +692,69 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case phaseDeviceFound:
 		switch key {
 		case "enter", " ":
-			m.phase = phaseCreateProject
-			err := m.createPythonProject()
-			if err != nil {
+			m.phase = phaseCreateProjectPrompt
+			m.wifiCursor = 0
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case phaseCreateProjectPrompt:
+		switch key {
+		case "up", "k":
+			if m.wifiCursor > 0 {
+				m.wifiCursor--
+			}
+		case "down", "j":
+			if m.wifiCursor < 1 {
+				m.wifiCursor++
+			}
+		case "enter", " ":
+			if m.wifiCursor == 0 {
+				m.phase = phaseTemplateLoading
+				return m, fetchTourTemplatesCmd()
+			} else {
+				m.phase = phaseAICheck
+				return m, m.cmdCheckAITools()
+			}
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case phaseTemplateLoading:
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+	case phaseTemplatePicker:
+		total := len(m.templateItems) + 1 // +1 for built-in
+		switch key {
+		case "up", "k":
+			if m.templateCursor > 0 {
+				m.templateCursor--
+			}
+		case "down", "j":
+			if m.templateCursor < total-1 {
+				m.templateCursor++
+			}
+		case "enter", " ":
+			if m.templateCursor < len(m.templateItems) {
+				m.selectedTemplate = m.templateItems[m.templateCursor].Name
+				m.phase = phaseTemplateDownloading
+				return m, m.downloadTourTemplateCmd()
+			}
+			// Built-in Python template
+			if err := m.createPythonProject(); err != nil {
 				m.err = err
 				m.phase = phaseError
 				return m, nil
 			}
-			return m, nil
+			m.phase = phaseCreateProject
 		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case phaseTemplateDownloading:
+		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
 
@@ -787,6 +905,14 @@ func (m tourWizardModel) View() string {
 		body = m.viewDiscovering(inner)
 	case phaseDeviceFound:
 		body = m.viewDeviceFound(inner)
+	case phaseCreateProjectPrompt:
+		body = m.viewCreateProjectPrompt(inner)
+	case phaseTemplateLoading:
+		body = wizSubStyle.Render("Fetching available templates…")
+	case phaseTemplatePicker:
+		body = m.viewTemplatePicker(inner)
+	case phaseTemplateDownloading:
+		body = wizSubStyle.Render(fmt.Sprintf("Downloading template %q…", m.selectedTemplate))
 	case phaseCreateProject:
 		body = m.viewCreateProject(inner)
 	case phaseRunProject:
@@ -1195,6 +1321,51 @@ func (m tourWizardModel) viewDeviceFound(w int) string {
 	return sb.String()
 }
 
+func (m tourWizardModel) viewCreateProjectPrompt(w int) string {
+	var sb strings.Builder
+	sb.WriteString(wizTitleStyle.Render("Step 8 — Sample app") + "\n")
+	sb.WriteString(wizBodyStyle.Width(w).Render("Would you like to deploy a sample app to your device?") + "\n\n")
+
+	opts := []string{"Yes, create a sample app", "No, skip"}
+	for i, opt := range opts {
+		if i == m.wifiCursor {
+			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
+		} else {
+			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
+		}
+	}
+	sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select  ·  q quit"))
+	return sb.String()
+}
+
+func (m tourWizardModel) viewTemplatePicker(w int) string {
+	var sb strings.Builder
+	sb.WriteString(wizTitleStyle.Render("Step 8 — Choose a template") + "\n")
+	sb.WriteString(wizSubStyle.Render("Select a starting point for your app.") + "\n\n")
+
+	total := len(m.templateItems) + 1
+	for i, t := range m.templateItems {
+		label := t.Name
+		if t.Description != "" {
+			label += "  — " + t.Description
+		}
+		if i == m.templateCursor {
+			sb.WriteString(wizSelectedStyle.Render("▶ "+label) + "\n")
+		} else {
+			sb.WriteString(wizNormalStyle.Render("  "+label) + "\n")
+		}
+	}
+	builtinLabel := "Hello World  — built-in Python HTTP server"
+	if m.templateCursor == total-1 {
+		sb.WriteString(wizSelectedStyle.Render("▶ "+builtinLabel) + "\n")
+	} else {
+		sb.WriteString(wizNormalStyle.Render("  "+builtinLabel) + "\n")
+	}
+
+	sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select  ·  q quit"))
+	return sb.String()
+}
+
 func (m tourWizardModel) viewCreateProject(w int) string {
 	var sb strings.Builder
 	sb.WriteString(wizTitleStyle.Render("Step 8 — Sample Python project") + "\n\n")
@@ -1406,6 +1577,25 @@ func (m tourWizardModel) cmdCheckAITools() tea.Cmd {
 	}
 }
 
+func fetchTourTemplatesCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		meta, err := fetchRepoMeta(ctx, "")
+		return tourTemplateFetchDoneMsg{meta: meta, err: err}
+	}
+}
+
+func (m tourWizardModel) downloadTourTemplateCmd() tea.Cmd {
+	tmpl := m.selectedTemplate
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		files, manifest, err := downloadTemplateArchive(ctx, langPython, tmpl, "", nil)
+		return tourTemplateDownloadDoneMsg{files: files, manifest: manifest, err: err}
+	}
+}
+
 // ─── project creation ─────────────────────────────────────────────────────────
 
 func (m *tourWizardModel) createPythonProject() error {
@@ -1445,6 +1635,56 @@ func (m *tourWizardModel) createPythonProject() error {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", name, err)
 		}
+	}
+
+	m.projectPath = dir
+	return nil
+}
+
+func (m *tourWizardModel) createProjectFromTemplate() error {
+	docs, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("finding home directory: %w", err)
+	}
+	docs = filepath.Join(docs, "Documents")
+
+	appID := "sh.wendy.hello"
+	if m.deviceName != "" {
+		appID = fmt.Sprintf("sh.wendy.hello.%s", m.deviceName)
+	}
+	m.projectID = appID
+
+	baseName := m.selectedTemplate
+	if baseName == "" {
+		baseName = "wendy-hello"
+	}
+	base := filepath.Join(docs, baseName)
+	dir := base
+	for i := 1; ; i++ {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			break
+		}
+		dir = fmt.Sprintf("%s-%d", base, i)
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating project directory: %w", err)
+	}
+
+	vals := map[string]interface{}{"APP_ID": appID}
+	if m.templateManifest != nil {
+		for _, v := range m.templateManifest.Variables {
+			if v.Name == "APP_ID" {
+				continue
+			}
+			if v.Default != nil {
+				vals[v.Name] = v.Default
+			}
+		}
+	}
+
+	if err := renderAndWriteTemplate(m.templateFiles, dir, appID, m.selectedTemplate, vals); err != nil {
+		return fmt.Errorf("writing template files: %w", err)
 	}
 
 	m.projectPath = dir
