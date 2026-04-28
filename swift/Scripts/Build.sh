@@ -5,7 +5,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SWIFT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SWIFT_DIR"
 
-: "${VERSION:?VERSION is required}"
+DEV_BUILD=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dev)
+      DEV_BUILD=1
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: $0 [--dev]" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+if [[ "$DEV_BUILD" -eq 1 ]]; then
+  VERSION="$(date -u '+%Y.%m.%d-%H%M%S-dev')"
+else
+  : "${VERSION:?VERSION is required}"
+fi
 
 if [[ "$VERSION" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})(-([0-9]{6}))?([-.].*)?$ ]]; then
   APPLE_MARKETING_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
@@ -36,11 +56,19 @@ find_signing_identity() {
 }
 
 if [ -z "${SIGNING_IDENTITY:-}" ]; then
-  SIGNING_IDENTITY=$(find_signing_identity | awk -F '"' '/Developer ID Application/ { print $2; exit }')
+  if [[ "$DEV_BUILD" -eq 1 ]]; then
+    SIGNING_IDENTITY=$(find_signing_identity | awk -F '"' '/Apple Development/ { print $2; exit }')
+  else
+    SIGNING_IDENTITY=$(find_signing_identity | awk -F '"' '/Developer ID Application/ { print $2; exit }')
+  fi
 fi
 
 if [ -z "${SIGNING_IDENTITY:-}" ]; then
-  echo "Missing SIGNING_IDENTITY and could not auto-detect a Developer ID Application identity" >&2
+  if [[ "$DEV_BUILD" -eq 1 ]]; then
+    echo "Missing SIGNING_IDENTITY and could not auto-detect an Apple Development identity" >&2
+  else
+    echo "Missing SIGNING_IDENTITY and could not auto-detect a Developer ID Application identity" >&2
+  fi
   exit 1
 fi
 
@@ -62,10 +90,12 @@ sign_path() {
     command+=(--keychain "$KEYCHAIN_PATH")
   fi
 
-  command+=(
-    --options runtime
-    --timestamp
-  )
+  if [[ "$DEV_BUILD" -ne 1 ]]; then
+    command+=(
+      --options runtime
+      --timestamp
+    )
+  fi
 
   if [ -n "$entitlements_path" ]; then
     command+=(--entitlements "$entitlements_path")
@@ -119,15 +149,17 @@ sign_path "$APP_PATH" "$ENTITLEMENTS_PATH"
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$NOTARY_ZIP"
+if [[ "$DEV_BUILD" -ne 1 ]]; then
+  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$NOTARY_ZIP"
 
-xcrun notarytool submit "$NOTARY_ZIP" \
-  --keychain-profile "$NOTARY_PROFILE" \
-  --wait
+  xcrun notarytool submit "$NOTARY_ZIP" \
+    --keychain-profile "$NOTARY_PROFILE" \
+    --wait
 
-xcrun stapler staple -v "$APP_PATH"
-xcrun stapler validate "$APP_PATH"
-spctl -a -vv --type exec "$APP_PATH"
+  xcrun stapler staple -v "$APP_PATH"
+  xcrun stapler validate "$APP_PATH"
+  spctl -a -vv --type exec "$APP_PATH"
+fi
 
 ditto -c -k --sequesterRsrc --keepParent \
   "$APP_PATH" \
