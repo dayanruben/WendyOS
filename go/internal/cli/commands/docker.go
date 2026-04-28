@@ -302,6 +302,9 @@ func ensureDockerDaemon(ctx context.Context) error {
 	}
 
 	if _, err := exec.LookPath("docker"); err != nil {
+		if runtime.GOOS == "darwin" {
+			return fmt.Errorf("docker is not installed — run: brew install --cask docker")
+		}
 		return fmt.Errorf("docker is not installed — please install Docker Desktop or OrbStack")
 	}
 
