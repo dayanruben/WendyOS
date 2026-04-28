@@ -31,9 +31,11 @@ func NewAudioService(logger *zap.Logger) *AudioService {
 }
 
 // ListAudioDevices enumerates audio devices via ALSA (arecord/aplay).
-// Devices are selected with ALSA card-based arguments in plughw:%d,0 form. We use
-// plughw rather than hw so ALSA's plug layer can handle format conversion when
-// needed, while still mapping directly to ALSA card/device IDs. PipeWire/PulseAudio
+// Devices are selected with ALSA card/device arguments in plughw:<card>,<device>
+// form. Returned device IDs encode both the ALSA card and device numbers as
+// ((card << 8) | device) + 1; alsaDeviceArg decodes them back into the correct
+// plughw:<card>,<device> streaming argument. We use plughw rather than hw so
+// ALSA's plug layer can handle format conversion when needed. PipeWire/PulseAudio
 // node IDs are a different numbering system and would not map correctly to these
 // streaming device arguments.
 func (s *AudioService) ListAudioDevices(ctx context.Context, _ *agentpb.ListAudioDevicesRequest) (*agentpb.ListAudioDevicesResponse, error) {
@@ -325,9 +327,10 @@ func (s *AudioService) setPulseAudioDefaultDevice(ctx context.Context, req *agen
 	return nil, fmt.Errorf("device ID %d not found in PulseAudio sinks or sources", targetID)
 }
 
-// firstALSACaptureCard returns the card number of the first ALSA capture device,
-// or 0 if none is found or arecord is unavailable.
-func firstALSACaptureCard(ctx context.Context) uint32 {
+// firstALSACaptureDeviceID returns the encoded device ID of the first ALSA capture
+// device from arecord -l. The ID is the encoded form ((card << 8) | device) + 1,
+// matching the IDs returned by ListAudioDevices. Returns 0 if no device is found.
+func firstALSACaptureDeviceID(ctx context.Context) uint32 {
 	cmd := exec.CommandContext(ctx, "arecord", "-l")
 	out, err := cmd.Output()
 	if err != nil {
@@ -346,7 +349,7 @@ func firstALSACaptureCard(ctx context.Context) uint32 {
 // plughw is used instead of hw so ALSA's plug layer handles format/rate conversion.
 func alsaDeviceArg(ctx context.Context, id uint32) string {
 	if id == 0 {
-		id = firstALSACaptureCard(ctx)
+		id = firstALSACaptureDeviceID(ctx)
 		if id == 0 {
 			return "plughw:0,0"
 		}
@@ -373,8 +376,8 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Device IDs from audio list correspond to ALSA card numbers (arecord -l).
-	// ID 0 means "unspecified" — auto-select the first capture card.
+	// Device IDs from audio list are encoded ALSA card+device pairs (see ListAudioDevices).
+	// ID 0 means "unspecified" — auto-select the first capture device.
 	deviceArg := alsaDeviceArg(ctx, req.GetDeviceId())
 
 	cmd := exec.CommandContext(ctx, "arecord",
@@ -437,8 +440,8 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 		channels = 1
 	}
 
-	// Device IDs from audio list correspond to ALSA card numbers (arecord -l).
-	// ID 0 means "unspecified" — auto-select the first capture card.
+	// Device IDs from audio list are encoded ALSA card+device pairs (see ListAudioDevices).
+	// ID 0 means "unspecified" — auto-select the first capture device.
 	deviceArg := alsaDeviceArg(ctx, req.GetDeviceId())
 
 	cmd := exec.CommandContext(ctx, "arecord",
