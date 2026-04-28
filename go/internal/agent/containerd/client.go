@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -513,7 +516,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
 	// Build labels for the container.
-	labels := wendyLabels(appName, version, req.GetRestartPolicy())
+	labels := wendyLabels(appName, version, req.GetRestartPolicy(), appCfg)
 
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
@@ -642,6 +645,7 @@ func (c *Client) StartContainer(ctx context.Context, appName string) (<-chan ser
 	}
 
 	c.logger.Info("Container started", zap.String("app_name", appName))
+	c.startPostStartAgentHook(container, appName)
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
@@ -708,11 +712,67 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	}
 
 	c.logger.Info("Container started with stdin", zap.String("app_name", appName))
+	c.startPostStartAgentHook(container, appName)
 
 	outputCh := make(chan services.ContainerOutput, 64)
 	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
+}
+
+func shellCommand() (string, string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", "/C"
+	}
+	return "sh", "-c"
+}
+
+func expandAgentHook(command, appName string) string {
+	return os.Expand(command, func(key string) string {
+		switch key {
+		case "WENDY_HOSTNAME":
+			return "localhost"
+		case "WENDY_APP_ID":
+			return appName
+		default:
+			return os.Getenv(key)
+		}
+	})
+}
+
+func (c *Client) startPostStartAgentHook(container containerd.Container, appName string) {
+	labels, err := container.Labels(context.Background())
+	if err != nil {
+		c.logger.Warn("Failed to read container labels for postStart agent hook",
+			zap.String("app_name", appName),
+			zap.Error(err),
+		)
+		return
+	}
+
+	command := labels[labelKeyPostStartAgent]
+	if command == "" {
+		return
+	}
+
+	expanded := expandAgentHook(command, appName)
+	shell, flag := shellCommand()
+	cmd := exec.Command(shell, flag, expanded)
+	if err := cmd.Start(); err != nil {
+		c.logger.Warn("Failed to start postStart agent hook",
+			zap.String("app_name", appName),
+			zap.String("command", expanded),
+			zap.Error(err),
+		)
+		return
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Release()
+	}
+	c.logger.Info("Started postStart agent hook",
+		zap.String("app_name", appName),
+		zap.String("command", expanded),
+	)
 }
 
 // deleteStaleTask attempts to load and force-delete any existing task for the

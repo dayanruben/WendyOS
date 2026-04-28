@@ -1,6 +1,7 @@
 package containerd
 
 import (
+	"os"
 	"testing"
 
 	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
@@ -50,5 +51,24 @@ func TestCreateContainerProgressMappingUsesUnpackingPhaseForStart(t *testing.T) 
 	}
 	if got.GetLayerIndex() != 0 {
 		t.Fatalf("layer index = %d; want 0", got.GetLayerIndex())
+	}
+}
+
+func TestExpandAgentHook(t *testing.T) {
+	t.Setenv("EXTRA_VALUE", "ok")
+
+	got := expandAgentHook("echo ${WENDY_APP_ID} ${WENDY_HOSTNAME} ${EXTRA_VALUE}", "camera-app")
+	want := "echo camera-app localhost ok"
+	if got != want {
+		t.Fatalf("expandAgentHook = %q; want %q", got, want)
+	}
+}
+
+func TestExpandAgentHookMissingEnv(t *testing.T) {
+	os.Unsetenv("MISSING_VALUE")
+
+	got := expandAgentHook("echo ${MISSING_VALUE}", "app")
+	if got != "echo " {
+		t.Fatalf("expandAgentHook missing env = %q; want empty expansion", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
 )
 
@@ -191,7 +192,7 @@ func TestGCTimestamp_IsUTC(t *testing.T) {
 }
 
 func TestWendyLabels_Basic(t *testing.T) {
-	labels := wendyLabels("myapp", "1.0.0", nil)
+	labels := wendyLabels("myapp", "1.0.0", nil, nil)
 
 	if v, ok := labels[labelKeyAppVersion]; !ok {
 		t.Error("missing app version label")
@@ -207,7 +208,7 @@ func TestWendyLabels_Basic(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyUnlessStopped(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
-	labels := wendyLabels("app", "2.0", rp)
+	labels := wendyLabels("app", "2.0", rp, nil)
 
 	if v, ok := labels[labelKeyRestartPolicy]; !ok {
 		t.Error("missing restart policy label")
@@ -221,7 +222,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 		Mode:                agentpb.RestartPolicyMode_ON_FAILURE,
 		OnFailureMaxRetries: 3,
 	}
-	labels := wendyLabels("app", "1.0", rp)
+	labels := wendyLabels("app", "1.0", rp, nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "on-failure:3" {
 		t.Errorf("restart policy = %q; want %q", v, "on-failure:3")
@@ -230,7 +231,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}
-	labels := wendyLabels("app", "1.0", rp)
+	labels := wendyLabels("app", "1.0", rp, nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "no" {
 		t.Errorf("restart policy = %q; want %q", v, "no")
@@ -239,10 +240,26 @@ func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyDefault(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_DEFAULT}
-	labels := wendyLabels("app", "1.0", rp)
+	labels := wendyLabels("app", "1.0", rp, nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "unless-stopped" {
 		t.Errorf("restart policy = %q; want %q (DEFAULT maps to unless-stopped)", v, "unless-stopped")
+	}
+}
+
+func TestWendyLabels_WithPostStartAgentHook(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{
+				Agent: "wendy-agent utils open-browser http://${WENDY_HOSTNAME}:3000",
+			},
+		},
+	}
+
+	labels := wendyLabels("app", "1.0", nil, cfg)
+
+	if v := labels[labelKeyPostStartAgent]; v != "wendy-agent utils open-browser http://${WENDY_HOSTNAME}:3000" {
+		t.Errorf("postStart agent hook label = %q", v)
 	}
 }
 
