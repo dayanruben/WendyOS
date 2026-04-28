@@ -516,7 +516,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
 	// Build labels for the container.
-	labels := wendyLabels(appName, version, req.GetRestartPolicy(), appCfg)
+	labels := wendyLabels(appName, version, req.GetRestartPolicy())
 
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
@@ -581,7 +581,7 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 // StartContainer starts the task for a named container and returns a channel
 // that streams stdout/stderr output. When the container exits, a final
 // ContainerOutput with Done=true is sent and the channel is closed.
-func (c *Client) StartContainer(ctx context.Context, appName string) (<-chan services.ContainerOutput, error) {
+func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string) (<-chan services.ContainerOutput, error) {
 	ctx = c.withNamespace(ctx)
 
 	container, err := c.client.LoadContainer(ctx, appName)
@@ -645,7 +645,7 @@ func (c *Client) StartContainer(ctx context.Context, appName string) (<-chan ser
 	}
 
 	c.logger.Info("Container started", zap.String("app_name", appName))
-	c.startPostStartAgentHook(ctx, container, appName)
+	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
@@ -656,7 +656,7 @@ func (c *Client) StartContainer(ctx context.Context, appName string) (<-chan ser
 
 // StartContainerWithStdin is like StartContainer but attaches the provided
 // stdin reader to the container's standard input.
-func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader) (<-chan services.ContainerOutput, error) {
+func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string) (<-chan services.ContainerOutput, error) {
 	ctx = c.withNamespace(ctx)
 
 	container, err := c.client.LoadContainer(ctx, appName)
@@ -712,7 +712,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	}
 
 	c.logger.Info("Container started with stdin", zap.String("app_name", appName))
-	c.startPostStartAgentHook(ctx, container, appName)
+	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
 	outputCh := make(chan services.ContainerOutput, 64)
 	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
@@ -748,20 +748,7 @@ var startPostStartHookCommand = func(shell, flag, command string) (func() error,
 	return cmd.Wait, nil
 }
 
-func (c *Client) startPostStartAgentHook(ctx context.Context, container containerd.Container, appName string) bool {
-	labels, err := container.Labels(ctx)
-	if err != nil {
-		c.logger.Warn("Failed to read container labels for postStart agent hook",
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
-		return false
-	}
-	return c.startPostStartAgentHookFromLabels(labels, appName)
-}
-
-func (c *Client) startPostStartAgentHookFromLabels(labels map[string]string, appName string) bool {
-	command := labels[labelKeyPostStartAgent]
+func (c *Client) startPostStartAgentHook(command, appName string) bool {
 	if command == "" {
 		return false
 	}

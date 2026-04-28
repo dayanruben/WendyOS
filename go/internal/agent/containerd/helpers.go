@@ -11,7 +11,6 @@ import (
 
 	"github.com/distribution/reference"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
 )
 
@@ -39,10 +38,6 @@ const labelKeyAppVersion = "sh.wendy/app.version"
 
 // labelKeyRestartPolicy stores the restart policy (e.g. "on-failure:5").
 const labelKeyRestartPolicy = "sh.wendy/restart.policy"
-
-// labelKeyPostStartAgent stores the host-side command to run on the agent
-// after the container starts.
-const labelKeyPostStartAgent = "sh.wendy/hooks.postStart.agent"
 
 // labelKeyGCRoot prevents garbage collection of content blobs.
 const labelKeyGCRoot = "containerd.io/gc.root"
@@ -99,7 +94,7 @@ func gcTimestamp() string {
 
 // wendyLabels builds the standard set of containerd labels for a Wendy-managed
 // container. These labels are used to identify, filter, and manage containers.
-func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy, appCfg *appconfig.AppConfig) map[string]string {
+func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy) map[string]string {
 	labels := map[string]string{
 		labelKeyAppVersion: version,
 	}
@@ -109,10 +104,6 @@ func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy, 
 		if policyStr != "" {
 			labels[labelKeyRestartPolicy] = policyStr
 		}
-	}
-
-	if appCfg != nil && appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil && appCfg.Hooks.PostStart.Agent != "" {
-		labels[labelKeyPostStartAgent] = appCfg.Hooks.PostStart.Agent
 	}
 
 	return labels

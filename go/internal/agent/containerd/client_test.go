@@ -75,7 +75,7 @@ func TestExpandAgentHookMissingEnv(t *testing.T) {
 	}
 }
 
-func TestStartPostStartAgentHookFromLabelsSkippedWhenAbsent(t *testing.T) {
+func TestStartPostStartAgentHookSkippedWhenEmpty(t *testing.T) {
 	old := startPostStartHookCommand
 	t.Cleanup(func() { startPostStartHookCommand = old })
 
@@ -86,16 +86,16 @@ func TestStartPostStartAgentHookFromLabelsSkippedWhenAbsent(t *testing.T) {
 	}
 
 	client := &Client{logger: zap.NewNop()}
-	started := client.startPostStartAgentHookFromLabels(map[string]string{}, "camera-app")
+	started := client.startPostStartAgentHook("", "camera-app")
 	if started {
-		t.Fatal("startPostStartAgentHookFromLabels returned true without hook label")
+		t.Fatal("startPostStartAgentHook returned true without command")
 	}
 	if calls != 0 {
 		t.Fatalf("hook runner called %d times; want 0", calls)
 	}
 }
 
-func TestStartPostStartAgentHookFromLabelsRunsWhenPresent(t *testing.T) {
+func TestStartPostStartAgentHookRunsWhenPresent(t *testing.T) {
 	t.Setenv("EXTRA_VALUE", "ok")
 	old := startPostStartHookCommand
 	t.Cleanup(func() { startPostStartHookCommand = old })
@@ -109,11 +109,9 @@ func TestStartPostStartAgentHookFromLabelsRunsWhenPresent(t *testing.T) {
 	}
 
 	client := &Client{logger: zap.NewNop()}
-	started := client.startPostStartAgentHookFromLabels(map[string]string{
-		labelKeyPostStartAgent: "echo ${WENDY_APP_ID} ${WENDY_HOSTNAME} ${EXTRA_VALUE}",
-	}, "camera-app")
+	started := client.startPostStartAgentHook("echo ${WENDY_APP_ID} ${WENDY_HOSTNAME} ${EXTRA_VALUE}", "camera-app")
 	if !started {
-		t.Fatal("startPostStartAgentHookFromLabels returned false with hook label")
+		t.Fatal("startPostStartAgentHook returned false with command")
 	}
 	if gotShell == "" || gotFlag == "" {
 		t.Fatalf("shell command not populated: shell=%q flag=%q", gotShell, gotFlag)
@@ -124,7 +122,7 @@ func TestStartPostStartAgentHookFromLabelsRunsWhenPresent(t *testing.T) {
 	}
 }
 
-func TestStartPostStartAgentHookFromLabelsStartErrorDoesNotLogCommand(t *testing.T) {
+func TestStartPostStartAgentHookStartErrorDoesNotLogCommand(t *testing.T) {
 	old := startPostStartHookCommand
 	t.Cleanup(func() { startPostStartHookCommand = old })
 
@@ -134,11 +132,9 @@ func TestStartPostStartAgentHookFromLabelsStartErrorDoesNotLogCommand(t *testing
 
 	core, observed := observer.New(zap.WarnLevel)
 	client := &Client{logger: zap.New(core)}
-	started := client.startPostStartAgentHookFromLabels(map[string]string{
-		labelKeyPostStartAgent: "echo secret-token-value",
-	}, "camera-app")
+	started := client.startPostStartAgentHook("echo secret-token-value", "camera-app")
 	if started {
-		t.Fatal("startPostStartAgentHookFromLabels returned true after start error")
+		t.Fatal("startPostStartAgentHook returned true after start error")
 	}
 
 	logs := observed.FilterMessage("Failed to start postStart agent hook")
