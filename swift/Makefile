@@ -4,7 +4,7 @@ SHELL := /bin/bash
 
 SWIFT_FORMAT_TARGETS := WendyAgentCore/Sources WendyAgentCore/Tests WendyAgentMac/Sources
 
-.PHONY: help format lint test proto build build-dev reset-mac-app-settings reset-mac-app-tcc reset-mac-app quit clean
+.PHONY: help format lint test proto build build-dev run reset-mac-app-settings reset-mac-app-tcc reset-mac-app quit clean
 
 help: ## Show this help message
 	@echo 'Usage:'
@@ -33,6 +33,11 @@ build: ## Build, sign, notarize, and package the macOS app
 
 build-dev: ## Build and package a dev-signed macOS app without notarization
 	OUTPUT_DIR='$(OUTPUT_DIR)' bash ./Scripts/Build.sh --dev
+
+run: ## Quit, build, and open the WendyAgentMac app
+	@$(MAKE) quit
+	@$(MAKE) build-dev
+	open Build/WendyAgentMac.app
 
 reset-mac-app-settings: ## Reset WendyAgentMac preferences/defaults
 	./Scripts/ResetMacAppSettings.sh
