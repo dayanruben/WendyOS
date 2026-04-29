@@ -7,11 +7,11 @@ import Subprocess
     import SystemPackage
 #endif
 
-// MARK: - Public
-
 public actor Machine {
     public nonisolated let sshTarget: String
     public nonisolated let baseDirectory: String
+
+    // MARK: - Creating Machines
 
     public static func ssh(_ spec: String) -> Machine {
         do {
@@ -24,6 +24,8 @@ public actor Machine {
     public static func parse(_ spec: String) throws -> Machine {
         try self.parse(spec, sshExecutable: "/usr/bin/ssh")
     }
+
+    // MARK: - Managing SSH Sessions
 
     public func close() async throws {
         guard try await self.isConnected() else {
@@ -43,6 +45,8 @@ public actor Machine {
         )
         try? FileManager.default.removeItem(atPath: self.controlPath)
     }
+
+    // MARK: - Running Commands
 
     public func run(_ command: String) async throws {
         let outcome = try await self.run(command) { _, _, stdout, stderr in

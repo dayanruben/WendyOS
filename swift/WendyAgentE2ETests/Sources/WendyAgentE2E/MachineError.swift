@@ -1,7 +1,5 @@
 import Subprocess
 
-// MARK: - Public
-
 public enum MachineError: Error {
     case invalidMachineSpec(String)
     case connectionFailed(machine: String, stderr: String)
