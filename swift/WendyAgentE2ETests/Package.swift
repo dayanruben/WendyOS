@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "WendyAgentE2ETests",
+    name: "WendyE2ETesting",
     platforms: [
         .macOS(.v15)
     ],
     products: [
-        .library(name: "WendyAgentE2E", targets: ["WendyAgentE2E"]),
+        .library(name: "WendyE2ETesting", targets: ["WendyE2ETesting"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "0.4.0"),
@@ -15,17 +15,17 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "WendyAgentE2E",
+            name: "WendyE2ETesting",
             dependencies: [
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
-            path: "Sources/WendyAgentE2E"
+            path: "Sources/WendyE2ETesting"
         ),
         .testTarget(
-            name: "WendyAgentE2ETests",
-            dependencies: ["WendyAgentE2E"],
-            path: "Tests/WendyAgentE2ETests"
+            name: "WendyE2ETestingTests",
+            dependencies: ["WendyE2ETesting"],
+            path: "Tests/WendyE2ETestingTests"
         ),
     ]
 )

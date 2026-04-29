@@ -2,7 +2,7 @@ import Foundation
 import Subprocess
 import Testing
 
-@testable import WendyAgentE2E
+@testable import WendyE2ETesting
 
 struct MachineTests {
     @Test("creates SSH machine")
@@ -30,6 +30,20 @@ struct MachineTests {
         #expect(machine.ssh == nil)
         #expect(machine.path == FileManager.default.currentDirectoryPath)
         #expect(machine.description == "local:\(FileManager.default.currentDirectoryPath)")
+    }
+
+    @Test("runs a simple command")
+    func runsSimpleCommand() async throws {
+        let machine = Machine()
+        let record = try await machine.run(
+            "printf 'wendy-machine-smoke'",
+            output: .string(limit: .max),
+            error: .string(limit: .max)
+        )
+
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput == "wendy-machine-smoke")
+        #expect(record.standardError == "")
     }
 
     @Test("runs local commands in path")

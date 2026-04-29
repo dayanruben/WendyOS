@@ -1,11 +1,11 @@
-# WendyAgentE2ETests
+# WendyE2ETesting
 
 Minimal Swift E2E scaffolding built around a local-or-SSH `Machine` helper.
 
 ## Run tests
 
 ```bash
-cd swift/WendyAgentE2ETests
+cd swift/WendyE2ETesting
 swift test
 ```
 
@@ -23,15 +23,11 @@ working directory, defaulting to the current directory. If remote `path` is
 omitted, commands run in the SSH user's home directory. Each remote command runs
 in its own SSH invocation.
 
-## Run the smoke test
+## Run the simple command test
 
-The smoke test is gated behind `WENDY_E2E_SMOKE=1`. Set `E2E_MACHINE_SSH` for a
-remote machine, or omit it to run locally. `E2E_MACHINE_PATH` is optional:
+The simple command test runs locally by default:
 
 ```bash
-cd swift/WendyAgentE2ETests
-WENDY_E2E_SMOKE=1 \
-E2E_MACHINE_SSH='user@host' \
-E2E_MACHINE_PATH='/path/to/wendy-agent' \
-swift test --filter MachineSmokeTests
+cd swift/WendyE2ETesting
+swift test --filter MachineTests/runsSimpleCommand
 ```
