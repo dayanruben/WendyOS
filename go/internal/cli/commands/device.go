@@ -73,7 +73,7 @@ func newDeviceCmd() *cobra.Command {
 		newWifiCmd(),
 		newBluetoothCmd(),
 		newAudioCmd(),
-		newVideoCmd(),
+		newCameraCmd(),
 		newHardwareCmd(),
 	)
 	addToGroup("data",
