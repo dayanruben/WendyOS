@@ -14,8 +14,8 @@ struct AgentE2ETests {
         let agent = Machine(name: "Agent", workingDirectory: swiftDirectoryPath)
 
         try await cli.run("make build") { standardOutput, standardError in
-            #expect(standardOutput.contains(#"go build .* bin/wendy"#))
-            #expect(standardOutput.contains(#"go build .* bin/wendy-agent"#))
+            #expect(standardOutput.contains(/go build .* bin\/wendy/))
+            #expect(standardOutput.contains(/go build .* bin\/wendy-agent/))
         }
 
         try await agent.run("make build-dev")

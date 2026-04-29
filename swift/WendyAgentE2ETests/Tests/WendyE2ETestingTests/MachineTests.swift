@@ -120,9 +120,9 @@ struct MachineTests {
         try await Self.withFixtureMachine { machine, _ in
             try await machine.run("printf 'hello'; printf 'oops' >&2") {
                 standardOutput, standardError in
-                #expect(standardOutput.string == "hello")
-                #expect(standardError.string == "oops")
-                #expect(standardOutput.contains(#"he.*o"#))
+                #expect(standardOutput == "hello")
+                #expect(standardError == "oops")
+                #expect(standardOutput.contains(/he.*o/))
             }
         }
     }

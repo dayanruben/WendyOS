@@ -81,7 +81,7 @@ public struct Machine: Sendable {
         _ command: String,
         output: StringOutput<UTF8> = .string(limit: .max),
         error: StringOutput<UTF8> = .string(limit: .max),
-        body: @Sendable (_ standardOutput: CommandOutput, _ standardError: CommandOutput) async throws -> Result
+        body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
     ) async throws -> Result {
         let record = try await self.run(command, output: output, error: error)
 
@@ -94,8 +94,8 @@ public struct Machine: Sendable {
         }
 
         return try await body(
-            CommandOutput(record.standardOutput ?? ""),
-            CommandOutput(record.standardError ?? "")
+            record.standardOutput ?? "",
+            record.standardError ?? ""
         )
     }
 
