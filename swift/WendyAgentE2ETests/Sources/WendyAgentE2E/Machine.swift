@@ -7,9 +7,9 @@ import Subprocess
     import SystemPackage
 #endif
 
-public actor Machine {
-    public nonisolated let sshTarget: String
-    public nonisolated let baseDirectory: String
+public struct Machine: Sendable {
+    public let sshTarget: String
+    public let baseDirectory: String
 
     // MARK: - Creating Machines
 
@@ -127,15 +127,15 @@ public actor Machine {
         "cd \(Self.shellQuote(self.baseDirectory)) && \(command)"
     }
 
-    private nonisolated static func shellQuote(_ value: String) -> String {
+    private static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private nonisolated static func printCommand(machine: String, command: String) {
+    private static func printCommand(machine: String, command: String) {
         fputs("$ [\(machine)] \(command)\n", stderr)
     }
 
-    private nonisolated static func forward(
+    private static func forward(
         _ sequence: AsyncBufferSequence,
         to handle: FileHandle
     ) async throws {
@@ -145,7 +145,7 @@ public actor Machine {
         }
     }
 
-    private nonisolated static func invokeSSH<Output: OutputProtocol, Error: ErrorOutputProtocol>(
+    private static func invokeSSH<Output: OutputProtocol, Error: ErrorOutputProtocol>(
         executable: String,
         arguments: [String],
         output: Output,
@@ -163,7 +163,7 @@ public actor Machine {
 // MARK: - CustomStringConvertible
 
 extension Machine: CustomStringConvertible {
-    public nonisolated var description: String {
+    public var description: String {
         "\(self.sshTarget):\(self.baseDirectory)"
     }
 }
