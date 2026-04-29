@@ -9,14 +9,14 @@ extension Tag {
 
 @Suite("Machine smoke tests", .serialized, .tags(.e2e))
 struct MachineSmokeTests {
-    @Test("build over SSH machine", .timeLimit(.minutes(10)))
-    func buildOverSSHMachine() async throws {
+    @Test("build on machine", .timeLimit(.minutes(10)))
+    func buildOnMachine() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["WENDY_E2E_SMOKE"] == "1" else {
             return
         }
 
-        let ssh = try #require(environment["E2E_MACHINE_SSH"])
+        let ssh = environment["E2E_MACHINE_SSH"]
         let path = environment["E2E_MACHINE_PATH"]
         let machine = Machine(ssh: ssh, path: path)
 

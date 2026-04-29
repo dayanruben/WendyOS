@@ -8,18 +8,18 @@ import Subprocess
 #endif
 
 public struct Machine: Sendable {
-    public let ssh: String
+    public let ssh: String?
     public let path: String?
 
     // MARK: - Creating Machines
 
-    public init(ssh: String, path: String? = nil, sshExecutable: String = "/usr/bin/ssh") {
-        precondition(!ssh.isEmpty, "ssh must not be empty")
+    public init(ssh: String? = nil, path: String? = nil, sshExecutable: String = "/usr/bin/ssh") {
+        precondition(ssh?.isEmpty != true, "ssh must not be empty")
         precondition(path?.isEmpty != true, "path must not be empty")
         precondition(!sshExecutable.isEmpty, "sshExecutable must not be empty")
 
         self.ssh = ssh
-        self.path = path
+        self.path = path ?? (ssh == nil ? FileManager.default.currentDirectoryPath : nil)
         self.sshExecutable = sshExecutable
     }
 
@@ -48,9 +48,9 @@ public struct Machine: Sendable {
     ) async throws -> ExecutionRecord<Output, Error> {
         Self.printCommand(machine: self.description, command: command)
 
-        return try await Self.invokeSSH(
-            executable: self.sshExecutable,
-            arguments: self.commandArguments(for: command),
+        let invocation = self.invocation(for: command)
+        return try await Self.invoke(
+            invocation,
             output: output,
             error: error
         )
@@ -70,9 +70,11 @@ public struct Machine: Sendable {
     ) async throws -> ExecutionOutcome<Result> {
         Self.printCommand(machine: self.description, command: command)
 
+        let invocation = self.invocation(for: command)
         return try await Subprocess.run(
-            .path(FilePath(self.sshExecutable)),
-            arguments: Arguments(self.commandArguments(for: command)),
+            .path(FilePath(invocation.executable)),
+            arguments: Arguments(invocation.arguments),
+            workingDirectory: invocation.workingDirectory,
             preferredBufferSize: preferredBufferSize,
             isolation: isolation,
             body: body
@@ -83,12 +85,24 @@ public struct Machine: Sendable {
 
     private let sshExecutable: String
 
-    private func commandArguments(for command: String) -> [String] {
-        [
-            "-T",
-            self.ssh,
-            self.wrapped(command),
-        ]
+    private func invocation(for command: String) -> Invocation {
+        if let ssh = self.ssh {
+            return Invocation(
+                executable: self.sshExecutable,
+                arguments: [
+                    "-T",
+                    ssh,
+                    self.wrapped(command),
+                ],
+                workingDirectory: nil
+            )
+        }
+
+        return Invocation(
+            executable: "/bin/bash",
+            arguments: ["-lc", command],
+            workingDirectory: self.path.map { FilePath($0) }
+        )
     }
 
     private func wrapped(_ command: String) -> String {
@@ -117,29 +131,36 @@ public struct Machine: Sendable {
         }
     }
 
-    private static func invokeSSH<Output: OutputProtocol, Error: ErrorOutputProtocol>(
-        executable: String,
-        arguments: [String],
+    private static func invoke<Output: OutputProtocol, Error: ErrorOutputProtocol>(
+        _ invocation: Invocation,
         output: Output,
         error: Error
     ) async throws -> ExecutionRecord<Output, Error> {
         try await Subprocess.run(
-            .path(FilePath(executable)),
-            arguments: Arguments(arguments),
+            .path(FilePath(invocation.executable)),
+            arguments: Arguments(invocation.arguments),
+            workingDirectory: invocation.workingDirectory,
             output: output,
             error: error
         )
     }
 }
 
+private struct Invocation: Sendable {
+    let executable: String
+    let arguments: [String]
+    let workingDirectory: FilePath?
+}
+
 // MARK: - CustomStringConvertible
 
 extension Machine: CustomStringConvertible {
     public var description: String {
+        let location = self.ssh ?? "local"
         if let path = self.path {
-            return "\(self.ssh):\(path)"
+            return "\(location):\(path)"
         }
 
-        return "\(self.ssh):~"
+        return "\(location):~"
     }
 }

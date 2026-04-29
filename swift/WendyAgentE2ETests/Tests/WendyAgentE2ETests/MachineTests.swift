@@ -23,6 +23,31 @@ struct MachineTests {
         #expect(machine.description == "ai@example.local:~")
     }
 
+    @Test("defaults local machine to current directory")
+    func defaultsLocalMachineToCurrentDirectory() {
+        let machine = Machine()
+
+        #expect(machine.ssh == nil)
+        #expect(machine.path == FileManager.default.currentDirectoryPath)
+        #expect(machine.description == "local:\(FileManager.default.currentDirectoryPath)")
+    }
+
+    @Test("runs local commands in path")
+    func runsLocalCommandsInPath() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("machine-local-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let machine = Machine(path: directory.path)
+        try await machine.run("touch local.txt")
+
+        #expect(machine.ssh == nil)
+        #expect(machine.path == directory.path)
+        #expect(machine.description == "local:\(directory.path)")
+        #expect(FileManager.default.fileExists(atPath: directory.path + "/local.txt"))
+    }
+
     @Test("runs commands over separate SSH invocations")
     func runsCommandsOverSeparateSSHInvocations() async throws {
         try await Self.withFixtureMachine { machine, fixture in
