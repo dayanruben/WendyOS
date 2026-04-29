@@ -14,105 +14,57 @@ struct MachineTests {
         #expect(machine.description == "ai@example.local:~/wendy-agent")
     }
 
-    @Test("reuses one persistent SSH master connection across runs")
-    func reusesPersistentSSHMasterConnectionAcrossRuns() async throws {
-        let fixture = try SSHFixture()
-        defer { fixture.remove() }
+    @Test("runs commands over separate SSH invocations")
+    func runsCommandsOverSeparateSSHInvocations() async throws {
+        try await Self.withFixtureMachine { machine, fixture in
+            try await machine.run("touch first.txt")
+            try await machine.run("touch second.txt")
 
-        let machine = Machine(
-            sshTarget: "ai@example.local",
-            baseDirectory: fixture.remoteRoot.path,
-            sshExecutable: fixture.sshScript.path,
-            controlPath: fixture.controlPath
-        )
-
-        try await machine.run("touch first.txt")
-        try await machine.run("touch second.txt")
-        try await machine.close()
-
-        #expect(FileManager.default.fileExists(atPath: fixture.remoteRoot.path + "/first.txt"))
-        #expect(FileManager.default.fileExists(atPath: fixture.remoteRoot.path + "/second.txt"))
-        #expect(try fixture.counter(named: "master-count") == 1)
-        #expect(try fixture.counter(named: "run-count") == 2)
+            #expect(FileManager.default.fileExists(atPath: fixture.remoteRoot.path + "/first.txt"))
+            #expect(FileManager.default.fileExists(atPath: fixture.remoteRoot.path + "/second.txt"))
+            #expect(try fixture.counter(named: "run-count") == 2)
+        }
     }
 
     @Test("closure API streams stdout and stderr")
     func closureAPIStreamsStdoutAndStderr() async throws {
-        let fixture = try SSHFixture()
-        defer { fixture.remove() }
-
-        let machine = Machine(
-            sshTarget: "ai@example.local",
-            baseDirectory: fixture.remoteRoot.path,
-            sshExecutable: fixture.sshScript.path,
-            controlPath: fixture.controlPath
-        )
-        defer {
-            Task {
-                try? await machine.close()
+        try await Self.withFixtureMachine { machine, _ in
+            let outcome = try await machine.run(
+                "printf 'hello\\n'; printf 'oops\\n' >&2"
+            ) { _, _, stdout, stderr in
+                async let stdoutLines = Self.collectLines(from: stdout)
+                async let stderrLines = Self.collectLines(from: stderr)
+                return try await (stdoutLines, stderrLines)
             }
-        }
 
-        let outcome = try await machine.run(
-            "printf 'hello\\n'; printf 'oops\\n' >&2"
-        ) { _, _, stdout, stderr in
-            async let stdoutLines = Self.collectLines(from: stdout)
-            async let stderrLines = Self.collectLines(from: stderr)
-            return try await (stdoutLines, stderrLines)
+            #expect(outcome.terminationStatus.isSuccess)
+            #expect(outcome.value.0 == ["hello"])
+            #expect(outcome.value.1 == ["oops"])
         }
-
-        #expect(outcome.terminationStatus.isSuccess)
-        #expect(outcome.value.0 == ["hello"])
-        #expect(outcome.value.1 == ["oops"])
     }
 
     @Test("collected output API matches swift-subprocess style")
     func collectedOutputAPIMatchesSwiftSubprocessStyle() async throws {
-        let fixture = try SSHFixture()
-        defer { fixture.remove() }
+        try await Self.withFixtureMachine { machine, _ in
+            let record = try await machine.run(
+                "printf 'hello'",
+                output: .string(limit: .max),
+                error: .string(limit: .max)
+            )
 
-        let machine = Machine(
-            sshTarget: "ai@example.local",
-            baseDirectory: fixture.remoteRoot.path,
-            sshExecutable: fixture.sshScript.path,
-            controlPath: fixture.controlPath
-        )
-        defer {
-            Task {
-                try? await machine.close()
-            }
+            #expect(record.terminationStatus.isSuccess)
+            #expect(record.standardOutput == "hello")
+            #expect(record.standardError == "")
         }
-
-        let record = try await machine.run(
-            "printf 'hello'",
-            output: .string(limit: .max),
-            error: .string(limit: .max)
-        )
-
-        #expect(record.terminationStatus.isSuccess)
-        #expect(record.standardOutput == "hello")
-        #expect(record.standardError == "")
     }
 
     @Test("simple run throws when the remote command exits non-zero")
     func simpleRunThrowsOnNonZeroExit() async throws {
-        let fixture = try SSHFixture()
-        defer { fixture.remove() }
-
-        let machine = Machine(
-            sshTarget: "ai@example.local",
-            baseDirectory: fixture.remoteRoot.path,
-            sshExecutable: fixture.sshScript.path,
-            controlPath: fixture.controlPath
-        )
-        defer {
-            Task {
-                try? await machine.close()
+        try await Self.withFixtureMachine { machine, _ in
+            await #expect(throws: MachineError.self) {
+                try await machine.run("exit 7")
             }
-        }
-
-        await #expect(throws: MachineError.self) {
-            try await machine.run("exit 7")
+            return ()
         }
     }
 
@@ -123,20 +75,32 @@ struct MachineTests {
         }
         return lines
     }
+
+    private static func withFixtureMachine<Result>(
+        _ body: (Machine, SSHFixture) async throws -> Result
+    ) async throws -> Result {
+        let fixture = try SSHFixture()
+        let machine = Machine(
+            sshTarget: "ai@example.local",
+            baseDirectory: fixture.remoteRoot.path,
+            sshExecutable: fixture.sshScript.path
+        )
+
+        defer { fixture.remove() }
+        return try await body(machine, fixture)
+    }
 }
 
 private struct SSHFixture {
     let root: URL
     let remoteRoot: URL
     let sshScript: URL
-    let controlPath: String
 
     init() throws {
         self.root = FileManager.default.temporaryDirectory
             .appendingPathComponent("machine-ssh-" + UUID().uuidString, isDirectory: true)
         self.remoteRoot = self.root.appendingPathComponent("remote", isDirectory: true)
         self.sshScript = self.root.appendingPathComponent("fake-ssh.sh")
-        self.controlPath = self.root.appendingPathComponent("control.sock").path
 
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
@@ -167,9 +131,6 @@ private struct SSHFixture {
             set -euo pipefail
 
             state_dir=\(stateDirectory)
-            socket=""
-            operation=""
-            master=false
             args=()
 
             increment() {
@@ -183,21 +144,10 @@ private struct SSHFixture {
 
             while (($#)); do
               case "$1" in
-                -MNf)
-                  master=true
-                  shift
-                  ;;
                 -T)
                   shift
                   ;;
                 -o)
-                  if [[ "$2" == ControlPath=* ]]; then
-                    socket="${2#ControlPath=}"
-                  fi
-                  shift 2
-                  ;;
-                -O)
-                  operation="$2"
                   shift 2
                   ;;
                 *)
@@ -207,32 +157,8 @@ private struct SSHFixture {
               esac
             done
 
-            target="${args[0]:-}"
             command="${args[1]:-}"
-            master_count="$state_dir/master-count"
             run_count="$state_dir/run-count"
-
-            case "$operation" in
-              check)
-                if [[ -n "$socket" && -e "$socket" ]]; then
-                  exit 0
-                fi
-                exit 255
-                ;;
-              exit)
-                if [[ -n "$socket" ]]; then
-                  rm -f "$socket"
-                fi
-                exit 0
-                ;;
-            esac
-
-            if [[ "$master" == true ]]; then
-              mkdir -p "$(dirname "$socket")"
-              : > "$socket"
-              increment "$master_count"
-              exit 0
-            fi
 
             increment "$run_count"
             printf '%s\n' "$command" >> "$state_dir/commands.log"

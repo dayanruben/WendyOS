@@ -25,27 +25,6 @@ public actor Machine {
         try self.parse(spec, sshExecutable: "/usr/bin/ssh")
     }
 
-    // MARK: - Managing SSH Sessions
-
-    public func close() async throws {
-        guard try await self.isConnected() else {
-            try? FileManager.default.removeItem(atPath: self.controlPath)
-            return
-        }
-
-        _ = try await Self.invokeSSH(
-            executable: self.sshExecutable,
-            arguments: [
-                "-o", "ControlPath=\(self.controlPath)",
-                "-O", "exit",
-                self.sshTarget,
-            ],
-            output: .discarded,
-            error: .discarded
-        )
-        try? FileManager.default.removeItem(atPath: self.controlPath)
-    }
-
     // MARK: - Running Commands
 
     public func run(_ command: String) async throws {
@@ -69,7 +48,6 @@ public actor Machine {
         output: Output,
         error: Error = .discarded
     ) async throws -> ExecutionRecord<Output, Error> {
-        try await self.ensureConnected()
         Self.printCommand(machine: self.description, command: command)
 
         return try await Self.invokeSSH(
@@ -92,7 +70,6 @@ public actor Machine {
                 _ standardError: AsyncBufferSequence
             ) async throws -> Result
     ) async throws -> ExecutionOutcome<Result> {
-        try await self.ensureConnected()
         Self.printCommand(machine: self.description, command: command)
 
         return try await Subprocess.run(
@@ -120,103 +97,27 @@ public actor Machine {
         return Machine(
             sshTarget: target,
             baseDirectory: path,
-            sshExecutable: sshExecutable,
-            controlPath: Self.makeControlPath()
+            sshExecutable: sshExecutable
         )
     }
 
     init(
         sshTarget: String,
         baseDirectory: String,
-        sshExecutable: String = "/usr/bin/ssh",
-        controlPath: String,
-        controlPersist: String = "10m"
+        sshExecutable: String = "/usr/bin/ssh"
     ) {
         self.sshTarget = sshTarget
         self.baseDirectory = baseDirectory
         self.sshExecutable = sshExecutable
-        self.controlPath = controlPath
-        self.controlPersist = controlPersist
-    }
-
-    deinit {
-        let sshExecutable = self.sshExecutable
-        let sshTarget = self.sshTarget
-        let controlPath = self.controlPath
-
-        Task.detached {
-            _ = try? await Self.invokeSSH(
-                executable: sshExecutable,
-                arguments: [
-                    "-o", "ControlPath=\(controlPath)",
-                    "-O", "exit",
-                    sshTarget,
-                ],
-                output: .discarded,
-                error: .discarded
-            )
-            try? FileManager.default.removeItem(atPath: controlPath)
-        }
     }
 
     // MARK: - Private
 
     private let sshExecutable: String
-    private let controlPath: String
-    private let controlPersist: String
-
-    private func ensureConnected() async throws {
-        guard try await self.isConnected() == false else {
-            return
-        }
-
-        let controlDirectory = (self.controlPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(
-            atPath: controlDirectory,
-            withIntermediateDirectories: true
-        )
-        try? FileManager.default.removeItem(atPath: self.controlPath)
-
-        let record = try await Self.invokeSSH(
-            executable: self.sshExecutable,
-            arguments: [
-                "-MNf",
-                "-o", "ControlMaster=yes",
-                "-o", "ControlPersist=\(self.controlPersist)",
-                "-o", "ControlPath=\(self.controlPath)",
-                self.sshTarget,
-            ],
-            output: .string(limit: .max),
-            error: .string(limit: .max)
-        )
-
-        guard record.terminationStatus.isSuccess else {
-            throw MachineError.connectionFailed(
-                machine: self.description,
-                stderr: record.standardError ?? ""
-            )
-        }
-    }
-
-    private func isConnected() async throws -> Bool {
-        let record = try await Self.invokeSSH(
-            executable: self.sshExecutable,
-            arguments: [
-                "-o", "ControlPath=\(self.controlPath)",
-                "-O", "check",
-                self.sshTarget,
-            ],
-            output: .discarded,
-            error: .discarded
-        )
-        return record.terminationStatus.isSuccess
-    }
 
     private func commandArguments(for command: String) -> [String] {
         [
             "-T",
-            "-o", "ControlMaster=no",
-            "-o", "ControlPath=\(self.controlPath)",
             self.sshTarget,
             self.wrapped(command),
         ]
@@ -224,10 +125,6 @@ public actor Machine {
 
     private func wrapped(_ command: String) -> String {
         "cd \(Self.shellQuote(self.baseDirectory)) && \(command)"
-    }
-
-    private nonisolated static func makeControlPath() -> String {
-        "/tmp/wendy-e2e-\(UUID().uuidString).sock"
     }
 
     private nonisolated static func shellQuote(_ value: String) -> String {

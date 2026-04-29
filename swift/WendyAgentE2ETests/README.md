@@ -15,8 +15,7 @@ swift test
 
 - `user@host:/path/to/repo`
 
-The SSH session is persisted with an OpenSSH control socket, so the first
-command authenticates and later commands reuse the same connection.
+Each command runs in its own SSH invocation.
 
 ## Run the smoke test
 
