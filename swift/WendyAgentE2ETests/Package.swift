@@ -27,5 +27,10 @@ let package = Package(
             dependencies: ["WendyE2ETesting"],
             path: "Tests/WendyE2ETestingTests"
         ),
+        .testTarget(
+            name: "WendyAgentE2ETests",
+            dependencies: ["WendyE2ETesting"],
+            path: "Tests/WendyAgentE2ETests"
+        ),
     ]
 )
