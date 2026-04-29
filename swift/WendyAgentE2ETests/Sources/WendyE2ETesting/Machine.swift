@@ -1,6 +1,7 @@
+public import Subprocess
+
 import Darwin
 import Foundation
-import Subprocess
 
 #if canImport(System)
     import System
@@ -73,6 +74,28 @@ public struct Machine: Sendable {
             invocation,
             output: output,
             error: error
+        )
+    }
+
+    public func run<Result>(
+        _ command: String,
+        output: StringOutput<UTF8> = .string(limit: .max),
+        error: StringOutput<UTF8> = .string(limit: .max),
+        body: @Sendable (_ standardOutput: CommandOutput, _ standardError: CommandOutput) async throws -> Result
+    ) async throws -> Result {
+        let record = try await self.run(command, output: output, error: error)
+
+        guard record.terminationStatus.isSuccess else {
+            throw MachineError.commandFailed(
+                machine: self.description,
+                command: command,
+                terminationStatus: record.terminationStatus
+            )
+        }
+
+        return try await body(
+            CommandOutput(record.standardOutput ?? ""),
+            CommandOutput(record.standardError ?? "")
         )
     }
 

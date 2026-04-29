@@ -115,6 +115,18 @@ struct MachineTests {
         }
     }
 
+    @Test("collected output callback receives command output")
+    func collectedOutputCallbackReceivesCommandOutput() async throws {
+        try await Self.withFixtureMachine { machine, _ in
+            try await machine.run("printf 'hello'; printf 'oops' >&2") {
+                standardOutput, standardError in
+                #expect(standardOutput.string == "hello")
+                #expect(standardError.string == "oops")
+                #expect(standardOutput.contains(#"he.*o"#))
+            }
+        }
+    }
+
     @Test("simple run throws when the remote command exits non-zero")
     func simpleRunThrowsOnNonZeroExit() async throws {
         try await Self.withFixtureMachine { machine, _ in
