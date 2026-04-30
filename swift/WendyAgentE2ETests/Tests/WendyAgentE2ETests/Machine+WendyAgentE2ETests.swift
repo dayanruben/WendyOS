@@ -9,8 +9,10 @@ extension Machine {
             workingDirectory: Self.rootDirectoryURL().appendingPathComponent("go").path
         )
 
-        try await machine.run("make build-cli") { standardOutput, _ in
-            #expect(standardOutput.contains(/go build .* bin\/wendy/))
+        try! await Gate.buildCLI.once {
+            try await machine.run("make build-cli") { standardOutput, _ in
+                #expect(standardOutput.contains(/go build .* bin\/wendy/))
+            }
         }
 
         return machine
@@ -22,12 +24,14 @@ extension Machine {
             workingDirectory: Self.rootDirectoryURL().appendingPathComponent("swift").path
         )
 
-        try await machine.run("make build-dev") { standardOutput, _ in
-            #expect(
-                standardOutput.contains(
-                    /Created macOS app artifact: .*wendy-agent-macos-arm64-.*\.zip/
+        try! await Gate.buildAgent.once {
+            try await machine.run("make build-dev") { standardOutput, _ in
+                #expect(
+                    standardOutput.contains(
+                        /Created macOS app artifact: .*wendy-agent-macos-arm64-.*\.zip/
+                    )
                 )
-            )
+            }
         }
 
         return machine
@@ -40,5 +44,18 @@ extension Machine {
             .deletingLastPathComponent()  // swift/WendyAgentE2ETests
             .deletingLastPathComponent()  // swift
             .deletingLastPathComponent()  // repository root
+    }
+}
+
+private actor Gate {
+    static let buildCLI = Gate()
+    static let buildAgent = Gate()
+
+    private var done = false
+
+    func once(_ block: () async throws -> Void) async rethrows {
+        guard !done else { return }
+        done = true
+        try await block()
     }
 }
