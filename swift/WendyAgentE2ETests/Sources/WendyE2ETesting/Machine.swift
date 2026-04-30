@@ -69,28 +69,20 @@ public struct Machine: Sendable {
         function: String = #function,
         line: Int = #line
     ) async throws {
-        let outcome = try await self.run(
+        let record = try await self.run(
             command,
+            output: .string(limit: .max),
+            error: .string(limit: .max),
             filePath: filePath,
             function: function,
             line: line
-        ) { _, _, stdout, stderr in
-            if self.verbose {
-                async let forwardStdout = Self.forward(stdout, to: .standardOutput, name: self.name)
-                async let forwardStderr = Self.forward(stderr, to: .standardError, name: self.name)
-                _ = try await (forwardStdout, forwardStderr)
-            } else {
-                async let discardStdout = Self.discard(stdout)
-                async let discardStderr = Self.discard(stderr)
-                _ = try await (discardStdout, discardStderr)
-            }
-        }
+        )
 
-        guard outcome.terminationStatus.isSuccess else {
+        guard record.terminationStatus.isSuccess else {
             throw MachineError.commandFailed(
                 machine: self.description,
                 command: command,
-                terminationStatus: outcome.terminationStatus
+                terminationStatus: record.terminationStatus
             )
         }
     }
@@ -162,54 +154,6 @@ public struct Machine: Sendable {
             record.standardOutput ?? "",
             record.standardError ?? ""
         )
-    }
-
-    public func run<Result>(
-        _ command: String,
-        preferredBufferSize: Int? = nil,
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line,
-        isolation: isolated (any Actor)? = #isolation,
-        body:
-            @Sendable (
-                _ execution: Execution,
-                _ inputWriter: StandardInputWriter,
-                _ standardOutput: AsyncBufferSequence,
-                _ standardError: AsyncBufferSequence
-            ) async throws -> Result
-    ) async throws -> ExecutionOutcome<Result> {
-        if self.verbose {
-            Self.printCommand(machine: self.name, command: command)
-        }
-
-        let invocation = self.invocation(for: command)
-        let start = ContinuousClock.now
-        let outcome = try await Subprocess.run(
-            .path(FilePath(invocation.executable)),
-            arguments: Arguments(invocation.arguments),
-            environment: invocation.environment,
-            workingDirectory: invocation.workingDirectory,
-            preferredBufferSize: preferredBufferSize,
-            isolation: isolation,
-            body: body
-        )
-        let duration = start.duration(to: .now)
-
-        Self.writeExecutionReport(
-            machine: self,
-            command: command,
-            filePath: filePath,
-            function: function,
-            line: line,
-            processIdentifier: nil,
-            terminationStatus: String(describing: outcome.terminationStatus),
-            duration: duration,
-            standardOutput: "<not captured: streaming API>",
-            standardError: "<not captured: streaming API>"
-        )
-
-        return outcome
     }
 
     // MARK: - Private
@@ -442,21 +386,6 @@ public struct Machine: Sendable {
         }
 
         return String(describing: value)
-    }
-
-    private static func forward(
-        _ sequence: AsyncBufferSequence,
-        to handle: FileHandle,
-        name: String
-    ) async throws {
-        for try await rawLine in sequence.lines() {
-            let line = rawLine.trimmingCharacters(in: .newlines)
-            try handle.write(contentsOf: Data("[\(name)] \(line)\n".utf8))
-        }
-    }
-
-    private static func discard(_ sequence: AsyncBufferSequence) async throws {
-        for try await _ in sequence {}
     }
 
     private static func invoke<Output: OutputProtocol, Error: ErrorOutputProtocol>(

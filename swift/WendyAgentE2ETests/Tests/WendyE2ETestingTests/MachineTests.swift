@@ -92,23 +92,6 @@ struct `machine` {
     }
 
     @Test
-    func `closure API streams stdout and stderr`() async throws {
-        try await Self.withFixtureMachine { machine, _ in
-            let outcome = try await machine.run(
-                "printf 'hello\\n'; printf 'oops\\n' >&2"
-            ) { _, _, stdout, stderr in
-                async let stdoutLines = Self.collectLines(from: stdout)
-                async let stderrLines = Self.collectLines(from: stderr)
-                return try await (stdoutLines, stderrLines)
-            }
-
-            #expect(outcome.terminationStatus.isSuccess)
-            #expect(outcome.value.0 == ["hello"])
-            #expect(outcome.value.1 == ["oops"])
-        }
-    }
-
-    @Test
     func `collected output API matches swift-subprocess style`() async throws {
         try await Self.withFixtureMachine { machine, _ in
             let record = try await machine.run(
@@ -144,14 +127,6 @@ struct `machine` {
             }
             return ()
         }
-    }
-
-    private static func collectLines(from sequence: AsyncBufferSequence) async throws -> [String] {
-        var lines: [String] = []
-        for try await line in sequence.lines() {
-            lines.append(line.trimmingCharacters(in: .newlines))
-        }
-        return lines
     }
 
     private static func withFixtureMachine<Result>(
