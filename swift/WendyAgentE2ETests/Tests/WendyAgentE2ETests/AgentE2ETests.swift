@@ -3,7 +3,7 @@ import Testing
 import WendyE2ETesting
 
 @Suite(.serialized)
-struct AgentE2ETests {
+struct `agent e2e` {
 
     @Test(.timeLimit(.minutes(10)))
     func `build CLI and agent`() async throws {
@@ -21,7 +21,11 @@ struct AgentE2ETests {
         }
 
         try await agent.run("make build-dev") { standardOutput, standardError in
-            #expect(standardOutput.contains(/Created macOS app artifact: .*wendy-agent-macos-arm64-.*\.zip/))
+            #expect(
+                standardOutput.contains(
+                    /Created macOS app artifact: .*wendy-agent-macos-arm64-.*\.zip/
+                )
+            )
         }
     }
 

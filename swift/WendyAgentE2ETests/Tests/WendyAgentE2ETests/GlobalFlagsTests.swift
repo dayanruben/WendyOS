@@ -1,7 +1,7 @@
 import Testing
 
 @Suite(.serialized)
-struct `Global flags` {
+struct `global flags` {
     @Test
     func `'--json' formats supported command output as JSON`() async throws {
         // TODO: implement

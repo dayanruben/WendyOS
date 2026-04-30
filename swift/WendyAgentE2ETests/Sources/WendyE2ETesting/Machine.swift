@@ -1,7 +1,6 @@
-public import Subprocess
-
 import Darwin
 import Foundation
+public import Subprocess
 
 #if canImport(System)
     import System
@@ -31,7 +30,8 @@ public struct Machine: Sendable {
 
         self.name = name
         self.ssh = ssh
-        self.workingDirectory = workingDirectory ?? (ssh == nil ? FileManager.default.currentDirectoryPath : nil)
+        self.workingDirectory =
+            workingDirectory ?? (ssh == nil ? FileManager.default.currentDirectoryPath : nil)
         self.verbose = verbose
         self.sshExecutable = sshExecutable
     }
