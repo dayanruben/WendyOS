@@ -8,16 +8,6 @@ public import Subprocess
     import SystemPackage
 #endif
 
-private let e2eTestRecordsDirectoryName: String = {
-    let formatter = DateFormatter()
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(secondsFromGMT: 0)
-    formatter.dateFormat = "yyyy-MM-dd.HH-mm-ss"
-
-    return "e2e-test-records.\(formatter.string(from: Date()))"
-}()
-
 public struct Machine: Sendable {
     public let name: String
     public let ssh: String?
@@ -47,10 +37,11 @@ public struct Machine: Sendable {
         precondition(workingDirectory?.isEmpty != true, "workingDirectory must not be empty")
         precondition(!sshExecutable.isEmpty, "sshExecutable must not be empty")
 
+        let currentDirectoryPathOrNil = ssh == nil ? FileManager.default.currentDirectoryPath : nil
+
         self.name = name
         self.ssh = ssh
-        self.workingDirectory =
-            workingDirectory ?? (ssh == nil ? FileManager.default.currentDirectoryPath : nil)
+        self.workingDirectory = workingDirectory ?? currentDirectoryPathOrNil
         self.verbose = verbose
         self.sshExecutable = sshExecutable
     }
@@ -153,6 +144,16 @@ public struct Machine: Sendable {
     // MARK: - Private
 
     private let sshExecutable: String
+
+    private static let e2eTestRecordsDirectoryName: String = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd.HH-mm-ss"
+
+        return "e2e-test-records.\(formatter.string(from: Date()))"
+    }()
 
     private func invocation(for command: String) -> Invocation {
         if let ssh = self.ssh {
@@ -283,7 +284,7 @@ public struct Machine: Sendable {
             baseURL = Self.packageRootDirectoryURL().appendingPathComponent(".build", isDirectory: true)
         }
 
-        return baseURL.appendingPathComponent(e2eTestRecordsDirectoryName, isDirectory: true)
+        return baseURL.appendingPathComponent(Self.e2eTestRecordsDirectoryName, isDirectory: true)
     }
 
     private static func packageRootDirectoryURL() -> URL {
