@@ -47,8 +47,18 @@ public struct Machine: Sendable {
 
     // MARK: - Running Commands
 
-    public func run(_ command: String) async throws {
-        let outcome = try await self.run(command) { _, _, stdout, stderr in
+    public func run(
+        _ command: String,
+        filePath: String = #filePath,
+        function: String = #function,
+        line: Int = #line
+    ) async throws {
+        let outcome = try await self.run(
+            command,
+            filePath: filePath,
+            function: function,
+            line: line
+        ) { _, _, stdout, stderr in
             if self.verbose {
                 async let forwardStdout = Self.forward(stdout, to: .standardOutput, name: self.name)
                 async let forwardStderr = Self.forward(stderr, to: .standardError, name: self.name)
@@ -72,13 +82,17 @@ public struct Machine: Sendable {
     public func run<Output: OutputProtocol, Error: ErrorOutputProtocol>(
         _ command: String,
         output: Output,
-        error: Error = .discarded
+        error: Error = .discarded,
+        filePath: String = #filePath,
+        function: String = #function,
+        line: Int = #line
     ) async throws -> ExecutionRecord<Output, Error> {
         if self.verbose {
             Self.printCommand(machine: self.name, command: command)
         }
 
         let invocation = self.invocation(for: command)
+
         return try await Self.invoke(
             invocation,
             output: output,
@@ -90,9 +104,19 @@ public struct Machine: Sendable {
         _ command: String,
         output: StringOutput<UTF8> = .string(limit: .max),
         error: StringOutput<UTF8> = .string(limit: .max),
+        filePath: String = #filePath,
+        function: String = #function,
+        line: Int = #line,
         body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
     ) async throws -> Result {
-        let record = try await self.run(command, output: output, error: error)
+        let record = try await self.run(
+            command,
+            output: output,
+            error: error,
+            filePath: filePath,
+            function: function,
+            line: line
+        )
 
         guard record.terminationStatus.isSuccess else {
             throw MachineError.commandFailed(
@@ -111,6 +135,9 @@ public struct Machine: Sendable {
     public func run<Result>(
         _ command: String,
         preferredBufferSize: Int? = nil,
+        filePath: String = #filePath,
+        function: String = #function,
+        line: Int = #line,
         isolation: isolated (any Actor)? = #isolation,
         body:
             @Sendable (
