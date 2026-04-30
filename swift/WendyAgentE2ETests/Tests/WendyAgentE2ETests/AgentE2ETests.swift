@@ -3,8 +3,9 @@ import Testing
 import WendyE2ETesting
 
 struct AgentE2ETests {
-    @Test("build CLI and agent", .timeLimit(.minutes(10)))
-    func buildCLIAndAgent() async throws {
+
+    @Test(.timeLimit(.minutes(10)))
+    func `build CLI and agent`() async throws {
         let rootDirectoryURL = Self.rootDirectoryURL()
 
         let goDirectoryPath = rootDirectoryURL.appendingPathComponent("go").path
