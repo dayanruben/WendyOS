@@ -402,6 +402,8 @@ public struct Machine: Sendable {
     ) -> String {
         """
 
+        ---
+
         ## Command
 
         - Source: `\(filePath):\(line)`
