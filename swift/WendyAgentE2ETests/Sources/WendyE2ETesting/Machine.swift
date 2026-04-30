@@ -14,6 +14,15 @@ public struct Machine: Sendable {
     public let workingDirectory: String?
     public let verbose: Bool
 
+    public var id: String {
+        let location = self.ssh ?? "local"
+        if let workingDirectory = self.workingDirectory {
+            return "\(location):\(workingDirectory)"
+        }
+
+        return "\(location):~"
+    }
+
     // MARK: - Creating Machines
 
     public init(
@@ -245,11 +254,6 @@ private struct User: Sendable {
 
 extension Machine: CustomStringConvertible {
     public var description: String {
-        let location = self.ssh ?? "local"
-        if let workingDirectory = self.workingDirectory {
-            return "\(location):\(workingDirectory)"
-        }
-
-        return "\(location):~"
+        self.id
     }
 }

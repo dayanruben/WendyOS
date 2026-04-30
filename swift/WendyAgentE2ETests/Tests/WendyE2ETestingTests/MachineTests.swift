@@ -18,6 +18,7 @@ struct `machine` {
         #expect(machine.ssh == "ai@example.local")
         #expect(machine.workingDirectory == "~/wendy-agent")
         #expect(machine.verbose == false)
+        #expect(machine.id == "ai@example.local:~/wendy-agent")
         #expect(machine.description == "ai@example.local:~/wendy-agent")
     }
 
@@ -34,6 +35,7 @@ struct `machine` {
 
         #expect(machine.ssh == "ai@example.local")
         #expect(machine.workingDirectory == nil)
+        #expect(machine.id == "ai@example.local:~")
         #expect(machine.description == "ai@example.local:~")
     }
 
@@ -43,6 +45,7 @@ struct `machine` {
 
         #expect(machine.ssh == nil)
         #expect(machine.workingDirectory == FileManager.default.currentDirectoryPath)
+        #expect(machine.id == "local:\(FileManager.default.currentDirectoryPath)")
         #expect(machine.description == "local:\(FileManager.default.currentDirectoryPath)")
     }
 
