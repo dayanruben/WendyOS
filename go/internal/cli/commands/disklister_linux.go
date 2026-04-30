@@ -5,8 +5,6 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
 
 	"github.com/dustin/go-humanize"
@@ -143,53 +141,42 @@ func unmountLsblkDevice(dev lsblkDevice) {
 	}
 }
 
-// writeImageToDisk writes an image file to a block device using dd,
-// streaming data via stdin in 4 MiB chunks for progress tracking.
+// writeImageToDisk writes an image file to a block device using dd. dd reads
+// the file directly (rather than via a stdin pipe) so that bs=4M actually
+// produces 4 MiB writes to the device — pipe input forces dd to issue a write
+// per pipe-buffer-sized read, which is dramatically slower on raw devices.
+// Progress is driven by parsing dd's status=progress output on stderr.
 func writeImageToDisk(imagePath string, d drive, progressFn func(written int64)) error {
 	if err := unmountDisk(d.DevicePath); err != nil {
 		return err
 	}
 
-	imgFile, err := os.Open(imagePath)
+	cmd := exec.Command("sudo", "dd",
+		fmt.Sprintf("if=%s", imagePath),
+		fmt.Sprintf("of=%s", d.DevicePath),
+		"bs=4M",
+		"status=progress",
+	)
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("opening image: %w", err)
-	}
-	defer imgFile.Close()
-
-	cmd := exec.Command("sudo", "dd", fmt.Sprintf("of=%s", d.DevicePath), "bs=4M")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("creating stdin pipe: %w", err)
+		return fmt.Errorf("creating stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting dd: %w", err)
 	}
 
-	buf := make([]byte, 4*1024*1024) // 4 MiB
-	var totalWritten int64
-	for {
-		n, readErr := imgFile.Read(buf)
-		if n > 0 {
-			if _, writeErr := stdin.Write(buf[:n]); writeErr != nil {
-				return fmt.Errorf("writing to dd: %w", writeErr)
-			}
-			totalWritten += int64(n)
-			if progressFn != nil {
-				progressFn(totalWritten)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("reading image: %w", readErr)
-		}
-	}
+	scannerDone := make(chan struct{})
+	go func() {
+		defer close(scannerDone)
+		scanDDProgress(stderr, progressFn)
+	}()
 
-	stdin.Close()
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("writing image: %w", err)
+	waitErr := cmd.Wait()
+	<-scannerDone
+
+	if waitErr != nil {
+		return fmt.Errorf("writing image: %w", waitErr)
 	}
 
 	// Sync to flush writes.
