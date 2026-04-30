@@ -3,10 +3,12 @@ import Testing
 public import WendyE2ETesting
 
 extension Machine {
-    public static func cli() async throws -> Machine {
+    public static func cli(ssh: String? = nil, verbose: Bool = false) async throws -> Machine {
         let machine = Machine(
             name: "CLI",
-            workingDirectory: Self.rootDirectoryURL().appendingPathComponent("go").path
+            ssh: ssh,
+            workingDirectory: Self.rootDirectoryURL().appendingPathComponent("go").path,
+            verbose: verbose
         )
 
         try await buildCLIOnce.perform {
@@ -18,10 +20,12 @@ extension Machine {
         return machine
     }
 
-    public static func agent() async throws -> Machine {
+    public static func agent(ssh: String? = nil, verbose: Bool = false) async throws -> Machine {
         let machine = Machine(
             name: "Agent",
-            workingDirectory: Self.rootDirectoryURL().appendingPathComponent("swift").path
+            ssh: ssh,
+            workingDirectory: Self.rootDirectoryURL().appendingPathComponent("swift").path,
+            verbose: verbose
         )
 
         try await buildAgentOnce.perform {
