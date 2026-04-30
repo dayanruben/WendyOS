@@ -20,6 +20,10 @@ struct `CLI basics` {
         }
     }
 
+    // AI:
+    // - Help text is readable and well-grouped.
+    // - Group names match the CLI docs.
+
     @Test
     func `'wendy --version' prints the CLI version`() async throws {
         try await self.cli.run("./bin/wendy --version") { standardOutput, standardError in
@@ -27,6 +31,10 @@ struct `CLI basics` {
             #expect(standardOutput.contains(/wendy version \S+/))
         }
     }
+
+    // AI:
+    // - Version string is readable.
+    // - Version matches the expected CLI build.
 
     @Test
     func `'wendy info' prints CLI and system information`() async throws {
@@ -39,4 +47,8 @@ struct `CLI basics` {
             #expect(standardOutput.contains(/Go Version:\s+\S+/))
         }
     }
+
+    // AI:
+    // - CLI/system details are complete and sensible.
+    // - No unexpected warnings or noisy diagnostics.
 }
