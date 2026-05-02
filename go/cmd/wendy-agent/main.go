@@ -167,7 +167,6 @@ func main() {
 			registrySrv = nil
 		}
 
-
 		registryAddr := "0.0.0.0:5000"
 		if addr := os.Getenv("WENDY_REGISTRY_ADDR"); addr != "" {
 			registryAddr = addr
