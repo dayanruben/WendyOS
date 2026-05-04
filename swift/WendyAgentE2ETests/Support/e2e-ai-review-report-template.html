@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{REPORT_TITLE}}</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --soft: #f3f4f6;
+      --green: #16803c;
+      --green-bg: #ecfdf3;
+      --green-line: #bbf7d0;
+      --amber: #a16207;
+      --amber-bg: #fffbeb;
+      --amber-line: #fde68a;
+      --red: #b91c1c;
+      --red-bg: #fef2f2;
+      --red-line: #fecaca;
+      --blue: #2563eb;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 56px 24px 72px;
+    }
+
+    header { margin-bottom: 28px; }
+
+    .kicker {
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(34px, 6vw, 54px);
+      line-height: 1.04;
+      letter-spacing: -0.045em;
+    }
+
+    .lead {
+      margin: 0;
+      max-width: 680px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin: 28px 0;
+    }
+
+    .metric {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(31, 41, 55, .05);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 12px 32px rgba(31, 41, 55, .06);
+      overflow: hidden;
+      margin-top: 18px;
+    }
+
+    .card-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      padding: 20px 22px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(#fff, #fbfcff);
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: -0.02em;
+    }
+
+    .badge {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .badge.pass {
+      color: var(--green);
+      background: var(--green-bg);
+      border: 1px solid var(--green-line);
+    }
+
+    .badge.concern {
+      color: var(--amber);
+      background: var(--amber-bg);
+      border: 1px solid var(--amber-line);
+    }
+
+    .badge.fail {
+      color: var(--red);
+      background: var(--red-bg);
+      border: 1px solid var(--red-line);
+    }
+
+    article {
+      padding: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    article:first-of-type { border-top: 0; }
+
+    h3 {
+      margin: 0 0 7px;
+      font-size: 18px;
+      line-height: 1.35;
+      letter-spacing: -0.015em;
+    }
+
+    .record {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .88em;
+      background: var(--soft);
+      border-radius: 5px;
+      padding: .12em .34em;
+    }
+
+    ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .checks li {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 20px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .checks li:first-child { border-top: 0; }
+
+    .status {
+      flex: 0 0 auto;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .status.pass { color: var(--green); }
+    .status.concern { color: var(--amber); }
+    .status.fail { color: var(--red); }
+
+    .note {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .skipped {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      padding: 22px;
+    }
+
+    .skipped li {
+      color: #4b5563;
+      background: var(--soft);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+
+    footer {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 680px) {
+      main { padding: 36px 16px 56px; }
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      .card-title { align-items: flex-start; flex-direction: column; }
+      .checks li { align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    Wendy Agent E2E AI Review HTML Template
+
+    Fill every {{PLACEHOLDER}} with escaped text. Duplicate the marked repeat
+    blocks as needed, then remove these instructions and any unused example
+    sections. For checklist statuses, use one of: pass, concern, fail.
+  -->
+  <main>
+    <header>
+      <div class="kicker">{{REPORT_KICKER}}</div>
+      <h1>{{REPORT_HEADING}}</h1>
+      <p class="lead">{{REPORT_SUMMARY}}</p>
+    </header>
+
+    <section class="summary" aria-label="Summary">
+      <div class="metric"><strong>{{TESTS_PASSED_COUNT}}</strong><span>Tests passed</span></div>
+      <div class="metric"><strong>{{AI_REVIEWED_TEST_COUNT}}</strong><span>Tests reviewed</span></div>
+      <div class="metric"><strong>{{CHECKLIST_PASS_COUNT}}</strong><span>Checklist passes</span></div>
+      <div class="metric"><strong>{{ISSUE_COUNT}}</strong><span>Issues found</span></div>
+    </section>
+
+    <!-- Repeat this .card section once per test file with AI-reviewed tests. -->
+    <section class="card">
+      <div class="card-title">
+        <h2>{{TEST_FILE_NAME}}</h2>
+        <span class="badge {{TEST_FILE_BADGE_STATUS_CLASS}}">{{TEST_FILE_BADGE_TEXT}}</span>
+      </div>
+
+      <!-- Repeat this article once per AI-reviewed test function in the file. -->
+      <article>
+        <h3>{{TEST_FUNCTION_TITLE}}</h3>
+        <p class="record"><code>{{RECORD_FILE_NAME}}</code></p>
+        <ul class="checks">
+          <!-- Repeat this li once per checklist item. -->
+          <li><span>{{CHECKLIST_ITEM_TEXT}}</span><span class="status {{CHECKLIST_STATUS_CLASS}}">{{CHECKLIST_STATUS_TEXT}}</span></li>
+        </ul>
+        <p class="note">{{TEST_NOTES}}</p>
+      </article>
+    </section>
+
+    <!-- Optional: remove this section when no files were skipped. -->
+    <section class="card">
+      <div class="card-title">
+        <h2>Skipped</h2>
+        <span class="badge pass">No AI checklist</span>
+      </div>
+      <ul class="skipped">
+        <!-- Repeat this li once per skipped test file. -->
+        <li>{{SKIPPED_TEST_FILE_NAME}}</li>
+      </ul>
+    </section>
+
+    <footer>
+      Records: <code>{{RECORDS_DIRECTORY}}</code>
+    </footer>
+  </main>
+</body>
+</html>
