@@ -3,7 +3,7 @@ import Testing
 @Suite(.serialized)
 struct `wendy tour` {
     @Test
-    func `starts the interactive guided setup tour`() async throws {
+    func `starts the interactive guided setup`() async throws {
         // TODO: implement.
     }
 

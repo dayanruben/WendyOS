@@ -10,8 +10,8 @@ struct `wendy` {
     }
 
     @Test
-    func `'--help' describes the top-level command groups`() async throws {
-        try await self.cli.run("./bin/wendy --help") { standardOutput, standardError in
+    func `describes the top-level command groups`() async throws {
+        try await self.cli.run("./bin/wendy") { standardOutput, standardError in
             #expect(standardError.isEmpty)
             #expect(standardOutput.contains("Project Commands:"))
             #expect(standardOutput.contains("Manage Your Cloud:"))
@@ -86,7 +86,7 @@ struct `wendy info` {
     }
 
     @Test
-    func `prints CLI and system information`() async throws {
+    func `prints CLI and system details`() async throws {
         try await self.cli.run("./bin/wendy info") { standardOutput, standardError in
             #expect(standardError.isEmpty)
             #expect(standardOutput.contains("Wendy CLI"))
@@ -102,7 +102,7 @@ struct `wendy info` {
     }
 
     @Test
-    func `'--json' formats CLI and system information as JSON`() async throws {
+    func `'--json' formats CLI and system details as JSON`() async throws {
         try await self.cli.run("./bin/wendy --json info") { standardOutput, standardError in
             #expect(standardError.isEmpty)
 

@@ -5,7 +5,7 @@ import WendyE2ETesting
 @Suite(.serialized)
 struct `wendy analytics` {
     @Test
-    func `describes analytics subcommands`() async throws {
+    func `describes subcommands`() async throws {
         // TODO: implement.
     }
 }
@@ -21,7 +21,7 @@ struct `wendy analytics status` {
     }
 
     @Test
-    func `'wendy analytics status' shows whether analytics are enabled`() async throws {
+    func `shows whether anonymous analytics are enabled`() async throws {
         let home = try Helper.temporaryDirectory(prefix: "wendy-analytics-status")
         defer { try? FileManager.default.removeItem(at: home) }
 
@@ -56,7 +56,7 @@ struct `wendy analytics enable` {
     }
 
     @Test
-    func `'wendy analytics enable' enables anonymous analytics`() async throws {
+    func `enables anonymous analytics`() async throws {
         let home = try Helper.temporaryDirectory(prefix: "wendy-analytics-enable")
         defer { try? FileManager.default.removeItem(at: home) }
         try Helper.writeAnalyticsConfig(enabled: false, home: home)
@@ -91,7 +91,7 @@ struct `wendy analytics disable` {
     }
 
     @Test
-    func `'wendy analytics disable' disables anonymous analytics`() async throws {
+    func `disables anonymous analytics`() async throws {
         let home = try Helper.temporaryDirectory(prefix: "wendy-analytics-disable")
         defer { try? FileManager.default.removeItem(at: home) }
         try Helper.writeAnalyticsConfig(enabled: true, home: home)

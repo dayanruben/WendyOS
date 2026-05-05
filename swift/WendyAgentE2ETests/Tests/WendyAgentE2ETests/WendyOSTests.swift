@@ -3,7 +3,7 @@ import Testing
 @Suite(.serialized)
 struct `wendy os` {
     @Test
-    func `describes WendyOS management subcommands`() async throws {
+    func `describes management subcommands`() async throws {
         // TODO: implement.
     }
 }

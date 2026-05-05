@@ -5,7 +5,7 @@ import WendyE2ETesting
 @Suite(.serialized)
 struct `wendy json` {
     @Test
-    func `describes JSON inspection subcommands`() async throws {
+    func `describes inspection subcommands`() async throws {
         // TODO: implement.
     }
 }
@@ -21,7 +21,7 @@ struct `wendy json schema` {
     }
 
     @Test
-    func `'wendy json schema' prints the wendy.json schema`() async throws {
+    func `prints the wendy.json schema`() async throws {
         let expectedSchema = try String(
             contentsOf: Helper.repositoryRootDirectoryURL()
                 .appendingPathComponent("go/internal/shared/appconfig/wendy.schema.json"),
@@ -60,7 +60,7 @@ struct `wendy json validate` {
     }
 
     @Test
-    func `'wendy json validate' accepts a valid wendy.json file`() async throws {
+    func `accepts a valid wendy.json file`() async throws {
         let directory = try Helper.temporaryDirectory(prefix: "wendy-json-valid")
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = try Helper.writeWendyJSON(
@@ -88,7 +88,7 @@ struct `wendy json validate` {
     }
 
     @Test
-    func `'wendy json validate' rejects an invalid wendy.json file`() async throws {
+    func `rejects an invalid wendy.json file`() async throws {
         let directory = try Helper.temporaryDirectory(prefix: "wendy-json-invalid")
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = try Helper.writeWendyJSON(

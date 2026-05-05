@@ -3,7 +3,7 @@ import Testing
 @Suite(.serialized)
 struct `wendy device wifi` {
     @Test
-    func `describes WiFi subcommands`() async throws {
+    func `describes subcommands`() async throws {
         // TODO: implement.
     }
 }

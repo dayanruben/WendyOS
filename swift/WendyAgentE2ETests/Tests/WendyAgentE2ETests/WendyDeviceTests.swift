@@ -3,12 +3,12 @@ import Testing
 @Suite(.serialized)
 struct `wendy device` {
     @Test
-    func `describes device management subcommands`() async throws {
+    func `describes management subcommands`() async throws {
         // TODO: implement.
     }
 
     @Test
-    func `uses the configured default device when none is specified`() async throws {
+    func `uses the configured default target when none is specified`() async throws {
         // TODO: implement.
     }
 }

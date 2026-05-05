@@ -3,7 +3,7 @@ import Testing
 @Suite(.serialized)
 struct `wendy project entitlements` {
     @Test
-    func `describes entitlement subcommands`() async throws {
+    func `describes subcommands`() async throws {
         // TODO: implement.
     }
 }
@@ -13,17 +13,17 @@ struct `wendy project entitlements` {
 @Suite(.serialized)
 struct `wendy project entitlements list` {
     @Test
+    func `lists configured entitlements`() async throws {
+        // TODO: implement.
+    }
+
+    @Test
+    func `reports when no entitlements are configured`() async throws {
+        // TODO: implement.
+    }
+
+    @Test
     func `'--show-all' shows all available entitlement types`() async throws {
-        // TODO: implement.
-    }
-
-    @Test
-    func `reports when the project has no entitlements`() async throws {
-        // TODO: implement.
-    }
-
-    @Test
-    func `lists configured project entitlements`() async throws {
         // TODO: implement.
     }
 }

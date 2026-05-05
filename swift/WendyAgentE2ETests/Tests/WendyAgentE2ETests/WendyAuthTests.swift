@@ -3,7 +3,7 @@ import Testing
 @Suite(.serialized)
 struct `wendy auth` {
     @Test
-    func `describes authentication subcommands`() async throws {
+    func `describes subcommands`() async throws {
         // TODO: implement.
     }
 }

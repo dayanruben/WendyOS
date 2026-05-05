@@ -3,7 +3,7 @@ import Testing
 @Suite(.serialized)
 struct `wendy os cache` {
     @Test
-    func `describes OS cache subcommands`() async throws {
+    func `describes subcommands`() async throws {
         // TODO: implement.
     }
 }

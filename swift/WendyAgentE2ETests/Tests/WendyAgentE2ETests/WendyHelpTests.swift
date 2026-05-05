@@ -3,12 +3,12 @@ import Testing
 @Suite(.serialized)
 struct `wendy help` {
     @Test
-    func `prints help for a top-level command`() async throws {
+    func `prints documentation for a top-level command`() async throws {
         // TODO: implement.
     }
 
     @Test
-    func `prints help for a nested command`() async throws {
+    func `prints documentation for a nested command`() async throws {
         // TODO: implement.
     }
 

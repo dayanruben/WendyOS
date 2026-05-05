@@ -8,7 +8,7 @@ struct `wendy build` {
     }
 
     @Test
-    func `builds the current project artifact`() async throws {
+    func `produces the current project artifact`() async throws {
         // TODO: implement.
     }
 

@@ -3,12 +3,12 @@ import Testing
 @Suite(.serialized)
 struct `wendy project` {
     @Test
-    func `describes project configuration subcommands`() async throws {
+    func `describes configuration subcommands`() async throws {
         // TODO: implement.
     }
 
     @Test
-    func `fails clearly outside a Wendy project when configuration is required`() async throws {
+    func `fails clearly outside a configured workspace`() async throws {
         // TODO: implement.
     }
 }
