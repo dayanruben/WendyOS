@@ -64,7 +64,6 @@ struct `wendy json` {
             #expect(standardOutput == "wendy.json is valid.\n")
             #expect(standardError.isEmpty)
         }
-
     }
 
     @Test
@@ -90,6 +89,20 @@ struct `wendy json` {
         #expect(!record.terminationStatus.isSuccess)
         #expect(record.standardOutput == "")
         #expect(record.standardError?.contains("Error: appId is required") == true)
-
     }
+
+    // MARK: -
+
+    @Suite
+    struct `wendy json schema` {
+        // TODO: implement.
+    }
+
+    // MARK: -
+
+    @Suite
+    struct `wendy json validate` {
+        // TODO: implement.
+    }
+
 }

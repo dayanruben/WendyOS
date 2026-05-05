@@ -32,7 +32,6 @@ struct `wendy analytics` {
             #expect(standardOutput.isEmpty)
             #expect(standardError == "Analytics: disabled\n")
         }
-
     }
 
     @Test
@@ -57,7 +56,6 @@ struct `wendy analytics` {
             #expect(standardOutput.isEmpty)
             #expect(standardError == "Analytics: enabled\n")
         }
-
     }
 
     @Test
@@ -82,6 +80,27 @@ struct `wendy analytics` {
             #expect(standardOutput.isEmpty)
             #expect(standardError == "Analytics: disabled\n")
         }
-
     }
+
+    // MARK: -
+
+    @Suite
+    struct `wendy analytics disable` {
+        // TODO: implement.
+    }
+
+    // MARK: -
+
+    @Suite
+    struct `wendy analytics enable` {
+        // TODO: implement.
+    }
+
+    // MARK: -
+
+    @Suite
+    struct `wendy analytics status` {
+        // TODO: implement.
+    }
+
 }
