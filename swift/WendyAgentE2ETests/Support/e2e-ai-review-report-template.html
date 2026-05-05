@@ -407,6 +407,12 @@
       border: 1px solid var(--red-line);
     }
 
+    .badge.ai {
+      color: var(--text);
+      background: var(--card);
+      border: 1px solid var(--line);
+    }
+
     .test-details {
       margin: 1px 0;
       border-radius: 8px;
@@ -459,10 +465,7 @@
 
     .test-body {
       margin: 4px 0 14px 22px;
-      padding: 14px 16px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
+      padding: 4px 0 0;
     }
 
     h3 {
@@ -514,13 +517,32 @@
       list-style: none;
     }
 
-    .checks li {
-      display: block;
-      padding: 10px 0;
-      border-top: 1px solid var(--line);
+    .ai-analysis {
+      margin: 0 0 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--card);
+      font-size: 14px;
     }
 
-    .checks li:first-child { border-top: 0; }
+    .ai-analysis h4 {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .checks {
+      margin: 0;
+    }
+
+    .checks li {
+      display: block;
+      padding: 3px 0;
+    }
 
     .status {
       margin-left: 6px;
@@ -544,6 +566,37 @@
       font-size: 14px;
     }
 
+    .report-button {
+      float: right;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--card);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.4;
+      margin-left: 12px;
+      opacity: 0;
+      padding: 4px 9px;
+      pointer-events: none;
+      text-decoration: none;
+      transform: translateY(-1px);
+      transition: opacity .12s ease, border-color .12s ease, color .12s ease;
+    }
+
+    .test-details:hover .report-button,
+    .test-details:focus-within .report-button {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .report-button:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
     .skipped {
       display: flex;
       flex-wrap: wrap;
@@ -560,7 +613,7 @@
     }
 
     .commands {
-      margin-top: 18px;
+      margin-top: 10px;
       border: 1px solid var(--line);
       border-radius: 14px;
       background: var(--stream-bg);
@@ -650,7 +703,7 @@
       .filter-bar { position: static; }
       .filter-count { flex-basis: 100%; margin-left: 0; }
       .search-field { flex-basis: 100%; }
-      .test-body { margin-left: 14px; padding: 12px; }
+      .test-body { margin-left: 14px; padding: 4px 0 0; }
       .command-output { margin-left: 0; }
       .command-run-meta { margin-left: 0; }
     }
@@ -727,15 +780,18 @@
         <!-- Repeat this details.test-details once per test function in the suite. Set data-has-ai to true when // AI: checklist items are present. -->
         <details class="test-details" data-test-status="{{TEST_STATUS_CLASS}}" data-has-ai="{{TEST_HAS_AI}}">
           <summary class="test-summary">
-            <span class="test-path">{{TEST_PATH_TEXT}}</span><span class="badge {{TEST_STATUS_CLASS}}">{{TEST_STATUS_TEXT}}</span>
+            {{TEST_REPORT_LINK}}<span class="test-path">{{TEST_PATH_TEXT}}</span><span class="badge {{TEST_STATUS_CLASS}}">{{TEST_STATUS_TEXT}}</span>{{TEST_AI_BADGE}}
           </summary>
           <div class="test-body">
           <!-- Optional: render when the test has // AI: checklist items. -->
-          <ul class="checks">
-            <!-- Repeat this li once per checklist item. -->
-            <li><span>{{CHECKLIST_ITEM_TEXT}}</span><span class="status {{CHECKLIST_STATUS_CLASS}}" aria-label="{{CHECKLIST_STATUS_TEXT}}"></span></li>
-          </ul>
-          <p class="note">{{TEST_NOTES}}</p>
+          <section class="ai-analysis">
+            <h4>AI analysis</h4>
+            <ul class="checks">
+              <!-- Repeat this li once per checklist item. -->
+              <li><span>{{CHECKLIST_ITEM_TEXT}}</span><span class="status {{CHECKLIST_STATUS_CLASS}}" aria-label="{{CHECKLIST_STATUS_TEXT}}"></span></li>
+            </ul>
+            <p class="note">{{TEST_NOTES}}</p>
+          </section>
 
           <!-- Optional: remove this block when the test did not run commands. -->
           <div class="commands">
@@ -788,6 +844,7 @@
       const themeToggle = document.querySelector('[data-theme-toggle]');
       const themeToggleIcon = document.querySelector('[data-theme-toggle-icon]');
       const themeToggleLabel = document.querySelector('[data-theme-toggle-label]');
+      const reportButtons = Array.from(document.querySelectorAll('.report-button'));
       let activeFilter = 'all';
 
       function currentTheme() {
@@ -897,6 +954,10 @@
       themeToggle?.addEventListener('click', () => {
         setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
       });
+
+      for (const button of reportButtons) {
+        button.addEventListener('click', event => event.stopPropagation());
+      }
 
       search?.addEventListener('input', applyFilters);
       updateThemeToggle();
