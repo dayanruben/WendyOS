@@ -1,10 +1,21 @@
 import Testing
+import WendyE2ETesting
 
 @Suite(.serialized)
 struct `wendy device audio` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `describes subcommands`() async throws {
-        // TODO: implement.
+        try await self.cli.run("./bin/wendy device audio --help") { standardOutput, standardError in
+            #expect(standardError.isEmpty)
+            #expect(standardOutput.contains("Manage audio devices"))
+            #expect(standardOutput.contains("list"))
+            #expect(standardOutput.contains("listen"))
+            #expect(standardOutput.contains("monitor"))
+            #expect(standardOutput.contains("set-default"))
+        }
     }
 }
 
@@ -12,14 +23,25 @@ struct `wendy device audio` {
 
 @Suite(.serialized)
 struct `wendy device audio list` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `lists audio devices on the selected device`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device audio list", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("Audio") == true || record.standardOutput?.contains("Input") == true || record.standardOutput?.contains("Output") == true)
     }
 
     @Test
     func `'--json' formats audio devices as JSON`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --json --device 127.0.0.1 device audio list", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        let array = try Helper.jsonArray(from: record.standardOutput ?? "")
+        if let first = array.first as? [String: Any] {
+            #expect(first["id"] != nil)
+            #expect(first["name"] as? String != nil)
+        }
     }
 }
 
@@ -27,14 +49,21 @@ struct `wendy device audio list` {
 
 @Suite(.serialized)
 struct `wendy device audio listen` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `starts listening to the selected audio input`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false /usr/bin/perl -e 'alarm 2; exec @ARGV' ./bin/wendy --device 127.0.0.1 device audio listen --id 1 --stdout", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.isEmpty == false || record.standardError?.contains("Streaming audio") == true)
     }
 
     @Test
     func `fails clearly when the audio input is unavailable`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false /usr/bin/perl -e 'alarm 2; exec @ARGV' ./bin/wendy --device 127.0.0.1 device audio listen --id 999 --stdout", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(!record.terminationStatus.isSuccess)
+        #expect(record.standardError?.contains("999") == true || record.standardError?.contains("audio") == true || record.standardError?.contains("Could not connect") == true)
     }
 }
 
@@ -42,14 +71,21 @@ struct `wendy device audio listen` {
 
 @Suite(.serialized)
 struct `wendy device audio monitor` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `streams audio level updates`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false /usr/bin/perl -e 'alarm 2; exec @ARGV' ./bin/wendy --device 127.0.0.1 device audio monitor --id 1 --rate 1", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("level") == true || record.standardOutput?.contains("dB") == true || record.standardError?.contains("level") == true)
     }
 
     @Test
     func `fails clearly when audio monitoring is unavailable`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false /usr/bin/perl -e 'alarm 2; exec @ARGV' ./bin/wendy --device 127.0.0.1 device audio monitor --id 999", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(!record.terminationStatus.isSuccess)
+        #expect(record.standardError?.contains("audio") == true || record.standardError?.contains("monitor") == true || record.standardError?.contains("Could not connect") == true)
     }
 }
 
@@ -57,13 +93,21 @@ struct `wendy device audio monitor` {
 
 @Suite(.serialized)
 struct `wendy device audio set-default` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `sets the default audio device`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device audio set-default --id 1", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("default") == true)
+        #expect(record.standardOutput?.contains("1") == true)
     }
 
     @Test
     func `fails clearly when the audio device is unknown`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device audio set-default --id 999", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(!record.terminationStatus.isSuccess)
+        #expect(record.standardError?.contains("999") == true || record.standardError?.contains("unknown") == true || record.standardError?.contains("Could not connect") == true)
     }
 }

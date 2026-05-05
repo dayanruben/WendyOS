@@ -1,10 +1,21 @@
 import Testing
+import WendyE2ETesting
 
 @Suite(.serialized)
 struct `wendy device bluetooth` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `describes subcommands`() async throws {
-        // TODO: implement.
+        try await self.cli.run("./bin/wendy device bluetooth --help") { standardOutput, standardError in
+            #expect(standardError.isEmpty)
+            #expect(standardOutput.contains("Manage Bluetooth"))
+            #expect(standardOutput.contains("connect"))
+            #expect(standardOutput.contains("disconnect"))
+            #expect(standardOutput.contains("forget"))
+            #expect(standardOutput.contains("list"))
+        }
     }
 }
 
@@ -12,14 +23,22 @@ struct `wendy device bluetooth` {
 
 @Suite(.serialized)
 struct `wendy device bluetooth connect` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `connects to a known Bluetooth device`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth connect AA:BB:CC:DD:EE:FF", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("Connected") == true)
+        #expect(record.standardOutput?.contains("AA:BB:CC:DD:EE:FF") == true)
     }
 
     @Test
     func `fails clearly when the Bluetooth device is unavailable`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth connect 00:00:00:00:00:00", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(!record.terminationStatus.isSuccess)
+        #expect(record.standardError?.contains("00:00:00:00:00:00") == true || record.standardError?.contains("Bluetooth") == true || record.standardError?.contains("Could not connect") == true)
     }
 }
 
@@ -27,14 +46,21 @@ struct `wendy device bluetooth connect` {
 
 @Suite(.serialized)
 struct `wendy device bluetooth disconnect` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `disconnects a connected Bluetooth device`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth disconnect AA:BB:CC:DD:EE:FF", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("Disconnected") == true)
     }
 
     @Test
     func `handles an already disconnected Bluetooth device`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth disconnect AA:BB:CC:DD:EE:FF", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("already disconnected") == true || record.standardOutput?.contains("Disconnected") == true)
     }
 }
 
@@ -42,14 +68,21 @@ struct `wendy device bluetooth disconnect` {
 
 @Suite(.serialized)
 struct `wendy device bluetooth forget` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `forgets a paired Bluetooth device`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth forget AA:BB:CC:DD:EE:FF", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("Forgot") == true || record.standardOutput?.contains("removed") == true)
     }
 
     @Test
     func `fails clearly when the Bluetooth device is not paired`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth forget 00:00:00:00:00:00", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(!record.terminationStatus.isSuccess)
+        #expect(record.standardError?.contains("not paired") == true || record.standardError?.contains("Bluetooth") == true || record.standardError?.contains("Could not connect") == true)
     }
 }
 
@@ -57,13 +90,24 @@ struct `wendy device bluetooth forget` {
 
 @Suite(.serialized)
 struct `wendy device bluetooth list` {
+    var cli: Machine
+    init() async throws { self.cli = try await Machine.cli() }
+
     @Test
     func `lists known Bluetooth devices`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --device 127.0.0.1 device bluetooth list", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        #expect(record.standardOutput?.contains("Bluetooth") == true || record.standardOutput?.contains("Address") == true)
     }
 
     @Test
     func `'--json' formats Bluetooth devices as JSON`() async throws {
-        // TODO: implement.
+        let record = try await self.cli.run("WENDY_ANALYTICS=false ./bin/wendy --json --device 127.0.0.1 device bluetooth list", output: .string(limit: .max), error: .string(limit: .max))
+        #expect(record.terminationStatus.isSuccess)
+        let array = try Helper.jsonArray(from: record.standardOutput ?? "")
+        if let first = array.first as? [String: Any] {
+            #expect(first["address"] as? String != nil)
+            #expect(first["name"] as? String != nil)
+        }
     }
 }

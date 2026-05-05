@@ -1,14 +1,37 @@
+import Foundation
 import Testing
+import WendyE2ETesting
 
 @Suite(.serialized)
 struct `wendy project` {
+    var cli: Machine
+
+    init() async throws {
+        self.cli = try await Machine.cli()
+    }
+
     @Test
     func `describes configuration subcommands`() async throws {
-        // TODO: implement.
+        try await self.cli.run("./bin/wendy project --help") { standardOutput, standardError in
+            #expect(standardError.isEmpty)
+            #expect(standardOutput.contains("Manage Wendy project configuration"))
+            #expect(standardOutput.contains("entitlements"))
+        }
     }
 
     @Test
     func `fails clearly outside a configured workspace`() async throws {
-        // TODO: implement.
+        let directory = try Helper.temporaryDirectory(prefix: "wendy-project-no-workspace")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let record = try await self.cli.run(
+            "cd \(Helper.shellQuote(directory.path)) && WENDY_ANALYTICS=false \(Helper.shellQuote(Helper.repositoryRootDirectoryURL().appendingPathComponent("go/bin/wendy").path)) project entitlements list",
+            output: .string(limit: .max),
+            error: .string(limit: .max)
+        )
+
+        #expect(!record.terminationStatus.isSuccess)
+        #expect(record.standardError?.contains("wendy.json") == true)
+        #expect(record.standardError?.contains("not found") == true || record.standardError?.contains("No") == true)
     }
 }

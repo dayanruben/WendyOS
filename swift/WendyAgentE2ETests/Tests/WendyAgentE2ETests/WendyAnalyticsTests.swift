@@ -4,9 +4,21 @@ import WendyE2ETesting
 
 @Suite(.serialized)
 struct `wendy analytics` {
+    var cli: Machine
+
+    init() async throws {
+        self.cli = try await Machine.cli()
+    }
+
     @Test
     func `describes subcommands`() async throws {
-        // TODO: implement.
+        try await self.cli.run("./bin/wendy analytics --help") { standardOutput, standardError in
+            #expect(standardError.isEmpty)
+            #expect(standardOutput.contains("Manage anonymous usage analytics"))
+            #expect(standardOutput.contains("disable"))
+            #expect(standardOutput.contains("enable"))
+            #expect(standardOutput.contains("status"))
+        }
     }
 }
 

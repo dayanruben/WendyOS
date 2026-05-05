@@ -24,14 +24,23 @@ enum Helper {
         return file
     }
 
+    static func writeFile(_ contents: String, named name: String, to directory: URL) throws -> URL {
+        let file = directory.appendingPathComponent(name, isDirectory: false)
+        try contents.write(to: file, atomically: true, encoding: .utf8)
+        return file
+    }
+
     static func writeAnalyticsConfig(enabled: Bool, home: URL) throws {
+        try writeUserConfig(["analytics": ["enabled": enabled]], home: home)
+    }
+
+    static func writeUserConfig(_ config: [String: Any], home: URL) throws {
         let configDirectory = home.appendingPathComponent(".wendy", isDirectory: true)
         try FileManager.default.createDirectory(
             at: configDirectory,
             withIntermediateDirectories: true
         )
 
-        let config = ["analytics": ["enabled": enabled]]
         let data = try JSONSerialization.data(
             withJSONObject: config,
             options: [.prettyPrinted, .sortedKeys]
@@ -39,14 +48,18 @@ enum Helper {
         try data.write(to: configDirectory.appendingPathComponent("config.json"))
     }
 
-    static func analyticsConfigEnabled(home: URL) throws -> Bool {
+    static func userConfig(home: URL) throws -> [String: Any] {
         let data = try Data(
             contentsOf:
                 home
                 .appendingPathComponent(".wendy", isDirectory: true)
                 .appendingPathComponent("config.json", isDirectory: false)
         )
-        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    static func analyticsConfigEnabled(home: URL) throws -> Bool {
+        let object = try userConfig(home: home)
         let analytics = try #require(object["analytics"] as? [String: Any])
         return try #require(analytics["enabled"] as? Bool)
     }
@@ -54,6 +67,32 @@ enum Helper {
     static func jsonObject(from string: String) throws -> [String: Any] {
         let data = Data(string.utf8)
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    static func jsonArray(from string: String) throws -> [Any] {
+        let data = Data(string.utf8)
+        return try #require(JSONSerialization.jsonObject(with: data) as? [Any])
+    }
+
+    static func wendyJSONContents(appId: String = "sh.wendy.e2e.app", entitlements: String = "{ \"type\": \"network\" }") -> String {
+        """
+        {
+          "appId": "\(appId)",
+          "version": "1.0.0",
+          "platform": "wendyos",
+          "language": "swift",
+          "entitlements": [
+            \(entitlements)
+          ]
+        }
+        """
+    }
+
+    static func commandEnvironment(home: URL? = nil) -> String {
+        if let home {
+            return "HOME=\(shellQuote(home.path)) WENDY_ANALYTICS=false"
+        }
+        return "WENDY_ANALYTICS=false"
     }
 
     static func withAsyncCleanup<Result>(

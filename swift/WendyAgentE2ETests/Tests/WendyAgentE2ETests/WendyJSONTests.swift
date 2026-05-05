@@ -4,9 +4,20 @@ import WendyE2ETesting
 
 @Suite(.serialized)
 struct `wendy json` {
+    var cli: Machine
+
+    init() async throws {
+        self.cli = try await Machine.cli()
+    }
+
     @Test
     func `describes inspection subcommands`() async throws {
-        // TODO: implement.
+        try await self.cli.run("./bin/wendy json --help") { standardOutput, standardError in
+            #expect(standardError.isEmpty)
+            #expect(standardOutput.contains("Inspect and validate wendy.json"))
+            #expect(standardOutput.contains("schema"))
+            #expect(standardOutput.contains("validate"))
+        }
     }
 }
 
