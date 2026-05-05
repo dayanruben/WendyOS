@@ -3,7 +3,14 @@
 package commands
 
 import (
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/internal/shared/version"
@@ -268,4 +275,142 @@ func TestConfirmOverwriteInternalDrive(t *testing.T) {
 			t.Errorf("override flag should bypass typed prompt: %v", err)
 		}
 	})
+}
+
+func TestProbeRangeSupport(t *testing.T) {
+	t.Run("returns content length when server supports ranges", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodHead {
+				t.Errorf("expected HEAD, got %s", r.Method)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", "8192")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		img := &imageInfo{DownloadURL: srv.URL + "/image.img"}
+		cl, ok := probeRangeSupport(&http.Client{}, img)
+		if !ok {
+			t.Fatal("expected ok=true")
+		}
+		if cl != 8192 {
+			t.Fatalf("expected contentLength=8192, got %d", cl)
+		}
+	})
+
+	t.Run("returns false when Accept-Ranges header is absent", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "8192")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		img := &imageInfo{DownloadURL: srv.URL + "/image.img"}
+		_, ok := probeRangeSupport(&http.Client{}, img)
+		if ok {
+			t.Fatal("expected ok=false when no Accept-Ranges header")
+		}
+	})
+
+	t.Run("falls back to img.ImageSize when Content-Length is absent", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Accept-Ranges", "bytes")
+			// No Content-Length header.
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		img := &imageInfo{DownloadURL: srv.URL + "/image.img", ImageSize: 4096}
+		cl, ok := probeRangeSupport(&http.Client{}, img)
+		if !ok {
+			t.Fatal("expected ok=true with ImageSize fallback")
+		}
+		if cl != 4096 {
+			t.Fatalf("expected contentLength=4096 from ImageSize, got %d", cl)
+		}
+	})
+
+	t.Run("returns false when server returns non-200", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", "8192")
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		img := &imageInfo{DownloadURL: srv.URL + "/image.img"}
+		_, ok := probeRangeSupport(&http.Client{}, img)
+		if ok {
+			t.Fatal("expected ok=false when server returns non-200")
+		}
+	})
+}
+
+func TestDownloadParallel(t *testing.T) {
+	// 8 KiB fixture — with 8 workers each gets a 1 KiB chunk.
+	fixture := make([]byte, 8*1024)
+	for i := range fixture {
+		fixture[i] = byte(i % 251) // prime modulus gives a non-trivial pattern
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "" {
+			http.Error(w, "range required", http.StatusBadRequest)
+			return
+		}
+		var start, end int64
+		if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); err != nil {
+			http.Error(w, "bad range header", http.StatusBadRequest)
+			return
+		}
+		if end >= int64(len(fixture)) {
+			end = int64(len(fixture)) - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(fixture)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(fixture[start : end+1]) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "wendy-test-*.img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	contentLength := int64(len(fixture))
+	if err := f.Truncate(contentLength); err != nil {
+		t.Fatal(err)
+	}
+
+	var progressCalled atomic.Bool
+	err = downloadParallel(&http.Client{}, srv.URL+"/image.img", contentLength, f, func(downloaded, total int64) {
+		progressCalled.Store(true)
+	})
+	if err != nil {
+		t.Fatalf("downloadParallel: %v", err)
+	}
+	if !progressCalled.Load() {
+		t.Error("progress callback was never called")
+	}
+
+	f.Close()
+
+	got, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, fixture) {
+		t.Errorf("content mismatch: got %d bytes, want %d bytes", len(got), len(fixture))
+		for i := range fixture {
+			if i >= len(got) || got[i] != fixture[i] {
+				t.Errorf("first diff at byte %d: got %d, want %d", i, got[i], fixture[i])
+				break
+			}
+		}
+	}
 }

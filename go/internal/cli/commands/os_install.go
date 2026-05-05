@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -169,6 +171,9 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 		}
 	}
 
+	if err := preAuthElevation(); err != nil {
+		return err
+	}
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	if err := writeImageToDisk(imagePath, *targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
@@ -468,7 +473,15 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
-	// Step 4: Resolve image (cached or download).
+	// Step 4: Pre-authenticate elevated privileges before downloading — on Unix
+	// this prompts for sudo, on Windows it checks/requests Administrator rights.
+	// Done here so the prompt appears on the raw terminal (before any TUI) and
+	// before spending time on a potentially large download.
+	if err := preAuthElevation(); err != nil {
+		return err
+	}
+
+	// Step 5: Resolve image (cached or download).
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	imgInfo, err := getImageInfo(device.Manifest, selectedVersion)
 	if err != nil {
@@ -486,12 +499,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return fmt.Errorf("stat image: %w", err)
 	}
 	totalSize := imgStat.Size()
-
-	// Pre-authenticate elevated privileges (sudo on Unix, admin check on
-	// Windows) so the prompt works on the raw terminal before the TUI starts.
-	if err := preAuthElevation(); err != nil {
-		return err
-	}
 
 	// Step 5: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
@@ -599,16 +606,19 @@ func pickManifestVersion(title string, manifest *deviceManifest) (string, error)
 // the I/O loop itself. The terminal can't usefully render faster than the
 // throttle rate anyway, and a trailing ProgressDoneMsg always renders 100%.
 func throttledProgress(p *tea.Program, minInterval time.Duration) func(written, total int64) {
-	var last time.Time
+	var lastNanos atomic.Int64
 	return func(written, total int64) {
 		if total <= 0 {
 			return
 		}
 		now := time.Now()
-		if now.Sub(last) < minInterval {
+		prev := lastNanos.Load()
+		if now.UnixNano()-prev < minInterval.Nanoseconds() {
 			return
 		}
-		last = now
+		if !lastNanos.CompareAndSwap(prev, now.UnixNano()) {
+			return
+		}
 		p.Send(tui.ProgressUpdateMsg{
 			Percent: float64(written) / float64(total),
 			Written: written,
@@ -617,18 +627,117 @@ func throttledProgress(p *tea.Program, minInterval time.Duration) func(written, 
 	}
 }
 
-// downloadImage downloads an OS image to a temp file with a progress bar.
-func downloadImage(img *imageInfo) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Minute}
-	resp, err := client.Get(img.DownloadURL)
+const parallelDownloadWorkers = 8
+
+// downloadChunk fetches the byte range [start, end] from url, writes it to dst
+// at the correct offset via WriteAt, and atomically increments *downloaded.
+func downloadChunk(client *http.Client, url string, start, end int64, dst *os.File, downloaded *int64, total int64, sendProgress func(int64, int64)) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("downloading: %w", err)
+		return err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("range request %d-%d: %w", start, end, err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("range request %d-%d: expected 206, got %d", start, end, resp.StatusCode)
 	}
+
+	buf := make([]byte, 1*1024*1024)
+	offset := start
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.WriteAt(buf[:n], offset); writeErr != nil {
+				return fmt.Errorf("writing at offset %d: %w", offset, writeErr)
+			}
+			offset += int64(n)
+			newTotal := atomic.AddInt64(downloaded, int64(n))
+			sendProgress(newTotal, total)
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("reading chunk %d-%d: %w", start, end, readErr)
+		}
+	}
+}
+
+// downloadParallel downloads url into dst using parallelDownloadWorkers concurrent
+// range requests. dst must already be truncated to contentLength bytes.
+func downloadParallel(client *http.Client, url string, contentLength int64, dst *os.File, sendProgress func(int64, int64)) error {
+	chunkSize := (contentLength + parallelDownloadWorkers - 1) / parallelDownloadWorkers
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, parallelDownloadWorkers)
+	var downloaded int64
+
+	for i := 0; i < parallelDownloadWorkers; i++ {
+		start := int64(i) * chunkSize
+		if start >= contentLength {
+			break
+		}
+		end := start + chunkSize - 1
+		if end >= contentLength {
+			end = contentLength - 1
+		}
+
+		wg.Add(1)
+		go func(start, end int64) {
+			defer wg.Done()
+			if err := downloadChunk(client, url, start, end, dst, &downloaded, contentLength, sendProgress); err != nil {
+				errCh <- err
+			}
+		}(start, end)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		return err
+	}
+	return nil
+}
+
+// probeRangeSupport issues a HEAD request to check whether the server
+// supports HTTP range requests. Returns the content length and true on
+// success. Falls back to img.ImageSize if Content-Length is absent.
+// Returns 0, false if ranges are unsupported or content length is unknown.
+func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64, ok bool) {
+	resp, err := client.Head(img.DownloadURL)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	// Rejects both absent header and RFC 7233 "Accept-Ranges: none".
+	if resp.Header.Get("Accept-Ranges") != "bytes" {
+		return 0, false
+	}
+	cl := resp.ContentLength
+	if cl <= 0 && img.ImageSize > 0 {
+		cl = img.ImageSize
+	}
+	if cl <= 0 {
+		return 0, false
+	}
+	return cl, true
+}
+
+// downloadImage downloads an OS image to a temp file with a progress bar.
+// If the server supports HTTP range requests, it downloads in parallel using
+// parallelDownloadWorkers concurrent connections. Falls back to a single
+// sequential stream otherwise.
+func downloadImage(img *imageInfo) (string, error) {
+	client := &http.Client{Timeout: 30 * time.Minute}
 
 	// Write directly into the OS cache directory so we never land in /tmp
 	// (which is often a size-limited tmpfs on Linux).
@@ -641,38 +750,60 @@ func downloadImage(img *imageInfo) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	total := resp.ContentLength
-	if img.ImageSize > 0 {
-		total = img.ImageSize
-	}
-
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
 	p := tea.NewProgram(prog)
-
-	var downloaded int64
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
-	go func() {
-		buf := make([]byte, 1*1024*1024)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
-				if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-					p.Send(tui.ProgressDoneMsg{Err: writeErr})
+
+	contentLength, supportsRanges := probeRangeSupport(client, img)
+
+	if supportsRanges {
+		if err := tmpFile.Truncate(contentLength); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			return "", fmt.Errorf("pre-allocating: %w", err)
+		}
+		go func() {
+			p.Send(tui.ProgressDoneMsg{Err: downloadParallel(client, img.DownloadURL, contentLength, tmpFile, sendProgress)})
+		}()
+	} else {
+		go func() {
+			resp, err := client.Get(img.DownloadURL)
+			if err != nil {
+				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("downloading: %w", err)})
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("download returned status %d", resp.StatusCode)})
+				return
+			}
+			total := resp.ContentLength
+			if img.ImageSize > 0 {
+				total = img.ImageSize
+			}
+			buf := make([]byte, 1*1024*1024)
+			var downloaded int64
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
+						p.Send(tui.ProgressDoneMsg{Err: writeErr})
+						return
+					}
+					downloaded += int64(n)
+					sendProgress(downloaded, total)
+				}
+				if readErr == io.EOF {
+					p.Send(tui.ProgressDoneMsg{})
 					return
 				}
-				downloaded += int64(n)
-				sendProgress(downloaded, total)
+				if readErr != nil {
+					p.Send(tui.ProgressDoneMsg{Err: readErr})
+					return
+				}
 			}
-			if readErr == io.EOF {
-				p.Send(tui.ProgressDoneMsg{})
-				return
-			}
-			if readErr != nil {
-				p.Send(tui.ProgressDoneMsg{Err: readErr})
-				return
-			}
-		}
-	}()
+		}()
+	}
 
 	finalModel, err := p.Run()
 	if err != nil {
