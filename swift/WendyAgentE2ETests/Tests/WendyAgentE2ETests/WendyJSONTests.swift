@@ -35,9 +35,7 @@ struct `wendy json` {
         }
 
         // AI:
-        // - Schema output matches the embedded wendy.schema.json file exactly.
-        // - Schema output is valid JSON and readable as documentation.
-        // - No warnings or noisy diagnostics are printed.
+        // - Schema output is readable as documentation.
     }
 
     @Test
@@ -67,9 +65,6 @@ struct `wendy json` {
             #expect(standardError.isEmpty)
         }
 
-        // AI:
-        // - Success message clearly tells the user the file is valid.
-        // - A valid config produces no warnings or noisy stderr output.
     }
 
     @Test
@@ -96,9 +91,5 @@ struct `wendy json` {
         #expect(record.standardOutput == "")
         #expect(record.standardError?.contains("Error: appId is required") == true)
 
-        // AI:
-        // - Failure message clearly identifies the missing required appId field.
-        // - Invalid config exits non-zero without printing a success message.
-        // - Diagnostics are concise and not noisy.
     }
 }

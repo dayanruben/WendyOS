@@ -24,10 +24,6 @@ struct `global flags` {
             #expect(!standardOutput.contains("Wendy CLI"))
         }
 
-        // AI:
-        // - The --json flag switches supported commands from human text to JSON.
-        // - JSON keys are stable and useful for automation.
-        // - No human-oriented headings, warnings, or noisy diagnostics are printed.
     }
 
     @Test
@@ -66,6 +62,5 @@ struct `global flags` {
         // AI:
         // - The CLI reaches the explicitly selected agent via --device.
         // - The response describes the agent machine, not just local CLI state.
-        // - JSON output stays stable enough for automation.
     }
 }

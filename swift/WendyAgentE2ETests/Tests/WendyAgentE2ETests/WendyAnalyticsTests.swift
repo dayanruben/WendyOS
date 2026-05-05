@@ -33,10 +33,6 @@ struct `wendy analytics` {
             #expect(standardError == "Analytics: disabled\n")
         }
 
-        // AI:
-        // - Status output clearly distinguishes enabled and disabled states.
-        // - The command uses isolated test config instead of real user settings.
-        // - Only the expected one-line status messages are printed.
     }
 
     @Test
@@ -62,10 +58,6 @@ struct `wendy analytics` {
             #expect(standardError == "Analytics: enabled\n")
         }
 
-        // AI:
-        // - Enable output clearly confirms anonymous analytics are enabled.
-        // - The enabled state persists to isolated config and is reflected by status.
-        // - Only the expected confirmation and status messages are printed.
     }
 
     @Test
@@ -91,9 +83,5 @@ struct `wendy analytics` {
             #expect(standardError == "Analytics: disabled\n")
         }
 
-        // AI:
-        // - Disable output clearly confirms anonymous analytics are disabled.
-        // - The disabled state persists to isolated config and is reflected by status.
-        // - Only the expected confirmation and status messages are printed.
     }
 }
