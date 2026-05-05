@@ -41,8 +41,7 @@ AI_REVIEW: dict[tuple[str, str], tuple[list[str], str]] = {
     ("WendyJSONTests.swift", "prints the wendy.json schema"): (["pass"], ""),
 }
 
-AI_REVIEW_START = "<!-- Wendy E2E AI review: start -->"
-AI_REVIEW_END = "<!-- Wendy E2E AI review: end -->"
+AI_REVIEW_HEADING = "## AI review"
 
 FAKE_ANALYSIS_REMARKS = [
     "Fake human-review report for UI testing. This prose should appear verbatim "
@@ -332,9 +331,7 @@ def record_ai_review_markdown(test: TestCase) -> str:
         return ""
 
     lines = [
-        AI_REVIEW_START,
-        "",
-        "## AI review",
+        AI_REVIEW_HEADING,
         "",
         "### Source `// AI:` comment",
         "",
@@ -346,16 +343,22 @@ def record_ai_review_markdown(test: TestCase) -> str:
     if test.ai_report_markdown:
         lines.extend(["", "### Report", "", test.ai_report_markdown])
 
-    lines.extend(["", AI_REVIEW_END, ""])
+    lines.append("")
     return "\n".join(lines)
 
 
 def strip_existing_record_ai_review(markdown: str) -> str:
-    pattern = re.compile(
-        rf"\n*---\n\n{re.escape(AI_REVIEW_START)}.*?{re.escape(AI_REVIEW_END)}\n*",
+    old_marker_pattern = re.compile(
+        r"\n*---\n\n<!-- Wendy E2E AI review: start -->.*?<!-- Wendy E2E AI review: end -->\n*",
         re.S,
     )
-    return pattern.sub("\n", markdown).rstrip() + "\n"
+    heading_pattern = re.compile(
+        rf"\n*---\n\n{re.escape(AI_REVIEW_HEADING)}.*?(?=\n---\n|\Z)",
+        re.S,
+    )
+    markdown = old_marker_pattern.sub("\n", markdown)
+    markdown = heading_pattern.sub("\n", markdown)
+    return markdown.rstrip() + "\n"
 
 
 def append_ai_reviews_to_records(files: list[tuple[Path, list[TestCase]]], records_dir: Path) -> int:
@@ -415,7 +418,7 @@ def render_cards(files: list[tuple[Path, list[TestCase]]], records_dir: Path) ->
                 f'{ai_filter_analysis}</summary>'
             )
 
-            body = [render_ai(test)]
+            body = []
             if test.disabled:
                 body.append(f'<p class="skip-reason">{escape(test.disabled)}</p>')
             body.append(render_commands(test.commands))
