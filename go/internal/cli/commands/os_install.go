@@ -156,9 +156,15 @@ func runOSInstallDirect(imagePath string, driveID string, force bool) error {
 		}
 	}
 
+	r, size, err := openLocalImageStream(imagePath)
+	if err != nil {
+		return fmt.Errorf("opening image: %w", err)
+	}
+	defer r.Close()
+
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
-	if err := writeImageToDisk(imagePath, *targetDrive, nil); err != nil {
+	if err := writeImageToDisk(r, size, *targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
 	}
 
@@ -445,24 +451,18 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
-	// Step 4: Resolve image (cached or download).
+	// Step 5: Resolve image (cached or download) and open streaming reader.
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	imgInfo, err := getImageInfo(device.Manifest, selectedVersion)
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
-	imagePath, err := resolveOSImage(deviceKey, imgInfo)
+	r, totalSize, err := openOSImageStream(deviceKey, imgInfo)
 	if err != nil {
-		return fmt.Errorf("resolving OS image: %w", err)
+		return fmt.Errorf("opening OS image: %w", err)
 	}
-
-	// Get image size for progress tracking.
-	imgStat, err := os.Stat(imagePath)
-	if err != nil {
-		return fmt.Errorf("stat image: %w", err)
-	}
-	totalSize := imgStat.Size()
+	defer r.Close()
 
 	// Pre-authenticate elevated privileges (sudo on Unix, admin check on
 	// Windows) so the prompt works on the raw terminal before the TUI starts.
@@ -470,13 +470,13 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return err
 	}
 
-	// Step 5: Write image to drive with progress bar.
+	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 	wp := tea.NewProgram(writeProg)
 
 	go func() {
-		writeErr := writeImageToDisk(imagePath, targetDrive, func(written int64) {
+		writeErr := writeImageToDisk(r, totalSize, targetDrive, func(written int64) {
 			if totalSize > 0 {
 				wp.Send(tui.ProgressUpdateMsg{
 					Percent: float64(written) / float64(totalSize),
