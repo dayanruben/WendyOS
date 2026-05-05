@@ -169,6 +169,23 @@ func (c *Client) WriteLayer(ctx context.Context, dgst string, reader io.Reader, 
 	return nil
 }
 
+// layerMediaType returns the OCI media type for a layer given its compression.
+// The compression field takes precedence; when it is COMPRESSION_GZIP (the zero
+// default), the legacy gzip bool determines the type for backward compatibility.
+func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType, gzip bool) string {
+	switch compression {
+	case agentpb.RunContainerLayerHeader_COMPRESSION_ZSTD:
+		return ocispec.MediaTypeImageLayerZstd
+	case agentpb.RunContainerLayerHeader_COMPRESSION_NONE:
+		return ocispec.MediaTypeImageLayer
+	default: // COMPRESSION_GZIP (0) or unrecognised
+		if gzip {
+			return ocispec.MediaTypeImageLayerGzip
+		}
+		return ocispec.MediaTypeImageLayer
+	}
+}
+
 // AssembleImage creates a containerd image from layers already present in the
 // content store. It builds an OCI manifest and config, writes them to the content
 // store, and registers the image. If the image already exists it is updated.
@@ -181,10 +198,7 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 	var layerDescs []ocispec.Descriptor
 	var diffIDs []digest.Digest
 	for _, l := range layers {
-		mediaType := ocispec.MediaTypeImageLayerGzip
-		if !l.GetGzip() {
-			mediaType = ocispec.MediaTypeImageLayer
-		}
+		mediaType := layerMediaType(l.GetCompression(), l.GetGzip())
 
 		dgst, err := digest.Parse(l.GetDigest())
 		if err != nil {
@@ -437,7 +451,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	if !unpacked {
 		c.logger.Info("Unpacking image", zap.String("image", imageName))
-		if err := c.UnpackImage(ctx, imageName, func(progress UnpackProgress) {
+		if err := c.UnpackImage(ctx, image, func(progress UnpackProgress) {
 			if mapped := toCreateContainerProgress(progress); mapped != nil {
 				report(mapped)
 			}
@@ -483,7 +497,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Build environment variables: image env first, then our overrides.
-	env := buildContainerBaseEnv(appName)
+	env := buildContainerBaseEnv()
 	if specErr == nil {
 		env = append(imageSpec.Config.Env, env...)
 	}
@@ -743,16 +757,15 @@ var deviceHostnameWithSuffix = func() string {
 }
 
 // buildContainerBaseEnv builds the wendy-injected env vars layered on top of
-// the image's own env. WENDY_HOSTNAME is the per-app mDNS name; WENDY_DEVICE_HOSTNAME
-// is the device's mDNS name (omitted when unresolvable).
-func buildContainerBaseEnv(appName string) []string {
+// the image's own env. WENDY_HOSTNAME is the device's mDNS hostname
+// (omitted when unresolvable).
+func buildContainerBaseEnv() []string {
 	env := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm",
-		fmt.Sprintf("WENDY_HOSTNAME=%s.local", appName),
 	}
 	if h := deviceHostnameWithSuffix(); h != "" {
-		env = append(env, "WENDY_DEVICE_HOSTNAME="+h)
+		env = append(env, "WENDY_HOSTNAME="+h)
 	}
 	return env
 }
@@ -1249,25 +1262,7 @@ func extractContainerMetrics(metric *types.Metric) services.ContainerMetrics {
 
 // extractMemoryBytes decodes cgroup v1 or v2 task metrics and returns memory usage in bytes.
 func extractMemoryBytes(metric *types.Metric) int64 {
-	switch {
-	case typeurl.Is(metric.Data, (*cgroupv1.Metrics)(nil)):
-		m := &cgroupv1.Metrics{}
-		if err := typeurl.UnmarshalTo(metric.Data, m); err != nil {
-			return 0
-		}
-		if m.Memory != nil && m.Memory.Usage != nil {
-			return int64(m.Memory.Usage.Usage)
-		}
-	case typeurl.Is(metric.Data, (*cgroupv2.Metrics)(nil)):
-		m := &cgroupv2.Metrics{}
-		if err := typeurl.UnmarshalTo(metric.Data, m); err != nil {
-			return 0
-		}
-		if m.Memory != nil {
-			return int64(m.Memory.Usage)
-		}
-	}
-	return 0
+	return extractContainerMetrics(metric).MemBytes
 }
 
 // streamReader is a helper that continuously reads from a reader and sends

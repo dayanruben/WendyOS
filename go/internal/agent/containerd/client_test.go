@@ -56,41 +56,31 @@ func TestCreateContainerProgressMappingUsesUnpackingPhaseForStart(t *testing.T) 
 	}
 }
 
-func TestBuildContainerBaseEnvIncludesDeviceHostname(t *testing.T) {
+func TestBuildContainerBaseEnvIncludesWendyHostname(t *testing.T) {
 	old := deviceHostnameWithSuffix
 	t.Cleanup(func() { deviceHostnameWithSuffix = old })
 	deviceHostnameWithSuffix = func() string { return "wendyos-test-device.local" }
 
-	env := buildContainerBaseEnv("camera-app")
+	env := buildContainerBaseEnv()
 
-	wantApp := "WENDY_HOSTNAME=camera-app.local"
-	wantDevice := "WENDY_DEVICE_HOSTNAME=wendyos-test-device.local"
-	var sawApp, sawDevice bool
+	want := "WENDY_HOSTNAME=wendyos-test-device.local"
 	for _, kv := range env {
-		switch kv {
-		case wantApp:
-			sawApp = true
-		case wantDevice:
-			sawDevice = true
+		if kv == want {
+			return
 		}
 	}
-	if !sawApp {
-		t.Errorf("env missing %q; got %v", wantApp, env)
-	}
-	if !sawDevice {
-		t.Errorf("env missing %q; got %v", wantDevice, env)
-	}
+	t.Errorf("env missing %q; got %v", want, env)
 }
 
-func TestBuildContainerBaseEnvOmitsDeviceHostnameWhenUnavailable(t *testing.T) {
+func TestBuildContainerBaseEnvOmitsWendyHostnameWhenUnavailable(t *testing.T) {
 	old := deviceHostnameWithSuffix
 	t.Cleanup(func() { deviceHostnameWithSuffix = old })
 	deviceHostnameWithSuffix = func() string { return "" }
 
-	env := buildContainerBaseEnv("camera-app")
+	env := buildContainerBaseEnv()
 
 	for _, kv := range env {
-		if len(kv) >= len("WENDY_DEVICE_HOSTNAME=") && kv[:len("WENDY_DEVICE_HOSTNAME=")] == "WENDY_DEVICE_HOSTNAME=" {
+		if len(kv) >= len("WENDY_HOSTNAME=") && kv[:len("WENDY_HOSTNAME=")] == "WENDY_HOSTNAME=" {
 			t.Errorf("env unexpectedly contains %q when device hostname is unresolvable", kv)
 		}
 	}
@@ -188,5 +178,47 @@ func TestStartPostStartAgentHookStartErrorDoesNotLogCommand(t *testing.T) {
 		if field.Key == "command" {
 			t.Fatal("hook command leaked into warning fields")
 		}
+	}
+}
+
+func TestLayerMediaType_Zstd(t *testing.T) {
+	got := layerMediaType(agentpb.RunContainerLayerHeader_COMPRESSION_ZSTD, false)
+	want := "application/vnd.oci.image.layer.v1.tar+zstd"
+	if got != want {
+		t.Errorf("layerMediaType(ZSTD, false) = %q; want %q", got, want)
+	}
+}
+
+func TestLayerMediaType_ZstdIgnoresGzipBool(t *testing.T) {
+	got := layerMediaType(agentpb.RunContainerLayerHeader_COMPRESSION_ZSTD, true)
+	want := "application/vnd.oci.image.layer.v1.tar+zstd"
+	if got != want {
+		t.Errorf("layerMediaType(ZSTD, true) = %q; want %q", got, want)
+	}
+}
+
+func TestLayerMediaType_None(t *testing.T) {
+	got := layerMediaType(agentpb.RunContainerLayerHeader_COMPRESSION_NONE, true)
+	want := "application/vnd.oci.image.layer.v1.tar"
+	if got != want {
+		t.Errorf("layerMediaType(NONE, true) = %q; want %q", got, want)
+	}
+}
+
+func TestLayerMediaType_GzipDefault_GzipTrue(t *testing.T) {
+	// Old CLI path: compression field absent (zero value = GZIP), gzip=true.
+	got := layerMediaType(agentpb.RunContainerLayerHeader_COMPRESSION_GZIP, true)
+	want := "application/vnd.oci.image.layer.v1.tar+gzip"
+	if got != want {
+		t.Errorf("layerMediaType(GZIP, true) = %q; want %q", got, want)
+	}
+}
+
+func TestLayerMediaType_GzipDefault_GzipFalse(t *testing.T) {
+	// Old CLI path: compression field absent (zero value = GZIP), gzip=false → uncompressed.
+	got := layerMediaType(agentpb.RunContainerLayerHeader_COMPRESSION_GZIP, false)
+	want := "application/vnd.oci.image.layer.v1.tar"
+	if got != want {
+		t.Errorf("layerMediaType(GZIP, false) = %q; want %q", got, want)
 	}
 }
