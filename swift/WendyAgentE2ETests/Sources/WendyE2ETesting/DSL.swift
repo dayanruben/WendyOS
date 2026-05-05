@@ -45,11 +45,48 @@ public struct MachineCommand: Sendable {
             return
         }
 
-        try await self.poll(
+        _ = try await self.poll(
             pollConfiguration,
+            output: .string(limit: .max),
+            error: .string(limit: .max),
             filePath: filePath,
             function: function,
             line: line
+        )
+    }
+
+    public func run<Result>(
+        output: StringOutput<UTF8> = .string(limit: .max),
+        error: StringOutput<UTF8> = .string(limit: .max),
+        filePath: String = #filePath,
+        function: String = #function,
+        line: Int = #line,
+        body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
+    ) async throws -> Result {
+        guard let pollConfiguration else {
+            return try await self.machine.run(
+                self.command,
+                output: output,
+                error: error,
+                filePath: filePath,
+                function: function,
+                line: line,
+                body: body
+            )
+        }
+
+        let record = try await self.poll(
+            pollConfiguration,
+            output: output,
+            error: error,
+            filePath: filePath,
+            function: function,
+            line: line
+        )
+
+        return try await body(
+            record.standardOutput ?? "",
+            record.standardError ?? ""
         )
     }
 
@@ -77,10 +114,12 @@ public struct MachineCommand: Sendable {
 
     private func poll(
         _ configuration: PollConfiguration,
+        output: StringOutput<UTF8>,
+        error: StringOutput<UTF8>,
         filePath: String,
         function: String,
         line: Int
-    ) async throws {
+    ) async throws -> ExecutionRecord<StringOutput<UTF8>, StringOutput<UTF8>> {
         let clock = ContinuousClock()
         let start = clock.now
         var lastTerminationStatus: TerminationStatus?
@@ -88,8 +127,8 @@ public struct MachineCommand: Sendable {
         while true {
             let record = try await self.machine.run(
                 self.command,
-                output: .string(limit: .max),
-                error: .string(limit: .max),
+                output: output,
+                error: error,
                 filePath: filePath,
                 function: function,
                 line: line
@@ -97,7 +136,7 @@ public struct MachineCommand: Sendable {
             lastTerminationStatus = record.terminationStatus
 
             if configuration.condition.matches(record.terminationStatus) {
-                return
+                return record
             }
 
             let elapsed = start.duration(to: clock.now)

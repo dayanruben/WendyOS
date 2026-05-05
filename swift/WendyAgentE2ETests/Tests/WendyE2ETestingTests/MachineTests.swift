@@ -143,6 +143,18 @@ struct `machine` {
     }
 
     @Test
+    func `command builder callback receives command output`() async throws {
+        let machine = Machine(name: "Local")
+
+        try await machine.command("printf 'hello'; printf 'oops' >&2").run {
+            standardOutput,
+            standardError in
+            #expect(standardOutput == "hello")
+            #expect(standardError == "oops")
+        }
+    }
+
+    @Test
     func `poll retries command until it succeeds`() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("machine-poll-" + UUID().uuidString, isDirectory: true)
@@ -167,6 +179,32 @@ struct `machine` {
             encoding: .utf8
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(count == "3")
+    }
+
+    @Test
+    func `poll callback receives output from successful attempt`() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("machine-poll-output-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let machine = Machine(name: "Local", workingDirectory: directory.path)
+        try await machine
+            .command(
+                """
+                count=$(cat counter.txt 2>/dev/null || echo 0)
+                count=$((count + 1))
+                echo "$count" > counter.txt
+                echo "stdout:$count"
+                echo "stderr:$count" >&2
+                test "$count" -ge 3
+                """
+            )
+            .poll(until: .success, step: .milliseconds(10), timeout: .seconds(2))
+            .run { standardOutput, standardError in
+                #expect(standardOutput == "stdout:3\n")
+                #expect(standardError == "stderr:3\n")
+            }
     }
 
     @Test

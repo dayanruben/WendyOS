@@ -32,19 +32,18 @@ struct `global flags` {
 
     @Test
     func `'--device' overrides the selected target device`() async throws {
-        let agent = try await Machine.agent()
+        // REFACTOR: Starting WendyAgentMac and shutting it down are test fixture
+        // concerns. Replace this inline lifecycle management with a dedicated
+        // DSL or something. This is good enough for the first draft.
 
-        try await agent.run("make quit || true")
+        let agent = try await Machine.agent()
         try await Helper.withAsyncCleanup {
+
+            try await agent.run("make quit || true")
             try await agent.run("open Build/WendyAgentMac.app")
             try await agent
                 .command("nc -z 127.0.0.1 50051")
-                .poll(
-                    until: .success,
-                    step: .milliseconds(250),
-                    timeout: .seconds(10),
-                    timeoutMessage: "WendyAgentMac did not open port 50051"
-                )
+                .poll(until: .success, timeoutMessage: "WendyAgentMac did not open port 50051")
                 .run()
 
             try await self.cli.run("./bin/wendy --json --device 127.0.0.1 device version") {
@@ -59,6 +58,7 @@ struct `global flags` {
                 #expect((object["cliVersion"] as? String)?.isEmpty == false)
                 #expect((object["cpuArchitecture"] as? String)?.isEmpty == false)
             }
+
         } cleanup: {
             try await agent.run("make quit || true")
         }
