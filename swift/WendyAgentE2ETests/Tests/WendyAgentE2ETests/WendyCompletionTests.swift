@@ -13,7 +13,7 @@ struct `'wendy completion'` {
     func `describes supported shells`() async throws {
         try await self.cli.run("./bin/wendy completion --help") { standardOutput, standardError in
             #expect(standardError.isEmpty)
-            #expect(standardOutput.contains("Generate the autocompletion script"))
+            #expect(standardOutput.contains("Generate shell completion scripts"))
             #expect(standardOutput.contains("bash"))
             #expect(standardOutput.contains("fish"))
             #expect(standardOutput.contains("powershell"))
