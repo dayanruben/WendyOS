@@ -87,7 +87,7 @@ struct `'wendy info'` {
 
     @Test
     func `prints CLI and system details`() async throws {
-        try await self.cli.run("./bin/wendy info") { standardOutput, standardError in
+        try await self.cli.run("./bin/wendy --json=false info") { standardOutput, standardError in
             #expect(standardError.isEmpty)
             #expect(standardOutput.contains("Wendy CLI"))
             #expect(standardOutput.contains(/Version:\s+\S+/))
