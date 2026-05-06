@@ -120,6 +120,6 @@ struct `'wendy json validate'` {
 
         #expect(!record.terminationStatus.isSuccess)
         #expect(record.standardOutput == "")
-        #expect(record.standardError?.contains("Error: appId is required") == true)
+        #expect(record.standardError?.contains("appId is required") == true)
     }
 }
