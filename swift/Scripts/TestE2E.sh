@@ -17,6 +17,8 @@ AGENT_SSH="${WENDY_AGENT_E2E_AGENT_SSH:-}"
 AGENT_WORKDIR="${WENDY_AGENT_E2E_AGENT_WORKING_DIRECTORY:-}"
 SYNC_AGENT="${WENDY_AGENT_E2E_SYNC_AGENT:-auto}"
 VERBOSE="${WENDY_AGENT_E2E_VERBOSE:-false}"
+TEST_OUTPUT_LOG="${WENDY_AGENT_E2E_TEST_OUTPUT_LOG:-}"
+XUNIT_OUTPUT="${WENDY_AGENT_E2E_XUNIT_OUTPUT:-}"
 TEST_FILTERS=()
 
 usage() {
@@ -33,6 +35,8 @@ Options:
   --records-dir DIR     Directory for generated *.md command records.
   --artifact-dir DIR    Directory for the final zip artifact.
   --report-zip PATH     Path to the final zip artifact.
+  --test-output-log PATH Path to the captured swift test stdout/stderr log.
+  --xunit-output PATH   Path to the SwiftPM xUnit test result XML file.
   --fixtures-dir DIR    Fixture directory exposed to tests.
   --agent-ssh SSH       Optional SSH target for the agent machine; omitted runs locally.
   --agent-workdir DIR   Existing swift/ working directory to use for the agent.
@@ -47,6 +51,8 @@ Environment:
   WENDY_AGENT_E2E_SYNC_AGENT                auto, true, or false.
   WENDY_AGENT_E2E_FIXTURES_DIR              Defaults to .github/swift-e2e-tests.
   WENDY_AGENT_E2E_TEST_RECORDS_DIR          Defaults to package .build records dir.
+  WENDY_AGENT_E2E_TEST_OUTPUT_LOG           Defaults to artifact dir swift-e2e-test-output.log.
+  WENDY_AGENT_E2E_XUNIT_OUTPUT              Defaults to artifact dir swift-e2e-test-results.xml.
   WENDY_AGENT_E2E_VERBOSE                   true/false; prints machine commands.
 EOF
 }
@@ -69,6 +75,14 @@ while [[ $# -gt 0 ]]; do
     --report-zip)
       REPORT_ZIP="$2"
       ARTIFACT_DIR="$(dirname "$REPORT_ZIP")"
+      shift 2
+      ;;
+    --test-output-log)
+      TEST_OUTPUT_LOG="$2"
+      shift 2
+      ;;
+    --xunit-output)
+      XUNIT_OUTPUT="$2"
       shift 2
       ;;
     --fixtures-dir)
@@ -115,7 +129,45 @@ if [[ ${#TEST_FILTERS[@]} -eq 0 ]]; then
   TEST_FILTERS+=("WendyAgentE2ETests")
 fi
 
+if [[ -z "$TEST_OUTPUT_LOG" ]]; then
+  TEST_OUTPUT_LOG="$ARTIFACT_DIR/swift-e2e-test-output.log"
+fi
+if [[ -z "$XUNIT_OUTPUT" ]]; then
+  XUNIT_OUTPUT="$ARTIFACT_DIR/swift-e2e-test-results.xml"
+fi
+
+absolute_dir_path() {
+  mkdir -p "$1"
+  (cd "$1" && pwd)
+}
+
+absolute_file_path() {
+  local path="$1"
+  local dir
+  local base
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  mkdir -p "$dir"
+  dir="$(cd "$dir" && pwd)"
+  printf "%s/%s" "$dir" "$base"
+}
+
+ARTIFACT_DIR="$(absolute_dir_path "$ARTIFACT_DIR")"
+RECORDS_DIR="$(absolute_dir_path "$RECORDS_DIR")"
+REPORT_ZIP="$(absolute_file_path "$REPORT_ZIP")"
+TEST_OUTPUT_LOG="$(absolute_file_path "$TEST_OUTPUT_LOG")"
+XUNIT_OUTPUT="$(absolute_file_path "$XUNIT_OUTPUT")"
+
+XUNIT_OUTPUT_DIR="$(dirname "$XUNIT_OUTPUT")"
+XUNIT_OUTPUT_BASENAME="$(basename "$XUNIT_OUTPUT")"
+XUNIT_OUTPUT_STEM="${XUNIT_OUTPUT_BASENAME%.*}"
+
 mkdir -p "$ARTIFACT_DIR"
+mkdir -p "$(dirname "$TEST_OUTPUT_LOG")" "$XUNIT_OUTPUT_DIR"
+rm -f "$TEST_OUTPUT_LOG"
+if [[ -d "$XUNIT_OUTPUT_DIR" ]]; then
+  find "$XUNIT_OUTPUT_DIR" -maxdepth 1 -type f \( -name "$XUNIT_OUTPUT_BASENAME" -o -name "$XUNIT_OUTPUT_STEM-*.xml" \) -delete
+fi
 rm -rf "$RECORDS_DIR"
 mkdir -p "$RECORDS_DIR"
 
@@ -123,6 +175,7 @@ if [[ ! -d "$FIXTURES_DIR" ]]; then
   echo "ERROR: Swift E2E fixtures directory not found: $FIXTURES_DIR" >&2
   exit 1
 fi
+FIXTURES_DIR="$(cd "$FIXTURES_DIR" && pwd)"
 
 shell_quote() {
   printf "%q" "$1"
@@ -180,12 +233,25 @@ collect_reports() {
         done
   fi
 
+  if [[ -f "$TEST_OUTPUT_LOG" ]]; then
+    cp "$TEST_OUTPUT_LOG" "$staging_dir/"
+  fi
+  if [[ -d "$XUNIT_OUTPUT_DIR" ]]; then
+    find "$XUNIT_OUTPUT_DIR" -maxdepth 1 -type f \( -name "$XUNIT_OUTPUT_BASENAME" -o -name "$XUNIT_OUTPUT_STEM-*.xml" \) -print0 \
+      | while IFS= read -r -d '' file; do
+          cp "$file" "$staging_dir/"
+        done
+  fi
+
   {
     echo "# Swift E2E Test Reports"
     echo
     echo "- Exit status: \`$status\`"
     echo "- Records directory: \`$RECORDS_DIR\`"
     echo "- Fixtures directory: \`$FIXTURES_DIR\`"
+    echo "- Test output log: \`$TEST_OUTPUT_LOG\`"
+    echo "- xUnit output: \`$XUNIT_OUTPUT\`"
+    echo "- xUnit generated files: \`$XUNIT_OUTPUT_BASENAME\`, \`$XUNIT_OUTPUT_STEM-*.xml\`"
     echo "- Verbose: \`$VERBOSE\`"
     if [[ -n "$AGENT_SSH" ]]; then
       echo "- Agent SSH: \`$AGENT_SSH\`"
@@ -226,6 +292,8 @@ echo "==> Running Swift E2E tests"
 echo "    Package:  $PACKAGE_DIR"
 echo "    Fixtures: $FIXTURES_DIR"
 echo "    Records:  $RECORDS_DIR"
+echo "    Log:      $TEST_OUTPUT_LOG"
+echo "    xUnit:    $XUNIT_OUTPUT"
 echo "    Filters:  ${TEST_FILTERS[*]}"
 echo "    Verbose:  $VERBOSE"
 if [[ -n "$AGENT_SSH" ]]; then
@@ -240,9 +308,9 @@ set +e
   WENDY_AGENT_E2E_AGENT_SSH="$AGENT_SSH" \
   WENDY_AGENT_E2E_AGENT_WORKING_DIRECTORY="$AGENT_WORKDIR" \
   WENDY_AGENT_E2E_VERBOSE="$VERBOSE" \
-  swift "${SWIFT_TEST_ARGS[@]}"
-)
-TEST_STATUS=$?
+  swift "${SWIFT_TEST_ARGS[@]}" --xunit-output "$XUNIT_OUTPUT"
+) 2>&1 | tee "$TEST_OUTPUT_LOG"
+TEST_STATUS=${PIPESTATUS[0]}
 set -e
 
 collect_reports "$TEST_STATUS"
