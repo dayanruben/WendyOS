@@ -45,6 +45,45 @@ Good first command areas are local and deterministic:
 
 Avoid starting with areas that require live agents, browsers, hardware, streaming, cloud auth, or network discovery.
 
+## Test organization and naming
+
+Use flattened suites only. Each suite name is the full command phrase being specified; do not use nested suites. Test names complete the sentence.
+
+```swift
+@Suite(.serialized)
+struct `'wendy help'` {
+    @Test
+    func `prints top-level help`() async throws {}
+
+    @Test
+    func `prints help for a nested command`() async throws {}
+}
+```
+
+The rendered behavior reads as:
+
+```text
+wendy help prints top-level help
+wendy help prints help for a nested command
+```
+
+For command variants, keep the flag in the test name when it is a mode of the same command:
+
+```swift
+@Suite(.serialized)
+struct `'wendy info'` {
+    @Test
+    func `prints CLI and system details`() async throws {}
+
+    @Test
+    func `'--json' prints CLI and system details as JSON`() async throws {}
+}
+```
+
+Use a separate suite only when the variant reads better as its own command phrase, for example `'wendy --version'`.
+
+Name files after command areas, not after our internal spec process. Prefer names like `WendyHelpTests.swift`, `WendyInfoTests.swift`, and `WendyAnalyticsTests.swift`; do not use `BehaviorSpec` in file names.
+
 ## Spec stub style
 
 Use disabled tests so unimplemented specs do not falsely pass:
