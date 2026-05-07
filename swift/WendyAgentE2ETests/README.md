@@ -84,6 +84,78 @@ Use a separate suite only when the variant reads better as its own command phras
 
 Name files after command areas, not after our internal spec process. Prefer names like `WendyHelpTests.swift`, `WendyInfoTests.swift`, and `WendyAnalyticsTests.swift`; do not use `BehaviorSpec` in file names.
 
+## Inline specification prose
+
+Add a Markdown-capable `/** ... */` documentation block immediately before each `@Test`. The suite and test name form the heading; the block comment provides the prose context that a terse heading cannot capture.
+
+Write this prose as present-tense product documentation, not as requirement language. Avoid words like "should", "must", "expect", or "will". The prose describes the desired end-state as if it is already true. Normative details belong in executable assertions, not in prose.
+
+```swift
+@Suite(.serialized)
+struct `'wendy help'` {
+    /**
+     Prints the top-level help shown to users who ask for command discovery.
+
+     This is the primary entry point for understanding the CLI. The output explains what Wendy is, groups related commands, shows global flags, and emits no stderr diagnostics because help is a successful informational command.
+
+     Command group names and global flag names are part of the user-facing contract. Line wrapping is not part of the contract.
+     */
+    @Test
+    func `prints top-level help`() async throws {
+        let result = try await self.cli.sh("./bin/wendy help")
+
+        #expect(result.terminationStatus.isSuccess)
+        #expect(result.standardOutput?.contains("Project Commands:") == true)
+        #expect(result.standardOutput?.contains("--json") == true)
+        #expect(result.standardError?.isEmpty == true)
+    }
+}
+```
+
+The generated document should render this as:
+
+```md
+## wendy help prints top-level help
+
+Prints the top-level help shown to users who ask for command discovery.
+
+This is the primary entry point for understanding the CLI...
+```
+
+Prefer `/** ... */` over `///` for spec prose because it is easier to read, easier to parse as one block, and better suited to multi-paragraph Markdown. Reserve `///` for short API comments on helpers and support types.
+
+## Executable requirements
+
+The test body is the requirements layer. Assertions express the precise contract:
+
+- exit status
+- stdout and stderr behavior
+- JSON shape and values
+- filesystem/config side effects
+- non-mutation on failure
+- platform-specific behavior
+- command records/evidence
+
+As repeated patterns emerge, evolve the E2E DSL so requirements read naturally in code. The goal is not a decorative DSL; the goal is test bodies that read like executable requirements and fail with useful diagnostics.
+
+Raw assertions are fine while a pattern is new:
+
+```swift
+#expect(record.terminationStatus.isSuccess)
+#expect(record.standardError?.isEmpty == true)
+#expect(record.standardOutput?.contains("Project Commands:") == true)
+```
+
+When a pattern repeats, prefer named helpers or DSL concepts:
+
+```swift
+try result.requiresSuccess()
+try result.stdout.requiresContains("Project Commands:")
+try result.stderr.requiresEmpty()
+```
+
+Future DSL directions include command success/failure helpers, stdout/stderr contracts, JSON shape assertions, file/config mutation assertions, help-section assertions, and platform gates.
+
 ## Spec stub style
 
 Use disabled tests so unimplemented specs do not falsely pass:
