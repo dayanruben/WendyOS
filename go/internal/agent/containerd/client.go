@@ -365,9 +365,33 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 	}
 	var manifest struct {
 		Annotations map[string]string `json:"annotations"`
+		Config      struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
 	}
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
+
+	var contentDigests []string
+	if manifest.Config.Digest != "" {
+		contentDigests = append(contentDigests, manifest.Config.Digest)
+	}
+	for _, l := range manifest.Layers {
+		if l.Digest != "" {
+			contentDigests = append(contentDigests, l.Digest)
+		}
+	}
+	for _, child := range manifest.Manifests {
+		if child.Digest != "" {
+			contentDigests = append(contentDigests, child.Digest)
+		}
 	}
 
 	var pool *x509.CertPool
@@ -378,7 +402,7 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 	if c.expectedOrgID != nil {
 		orgID = c.expectedOrgID()
 	}
-	if err := checkManifestSignature(manifest.Annotations, pool, orgID); err != nil {
+	if err := checkManifestSignature(manifest.Annotations, contentDigests, pool, orgID); err != nil {
 		return nil, err
 	}
 	if sig := manifest.Annotations[certs.AnnotationSignature]; sig != "" {
@@ -395,7 +419,7 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 // shared-CA scenarios where chain validation alone does not enforce per-org isolation.
 // User certs (CN "wendy/user/<userID>") carry no org ID in their CN; they rely on
 // chain validation only.
-func checkManifestSignature(annotations map[string]string, trustedPool *x509.CertPool, expectedOrgID int32) error {
+func checkManifestSignature(annotations map[string]string, contentDigests []string, trustedPool *x509.CertPool, expectedOrgID int32) error {
 	sig := annotations[certs.AnnotationSignature]
 	certPEM := annotations[certs.AnnotationSignatureCert]
 	if sig != "" && certPEM != "" {
@@ -403,7 +427,7 @@ func checkManifestSignature(annotations map[string]string, trustedPool *x509.Cer
 		if parseErr != nil {
 			return fmt.Errorf("parsing signature certificate: %w", parseErr)
 		}
-		payload := certs.EntitlementAnnotationPayload(annotations)
+		payload := certs.SigningPayload(contentDigests, annotations)
 		if verifyErr := certs.VerifyBytes(payload, sig, cert); verifyErr != nil {
 			return fmt.Errorf("entitlement signature verification failed: %w", verifyErr)
 		}

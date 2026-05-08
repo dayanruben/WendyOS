@@ -331,14 +331,14 @@ func TestParseLeafCertificate_Invalid(t *testing.T) {
 	}
 }
 
-func TestEntitlementAnnotationPayload_Stable(t *testing.T) {
+func TestSigningPayload_Stable(t *testing.T) {
 	annotations := map[string]string{
 		"sh.wendy/entitlement.gpu":       `{"port":0}`,
 		"sh.wendy/entitlement.bluetooth": `{}`,
 		"sh.wendy/signature":             "should-be-excluded",
 		"sh.wendy/signature.cert":        "should-be-excluded",
 	}
-	payload := EntitlementAnnotationPayload(annotations)
+	payload := SigningPayload(nil, annotations)
 	s := string(payload)
 	if strings.Contains(s, "should-be-excluded") {
 		t.Error("payload must not contain signature annotations")
@@ -357,23 +357,55 @@ func TestEntitlementAnnotationPayload_Stable(t *testing.T) {
 	}
 }
 
-func TestEntitlementAnnotationPayload_Empty(t *testing.T) {
-	if payload := EntitlementAnnotationPayload(nil); len(payload) != 0 {
-		t.Errorf("expected empty payload for nil annotations, got %q", payload)
+func TestSigningPayload_Empty(t *testing.T) {
+	if payload := SigningPayload(nil, nil); len(payload) != 0 {
+		t.Errorf("expected empty payload for nil inputs, got %q", payload)
 	}
-	if payload := EntitlementAnnotationPayload(map[string]string{}); len(payload) != 0 {
+	if payload := SigningPayload(nil, map[string]string{}); len(payload) != 0 {
 		t.Errorf("expected empty payload for empty annotations, got %q", payload)
+	}
+}
+
+func TestSigningPayload_ContentDigestsIncluded(t *testing.T) {
+	digests := []string{"sha256:bbb", "sha256:aaa"} // intentionally unsorted
+	payload := string(SigningPayload(digests, nil))
+	// Both digests must appear, sorted: aaa before bbb.
+	if !strings.Contains(payload, "digest=sha256:aaa") {
+		t.Error("payload missing sha256:aaa")
+	}
+	if !strings.Contains(payload, "digest=sha256:bbb") {
+		t.Error("payload missing sha256:bbb")
+	}
+	if strings.Index(payload, "sha256:aaa") > strings.Index(payload, "sha256:bbb") {
+		t.Error("digests not sorted: aaa must appear before bbb")
+	}
+}
+
+func TestSigningPayload_ContentDigestsDontMatchEntitlementOrder(t *testing.T) {
+	// Digests (digest=) must precede entitlement keys (sh.wendy/) in the payload.
+	payload := string(SigningPayload(
+		[]string{"sha256:abc"},
+		map[string]string{"sh.wendy/entitlement.gpu": `{}`},
+	))
+	dIdx := strings.Index(payload, "digest=")
+	eIdx := strings.Index(payload, "sh.wendy/")
+	if dIdx < 0 || eIdx < 0 {
+		t.Fatalf("missing expected content in payload: %q", payload)
+	}
+	if dIdx > eIdx {
+		t.Errorf("digest line should precede entitlement line; got dIdx=%d eIdx=%d", dIdx, eIdx)
 	}
 }
 
 func TestSignAndVerify_EntitlementAnnotations(t *testing.T) {
 	key, cert, certPEM := generateTestKeyAndCert(t)
+	digests := []string{"sha256:layer1", "sha256:config"}
 	annotations := map[string]string{
 		"sh.wendy/entitlement.gpu":       `{"port":0}`,
 		"sh.wendy/entitlement.bluetooth": `{}`,
 	}
 
-	payload := EntitlementAnnotationPayload(annotations)
+	payload := SigningPayload(digests, annotations)
 	sig, err := SignBytes(payload, key)
 	if err != nil {
 		t.Fatalf("SignBytes: %v", err)
@@ -381,20 +413,27 @@ func TestSignAndVerify_EntitlementAnnotations(t *testing.T) {
 	annotations[AnnotationSignature] = sig
 	annotations[AnnotationSignatureCert] = certPEM
 
-	// Verify using the cert from annotations.
+	// Verify using the cert from annotations (signature keys must be excluded from payload).
 	parsedCert, err := ParseLeafCertificate(annotations[AnnotationSignatureCert])
 	if err != nil {
 		t.Fatalf("ParseLeafCertificate: %v", err)
 	}
-	verifyPayload := EntitlementAnnotationPayload(annotations) // must ignore signature keys
+	verifyPayload := SigningPayload(digests, annotations)
 	if err := VerifyBytes(verifyPayload, annotations[AnnotationSignature], parsedCert); err != nil {
 		t.Errorf("end-to-end verification failed: %v", err)
 	}
 
 	// Tamper with an entitlement value and confirm verification fails.
 	annotations["sh.wendy/entitlement.gpu"] = `{"port":9999}`
-	tamperedPayload := EntitlementAnnotationPayload(annotations)
+	tamperedPayload := SigningPayload(digests, annotations)
 	if err := VerifyBytes(tamperedPayload, sig, cert); err == nil {
-		t.Error("expected verification failure after tampering")
+		t.Error("expected verification failure after entitlement tampering")
+	}
+
+	// Restore entitlements and tamper with a layer digest.
+	annotations["sh.wendy/entitlement.gpu"] = `{"port":0}`
+	layerTamperedPayload := SigningPayload([]string{"sha256:layer1", "sha256:evil"}, annotations)
+	if err := VerifyBytes(layerTamperedPayload, sig, cert); err == nil {
+		t.Error("expected verification failure after layer digest tampering")
 	}
 }

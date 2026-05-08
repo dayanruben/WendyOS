@@ -1846,6 +1846,43 @@ func registryHTTPClient(useMTLS bool) (*http.Client, error) {
 	}, nil
 }
 
+// manifestContentDigests extracts content-addressing digests from a manifest or
+// index JSON blob. For single manifests (OCI or Docker v2) it returns the image
+// config digest plus every layer digest. For OCI indexes it returns the child
+// manifest digests. These digests are included in the signing payload so that
+// replacing image layers invalidates the signature.
+func manifestContentDigests(manifestBytes []byte) []string {
+	var m struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
+	}
+	if err := json.Unmarshal(manifestBytes, &m); err != nil {
+		return nil
+	}
+	var digests []string
+	if m.Config.Digest != "" {
+		digests = append(digests, m.Config.Digest)
+	}
+	for _, l := range m.Layers {
+		if l.Digest != "" {
+			digests = append(digests, l.Digest)
+		}
+	}
+	for _, child := range m.Manifests {
+		if child.Digest != "" {
+			digests = append(digests, child.Digest)
+		}
+	}
+	return digests
+}
+
 // annotateManifestWithEntitlements fetches the OCI image manifest at
 // registryAddr/repo:tag, adds sh.wendy/entitlement.* annotations for each
 // entitlement from the app config, and re-pushes the annotated manifest under
@@ -1907,9 +1944,10 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 	// Sign the entitlement annotations with the developer certificate if one is
 	// available. A missing or non-EC cert is silently skipped so that unsigned
 	// images still work with unprovisioned or un-authenticated devices.
+	contentDigests := manifestContentDigests(manifestBytes)
 	if certInfo := loadCLICert(); certInfo != nil && certInfo.PemPrivateKey != "" && certInfo.PemCertificate != "" {
 		if key, keyErr := certs.ParseECPrivateKey(certInfo.PemPrivateKey); keyErr == nil {
-			payload := certs.EntitlementAnnotationPayload(annotations)
+			payload := certs.SigningPayload(contentDigests, annotations)
 			if sig, sigErr := certs.SignBytes(payload, key); sigErr == nil {
 				if leafPEM, leafErr := certs.LeafCertificatePEM(certInfo.PemCertificate); leafErr == nil {
 					annotations[certs.AnnotationSignature] = sig

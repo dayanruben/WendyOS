@@ -67,12 +67,30 @@ func ParseLeafCertificate(certPEM string) (*x509.Certificate, error) {
 	return cert, nil
 }
 
-// EntitlementAnnotationPayload builds the canonical byte payload that is signed
-// and verified for a manifest's entitlement annotations. The payload is the
-// sorted sh.wendy/entitlement.* annotation keys concatenated as "key=value\n".
-// Signature annotations (sh.wendy/signature*) are excluded so the payload is
-// stable regardless of whether it has already been signed.
-func EntitlementAnnotationPayload(annotations map[string]string) []byte {
+// SigningPayload builds the canonical byte payload that is signed and verified
+// for a manifest. The payload is the concatenation of:
+//
+//  1. Content digests (sorted lexicographically), each as "digest=<value>\n".
+//     These are the config + layer digests for single manifests, or child
+//     manifest digests for OCI indexes. They bind the signature to the actual
+//     image content so that swapping layers invalidates the signature.
+//  2. All sh.wendy/entitlement.* annotation key/value pairs, sorted
+//     lexicographically, each as "key=value\n".
+//
+// The sh.wendy/signature* annotations are excluded so the payload is stable
+// whether or not the manifest has already been signed.
+func SigningPayload(contentDigests []string, annotations map[string]string) []byte {
+	var buf strings.Builder
+
+	sorted := make([]string, len(contentDigests))
+	copy(sorted, contentDigests)
+	sort.Strings(sorted)
+	for _, d := range sorted {
+		buf.WriteString("digest=")
+		buf.WriteString(d)
+		buf.WriteByte('\n')
+	}
+
 	var keys []string
 	for k := range annotations {
 		if strings.HasPrefix(k, entitlementAnnotationPrefix) {
@@ -80,12 +98,12 @@ func EntitlementAnnotationPayload(annotations map[string]string) []byte {
 		}
 	}
 	sort.Strings(keys)
-	var buf strings.Builder
 	for _, k := range keys {
 		buf.WriteString(k)
 		buf.WriteByte('=')
 		buf.WriteString(annotations[k])
 		buf.WriteByte('\n')
 	}
+
 	return []byte(buf.String())
 }
