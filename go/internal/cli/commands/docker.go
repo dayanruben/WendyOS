@@ -1970,8 +1970,9 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 // buildEntitlementAnnotations converts a list of entitlements into OCI annotation
 // key/value pairs. The key format is sh.wendy/entitlement.<type>; when multiple
 // entitlements share the same type a numeric suffix (.0, .1, …) is appended.
-// Values use the comma-separated key=value format produced by
-// appconfig.EntitlementAnnotationValue. Entitlements with an empty type are skipped.
+// Values are JSON-encoded entitlement objects with the "type" field omitted
+// (matching the containerd container label format in the agent's wendyLabels).
+// Entitlements with an empty type are skipped.
 func buildEntitlementAnnotations(entitlements []appconfig.Entitlement) (map[string]string, error) {
 	typeCounts := make(map[string]int)
 	for _, e := range entitlements {
@@ -1992,7 +1993,20 @@ func buildEntitlementAnnotations(entitlements []appconfig.Entitlement) (map[stri
 			key = fmt.Sprintf("%s%s.%d", ociEntitlementAnnotationPrefix, e.Type, typeIndex[e.Type])
 			typeIndex[e.Type]++
 		}
-		out[key] = appconfig.EntitlementAnnotationValue(e)
+		data, err := json.Marshal(e)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling entitlement %q: %w", e.Type, err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, fmt.Errorf("re-parsing entitlement %q: %w", e.Type, err)
+		}
+		delete(m, "type")
+		stripped, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("re-encoding entitlement %q: %w", e.Type, err)
+		}
+		out[key] = string(stripped)
 	}
 	return out, nil
 }

@@ -4,6 +4,7 @@ package containerd
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -180,7 +181,7 @@ func parseEntitlementsFromAnnotations(annotations map[string]string) []appconfig
 		indexed = append(indexed, indexedEnt{
 			entType: entType,
 			idx:     idx,
-			ent:     appconfig.ParseEntitlementAnnotation(entType, v),
+			ent:     parseEntitlementValue(entType, v),
 		})
 	}
 
@@ -196,6 +197,20 @@ func parseEntitlementsFromAnnotations(annotations map[string]string) []appconfig
 		result[i] = ie.ent
 	}
 	return result
+}
+
+// parseEntitlementValue parses a single entitlement annotation value. It
+// accepts both the current JSON format ({"mode":"host"}) and the legacy
+// comma-separated format (mode=host) for backward compatibility.
+func parseEntitlementValue(entType, value string) appconfig.Entitlement {
+	if len(value) > 0 && value[0] == '{' {
+		var ent appconfig.Entitlement
+		if err := json.Unmarshal([]byte(value), &ent); err == nil {
+			ent.Type = entType
+			return ent
+		}
+	}
+	return appconfig.ParseEntitlementAnnotation(entType, value)
 }
 
 // restartPolicyToLabel converts a protobuf RestartPolicy to a label string.
