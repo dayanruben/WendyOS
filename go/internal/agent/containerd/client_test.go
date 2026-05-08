@@ -64,6 +64,31 @@ func makeTestLeafCert(t *testing.T, cn string, caKey *ecdsa.PrivateKey, caCert *
 	return key, certPEM
 }
 
+// makeTestLeafCertExpired issues an already-expired leaf cert signed by caKey/caCert.
+// Returns the key, PEM, and the midpoint signing time (when it was valid).
+func makeTestLeafCertExpired(t *testing.T, cn string, caKey *ecdsa.PrivateKey, caCert *x509.Certificate) (*ecdsa.PrivateKey, string, time.Time) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	notBefore := time.Now().Add(-2 * time.Hour)
+	notAfter := time.Now().Add(-30 * time.Minute)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(99),
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create expired leaf cert: %v", err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	signingTime := notBefore.Add(time.Hour) // midpoint: cert was valid then
+	return key, certPEM, signingTime
+}
+
 // makeTestKeyAndCertPEM generates a self-signed CA cert, usable as both a leaf
 // (for signing) and a root (for pool construction) in simple tests.
 func makeTestKeyAndCertPEM(t *testing.T) (*ecdsa.PrivateKey, string) {
@@ -84,8 +109,16 @@ func poolFromPEM(t *testing.T, certPEM string) *x509.CertPool {
 
 // signAnnotations adds sh.wendy/signature and sh.wendy/signature.cert to annotations.
 // contentDigests may be nil for tests that do not exercise content binding.
-func signAnnotations(t *testing.T, annotations map[string]string, contentDigests []string, key *ecdsa.PrivateKey, certPEM string) {
+// repo, when non-empty, sets sh.wendy/signed.repo in annotations before signing.
+// signingTime, when non-zero, sets sh.wendy/signed.at in annotations before signing.
+func signAnnotations(t *testing.T, annotations map[string]string, contentDigests []string, key *ecdsa.PrivateKey, certPEM string, repo string, signingTime time.Time) {
 	t.Helper()
+	if repo != "" {
+		annotations[certs.AnnotationSignedRepo] = repo
+	}
+	if !signingTime.IsZero() {
+		annotations[certs.AnnotationSignedAt] = signingTime.UTC().Format(time.RFC3339)
+	}
 	payload := certs.SigningPayload(contentDigests, annotations)
 	sig, err := certs.SignBytes(payload, key)
 	if err != nil {
@@ -458,11 +491,15 @@ func TestCheckManifestSignature(t *testing.T) {
 		return map[string]string{"sh.wendy/entitlement.bluetooth": `{}`}
 	}
 
+	// Expired leaf cert and its midpoint signing time (used for cert expiry tests).
+	expiredKey, expiredCertPEM, validSigningTime := makeTestLeafCertExpired(t, "wendy/1/42", org1CAKey, org1CACert)
+
 	tests := []struct {
 		name           string
 		annots         func() map[string]string
 		contentDigests []string       // digests used when signing and verifying
 		checkDigests   []string       // if non-nil, overrides contentDigests at verify time
+		expectedRepo   string         // empty = skip repo check
 		trustedPool    *x509.CertPool // nil = unenrolled
 		orgID          int32
 		wantErr        string
@@ -484,7 +521,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "valid signature, not enrolled",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org1Key, org1CertPEM)
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: nil,
@@ -493,7 +530,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "valid signature on empty entitlements, enrolled",
 			annots: func() map[string]string {
 				a := map[string]string{}
-				signAnnotations(t, a, nil, org1Key, org1CertPEM)
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: org1Pool,
@@ -503,7 +540,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "sig present but cert missing, enrolled",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org1Key, org1CertPEM)
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
 				delete(a, certs.AnnotationSignatureCert)
 				return a
 			},
@@ -517,7 +554,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "corrupt signature",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org1Key, org1CertPEM)
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
 				a[certs.AnnotationSignature] = "AAAA"
 				return a
 			},
@@ -529,7 +566,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "tampered entitlement after signing",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org1Key, org1CertPEM)
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
 				a["sh.wendy/entitlement.bluetooth"] = `{"port":9999}`
 				return a
 			},
@@ -543,7 +580,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "valid signature with content digests",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, []string{"sha256:aaa", "sha256:bbb"}, org1Key, org1CertPEM)
+				signAnnotations(t, a, []string{"sha256:aaa", "sha256:bbb"}, org1Key, org1CertPEM, "", time.Time{})
 				return a
 			},
 			contentDigests: []string{"sha256:aaa", "sha256:bbb"},
@@ -554,7 +591,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "swapped layers (different digests) detected",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, []string{"sha256:aaa", "sha256:bbb"}, org1Key, org1CertPEM)
+				signAnnotations(t, a, []string{"sha256:aaa", "sha256:bbb"}, org1Key, org1CertPEM, "", time.Time{})
 				return a
 			},
 			contentDigests: []string{"sha256:aaa", "sha256:bbb"},
@@ -570,7 +607,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "old-format signature (no content digests) rejected when agent has manifest digests",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org1Key, org1CertPEM) // old format
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{}) // old format
 				return a
 			},
 			contentDigests: []string{"sha256:config", "sha256:layer0"}, // agent extracts these
@@ -585,7 +622,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "signature with content digests rejected when agent has no manifest digests",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, []string{"sha256:aaa"}, org1Key, org1CertPEM)
+				signAnnotations(t, a, []string{"sha256:aaa"}, org1Key, org1CertPEM, "", time.Time{})
 				return a
 			},
 			contentDigests: nil, // agent extracted nothing
@@ -599,7 +636,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "per-org CAs: org1 cert accepted by org1 device",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org1Key, org1CertPEM)
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: org1Pool,
@@ -609,7 +646,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "per-org CAs: org2 cert rejected by org1 device (chain mismatch)",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, org2Key, org2CertPEM)
+				signAnnotations(t, a, nil, org2Key, org2CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: org1Pool, // org2 cert does not chain to org1 CA
@@ -624,7 +661,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "shared CA, no orgID check: org2 cert passes org1 chain (gap demonstrated)",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, sharedOrg2Key, sharedOrg2CertPEM)
+				signAnnotations(t, a, nil, sharedOrg2Key, sharedOrg2CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: sharedPool,
@@ -635,7 +672,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "shared CA, with orgID check: org2 cert rejected by org1 device",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, sharedOrg2Key, sharedOrg2CertPEM)
+				signAnnotations(t, a, nil, sharedOrg2Key, sharedOrg2CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: sharedPool,
@@ -646,7 +683,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "shared CA, org1 cert accepted by org1 device with orgID check",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, sharedOrg1Key, sharedOrg1CertPEM)
+				signAnnotations(t, a, nil, sharedOrg1Key, sharedOrg1CertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: sharedPool,
@@ -661,7 +698,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "user cert accepted when chain matches and no org ID in CN",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, userKey, userCertPEM)
+				signAnnotations(t, a, nil, userKey, userCertPEM, "", time.Time{})
 				return a
 			},
 			trustedPool: org1Pool,
@@ -671,7 +708,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			name: "user cert from different org's CA rejected by chain check",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, nil, userKey, userCertPEM) // signed by org1 CA
+				signAnnotations(t, a, nil, userKey, userCertPEM, "", time.Time{}) // signed by org1 CA
 				return a
 			},
 			trustedPool: org2Pool, // org2 device trusts org2 CA only
@@ -698,6 +735,66 @@ func TestCheckManifestSignature(t *testing.T) {
 			orgID:       1,
 			wantErr:     "unsigned",
 		},
+
+		// ── Repository binding (Fix #1) ──────────────────────────────────────────
+		{
+			name: "correct repo binding accepted",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "myapp", time.Time{})
+				return a
+			},
+			expectedRepo: "myapp",
+			trustedPool:  org1Pool,
+			orgID:        1,
+		},
+		{
+			name: "repo mismatch: signed for app-a, deployed as app-b",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "app-a", time.Time{})
+				return a
+			},
+			expectedRepo: "app-b",
+			trustedPool:  org1Pool,
+			orgID:        1,
+			wantErr:      "deployed as",
+		},
+		{
+			name: "missing signed.repo annotation when repo check expected",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, nil, org1Key, org1CertPEM, "", time.Time{})
+				return a
+			},
+			expectedRepo: "myapp",
+			trustedPool:  org1Pool,
+			orgID:        1,
+			wantErr:      "signed.repo missing",
+		},
+
+		// ── Signing timestamp / cert expiry (Fix #4 & #7) ───────────────────────
+		{
+			name: "expired cert accepted when signing time annotation is present",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, nil, expiredKey, expiredCertPEM, "", validSigningTime)
+				return a
+			},
+			trustedPool: org1Pool,
+			orgID:       1,
+		},
+		{
+			name: "expired cert rejected when signing time annotation is absent",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, nil, expiredKey, expiredCertPEM, "", time.Time{})
+				return a
+			},
+			trustedPool: org1Pool,
+			orgID:       1,
+			wantErr:     "not trusted",
+		},
 	}
 
 	for _, tc := range tests {
@@ -706,7 +803,7 @@ func TestCheckManifestSignature(t *testing.T) {
 			if tc.checkDigests != nil {
 				verifyDigests = tc.checkDigests
 			}
-			err := checkManifestSignature(tc.annots(), verifyDigests, tc.trustedPool, tc.orgID)
+			err := checkManifestSignature(tc.annots(), verifyDigests, tc.expectedRepo, tc.trustedPool, tc.orgID)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
@@ -719,6 +816,25 @@ func TestCheckManifestSignature(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestImageRepo(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"myapp", "myapp"},
+		{"myapp:latest", "myapp"},
+		{"192.168.1.1:5000/myapp:latest", "myapp"},
+		{"localhost:5000/org/app:v1", "org/app"},
+		{"registry.example.com/org/app", "org/app"},
+		{"org/app:v1", "org/app"},
+	}
+	for _, tc := range tests {
+		if got := imageRepo(tc.name); got != tc.want {
+			t.Errorf("imageRepo(%q) = %q; want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

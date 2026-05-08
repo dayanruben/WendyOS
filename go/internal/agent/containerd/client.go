@@ -402,7 +402,7 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 	if c.expectedOrgID != nil {
 		orgID = c.expectedOrgID()
 	}
-	if err := checkManifestSignature(manifest.Annotations, contentDigests, pool, orgID); err != nil {
+	if err := checkManifestSignature(manifest.Annotations, contentDigests, imageRepo(image.Name()), pool, orgID); err != nil {
 		return nil, err
 	}
 	if sig := manifest.Annotations[certs.AnnotationSignature]; sig != "" {
@@ -411,15 +411,39 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 	return parseEntitlementsFromAnnotations(manifest.Annotations), nil
 }
 
+// imageRepo strips the registry host and tag from a containerd image name,
+// returning just the repository path. For example:
+//
+//	"192.168.1.1:5000/myapp:latest" → "myapp"
+//	"localhost:5000/org/app:v1"     → "org/app"
+//	"myapp"                         → "myapp"
+func imageRepo(name string) string {
+	// Strip registry host: if the first path component contains ':' or '.' it is
+	// a host:port or DNS name, not part of the repo path.
+	if idx := strings.Index(name, "/"); idx > 0 {
+		prefix := name[:idx]
+		if strings.ContainsAny(prefix, ".:") || prefix == "localhost" {
+			name = name[idx+1:]
+		}
+	}
+	// Strip tag: remove everything after the last ':' if it does not contain '/'.
+	if idx := strings.LastIndex(name, ":"); idx > 0 && !strings.Contains(name[idx:], "/") {
+		name = name[:idx]
+	}
+	return name
+}
+
 // checkManifestSignature verifies the sh.wendy/signature annotation if present,
 // and validates the signing cert against trustedPool. A non-nil trustedPool means
 // the device is enrolled: images without a valid signature from the org CA are rejected.
+// expectedRepo (when non-empty) is compared against the sh.wendy/signed.repo annotation
+// to prevent signed images from being redeployed under a different repository name.
 // expectedOrgID adds an explicit org-ID check on certs whose CN encodes the org
 // (format "wendy/<orgID>/..." or "sh/wendy/<orgID>/..."). This guards against
 // shared-CA scenarios where chain validation alone does not enforce per-org isolation.
 // User certs (CN "wendy/user/<userID>") carry no org ID in their CN; they rely on
 // chain validation only.
-func checkManifestSignature(annotations map[string]string, contentDigests []string, trustedPool *x509.CertPool, expectedOrgID int32) error {
+func checkManifestSignature(annotations map[string]string, contentDigests []string, expectedRepo string, trustedPool *x509.CertPool, expectedOrgID int32) error {
 	sig := annotations[certs.AnnotationSignature]
 	certPEM := annotations[certs.AnnotationSignatureCert]
 	if sig != "" && certPEM != "" {
@@ -431,8 +455,26 @@ func checkManifestSignature(annotations map[string]string, contentDigests []stri
 		if verifyErr := certs.VerifyBytes(payload, sig, cert); verifyErr != nil {
 			return fmt.Errorf("entitlement signature verification failed: %w", verifyErr)
 		}
+		// Repo binding check (post-ECDSA so sh.wendy/signed.repo is trusted).
+		if expectedRepo != "" {
+			signedRepo := annotations[certs.AnnotationSignedRepo]
+			if signedRepo == "" {
+				return fmt.Errorf("image has no repository binding (sh.wendy/signed.repo missing)")
+			}
+			if signedRepo != expectedRepo {
+				return fmt.Errorf("image signed for repository %q, deployed as %q", signedRepo, expectedRepo)
+			}
+		}
 		if trustedPool != nil {
 			opts := x509.VerifyOptions{Roots: trustedPool}
+			// Use the signing timestamp (if present) as CurrentTime so that a cert
+			// that was valid when the image was signed is not retroactively rejected
+			// after the cert expires.
+			if signedAtStr := annotations[certs.AnnotationSignedAt]; signedAtStr != "" {
+				if t, err := time.Parse(time.RFC3339, signedAtStr); err == nil {
+					opts.CurrentTime = t
+				}
+			}
 			if _, err := cert.Verify(opts); err != nil {
 				return fmt.Errorf("signing certificate not trusted by provisioning CA: %w", err)
 			}

@@ -335,6 +335,8 @@ func TestSigningPayload_Stable(t *testing.T) {
 	annotations := map[string]string{
 		"sh.wendy/entitlement.gpu":       `{"port":0}`,
 		"sh.wendy/entitlement.bluetooth": `{}`,
+		"sh.wendy/signed.repo":           "myapp",
+		"sh.wendy/signed.at":             "2024-01-01T00:00:00Z",
 		"sh.wendy/signature":             "should-be-excluded",
 		"sh.wendy/signature.cert":        "should-be-excluded",
 	}
@@ -349,11 +351,36 @@ func TestSigningPayload_Stable(t *testing.T) {
 	if !strings.Contains(s, "sh.wendy/entitlement.gpu") {
 		t.Error("payload missing gpu entitlement key")
 	}
-	// Verify ordering: bluetooth comes before gpu alphabetically.
+	if !strings.Contains(s, "sh.wendy/signed.repo=myapp") {
+		t.Error("payload missing sh.wendy/signed.repo")
+	}
+	if !strings.Contains(s, "sh.wendy/signed.at=2024-01-01T00:00:00Z") {
+		t.Error("payload missing sh.wendy/signed.at")
+	}
+	// Verify ordering: bluetooth < gpu < signed.at < signed.repo alphabetically.
 	btIdx := strings.Index(s, "bluetooth")
 	gpuIdx := strings.Index(s, "gpu")
 	if btIdx > gpuIdx {
 		t.Errorf("keys not sorted: bluetooth at %d, gpu at %d", btIdx, gpuIdx)
+	}
+}
+
+func TestSigningPayload_ValueEscaping(t *testing.T) {
+	annotations := map[string]string{
+		"sh.wendy/entitlement.weird": "val%with\nnewline\rand%percent",
+	}
+	payload := string(SigningPayload(nil, annotations))
+	if strings.Contains(payload, "\n\n") {
+		t.Error("unescaped newline in value would create spurious record boundary")
+	}
+	if !strings.Contains(payload, "%25") {
+		t.Error("payload missing escaped percent (%25)")
+	}
+	if !strings.Contains(payload, "%0A") {
+		t.Error("payload missing escaped newline (%0A)")
+	}
+	if !strings.Contains(payload, "%0D") {
+		t.Error("payload missing escaped carriage return (%0D)")
 	}
 }
 

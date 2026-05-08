@@ -20,9 +20,22 @@ const (
 	// leaf certificate whose private key produced the AnnotationSignature.
 	AnnotationSignatureCert = "sh.wendy/signature.cert"
 
+	// AnnotationSignedRepo is the OCI manifest annotation key for the repository
+	// name that was used when the image was signed. Included in the signing payload
+	// so that re-deploying an image under a different name invalidates the signature.
+	AnnotationSignedRepo = "sh.wendy/signed.repo"
+	// AnnotationSignedAt is the OCI manifest annotation key for the RFC3339 UTC
+	// timestamp at which the image was signed. Used as CurrentTime in x509 chain
+	// validation so that a certificate that was valid at signing time is still
+	// accepted even if it has since expired.
+	AnnotationSignedAt = "sh.wendy/signed.at"
+
 	// entitlementAnnotationPrefix is the prefix for Wendy entitlement annotations.
-	// Duplicated here to avoid importing the CLI package from the shared certs package.
 	entitlementAnnotationPrefix = "sh.wendy/entitlement."
+	// signedAnnotationPrefix is the prefix for Wendy signed-metadata annotations.
+	// Keys under this prefix (e.g. sh.wendy/signed.repo, sh.wendy/signed.at) are
+	// included in the signing payload alongside entitlement annotations.
+	signedAnnotationPrefix = "sh.wendy/signed."
 )
 
 // SignBytes signs data with ECDSA-P256+SHA-256 and returns the DER signature
@@ -74,8 +87,10 @@ func ParseLeafCertificate(certPEM string) (*x509.Certificate, error) {
 //     These are the config + layer digests for single manifests, or child
 //     manifest digests for OCI indexes. They bind the signature to the actual
 //     image content so that swapping layers invalidates the signature.
-//  2. All sh.wendy/entitlement.* annotation key/value pairs, sorted
-//     lexicographically, each as "key=value\n".
+//  2. All sh.wendy/entitlement.* and sh.wendy/signed.* annotation key/value
+//     pairs, sorted lexicographically, each as "key=value\n". Values are
+//     percent-encoded (% → %25, CR → %0D, LF → %0A) to prevent a newline
+//     inside a value from being mistaken for a record separator.
 //
 // The sh.wendy/signature* annotations are excluded so the payload is stable
 // whether or not the manifest has already been signed.
@@ -87,13 +102,13 @@ func SigningPayload(contentDigests []string, annotations map[string]string) []by
 	sort.Strings(sorted)
 	for _, d := range sorted {
 		buf.WriteString("digest=")
-		buf.WriteString(d)
+		buf.WriteString(escapeAnnotationValue(d))
 		buf.WriteByte('\n')
 	}
 
 	var keys []string
 	for k := range annotations {
-		if strings.HasPrefix(k, entitlementAnnotationPrefix) {
+		if strings.HasPrefix(k, entitlementAnnotationPrefix) || strings.HasPrefix(k, signedAnnotationPrefix) {
 			keys = append(keys, k)
 		}
 	}
@@ -101,9 +116,18 @@ func SigningPayload(contentDigests []string, annotations map[string]string) []by
 	for _, k := range keys {
 		buf.WriteString(k)
 		buf.WriteByte('=')
-		buf.WriteString(annotations[k])
+		buf.WriteString(escapeAnnotationValue(annotations[k]))
 		buf.WriteByte('\n')
 	}
 
 	return []byte(buf.String())
+}
+
+// escapeAnnotationValue percent-encodes characters that would otherwise be
+// ambiguous in the signing payload line format: '%', '\r', and '\n'.
+func escapeAnnotationValue(v string) string {
+	v = strings.ReplaceAll(v, "%", "%25")
+	v = strings.ReplaceAll(v, "\r", "%0D")
+	v = strings.ReplaceAll(v, "\n", "%0A")
+	return v
 }

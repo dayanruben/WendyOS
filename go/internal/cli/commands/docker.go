@@ -1937,6 +1937,11 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 	contentDigests := manifestContentDigests(manifestBytes)
 	if certInfo := loadCLICert(); certInfo != nil && certInfo.PemPrivateKey != "" && certInfo.PemCertificate != "" {
 		if key, keyErr := certs.ParseECPrivateKey(certInfo.PemPrivateKey); keyErr == nil {
+			// Bind the image to its repository name and record the signing time.
+			// Both are included in the payload via sh.wendy/signed.* prefix so they
+			// cannot be altered without invalidating the signature.
+			annotations[certs.AnnotationSignedRepo] = repo
+			annotations[certs.AnnotationSignedAt] = time.Now().UTC().Format(time.RFC3339)
 			payload := certs.SigningPayload(contentDigests, annotations)
 			if sig, sigErr := certs.SignBytes(payload, key); sigErr == nil {
 				if leafPEM, leafErr := certs.LeafCertificatePEM(certInfo.PemCertificate); leafErr == nil {
