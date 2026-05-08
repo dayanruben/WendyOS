@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Subprocess
 import WendyE2ETesting
 
 @Suite(.serialized)
@@ -78,7 +79,7 @@ struct `'wendy build'` {
         )
         try Helper.writeFile(
             """
-            // swift-tools-version:6.2
+            // swift-tools-version:6.1
             import PackageDescription
             let package = Package(name: "Invalid", targets: [.executableTarget(name: "Invalid")])
             """,

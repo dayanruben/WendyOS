@@ -1,4 +1,4 @@
-import Subprocess
+public import Subprocess
 
 public struct SessionCommand: Sendable {
     public enum PollCondition: Sendable {

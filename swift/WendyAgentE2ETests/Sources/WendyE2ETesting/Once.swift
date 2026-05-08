@@ -32,5 +32,5 @@ public actor Once {
     // MARK: - Private
 
     private var done = false
-    private var error: Error? = nil
+    private var error: (any Error)? = nil
 }

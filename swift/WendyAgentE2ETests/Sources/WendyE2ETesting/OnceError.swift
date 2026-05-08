@@ -1,5 +1,5 @@
 public enum OnceError: Error {
-    case failedOnFirstRun(name: String, originalError: Error)
+    case failedOnFirstRun(name: String, originalError: any Error)
 }
 
 // MARK: - CustomStringConvertible

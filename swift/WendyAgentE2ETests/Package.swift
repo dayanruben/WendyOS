@@ -1,5 +1,11 @@
-// swift-tools-version: 6.2.0
+// swift-tools-version: 6.1
 import PackageDescription
+
+let swiftSettings: [SwiftSetting] = [
+    .enableUpcomingFeature("ExistentialAny"),
+    .enableUpcomingFeature("MemberImportVisibility"),
+    .enableUpcomingFeature("InternalImportsByDefault"),
+]
 
 let package = Package(
     name: "WendyE2ETesting",
@@ -20,17 +26,20 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
-            path: "Sources/WendyE2ETesting"
+            path: "Sources/WendyE2ETesting",
+            swiftSettings: swiftSettings
         ),
         .testTarget(
             name: "WendyE2ETestingTests",
             dependencies: ["WendyE2ETesting"],
-            path: "Tests/WendyE2ETestingTests"
+            path: "Tests/WendyE2ETestingTests",
+            swiftSettings: swiftSettings
         ),
         .testTarget(
             name: "WendyAgentE2ETests",
             dependencies: ["WendyE2ETesting"],
-            path: "Tests/WendyAgentE2ETests"
+            path: "Tests/WendyAgentE2ETests",
+            swiftSettings: swiftSettings
         ),
     ]
 )

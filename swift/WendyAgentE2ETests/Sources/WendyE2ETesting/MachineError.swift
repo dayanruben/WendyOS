@@ -1,4 +1,4 @@
-import Subprocess
+public import Subprocess
 
 public enum MachineError: Error {
     case commandFailed(machine: String, command: String, terminationStatus: TerminationStatus)

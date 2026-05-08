@@ -1,4 +1,5 @@
 import Testing
+import Subprocess
 import WendyE2ETesting
 
 @Suite(.serialized)

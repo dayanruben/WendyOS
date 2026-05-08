@@ -322,7 +322,15 @@ public struct Session: Sendable {
     }
 
     private static func printCommand(machine: String, command: String) {
-        fputs("[\(machine)] $ \(command)\n", stderr)
+        Self.printToStandardError("[\(machine)] $ \(command)\n")
+    }
+
+    private static func printToStandardError(_ message: String) {
+        // SAFETY: stderr is process-global C runtime state. This helper only
+        // passes the current stream pointer to fputs for a single diagnostic
+        // write and does not mutate or store the pointer.
+        nonisolated(unsafe) let standardError = stderr
+        fputs(message, standardError)
     }
 
     private static func writeExecutionReport(
@@ -365,7 +373,7 @@ public struct Session: Sendable {
                 )
             )
         } catch {
-            fputs("Failed to write Wendy E2E command report: \(error)\n", stderr)
+            Self.printToStandardError("Failed to write Wendy E2E command report: \(error)\n")
         }
     }
 
