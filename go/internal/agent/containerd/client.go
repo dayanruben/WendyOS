@@ -534,20 +534,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	// Start D-Bus proxy if bluetooth entitlement is present.
-	var dbusProxyStarted bool
-	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
-			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
-		}
-		dbusProxyStarted = true
-		defer func() {
-			if dbusProxyStarted {
-				_ = c.proxyManager.Stop(appName)
-			}
-		}()
-	}
-
 	// Try the local image store first. The device-local registry shares
 	// containerd's content store, so anything just pushed to it is already
 	// available via GetImage — pulling would just round-trip bytes over
@@ -575,11 +561,26 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Read entitlements from image manifest annotations. When present, these are
 	// the authoritative source (codesigned with the image) and override whatever
-	// was passed in app_config.
+	// was passed in app_config. This must happen before any entitlement-dependent
+	// setup (e.g. the D-Bus proxy below) so all decisions use the final set.
 	if manifestEntitlements, readErr := c.readEntitlementsFromManifest(ctx, image); readErr != nil {
 		c.logger.Warn("could not read entitlement annotations from manifest", zap.Error(readErr))
 	} else if len(manifestEntitlements) > 0 {
 		appCfg.Entitlements = manifestEntitlements
+	}
+
+	// Start D-Bus proxy if bluetooth entitlement is present.
+	var dbusProxyStarted bool
+	if c.proxyManager != nil && hasBluetooth(appCfg) {
+		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
+			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
+		}
+		dbusProxyStarted = true
+		defer func() {
+			if dbusProxyStarted {
+				_ = c.proxyManager.Stop(appName)
+			}
+		}()
 	}
 
 	// Unpack the image into the snapshotter if not already done.

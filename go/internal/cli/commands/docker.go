@@ -168,22 +168,6 @@ func detectBuildOptions(dir string) []BuildOption {
 	return options
 }
 
-// injectDebugpy builds a wrapper image on top of the given image that installs debugpy.
-func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool) error {
-	tmpDir, err := os.MkdirTemp("", "wendy-debugpy-*")
-	if err != nil {
-		return fmt.Errorf("creating temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	dockerfile := fmt.Sprintf("FROM %s\nUSER root\nRUN pip install debugpy\n", registryImage)
-	if err := os.WriteFile(filepath.Join(tmpDir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
-		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
-	}
-
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, buildArgs, streamOutput, useMTLS)
-}
-
 // generatePythonDockerfile creates a Dockerfile for Python projects that do not already have one.
 // It returns the path to the generated Dockerfile.
 func generatePythonDockerfile(dir string) (string, error) {
@@ -1299,11 +1283,13 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		MinVersion:         tls.VersionTLS12,
 		Certificates:       []tls.Certificate{tlsCert},
 	}
+	dialer := &tls.Dialer{Config: tlsCfg}
 	return startRegistryProxyWithDialer(ctx, func(ctx context.Context) (net.Conn, error) {
-		return tls.DialWithDialer(&net.Dialer{}, "tcp", target, tlsCfg)
+		return dialer.DialContext(ctx, "tcp", target)
 	}, target)
 }
 
@@ -1839,7 +1825,8 @@ func registryHTTPClient(useMTLS bool) (*http.Client, error) {
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // device registries use self-signed certs
+				InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+				MinVersion:         tls.VersionTLS12,
 				Certificates:       []tls.Certificate{tlsCert},
 			},
 		},
@@ -1939,7 +1926,10 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 	}
 
 	// Build per-entitlement annotation map.
-	annotations := buildEntitlementAnnotations(entitlements)
+	annotations, err := buildEntitlementAnnotations(entitlements)
+	if err != nil {
+		return err
+	}
 
 	// Sign the entitlement annotations with the developer certificate if one is
 	// available. A missing or non-EC cert is silently skipped so that unsigned
@@ -1988,14 +1978,20 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 // entitlements share the same type a numeric suffix (.0, .1, …) is appended.
 // Values are JSON-encoded entitlement objects with the "type" field omitted
 // (matching the containerd container label format in the agent's wendyLabels).
-func buildEntitlementAnnotations(entitlements []appconfig.Entitlement) map[string]string {
+// Entitlements with an empty type are skipped.
+func buildEntitlementAnnotations(entitlements []appconfig.Entitlement) (map[string]string, error) {
 	typeCounts := make(map[string]int)
 	for _, e := range entitlements {
-		typeCounts[e.Type]++
+		if e.Type != "" {
+			typeCounts[e.Type]++
+		}
 	}
 	typeIndex := make(map[string]int)
 	out := make(map[string]string)
 	for _, e := range entitlements {
+		if e.Type == "" {
+			continue
+		}
 		var key string
 		if typeCounts[e.Type] == 1 {
 			key = ociEntitlementAnnotationPrefix + e.Type
@@ -2005,20 +2001,20 @@ func buildEntitlementAnnotations(entitlements []appconfig.Entitlement) map[strin
 		}
 		data, err := json.Marshal(e)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("marshaling entitlement %q: %w", e.Type, err)
 		}
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(data, &m); err != nil {
-			continue
+			return nil, fmt.Errorf("re-parsing entitlement %q: %w", e.Type, err)
 		}
 		delete(m, "type")
 		stripped, err := json.Marshal(m)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("re-encoding entitlement %q: %w", e.Type, err)
 		}
 		out[key] = string(stripped)
 	}
-	return out
+	return out, nil
 }
 
 // injectManifestAnnotations merges annotations into a manifest or index JSON

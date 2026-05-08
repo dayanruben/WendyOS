@@ -46,8 +46,9 @@ const labelKeyRestartPolicy = "sh.wendy/restart.policy"
 const labelKeyMCPPort = "sh.wendy/mcp.port"
 
 // labelKeyEntitlementPrefix is the prefix for per-entitlement labels; each
-// entitlement is stored as sh.wendy/entitlement.<index> so it can be
-// codesigned alongside the rest of the container metadata.
+// entitlement is stored as sh.wendy/entitlement.<type> (or
+// sh.wendy/entitlement.<type>.<n> when multiple entitlements share the same
+// type) so it can be codesigned alongside the rest of the container metadata.
 const labelKeyEntitlementPrefix = "sh.wendy/entitlement."
 
 // labelKeyGCRoot prevents garbage collection of content blobs.
@@ -126,10 +127,15 @@ func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy, 
 
 	typeCounts := make(map[string]int)
 	for _, e := range entitlements {
-		typeCounts[e.Type]++
+		if e.Type != "" {
+			typeCounts[e.Type]++
+		}
 	}
 	typeIndex := make(map[string]int)
 	for _, e := range entitlements {
+		if e.Type == "" {
+			continue
+		}
 		var key string
 		if typeCounts[e.Type] == 1 {
 			key = labelKeyEntitlementPrefix + e.Type
@@ -137,15 +143,12 @@ func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy, 
 			key = fmt.Sprintf("%s%s.%d", labelKeyEntitlementPrefix, e.Type, typeIndex[e.Type])
 			typeIndex[e.Type]++
 		}
-		if data, err := json.Marshal(e); err == nil {
-			var m map[string]json.RawMessage
-			if err := json.Unmarshal(data, &m); err == nil {
-				delete(m, "type")
-				if stripped, err := json.Marshal(m); err == nil {
-					labels[key] = string(stripped)
-				}
-			}
-		}
+		data, _ := json.Marshal(e)
+		var m map[string]json.RawMessage
+		_ = json.Unmarshal(data, &m)
+		delete(m, "type")
+		stripped, _ := json.Marshal(m)
+		labels[key] = string(stripped)
 	}
 
 	return labels

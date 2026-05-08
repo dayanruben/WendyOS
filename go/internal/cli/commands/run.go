@@ -503,8 +503,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
 	}
 
-	// Debug mode requires host networking for remote debugger access
-	// (gdb/lldb for native apps, debugpy for Python apps).
+	// Debug mode requires host networking for remote debugger access.
 	if opts.debug {
 		appCfg.Debug = true
 		foundNetwork := false
@@ -1217,14 +1216,6 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			if err := annotateManifestWithEntitlements(ctx, annotationAddr, repo, "latest", appCfg.Entitlements, false); err != nil {
 				cliLogln("Warning: could not annotate image manifest with entitlements: %v", err)
 			}
-		}
-	}
-
-	// Inject debugpy for Python remote debugging.
-	if opts.debug && appCfg.Language == "python" {
-		cliLogln("Injecting debugpy for remote debugging...")
-		if err := injectDebugpy(ctx, registryAddr, registryImage, platform, buildArgs, os.Stdout, conn.IsMTLS); err != nil {
-			return fmt.Errorf("injecting debugpy: %w", err)
 		}
 	}
 
