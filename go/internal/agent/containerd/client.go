@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"crypto/x509"
+
 	cgroupv1 "github.com/containerd/cgroups/v3/cgroup1/stats"
 	cgroupv2 "github.com/containerd/cgroups/v3/cgroup2/stats"
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
@@ -50,20 +52,26 @@ const DefaultAddress = "/run/containerd/containerd.sock"
 
 // Client wraps the containerd SDK client and implements services.ContainerdClient.
 type Client struct {
-	client       *containerd.Client
-	logger       *zap.Logger
-	namespace    string
-	mu           sync.Mutex
-	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
-	isEnrolled   func() bool        // reports whether the device is enrolled; nil → never enrolled
+	client        *containerd.Client
+	logger        *zap.Logger
+	namespace     string
+	mu            sync.Mutex
+	proxyManager  *dbusproxy.Manager    // nil if xdg-dbus-proxy is not available
+	trustedCAPool func() *x509.CertPool // nil return → unenrolled; non-nil → validate cert chain against pool
+	expectedOrgID func() int32          // returns 0 when org ID is unavailable or device is unenrolled
 }
 
 // NewClient creates a new containerd SDK client connected to the given Unix
 // socket address. If address is empty, DefaultAddress is used.
 // proxyMgr may be nil if xdg-dbus-proxy is not available.
-// isEnrolled is called at container-create time to check whether the device is
-// enrolled; nil is treated as "never enrolled" for backward compatibility.
-func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, isEnrolled func() bool) (*Client, error) {
+// trustedCAPool is called at container-create time; a nil return means the
+// device is unenrolled and no chain validation is performed. A non-nil pool
+// means the device is enrolled and the manifest's signing cert must chain to
+// that pool (i.e., the org's provisioning CA).
+// expectedOrgID is called alongside trustedCAPool; a non-zero return adds an
+// explicit org-ID check on the cert CN, guarding against shared-CA scenarios
+// where chain validation alone does not enforce per-org isolation.
+func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, trustedCAPool func() *x509.CertPool, expectedOrgID func() int32) (*Client, error) {
 	if address == "" {
 		address = DefaultAddress
 	}
@@ -74,11 +82,12 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, 
 	}
 
 	return &Client{
-		client:       c,
-		logger:       logger,
-		namespace:    "default",
-		proxyManager: proxyMgr,
-		isEnrolled:   isEnrolled,
+		client:        c,
+		logger:        logger,
+		namespace:     "default",
+		proxyManager:  proxyMgr,
+		trustedCAPool: trustedCAPool,
+		expectedOrgID: expectedOrgID,
 	}, nil
 }
 
@@ -361,7 +370,15 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 
-	if err := checkManifestSignature(manifest.Annotations, c.isEnrolled != nil && c.isEnrolled()); err != nil {
+	var pool *x509.CertPool
+	if c.trustedCAPool != nil {
+		pool = c.trustedCAPool()
+	}
+	var orgID int32
+	if c.expectedOrgID != nil {
+		orgID = c.expectedOrgID()
+	}
+	if err := checkManifestSignature(manifest.Annotations, pool, orgID); err != nil {
 		return nil, err
 	}
 	if sig := manifest.Annotations[certs.AnnotationSignature]; sig != "" {
@@ -371,8 +388,14 @@ func (c *Client) readEntitlementsFromManifest(ctx context.Context, image contain
 }
 
 // checkManifestSignature verifies the sh.wendy/signature annotation if present,
-// and rejects unsigned images on enrolled devices.
-func checkManifestSignature(annotations map[string]string, enrolled bool) error {
+// and validates the signing cert against trustedPool. A non-nil trustedPool means
+// the device is enrolled: images without a valid signature from the org CA are rejected.
+// expectedOrgID adds an explicit org-ID check on certs whose CN encodes the org
+// (format "wendy/<orgID>/..." or "sh/wendy/<orgID>/..."). This guards against
+// shared-CA scenarios where chain validation alone does not enforce per-org isolation.
+// User certs (CN "wendy/user/<userID>") carry no org ID in their CN; they rely on
+// chain validation only.
+func checkManifestSignature(annotations map[string]string, trustedPool *x509.CertPool, expectedOrgID int32) error {
 	sig := annotations[certs.AnnotationSignature]
 	certPEM := annotations[certs.AnnotationSignatureCert]
 	if sig != "" && certPEM != "" {
@@ -384,12 +407,40 @@ func checkManifestSignature(annotations map[string]string, enrolled bool) error 
 		if verifyErr := certs.VerifyBytes(payload, sig, cert); verifyErr != nil {
 			return fmt.Errorf("entitlement signature verification failed: %w", verifyErr)
 		}
+		if trustedPool != nil {
+			opts := x509.VerifyOptions{Roots: trustedPool}
+			if _, err := cert.Verify(opts); err != nil {
+				return fmt.Errorf("signing certificate not trusted by provisioning CA: %w", err)
+			}
+		}
+		if expectedOrgID != 0 {
+			if certOrg := certOrgID(cert.Subject.CommonName); certOrg != 0 && certOrg != expectedOrgID {
+				return fmt.Errorf("signing certificate is from org %d, device is enrolled in org %d", certOrg, expectedOrgID)
+			}
+		}
 		return nil
 	}
-	if enrolled {
+	if trustedPool != nil {
 		return fmt.Errorf("device is enrolled but container image is unsigned")
 	}
 	return nil
+}
+
+// certOrgID extracts the numeric org ID from a Wendy cert common name.
+// Returns 0 for user certs (CN "wendy/user/<id>") or unrecognised formats.
+// Recognised formats: "wendy/<orgID>/<assetID>" and "sh/wendy/<orgID>/<assetID>".
+func certOrgID(cn string) int32 {
+	cn = strings.TrimPrefix(cn, "sh/")
+	cn = strings.TrimPrefix(cn, "wendy/")
+	parts := strings.SplitN(cn, "/", 2)
+	if len(parts) == 0 {
+		return 0
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 32)
+	if err != nil {
+		return 0 // "user" prefix or other non-numeric component
+	}
+	return int32(id)
 }
 
 func toCreateContainerProgress(progress UnpackProgress) *agentpb.CreateContainerProgress {

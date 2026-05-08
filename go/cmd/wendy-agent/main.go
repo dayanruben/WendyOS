@@ -145,7 +145,7 @@ func main() {
 	if containerdAddr == "" {
 		containerdAddr = agentcontainerd.DefaultAddress
 	}
-	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr, provisioningSvc.Enrolled)
+	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr, provisioningSvc.TrustedCAPool, provisioningSvc.OrgID)
 	if ctrdErr != nil {
 		logger.Warn("Failed to connect to containerd (container features will be unavailable)", zap.Error(ctrdErr))
 	} else {

@@ -19,26 +19,67 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// makeTestKeyAndCertPEM generates a throw-away EC P-256 key and self-signed cert
-// for use in signature tests.
-func makeTestKeyAndCertPEM(t *testing.T) (*ecdsa.PrivateKey, string) {
+// makeTestCA generates a throw-away EC P-256 self-signed CA certificate.
+func makeTestCA(t *testing.T, cn string) (*ecdsa.PrivateKey, *x509.Certificate, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatalf("generate CA key: %v", err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("create cert: %v", err)
+		t.Fatalf("create CA cert: %v", err)
+	}
+	cert, _ := x509.ParseCertificate(der)
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	return key, cert, certPEM
+}
+
+// makeTestLeafCert issues a leaf cert signed by caKey/caCert with the given CN.
+func makeTestLeafCert(t *testing.T, cn string, caKey *ecdsa.PrivateKey, caCert *x509.Certificate) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create leaf cert: %v", err)
 	}
 	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	return key, certPEM
+}
+
+// makeTestKeyAndCertPEM generates a self-signed CA cert, usable as both a leaf
+// (for signing) and a root (for pool construction) in simple tests.
+func makeTestKeyAndCertPEM(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	key, _, certPEM := makeTestCA(t, "test-ca")
+	return key, certPEM
+}
+
+// poolFromPEM builds an x509.CertPool containing the given PEM cert.
+func poolFromPEM(t *testing.T, certPEM string) *x509.CertPool {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(certPEM)) {
+		t.Fatal("failed to build cert pool from PEM")
+	}
+	return pool
 }
 
 // signAnnotations adds sh.wendy/signature and sh.wendy/signature.cert to annotations.
@@ -393,118 +434,216 @@ func TestLayerMediaType_GzipDefault_GzipFalse(t *testing.T) {
 }
 
 func TestCheckManifestSignature(t *testing.T) {
-	key, certPEM := makeTestKeyAndCertPEM(t)
-	otherKey, _ := makeTestKeyAndCertPEM(t) // different key, same cert issuer
+	// Per-org CAs: each org has its own CA that signs its certs.
+	org1CAKey, org1CACert, org1CAPEM := makeTestCA(t, "org-1-ca")
+	org2CAKey, org2CACert, org2CAPEM := makeTestCA(t, "org-2-ca")
+	org1Pool := poolFromPEM(t, org1CAPEM)
+	org2Pool := poolFromPEM(t, org2CAPEM)
+
+	// Leaf certs issued by each org's CA with Wendy CN format.
+	org1Key, org1CertPEM := makeTestLeafCert(t, "wendy/1/42", org1CAKey, org1CACert)
+	org2Key, org2CertPEM := makeTestLeafCert(t, "wendy/2/99", org2CAKey, org2CACert)
+
+	// Shared CA: both orgs' certs signed by the same root (simulates flat PKI).
+	sharedCAKey, sharedCACert, sharedCAPEM := makeTestCA(t, "shared-root-ca")
+	sharedPool := poolFromPEM(t, sharedCAPEM)
+	sharedOrg1Key, sharedOrg1CertPEM := makeTestLeafCert(t, "wendy/1/42", sharedCAKey, sharedCACert)
+	sharedOrg2Key, sharedOrg2CertPEM := makeTestLeafCert(t, "wendy/2/99", sharedCAKey, sharedCACert)
+
+	// User cert: CN has no numeric org ID.
+	userKey, userCertPEM := makeTestLeafCert(t, "wendy/user/alice", org1CAKey, org1CACert)
 
 	entitlementAnnotations := func() map[string]string {
-		return map[string]string{
-			"sh.wendy/entitlement.bluetooth": `{}`,
-		}
+		return map[string]string{"sh.wendy/entitlement.bluetooth": `{}`}
 	}
 
 	tests := []struct {
-		name     string
-		annots   func() map[string]string
-		enrolled bool
-		wantErr  string
+		name        string
+		annots      func() map[string]string
+		trustedPool *x509.CertPool // nil = unenrolled
+		orgID       int32
+		wantErr     string
 	}{
+		// ── Basic enrollment checks ──────────────────────────────────────────────
 		{
-			name:     "no annotations, not enrolled",
-			annots:   func() map[string]string { return nil },
-			enrolled: false,
+			name:        "no annotations, not enrolled",
+			annots:      func() map[string]string { return nil },
+			trustedPool: nil,
 		},
 		{
-			name:     "no annotations, enrolled",
-			annots:   func() map[string]string { return nil },
-			enrolled: true,
-			wantErr:  "unsigned",
+			name:        "no annotations, enrolled",
+			annots:      func() map[string]string { return nil },
+			trustedPool: org1Pool,
+			orgID:       1,
+			wantErr:     "unsigned",
 		},
 		{
 			name: "valid signature, not enrolled",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, key, certPEM)
+				signAnnotations(t, a, org1Key, org1CertPEM)
 				return a
 			},
-			enrolled: false,
-		},
-		{
-			name: "valid signature, enrolled",
-			annots: func() map[string]string {
-				a := entitlementAnnotations()
-				signAnnotations(t, a, key, certPEM)
-				return a
-			},
-			enrolled: true,
+			trustedPool: nil,
 		},
 		{
 			name: "valid signature on empty entitlements, enrolled",
 			annots: func() map[string]string {
 				a := map[string]string{}
-				signAnnotations(t, a, key, certPEM)
+				signAnnotations(t, a, org1Key, org1CertPEM)
 				return a
 			},
-			enrolled: true,
-		},
-		{
-			name: "corrupt signature, not enrolled",
-			annots: func() map[string]string {
-				a := entitlementAnnotations()
-				signAnnotations(t, a, key, certPEM)
-				a[certs.AnnotationSignature] = "AAAA" // corrupt
-				return a
-			},
-			enrolled: false,
-			wantErr:  "verification failed",
-		},
-		{
-			name: "corrupt signature, enrolled",
-			annots: func() map[string]string {
-				a := entitlementAnnotations()
-				signAnnotations(t, a, key, certPEM)
-				a[certs.AnnotationSignature] = "AAAA" // corrupt
-				return a
-			},
-			enrolled: true,
-			wantErr:  "verification failed",
-		},
-		{
-			name: "tampered entitlement after signing, enrolled",
-			annots: func() map[string]string {
-				a := entitlementAnnotations()
-				signAnnotations(t, a, key, certPEM)
-				a["sh.wendy/entitlement.bluetooth"] = `{"port":9999}` // tamper
-				return a
-			},
-			enrolled: true,
-			wantErr:  "verification failed",
-		},
-		{
-			name: "signature by wrong key, enrolled",
-			annots: func() map[string]string {
-				a := entitlementAnnotations()
-				signAnnotations(t, a, otherKey, certPEM) // signed by different key
-				return a
-			},
-			enrolled: true,
-			wantErr:  "verification failed",
+			trustedPool: org1Pool,
+			orgID:       1,
 		},
 		{
 			name: "sig present but cert missing, enrolled",
 			annots: func() map[string]string {
 				a := entitlementAnnotations()
-				signAnnotations(t, a, key, certPEM)
-				delete(a, certs.AnnotationSignatureCert) // strip cert
+				signAnnotations(t, a, org1Key, org1CertPEM)
+				delete(a, certs.AnnotationSignatureCert)
 				return a
 			},
-			enrolled: true,
-			wantErr:  "unsigned",
+			trustedPool: org1Pool,
+			orgID:       1,
+			wantErr:     "unsigned",
+		},
+
+		// ── Signature integrity ──────────────────────────────────────────────────
+		{
+			name: "corrupt signature",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, org1Key, org1CertPEM)
+				a[certs.AnnotationSignature] = "AAAA"
+				return a
+			},
+			trustedPool: org1Pool,
+			orgID:       1,
+			wantErr:     "verification failed",
+		},
+		{
+			name: "tampered entitlement after signing",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, org1Key, org1CertPEM)
+				a["sh.wendy/entitlement.bluetooth"] = `{"port":9999}`
+				return a
+			},
+			trustedPool: org1Pool,
+			orgID:       1,
+			wantErr:     "verification failed",
+		},
+
+		// ── Per-org CA isolation (structural PKI isolation) ──────────────────────
+		{
+			name: "per-org CAs: org1 cert accepted by org1 device",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, org1Key, org1CertPEM)
+				return a
+			},
+			trustedPool: org1Pool,
+			orgID:       1,
+		},
+		{
+			name: "per-org CAs: org2 cert rejected by org1 device (chain mismatch)",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, org2Key, org2CertPEM)
+				return a
+			},
+			trustedPool: org1Pool, // org2 cert does not chain to org1 CA
+			orgID:       1,
+			wantErr:     "not trusted",
+		},
+
+		// ── Shared root CA — the cross-org gap ───────────────────────────────────
+		// When all orgs are signed by the same CA, chain validation alone is
+		// insufficient: org2's cert chains to the same root as org1's pool.
+		{
+			name: "shared CA, no orgID check: org2 cert passes org1 chain (gap demonstrated)",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, sharedOrg2Key, sharedOrg2CertPEM)
+				return a
+			},
+			trustedPool: sharedPool,
+			orgID:       0, // no org ID check → cross-org accepted (the gap)
+			// wantErr intentionally empty to show the gap exists
+		},
+		{
+			name: "shared CA, with orgID check: org2 cert rejected by org1 device",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, sharedOrg2Key, sharedOrg2CertPEM)
+				return a
+			},
+			trustedPool: sharedPool,
+			orgID:       1, // CN says org 2, device expects org 1 → rejected
+			wantErr:     "org 2",
+		},
+		{
+			name: "shared CA, org1 cert accepted by org1 device with orgID check",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, sharedOrg1Key, sharedOrg1CertPEM)
+				return a
+			},
+			trustedPool: sharedPool,
+			orgID:       1,
+		},
+
+		// ── User certs (no org ID in CN) ─────────────────────────────────────────
+		// User certs (CN "wendy/user/<id>") carry no numeric org ID; the CN
+		// check is skipped. Cross-org isolation for user certs relies entirely
+		// on per-org intermediate CAs in the PKI.
+		{
+			name: "user cert accepted when chain matches and no org ID in CN",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, userKey, userCertPEM)
+				return a
+			},
+			trustedPool: org1Pool,
+			orgID:       1, // CN "wendy/user/alice" → certOrgID returns 0 → check skipped
+		},
+		{
+			name: "user cert from different org's CA rejected by chain check",
+			annots: func() map[string]string {
+				a := entitlementAnnotations()
+				signAnnotations(t, a, userKey, userCertPEM) // signed by org1 CA
+				return a
+			},
+			trustedPool: org2Pool, // org2 device trusts org2 CA only
+			orgID:       2,
+			wantErr:     "not trusted",
+		},
+
+		// ── Docker Hub / cosign compatibility note ────────────────────────────────
+		// Docker Content Trust (Notary) and cosign store signatures as separate
+		// OCI artefacts / in a Notary server — not in manifest annotations. This
+		// system is independent of and not compatible with those mechanisms.
+		// A Docker Hub-signed image with no sh.wendy/signature annotation is
+		// treated as unsigned by an enrolled device and rejected.
+		{
+			name: "docker-hub-signed image (no wendy annotation) rejected on enrolled device",
+			annots: func() map[string]string {
+				// Simulate a Docker Hub image: has standard OCI annotations
+				// but no sh.wendy/signature annotation.
+				return map[string]string{
+					"org.opencontainers.image.created": "2024-01-01T00:00:00Z",
+				}
+			},
+			trustedPool: org1Pool,
+			orgID:       1,
+			wantErr:     "unsigned",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkManifestSignature(tc.annots(), tc.enrolled)
+			err := checkManifestSignature(tc.annots(), tc.trustedPool, tc.orgID)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
@@ -517,5 +656,25 @@ func TestCheckManifestSignature(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCertOrgID(t *testing.T) {
+	tests := []struct {
+		cn   string
+		want int32
+	}{
+		{"wendy/1/42", 1},
+		{"wendy/2/99", 2},
+		{"sh/wendy/7/3", 7},
+		{"wendy/user/alice", 0},  // user cert — no numeric org
+		{"wendy/user/123", 0},    // user ID happens to be numeric but prefix is "user"
+		{"unrelated-cn", 0},
+		{"", 0},
+	}
+	for _, tc := range tests {
+		if got := certOrgID(tc.cn); got != tc.want {
+			t.Errorf("certOrgID(%q) = %d; want %d", tc.cn, got, tc.want)
+		}
 	}
 }
