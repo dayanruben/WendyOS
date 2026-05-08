@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SWIFT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SWIFT_DIR/.." && pwd)"
-PACKAGE_DIR="$SWIFT_DIR/WendyAgentE2ETests"
+PACKAGE_DIR="$SWIFT_DIR/WendyE2ETests"
 DEFAULT_FIXTURES_DIR="$REPO_ROOT/.github/swift-e2e-tests"
 DEFAULT_RECORDS_DIR="$PACKAGE_DIR/.build/e2e-test-records.current"
 DEFAULT_ARTIFACT_DIR="$SWIFT_DIR/Build/E2E"
@@ -29,7 +29,7 @@ records as a zip artifact.
 Options:
   --filter FILTER       Pass a SwiftPM test filter (can be repeated). If omitted,
                         WENDY_AGENT_E2E_TEST_FILTERS may contain comma-separated
-                        filters, otherwise the WendyAgentE2ETests target is run.
+                        filters, otherwise the WendyE2ETests target is run.
   --records-dir DIR     Directory for generated *.md command records.
   --artifact-dir DIR    Directory for the final zip artifact.
   --report-zip PATH     Path to the final zip artifact.
@@ -112,7 +112,7 @@ if [[ ${#TEST_FILTERS[@]} -eq 0 && -n "${WENDY_AGENT_E2E_TEST_FILTERS:-}" ]]; th
 fi
 
 if [[ ${#TEST_FILTERS[@]} -eq 0 ]]; then
-  TEST_FILTERS+=("WendyAgentE2ETests")
+  TEST_FILTERS+=("WendyE2ETests")
 fi
 
 absolute_dir_path() {
@@ -180,7 +180,7 @@ sync_agent_checkout_if_needed() {
     --exclude '.build/' \
     --exclude 'Build/' \
     --exclude 'swift/WendyAgentCore/.build/' \
-    --exclude 'swift/WendyAgentE2ETests/.build/' \
+    --exclude 'swift/WendyE2ETests/.build/' \
     --exclude 'swift/Build/' \
     "$REPO_ROOT/" "$AGENT_SSH:$remote_root/"
 

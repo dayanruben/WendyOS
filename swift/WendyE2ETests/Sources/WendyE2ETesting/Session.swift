@@ -421,7 +421,7 @@ public struct Session: Sendable {
         URL(fileURLWithPath: #filePath, isDirectory: false)
             .deletingLastPathComponent()  // Sources/WendyE2ETesting
             .deletingLastPathComponent()  // Sources
-            .deletingLastPathComponent()  // swift/WendyAgentE2ETests
+            .deletingLastPathComponent()  // swift/WendyE2ETests
     }
 
     private static func fileName(from filePath: String) -> String {

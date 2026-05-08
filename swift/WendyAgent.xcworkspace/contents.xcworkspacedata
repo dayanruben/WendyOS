@@ -8,6 +8,6 @@
       location = "group:WendyAgentMac/WendyAgentMac.xcodeproj">
    </FileRef>
    <FileRef
-      location = "group:WendyAgentE2ETests">
+      location = "group:WendyE2ETests">
    </FileRef>
 </Workspace>

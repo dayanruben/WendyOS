@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn `swift/WendyAgentE2ETests` into the executable behavioral specification for
+Turn `swift/WendyE2ETests` into the executable behavioral specification for
 the Wendy CLI, agent, device, cloud, and project workflows.
 
 The suite should not grow by casually encoding current behavior. For each command
@@ -207,8 +207,8 @@ This order is for focus and reviewability only. Later areas are not optional.
 Use an explicit records directory while iterating:
 
 ```bash
-cd swift/WendyAgentE2ETests
-WENDY_AGENT_E2E_TEST_RECORDS_DIR="$PWD/.build/e2e-test-records.current" swift test --filter WendyAgentE2ETests
+cd swift/WendyE2ETests
+WENDY_AGENT_E2E_TEST_RECORDS_DIR="$PWD/.build/e2e-test-records.current" swift test --filter WendyE2ETests
 ```
 
 For focused work:

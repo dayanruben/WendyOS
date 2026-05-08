@@ -1,4 +1,4 @@
-# WendyAgentE2ETests
+# WendyE2ETests
 
 Swift E2E test package for the Wendy CLI and local Wendy agent. The long-term goal is to use this package as a behavioral specification suite, not just a collection of smoke tests.
 
@@ -7,21 +7,21 @@ Swift E2E test package for the Wendy CLI and local Wendy agent. The long-term go
 From this package:
 
 ```bash
-swift test --filter WendyAgentE2ETests
+swift test --filter WendyE2ETests
 ```
 
 For reproducible command records:
 
 ```bash
 WENDY_AGENT_E2E_TEST_RECORDS_DIR="$PWD/.build/e2e-test-records.current" \
-  swift test --filter WendyAgentE2ETests
+  swift test --filter WendyE2ETests
 ```
 
 To render the HTML report from the repository root:
 
 ```bash
 .agents/skills/run-e2e-tests-and-analyze/render-e2e-report.py \
-  --records-dir swift/WendyAgentE2ETests/.build/e2e-test-records.current
+  --records-dir swift/WendyE2ETests/.build/e2e-test-records.current
 ```
 
 ## Behavioral spec workflow
@@ -248,7 +248,7 @@ After the stubs read like a complete product/API spec, implement them incrementa
 
 In a future session, use:
 
-> Read `swift/WendyAgentE2ETests/README.md` and continue the behavioral spec workflow from the current recommended starting point. Do not implement test bodies until the disabled spec stubs are agreed.
+> Read `swift/WendyE2ETests/README.md` and continue the behavioral spec workflow from the current recommended starting point. Do not implement test bodies until the disabled spec stubs are agreed.
 
 ## Machine and session overview
 

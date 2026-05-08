@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 .DEFAULT_GOAL := help
 
-SWIFT_FORMAT_TARGETS := WendyAgentCore/Sources WendyAgentCore/Tests WendyAgentMac/Sources WendyAgentE2ETests/Sources WendyAgentE2ETests/Tests
+SWIFT_FORMAT_TARGETS := WendyAgentCore/Sources WendyAgentCore/Tests WendyAgentMac/Sources WendyE2ETests/Sources WendyE2ETests/Tests
 
 .PHONY: help format lint test test-e2e proto build build-dev run reset-mac-app-settings reset-mac-app-tcc reset-mac-app quit clean
 

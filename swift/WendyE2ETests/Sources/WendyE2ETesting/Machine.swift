@@ -145,7 +145,7 @@ public struct Machine: Sendable, Equatable {
         URL(fileURLWithPath: #filePath, isDirectory: false)
             .deletingLastPathComponent()  // Sources/WendyE2ETesting
             .deletingLastPathComponent()  // Sources
-            .deletingLastPathComponent()  // swift/WendyAgentE2ETests
+            .deletingLastPathComponent()  // swift/WendyE2ETests
     }
 }
 

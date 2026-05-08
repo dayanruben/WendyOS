@@ -36,9 +36,9 @@ let package = Package(
             swiftSettings: swiftSettings
         ),
         .testTarget(
-            name: "WendyAgentE2ETests",
+            name: "WendyE2ETests",
             dependencies: ["WendyE2ETesting"],
-            path: "Tests/WendyAgentE2ETests",
+            path: "Tests/WendyE2ETests",
             swiftSettings: swiftSettings
         ),
     ]
