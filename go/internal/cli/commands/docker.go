@@ -218,6 +218,8 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		return err
 	}
 
+	// registryAddr is always a plain-HTTP address: either the device's own
+	// unprovisioned registry or a local proxy that handles TLS on our behalf.
 	swiftArgs := []string{
 		"package",
 		"--swift-sdk=" + sdk,
