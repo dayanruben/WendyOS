@@ -34,7 +34,7 @@ struct ReferenceCommand: ParsableCommand {
     @Flag(help: "Include requirements, source locations, and disabled state.")
     var specReview = false
 
-    @Option(name: .long, help: "Output format: markdown, md, or html.")
+    @Option(name: .long, help: "Output format: markdown, md, html, or json.")
     var format: ReferenceFormat = .markdown
 
     @Option(name: [.short, .long], help: "Write generated files and index to this directory.")
@@ -71,7 +71,7 @@ struct ReferenceCommand: ParsableCommand {
         for sourceFile in sourceFiles {
             documents.append(contentsOf: try Reference.parseFile(at: sourceFile))
         }
-        print(format.render(documents, options: options), terminator: "")
+        print(try format.render(documents, options: options), terminator: "")
     }
 
     private func validateFormatOption() throws {
@@ -87,6 +87,7 @@ struct ReferenceCommand: ParsableCommand {
 enum ReferenceFormat: String, ExpressibleByArgument, CustomStringConvertible {
     case markdown
     case html
+    case json
 
     init?(argument: String) {
         switch argument.lowercased() {
@@ -94,6 +95,8 @@ enum ReferenceFormat: String, ExpressibleByArgument, CustomStringConvertible {
             self = .markdown
         case "html":
             self = .html
+        case "json":
+            self = .json
         default:
             return nil
         }
@@ -105,6 +108,8 @@ enum ReferenceFormat: String, ExpressibleByArgument, CustomStringConvertible {
             "Markdown"
         case .html:
             "HTML"
+        case .json:
+            "JSON"
         }
     }
 
@@ -114,6 +119,8 @@ enum ReferenceFormat: String, ExpressibleByArgument, CustomStringConvertible {
             "index.md"
         case .html:
             "index.html"
+        case .json:
+            "index.json"
         }
     }
 
@@ -123,27 +130,33 @@ enum ReferenceFormat: String, ExpressibleByArgument, CustomStringConvertible {
             Reference.markdownFileName(forTitle: title)
         case .html:
             Reference.htmlFileName(forTitle: title)
+        case .json:
+            Reference.jsonFileName(forTitle: title)
         }
     }
 
     func render(
         _ documents: [Reference.Document],
         options: Reference.MarkdownOptions
-    ) -> String {
+    ) throws -> String {
         switch self {
         case .markdown:
             Reference.renderMarkdown(documents, options: options)
         case .html:
             Reference.renderHTML(documents, options: options)
+        case .json:
+            try Reference.renderJSON(documents, options: options)
         }
     }
 
-    func renderIndex(_ entries: [Reference.IndexEntry], title: String) -> String {
+    func renderIndex(_ entries: [Reference.IndexEntry], title: String) throws -> String {
         switch self {
         case .markdown:
             Reference.renderMarkdownIndex(entries, title: title)
         case .html:
             Reference.renderHTMLIndex(entries, title: title)
+        case .json:
+            try Reference.renderJSONIndex(entries, title: title)
         }
     }
 }
@@ -169,7 +182,7 @@ private func writeReferenceFiles(
         }
 
         let fileName = format.fileName(forTitle: topLevelDocument.title)
-        let rendered = format.render(documents, options: options)
+        let rendered = try format.render(documents, options: options)
         try rendered.write(
             to: outputURL.appendingPathComponent(fileName),
             atomically: true,
@@ -188,7 +201,7 @@ private func writeReferenceFiles(
         }
     }
 
-    let index = format.renderIndex(indexEntries, title: "Wendy E2E Reference")
+    let index = try format.renderIndex(indexEntries, title: "Wendy E2E Reference")
     try index.write(
         to: outputURL.appendingPathComponent(format.indexFileName),
         atomically: true,

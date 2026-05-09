@@ -54,7 +54,7 @@ public enum Reference {
         }
     }
 
-    public struct Requirements: Sendable, Equatable {
+    public struct Requirements: Sendable, Equatable, Encodable {
         public var given: [String]
         public var when: [String]
         public var then: [String]
@@ -70,7 +70,7 @@ public enum Reference {
         }
     }
 
-    public struct SourceLocation: Sendable, Equatable {
+    public struct SourceLocation: Sendable, Equatable, Encodable {
         public var path: String
         public var line: Int
 
@@ -200,6 +200,10 @@ public enum Reference {
         "\(markdownSlug(forTitle: title, fallback: "reference")).html"
     }
 
+    public static func jsonFileName(forTitle title: String) -> String {
+        "\(markdownSlug(forTitle: title, fallback: "reference")).json"
+    }
+
     public static func markdownAnchor(forTitle title: String) -> String {
         markdownSlug(forTitle: title, fallback: "section")
     }
@@ -294,6 +298,29 @@ public enum Reference {
             title: document.title,
             body: renderHTMLBody(document, options: options)
         )
+    }
+
+    // MARK: - Rendering JSON
+
+    public static func renderJSON(
+        _ documents: [Document],
+        options: MarkdownOptions = .reference
+    ) throws -> String {
+        try renderJSONValue(documents.map { JSONDocument($0, options: options) })
+    }
+
+    public static func renderJSONIndex(
+        _ entries: [IndexEntry],
+        title: String = "Reference"
+    ) throws -> String {
+        try renderJSONValue(JSONIndex(title: title, entries: entries.map(JSONIndexEntry.init)))
+    }
+
+    public static func renderJSON(
+        _ document: Document,
+        options: MarkdownOptions = .reference
+    ) throws -> String {
+        try renderJSON([document], options: options)
     }
 }
 
@@ -594,6 +621,72 @@ private func markdownSlug(forTitle title: String, fallback: String) -> String {
 
     let slug = result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     return slug.isEmpty ? fallback : slug
+}
+
+// MARK: - Private JSON Rendering
+
+private struct JSONIndex: Encodable {
+    var title: String
+    var entries: [JSONIndexEntry]
+}
+
+private struct JSONIndexEntry: Encodable {
+    var title: String
+    var fileName: String
+    var anchor: String?
+
+    init(_ entry: Reference.IndexEntry) {
+        self.title = entry.title
+        self.fileName = entry.fileName
+        self.anchor = entry.anchor
+    }
+}
+
+private struct JSONDocument: Encodable {
+    var title: String
+    var overview: String
+    var sourceLocation: Reference.SourceLocation?
+    var sections: [JSONSection]
+
+    init(_ document: Reference.Document, options: Reference.MarkdownOptions) {
+        self.title = document.title
+        self.overview = document.overview
+        self.sourceLocation = options.includeSourceLocations ? document.sourceLocation : nil
+        self.sections = document.sections.map { JSONSection($0, options: options) }
+    }
+}
+
+private struct JSONSection: Encodable {
+    var title: String
+    var entries: [JSONEntry]
+
+    init(_ section: Reference.Section, options: Reference.MarkdownOptions) {
+        self.title = section.title
+        self.entries = section.entries.map { JSONEntry($0, options: options) }
+    }
+}
+
+private struct JSONEntry: Encodable {
+    var title: String
+    var documentation: String
+    var requirements: Reference.Requirements?
+    var sourceLocation: Reference.SourceLocation?
+    var isDisabled: Bool?
+
+    init(_ entry: Reference.Entry, options: Reference.MarkdownOptions) {
+        self.title = entry.title
+        self.documentation = entry.documentation
+        self.requirements = options.includeRequirements ? entry.requirements : nil
+        self.sourceLocation = options.includeSourceLocations ? entry.sourceLocation : nil
+        self.isDisabled = options.includeDisabledState ? entry.isDisabled : nil
+    }
+}
+
+private func renderJSONValue(_ value: some Encodable) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    let data = try encoder.encode(value)
+    return String(decoding: data, as: UTF8.self) + "\n"
 }
 
 // MARK: - Private HTML Rendering

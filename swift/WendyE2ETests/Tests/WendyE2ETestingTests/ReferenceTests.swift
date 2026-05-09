@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import WendyE2ETesting
 
@@ -164,6 +165,7 @@ struct `reference documentation extraction` {
             Reference.markdownFileName(forTitle: "`wendy device info`") == "wendy-device-info.md"
         )
         #expect(Reference.htmlFileName(forTitle: "`wendy device info`") == "wendy-device-info.html")
+        #expect(Reference.jsonFileName(forTitle: "`wendy device info`") == "wendy-device-info.json")
         #expect(Reference.markdownFileName(forTitle: "wendy --version") == "wendy-version.md")
         #expect(
             Reference.markdownAnchor(forTitle: "`wendy device version`") == "wendy-device-version"
@@ -221,6 +223,48 @@ struct `reference documentation extraction` {
                 "<a href=\"wendy-device-info.html#wendy-device-version\"><code>wendy device version</code></a>"
             )
         )
+    }
+
+    @Test
+    func `renders json reference documents`() throws {
+        let document = try #require(Reference.parseSource(Self.fixtureSource).first)
+        let json = try Reference.renderJSON(document, options: .reference)
+
+        #expect(try Self.jsonValue(from: json) is [[String: Any]])
+        #expect(json.contains("\"title\" : \"`wendy device info`\""))
+        #expect(json.contains("\"sections\" : ["))
+        #expect(!json.contains("\"requirements\""))
+        #expect(!json.contains("\"sourceLocation\""))
+        #expect(!json.contains("\"isDisabled\""))
+    }
+
+    @Test
+    func `renders spec review json with requirements and metadata`() throws {
+        let document = try #require(Reference.parseSource(Self.fixtureSource).first)
+        let json = try Reference.renderJSON(document, options: .specReview)
+
+        #expect(json.contains("\"requirements\""))
+        #expect(json.contains("\"sourceLocation\""))
+        #expect(json.contains("\"isDisabled\" : true"))
+        #expect(json.contains("\"given\" : ["))
+        #expect(json.contains("\"then\" : ["))
+    }
+
+    @Test
+    func `renders json index entries`() throws {
+        let json = try Reference.renderJSONIndex(
+            Self.indexEntries(fileExtension: "json"),
+            title: "Wendy E2E Reference"
+        )
+
+        #expect(try Self.jsonValue(from: json) is [String: Any])
+        #expect(json.contains("\"title\" : \"Wendy E2E Reference\""))
+        #expect(json.contains("\"fileName\" : \"wendy-device-info.json\""))
+        #expect(json.contains("\"anchor\" : \"wendy-device-version\""))
+    }
+
+    private static func jsonValue(from json: String) throws -> Any {
+        try JSONSerialization.jsonObject(with: Data(json.utf8))
     }
 
     private static func indexEntries(fileExtension: String) -> [Reference.IndexEntry] {
