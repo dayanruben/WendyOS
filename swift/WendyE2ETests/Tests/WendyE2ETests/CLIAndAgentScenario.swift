@@ -1,28 +1,39 @@
 import Foundation
 import WendyE2ETesting
 
-final class CLIAndAgentScenario: Scenario {
-    static var cli: Machine {
-        Machine(
+final class CLIAndAgentScenario: Scenario, Sendable {
+    static var shared: CLIAndAgentScenario {
+        get async {
+            _shared
+        }
+    }
+
+    let cli: Machine
+    let agent: Machine
+
+    private static let _shared = CLIAndAgentScenario()
+
+    private init() {
+        let repositoryRootDirectoryURL = Self.repositoryRootDirectoryURL()
+
+        self.cli = Machine(
             id: "cli",
             name: "CLI",
             os: Environment.cliOS ?? .current,
             tags: [.cli],
             ssh: Environment.cliSSH,
             workingDirectory: Environment.cliWorkingDirectory
-                ?? Self.repositoryRootDirectoryURL().appendingPathComponent("go").path
+                ?? repositoryRootDirectoryURL.appendingPathComponent("go").path
         )
-    }
 
-    static var agent: Machine {
-        Machine(
+        self.agent = Machine(
             id: "agent",
             name: "Agent",
             os: Environment.agentOS ?? .current,
             tags: [.agent],
             ssh: Environment.agentSSH,
             workingDirectory: Environment.agentWorkingDirectory
-                ?? Self.repositoryRootDirectoryURL().appendingPathComponent("swift").path
+                ?? repositoryRootDirectoryURL.appendingPathComponent("swift").path
         )
     }
 
