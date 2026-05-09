@@ -158,6 +158,27 @@ struct `reference documentation extraction` {
         #expect(markdown.contains("\n\n---\n\n# wendy device version"))
     }
 
+    @Test
+    func `dasherizes document titles for markdown file names`() {
+        #expect(Reference.markdownFileName(forTitle: "wendy device info") == "wendy-device-info.md")
+        #expect(Reference.markdownFileName(forTitle: "wendy --version") == "wendy-version.md")
+    }
+
+    @Test
+    func `renders markdown index entries`() {
+        let markdown = Reference.renderMarkdownIndex(
+            [
+                Reference.IndexEntry(title: "wendy device info", fileName: "wendy-device-info.md"),
+                Reference.IndexEntry(title: "wendy help", fileName: "wendy-help.md"),
+            ],
+            title: "Wendy E2E Reference"
+        )
+
+        #expect(markdown.contains("# Wendy E2E Reference"))
+        #expect(markdown.contains("- [wendy device info](wendy-device-info.md)"))
+        #expect(markdown.contains("- [wendy help](wendy-help.md)"))
+    }
+
     private static let fixtureWithoutMark = """
         /**
          Shows help.

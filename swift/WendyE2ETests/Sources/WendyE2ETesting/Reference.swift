@@ -108,6 +108,16 @@ public enum Reference {
         )
     }
 
+    public struct IndexEntry: Sendable, Equatable {
+        public var title: String
+        public var fileName: String
+
+        public init(title: String, fileName: String) {
+            self.title = title
+            self.fileName = fileName
+        }
+    }
+
     public enum Error: Swift.Error, Equatable, CustomStringConvertible {
         case fileNotFound(String)
         case directoryNotFound(String)
@@ -178,6 +188,37 @@ public enum Reference {
     ) -> String {
         documents.map { renderMarkdown($0, options: options) }
             .joined(separator: "\n\n---\n\n")
+    }
+
+    public static func markdownFileName(forTitle title: String) -> String {
+        let scalars = title.lowercased().unicodeScalars
+        var result = ""
+        var previousWasSeparator = false
+
+        for scalar in scalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                result.unicodeScalars.append(scalar)
+                previousWasSeparator = false
+            } else if !previousWasSeparator {
+                result.append("-")
+                previousWasSeparator = true
+            }
+        }
+
+        let stem = result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return "\(stem.isEmpty ? "reference" : stem).md"
+    }
+
+    public static func renderMarkdownIndex(
+        _ entries: [IndexEntry],
+        title: String = "Reference"
+    ) -> String {
+        var markdown: [String] = ["# \(title)", ""]
+        for entry in entries {
+            markdown.append("- [\(entry.title)](\(entry.fileName))")
+        }
+        return markdown.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            + "\n"
     }
 
     public static func renderMarkdown(

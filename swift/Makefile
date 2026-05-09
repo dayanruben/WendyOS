@@ -26,8 +26,9 @@ test-e2e: ## Run Swift E2E tests and package command records
 	bash ./Scripts/TestE2E.sh
 
 reference: ## Generate Swift E2E reference documentation
+	rm -rf Build/Reference
 	mkdir -p Build/Reference
-	cd WendyE2ETests && swift run swift-e2e-testing reference Tests/WendyE2ETests > ../Build/Reference/reference.md
+	cd WendyE2ETests && swift run swift-e2e-testing reference --output ../Build/Reference Tests/WendyE2ETests
 
 proto: ## Generate Swift gRPC code from Proto/
 	./Scripts/GenerateProto.sh
