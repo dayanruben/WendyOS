@@ -163,6 +163,7 @@ struct `reference documentation extraction` {
         #expect(
             Reference.markdownFileName(forTitle: "`wendy device info`") == "wendy-device-info.md"
         )
+        #expect(Reference.htmlFileName(forTitle: "`wendy device info`") == "wendy-device-info.html")
         #expect(Reference.markdownFileName(forTitle: "wendy --version") == "wendy-version.md")
         #expect(
             Reference.markdownAnchor(forTitle: "`wendy device version`") == "wendy-device-version"
@@ -172,18 +173,7 @@ struct `reference documentation extraction` {
     @Test
     func `renders markdown index entries`() {
         let markdown = Reference.renderMarkdownIndex(
-            [
-                Reference.IndexEntry(
-                    title: "`wendy device info`",
-                    fileName: "wendy-device-info.md"
-                ),
-                Reference.IndexEntry(
-                    title: "`wendy device version`",
-                    fileName: "wendy-device-info.md",
-                    anchor: "wendy-device-version"
-                ),
-                Reference.IndexEntry(title: "wendy help", fileName: "wendy-help.md"),
-            ],
+            Self.indexEntries(fileExtension: "md"),
             title: "Wendy E2E Reference"
         )
 
@@ -195,6 +185,57 @@ struct `reference documentation extraction` {
             )
         )
         #expect(markdown.contains("- [wendy help](wendy-help.md)"))
+    }
+
+    @Test
+    func `renders html reference documents`() throws {
+        let document = try #require(Reference.parseSource(Self.fixtureSource).first)
+        let html = Reference.renderHTML(document, options: .reference)
+
+        #expect(html.contains("<!doctype html>"))
+        #expect(html.contains("<title>wendy device info</title>"))
+        #expect(html.contains("<h1 id=\"wendy-device-info\"><code>wendy device info</code></h1>"))
+        #expect(html.contains("<h2 id=\"selecting-devices\">Selecting Devices</h2>"))
+        #expect(
+            html.contains(
+                "<h3 id=\"device-selects-an-explicit-device\"><code>--device</code> selects an explicit device</h3>"
+            )
+        )
+        #expect(html.contains("Selects a device explicitly with <code>--device</code>."))
+        #expect(!html.contains("<h4>Requirements</h4>"))
+    }
+
+    @Test
+    func `renders html index entries`() {
+        let html = Reference.renderHTMLIndex(
+            Self.indexEntries(fileExtension: "html"),
+            title: "Wendy E2E Reference"
+        )
+
+        #expect(html.contains("<h1>Wendy E2E Reference</h1>"))
+        #expect(
+            html.contains("<a href=\"wendy-device-info.html\"><code>wendy device info</code></a>")
+        )
+        #expect(
+            html.contains(
+                "<a href=\"wendy-device-info.html#wendy-device-version\"><code>wendy device version</code></a>"
+            )
+        )
+    }
+
+    private static func indexEntries(fileExtension: String) -> [Reference.IndexEntry] {
+        [
+            Reference.IndexEntry(
+                title: "`wendy device info`",
+                fileName: "wendy-device-info.\(fileExtension)"
+            ),
+            Reference.IndexEntry(
+                title: "`wendy device version`",
+                fileName: "wendy-device-info.\(fileExtension)",
+                anchor: "wendy-device-version"
+            ),
+            Reference.IndexEntry(title: "wendy help", fileName: "wendy-help.\(fileExtension)"),
+        ]
     }
 
     private static let fixtureWithoutMark = """

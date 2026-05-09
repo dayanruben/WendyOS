@@ -196,6 +196,10 @@ public enum Reference {
         "\(markdownSlug(forTitle: title, fallback: "reference")).md"
     }
 
+    public static func htmlFileName(forTitle title: String) -> String {
+        "\(markdownSlug(forTitle: title, fallback: "reference")).html"
+    }
+
     public static func markdownAnchor(forTitle title: String) -> String {
         markdownSlug(forTitle: title, fallback: "section")
     }
@@ -251,6 +255,45 @@ public enum Reference {
 
         return markdown.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             + "\n"
+    }
+
+    // MARK: - Rendering HTML
+
+    public static func renderHTML(
+        _ documents: [Document],
+        options: MarkdownOptions = .reference
+    ) -> String {
+        let title = documents.first?.title ?? "Reference"
+        let body = documents.map { renderHTMLBody($0, options: options) }
+            .joined(separator: "\n<hr>\n")
+        return renderHTMLDocument(title: title, body: body)
+    }
+
+    public static func renderHTMLIndex(
+        _ entries: [IndexEntry],
+        title: String = "Reference"
+    ) -> String {
+        var html: [String] = []
+        html.append("<h1>\(renderInlineHTML(title))</h1>")
+        html.append("<ul>")
+        for entry in entries {
+            let target = entry.anchor.map { "\(entry.fileName)#\($0)" } ?? entry.fileName
+            html.append(
+                "<li><a href=\"\(escapeHTMLAttribute(target))\">\(renderInlineHTML(entry.title))</a></li>"
+            )
+        }
+        html.append("</ul>")
+        return renderHTMLDocument(title: title, body: html.joined(separator: "\n"))
+    }
+
+    public static func renderHTML(
+        _ document: Document,
+        options: MarkdownOptions = .reference
+    ) -> String {
+        renderHTMLDocument(
+            title: document.title,
+            body: renderHTMLBody(document, options: options)
+        )
     }
 }
 
@@ -551,6 +594,233 @@ private func markdownSlug(forTitle title: String, fallback: String) -> String {
 
     let slug = result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     return slug.isEmpty ? fallback : slug
+}
+
+// MARK: - Private HTML Rendering
+
+private func renderHTMLBody(
+    _ document: Reference.Document,
+    options: Reference.MarkdownOptions
+) -> String {
+    var html: [String] = []
+    html.append(
+        "<h1 id=\"\(escapeHTMLAttribute(Reference.markdownAnchor(forTitle: document.title)))\">\(renderInlineHTML(document.title))</h1>"
+    )
+    appendHTMLBlocks(document.overview, to: &html)
+    appendHTMLMetadata(
+        isDisabled: nil,
+        sourceLocation: document.sourceLocation,
+        options: options,
+        to: &html
+    )
+
+    for section in document.sections where !section.entries.isEmpty {
+        html.append(
+            "<h2 id=\"\(escapeHTMLAttribute(Reference.markdownAnchor(forTitle: section.title)))\">\(renderInlineHTML(section.title))</h2>"
+        )
+
+        for entry in section.entries {
+            html.append(
+                "<h3 id=\"\(escapeHTMLAttribute(Reference.markdownAnchor(forTitle: entry.title)))\">\(renderInlineHTML(entry.title))</h3>"
+            )
+            appendHTMLMetadata(
+                isDisabled: entry.isDisabled,
+                sourceLocation: entry.sourceLocation,
+                options: options,
+                to: &html
+            )
+            appendHTMLBlocks(entry.documentation, to: &html)
+
+            if options.includeRequirements && !entry.requirements.isEmpty {
+                html.append("<h4>Requirements</h4>")
+                appendHTMLRequirements(entry.requirements, to: &html)
+            }
+        }
+    }
+
+    return html.joined(separator: "\n")
+}
+
+private func renderHTMLDocument(title: String, body: String) -> String {
+    """
+    <!doctype html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>\(escapeHTMLText(strippingInlineCodeMarkup(from: title)))</title>
+    <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow-x: auto; padding: 1rem; background: #f6f8fa; border-radius: 0.5rem; }
+    .metadata { color: #666; font-size: 0.9rem; }
+    hr { border: 0; border-top: 1px solid #ddd; margin: 2rem 0; }
+    </style>
+    </head>
+    <body>
+    \(body)
+    </body>
+    </html>
+    """
+}
+
+private func appendHTMLBlocks(_ text: String, to html: inout [String]) {
+    let lines = text.trimmingCharacters(in: .whitespacesAndNewlines).components(
+        separatedBy: .newlines
+    )
+    guard !lines.isEmpty, !(lines.count == 1 && lines[0].isEmpty) else {
+        return
+    }
+
+    var paragraph: [String] = []
+    var listItems: [String] = []
+    var codeLines: [String] = []
+    var isInCodeFence = false
+
+    func flushParagraph() {
+        guard !paragraph.isEmpty else { return }
+        let text = paragraph.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        html.append("<p>\(renderInlineHTML(text))</p>")
+        paragraph.removeAll()
+    }
+
+    func flushList() {
+        guard !listItems.isEmpty else { return }
+        html.append("<ul>")
+        for item in listItems {
+            html.append("<li>\(renderInlineHTML(item))</li>")
+        }
+        html.append("</ul>")
+        listItems.removeAll()
+    }
+
+    func flushCode() {
+        guard !codeLines.isEmpty else { return }
+        html.append("<pre><code>\(escapeHTMLText(codeLines.joined(separator: "\n")))</code></pre>")
+        codeLines.removeAll()
+    }
+
+    for line in lines {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("```") {
+            if isInCodeFence {
+                flushCode()
+                isInCodeFence = false
+            } else {
+                flushParagraph()
+                flushList()
+                isInCodeFence = true
+            }
+            continue
+        }
+
+        if isInCodeFence {
+            codeLines.append(line)
+        } else if trimmed.isEmpty {
+            flushParagraph()
+            flushList()
+        } else if let listItem = trimmed.removingPrefix("-") {
+            flushParagraph()
+            listItems.append(listItem)
+        } else {
+            flushList()
+            paragraph.append(line)
+        }
+    }
+
+    flushParagraph()
+    flushList()
+    flushCode()
+}
+
+private func appendHTMLMetadata(
+    isDisabled: Bool?,
+    sourceLocation: Reference.SourceLocation,
+    options: Reference.MarkdownOptions,
+    to html: inout [String]
+) {
+    var metadata: [String] = []
+    if options.includeDisabledState, let isDisabled {
+        metadata.append(isDisabled ? "disabled" : "enabled")
+    }
+    if options.includeSourceLocations {
+        metadata.append(
+            "<code>\(escapeHTMLText("\(sourceLocation.path):\(sourceLocation.line)"))</code>"
+        )
+    }
+
+    guard !metadata.isEmpty else {
+        return
+    }
+
+    html.append("<p class=\"metadata\">\(metadata.joined(separator: " · "))</p>")
+}
+
+private func appendHTMLRequirements(_ requirements: Reference.Requirements, to html: inout [String])
+{
+    appendHTMLRequirementGroup("Given", requirements.given, to: &html)
+    appendHTMLRequirementGroup("When", requirements.when, to: &html)
+    appendHTMLRequirementGroup("Then", requirements.then, to: &html)
+}
+
+private func appendHTMLRequirementGroup(
+    _ title: String,
+    _ values: [String],
+    to html: inout [String]
+) {
+    guard !values.isEmpty else {
+        return
+    }
+
+    html.append("<h5>\(escapeHTMLText(title))</h5>")
+    html.append("<ul>")
+    for value in values {
+        html.append("<li>\(renderInlineHTML(value))</li>")
+    }
+    html.append("</ul>")
+}
+
+private func renderInlineHTML(_ value: String) -> String {
+    var html = ""
+    var cursor = value.startIndex
+
+    while cursor < value.endIndex {
+        guard value[cursor] == "`" else {
+            html.append(escapeHTMLText(String(value[cursor])))
+            cursor = value.index(after: cursor)
+            continue
+        }
+
+        let contentStart = value.index(after: cursor)
+        guard let contentEnd = value[contentStart...].firstIndex(of: "`") else {
+            html.append(escapeHTMLText(String(value[cursor])))
+            cursor = value.index(after: cursor)
+            continue
+        }
+
+        html.append("<code>")
+        html.append(escapeHTMLText(String(value[contentStart..<contentEnd])))
+        html.append("</code>")
+        cursor = value.index(after: contentEnd)
+    }
+
+    return html
+}
+
+private func escapeHTMLText(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+}
+
+private func escapeHTMLAttribute(_ value: String) -> String {
+    escapeHTMLText(value)
+        .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+private func strippingInlineCodeMarkup(from value: String) -> String {
+    value.replacingOccurrences(of: "`", with: "")
 }
 
 // MARK: - Private Rendering
