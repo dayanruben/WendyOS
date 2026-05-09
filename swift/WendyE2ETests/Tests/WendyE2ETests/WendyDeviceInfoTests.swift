@@ -24,6 +24,14 @@ import WendyE2ETesting
 /// - `--prerelease`: Includes prerelease agent builds when checking for updates.
 @Suite(.serialized)
 struct `'wendy device info'` {
+    var cli: Session
+    let agent: Session
+
+    init() async throws {
+        self.cli = try await Session.begin(for: .cli)
+        self.agent = try await Session.begin(for: .agent)
+    }
+
     // MARK: - Selecting Devices
 
     /**
