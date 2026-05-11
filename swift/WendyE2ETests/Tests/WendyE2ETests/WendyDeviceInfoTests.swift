@@ -24,20 +24,6 @@ import WendyE2ETesting
 /// - `--prerelease`: Includes prerelease agent builds when checking for updates.
 @Suite(.serialized)
 struct `'wendy device info'` {
-    let scenario: CLIAndAgentScenario
-    let cli: Session
-    let agent: Session
-
-    init() async throws {
-        let scenario = try await CLIAndAgentScenario.shared
-        self.scenario = scenario
-        self.cli = scenario.cli
-        self.agent = scenario.agent
-
-        // Keep this suite deterministic when tests share the scenario's CLI home.
-        // Individual tests can create the config state they need after this reset.
-        try await self.cli.sh("rm -rf \"$HOME/.wendy\"")
-    }
 
     // MARK: - Selecting Devices
 
@@ -124,18 +110,21 @@ struct `'wendy device info'` {
      */
     @Test
     func `'--json' reports a missing device without prompting`() async throws {
-        try await self.cli.sh("wendy device info --json") {
-            terminationStatus,
-            standardOutput,
-            standardError in
-            #expect(!terminationStatus.isSuccess)
-            #expect(standardOutput == "")
-            #expect(
-                standardError.contains(
-                    "no device specified; use --device flag or set a default"
+        let scenario = CLIAndAgentScenario()
+        try await scenario.run { cli, _ in
+            try await cli.sh("wendy device info --json") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+                #expect(!terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(
+                    standardError.contains(
+                        "no device specified; use --device flag or set a default"
+                    )
                 )
-            )
-            #expect(!standardError.contains("Select a device"))
+                #expect(!standardError.contains("Select a device"))
+            }
         }
     }
 

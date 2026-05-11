@@ -4,76 +4,84 @@ import WendyE2ETesting
 final class CLIAndAgentScenario: Scenario, Sendable {
     // MARK: - Internal
 
-    // NOTE: This is temporarily a singleton until we sort out the DSL and everything.
-    static var shared: CLIAndAgentScenario {
-        get async throws {
-            try await _shared.value
+    func run<Result>(
+        _ body: @Sendable (_ cli: Session, _ agent: Session) async throws -> Result
+    ) async throws -> Result {
+        let (cli, agent) = try await self.setUp()
+
+        let result: Result
+        do {
+            result = try await body(cli, agent)
+        } catch {
+            try? await Self.tearDown(
+                cli: cli,
+                agent: agent
+            )
+            throw error
         }
-    }
 
-    let cli: Session
-    let agent: Session
-
-    deinit {
-        let cli = self.cli
-        let agent = self.agent
-
-        // WORKAROUND: Swift Testing does not provide an async tear-down hook.
-        // Suite life-cycle is init/deinit based and Swift has no async deinit,
-        // so session clean-up has to be bridged through an unstructured task.
-        // Fix by finding a structured concurrency solution for this.
-        Task {
-            try? await Self.stopAgent(with: agent)
-            try? await cli.sh("rm -rf \"$HOME\"")
-            try? await agent.end()
-            try? await cli.end()
-        }
+        try await Self.tearDown(
+            cli: cli,
+            agent: agent
+        )
+        return result
     }
 
     // MARK: - Private
 
-    private static let _shared = Task {
-        try await CLIAndAgentScenario()
-    }
+    private func setUp() async throws -> (cli: Session, agent: Session) {
+        var cliSession: Session?
+        var agentSession: Session?
 
-    private init() async throws {
-        let repositoryRootDirectoryURL = Self.repositoryRootDirectoryURL()
-        let cliWorkingDirectory =
-            Environment.cliWorkingDirectory
-            ?? repositoryRootDirectoryURL.appendingPathComponent("go").path
-        let cliHomeDirectory = "/tmp/wendy-e2e-cli-home-\(UUID().uuidString)"
+        do {
+            let repositoryRootDirectoryURL = Self.repositoryRootDirectoryURL()
+            let cliWorkingDirectory =
+                Environment.cliWorkingDirectory
+                ?? repositoryRootDirectoryURL.appendingPathComponent("go").path
+            let cliHomeDirectory = "/tmp/wendy-e2e-cli-home-\(UUID().uuidString)"
 
-        let cli = Machine(
-            id: "cli",
-            name: "CLI",
-            os: Environment.cliOS ?? .current,
-            tags: [.cli],
-            ssh: Environment.cliSSH,
-            workingDirectory: cliWorkingDirectory,
-            env: [
-                "HOME": cliHomeDirectory,
-                "PATH": "\(cliWorkingDirectory)/bin:$PATH",
-                "WENDY_ANALYTICS": "false",
-            ]
-        )
+            let cliMachine = Machine(
+                id: "cli",
+                name: "CLI",
+                os: Environment.cliOS ?? .current,
+                tags: [.cli],
+                ssh: Environment.cliSSH,
+                workingDirectory: cliWorkingDirectory,
+                env: [
+                    "HOME": cliHomeDirectory,
+                    "PATH": "\(cliWorkingDirectory)/bin:$PATH",
+                    "WENDY_ANALYTICS": "false",
+                ]
+            )
 
-        let agent = Machine(
-            id: "agent",
-            name: "Agent",
-            os: Environment.agentOS ?? .current,
-            tags: [.agent],
-            ssh: Environment.agentSSH,
-            workingDirectory: Environment.agentWorkingDirectory
-                ?? repositoryRootDirectoryURL.appendingPathComponent("swift").path
-        )
+            let agentMachine = Machine(
+                id: "agent",
+                name: "Agent",
+                os: Environment.agentOS ?? .current,
+                tags: [.agent],
+                ssh: Environment.agentSSH,
+                workingDirectory: Environment.agentWorkingDirectory
+                    ?? repositoryRootDirectoryURL.appendingPathComponent("swift").path
+            )
 
-        self.cli = try await Session.begin(for: cli)
-        self.agent = try await Session.begin(for: agent)
+            let cli = try await Session.begin(for: cliMachine)
+            cliSession = cli
+            let agent = try await Session.begin(for: agentMachine)
+            agentSession = agent
 
-        try await self.cli.sh("mkdir -p \"$HOME\"")
-        try await self.buildCLI(with: self.cli)
-        try await self.buildAgent(with: self.agent)
-        try await Self.startAgent(with: self.agent)
+            try await cli.sh("mkdir -p \"$HOME\"")
+            try await self.buildCLI(with: cli)
+            try await self.buildAgent(with: agent)
+            try await Self.startAgent(with: agent)
+
+            return (cli, agent)
+        } catch {
+            try? await Self.tearDown(
+                cli: cliSession,
+                agent: agentSession
+            )
+            throw error
+        }
     }
 
     private func buildCLI(with session: Session) async throws {
@@ -154,6 +162,53 @@ final class CLIAndAgentScenario: Scenario, Sendable {
             )
         case .windows, .wendyOS:
             fatalError("Stopping the agent is not supported on \(session.machine.os) yet.")
+        }
+    }
+
+    private static func tearDown(
+        cli: Session?,
+        agent: Session?
+    ) async throws {
+        var firstError: (any Error)?
+
+        if let agent {
+            do {
+                try await Self.stopAgent(with: agent)
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let cli {
+            do {
+                try await cli.sh(
+                    """
+                    if [ -d "$HOME" ]; then
+                      chmod -R u+w "$HOME" 2>/dev/null || true
+                      rm -rf "$HOME"
+                    fi
+                    """
+                )
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let agent {
+            do {
+                try await agent.end()
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let cli {
+            do {
+                try await cli.end()
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+
+        if let firstError {
+            throw firstError
         }
     }
 
