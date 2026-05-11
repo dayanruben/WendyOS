@@ -2,6 +2,7 @@ import Foundation
 import WendyE2ETesting
 
 final class CLIAndAgentScenario: Scenario, Sendable {
+    // NOTE: This is temporarily a singleton until we sort out the DSL and everything.
     static var shared: CLIAndAgentScenario {
         get async throws {
             try await _shared.value
