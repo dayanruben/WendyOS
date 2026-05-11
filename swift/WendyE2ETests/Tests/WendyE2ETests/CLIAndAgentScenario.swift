@@ -5,9 +5,18 @@ final class CLIAndAgentScenario: Scenario, Sendable {
     // MARK: - Internal
 
     func run<Result>(
+        filePath: String = #filePath,
+        function: String = #function,
+        line: Int = #line,
         _ body: @Sendable (_ cli: Session, _ agent: Session) async throws -> Result
     ) async throws -> Result {
-        let (cli, agent) = try await self.setUp()
+        let reportPath = try Session.reportPath(filePath: filePath, function: function)
+        let (cli, agent) = try await self.setUp(
+            reportPath: reportPath,
+            reportSourceFilePath: filePath,
+            reportSourceFunction: function,
+            reportSourceLine: line
+        )
 
         let result: Result
         do {
@@ -29,7 +38,12 @@ final class CLIAndAgentScenario: Scenario, Sendable {
 
     // MARK: - Private
 
-    private func setUp() async throws -> (cli: Session, agent: Session) {
+    private func setUp(
+        reportPath: String,
+        reportSourceFilePath: String,
+        reportSourceFunction: String,
+        reportSourceLine: Int
+    ) async throws -> (cli: Session, agent: Session) {
         var cliSession: Session?
         var agentSession: Session?
 
@@ -64,9 +78,21 @@ final class CLIAndAgentScenario: Scenario, Sendable {
                     ?? repositoryRootDirectoryURL.appendingPathComponent("swift").path
             )
 
-            let cli = try await Session.begin(for: cliMachine)
+            let cli = try await Session.begin(
+                for: cliMachine,
+                reportPath: reportPath,
+                reportSourceFilePath: reportSourceFilePath,
+                reportSourceFunction: reportSourceFunction,
+                reportSourceLine: reportSourceLine
+            )
             cliSession = cli
-            let agent = try await Session.begin(for: agentMachine)
+            let agent = try await Session.begin(
+                for: agentMachine,
+                reportPath: reportPath,
+                reportSourceFilePath: reportSourceFilePath,
+                reportSourceFunction: reportSourceFunction,
+                reportSourceLine: reportSourceLine
+            )
             agentSession = agent
 
             try await cli.sh("mkdir -p \"$HOME\"")

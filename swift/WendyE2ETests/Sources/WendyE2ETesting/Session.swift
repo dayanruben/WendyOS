@@ -17,16 +17,36 @@ public import Subprocess
 
 public struct Session: Sendable {
     public let machine: Machine
+    public let reportPath: String?
 
     // MARK: - Beginning and Ending Sessions
 
-    public static func begin(for machine: Machine, verbose: Bool = false) async throws -> Session {
+    public static func begin(
+        for machine: Machine,
+        verbose: Bool = false,
+        reportPath: String? = nil,
+        reportSourceFilePath: String = #filePath,
+        reportSourceFunction: String = #function,
+        reportSourceLine: Int = #line
+    ) async throws -> Session {
         let session = Session(
             machine: machine,
+            reportPath: reportPath,
+            reportSource: reportPath.map { _ in
+                ReportSource(
+                    filePath: reportSourceFilePath,
+                    function: reportSourceFunction,
+                    line: reportSourceLine
+                )
+            },
             verbose: verbose || Environment.verbose
         )
 
         return session
+    }
+
+    public static func reportPath(filePath: String, function: String) throws -> String {
+        try Self.reportURL(filePath: filePath, function: function).path
     }
 
     public func end() async throws {
@@ -96,19 +116,11 @@ public struct Session: Sendable {
 
     // MARK: - Running Shell Commands
 
-    public func sh(
-        _ command: String,
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line
-    ) async throws {
+    public func sh(_ command: String) async throws {
         let record = try await self.sh(
             command,
             output: .string(limit: .max),
-            error: .string(limit: .max),
-            filePath: filePath,
-            function: function,
-            line: line
+            error: .string(limit: .max)
         )
 
         guard record.terminationStatus.isSuccess else {
@@ -123,10 +135,7 @@ public struct Session: Sendable {
     public func sh<Output: OutputProtocol, Error: ErrorOutputProtocol>(
         _ command: String,
         output: Output,
-        error: Error = .discarded,
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line
+        error: Error = .discarded
     ) async throws -> ExecutionRecord<Output, Error> {
         if self.verbose {
             Self.printCommand(machine: self.machine.name, command: command)
@@ -144,9 +153,6 @@ public struct Session: Sendable {
         Self.writeExecutionReport(
             session: self,
             command: command,
-            filePath: filePath,
-            function: function,
-            line: line,
             processIdentifier: String(describing: record.processIdentifier),
             terminationStatus: String(describing: record.terminationStatus),
             duration: duration,
@@ -161,18 +167,12 @@ public struct Session: Sendable {
         _ command: String,
         output: StringOutput<UTF8> = .string(limit: .max),
         error: StringOutput<UTF8> = .string(limit: .max),
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line,
         body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
     ) async throws -> Result {
         let record = try await self.sh(
             command,
             output: output,
-            error: error,
-            filePath: filePath,
-            function: function,
-            line: line
+            error: error
         )
 
         guard record.terminationStatus.isSuccess else {
@@ -193,9 +193,6 @@ public struct Session: Sendable {
         _ command: String,
         output: StringOutput<UTF8> = .string(limit: .max),
         error: StringOutput<UTF8> = .string(limit: .max),
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line,
         body:
             @Sendable (
                 _ terminationStatus: TerminationStatus,
@@ -206,10 +203,7 @@ public struct Session: Sendable {
         let record = try await self.sh(
             command,
             output: output,
-            error: error,
-            filePath: filePath,
-            function: function,
-            line: line
+            error: error
         )
 
         return try await body(
@@ -221,13 +215,21 @@ public struct Session: Sendable {
 
     // MARK: - Internal
 
-    init(machine: Machine, verbose: Bool = false) {
+    private init(
+        machine: Machine,
+        reportPath: String? = nil,
+        reportSource: ReportSource? = nil,
+        verbose: Bool = false
+    ) {
         self.machine = machine
+        self.reportPath = reportPath
+        self.reportSource = reportSource
         self.verbose = verbose
     }
 
     // MARK: - Private
 
+    private let reportSource: ReportSource?
     private let verbose: Bool
 
     private static let e2eTestRecordsDirectoryName: String = {
@@ -409,22 +411,28 @@ public struct Session: Sendable {
     private static func writeExecutionReport(
         session: Session,
         command: String,
-        filePath: String,
-        function: String,
-        line: Int,
         processIdentifier: String?,
         terminationStatus: String,
         duration: Duration,
         standardOutput: String,
         standardError: String
     ) {
+        guard let reportPath = session.reportPath,
+            let reportSource = session.reportSource
+        else {
+            return
+        }
+
         do {
-            let reportURL = try Self.reportURL(filePath: filePath, function: function)
+            let reportURL = URL(fileURLWithPath: reportPath, isDirectory: false)
             let fileExists = FileManager.default.fileExists(atPath: reportURL.path)
 
             if !fileExists {
-                try Self.reportHeader(filePath: filePath, function: function)
-                    .write(to: reportURL, atomically: true, encoding: .utf8)
+                try Self.reportHeader(
+                    filePath: reportSource.filePath,
+                    function: reportSource.function
+                )
+                .write(to: reportURL, atomically: true, encoding: .utf8)
             }
 
             let handle = try FileHandle(forWritingTo: reportURL)
@@ -435,8 +443,8 @@ public struct Session: Sendable {
                     Self.commandReport(
                         session: session,
                         command: command,
-                        filePath: filePath,
-                        line: line,
+                        filePath: reportSource.filePath,
+                        line: reportSource.line,
                         processIdentifier: processIdentifier,
                         terminationStatus: terminationStatus,
                         duration: duration,
@@ -660,6 +668,12 @@ private struct Invocation: Sendable {
     let arguments: [String]
     let environment: Subprocess.Environment
     let workingDirectory: FilePath?
+}
+
+private struct ReportSource: Sendable {
+    let filePath: String
+    let function: String
+    let line: Int
 }
 
 private enum SlugCharacterKind {

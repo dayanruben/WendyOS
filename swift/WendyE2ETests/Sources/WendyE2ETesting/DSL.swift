@@ -30,37 +30,22 @@ public struct SessionCommand: Sendable {
         )
     }
 
-    public func run(
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line
-    ) async throws {
+    public func run() async throws {
         guard let pollConfiguration else {
-            try await self.session.sh(
-                self.command,
-                filePath: filePath,
-                function: function,
-                line: line
-            )
+            try await self.session.sh(self.command)
             return
         }
 
         _ = try await self.poll(
             pollConfiguration,
             output: .string(limit: .max),
-            error: .string(limit: .max),
-            filePath: filePath,
-            function: function,
-            line: line
+            error: .string(limit: .max)
         )
     }
 
     public func run<Result>(
         output: StringOutput<UTF8> = .string(limit: .max),
         error: StringOutput<UTF8> = .string(limit: .max),
-        filePath: String = #filePath,
-        function: String = #function,
-        line: Int = #line,
         body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
     ) async throws -> Result {
         guard let pollConfiguration else {
@@ -68,9 +53,6 @@ public struct SessionCommand: Sendable {
                 self.command,
                 output: output,
                 error: error,
-                filePath: filePath,
-                function: function,
-                line: line,
                 body: body
             )
         }
@@ -78,10 +60,7 @@ public struct SessionCommand: Sendable {
         let record = try await self.poll(
             pollConfiguration,
             output: output,
-            error: error,
-            filePath: filePath,
-            function: function,
-            line: line
+            error: error
         )
 
         return try await body(
@@ -115,10 +94,7 @@ public struct SessionCommand: Sendable {
     private func poll(
         _ configuration: PollConfiguration,
         output: StringOutput<UTF8>,
-        error: StringOutput<UTF8>,
-        filePath: String,
-        function: String,
-        line: Int
+        error: StringOutput<UTF8>
     ) async throws -> ExecutionRecord<StringOutput<UTF8>, StringOutput<UTF8>> {
         let clock = ContinuousClock()
         let start = clock.now
@@ -128,10 +104,7 @@ public struct SessionCommand: Sendable {
             let record = try await self.session.sh(
                 self.command,
                 output: output,
-                error: error,
-                filePath: filePath,
-                function: function,
-                line: line
+                error: error
             )
             lastTerminationStatus = record.terminationStatus
 
@@ -179,12 +152,12 @@ private struct PollConfiguration: Sendable {
 }
 
 extension SessionCommand.PollCondition {
-    fileprivate func matches(_ terminationStatus: TerminationStatus) -> Bool {
+    fileprivate func matches(_ status: TerminationStatus) -> Bool {
         switch self {
         case .success:
-            return terminationStatus.isSuccess
+            status.isSuccess
         case .failure:
-            return !terminationStatus.isSuccess
+            !status.isSuccess
         }
     }
 }
