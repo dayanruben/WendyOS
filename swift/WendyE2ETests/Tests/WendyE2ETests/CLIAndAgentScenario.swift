@@ -10,12 +10,10 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         line: Int = #line,
         _ body: @Sendable (_ cli: Session, _ agent: Session) async throws -> Result
     ) async throws -> Result {
-        let reportPath = try Session.reportPath(filePath: filePath, function: function)
         let (cli, agent) = try await self.setUp(
-            reportPath: reportPath,
-            reportSourceFilePath: filePath,
-            reportSourceFunction: function,
-            reportSourceLine: line
+            filePath: filePath,
+            function: function,
+            line: line
         )
 
         let result: Result
@@ -39,15 +37,15 @@ final class CLIAndAgentScenario: Scenario, Sendable {
     // MARK: - Private
 
     private func setUp(
-        reportPath: String,
-        reportSourceFilePath: String,
-        reportSourceFunction: String,
-        reportSourceLine: Int
+        filePath: String,
+        function: String,
+        line: Int
     ) async throws -> (cli: Session, agent: Session) {
         var cliSession: Session?
         var agentSession: Session?
 
         do {
+            let reportPath = try Session.reportPath(filePath: filePath, function: function)
             let repositoryRootDirectoryURL = Self.repositoryRootDirectoryURL()
             let cliWorkingDirectory =
                 Environment.cliWorkingDirectory
@@ -81,17 +79,17 @@ final class CLIAndAgentScenario: Scenario, Sendable {
             let cli = try await Session.begin(
                 for: cliMachine,
                 reportPath: reportPath,
-                reportSourceFilePath: reportSourceFilePath,
-                reportSourceFunction: reportSourceFunction,
-                reportSourceLine: reportSourceLine
+                reportSourceFilePath: filePath,
+                reportSourceFunction: function,
+                reportSourceLine: line
             )
             cliSession = cli
             let agent = try await Session.begin(
                 for: agentMachine,
                 reportPath: reportPath,
-                reportSourceFilePath: reportSourceFilePath,
-                reportSourceFunction: reportSourceFunction,
-                reportSourceLine: reportSourceLine
+                reportSourceFilePath: filePath,
+                reportSourceFunction: function,
+                reportSourceLine: line
             )
             agentSession = agent
 
