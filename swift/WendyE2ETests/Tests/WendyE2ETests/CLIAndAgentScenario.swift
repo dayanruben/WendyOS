@@ -94,9 +94,6 @@ final class CLIAndAgentScenario: Scenario, Sendable {
             agentSession = agent
 
             try await cli.sh("mkdir -p \"$HOME\"")
-            try await self.buildCLIIfNeeded(with: cli)
-            try await self.buildAgentIfNeeded(with: agent)
-            try await Self.startAgent(with: agent, verifiedBy: cli)
 
             return (cli, agent)
         } catch {
@@ -108,132 +105,12 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         }
     }
 
-    private func buildCLIIfNeeded(with session: Session) async throws {
-        switch session.machine.os {
-        case .macOS, .linux:
-            try await session.sh(
-                """
-                set -e
-                stamp=/tmp/wendy-e2e-\(Environment.runID)-cli-built
-                if [ ! -f "$stamp" ]; then
-                  make build-cli
-                  touch "$stamp"
-                fi
-                """
-            )
-        case .windows, .wendyOS:
-            fatalError("Building the CLI is not supported on \(session.machine.os) yet.")
-        }
-    }
-
-    private func buildAgentIfNeeded(with session: Session) async throws {
-        switch session.machine.os {
-        case .macOS, .linux:
-            try await session.sh(
-                """
-                set -e
-                stamp=/tmp/wendy-e2e-\(Environment.runID)-agent-built
-                if [ ! -f "$stamp" ]; then
-                  cd ../go
-                  make build-agent
-                  touch "$stamp"
-                fi
-                """
-            )
-        case .windows, .wendyOS:
-            fatalError("Building the agent is not supported on \(session.machine.os) yet.")
-        }
-    }
-
-    private static func startAgent(with session: Session, verifiedBy cli: Session) async throws {
-        try await Self.stopAgent(with: session)
-
-        switch session.machine.os {
-        case .macOS, .linux:
-            try await session.sh(
-                """
-                set -e
-                pidfile=/tmp/wendy-agent-e2e-\(Environment.runID).pid
-                logfile=/tmp/wendy-agent-e2e-\(Environment.runID).log
-
-                cd ../go
-                nohup ./bin/wendy-agent > "$logfile" 2>&1 &
-                echo $! > "$pidfile"
-                """
-            )
-        case .windows, .wendyOS:
-            fatalError("Starting the agent is not supported on \(session.machine.os) yet.")
-        }
-
-        try await cli
-            .command("wendy --device \(session.machine.address) device info --json >/dev/null")
-            .poll(
-                until: .success,
-                step: .seconds(1),
-                timeout: .seconds(30),
-                timeoutMessage: "Wendy agent did not become ready"
-            )
-            .run()
-    }
-
-    private static func stopAgent(with session: Session) async throws {
-        switch session.machine.os {
-        case .macOS:
-            try await session.sh(
-                """
-                make quit || true
-                pidfile=/tmp/wendy-agent-e2e-\(Environment.runID).pid
-
-                if [ -f "$pidfile" ]; then
-                  pid="$(cat "$pidfile")"
-                  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    kill "$pid"
-                    sleep 1
-                    if kill -0 "$pid" 2>/dev/null; then
-                      kill -9 "$pid"
-                    fi
-                  fi
-                  rm -f "$pidfile"
-                fi
-                """
-            )
-        case .linux:
-            try await session.sh(
-                """
-                set -e
-                pidfile=/tmp/wendy-agent-e2e-\(Environment.runID).pid
-
-                if [ -f "$pidfile" ]; then
-                  pid="$(cat "$pidfile")"
-                  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    kill "$pid"
-                    sleep 1
-                    if kill -0 "$pid" 2>/dev/null; then
-                      kill -9 "$pid"
-                    fi
-                  fi
-                  rm -f "$pidfile"
-                fi
-                """
-            )
-        case .windows, .wendyOS:
-            fatalError("Stopping the agent is not supported on \(session.machine.os) yet.")
-        }
-    }
-
     private static func tearDown(
         cli: Session?,
         agent: Session?
     ) async throws {
         var firstError: (any Error)?
 
-        if let agent {
-            do {
-                try await Self.stopAgent(with: agent)
-            } catch {
-                firstError = firstError ?? error
-            }
-        }
         if let cli {
             do {
                 try await cli.sh(
