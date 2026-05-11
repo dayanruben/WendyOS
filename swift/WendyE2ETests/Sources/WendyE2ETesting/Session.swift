@@ -26,18 +26,6 @@ public struct Session: Sendable {
             verbose: verbose || Environment.verbose
         )
 
-        if machine.tags.contains(.cli) {
-            try await Self.buildCLIOnce.perform {
-                try await session.sh("make build-cli")
-            }
-        }
-
-        if machine.tags.contains(.agent) {
-            try await Self.buildAgentOnce.perform {
-                try await session.sh("make build-dev")
-            }
-        }
-
         return session
     }
 
@@ -211,9 +199,6 @@ public struct Session: Sendable {
     // MARK: - Private
 
     private let verbose: Bool
-
-    private static let buildCLIOnce = Once(name: "build CLI")
-    private static let buildAgentOnce = Once(name: "build agent")
 
     private static let e2eTestRecordsDirectoryName: String = {
         let formatter = DateFormatter()

@@ -40,6 +40,9 @@ final class CLIAndAgentScenario: Scenario, Sendable {
 
         self.cli = try await Session.begin(for: cli)
         self.agent = try await Session.begin(for: agent)
+
+        try await self.buildCLI(with: self.cli)
+        try await self.buildAgent(with: self.agent)
     }
 
     deinit {
@@ -53,6 +56,26 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         Task {
             try? await agent.end()
             try? await cli.end()
+        }
+    }
+
+    private func buildCLI(with session: Session) async throws {
+        switch session.machine.os {
+        case .macOS, .linux:
+            try await session.sh("make build-cli")
+        case .windows, .wendyOS:
+            break
+        }
+    }
+
+    private func buildAgent(with session: Session) async throws {
+        switch session.machine.os {
+        case .macOS:
+            try await session.sh("make build-dev")
+        case .linux:
+            try await session.sh("cd ../go && make build-agent")
+        case .windows, .wendyOS:
+            break
         }
     }
 
