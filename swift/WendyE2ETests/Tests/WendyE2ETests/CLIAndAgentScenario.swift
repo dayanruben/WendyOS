@@ -96,8 +96,8 @@ final class CLIAndAgentScenario: Scenario, Sendable {
             agentSession = agent
 
             try await cli.sh("mkdir -p \"$HOME\"")
-            try await self.buildCLI(with: cli)
-            try await self.buildAgent(with: agent)
+            try await self.buildCLIIfNeeded(with: cli)
+            try await self.buildAgentIfNeeded(with: agent)
             try await Self.startAgent(with: agent)
 
             return (cli, agent)
@@ -110,21 +110,49 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         }
     }
 
-    private func buildCLI(with session: Session) async throws {
+    private func buildCLIIfNeeded(with session: Session) async throws {
         switch session.machine.os {
         case .macOS, .linux:
-            try await session.sh("make build-cli")
+            try await session.sh(
+                """
+                set -e
+                stamp=/tmp/wendy-e2e-\(Environment.runID)-cli-built
+                if [ ! -f "$stamp" ]; then
+                  make build-cli
+                  touch "$stamp"
+                fi
+                """
+            )
         case .windows, .wendyOS:
             fatalError("Building the CLI is not supported on \(session.machine.os) yet.")
         }
     }
 
-    private func buildAgent(with session: Session) async throws {
+    private func buildAgentIfNeeded(with session: Session) async throws {
         switch session.machine.os {
         case .macOS:
-            try await session.sh("make build-dev")
+            try await session.sh(
+                """
+                set -e
+                stamp=/tmp/wendy-e2e-\(Environment.runID)-agent-built
+                if [ ! -f "$stamp" ]; then
+                  make build-dev
+                  touch "$stamp"
+                fi
+                """
+            )
         case .linux:
-            try await session.sh("cd ../go && make build-agent")
+            try await session.sh(
+                """
+                set -e
+                stamp=/tmp/wendy-e2e-\(Environment.runID)-agent-built
+                if [ ! -f "$stamp" ]; then
+                  cd ../go
+                  make build-agent
+                  touch "$stamp"
+                fi
+                """
+            )
         case .windows, .wendyOS:
             fatalError("Building the agent is not supported on \(session.machine.os) yet.")
         }

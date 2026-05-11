@@ -1,6 +1,11 @@
 import Foundation
 
 public enum Environment {
+    public static let runID: String = {
+        let configured = value("WENDY_E2E_RUN_ID") ?? UUID().uuidString
+        return configured.replacingOccurrences(of: "-", with: "")
+    }()
+
     public static var verbose: Bool {
         flag("WENDY_E2E_VERBOSE")
     }
