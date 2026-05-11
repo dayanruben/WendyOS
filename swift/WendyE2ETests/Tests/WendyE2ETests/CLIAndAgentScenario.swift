@@ -43,7 +43,7 @@ final class CLIAndAgentScenario: Scenario, Sendable {
 
         try await self.buildCLI(with: self.cli)
         try await self.buildAgent(with: self.agent)
-        try await self.launchAgent(with: self.agent)
+        try await Self.startAgent(with: self.agent)
     }
 
     deinit {
@@ -55,6 +55,7 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         // so session clean-up has to be bridged through an unstructured task.
         // Fix by finding a structured concurrency solution for this.
         Task {
+            try? await Self.stopAgent(with: agent)
             try? await agent.end()
             try? await cli.end()
         }
@@ -80,7 +81,7 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         }
     }
 
-    private func launchAgent(with session: Session) async throws {
+    private static func startAgent(with session: Session) async throws {
         switch session.machine.os {
         case .macOS:
             try await session.sh("make quit && open Build/WendyAgentMac.app")
@@ -89,7 +90,18 @@ final class CLIAndAgentScenario: Scenario, Sendable {
                 "cd ../go && nohup ./bin/wendy-agent > /tmp/wendy-agent-e2e.log 2>&1 &"
             )
         case .windows, .wendyOS:
-            fatalError("Launching the agent is not supported on \(session.machine.os) yet.")
+            fatalError("Starting the agent is not supported on \(session.machine.os) yet.")
+        }
+    }
+
+    private static func stopAgent(with session: Session) async throws {
+        switch session.machine.os {
+        case .macOS:
+            try await session.sh("make quit")
+        case .linux:
+            try await session.sh("pkill -f wendy-agent")
+        case .windows, .wendyOS:
+            fatalError("Stopping the agent is not supported on \(session.machine.os) yet.")
         }
     }
 
