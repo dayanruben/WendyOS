@@ -344,10 +344,10 @@ struct `session` {
 
     @Test
     func `dasherizes camel-cased function names for command record file names`() {
-        #expect(Session.slug("buildAgent(with:)") == "build-agent-with")
-        #expect(Session.slug("URLParserTests") == "url-parser-tests")
+        #expect(Reporter.slug("buildAgent(with:)") == "build-agent-with")
+        #expect(Reporter.slug("URLParserTests") == "url-parser-tests")
         #expect(
-            Session.slug("'--json' reports a missing device") == "json-reports-a-missing-device"
+            Reporter.slug("'--json' reports a missing device") == "json-reports-a-missing-device"
         )
     }
 

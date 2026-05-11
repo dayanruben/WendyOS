@@ -45,7 +45,11 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         var agentSession: Session?
 
         do {
-            let reportPath = try Session.reportPath(filePath: filePath, function: function)
+            let reporter = try Reporter(
+                filePath: filePath,
+                function: function,
+                line: line
+            )
             let repositoryRootDirectoryURL = Self.repositoryRootDirectoryURL()
             let cliWorkingDirectory =
                 Environment.cliWorkingDirectory
@@ -78,18 +82,12 @@ final class CLIAndAgentScenario: Scenario, Sendable {
 
             let cli = try await Session.begin(
                 for: cliMachine,
-                reportPath: reportPath,
-                reportSourceFilePath: filePath,
-                reportSourceFunction: function,
-                reportSourceLine: line
+                reporter: reporter
             )
             cliSession = cli
             let agent = try await Session.begin(
                 for: agentMachine,
-                reportPath: reportPath,
-                reportSourceFilePath: filePath,
-                reportSourceFunction: function,
-                reportSourceLine: line
+                reporter: reporter
             )
             agentSession = agent
 
