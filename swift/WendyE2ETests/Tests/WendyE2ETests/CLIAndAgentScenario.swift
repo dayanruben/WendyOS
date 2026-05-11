@@ -43,6 +43,7 @@ final class CLIAndAgentScenario: Scenario, Sendable {
 
         try await self.buildCLI(with: self.cli)
         try await self.buildAgent(with: self.agent)
+        try await self.launchAgent(with: self.agent)
     }
 
     deinit {
@@ -64,7 +65,7 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         case .macOS, .linux:
             try await session.sh("make build-cli")
         case .windows, .wendyOS:
-            break
+            fatalError("Building the CLI is not supported on \(session.machine.os) yet.")
         }
     }
 
@@ -75,7 +76,20 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         case .linux:
             try await session.sh("cd ../go && make build-agent")
         case .windows, .wendyOS:
-            break
+            fatalError("Building the agent is not supported on \(session.machine.os) yet.")
+        }
+    }
+
+    private func launchAgent(with session: Session) async throws {
+        switch session.machine.os {
+        case .macOS:
+            try await session.sh("make quit && open Build/WendyAgentMac.app")
+        case .linux:
+            try await session.sh(
+                "cd ../go && nohup ./bin/wendy-agent > /tmp/wendy-agent-e2e.log 2>&1 &"
+            )
+        case .windows, .wendyOS:
+            fatalError("Launching the agent is not supported on \(session.machine.os) yet.")
         }
     }
 
