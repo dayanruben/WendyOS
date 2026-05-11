@@ -130,7 +130,32 @@ struct `'wendy device info'` {
      */
     @Test
     func `prints human-readable device information`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, agent in
+            let agentAddress = agent.machine.address
+            let command: String
+            switch cli.machine.os {
+            case .macOS:
+                command = "script -q /dev/null wendy --device \(agentAddress) device info"
+            case .linux:
+                command = "script -q -c 'wendy --device \(agentAddress) device info' /dev/null"
+            case .windows, .wendyOS:
+                fatalError("Interactive device info is not supported on \(cli.machine.os) yet.")
+            }
+
+            try await cli.sh(command) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput.contains("Agent Version:"))
+                #expect(standardOutput.contains("OS:"))
+                #expect(standardOutput.contains("Architecture:"))
+                #expect(standardOutput.contains("CLI Version:"))
+                #expect(standardError == "")
+                #expect(!standardOutput.contains("Select a device"))
+                #expect(!standardOutput.contains("\"version\""))
+            }
+        }
     }
 
     /**
@@ -173,7 +198,40 @@ struct `'wendy device info'` {
      */
     @Test
     func `non-interactive mode prints JSON device information`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, agent in
+            let agentAddress = agent.machine.address
+
+            try await cli.sh(
+                """
+                mkdir -p "$HOME/.wendy"
+                printf '{"defaultDevice":"\(agentAddress)"}\n' > "$HOME/.wendy/config.json"
+                """
+            )
+
+            try await cli.sh("wendy device info") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+                #expect(terminationStatus.isSuccess)
+                #expect(standardError == "")
+                #expect(!standardOutput.contains("Select a device"))
+
+                let json = try #require(
+                    try JSONSerialization.jsonObject(with: Data(standardOutput.utf8))
+                        as? [String: Any]
+                )
+                let version = try #require(json["version"] as? String)
+                let os = try #require(json["os"] as? String)
+                let cpuArchitecture = try #require(json["cpuArchitecture"] as? String)
+                let cliVersion = try #require(json["cliVersion"] as? String)
+
+                #expect(!version.isEmpty)
+                #expect(!os.isEmpty)
+                #expect(!cpuArchitecture.isEmpty)
+                #expect(!cliVersion.isEmpty)
+                #expect(json["hasGpu"] is Bool)
+            }
+        }
     }
 
     // MARK: - Handling Configuration Errors
