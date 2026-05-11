@@ -2,6 +2,8 @@ import Foundation
 import WendyE2ETesting
 
 final class CLIAndAgentScenario: Scenario, Sendable {
+    // MARK: - Internal
+
     // NOTE: This is temporarily a singleton until we sort out the DSL and everything.
     static var shared: CLIAndAgentScenario {
         get async throws {
@@ -11,6 +13,23 @@ final class CLIAndAgentScenario: Scenario, Sendable {
 
     let cli: Session
     let agent: Session
+
+    deinit {
+        let cli = self.cli
+        let agent = self.agent
+
+        // WORKAROUND: Swift Testing does not provide an async tear-down hook.
+        // Suite life-cycle is init/deinit based and Swift has no async deinit,
+        // so session clean-up has to be bridged through an unstructured task.
+        // Fix by finding a structured concurrency solution for this.
+        Task {
+            try? await Self.stopAgent(with: agent)
+            try? await agent.end()
+            try? await cli.end()
+        }
+    }
+
+    // MARK: - Private
 
     private static let _shared = Task {
         try await CLIAndAgentScenario()
@@ -45,21 +64,6 @@ final class CLIAndAgentScenario: Scenario, Sendable {
         try await self.buildCLI(with: self.cli)
         try await self.buildAgent(with: self.agent)
         try await Self.startAgent(with: self.agent)
-    }
-
-    deinit {
-        let cli = self.cli
-        let agent = self.agent
-
-        // WORKAROUND: Swift Testing does not provide an async tear-down hook.
-        // Suite life-cycle is init/deinit based and Swift has no async deinit,
-        // so session clean-up has to be bridged through an unstructured task.
-        // Fix by finding a structured concurrency solution for this.
-        Task {
-            try? await Self.stopAgent(with: agent)
-            try? await agent.end()
-            try? await cli.end()
-        }
     }
 
     private func buildCLI(with session: Session) async throws {
