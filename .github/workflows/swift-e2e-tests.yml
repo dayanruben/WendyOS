@@ -10,82 +10,151 @@ on:
         description: 'Comma-separated SwiftPM test filters (empty = WendyE2ETests)'
         required: false
         default: ''
-      agent_ssh:
-        description: 'Optional SSH target for the Mac agent host (empty = run agent locally)'
-        required: false
-        default: ''
-      agent_workdir:
-        description: 'Optional agent swift/ working directory (empty = local checkout; with agent_ssh empty, remains local)'
-        required: false
-        default: ''
   workflow_call:
     inputs:
       tests:
         type: string
         required: false
         default: ''
-      agent_ssh:
-        type: string
-        required: false
-        default: ''
-      agent_workdir:
-        type: string
-        required: false
-        default: ''
 
 jobs:
   swift-e2e-tests:
-    name: Swift E2E Tests
-    # The custom `MacOS` label selects the Wendy-CLI-on-mac self-hosted runner.
-    # By default both the CLI and agent run locally on the selected runner.
-    runs-on: [self-hosted, macOS, ARM64, MacOS]
-    concurrency:
-      group: swift-e2e-tests-wendy-cli-on-mac
-      cancel-in-progress: false
-    timeout-minutes: 120
-    env:
-      INPUT_TESTS: ${{ inputs.tests || '' }}
-      INPUT_AGENT_SSH: ${{ inputs.agent_ssh || '' }}
-      INPUT_AGENT_WORKDIR: ${{ inputs.agent_workdir || '' }}
+    name: Swift E2E (${{ matrix.target.name }})
+    # These entries are placeholders for the real device-to-device matrix. They
+    # intentionally run on GitHub-hosted Ubuntu while every combination is marked
+    # "Not Supported Yet" so the matrix is visible without requiring all planned
+    # self-hosted runners and devices to exist.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - id: macos-26__jetson-orin-nano
+            name: macOS 26 → Jetson Orin Nano — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: macos-26
+            runner_name: macOS 26
+            runner_labels: 'self-hosted, macOS, ARM64, macos-26'
+            cli_os: macOS
+            device_id: jetson-orin-nano
+            device_name: Jetson Orin Nano
+            transport: lan
+
+          - id: ubuntu-24-04__jetson-orin-nano
+            name: Ubuntu 24.04 → Jetson Orin Nano — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: ubuntu-24-04
+            runner_name: Ubuntu 24.04
+            runner_labels: 'self-hosted, Linux, X64, ubuntu-24-04'
+            cli_os: linux
+            device_id: jetson-orin-nano
+            device_name: Jetson Orin Nano
+            transport: lan
+
+          - id: windows-11__jetson-orin-nano
+            name: Windows 11 → Jetson Orin Nano — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: windows-11
+            runner_name: Windows 11
+            runner_labels: 'self-hosted, Windows, X64, windows-11'
+            cli_os: windows
+            device_id: jetson-orin-nano
+            device_name: Jetson Orin Nano
+            transport: lan
+
+          - id: macos-26__raspberry-pi-5
+            name: macOS 26 → Raspberry Pi 5 — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: macos-26
+            runner_name: macOS 26
+            runner_labels: 'self-hosted, macOS, ARM64, macos-26'
+            cli_os: macOS
+            device_id: raspberry-pi-5
+            device_name: Raspberry Pi 5
+            transport: lan
+
+          - id: ubuntu-24-04__raspberry-pi-5
+            name: Ubuntu 24.04 → Raspberry Pi 5 — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: ubuntu-24-04
+            runner_name: Ubuntu 24.04
+            runner_labels: 'self-hosted, Linux, X64, ubuntu-24-04'
+            cli_os: linux
+            device_id: raspberry-pi-5
+            device_name: Raspberry Pi 5
+            transport: lan
+
+          - id: windows-11__raspberry-pi-5
+            name: Windows 11 → Raspberry Pi 5 — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: windows-11
+            runner_name: Windows 11
+            runner_labels: 'self-hosted, Windows, X64, windows-11'
+            cli_os: windows
+            device_id: raspberry-pi-5
+            device_name: Raspberry Pi 5
+            transport: lan
+
+          - id: macos-26__esp32-c6
+            name: macOS 26 → ESP32-C6 — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: macos-26
+            runner_name: macOS 26
+            runner_labels: 'self-hosted, macOS, ARM64, macos-26'
+            cli_os: macOS
+            device_id: esp32-c6
+            device_name: ESP32-C6
+            transport: ble
+
+          - id: ubuntu-24-04__esp32-c6
+            name: Ubuntu 24.04 → ESP32-C6 — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: ubuntu-24-04
+            runner_name: Ubuntu 24.04
+            runner_labels: 'self-hosted, Linux, X64, ubuntu-24-04'
+            cli_os: linux
+            device_id: esp32-c6
+            device_name: ESP32-C6
+            transport: ble
+
+          - id: windows-11__esp32-c6
+            name: Windows 11 → ESP32-C6 — Not Supported Yet
+            status: not-supported-yet
+            status_label: Not Supported Yet
+            runner_id: windows-11
+            runner_name: Windows 11
+            runner_labels: 'self-hosted, Windows, X64, windows-11'
+            cli_os: windows
+            device_id: esp32-c6
+            device_name: ESP32-C6
+            transport: ble
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Capture selected Xcode version
-        id: xcode
+      - name: Not Supported Yet
         shell: bash
         run: |
           set -euo pipefail
-          echo "version=$(xcodebuild -version | awk '/Xcode/ { print $2 }')" >> "$GITHUB_OUTPUT"
-
-      - name: Cache SwiftPM package resolution
-        uses: actions/cache@v5
-        with:
-          path: |
-            swift/WendyE2ETests/.build/checkouts
-            swift/WendyE2ETests/.build/repositories
-            ~/Library/Caches/org.swift.swiftpm
-            ~/.cache/org.swift.swiftpm
-          key: swift-e2e-swiftpm-${{ runner.os }}-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/WendyE2ETests/Package.resolved') }}
-          restore-keys: |
-            swift-e2e-swiftpm-${{ runner.os }}-xcode-${{ steps.xcode.outputs.version }}-
-            swift-e2e-swiftpm-${{ runner.os }}-
-
-      - name: Run Swift E2E tests
-        working-directory: swift
-        shell: bash
-        env:
-          WENDY_AGENT_E2E_TEST_FILTERS: ${{ env.INPUT_TESTS }}
-          WENDY_AGENT_E2E_AGENT_SSH: ${{ env.INPUT_AGENT_SSH }}
-          WENDY_AGENT_E2E_AGENT_WORKING_DIRECTORY: ${{ env.INPUT_AGENT_WORKDIR }}
-        run: |
-          set -euo pipefail
-          bash ./Scripts/TestE2E.sh
-
-      - name: Upload Swift E2E reports zip
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: swift-e2e-test-reports
-          path: swift/Build/E2E/swift-e2e-test-reports.zip
-          if-no-files-found: warn
-          retention-days: 14
+          {
+            echo "## Swift E2E: ${{ matrix.target.name }}"
+            echo
+            echo "Status: **${{ matrix.target.status_label }}**"
+            echo
+            echo "This matrix entry is intentionally visible but currently runs as a no-op."
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Runner | ${{ matrix.target.runner_name }} |"
+            echo "| Planned runner labels | \`${{ matrix.target.runner_labels }}\` |"
+            echo "| CLI OS | \`${{ matrix.target.cli_os }}\` |"
+            echo "| Device | ${{ matrix.target.device_name }} |"
+            echo "| Device ID | \`${{ matrix.target.device_id }}\` |"
+            echo "| Transport | \`${{ matrix.target.transport }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
