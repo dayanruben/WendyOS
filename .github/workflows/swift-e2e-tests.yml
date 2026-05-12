@@ -19,7 +19,7 @@ on:
 
 jobs:
   swift-e2e-tests:
-    name: Swift E2E (${{ matrix.target.name }})
+    name: ${{ matrix.target.name }}
     # These entries are placeholders for the real device-to-device matrix. They
     # intentionally run on GitHub-hosted Ubuntu while every combination is marked
     # "Not Supported Yet" so the matrix is visible without requiring all planned
@@ -31,7 +31,7 @@ jobs:
       matrix:
         target:
           - id: macos-26__jetson-orin-nano
-            name: macOS 26 → Jetson Orin Nano — Not Supported Yet
+            name: macOS 26 → Jetson Orin Nano 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: macos-26
@@ -43,7 +43,7 @@ jobs:
             transport: lan
 
           - id: ubuntu-24-04__jetson-orin-nano
-            name: Ubuntu 24.04 → Jetson Orin Nano — Not Supported Yet
+            name: Ubuntu 24.04 → Jetson Orin Nano 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: ubuntu-24-04
@@ -55,7 +55,7 @@ jobs:
             transport: lan
 
           - id: windows-11__jetson-orin-nano
-            name: Windows 11 → Jetson Orin Nano — Not Supported Yet
+            name: Windows 11 → Jetson Orin Nano 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: windows-11
@@ -67,7 +67,7 @@ jobs:
             transport: lan
 
           - id: macos-26__raspberry-pi-5
-            name: macOS 26 → Raspberry Pi 5 — Not Supported Yet
+            name: macOS 26 → Raspberry Pi 5 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: macos-26
@@ -79,7 +79,7 @@ jobs:
             transport: lan
 
           - id: ubuntu-24-04__raspberry-pi-5
-            name: Ubuntu 24.04 → Raspberry Pi 5 — Not Supported Yet
+            name: Ubuntu 24.04 → Raspberry Pi 5 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: ubuntu-24-04
@@ -91,7 +91,7 @@ jobs:
             transport: lan
 
           - id: windows-11__raspberry-pi-5
-            name: Windows 11 → Raspberry Pi 5 — Not Supported Yet
+            name: Windows 11 → Raspberry Pi 5 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: windows-11
@@ -103,7 +103,7 @@ jobs:
             transport: lan
 
           - id: macos-26__esp32-c6
-            name: macOS 26 → ESP32-C6 — Not Supported Yet
+            name: macOS 26 → ESP32-C6 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: macos-26
@@ -115,7 +115,7 @@ jobs:
             transport: ble
 
           - id: ubuntu-24-04__esp32-c6
-            name: Ubuntu 24.04 → ESP32-C6 — Not Supported Yet
+            name: Ubuntu 24.04 → ESP32-C6 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: ubuntu-24-04
@@ -127,7 +127,7 @@ jobs:
             transport: ble
 
           - id: windows-11__esp32-c6
-            name: Windows 11 → ESP32-C6 — Not Supported Yet
+            name: Windows 11 → ESP32-C6 🚧
             status: not-supported-yet
             status_label: Not Supported Yet
             runner_id: windows-11
@@ -143,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## Swift E2E: ${{ matrix.target.name }}"
+            echo "## ${{ matrix.target.name }}"
             echo
             echo "Status: **${{ matrix.target.status_label }}**"
             echo
