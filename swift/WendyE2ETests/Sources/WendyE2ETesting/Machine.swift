@@ -45,6 +45,7 @@ public struct Machine: Sendable, Equatable {
     public let name: String
     public let os: MachineOS
     public let tags: Set<MachineTag>
+    public let isLocal: Bool
     public let user: String?
     public let address: String
     public let workingDirectory: String?
@@ -88,6 +89,7 @@ public struct Machine: Sendable, Equatable {
         self.name = name
         self.os = os
         self.tags = tags
+        self.isLocal = address == nil
         self.user = user
         self.address = resolvedAddress
         self.workingDirectory = resolvedWorkingDirectory

@@ -119,23 +119,14 @@ public struct Session: Sendable {
         }
 
         let invocation = self.invocation(for: command)
-        await SSHInvocationLimiter.shared.acquire()
 
-        let record: ExecutionRecord<Output, Error>
-        let duration: Duration
-        do {
-            let start = ContinuousClock.now
-            record = try await Self.invoke(
-                invocation,
-                output: output,
-                error: error
-            )
-            duration = start.duration(to: .now)
-            await SSHInvocationLimiter.shared.release()
-        } catch {
-            await SSHInvocationLimiter.shared.release()
-            throw error
-        }
+        let start = ContinuousClock.now
+        let record = try await Self.invoke(
+            invocation,
+            output: output,
+            error: error
+        )
+        let duration = start.duration(to: .now)
 
         self.reporter?.record(
             session: self,
@@ -224,6 +215,23 @@ public struct Session: Sendable {
     }
 
     private func invocation(for command: String) -> Invocation {
+        if self.machine.isLocal {
+            return self.localInvocation(for: command)
+        }
+
+        return self.sshInvocation(for: command)
+    }
+
+    private func localInvocation(for command: String) -> Invocation {
+        Invocation(
+            executable: Self.localShellPath,
+            arguments: ["-lc", self.wrapped(command)],
+            environment: .inherit,
+            workingDirectory: nil
+        )
+    }
+
+    private func sshInvocation(for command: String) -> Invocation {
         let wrappedCommand = self.wrapped(command)
         let loginShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc \(Self.shellQuote(wrappedCommand))"
 
@@ -245,6 +253,14 @@ public struct Session: Sendable {
             environment: .inherit,
             workingDirectory: nil
         )
+    }
+
+    private static var localShellPath: String {
+        guard let shell = ProcessInfo.processInfo.environment["SHELL"], !shell.isEmpty else {
+            return "/bin/sh"
+        }
+
+        return shell
     }
 
     private func wrapped(_ command: String) -> String {
@@ -387,37 +403,6 @@ public struct Session: Sendable {
             output: output,
             error: error
         )
-    }
-}
-
-private actor SSHInvocationLimiter {
-    static let shared = SSHInvocationLimiter(maximumConcurrentInvocations: 8)
-
-    private let maximumConcurrentInvocations: Int
-    private var activeInvocations = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    init(maximumConcurrentInvocations: Int) {
-        self.maximumConcurrentInvocations = maximumConcurrentInvocations
-    }
-
-    func acquire() async {
-        if self.activeInvocations < self.maximumConcurrentInvocations {
-            self.activeInvocations += 1
-            return
-        }
-
-        await withCheckedContinuation { continuation in
-            self.waiters.append(continuation)
-        }
-    }
-
-    func release() {
-        if self.waiters.isEmpty {
-            self.activeInvocations -= 1
-        } else {
-            self.waiters.removeFirst().resume()
-        }
     }
 }
 

@@ -312,4 +312,4 @@ try await agent
     .run()
 ```
 
-Sessions always run over SSH. If `address` is omitted, the current hostname is used; `user` is included in the SSH target when provided. `Session.begin(for:verbose:)` enables command echoing for that session; `WENDY_E2E_VERBOSE=1` enables it globally.
+Sessions run locally when `address` is omitted. If `address` is provided, commands run over SSH; `user` is included in the SSH target when provided. Local sessions still execute commands through a shell and honor configured working directories and environment. `Session.begin(for:verbose:)` enables command echoing for that session; `WENDY_E2E_VERBOSE=1` enables it globally.

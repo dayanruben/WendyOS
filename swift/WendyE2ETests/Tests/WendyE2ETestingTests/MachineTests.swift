@@ -16,6 +16,7 @@ struct `machine` {
         )
 
         #expect(machine.name == "SSH")
+        #expect(machine.isLocal == false)
         #expect(machine.user == "ai")
         #expect(machine.address == "example.local")
         #expect(machine.workingDirectory == "~/wendy-agent")
@@ -27,6 +28,7 @@ struct `machine` {
     func `defaults remote machine to user home directory`() {
         let machine = Machine(name: "SSH", user: "ai", address: "example.local")
 
+        #expect(machine.isLocal == false)
         #expect(machine.user == "ai")
         #expect(machine.address == "example.local")
         #expect(machine.workingDirectory == nil)
@@ -38,6 +40,7 @@ struct `machine` {
     func `defaults machine to current host and directory`() {
         let machine = Machine(name: "Local")
 
+        #expect(machine.isLocal)
         #expect(machine.user == nil)
         #expect(!machine.address.isEmpty)
         #expect(machine.workingDirectory == FileManager.default.currentDirectoryPath)
@@ -52,6 +55,7 @@ struct `machine` {
         #expect(Machine.current.id == "current")
         #expect(Machine.current.name == "Current")
         #expect(Machine.current.tags == [.runner])
+        #expect(Machine.current.isLocal)
         #expect(Machine.current.user == nil)
         #expect(!Machine.current.address.isEmpty)
         #expect(Machine.current.workingDirectory == FileManager.default.currentDirectoryPath)
@@ -68,6 +72,7 @@ struct `machine` {
             ]
         )
 
+        #expect(machine.isLocal)
         #expect(machine.env["HOME"] == "/tmp/wendy-e2e-home")
         #expect(machine.env["PATH"] == "/tmp/wendy-e2e-bin:$PATH")
         #expect(machine.env["WENDY_ANALYTICS"] == "false")
@@ -77,6 +82,7 @@ struct `machine` {
     func `stores a routable address`() {
         let machine = Machine(name: "Remote", address: "192.168.64.2")
 
+        #expect(machine.isLocal == false)
         #expect(machine.address == "192.168.64.2")
     }
 }
@@ -98,7 +104,7 @@ struct `session` {
     }
 
     @Test
-    func `runs SSH commands in working directory`() async throws {
+    func `runs local commands in working directory`() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("machine-local-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -115,7 +121,7 @@ struct `session` {
     }
 
     @Test
-    func `sets environment variables before running SSH commands`() async throws {
+    func `sets environment variables before running local commands`() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("machine-env-" + UUID().uuidString, isDirectory: true)
         let binDirectory = directory.appendingPathComponent("bin", isDirectory: true)
@@ -161,7 +167,7 @@ struct `session` {
     }
 
     @Test
-    func `runs commands over SSH`() async throws {
+    func `runs commands locally by default`() async throws {
         try await Self.withTemporarySession { session, directory in
             try await session.sh("touch first.txt")
             try await session.sh("touch second.txt")
@@ -200,7 +206,7 @@ struct `session` {
     }
 
     @Test
-    func `simple shell command throws when the remote command exits non-zero`() async throws {
+    func `simple shell command throws when the command exits non-zero`() async throws {
         try await Self.withTemporarySession { session, _ in
             await #expect(throws: MachineError.self) {
                 try await session.sh("exit 7")
@@ -329,7 +335,7 @@ struct `session` {
     ) async throws -> Result {
         let directory = try Self.makeTemporaryDirectory()
         let session = try await Session.begin(
-            for: Machine(name: "SSH", workingDirectory: directory.path)
+            for: Machine(name: "Local", workingDirectory: directory.path)
         )
 
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -338,7 +344,7 @@ struct `session` {
 
     private static func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("machine-ssh-" + UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("machine-local-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
