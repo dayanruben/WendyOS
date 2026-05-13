@@ -612,6 +612,7 @@ private func renderReport(
         "{{REPORT_HEADING}}": "Wendy E2E Report",
         "{{REPORT_SUMMARY}}":
             "Generated from Swift E2E tests, Swift Testing results, and captured command recordings.",
+        "{{RUN_ID}}": runID(recordingURL: recordingURL, outputURL: outputURL),
         "{{TESTS_PASSED_COUNT}}": String(passed),
         "{{TESTS_SKIPPED_COUNT}}": String(skipped),
         "{{TESTS_FAILED_COUNT}}": String(failed),
@@ -653,6 +654,26 @@ private func renderReport(
     print(
         "tests=\(total) passed=\(passed) skipped=\(skipped) failed=\(failed) unknown=\(unknown) commands=\(commandCount)"
     )
+}
+
+private func runID(recordingURL: URL, outputURL: URL) -> String {
+    let candidates = [
+        outputURL.deletingLastPathComponent(),
+        recordingURL.deletingLastPathComponent(),
+        recordingURL,
+    ]
+
+    for candidate in candidates {
+        let name = candidate.lastPathComponent
+        if name.hasPrefix("e2e-report.") {
+            return String(name.dropFirst("e2e-report.".count))
+        }
+        if name.hasPrefix("e2e-recording.") {
+            return String(name.dropFirst("e2e-recording.".count))
+        }
+    }
+
+    return outputURL.deletingLastPathComponent().lastPathComponent
 }
 
 private func recordLinkPrefix(recordingURL: URL, outputURL: URL) -> String {
