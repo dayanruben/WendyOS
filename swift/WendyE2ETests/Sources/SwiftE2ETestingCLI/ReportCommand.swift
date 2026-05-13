@@ -43,9 +43,10 @@ struct ReportCommand: ParsableCommand {
                 ?? packageURL.appendingPathComponent("Support/e2e-report.template.html")
                 .path
         )
-        let recordingURL =
-            try recordingDir.map { URL(fileURLWithPath: $0) }
-            ?? latestRecordingDirectory(packageURL: packageURL)
+        let recordingURL = try resolvedRecordingDirectory(
+            recordingDir.map { URL(fileURLWithPath: $0) }
+                ?? latestRecordingDirectory(packageURL: packageURL)
+        )
         let outputURL = URL(
             fileURLWithPath: output ?? recordingURL.appendingPathComponent("index.html").path
         )
@@ -228,9 +229,40 @@ private func fenced(label: String, in text: String) -> String {
     firstMatch("### \(label)\\n\\n```text\\n([\\s\\S]*?)\\n```", in: text) ?? ""
 }
 
+private func resolvedRecordingDirectory(_ url: URL) throws -> URL {
+    if try containsRecordingFiles(url) {
+        return url
+    }
+
+    let nestedRecordingURL = url.appendingPathComponent("recording", isDirectory: true)
+    if try containsRecordingFiles(nestedRecordingURL) {
+        return nestedRecordingURL
+    }
+
+    return url
+}
+
+private func containsRecordingFiles(_ url: URL) throws -> Bool {
+    guard FileManager.default.fileExists(atPath: url.path) else {
+        return false
+    }
+
+    return try FileManager.default.contentsOfDirectory(
+        at: url,
+        includingPropertiesForKeys: nil
+    ).contains { candidate in
+        candidate.lastPathComponent.hasSuffix("-swift-testing.xml") || isCommandRecord(candidate)
+    }
+}
+
+private func isCommandRecord(_ url: URL) -> Bool {
+    url.pathExtension == "md"
+        && url.lastPathComponent != "README.md"
+        && url.lastPathComponent != "index.md"
+}
+
 private func loadTestResults(in recordingURL: URL) throws -> [TestResultKey: ReportTestStatus] {
-    let resultURL = recordingURL.appendingPathComponent("test-results-swift-testing.xml")
-    guard FileManager.default.fileExists(atPath: resultURL.path) else {
+    guard let resultURL = try testResultsURL(in: recordingURL) else {
         return [:]
     }
 
@@ -244,6 +276,20 @@ private func loadTestResults(in recordingURL: URL) throws -> [TestResultKey: Rep
         )
     }
     return parser.results
+}
+
+private func testResultsURL(in recordingURL: URL) throws -> URL? {
+    let defaultURL = recordingURL.appendingPathComponent("test-results-swift-testing.xml")
+    if FileManager.default.fileExists(atPath: defaultURL.path) {
+        return defaultURL
+    }
+
+    let candidates = try FileManager.default.contentsOfDirectory(
+        at: recordingURL,
+        includingPropertiesForKeys: nil
+    ).filter { $0.lastPathComponent.hasSuffix("-swift-testing.xml") }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    return candidates.first
 }
 
 private final class XUnitResultParser: NSObject, XMLParserDelegate {
