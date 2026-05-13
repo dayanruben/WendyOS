@@ -4,7 +4,7 @@ SHELL := /bin/bash
 
 SWIFT_FORMAT_TARGETS := WendyAgentCore/Sources WendyAgentCore/Tests WendyAgentMac/Sources WendyE2ETests/Sources WendyE2ETests/Tests
 
-.PHONY: help format lint test test-e2e test-e2e-jetson-orin-nano test-e2e-raspberry-pi-5 test-e2e-mac-mini reference proto build build-cli build-dev agent-start agent-reset-settings agent-reset-tcc agent-reset agent-stop clean
+.PHONY: help format lint test test-e2e test-e2e-jetson-orin-nano test-e2e-raspberry-pi-5 test-e2e-mac-mini reference proto build build-cli build-dev agent-start agent-reset-settings agent-reset-permissions agent-reset agent-stop clean
 
 help: ## Show this help message
 	@echo 'Usage:'
@@ -66,10 +66,10 @@ agent-start: ## Stop, build, and open the WendyAgentMac app
 agent-reset-settings: ## Reset WendyAgentMac preferences/defaults
 	./Scripts/ResetMacAppSettings.sh
 
-agent-reset-tcc: ## Reset WendyAgentMac TCC permissions
+agent-reset-permissions: ## Reset WendyAgentMac permissions
 	./Scripts/ResetMacAppTCC.sh
 
-agent-reset: agent-reset-settings agent-reset-tcc ## Reset WendyAgentMac settings and TCC permissions
+agent-reset: agent-reset-settings agent-reset-permissions ## Reset WendyAgentMac settings and permissions
 
 agent-stop: ## Quit WendyAgentMac and fail if it is still running after 10 seconds
 	./Scripts/Quit.sh
