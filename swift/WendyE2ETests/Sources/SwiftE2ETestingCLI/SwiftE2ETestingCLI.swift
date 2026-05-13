@@ -45,7 +45,7 @@ struct ReferenceCommand: ParsableCommand {
             throw ValidationError("Missing path.")
         }
 
-        let options = Reference.MarkdownOptions(
+        let options = Reference.RenderOptions(
             includeSourceLocations: includeSourceLocations || specReview,
             includeDisabledState: includeDisabledState || specReview
         )
@@ -133,7 +133,7 @@ enum ReferenceFormat: String, ExpressibleByArgument, CustomStringConvertible {
 
     func render(
         _ documents: [Reference.Document],
-        options: Reference.MarkdownOptions
+        options: Reference.RenderOptions
     ) throws -> String {
         switch self {
         case .markdown:
@@ -161,7 +161,7 @@ private func writeReferenceFiles(
     sourceFiles: [String],
     outputDirectory: String,
     format: ReferenceFormat,
-    options: Reference.MarkdownOptions
+    options: Reference.RenderOptions
 ) throws -> Int {
     let outputURL = URL(fileURLWithPath: outputDirectory)
     try FileManager.default.createDirectory(
