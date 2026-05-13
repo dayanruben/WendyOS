@@ -10,9 +10,10 @@ From this package:
 swift test --filter WendyE2ETests
 ```
 
-From `swift/`, the helper script writes command recordings and Swift Testing
-results to `Build/e2e-report.<run-id>/recording` and the HTML report to
-`Build/e2e-report.<run-id>/index.html`:
+From `swift/`, the helper script writes command recordings to
+`Build/e2e-report.<run-id>/recording`, Swift Testing results to
+`Build/e2e-report.<run-id>/test-results-swift-testing.xml`, and the HTML
+report to `Build/e2e-report.<run-id>/index.html`:
 
 ```bash
 bash Scripts/TestE2E.sh

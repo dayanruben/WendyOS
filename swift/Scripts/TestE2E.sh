@@ -213,8 +213,6 @@ RECORDING_DIR="$(absolute_dir_path "$RECORDING_DIR")"
 REPORT_ZIP="$(absolute_file_path "$REPORT_ZIP")"
 REPORT_RECORDING_DIR="$REPORT_DIR/recording"
 TEST_RESULTS_OUTPUT_BASE="$REPORT_DIR/test-results.xml"
-TEST_RESULTS_OUTPUT_FILE="$REPORT_DIR/test-results-swift-testing.xml"
-RECORDING_TEST_RESULTS_FILE="$RECORDING_DIR/test-results-swift-testing.xml"
 
 rm -rf "$REPORT_ZIP"
 if [[ "$RECORDING_DIR" == "$REPORT_RECORDING_DIR" ]]; then
@@ -241,13 +239,6 @@ ssh_target() {
     printf "%s@%s" "$AGENT_USER" "$host"
   else
     printf "%s" "$host"
-  fi
-}
-
-copy_test_results_to_recording() {
-  if [[ -f "$TEST_RESULTS_OUTPUT_FILE" ]]; then
-    cp "$TEST_RESULTS_OUTPUT_FILE" "$RECORDING_TEST_RESULTS_FILE"
-    rm -f "$TEST_RESULTS_OUTPUT_FILE"
   fi
 }
 
@@ -362,7 +353,6 @@ set +e
 TEST_STATUS=$?
 set -e
 
-copy_test_results_to_recording
 generate_html_report
 collect_reports "$TEST_STATUS"
 exit "$TEST_STATUS"

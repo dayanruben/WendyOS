@@ -52,7 +52,10 @@ struct ReportCommand: ParsableCommand {
         )
 
         let records = try loadRecords(in: recordingURL)
-        let testResults = try loadTestResults(in: recordingURL)
+        let testResults = try loadTestResults(
+            in: recordingURL,
+            outputDirectoryURL: outputURL.deletingLastPathComponent()
+        )
         let files = try parseTests(in: testsURL, records: records, testResults: testResults)
         try renderReport(
             templateURL: templateURL,
@@ -251,7 +254,7 @@ private func containsRecordingFiles(_ url: URL) throws -> Bool {
         at: url,
         includingPropertiesForKeys: nil
     ).contains { candidate in
-        candidate.lastPathComponent.hasSuffix("-swift-testing.xml") || isCommandRecord(candidate)
+        isCommandRecord(candidate)
     }
 }
 
@@ -261,8 +264,19 @@ private func isCommandRecord(_ url: URL) -> Bool {
         && url.lastPathComponent != "index.md"
 }
 
-private func loadTestResults(in recordingURL: URL) throws -> [TestResultKey: ReportTestStatus] {
-    guard let resultURL = try testResultsURL(in: recordingURL) else {
+private func loadTestResults(
+    in recordingURL: URL,
+    outputDirectoryURL: URL
+) throws -> [TestResultKey: ReportTestStatus] {
+    guard
+        let resultURL = try testResultsURL(
+            in: [
+                recordingURL,
+                outputDirectoryURL,
+                recordingURL.deletingLastPathComponent(),
+            ]
+        )
+    else {
         return [:]
     }
 
@@ -278,18 +292,34 @@ private func loadTestResults(in recordingURL: URL) throws -> [TestResultKey: Rep
     return parser.results
 }
 
-private func testResultsURL(in recordingURL: URL) throws -> URL? {
-    let defaultURL = recordingURL.appendingPathComponent("test-results-swift-testing.xml")
-    if FileManager.default.fileExists(atPath: defaultURL.path) {
-        return defaultURL
+private func testResultsURL(in searchURLs: [URL]) throws -> URL? {
+    var seen: Set<String> = []
+    for searchURL in searchURLs {
+        let path = searchURL.standardizedFileURL.path
+        guard !seen.contains(path) else {
+            continue
+        }
+        seen.insert(path)
+
+        let defaultURL = searchURL.appendingPathComponent("test-results-swift-testing.xml")
+        if FileManager.default.fileExists(atPath: defaultURL.path) {
+            return defaultURL
+        }
+
+        guard FileManager.default.fileExists(atPath: searchURL.path) else {
+            continue
+        }
+        let candidates = try FileManager.default.contentsOfDirectory(
+            at: searchURL,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasSuffix("-swift-testing.xml") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if let candidate = candidates.first {
+            return candidate
+        }
     }
 
-    let candidates = try FileManager.default.contentsOfDirectory(
-        at: recordingURL,
-        includingPropertiesForKeys: nil
-    ).filter { $0.lastPathComponent.hasSuffix("-swift-testing.xml") }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    return candidates.first
+    return nil
 }
 
 private final class XUnitResultParser: NSObject, XMLParserDelegate {
