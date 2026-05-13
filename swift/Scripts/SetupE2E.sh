@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Prepare the current host for WendyAgent Swift E2E tests.
+
+The setup verifies required developer tools, configures passwordless SSH
+loopback for the current user, and on Ubuntu installs the packages needed to
+build and run the Swift E2E test suite.
+
+Options:
+  --help, -h  Show this help message.
+EOF
+}
+
 logStep() {
   printf '==> %s\n' "$1"
 }
@@ -262,6 +277,20 @@ setupE2EMacOS() {
 
   setupSSHLoopback
 }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
 
 case "$(uname -s)" in
   Darwin)

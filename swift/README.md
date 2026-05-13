@@ -46,6 +46,43 @@ cd WendyAgentCore
 swift test
 ```
 
+### Run E2E tests locally
+
+The E2E harness lives in `WendyE2ETests/` and runs commands over SSH, even
+for local runs. From the `swift/` directory, use these scripts directly when
+you need lower-level control:
+
+- `Scripts/SetupE2E.sh` checks and prepares the host for E2E runs. On macOS it
+  verifies the required tools and configures passwordless SSH loopback. On
+  Ubuntu it also installs the required packages, Swift if needed, and SSH server
+  settings for parallel test bursts.
+- `Scripts/TestE2E.sh` runs the Swift E2E test package, writes command records,
+  and packages the generated reports into `Build/E2E/`. It accepts options such
+  as `--filter`, `--agent-address`, `--agent-user`, and `--verbose`.
+
+Typical local setup and run:
+
+```bash
+cd swift
+bash Scripts/SetupE2E.sh
+make test-e2e
+```
+
+The Makefile includes helpers for the common cases:
+
+- `make test-e2e` runs the E2E suite against the local host.
+- `make test-e2e-mac-mini` runs against `mac-mini.local`.
+- `make test-e2e-jetson-orin-nano` runs against
+  `wendyos-jetson-orin-nano.local`.
+- `make test-e2e-raspberry-pi-5` runs against
+  `wendyos-raspberry-pi-5.local`.
+
+Device-targeted helpers accept a `DEVICE` override:
+
+```bash
+make test-e2e-mac-mini DEVICE=my-mac.local
+```
+
 ## Project structure
 
 ```text
