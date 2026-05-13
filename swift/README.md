@@ -49,8 +49,10 @@ swift test
 ### Run E2E tests locally
 
 The E2E harness lives in `WendyE2ETests/` and runs commands over SSH, even
-for local runs. From the `swift/` directory, use these scripts directly when
-you need lower-level control:
+for local runs. The tests expect `wendy-agent` to already be running on the
+agent target, whether that target is the local host or a remote device. From
+the `swift/` directory, use these scripts directly when you need lower-level
+control:
 
 - `Scripts/SetupE2E.sh` checks and prepares the host for E2E runs. On macOS it
   verifies the required tools and configures passwordless SSH loopback. On
