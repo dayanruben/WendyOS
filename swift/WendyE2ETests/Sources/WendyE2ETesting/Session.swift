@@ -118,8 +118,8 @@ public struct Session: Sendable {
             Self.printCommand(machine: self.machine.name, command: command)
         }
 
-        let invocation = self.invocation(for: command)
-        let invocationCommand = Self.shellCommand(for: invocation)
+        let harnessPrefix = self.harnessPrefix()
+        let invocation = self.invocation(for: command, harnessPrefix: harnessPrefix)
 
         let start = ContinuousClock.now
         let record = try await Self.invoke(
@@ -137,7 +137,7 @@ public struct Session: Sendable {
             duration: duration,
             standardOutput: Self.outputDescription(record.standardOutput),
             standardError: Self.outputDescription(record.standardError),
-            invocationCommand: invocationCommand
+            harnessPrefix: harnessPrefix
         )
 
         return record
@@ -216,25 +216,25 @@ public struct Session: Sendable {
         }
     }
 
-    private func invocation(for command: String) -> Invocation {
+    private func invocation(for command: String, harnessPrefix: [String]) -> Invocation {
         if self.machine.isLocal {
-            return self.localInvocation(for: command)
+            return self.localInvocation(for: command, harnessPrefix: harnessPrefix)
         }
 
-        return self.sshInvocation(for: command)
+        return self.sshInvocation(for: command, harnessPrefix: harnessPrefix)
     }
 
-    private func localInvocation(for command: String) -> Invocation {
+    private func localInvocation(for command: String, harnessPrefix: [String]) -> Invocation {
         Invocation(
             executable: Self.localShellPath,
-            arguments: ["-lc", self.wrapped(command)],
+            arguments: ["-lc", self.wrapped(command, harnessPrefix: harnessPrefix)],
             environment: .inherit,
             workingDirectory: nil
         )
     }
 
-    private func sshInvocation(for command: String) -> Invocation {
-        let wrappedCommand = self.wrapped(command)
+    private func sshInvocation(for command: String, harnessPrefix: [String]) -> Invocation {
+        let wrappedCommand = self.wrapped(command, harnessPrefix: harnessPrefix)
         let loginShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc \(Self.shellQuote(wrappedCommand))"
 
         return Invocation(
@@ -265,7 +265,7 @@ public struct Session: Sendable {
         return shell
     }
 
-    private func wrapped(_ command: String) -> String {
+    private func harnessPrefix() -> [String] {
         var parts = self.machine.env.keys.sorted().map { key in
             "export \(key)=\(Self.shellEnvironmentValue(self.machine.env[key] ?? ""))"
         }
@@ -273,9 +273,12 @@ public struct Session: Sendable {
         if let workingDirectory = self.machine.workingDirectory {
             parts.append("cd \(Self.shellQuote(workingDirectory))")
         }
-        parts.append(command)
 
-        return parts.joined(separator: " && ")
+        return parts
+    }
+
+    private func wrapped(_ command: String, harnessPrefix: [String]) -> String {
+        (harnessPrefix + [command]).joined(separator: " && ")
     }
 
     private func sshTarget(address: String) -> String {
@@ -373,12 +376,6 @@ public struct Session: Sendable {
 
     private static func printCommand(machine: String, command: String) {
         Self.printToStandardError("[\(machine)] $ \(command)\n")
-    }
-
-    private static func shellCommand(for invocation: Invocation) -> String {
-        ([invocation.executable] + invocation.arguments)
-            .map(Self.shellQuote)
-            .joined(separator: " ")
     }
 
     private static func printToStandardError(_ message: String) {

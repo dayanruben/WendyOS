@@ -28,7 +28,7 @@ public struct Recorder: Sendable {
         duration: Duration,
         standardOutput: String,
         standardError: String,
-        invocationCommand: String
+        harnessPrefix: [String]
     ) {
         do {
             let recordURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
@@ -60,7 +60,8 @@ public struct Recorder: Sendable {
 
             try self.recordShellScript(
                 session: session,
-                invocationCommand: invocationCommand
+                command: command,
+                harnessPrefix: harnessPrefix
             )
         } catch {
             Self.printToStandardError("Failed to write Wendy E2E command recording: \(error)\n")
@@ -129,15 +130,6 @@ public struct Recorder: Sendable {
         let suite: String
         let testName: String
         let line: Int
-    }
-
-    private enum ShellColor {
-        static let reset = "\u{001B}[0m"
-        static let marker = "\u{001B}[1;35m"
-        static let file = "\u{001B}[1;34m"
-        static let code = "\u{001B}[1;36m"
-        static let text = "\u{001B}[0;37m"
-        static let run = "\u{001B}[1;33m"
     }
 
     private let source: Source
@@ -416,7 +408,8 @@ public struct Recorder: Sendable {
 
     private func recordShellScript(
         session: Session,
-        invocationCommand: String
+        command: String,
+        harnessPrefix: [String]
     ) throws {
         let scriptURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
             .deletingPathExtension()
@@ -424,7 +417,7 @@ public struct Recorder: Sendable {
         let scriptExists = FileManager.default.fileExists(atPath: scriptURL.path)
 
         if !scriptExists {
-            try Self.shellScriptHeader(source: self.source)
+            try Self.shellScriptHeader()
                 .write(to: scriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755],
@@ -438,82 +431,108 @@ public struct Recorder: Sendable {
         try handle.write(
             contentsOf: Data(
                 Self.shellScriptCommand(
-                    machineName: session.machine.name,
-                    invocationCommand: invocationCommand
+                    machine: session.machine,
+                    command: command,
+                    harnessPrefix: harnessPrefix
                 ).utf8
             )
         )
     }
 
-    private static func shellScriptHeader(source: Source) -> String {
-        let location = "\(source.fileName).swift:\(source.line)"
-        let heading =
-            ShellColor.marker + "==> " + ShellColor.file + location
-            + ShellColor.text + " > " + Self.coloredDisplayName(source.suite)
-            + ShellColor.text + " > " + Self.coloredDisplayName(source.testName)
-            + ShellColor.reset
+    private static func shellScriptHeader() -> String {
+        """
+        #!/bin/sh
+
+        """
+    }
+
+    private static func shellScriptCommand(
+        machine: Machine,
+        command: String,
+        harnessPrefix: [String]
+    ) -> String {
+        let commandSource = Self.commandSource(
+            machine: machine,
+            command: command,
+            harnessPrefix: harnessPrefix
+        )
 
         return """
-            #!/bin/sh
 
-            # Replays commands captured for this Wendy E2E test recording.
-            printf '%s\n' \(Self.shellQuote(heading))
+            # \(Self.divider)
+            \(commandSource)
 
             """
     }
 
-    private static func shellScriptCommand(machineName: String, invocationCommand: String) -> String
-    {
-        let runLine =
-            ShellColor.run + ">>> run [\(machineName)] " + invocationCommand
-            + ShellColor.reset
-        return """
-            printf '%s\n' \(Self.shellQuote(runLine))
-            \(invocationCommand)
+    private static let divider =
+        "------------------------------------------------------------------------------"
 
-            """
+    private static func commandSource(
+        machine: Machine,
+        command: String,
+        harnessPrefix: [String]
+    ) -> String {
+        if machine.isLocal {
+            return Self.localCommandSource(command: command, harnessPrefix: harnessPrefix)
+        }
+
+        return Self.remoteCommandSource(
+            machine: machine,
+            command: command,
+            harnessPrefix: harnessPrefix
+        )
     }
 
-    private static func coloredDisplayName(_ value: String) -> String {
-        if value.first == "'", value.last == "'", value.count > 1 {
-            return Self.coloredCodeSpan(String(value.dropFirst().dropLast()))
-        }
+    private static func localCommandSource(command: String, harnessPrefix: [String]) -> String {
+        """
+        (
+        \(Self.harnessPrefixSource(harnessPrefix))
 
-        var result = ""
-        var segment = ""
-        var inCode = false
-
-        func flushSegment() {
-            guard !segment.isEmpty else {
-                return
-            }
-            if inCode {
-                result.append(Self.coloredCodeSpan(segment))
-            } else {
-                result.append(ShellColor.text + segment)
-            }
-            segment = ""
-        }
-
-        for character in value {
-            if character == "'" {
-                flushSegment()
-                inCode.toggle()
-            } else {
-                segment.append(character)
-            }
-        }
-        flushSegment()
-
-        if inCode {
-            result.append(ShellColor.text + "'")
-        }
-
-        return result
+        \(command)
+        )
+        """
     }
 
-    private static func coloredCodeSpan(_ value: String) -> String {
-        ShellColor.code + "`" + value + "`" + ShellColor.text
+    private static func remoteCommandSource(
+        machine: Machine,
+        command: String,
+        harnessPrefix: [String]
+    ) -> String {
+        """
+        \(Self.sshCommandPrefix(machine: machine)) <<'WENDY_E2E_REMOTE_COMMAND'
+        \(Self.harnessPrefixSource(harnessPrefix))
+
+        \(command)
+        WENDY_E2E_REMOTE_COMMAND
+        """
+    }
+
+    private static func harnessPrefixSource(_ harnessPrefix: [String]) -> String {
+        guard !harnessPrefix.isEmpty else {
+            return ""
+        }
+
+        return harnessPrefix.map { line in
+            line.hasPrefix("cd ") ? "\(line) || exit $?" : line
+        }.joined(separator: "\n")
+    }
+
+    private static func sshCommandPrefix(machine: Machine) -> String {
+        """
+        ssh \\
+          -o BatchMode=yes \\
+          -o StrictHostKeyChecking=no \\
+          -o UserKnownHostsFile=/dev/null \\
+          -o LogLevel=ERROR \\
+          -T \\
+          \(Self.shellQuote(Self.sshTarget(machine: machine)))
+        """
+    }
+
+    private static func sshTarget(machine: Machine) -> String {
+        let host = machine.address.contains(":") ? "[\(machine.address)]" : machine.address
+        return machine.user.map { "\($0)@\(host)" } ?? host
     }
 
     private static func shellQuote(_ value: String) -> String {
