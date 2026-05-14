@@ -463,18 +463,16 @@ public struct Recorder: Sendable {
         harnessPrefix: [String],
         scriptShellName: String
     ) throws {
-        let scriptURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
-            .deletingPathExtension()
-            .appendingPathExtension("sh")
+        let scriptURL = URL(
+            fileURLWithPath: URL(fileURLWithPath: self.recordPath, isDirectory: false)
+                .deletingPathExtension().path + ".sh.txt",
+            isDirectory: false
+        )
         let scriptExists = FileManager.default.fileExists(atPath: scriptURL.path)
 
         if !scriptExists {
             try Self.shellScriptHeader(shellName: scriptShellName)
                 .write(to: scriptURL, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: scriptURL.path
-            )
         }
 
         let handle = try FileHandle(forWritingTo: scriptURL)

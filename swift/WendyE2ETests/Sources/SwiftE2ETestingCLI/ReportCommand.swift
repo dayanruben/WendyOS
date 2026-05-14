@@ -758,7 +758,7 @@ private func renderCards(
             let statusText = test.status.statusText
             let hasAI = test.aiItems.isEmpty ? "false" : "true"
             let recordURL = recordingURL.appendingPathComponent(test.recordName)
-            let shellName = test.recordName.replacing(/\.md$/, with: ".sh")
+            let shellName = test.recordName.replacing(/\.md$/, with: ".sh.txt")
             let shellURL = recordingURL.appendingPathComponent(shellName)
             let recordLinks = [
                 FileManager.default.fileExists(atPath: shellURL.path)
