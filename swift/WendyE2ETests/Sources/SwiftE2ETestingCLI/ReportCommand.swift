@@ -709,17 +709,23 @@ private func renderCards(
             let statusText = test.status.statusText
             let hasAI = test.aiItems.isEmpty ? "false" : "true"
             let recordURL = recordingURL.appendingPathComponent(test.recordName)
-            let reportLink =
+            let shellName = test.recordName.replacing(/\.md$/, with: ".sh")
+            let shellURL = recordingURL.appendingPathComponent(shellName)
+            let recordLinks = [
+                FileManager.default.fileExists(atPath: shellURL.path)
+                    ? "<a class=\"report-button\" href=\"\(escapeHTML(recordLinkPrefix + shellName))\">Shell</a>"
+                    : "",
                 FileManager.default.fileExists(atPath: recordURL.path)
-                ? "<a class=\"report-button\" href=\"\(escapeHTML(recordLinkPrefix + test.recordName))\">Record</a>"
-                : ""
+                    ? "<a class=\"report-button\" href=\"\(escapeHTML(recordLinkPrefix + test.recordName))\">Record</a>"
+                    : "",
+            ].joined()
             let pathText = "\(test.suite) › \(test.name)"
 
             cards.append(
                 "<details class=\"test-details\" data-test-status=\"\(statusClass)\" data-has-ai=\"\(hasAI)\" data-has-ai-analysis=\"false\">"
             )
             cards.append(
-                "<summary class=\"test-summary\">\(reportLink)<span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span></summary>"
+                "<summary class=\"test-summary\">\(recordLinks)<span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span></summary>"
             )
 
             var body: [String] = []
