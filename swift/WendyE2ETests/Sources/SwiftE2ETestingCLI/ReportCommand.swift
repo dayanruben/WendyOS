@@ -24,6 +24,9 @@ struct ReportCommand: ParsableCommand {
     @Option(name: .long, help: "HTML report template path.")
     var template: String?
 
+    @Option(name: .long, help: "E2E run directory. Reads tests/ and writes report.html.")
+    var runDir: String?
+
     @Option(
         name: [.customLong("recording-dir"), .customLong("records-dir")],
         help: "Directory containing E2E command recordings and Swift Testing results."
@@ -43,12 +46,16 @@ struct ReportCommand: ParsableCommand {
                 ?? packageURL.appendingPathComponent("Support/e2e-report.template.html")
                 .path
         )
+        let runURL = runDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let recordingURL = try resolvedRecordingDirectory(
-            recordingDir.map { URL(fileURLWithPath: $0) }
+            recordingDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? runURL?.appendingPathComponent("tests", isDirectory: true)
                 ?? latestRecordingDirectory(packageURL: packageURL)
         )
         let outputURL = URL(
-            fileURLWithPath: output ?? recordingURL.appendingPathComponent("index.html").path
+            fileURLWithPath: output
+                ?? runURL?.appendingPathComponent("report.html").path
+                ?? recordingURL.appendingPathComponent("index.html").path
         )
 
         let records = try loadRecords(in: recordingURL)
@@ -188,20 +195,58 @@ private func latestRecordingDirectory(packageURL: URL) throws -> URL {
 }
 
 private func loadRecords(in recordingURL: URL) throws -> [String: [CommandRun]] {
-    let recordURLs = try FileManager.default.contentsOfDirectory(
-        at: recordingURL,
-        includingPropertiesForKeys: nil
-    ).filter { $0.pathExtension == "md" }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    let recordURLs = try commandRecordURLs(in: recordingURL)
 
     var records: [String: [CommandRun]] = [:]
     for recordURL in recordURLs {
-        records[recordURL.lastPathComponent] = try parseRecord(at: recordURL)
+        records[recordKey(for: recordURL)] = try parseRecord(
+            at: recordURL,
+            relativeTo: recordingURL
+        )
     }
     return records
 }
 
-private func parseRecord(at recordURL: URL) throws -> [CommandRun] {
+private func commandRecordURLs(in recordingURL: URL) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: recordingURL.path) else {
+        return []
+    }
+
+    guard
+        let enumerator = FileManager.default.enumerator(
+            at: recordingURL,
+            includingPropertiesForKeys: nil
+        )
+    else {
+        throw ValidationError("Recording directory cannot be read: \(recordingURL.path)")
+    }
+
+    return enumerator.compactMap { element -> URL? in
+        guard let url = element as? URL, isCommandRecord(url) else {
+            return nil
+        }
+        return url
+    }.sorted { $0.path < $1.path }
+}
+
+private func recordKey(for recordURL: URL) -> String {
+    if recordURL.lastPathComponent == "recording.md" {
+        return recordURL.deletingLastPathComponent().lastPathComponent
+    }
+    return recordURL.deletingPathExtension().lastPathComponent
+}
+
+private func relativePath(from baseURL: URL, to url: URL) -> String {
+    let basePath = baseURL.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"
+    guard path.hasPrefix(prefix) else {
+        return url.lastPathComponent
+    }
+    return String(path.dropFirst(prefix.count))
+}
+
+private func parseRecord(at recordURL: URL, relativeTo recordingURL: URL) throws -> [CommandRun] {
     let text = try String(contentsOf: recordURL, encoding: .utf8)
     var commands: [CommandRun] = []
 
@@ -210,7 +255,7 @@ private func parseRecord(at recordURL: URL) throws -> [CommandRun] {
         let sourceLine =
             Int(firstMatch(#"- Source: `([^`]+):(\d+)`"#, in: part, group: 2) ?? "") ?? -1
         var command = CommandRun(
-            record: recordURL.lastPathComponent,
+            record: relativePath(from: recordingURL, to: recordURL),
             sourcePath: sourcePath,
             sourceFile: sourcePath.isEmpty
                 ? "" : URL(fileURLWithPath: sourcePath).lastPathComponent,
@@ -493,9 +538,10 @@ private func parseTests(
             let body = Array(lines[(tests[testIndex].funcLine - 1)..<(nextLine - 1)])
             tests[testIndex].nextLine = nextLine
             tests[testIndex].aiItems = extractAIItems(from: body)
-            tests[testIndex].recordName =
-                "\(sourceURL.deletingPathExtension().lastPathComponent).\(slug(tests[testIndex].suite)).\(slug(tests[testIndex].name)).md"
-            tests[testIndex].commands = records[tests[testIndex].recordName, default: []].filter {
+            let recordKey =
+                "\(sourceURL.deletingPathExtension().lastPathComponent).\(slug(tests[testIndex].name))"
+            tests[testIndex].recordName = "\(recordKey)/recording.md"
+            tests[testIndex].commands = records[recordKey, default: []].filter {
                 command in
                 command.sourceFile == sourceURL.lastPathComponent
                     && tests[testIndex].funcLine <= command.sourceLine
@@ -665,6 +711,9 @@ private func runID(recordingURL: URL, outputURL: URL) -> String {
 
     for candidate in candidates {
         let name = candidate.lastPathComponent
+        if name.hasPrefix("e2e-run.") {
+            return String(name.dropFirst("e2e-run.".count))
+        }
         if name.hasPrefix("e2e-report.") {
             return String(name.dropFirst("e2e-report.".count))
         }

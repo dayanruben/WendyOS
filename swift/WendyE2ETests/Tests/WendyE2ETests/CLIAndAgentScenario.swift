@@ -54,7 +54,24 @@ final class CLIAndAgentScenario: Scenario, Sendable {
             let cliWorkingDirectory =
                 Environment.cliWorkingDirectory
                 ?? repositoryRootDirectoryURL.appendingPathComponent("go").path
-            let cliHomeDirectory = "/tmp/wendy-e2e-cli-home-\(UUID().uuidString)"
+            let testDirectoryURL = URL(
+                fileURLWithPath: recorder.testDirectoryPath,
+                isDirectory: true
+            )
+            let cliUsesRunDirectory =
+                Environment.runDirectory != nil && Environment.cliAddress == nil
+            let cliHomeDirectory =
+                cliUsesRunDirectory
+                ? testDirectoryURL.appendingPathComponent("home", isDirectory: true).path
+                : "/tmp/wendy-e2e-cli-home-\(UUID().uuidString)"
+            let cliTemporaryDirectory =
+                cliUsesRunDirectory
+                ? testDirectoryURL.appendingPathComponent("tmp", isDirectory: true).path
+                : "/tmp/wendy-e2e-cli-tmp-\(UUID().uuidString)"
+            let cliBinDirectory =
+                cliUsesRunDirectory
+                ? Environment.cliBinDirectory ?? "\(cliWorkingDirectory)/bin"
+                : "\(cliWorkingDirectory)/bin"
 
             let cliMachine = Machine(
                 id: "cli",
@@ -66,10 +83,18 @@ final class CLIAndAgentScenario: Scenario, Sendable {
                 workingDirectory: cliWorkingDirectory,
                 env: [
                     "HOME": cliHomeDirectory,
-                    "PATH": "\(cliWorkingDirectory)/bin:$PATH",
+                    "PATH": "\(cliBinDirectory):$PATH",
+                    "TMPDIR": cliTemporaryDirectory,
                     "WENDY_ANALYTICS": "false",
                 ]
             )
+
+            var agentEnv: [String: String] = [:]
+            if Environment.agentAddress == nil,
+                let agentBinDirectory = Environment.agentBinDirectory
+            {
+                agentEnv["PATH"] = "\(agentBinDirectory):$PATH"
+            }
 
             let agentMachine = Machine(
                 id: "agent",
@@ -79,7 +104,8 @@ final class CLIAndAgentScenario: Scenario, Sendable {
                 user: Environment.agentUser,
                 address: Environment.agentAddress,
                 workingDirectory: Environment.agentWorkingDirectory
-                    ?? repositoryRootDirectoryURL.appendingPathComponent("swift").path
+                    ?? repositoryRootDirectoryURL.appendingPathComponent("swift").path,
+                env: agentEnv
             )
 
             let cli = try await Session.begin(
@@ -93,7 +119,7 @@ final class CLIAndAgentScenario: Scenario, Sendable {
             )
             agentSession = agent
 
-            try await cli.sh("mkdir -p \"$HOME\"")
+            try await cli.sh("mkdir -p \"$HOME\" \"$TMPDIR\"")
 
             return (cli, agent)
         } catch {
@@ -111,14 +137,16 @@ final class CLIAndAgentScenario: Scenario, Sendable {
     ) async throws {
         var firstError: (any Error)?
 
-        if let cli {
+        if let cli, Environment.runDirectory == nil {
             do {
                 try await cli.sh(
                     """
-                    if [ -d "$HOME" ]; then
-                      chmod -R u+w "$HOME" 2>/dev/null || true
-                      rm -rf "$HOME"
-                    fi
+                    for directory in "$HOME" "$TMPDIR"; do
+                      if [ -d "$directory" ]; then
+                        chmod -R u+w "$directory" 2>/dev/null || true
+                        rm -rf "$directory"
+                      fi
+                    done
                     """
                 )
             } catch {

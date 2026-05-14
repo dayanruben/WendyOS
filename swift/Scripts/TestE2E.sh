@@ -38,10 +38,9 @@ if [[ -z "$RUN_ID" ]]; then
   RUN_ID="$(default_run_id)"
 fi
 
-DEFAULT_REPORT_DIR="$SWIFT_DIR/Build/e2e-report.$RUN_ID"
+DEFAULT_RUN_DIR="$SWIFT_DIR/Build/e2e-run.$RUN_ID"
 
-REPORT_DIR="${WENDY_E2E_ARTIFACT_DIR:-$DEFAULT_REPORT_DIR}"
-RECORDING_DIR="${WENDY_E2E_RECORDING_DIR:-${WENDY_E2E_TEST_RECORDS_DIR:-}}"
+RUN_DIR="${WENDY_E2E_RUN_DIR:-$DEFAULT_RUN_DIR}"
 REPORT_ZIP="${WENDY_E2E_REPORT_ZIP:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
@@ -56,16 +55,14 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Run the WendyAgent Swift E2E tests and package the generated E2E recording
+Run the WendyAgent Swift E2E tests and package the generated E2E run directory
 as a zip artifact.
 
 Options:
   --filter FILTER       Pass a SwiftPM test filter (can be repeated). If omitted,
                         WENDY_E2E_TEST_FILTERS may contain comma-separated
                         filters, otherwise the WendyE2ETests target is run.
-  --recording-dir DIR   Directory for generated E2E recording files.
-  --records-dir DIR    Deprecated alias for --recording-dir.
-  --artifact-dir DIR    Directory for generated report files.
+  --run-dir DIR         Directory for all generated E2E run files.
   --report-zip PATH     Path to the final zip artifact.
   --agent-user USER     Optional SSH user for the agent machine.
   --agent-address HOST  Optional address for the agent machine; defaults to hostname.
@@ -73,19 +70,17 @@ Options:
   --parallel            Allow SwiftPM to run tests in parallel. Only valid when
                         both CLI and agent machines use local transport.
   --verbose             Print each E2E machine command before it runs.
-  --no-report           Do not generate index.html from the E2E recording.
+  --no-report           Do not generate report.html from the E2E run directory.
   --help                Show this help message.
 
 Environment:
   WENDY_E2E_TEST_FILTERS              Comma-separated SwiftPM filters.
   WENDY_E2E_RUN_ID                    Optional run identifier for default paths.
+  WENDY_E2E_RUN_DIR                   Defaults to Build/e2e-run.<run-id>.
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
   WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
   WENDY_E2E_AGENT_WORKING_DIRECTORY   swift/ directory for the agent.
-  WENDY_E2E_ARTIFACT_DIR              Defaults to Build/e2e-report.<run-id>.
-  WENDY_E2E_RECORDING_DIR             Defaults to Build/e2e-report.<run-id>/recording.
-  WENDY_E2E_TEST_RECORDS_DIR          Backward-compatible alias for recording dir.
-  WENDY_E2E_GENERATE_REPORT           true/false; generates index.html.
+  WENDY_E2E_GENERATE_REPORT           true/false; generates report.html.
   WENDY_E2E_PARALLEL                  true/false; enables SwiftPM parallel tests.
   WENDY_E2E_VERBOSE                   true/false; prints machine commands.
 EOF
@@ -97,13 +92,13 @@ while [[ $# -gt 0 ]]; do
       TEST_FILTERS+=("$2")
       shift 2
       ;;
-    --recording-dir|--records-dir)
-      RECORDING_DIR="$2"
+    --run-dir)
+      RUN_DIR="$2"
       shift 2
       ;;
-    --artifact-dir)
-      REPORT_DIR="$2"
-      shift 2
+    --recording-dir|--records-dir|--artifact-dir)
+      echo "ERROR: $1 is no longer supported; use --run-dir instead." >&2
+      exit 64
       ;;
     --report-zip)
       REPORT_ZIP="$2"
@@ -177,6 +172,12 @@ if [[ "$PARALLEL" == "true" && ( -n "$CLI_ADDRESS" || -n "$AGENT_ADDRESS" ) ]]; 
   exit 64
 fi
 
+if [[ -n "$CLI_ADDRESS" ]]; then
+  echo "ERROR: TestE2E.sh builds the wendy CLI into the local run directory." >&2
+  echo "Unset WENDY_E2E_CLI_ADDRESS to use the managed E2E CLI binary." >&2
+  exit 64
+fi
+
 absolute_dir_path() {
   mkdir -p "$1"
   (cd "$1" && pwd)
@@ -193,26 +194,22 @@ absolute_file_path() {
   printf "%s/%s" "$dir" "$base"
 }
 
-REPORT_DIR="$(absolute_dir_path "$REPORT_DIR")"
-if [[ -z "$RECORDING_DIR" ]]; then
-  RECORDING_DIR="$REPORT_DIR/recording"
-fi
-if [[ -z "$REPORT_ZIP" ]]; then
-  REPORT_ZIP="$REPORT_DIR.zip"
-fi
-RECORDING_DIR="$(absolute_dir_path "$RECORDING_DIR")"
-REPORT_ZIP="$(absolute_file_path "$REPORT_ZIP")"
-REPORT_RECORDING_DIR="$REPORT_DIR/recording"
-TEST_RESULTS_OUTPUT_BASE="$REPORT_DIR/test-results.xml"
+RUN_DIR="$(absolute_dir_path "$RUN_DIR")"
+CLI_BIN_DIR="$RUN_DIR/cli/bin"
+AGENT_BIN_DIR="$RUN_DIR/agent/bin"
+TESTS_DIR="$RUN_DIR/tests"
+TEST_RESULTS_OUTPUT_BASE="$RUN_DIR/test-results.xml"
 
-rm -rf "$REPORT_ZIP"
-if [[ "$RECORDING_DIR" == "$REPORT_RECORDING_DIR" ]]; then
-  rm -rf "$REPORT_DIR"
-  mkdir -p "$RECORDING_DIR"
-else
-  rm -rf "$REPORT_DIR" "$RECORDING_DIR"
-  mkdir -p "$REPORT_RECORDING_DIR" "$RECORDING_DIR"
+if [[ -z "$REPORT_ZIP" ]]; then
+  REPORT_ZIP="$RUN_DIR.zip"
 fi
+REPORT_ZIP="$(absolute_file_path "$REPORT_ZIP")"
+
+rm -rf "$REPORT_ZIP" "$RUN_DIR"
+mkdir -p \
+  "$CLI_BIN_DIR" \
+  "$AGENT_BIN_DIR" \
+  "$TESTS_DIR"
 
 ssh_target() {
   local host="$AGENT_ADDRESS"
@@ -227,6 +224,29 @@ ssh_target() {
   fi
 }
 
+build_cli() {
+  local go_dir="$SWIFT_DIR/../go"
+  local wendy_path="$CLI_BIN_DIR/wendy"
+
+  echo "==> Building wendy CLI"
+  echo "    Output: $wendy_path"
+  (
+    cd "$go_dir"
+    go build -o "$wendy_path" ./cmd/wendy
+  )
+
+  local resolved
+  resolved="$(PATH="$CLI_BIN_DIR:$PATH" command -v wendy || true)"
+  if [[ "$resolved" != "$wendy_path" ]]; then
+    echo "ERROR: managed wendy CLI was not first on PATH." >&2
+    echo "Expected: $wendy_path" >&2
+    echo "Resolved: ${resolved:-<not found>}" >&2
+    exit 1
+  fi
+
+  echo "    Version: $("$wendy_path" --version)"
+}
+
 generate_html_report() {
   if [[ "$GENERATE_REPORT" != "true" ]]; then
     return
@@ -235,9 +255,7 @@ generate_html_report() {
   echo "==> Generating Swift E2E HTML report"
   (
     cd "$PACKAGE_DIR"
-    swift run swift-e2e-testing report \
-      --recording-dir "$RECORDING_DIR" \
-      --output "$REPORT_DIR/index.html"
+    swift run swift-e2e-testing report --run-dir "$RUN_DIR"
   )
 }
 
@@ -245,26 +263,16 @@ collect_reports() {
   local status="$1"
 
   rm -rf "$REPORT_ZIP"
-  mkdir -p "$REPORT_DIR"
-
-  if [[ "$RECORDING_DIR" != "$REPORT_RECORDING_DIR" ]]; then
-    rm -rf "$REPORT_RECORDING_DIR"
-    mkdir -p "$REPORT_RECORDING_DIR"
-    if [[ -d "$RECORDING_DIR" ]]; then
-      find "$RECORDING_DIR" -maxdepth 1 -type f \( -name '*.md' -o -name '*.sh' -o -name '*.xml' \) -print0 \
-        | while IFS= read -r -d '' file; do
-            cp "$file" "$REPORT_RECORDING_DIR/"
-          done
-    fi
-  fi
+  mkdir -p "$RUN_DIR"
 
   {
     echo "# Swift E2E Test Reports"
     echo
     echo "- Exit status: \`$status\`"
     echo "- Run ID: \`$RUN_ID\`"
-    echo "- Report directory: \`$REPORT_DIR\`"
-    echo "- Recording directory: \`$RECORDING_DIR\`"
+    echo "- Run directory: \`$RUN_DIR\`"
+    echo "- CLI binary: \`$CLI_BIN_DIR/wendy\`"
+    echo "- Tests directory: \`$TESTS_DIR\`"
     echo "- Verbose: \`$VERBOSE\`"
     echo "- Parallel: \`$PARALLEL\`"
     echo "- HTML report: \`$GENERATE_REPORT\`"
@@ -275,8 +283,8 @@ collect_reports() {
     fi
     echo
     echo "## Files"
-    find "$REPORT_DIR" -type f | sort | sed "s#^$REPORT_DIR/#- #"
-  } > "$REPORT_DIR/README.md"
+    find "$RUN_DIR" -type f | sort | sed "s#^$RUN_DIR/#- #"
+  } > "$RUN_DIR/README.md"
 
   local report_zip_dir
   local report_zip
@@ -286,12 +294,12 @@ collect_reports() {
   report_zip="$report_zip_dir/$(basename "$REPORT_ZIP")"
 
   if command -v zip >/dev/null 2>&1; then
-    (cd "$REPORT_DIR" && zip -qr "$report_zip" .)
+    (cd "$(dirname "$RUN_DIR")" && zip -qr "$report_zip" "$(basename "$RUN_DIR")")
   else
-    (cd "$(dirname "$REPORT_DIR")" && ditto -c -k --keepParent "$(basename "$REPORT_DIR")" "$report_zip")
+    (cd "$(dirname "$RUN_DIR")" && ditto -c -k --keepParent "$(basename "$RUN_DIR")" "$report_zip")
   fi
 
-  echo "==> Wrote Swift E2E reports zip: $report_zip"
+  echo "==> Wrote Swift E2E run zip: $report_zip"
 }
 
 SWIFT_TEST_ARGS=("test")
@@ -305,11 +313,24 @@ else
   SWIFT_TEST_ARGS+=("--filter" "$joined_filter")
 fi
 
+build_cli
+
+SWIFT_TEST_ENV=(
+  "WENDY_E2E_RUN_ID=$RUN_ID"
+  "WENDY_E2E_RUN_DIR=$RUN_DIR"
+  "WENDY_E2E_AGENT_USER=$AGENT_USER"
+  "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
+  "WENDY_E2E_AGENT_WORKING_DIRECTORY=$AGENT_WORKDIR"
+  "WENDY_E2E_PARALLEL=$PARALLEL"
+  "WENDY_E2E_VERBOSE=$VERBOSE"
+)
 echo "==> Running Swift E2E tests"
 echo "    Package:  $PACKAGE_DIR"
 echo "    Run ID:   $RUN_ID"
-echo "    Report:   $REPORT_DIR"
-echo "    Recording: $RECORDING_DIR"
+echo "    Run dir:  $RUN_DIR"
+echo "    CLI:      $CLI_BIN_DIR/wendy"
+echo "    Tests:    $TESTS_DIR"
+echo "    Report:   $RUN_DIR/report.html"
 echo "    Filters:  ${TEST_FILTERS[*]}"
 echo "    Verbose:  $VERBOSE"
 echo "    Parallel: $PARALLEL"
@@ -321,15 +342,8 @@ fi
 set +e
 (
   cd "$PACKAGE_DIR"
-  WENDY_E2E_RUN_ID="$RUN_ID" \
-  WENDY_E2E_RECORDING_DIR="$RECORDING_DIR" \
-  WENDY_E2E_TEST_RECORDS_DIR="$RECORDING_DIR" \
-  WENDY_E2E_AGENT_USER="$AGENT_USER" \
-  WENDY_E2E_AGENT_ADDRESS="$AGENT_ADDRESS" \
-  WENDY_E2E_AGENT_WORKING_DIRECTORY="$AGENT_WORKDIR" \
-  WENDY_E2E_PARALLEL="$PARALLEL" \
-  WENDY_E2E_VERBOSE="$VERBOSE" \
-  swift "${SWIFT_TEST_ARGS[@]}" \
+  env "${SWIFT_TEST_ENV[@]}" \
+    swift "${SWIFT_TEST_ARGS[@]}" \
     --xunit-output "$TEST_RESULTS_OUTPUT_BASE"
 )
 TEST_STATUS=$?

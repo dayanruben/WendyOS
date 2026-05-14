@@ -10,10 +10,9 @@ From this package:
 swift test --filter WendyE2ETests
 ```
 
-From `swift/`, the helper script writes command recordings to
-`Build/e2e-report.<run-id>/recording`, Swift Testing results to
-`Build/e2e-report.<run-id>/test-results-swift-testing.xml`, and the HTML
-report to `Build/e2e-report.<run-id>/index.html`:
+From `swift/`, the helper script writes the full run bundle to
+`Build/e2e-run.<run-id>/`, including the managed CLI binary, per-test
+sandboxes, Swift Testing results, command recordings, and `report.html`:
 
 ```bash
 bash Scripts/TestE2E.sh
@@ -22,20 +21,22 @@ bash Scripts/TestE2E.sh
 For reproducible command recordings when invoking SwiftPM directly:
 
 ```bash
-WENDY_E2E_RECORDING_DIR="$PWD/.build/e2e-recording.current" \
-  swift test --filter WendyE2ETests
+RUN_DIR="$PWD/.build/e2e-run.current"
+rm -rf "$RUN_DIR"
+mkdir -p "$RUN_DIR/cli/bin"
+(cd ../../go && go build -o "$RUN_DIR/cli/bin/wendy" ./cmd/wendy)
+WENDY_E2E_RUN_DIR="$RUN_DIR" swift test --filter WendyE2ETests
 ```
 
-Each implemented test writes a Markdown recording named
-`<test-file-name-without-suffix>.<test-suite-dasherized>.<test-name-dasherized>.md`.
-A sibling `.sh` file with the same stem replays the captured `sh()` invocations
-in order for manual debugging.
+Each implemented test writes recordings under
+`<run-dir>/tests/<test-file-name-without-suffix>.<test-name-dasherized>/`.
+The `recording.sh` file replays the captured `sh()` invocations in order for
+manual debugging.
 
 To render the HTML report from this package:
 
 ```bash
-swift run swift-e2e-testing report \
-  --recording-dir .build/e2e-recording.current
+swift run swift-e2e-testing report --run-dir .build/e2e-run.current
 ```
 
 ## Behavioral spec workflow

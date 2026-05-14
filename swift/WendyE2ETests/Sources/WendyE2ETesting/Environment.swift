@@ -10,6 +10,10 @@ public enum Environment {
         flag("WENDY_E2E_VERBOSE")
     }
 
+    public static var runDirectory: String? {
+        value("WENDY_E2E_RUN_DIR")
+    }
+
     public static var cliOS: MachineOS? {
         value("WENDY_E2E_CLI_OS").flatMap(MachineOS.init(environmentValue:))
     }
@@ -24,6 +28,10 @@ public enum Environment {
 
     public static var cliWorkingDirectory: String? {
         value("WENDY_E2E_CLI_WORKING_DIRECTORY")
+    }
+
+    public static var cliBinDirectory: String? {
+        runDirectoryPath("cli", "bin")
     }
 
     public static var agentOS: MachineOS? {
@@ -42,8 +50,14 @@ public enum Environment {
         value("WENDY_E2E_AGENT_WORKING_DIRECTORY")
     }
 
+    public static var agentBinDirectory: String? {
+        runDirectoryPath("agent", "bin")
+    }
+
     public static var testRecordsDirectory: String? {
-        value("WENDY_E2E_RECORDING_DIR") ?? value("WENDY_E2E_TEST_RECORDS_DIR")
+        value("WENDY_E2E_RECORDING_DIR")
+            ?? value("WENDY_E2E_TEST_RECORDS_DIR")
+            ?? runDirectoryPath("tests")
     }
 
     private static func value(_ name: String) -> String? {
@@ -51,6 +65,18 @@ public enum Environment {
             return nil
         }
         return value
+    }
+
+    private static func runDirectoryPath(_ components: String...) -> String? {
+        guard let runDirectory else {
+            return nil
+        }
+
+        return components.reduce(
+            URL(fileURLWithPath: runDirectory, isDirectory: true)
+        ) { url, component in
+            url.appendingPathComponent(component, isDirectory: true)
+        }.path
     }
 
     private static func flag(_ name: String) -> Bool {

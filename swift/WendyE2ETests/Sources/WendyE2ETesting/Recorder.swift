@@ -2,6 +2,7 @@ import Foundation
 
 public struct Recorder: Sendable {
     public let recordPath: String
+    public let testDirectoryPath: String
 
     public init(
         filePath: String,
@@ -9,7 +10,9 @@ public struct Recorder: Sendable {
         line: Int
     ) throws {
         let identity = Self.testIdentity(filePath: filePath, function: function, line: line)
-        self.recordPath = try Self.recordURL(identity: identity).path
+        let testDirectoryURL = try Self.testDirectoryURL(identity: identity)
+        self.testDirectoryPath = testDirectoryURL.path
+        self.recordPath = testDirectoryURL.appendingPathComponent("recording.md").path
         self.source = Source(
             filePath: filePath,
             fileName: identity.fileName,
@@ -106,8 +109,12 @@ public struct Recorder: Sendable {
         return slug.isEmpty ? "unknown" : slug
     }
 
+    public static func recordingDirectoryName(filePath: String, testName: String) -> String {
+        "\(Self.fileName(from: filePath)).\(Self.slug(testName))"
+    }
+
     static func recordingFileName(filePath: String, suite: String, testName: String) -> String {
-        "\(Self.fileName(from: filePath)).\(Self.slug(suite)).\(Self.slug(testName)).md"
+        "\(Self.recordingDirectoryName(filePath: filePath, testName: testName)).md"
     }
 
     // MARK: - Private
@@ -146,17 +153,37 @@ public struct Recorder: Sendable {
         return "e2e-recording.\(formatter.string(from: Date()))"
     }()
 
-    private static func recordURL(identity: TestIdentity) throws -> URL {
-        let directoryURL = try Self.recordsDirectoryURL()
+    private static func testDirectoryURL(identity: TestIdentity) throws -> URL {
+        if let runDirectory = Environment.runDirectory {
+            let directoryURL = URL(fileURLWithPath: runDirectory, isDirectory: true)
+                .appendingPathComponent("tests", isDirectory: true)
+                .appendingPathComponent(
+                    Self.recordingDirectoryName(
+                        filePath: identity.filePath,
+                        testName: identity.testName
+                    ),
+                    isDirectory: true
+                )
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true
+            )
+            return directoryURL
+        }
 
-        return directoryURL.appendingPathComponent(
-            Self.recordingFileName(
-                filePath: identity.filePath,
-                suite: identity.suite,
-                testName: identity.testName
-            ),
-            isDirectory: false
+        let directoryURL = try Self.recordsDirectoryURL()
+            .appendingPathComponent(
+                Self.recordingDirectoryName(
+                    filePath: identity.filePath,
+                    testName: identity.testName
+                ),
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
         )
+        return directoryURL
     }
 
     private static func recordsDirectoryURL() throws -> URL {

@@ -326,7 +326,7 @@ struct `session` {
                 suite: "'wendy device info'",
                 testName: "'--device' selects an explicit device"
             )
-                == "WendyDeviceInfoTests.wendy-device-info.device-selects-an-explicit-device.md"
+                == "WendyDeviceInfoTests.device-selects-an-explicit-device.md"
         )
     }
 
