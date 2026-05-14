@@ -494,7 +494,7 @@ private func parseTests(
             tests[testIndex].nextLine = nextLine
             tests[testIndex].aiItems = extractAIItems(from: body)
             tests[testIndex].recordName =
-                "\(sourceURL.deletingPathExtension().lastPathComponent).\(slug(tests[testIndex].name)).md"
+                "\(sourceURL.deletingPathExtension().lastPathComponent).\(slug(tests[testIndex].suite)).\(slug(tests[testIndex].name)).md"
             tests[testIndex].commands = records[tests[testIndex].recordName, default: []].filter {
                 command in
                 command.sourceFile == sourceURL.lastPathComponent
@@ -793,20 +793,69 @@ private func renderCommands(_ commands: [CommandRun]) -> String {
 private func slug(_ value: String) -> String {
     var result = ""
     var needsSeparator = false
+    var previousKind: SlugCharacterKind?
+    let scalars = Array(value.unicodeScalars)
 
-    for character in value {
-        if character.isASCII, character.isLetter || character.isNumber {
-            if needsSeparator, !result.isEmpty {
-                result.append("-")
-            }
-            result.append(character.lowercased())
-            needsSeparator = false
-        } else if !result.isEmpty {
-            needsSeparator = true
+    for index in scalars.indices {
+        let scalar = scalars[index]
+        guard let kind = SlugCharacterKind(scalar) else {
+            needsSeparator = !result.isEmpty
+            previousKind = nil
+            continue
         }
+
+        let nextKind =
+            scalars.index(after: index) < scalars.endIndex
+            ? SlugCharacterKind(scalars[scalars.index(after: index)]) : nil
+        if !result.isEmpty,
+            needsSeparator
+                || needsCamelCaseSeparator(
+                    previousKind: previousKind,
+                    currentKind: kind,
+                    nextKind: nextKind
+                )
+        {
+            result.append("-")
+        }
+
+        result.append(String(scalar).lowercased())
+        needsSeparator = false
+        previousKind = kind
     }
 
     return result.isEmpty ? "unknown" : result
+}
+
+private func needsCamelCaseSeparator(
+    previousKind: SlugCharacterKind?,
+    currentKind: SlugCharacterKind,
+    nextKind: SlugCharacterKind?
+) -> Bool {
+    switch (previousKind, currentKind, nextKind) {
+    case (.lower?, .upper, _), (.digit?, .upper, _), (.upper?, .upper, .lower?):
+        return true
+    default:
+        return false
+    }
+}
+
+private enum SlugCharacterKind {
+    case digit
+    case lower
+    case upper
+
+    init?(_ scalar: Unicode.Scalar) {
+        switch scalar.value {
+        case 48...57:
+            self = .digit
+        case 65...90:
+            self = .upper
+        case 97...122:
+            self = .lower
+        default:
+            return nil
+        }
+    }
 }
 
 private func displayName(_ fileName: String) -> String {

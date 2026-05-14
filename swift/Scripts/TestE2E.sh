@@ -251,7 +251,7 @@ collect_reports() {
     rm -rf "$REPORT_RECORDING_DIR"
     mkdir -p "$REPORT_RECORDING_DIR"
     if [[ -d "$RECORDING_DIR" ]]; then
-      find "$RECORDING_DIR" -maxdepth 1 -type f \( -name '*.md' -o -name '*.xml' \) -print0 \
+      find "$RECORDING_DIR" -maxdepth 1 -type f \( -name '*.md' -o -name '*.sh' -o -name '*.xml' \) -print0 \
         | while IFS= read -r -d '' file; do
             cp "$file" "$REPORT_RECORDING_DIR/"
           done

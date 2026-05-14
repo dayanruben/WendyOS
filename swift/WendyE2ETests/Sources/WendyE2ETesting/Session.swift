@@ -119,6 +119,7 @@ public struct Session: Sendable {
         }
 
         let invocation = self.invocation(for: command)
+        let invocationCommand = Self.shellCommand(for: invocation)
 
         let start = ContinuousClock.now
         let record = try await Self.invoke(
@@ -135,7 +136,8 @@ public struct Session: Sendable {
             terminationStatus: String(describing: record.terminationStatus),
             duration: duration,
             standardOutput: Self.outputDescription(record.standardOutput),
-            standardError: Self.outputDescription(record.standardError)
+            standardError: Self.outputDescription(record.standardError),
+            invocationCommand: invocationCommand
         )
 
         return record
@@ -371,6 +373,12 @@ public struct Session: Sendable {
 
     private static func printCommand(machine: String, command: String) {
         Self.printToStandardError("[\(machine)] $ \(command)\n")
+    }
+
+    private static func shellCommand(for invocation: Invocation) -> String {
+        ([invocation.executable] + invocation.arguments)
+            .map(Self.shellQuote)
+            .joined(separator: " ")
     }
 
     private static func printToStandardError(_ message: String) {

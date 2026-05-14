@@ -8,10 +8,14 @@ public struct Reporter: Sendable {
         function: String,
         line: Int
     ) throws {
-        self.reportPath = try Self.reportURL(filePath: filePath, function: function).path
+        let identity = Self.testIdentity(filePath: filePath, function: function, line: line)
+        self.reportPath = try Self.reportURL(identity: identity).path
         self.source = Source(
             filePath: filePath,
+            fileName: identity.fileName,
             function: function,
+            suite: identity.suite,
+            testName: identity.testName,
             line: line
         )
     }
@@ -23,24 +27,22 @@ public struct Reporter: Sendable {
         terminationStatus: String,
         duration: Duration,
         standardOutput: String,
-        standardError: String
+        standardError: String,
+        invocationCommand: String
     ) {
         do {
             let reportURL = URL(fileURLWithPath: self.reportPath, isDirectory: false)
-            let fileExists = FileManager.default.fileExists(atPath: reportURL.path)
+            let reportExists = FileManager.default.fileExists(atPath: reportURL.path)
 
-            if !fileExists {
-                try Self.reportHeader(
-                    filePath: self.source.filePath,
-                    function: self.source.function
-                )
-                .write(to: reportURL, atomically: true, encoding: .utf8)
+            if !reportExists {
+                try Self.reportHeader(source: self.source)
+                    .write(to: reportURL, atomically: true, encoding: .utf8)
             }
 
-            let handle = try FileHandle(forWritingTo: reportURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(
+            let reportHandle = try FileHandle(forWritingTo: reportURL)
+            defer { try? reportHandle.close() }
+            try reportHandle.seekToEnd()
+            try reportHandle.write(
                 contentsOf: Data(
                     Self.commandReport(
                         session: session,
@@ -54,6 +56,11 @@ public struct Reporter: Sendable {
                         standardError: standardError
                     ).utf8
                 )
+            )
+
+            try self.recordShellScript(
+                session: session,
+                invocationCommand: invocationCommand
             )
         } catch {
             Self.printToStandardError("Failed to write Wendy E2E command report: \(error)\n")
@@ -96,12 +103,41 @@ public struct Reporter: Sendable {
         return slug.isEmpty ? "unknown" : slug
     }
 
+    static func recordingFileName(filePath: String, suite: String, testName: String) -> String {
+        "\(Self.fileName(from: filePath)).\(Self.slug(suite)).\(Self.slug(testName)).md"
+    }
+
     // MARK: - Private
 
     private struct Source: Sendable {
         let filePath: String
+        let fileName: String
         let function: String
+        let suite: String
+        let testName: String
         let line: Int
+    }
+
+    private struct TestIdentity: Sendable {
+        let filePath: String
+        let fileName: String
+        let suite: String
+        let testName: String
+    }
+
+    private struct TestDeclaration: Sendable {
+        let suite: String
+        let testName: String
+        let line: Int
+    }
+
+    private enum ShellColor {
+        static let reset = "\u{001B}[0m"
+        static let marker = "\u{001B}[1;35m"
+        static let file = "\u{001B}[1;34m"
+        static let code = "\u{001B}[1;36m"
+        static let text = "\u{001B}[0;37m"
+        static let run = "\u{001B}[1;33m"
     }
 
     private let source: Source
@@ -116,11 +152,15 @@ public struct Reporter: Sendable {
         return "e2e-recording.\(formatter.string(from: Date()))"
     }()
 
-    private static func reportURL(filePath: String, function: String) throws -> URL {
+    private static func reportURL(identity: TestIdentity) throws -> URL {
         let directoryURL = try Self.recordsDirectoryURL()
 
         return directoryURL.appendingPathComponent(
-            "\(Self.fileName(from: filePath)).\(Self.slug(function)).md",
+            Self.recordingFileName(
+                filePath: identity.filePath,
+                suite: identity.suite,
+                testName: identity.testName
+            ),
             isDirectory: false
         )
     }
@@ -170,6 +210,131 @@ public struct Reporter: Sendable {
         URL(fileURLWithPath: filePath, isDirectory: false).deletingPathExtension().lastPathComponent
     }
 
+    private static func testIdentity(filePath: String, function: String, line: Int) -> TestIdentity
+    {
+        let fileName = Self.fileName(from: filePath)
+        let fallbackTestName = Self.normalizedFunctionName(function)
+        let fallback = TestIdentity(
+            filePath: filePath,
+            fileName: fileName,
+            suite: fileName,
+            testName: fallbackTestName
+        )
+
+        guard let source = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+            return fallback
+        }
+
+        let declarations = Self.testDeclarations(in: source, fallbackSuite: fileName)
+        if let declaration = Self.testDeclaration(containing: line, in: declarations) {
+            return TestIdentity(
+                filePath: filePath,
+                fileName: fileName,
+                suite: declaration.suite,
+                testName: declaration.testName
+            )
+        }
+
+        if let declaration = declarations.last(where: { $0.testName == fallbackTestName }) {
+            return TestIdentity(
+                filePath: filePath,
+                fileName: fileName,
+                suite: declaration.suite,
+                testName: declaration.testName
+            )
+        }
+
+        return fallback
+    }
+
+    private static func testDeclarations(
+        in source: String,
+        fallbackSuite: String
+    ) -> [TestDeclaration] {
+        let lines = source.components(separatedBy: .newlines)
+        var suite = fallbackSuite
+        var pendingTest = false
+        var declarations: [TestDeclaration] = []
+
+        for (offset, line) in lines.enumerated() {
+            if let suiteName = Self.suiteName(in: line) {
+                suite = suiteName
+            }
+
+            if line.contains("@Test") {
+                pendingTest = true
+            }
+
+            guard let testName = Self.functionName(in: line) else {
+                continue
+            }
+
+            if pendingTest {
+                declarations.append(
+                    TestDeclaration(
+                        suite: suite,
+                        testName: testName,
+                        line: offset + 1
+                    )
+                )
+                pendingTest = false
+            }
+        }
+
+        return declarations
+    }
+
+    private static func testDeclaration(
+        containing line: Int,
+        in declarations: [TestDeclaration]
+    ) -> TestDeclaration? {
+        for index in declarations.indices {
+            let declaration = declarations[index]
+            let nextLine =
+                declarations.index(after: index) < declarations.endIndex
+                ? declarations[declarations.index(after: index)].line : Int.max
+            if declaration.line <= line, line < nextLine {
+                return declaration
+            }
+        }
+
+        return nil
+    }
+
+    private static func suiteName(in line: String) -> String? {
+        Self.firstMatch(#"\bstruct\s+`([^`]+)`\s*\{"#, in: line)
+            ?? Self.firstMatch(#"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"#, in: line)
+    }
+
+    private static func functionName(in line: String) -> String? {
+        Self.firstMatch(#"\bfunc\s+`([^`]+)`\s*\("#, in: line)
+            ?? Self.firstMatch(#"\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("#, in: line)
+    }
+
+    private static func firstMatch(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > 1,
+            let swiftRange = Range(match.range(at: 1), in: text)
+        else {
+            return nil
+        }
+        return String(text[swiftRange])
+    }
+
+    private static func normalizedFunctionName(_ function: String) -> String {
+        var value = function
+        if value.hasSuffix("()") {
+            value.removeLast(2)
+        }
+        if value.first == "`", value.last == "`" {
+            value = String(value.dropFirst().dropLast())
+        }
+        return value
+    }
+
     private static func needsCamelCaseSeparator(
         previousKind: SlugCharacterKind?,
         currentKind: SlugCharacterKind,
@@ -183,12 +348,14 @@ public struct Reporter: Sendable {
         }
     }
 
-    private static func reportHeader(filePath: String, function: String) -> String {
+    private static func reportHeader(source: Source) -> String {
         """
         # Wendy E2E test report
 
-        - Source: `\(filePath)`
-        - Function: `\(function)`
+        - Source: `\(source.filePath)`
+        - Suite: `\(source.suite)`
+        - Test: `\(source.testName)`
+        - Function: `\(source.function)`
 
         """
     }
@@ -245,6 +412,112 @@ public struct Reporter: Sendable {
             ```
 
             """
+    }
+
+    private func recordShellScript(
+        session: Session,
+        invocationCommand: String
+    ) throws {
+        let scriptURL = URL(fileURLWithPath: self.reportPath, isDirectory: false)
+            .deletingPathExtension()
+            .appendingPathExtension("sh")
+        let scriptExists = FileManager.default.fileExists(atPath: scriptURL.path)
+
+        if !scriptExists {
+            try Self.shellScriptHeader(source: self.source)
+                .write(to: scriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: scriptURL.path
+            )
+        }
+
+        let handle = try FileHandle(forWritingTo: scriptURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(
+            contentsOf: Data(
+                Self.shellScriptCommand(
+                    machineName: session.machine.name,
+                    invocationCommand: invocationCommand
+                ).utf8
+            )
+        )
+    }
+
+    private static func shellScriptHeader(source: Source) -> String {
+        let location = "\(source.fileName).swift:\(source.line)"
+        let heading =
+            ShellColor.marker + "==> " + ShellColor.file + location
+            + ShellColor.text + " > " + Self.coloredDisplayName(source.suite)
+            + ShellColor.text + " > " + Self.coloredDisplayName(source.testName)
+            + ShellColor.reset
+
+        return """
+            #!/bin/sh
+
+            # Replays commands captured for this Wendy E2E test recording.
+            printf '%s\n' \(Self.shellQuote(heading))
+
+            """
+    }
+
+    private static func shellScriptCommand(machineName: String, invocationCommand: String) -> String
+    {
+        let runLine =
+            ShellColor.run + ">>> run [\(machineName)] " + invocationCommand
+            + ShellColor.reset
+        return """
+            printf '%s\n' \(Self.shellQuote(runLine))
+            \(invocationCommand)
+
+            """
+    }
+
+    private static func coloredDisplayName(_ value: String) -> String {
+        if value.first == "'", value.last == "'", value.count > 1 {
+            return Self.coloredCodeSpan(String(value.dropFirst().dropLast()))
+        }
+
+        var result = ""
+        var segment = ""
+        var inCode = false
+
+        func flushSegment() {
+            guard !segment.isEmpty else {
+                return
+            }
+            if inCode {
+                result.append(Self.coloredCodeSpan(segment))
+            } else {
+                result.append(ShellColor.text + segment)
+            }
+            segment = ""
+        }
+
+        for character in value {
+            if character == "'" {
+                flushSegment()
+                inCode.toggle()
+            } else {
+                segment.append(character)
+            }
+        }
+        flushSegment()
+
+        if inCode {
+            result.append(ShellColor.text + "'")
+        }
+
+        return result
+    }
+
+    private static func coloredCodeSpan(_ value: String) -> String {
+        ShellColor.code + "`" + value + "`" + ShellColor.text
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func environmentDescription(_ environment: [String: String]) -> String {

@@ -314,11 +314,19 @@ struct `session` {
     }
 
     @Test
-    func `dasherizes camel-cased function names for command record file names`() {
+    func `dasherizes command record file names`() {
         #expect(Reporter.slug("buildAgent(with:)") == "build-agent-with")
         #expect(Reporter.slug("URLParserTests") == "url-parser-tests")
         #expect(
             Reporter.slug("'--json' reports a missing device") == "json-reports-a-missing-device"
+        )
+        #expect(
+            Reporter.recordingFileName(
+                filePath: "/tmp/WendyDeviceInfoTests.swift",
+                suite: "'wendy device info'",
+                testName: "'--device' selects an explicit device"
+            )
+                == "WendyDeviceInfoTests.wendy-device-info.device-selects-an-explicit-device.md"
         )
     }
 

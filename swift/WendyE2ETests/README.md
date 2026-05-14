@@ -26,6 +26,11 @@ WENDY_E2E_RECORDING_DIR="$PWD/.build/e2e-recording.current" \
   swift test --filter WendyE2ETests
 ```
 
+Each implemented test writes a Markdown recording named
+`<test-file-name-without-suffix>.<test-suite-dasherized>.<test-name-dasherized>.md`.
+A sibling `.sh` file with the same stem replays the captured `sh()` invocations
+in order for manual debugging.
+
 To render the HTML report from this package:
 
 ```bash
