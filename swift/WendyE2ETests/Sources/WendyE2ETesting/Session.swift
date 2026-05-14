@@ -137,7 +137,8 @@ public struct Session: Sendable {
             duration: duration,
             standardOutput: Self.outputDescription(record.standardOutput),
             standardError: Self.outputDescription(record.standardError),
-            harnessPrefix: harnessPrefix
+            harnessPrefix: harnessPrefix,
+            scriptShellName: Self.localShellName
         )
 
         return record
@@ -263,6 +264,11 @@ public struct Session: Sendable {
         }
 
         return shell
+    }
+
+    private static var localShellName: String {
+        let name = URL(fileURLWithPath: Self.localShellPath, isDirectory: false).lastPathComponent
+        return name.isEmpty ? "sh" : name
     }
 
     private func harnessPrefix() -> [String] {

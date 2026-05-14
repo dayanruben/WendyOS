@@ -28,7 +28,8 @@ public struct Recorder: Sendable {
         duration: Duration,
         standardOutput: String,
         standardError: String,
-        harnessPrefix: [String]
+        harnessPrefix: [String],
+        scriptShellName: String
     ) {
         do {
             let recordURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
@@ -61,7 +62,8 @@ public struct Recorder: Sendable {
             try self.recordShellScript(
                 session: session,
                 command: command,
-                harnessPrefix: harnessPrefix
+                harnessPrefix: harnessPrefix,
+                scriptShellName: scriptShellName
             )
         } catch {
             Self.printToStandardError("Failed to write Wendy E2E command recording: \(error)\n")
@@ -409,7 +411,8 @@ public struct Recorder: Sendable {
     private func recordShellScript(
         session: Session,
         command: String,
-        harnessPrefix: [String]
+        harnessPrefix: [String],
+        scriptShellName: String
     ) throws {
         let scriptURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
             .deletingPathExtension()
@@ -417,7 +420,7 @@ public struct Recorder: Sendable {
         let scriptExists = FileManager.default.fileExists(atPath: scriptURL.path)
 
         if !scriptExists {
-            try Self.shellScriptHeader()
+            try Self.shellScriptHeader(shellName: scriptShellName)
                 .write(to: scriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755],
@@ -439,9 +442,13 @@ public struct Recorder: Sendable {
         )
     }
 
-    private static func shellScriptHeader() -> String {
+    private static func shellScriptHeader(shellName: String) -> String {
         """
-        #!/bin/sh
+        #!/usr/bin/env \(shellName)
+
+        set -eu
+        (set -o pipefail) 2>/dev/null && set -o pipefail
+        set -x
 
         """
     }
