@@ -467,6 +467,7 @@ public struct Recorder: Sendable {
         return """
 
             # \(Self.divider)
+
             \(commandSource)
 
             """
