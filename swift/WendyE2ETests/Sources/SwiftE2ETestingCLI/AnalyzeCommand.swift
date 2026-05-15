@@ -30,6 +30,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Model name. Defaults depend on provider.")
     var model: String?
 
+    @Option(name: .long, help: "Markdown prompt template file path.")
+    var prompt: String?
+
     @Option(name: .long, help: "Maximum recording characters to include per test.")
     var maxRecordingCharacters = 60_000
 
@@ -54,8 +57,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
             outputDirectoryURL: outputDirectoryURL
         )
         let tests = try parseAnalyzeTests(in: testsURL, records: records, testResults: testResults)
-        let reviewableTests = tests.filter { !$0.aiItems.isEmpty || $0.status.isFailed }
+        let reviewableTests = tests.filter { !$0.aiComments.isEmpty }
 
+        let promptTemplate = try loadPromptTemplate(path: prompt)
         let analyzer = try makeAnalyzer(provider: provider, model: model)
         if analyzer.isConfigured {
             print("==> Running Swift E2E AI analysis")
@@ -94,7 +98,8 @@ struct AnalyzeCommand: AsyncParsableCommand {
                 recording: clipped(
                     String(contentsOf: recordURL, encoding: .utf8),
                     limit: maxRecordingCharacters
-                )
+                ),
+                template: promptTemplate
             )
             let markdown = try await analyzer.analyze(request: request)
             try markdown.write(to: analysisURL, atomically: true, encoding: .utf8)
@@ -145,7 +150,7 @@ private struct AnalyzeTestCase {
     var funcLine: Int
     var nextLine: Int
     var sourceBody: String
-    var aiItems: [String]
+    var aiComments: [String]
     var status: AnalyzeTestStatus
     var recordName: String
     var recordURL: URL?
@@ -200,13 +205,21 @@ private struct AnalyzeAIRequest {
     var test: AnalyzeTestCase
     var source: String
     var recording: String
+    var template: String?
 
     var prompt: String {
+        if let template {
+            return renderPromptTemplate(template)
+        }
+
         var lines: [String] = []
         lines.append("You are analyzing a WendyAgent Swift end-to-end test recording.")
-        lines.append("Compare captured command behavior against the test's // AI: checklist.")
+        lines.append("Pay special attention to every // AI: comment in the test source.")
         lines.append(
-            "If the test failed, investigate likely cause from failure text, source, and recording."
+            "Treat // AI: comments as prompts, notes, or instructions; they are not necessarily checklist items."
+        )
+        lines.append(
+            "Use the full test source, captured recording, and failure text as context when needed."
         )
         lines.append("Return concise Markdown only using this shape:")
         lines.append("# AI Analysis")
@@ -215,8 +228,8 @@ private struct AnalyzeAIRequest {
         lines.append("Source: `File.swift:line`")
         lines.append("Record: `recording.md`")
         lines.append("")
-        lines.append("## Checklist")
-        lines.append("- pass|concern|fail: item")
+        lines.append("## AI comments")
+        lines.append("- pass|concern|fail: address each // AI: instruction or note")
         lines.append("  Evidence: brief evidence")
         lines.append("")
         lines.append("## Failure investigation")
@@ -231,14 +244,8 @@ private struct AnalyzeAIRequest {
         if let detail = test.status.detail, !detail.isEmpty {
             lines.append("Failure detail:\n\(detail)")
         }
-        if test.aiItems.isEmpty {
-            lines.append("// AI checklist: <none>")
-        } else {
-            lines.append("// AI checklist:")
-            for item in test.aiItems {
-                lines.append("- \(item)")
-            }
-        }
+        lines.append("// AI comments:")
+        lines.append(formattedAIComments)
         lines.append("")
         lines.append("Swift source excerpt:")
         lines.append("```swift")
@@ -250,6 +257,34 @@ private struct AnalyzeAIRequest {
         lines.append(recording)
         lines.append("```")
         return lines.joined(separator: "\n")
+    }
+
+    private func renderPromptTemplate(_ template: String) -> String {
+        var output = template
+        let replacements: [String: String] = [
+            "{{TEST_NAME}}": "\(test.suite) › \(test.name)",
+            "{{TEST_SUITE}}": test.suite,
+            "{{TEST_FUNCTION}}": test.name,
+            "{{TEST_FILE}}": test.fileName,
+            "{{TEST_LINE}}": String(test.funcLine),
+            "{{TEST_STATUS}}": test.status.statusText,
+            "{{FAILURE_DETAIL}}": test.status.detail ?? "",
+            "{{AI_COMMENTS}}": formattedAIComments,
+            "{{AI_CHECKLIST}}": formattedAIComments,
+            "{{SOURCE}}": source,
+            "{{RECORDING}}": recording,
+        ]
+        for (placeholder, value) in replacements {
+            output = output.replacingOccurrences(of: placeholder, with: value)
+        }
+        return output
+    }
+
+    private var formattedAIComments: String {
+        guard !test.aiComments.isEmpty else {
+            return "<none>"
+        }
+        return test.aiComments.joined(separator: "\n\n")
     }
 }
 
@@ -415,6 +450,13 @@ private struct OpenAIChatResponse: Decodable {
     var choices: [Choice]
 }
 
+private func loadPromptTemplate(path: String?) throws -> String? {
+    guard let path, !path.isEmpty else {
+        return nil
+    }
+    return try String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+}
+
 private func makeAnalyzer(provider: AIProvider, model: String?) throws -> any E2EAIAnalyzer {
     let environment = ProcessInfo.processInfo.environment
     let anthropicKey = environment["ANTHROPIC_API_KEY", default: ""]
@@ -540,7 +582,7 @@ private func parseAnalyzeTests(
             let nextLine =
                 index + 1 < discovered.count ? discovered[index + 1].funcLine : lines.count + 1
             let bodyLines = Array(lines[(test.funcLine - 1)..<(nextLine - 1)])
-            let aiItems = extractAnalyzeAIItems(from: bodyLines)
+            let aiComments = extractAnalyzeAIComments(from: bodyLines)
             let recordKey = "\(analyzeRecordFileStem(sourceURL)).\(analyzeSlug(test.name))"
             let key = AnalyzeResultKey(suite: suite, name: test.name)
             let status =
@@ -555,7 +597,7 @@ private func parseAnalyzeTests(
                     funcLine: test.funcLine,
                     nextLine: nextLine,
                     sourceBody: bodyLines.joined(separator: "\n"),
-                    aiItems: aiItems,
+                    aiComments: aiComments,
                     status: status,
                     recordName: "\(recordKey)/recording.md",
                     recordURL: records[recordKey]
@@ -586,31 +628,63 @@ private func analyzeSwiftTestFiles(in testsURL: URL) throws -> [URL] {
     }.sorted { $0.path < $1.path }
 }
 
-private func extractAnalyzeAIItems(from lines: [String]) -> [String] {
-    var items: [String] = []
+private func extractAnalyzeAIComments(from lines: [String]) -> [String] {
+    var blocks: [String] = []
+    var currentBlock: [String] = []
     var inAI = false
+
+    func finishBlock() {
+        let block = currentBlock.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !block.isEmpty {
+            blocks.append(block)
+        }
+        currentBlock = []
+    }
 
     for line in lines {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if line.contains("// AI:") {
+        if let range = trimmed.range(of: "// AI:") {
+            if inAI {
+                finishBlock()
+            }
             inAI = true
+            let note = trimmed[range.upperBound...]
+                .trimmingCharacters(in: .whitespaces)
+            if !note.isEmpty {
+                currentBlock.append(note)
+            }
             continue
         }
+
         guard inAI else {
             continue
         }
+
         if trimmed.hasPrefix("//") {
-            if let item = analyzeFirstMatch(#"//\s*-\s*(.*)"#, in: line) {
-                items.append(item.trimmingCharacters(in: .whitespaces))
-            }
-        } else if trimmed.isEmpty {
-            continue
+            currentBlock.append(stripAnalyzeCommentPrefix(from: trimmed))
         } else {
+            finishBlock()
             inAI = false
         }
     }
 
-    return items
+    if inAI {
+        finishBlock()
+    }
+
+    return blocks
+}
+
+private func stripAnalyzeCommentPrefix(from line: String) -> String {
+    var value = line
+    if value.hasPrefix("//") {
+        value.removeFirst(2)
+    }
+    if value.hasPrefix(" ") {
+        value.removeFirst()
+    }
+    return value
 }
 
 private func loadAnalyzeTestResults(
@@ -784,7 +858,7 @@ private func writeAnalyzeSummary(
         if case .existing = result { return true }
         return false
     }.count
-    let aiTestCount = tests.filter { !$0.aiItems.isEmpty }.count
+    let aiTestCount = tests.filter { !$0.aiComments.isEmpty }.count
     let failedTestCount = tests.filter(\.status.isFailed).count
 
     var markdown: [String] = []

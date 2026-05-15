@@ -1,6 +1,6 @@
 ---
 name: e2e-analyze-ci
-description: Fetch the latest completed Swift E2E CI artifacts for the current branch or PR, analyze // AI: checklists and failed tests, and write per-test ai-analysis.md files next to recording.md.
+description: Fetch the latest completed Swift E2E CI artifacts for the current branch or PR, analyze // AI: comments and failed tests, and write per-test ai-analysis.md files next to recording.md.
 ---
 
 # Analyze Swift E2E CI Artifacts
@@ -14,8 +14,8 @@ per-test `ai-analysis.md` files that the HTML report can render inline.
 1. Determine the current git branch and associated PR, if any.
 2. Fetch artifacts from the latest **completed** `Swift E2E Tests` workflow run
    for that branch/PR.
-3. Analyze every test that has a `// AI:` checklist in source.
-4. Also investigate every failed test, even if it has no `// AI:` checklist.
+3. Analyze every test that has one or more `// AI:` comment blocks in source.
+4. Also investigate every failed test, even if it has no `// AI:` comments.
 5. Write one `ai-analysis.md` beside each analyzed test's `recording.md`.
 6. Regenerate `report.html` so analyzed tests receive the existing `AI` badge and
    show the analysis inline when expanded.
@@ -86,23 +86,27 @@ Each command section in a recording includes a source line:
 
 Open that test file in the current checkout and identify the enclosing `@Test`
 function. Only treat comments beginning with `// AI:` inside that test function
-as AI analysis instructions. Checklist items are usually written as:
+as AI analysis instructions. A test can contain multiple `// AI:` blocks,
+separated by code or blank lines. These blocks are prompts, notes, or
+instructions; they are not necessarily checklists. Examples:
 
 ```swift
+// AI: Confirm the output is actionable for a human operator.
+
 // AI:
-// - The output should ...
-// - Errors should ...
+// Also check that stderr does not leak implementation details.
 ```
 
 ## Analysis Rules
 
 Analyze a test when either condition is true:
 
-- The test function has a `// AI:` checklist.
+- The test function has one or more `// AI:` comment blocks.
 - The xUnit results or report show the test failed.
 
-For `// AI:` tests, compare the checklist to the captured command evidence in
-`recording.md` and `recording.sh.txt`.
+For `// AI:` tests, compare the instructions or notes to the captured command
+evidence in `recording.md` and `recording.sh.txt`, using the whole test source
+as context.
 
 For failed tests, inspect:
 
@@ -114,9 +118,9 @@ For failed tests, inspect:
 
 Use these result words consistently:
 
-- `pass` — evidence clearly satisfies the checklist item.
+- `pass` — evidence clearly satisfies the `// AI:` instruction.
 - `concern` — evidence is ambiguous, noisy, incomplete, flaky, or surprising.
-- `fail` — evidence contradicts the checklist item or the test failure appears
+- `fail` — evidence contradicts the `// AI:` instruction or the test failure appears
   product-related.
 
 ## Run the Swift Analyzer
@@ -132,8 +136,9 @@ done
 ```
 
 Use `--provider anthropic` (or `--provider claude`) with `ANTHROPIC_API_KEY`,
-or `--provider openai` with `OPENAI_API_KEY`, to force a provider. Use
-`--overwrite` to replace existing per-test outputs.
+or `--provider openai` with `OPENAI_API_KEY`, to force a provider. Pass
+`--prompt path/to/prompt.md` to override the built-in prompt. Use `--overwrite`
+to replace existing per-test outputs.
 
 ## Per-Test Analysis File
 
@@ -152,9 +157,9 @@ Status: pass|concern|fail
 Source: `WendyFooTests.swift:<line>`
 Record: `recording.md`
 
-## Checklist
+## AI comments
 
-- pass|concern|fail: <checklist item>
+- pass|concern|fail: <AI instruction or note>
   Evidence: <brief quote or summary from the recording>
 
 ## Failure investigation
@@ -168,7 +173,7 @@ Optional concise context for a human reader.
 ```
 
 Keep the analysis short. Quote only the evidence needed to justify concerns or
-failures. If a `// AI:` checklist passes with unsurprising evidence, one or two
+failures. If a `// AI:` instruction passes with unsurprising evidence, one or two
 sentences are enough.
 
 ## Regenerate HTML Reports
