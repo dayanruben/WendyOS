@@ -60,9 +60,26 @@ struct `'wendy completion install'` {
      The command exits successfully without creating directories or
      editing shell configuration.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints install paths without writing files`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh(
+                """
+                wendy completion install --print-path --shell zsh
+                test ! -e "$HOME/.zfunc/_wendy"
+                test ! -e "$HOME/.zshrc"
+                """
+            ) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput.contains("/.zfunc/_wendy"))
+                #expect(standardOutput.contains("/.zshrc"))
+                #expect(standardError == "")
+            }
+        }
     }
 
     /**
