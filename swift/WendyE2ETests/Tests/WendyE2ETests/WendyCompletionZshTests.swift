@@ -37,9 +37,26 @@ struct `'wendy completion zsh'` {
      Writes a valid zsh completion script to stdout. The command emits no
      stderr, exits successfully, and does not read or write shell rc files.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints the zsh completion script`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh(
+                """
+                wendy completion zsh
+                test ! -e "$HOME/.zshrc"
+                """
+            ) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput.contains("#compdef wendy"))
+                #expect(standardOutput.contains("compdef _wendy wendy"))
+                #expect(standardOutput.contains("_wendy()"))
+                #expect(standardError == "")
+            }
+        }
     }
 
     /**
