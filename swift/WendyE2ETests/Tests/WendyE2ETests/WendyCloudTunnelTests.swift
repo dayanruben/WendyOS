@@ -14,6 +14,9 @@ struct `'wendy cloud tunnel'` {
      */
     @Test
     func `prints command help`() async throws {
+        // AI: Review the full help output as CLI documentation for a networking
+        // command. Flag confusing port-mapping wording, missing safety cues,
+        // duplicated global flags, or formatting that would make setup hard.
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy cloud tunnel --help") {
                 terminationStatus,
@@ -90,6 +93,9 @@ struct `'wendy cloud tunnel'` {
      */
     @Test
     func `reports auth and broker failures without leaving listeners open`() async throws {
+        // AI: Judge whether the failure is actionable for a user who expected a
+        // tunnel to start. The output should make the auth problem obvious and
+        // should not imply that a listener or forwarding session remains active.
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy cloud tunnel 65535:80") {
                 terminationStatus,

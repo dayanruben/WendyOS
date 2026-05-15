@@ -39,6 +39,9 @@ struct `'wendy completion zsh'` {
      */
     @Test
     func `prints the zsh completion script`() async throws {
+        // AI: Skim the generated script for obvious zsh-completion quality
+        // issues that substring assertions miss, such as broken function shape,
+        // shell-mismatched syntax, noisy comments, or truncated output.
         try await self.scenario.run { cli, _ in
             try await cli.sh(
                 """

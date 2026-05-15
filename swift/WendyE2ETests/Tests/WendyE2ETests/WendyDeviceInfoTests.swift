@@ -133,6 +133,9 @@ struct `'wendy device info'` {
      */
     @Test
     func `prints human-readable device information`() async throws {
+        // AI: Review the human-readable output for usefulness, not exact text.
+        // It should be clean terminal output with coherent labels, no JSON leak,
+        // and enough device context for a person to identify the target.
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
             let command: String
@@ -332,6 +335,9 @@ struct `'wendy device info'` {
      */
     @Test
     func `'--check-updates' reports update status`() async throws {
+        // AI: Review the update-check wording for ambiguity. The output should
+        // clearly distinguish current device information from update status and
+        // should not overpromise when no update is available.
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
             let command: String

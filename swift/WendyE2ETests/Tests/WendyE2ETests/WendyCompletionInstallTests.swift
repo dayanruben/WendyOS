@@ -15,6 +15,9 @@ struct `'wendy completion install'` {
      */
     @Test
     func `prints command help`() async throws {
+        // AI: Review this help as installer documentation. Check whether users
+        // can understand the difference between installing, printing paths,
+        // printing scripts to stdout, and choosing a shell explicitly.
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy completion install --help") {
                 terminationStatus,
@@ -154,6 +157,9 @@ struct `'wendy completion install'` {
      */
     @Test
     func `is idempotent when completion is already installed`() async throws {
+        // AI: Look for surprising repeated-install behavior in the command log.
+        // The second run should read as safe and intentional, not as if it
+        // rewrote user shell configuration unnecessarily.
         try await self.scenario.run { cli, _ in
             try await cli.sh(
                 """
