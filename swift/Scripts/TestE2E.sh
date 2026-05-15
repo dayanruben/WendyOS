@@ -39,10 +39,12 @@ CLI_ROOT_DIR="${WENDY_E2E_CLI_ROOT_DIR:-}"
 CLI_REPO_DIR="${WENDY_E2E_CLI_REPO_DIR:-}"
 CLI_USER="${WENDY_E2E_CLI_USER:-}"
 CLI_ADDRESS="${WENDY_E2E_CLI_ADDRESS:-}"
+CLI_OS="${WENDY_E2E_CLI_OS:-}"
 AGENT_ROOT_DIR="${WENDY_E2E_AGENT_ROOT_DIR:-}"
 AGENT_REPO_DIR="${WENDY_E2E_AGENT_REPO_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
+AGENT_OS="${WENDY_E2E_AGENT_OS:-}"
 ISOLATION="${WENDY_E2E_ISOLATION:-per-test}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
 REPORT="${WENDY_E2E_GENERATE_REPORT:-true}"
@@ -121,10 +123,12 @@ Environment:
   WENDY_E2E_CLI_REPO_DIR              wendy-agent repo root on the CLI machine.
   WENDY_E2E_CLI_USER                  Optional SSH user for the CLI machine.
   WENDY_E2E_CLI_ADDRESS               Optional address for the CLI machine.
+  WENDY_E2E_CLI_OS                    Optional OS override for the CLI machine.
   WENDY_E2E_AGENT_ROOT_DIR            Root directory for agent machine runs.
   WENDY_E2E_AGENT_REPO_DIR            wendy-agent repo root on the agent machine.
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
   WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
+  WENDY_E2E_AGENT_OS                  Optional OS override for the agent machine.
   WENDY_E2E_ISOLATION                 none, per-run, or per-test; defaults to per-test.
   WENDY_E2E_GENERATE_REPORT           Boolean; generates report.html.
   WENDY_E2E_PARALLEL                  Boolean; enables SwiftPM parallel tests.
@@ -469,6 +473,7 @@ write_run_summary() {
     echo "- CLI repo directory: \`${CLI_REPO_DIR:-<none>}\`"
     echo "- CLI user: \`${CLI_USER:-<none>}\`"
     echo "- CLI address: \`${CLI_ADDRESS:-<local>}\`"
+    echo "- CLI OS: \`${CLI_OS:-<current>}\`"
     echo "- CLI binary: \`$CLI_BIN_DIR/wendy\`"
     echo "- Agent root directory: \`$AGENT_ROOT_DIR\`"
     echo "- Agent run directory: \`$AGENT_RUN_DIR\`"
@@ -481,6 +486,7 @@ write_run_summary() {
     echo "- HTML report: \`$REPORT\`"
     echo "- Agent user: \`${AGENT_USER:-<none>}\`"
     echo "- Agent address: \`${AGENT_ADDRESS:-<local>}\`"
+    echo "- Agent OS: \`${AGENT_OS:-<current>}\`"
     echo
     echo "## Files"
     find "$RUN_DIR" -type f | sort | sed "s#^$RUN_DIR/#- #"
@@ -513,7 +519,8 @@ SWIFT_TEST_ENV=(
   "WENDY_E2E_AGENT_REPO_DIR=$AGENT_REPO_DIR"
   "WENDY_E2E_AGENT_USER=$AGENT_USER"
   "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
-  "WENDY_E2E_CLI_OS="
+  "WENDY_E2E_CLI_OS=$CLI_OS"
+  "WENDY_E2E_AGENT_OS=$AGENT_OS"
   "WENDY_E2E_ISOLATION=$ISOLATION"
   "WENDY_E2E_PARALLEL=$PARALLEL"
   "WENDY_E2E_VERBOSE=$VERBOSE"
@@ -533,11 +540,13 @@ echo "    Verbose:  $VERBOSE"
 echo "    Parallel: $PARALLEL"
 echo "    HTML:     $REPORT"
 echo "    CLI target: ${CLI_USER:+$CLI_USER@}${CLI_ADDRESS:-<local>}:${CLI_REPO_DIR:-<no-repo>}"
+echo "    CLI OS:   ${CLI_OS:-<current>}"
 if [[ -n "$AGENT_ADDRESS" ]]; then
   echo "    Agent:   $(ssh_target "$AGENT_USER" "$AGENT_ADDRESS"):${AGENT_REPO_DIR:-<no-repo>}"
 else
   echo "    Agent:   <local>:${AGENT_REPO_DIR:-<no-repo>}"
 fi
+echo "    Agent OS: ${AGENT_OS:-<current>}"
 
 set +e
 (
