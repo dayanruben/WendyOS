@@ -1,7 +1,10 @@
+import Subprocess
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy cloud tunnel'` {
+    let scenario = CLIAndAgentScenario()
     /**
      Displays usage for `wendy cloud tunnel`. The output includes the command
      synopsis, local flags, inherited global flags, and concise
@@ -9,9 +12,34 @@ struct `'wendy cloud tunnel'` {
      stderr, and leaves configuration, cache, project, cloud, and device
      state untouched.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh("wendy cloud tunnel --help") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(
+                    standardOutput.contains(
+                        "forwards each connection through the Wendy Cloud tunnel broker"
+                    )
+                )
+                #expect(standardOutput.contains("Usage:"))
+                #expect(
+                    standardOutput.contains(
+                        "wendy cloud tunnel <local-port>:<remote-port> [flags]"
+                    )
+                )
+                #expect(standardOutput.contains("--broker-url"))
+                #expect(standardOutput.contains("--cloud-grpc"))
+                #expect(standardOutput.contains("--device"))
+                #expect(standardOutput.contains("--help"))
+                #expect(standardOutput.contains("--json"))
+                #expect(standardError == "")
+            }
+        }
     }
 
     /**
