@@ -310,11 +310,39 @@ public struct WendyE2ESession: Sendable {
             "export \(key)=\(Self.shellEnvironmentValue(self.env[key] ?? ""))"
         }
 
+        let setupDirectories = self.setupDirectories()
+        if !setupDirectories.isEmpty {
+            parts.append(
+                "mkdir -p "
+                    + setupDirectories
+                    .map(Self.shellEnvironmentValue)
+                    .joined(separator: " ")
+            )
+        }
+
         if let workingDirectory = self.workingDirectory {
             parts.append("cd \(Self.shellEnvironmentValue(workingDirectory))")
         }
 
         return parts
+    }
+
+    private func setupDirectories() -> [String] {
+        var directories: [String] = []
+        var seen: Set<String> = []
+
+        func append(_ directory: String?) {
+            guard let directory, !directory.isEmpty, seen.insert(directory).inserted else {
+                return
+            }
+            directories.append(directory)
+        }
+
+        append(self.env["HOME"])
+        append(self.env["TMPDIR"])
+        append(self.workingDirectory)
+
+        return directories
     }
 
     private func wrapped(_ command: String, harnessPrefix: [String]) -> String {

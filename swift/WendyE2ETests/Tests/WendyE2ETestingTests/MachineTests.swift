@@ -149,6 +149,33 @@ struct `session` {
     }
 
     @Test
+    func `creates session directories lazily before running commands`() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("machine-lazy-" + UUID().uuidString, isDirectory: true)
+        let homeDirectory = directory.appendingPathComponent("home", isDirectory: true)
+        let temporaryDirectory = directory.appendingPathComponent("tmp", isDirectory: true)
+        let workingDirectory = homeDirectory.appendingPathComponent("work", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let session = try await WendyE2ESession.begin(
+            for: WendyE2EMachine(id: "local", name: "Local"),
+            workingDirectory: workingDirectory.path,
+            env: [
+                "HOME": homeDirectory.path,
+                "TMPDIR": temporaryDirectory.path,
+            ]
+        )
+
+        try await session.sh("printf '%s' \"$PWD\"") { standardOutput, _ in
+            #expect(standardOutput == workingDirectory.path)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: homeDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: temporaryDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: workingDirectory.path))
+    }
+
+    @Test
     func `runs commands locally by default`() async throws {
         try await Self.withTemporarySession { session, directory in
             try await session.sh("touch first.txt")

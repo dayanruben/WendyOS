@@ -91,40 +91,6 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 temporaryDirectory: agentTemporaryDirectory,
                 binDirectory: agentBinDirectory
             )
-            let cliSetupMachine = WendyE2EMachine(
-                id: "cli-setup",
-                name: "CLI setup",
-                os: WendyE2EEnvironment.cliOS ?? .current,
-                tags: [.cli],
-                user: WendyE2EEnvironment.cliUser,
-                address: WendyE2EEnvironment.cliAddress
-            )
-            let cliSetup = try await WendyE2ESession.begin(
-                for: cliSetupMachine,
-                workingDirectory: "/",
-                env: cliEnvironment,
-                recorder: recorder
-            )
-            cliSession = cliSetup
-            try await cliSetup.sh("mkdir -p \"$HOME\" \"$TMPDIR\" \"$HOME/work\"")
-
-            let agentSetupMachine = WendyE2EMachine(
-                id: "agent-setup",
-                name: "Agent setup",
-                os: WendyE2EEnvironment.agentOS ?? .current,
-                tags: [.agent],
-                user: WendyE2EEnvironment.agentUser,
-                address: WendyE2EEnvironment.agentAddress
-            )
-            let agentSetup = try await WendyE2ESession.begin(
-                for: agentSetupMachine,
-                workingDirectory: "/",
-                env: agentEnv,
-                recorder: recorder
-            )
-            agentSession = agentSetup
-            try await agentSetup.sh("mkdir -p \"$HOME\" \"$TMPDIR\" \"$HOME/work\"")
-
             let cliMachine = WendyE2EMachine(
                 id: "cli",
                 name: "CLI",
@@ -192,10 +158,6 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
         if let firstError {
             throw firstError
         }
-    }
-
-    private static func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func roleTestDirectoryPath(
