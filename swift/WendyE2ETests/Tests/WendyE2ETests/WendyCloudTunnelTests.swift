@@ -66,9 +66,22 @@ struct `'wendy cloud tunnel'` {
      out-of-range ports fail before opening a listener or contacting the
      broker.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `rejects invalid port mappings before listening`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh("wendy cloud tunnel notaport") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(!terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(standardError.contains("invalid port"))
+                #expect(standardError.contains("notaport"))
+                #expect(!standardError.contains("Fetching device list"))
+                #expect(!standardError.contains("Forwarding"))
+            }
+        }
     }
 
     /**
