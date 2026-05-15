@@ -75,9 +75,6 @@ update_readme_block() {
     if [[ -f "$RUN_DIR/ai-analysis.md" ]]; then
       echo "- AI analysis: \`$RUN_DIR/ai-analysis.md\`"
     fi
-    if [[ -f "$RUN_DIR/ai-analysis.json" ]]; then
-      echo "- AI analysis JSON: \`$RUN_DIR/ai-analysis.json\`"
-    fi
     echo
     echo "### Files after report rendering"
     find "$RUN_DIR" -type f | sort | sed "s#^$RUN_DIR/#- #"

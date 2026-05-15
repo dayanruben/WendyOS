@@ -774,7 +774,6 @@ private func writeAnalyzeSummary(
     results: [AnalyzeTestAIResult]
 ) throws {
     let markdownURL = runURL.appendingPathComponent("ai-analysis.md")
-    let jsonURL = runURL.appendingPathComponent("ai-analysis.json")
     let written = results.filter(\.isWritten).count
     let skipped = results.filter(\.isSkipped).count
     let missingRecords = results.filter { result in
@@ -823,61 +822,6 @@ private func writeAnalyzeSummary(
         encoding: .utf8
     )
 
-    let summary = AnalyzeSummaryJSON(
-        status: analyzer.isConfigured ? "complete" : "skipped",
-        provider: analyzer.providerName,
-        model: analyzer.modelName,
-        testsDiscovered: tests.count,
-        aiTests: aiTestCount,
-        failedTests: failedTestCount,
-        selectedTests: reviewableTests.count,
-        written: written,
-        existing: existing,
-        missingRecords: missingRecords,
-        skipped: skipped,
-        findings: results.map { result in
-            AnalyzeFindingJSON(
-                test: "\(result.test.suite) › \(result.test.name)",
-                record: result.test.recordName,
-                status: result.test.status.statusText,
-                output: resultOutputPath(result)
-            )
-        }
-    )
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try encoder.encode(summary).write(to: jsonURL)
-}
-
-private struct AnalyzeSummaryJSON: Encodable {
-    var status: String
-    var provider: String
-    var model: String
-    var testsDiscovered: Int
-    var aiTests: Int
-    var failedTests: Int
-    var selectedTests: Int
-    var written: Int
-    var existing: Int
-    var missingRecords: Int
-    var skipped: Int
-    var findings: [AnalyzeFindingJSON]
-}
-
-private struct AnalyzeFindingJSON: Encodable {
-    var test: String
-    var record: String
-    var status: String
-    var output: String?
-}
-
-private func resultOutputPath(_ result: AnalyzeTestAIResult) -> String? {
-    switch result {
-    case .written(_, let path, _), .existing(_, let path):
-        path.path
-    case .skipped, .missingRecord:
-        nil
-    }
 }
 
 private func updateAnalyzeReadmeBlock(runURL: URL) {
@@ -894,7 +838,6 @@ private func updateAnalyzeReadmeBlock(runURL: URL) {
         ## AI Analysis
 
         - Markdown: `\(runURL.appendingPathComponent("ai-analysis.md").path)`
-        - JSON: `\(runURL.appendingPathComponent("ai-analysis.json").path)`
         \(end)
         """
     let output =
