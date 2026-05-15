@@ -59,7 +59,10 @@ struct `'wendy completion install'` {
                 #expect(terminationStatus.isSuccess)
                 #expect(standardOutput == "")
                 #expect(standardError.contains("Wrote"))
-                #expect(standardError.contains("Updated"))
+                #expect(
+                    standardError.contains("Updated")
+                        || standardError.contains("Already configured")
+                )
             }
         }
     }
@@ -149,9 +152,27 @@ struct `'wendy completion install'` {
      Running installation repeatedly leaves a single managed completion
      script and a single source line in the relevant shell rc file.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `is idempotent when completion is already installed`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh(
+                """
+                SHELL=/bin/zsh wendy completion install
+                SHELL=/bin/zsh wendy completion install
+                test -f "$HOME/.zfunc/_wendy"
+                test "$(grep -c '^# wendy-completion$' "$HOME/.zshrc")" = 1
+                """
+            ) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(standardError.contains("Already configured"))
+                #expect(standardError.contains(".zfunc/_wendy"))
+            }
+        }
     }
 
     /**
