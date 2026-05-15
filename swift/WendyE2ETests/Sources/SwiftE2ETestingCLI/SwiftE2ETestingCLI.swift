@@ -3,11 +3,11 @@ import Foundation
 import WendyE2ETesting
 
 @main
-struct SwiftE2ETestingCLI: ParsableCommand {
+struct SwiftE2ETestingCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "swift-e2e-testing",
         abstract: "Utilities for Swift E2E behavioral specs.",
-        subcommands: [ReferenceCommand.self, ReportCommand.self]
+        subcommands: [ReferenceCommand.self, ReportCommand.self, AnalyzeCommand.self]
     )
 }
 

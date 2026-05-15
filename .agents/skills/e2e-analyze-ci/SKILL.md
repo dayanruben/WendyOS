@@ -119,9 +119,25 @@ Use these result words consistently:
 - `fail` — evidence contradicts the checklist item or the test failure appears
   product-related.
 
+## Run the Swift Analyzer
+
+After downloading artifacts, run the checked-in analyzer from `swift/`:
+
+```bash
+cd swift
+for run_dir in Build/e2e-ci-analysis/run-*/artifacts/wendy-e2e-*; do
+  [ -d "$run_dir/tests" ] || continue
+  bash Scripts/E2EAnalyze.sh --run-dir "$run_dir" --provider auto
+done
+```
+
+Use `--provider anthropic` (or `--provider claude`) with `ANTHROPIC_API_KEY`,
+or `--provider openai` with `OPENAI_API_KEY`, to force a provider. Use
+`--overwrite` to replace existing per-test outputs.
+
 ## Per-Test Analysis File
 
-Write the analysis next to the recording:
+The analyzer writes analysis next to the recording:
 
 ```text
 .../tests/<test-slug>/ai-analysis.md
