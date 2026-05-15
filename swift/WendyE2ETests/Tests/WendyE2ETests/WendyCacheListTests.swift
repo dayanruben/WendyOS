@@ -1,7 +1,11 @@
+import Subprocess
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy cache list'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy cache list`. The output includes the command
      synopsis, local flags, inherited global flags, and concise
@@ -9,9 +13,24 @@ struct `'wendy cache list'` {
      stderr, and leaves configuration, cache, project, cloud, and device
      state untouched.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh("wendy cache list --help") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput.contains("List cached items"))
+                #expect(standardOutput.contains("Usage:"))
+                #expect(standardOutput.contains("wendy cache list [flags]"))
+                #expect(standardOutput.contains("--help"))
+                #expect(standardOutput.contains("--device"))
+                #expect(standardOutput.contains("--json"))
+                #expect(standardError == "")
+            }
+        }
     }
 
     /**
