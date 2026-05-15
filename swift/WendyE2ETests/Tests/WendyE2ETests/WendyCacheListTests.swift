@@ -124,8 +124,20 @@ struct `'wendy cache list'` {
      on stderr, return a failure status, emit no success output, and leave
      existing state unchanged.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh("wendy cache list extra") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(!terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(standardError.contains("unknown command"))
+                #expect(standardError.contains("extra"))
+                #expect(!standardError.contains("Cache is empty"))
+            }
+        }
     }
 }
