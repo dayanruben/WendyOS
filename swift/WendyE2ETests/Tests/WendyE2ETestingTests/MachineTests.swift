@@ -176,6 +176,38 @@ struct `session` {
     }
 
     @Test
+    func `resets session directories only before the first command`() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("machine-reset-" + UUID().uuidString, isDirectory: true)
+        let homeDirectory = directory.appendingPathComponent("home", isDirectory: true)
+        let temporaryDirectory = directory.appendingPathComponent("tmp", isDirectory: true)
+        let workingDirectory = homeDirectory.appendingPathComponent("work", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: homeDirectory,
+            withIntermediateDirectories: true
+        )
+        try "stale".write(
+            to: homeDirectory.appendingPathComponent("stale"),
+            atomically: true,
+            encoding: .utf8
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let session = try await WendyE2ESession.begin(
+            for: WendyE2EMachine(id: "local", name: "Local"),
+            workingDirectory: workingDirectory.path,
+            env: [
+                "HOME": homeDirectory.path,
+                "TMPDIR": temporaryDirectory.path,
+            ],
+            resetDirectoriesOnFirstCommand: true
+        )
+
+        try await session.sh("test ! -e \"$HOME/stale\" && touch \"$HOME/fresh\"")
+        try await session.sh("test -e \"$HOME/fresh\"")
+    }
+
+    @Test
     func `runs commands locally by default`() async throws {
         try await Self.withTemporarySession { session, directory in
             try await session.sh("touch first.txt")

@@ -43,6 +43,7 @@ AGENT_ROOT_DIR="${WENDY_E2E_AGENT_ROOT_DIR:-}"
 AGENT_REPO_DIR="${WENDY_E2E_AGENT_REPO_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
+ISOLATION="${WENDY_E2E_ISOLATION:-per-test}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
 REPORT="${WENDY_E2E_GENERATE_REPORT:-true}"
 PARALLEL="${WENDY_E2E_PARALLEL:-false}"
@@ -62,6 +63,21 @@ normalize_bool() {
       ;;
     *)
       echo "ERROR: $name must be true or false." >&2
+      exit 64
+      ;;
+  esac
+}
+
+normalize_isolation() {
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    none|per-run|per-test)
+      printf "%s" "$value"
+      ;;
+    *)
+      echo "ERROR: WENDY_E2E_ISOLATION must be none, per-run, or per-test." >&2
       exit 64
       ;;
   esac
@@ -87,6 +103,7 @@ Options:
   --agent-repo-dir DIR  wendy-agent repo root on the agent machine.
   --agent-user USER     Optional SSH user for the agent machine.
   --agent-address HOST  Optional address for the agent machine; defaults to hostname.
+  --isolation MODE      Sandbox isolation: none, per-run, or per-test; defaults to per-test.
   --parallel            Allow SwiftPM to run tests in parallel. Only valid when
                         both CLI and agent machines use local transport.
   --no-parallel         Do not run SwiftPM tests in parallel.
@@ -108,6 +125,7 @@ Environment:
   WENDY_E2E_AGENT_REPO_DIR            wendy-agent repo root on the agent machine.
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
   WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
+  WENDY_E2E_ISOLATION                 none, per-run, or per-test; defaults to per-test.
   WENDY_E2E_GENERATE_REPORT           Boolean; generates report.html.
   WENDY_E2E_PARALLEL                  Boolean; enables SwiftPM parallel tests.
   WENDY_E2E_VERBOSE                   Boolean; prints machine commands.
@@ -160,6 +178,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --agent-address)
       AGENT_ADDRESS="$2"
+      shift 2
+      ;;
+    --isolation)
+      ISOLATION="$2"
       shift 2
       ;;
     --parallel)
@@ -236,9 +258,15 @@ if [[ -z "$AGENT_ROOT_DIR" ]]; then
   fi
 fi
 
+ISOLATION="$(normalize_isolation "$ISOLATION")"
 PARALLEL="$(normalize_bool "WENDY_E2E_PARALLEL" "$PARALLEL")"
 REPORT="$(normalize_bool "WENDY_E2E_GENERATE_REPORT" "$REPORT")"
 VERBOSE="$(normalize_bool "WENDY_E2E_VERBOSE" "$VERBOSE")"
+
+if [[ "$PARALLEL" == "true" && "$ISOLATION" != "per-test" ]]; then
+  echo "ERROR: --parallel requires --isolation per-test." >&2
+  exit 64
+fi
 
 if [[ "$PARALLEL" == "true" && ( -n "$CLI_ADDRESS" || -n "$AGENT_ADDRESS" ) ]]; then
   echo "ERROR: --parallel is only valid when CLI and agent machines are local." >&2
@@ -447,6 +475,7 @@ write_run_summary() {
     echo "- Agent repo directory: \`${AGENT_REPO_DIR:-<none>}\`"
     echo "- Agent binary directory: \`$AGENT_BIN_DIR\`"
     echo "- Tests directory: \`$TESTS_DIR\`"
+    echo "- Isolation: \`$ISOLATION\`"
     echo "- Verbose: \`$VERBOSE\`"
     echo "- Parallel: \`$PARALLEL\`"
     echo "- HTML report: \`$REPORT\`"
@@ -485,6 +514,7 @@ SWIFT_TEST_ENV=(
   "WENDY_E2E_AGENT_USER=$AGENT_USER"
   "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
   "WENDY_E2E_CLI_OS="
+  "WENDY_E2E_ISOLATION=$ISOLATION"
   "WENDY_E2E_PARALLEL=$PARALLEL"
   "WENDY_E2E_VERBOSE=$VERBOSE"
 )
@@ -498,6 +528,7 @@ echo "    CLI:      $CLI_BIN_DIR/wendy"
 echo "    Tests:    $TESTS_DIR"
 echo "    Report:   $RUN_DIR/report.html"
 echo "    Filters:  ${TEST_FILTERS[*]}"
+echo "    Isolation: $ISOLATION"
 echo "    Verbose:  $VERBOSE"
 echo "    Parallel: $PARALLEL"
 echo "    HTML:     $REPORT"

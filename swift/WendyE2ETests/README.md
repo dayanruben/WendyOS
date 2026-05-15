@@ -12,8 +12,8 @@ swift test --filter WendyE2ETests
 
 From `swift/`, the helper script writes runner output under an explicit
 output directory, builds the managed CLI into the CLI run directory, writes
-isolated per-test CLI and agent sandboxes, captures Swift Testing results and
-command recordings, and renders `report.html`:
+isolated CLI and agent sandboxes, captures Swift Testing results and command
+recordings, and renders `report.html`:
 
 ```bash
 bash Scripts/TestE2E.sh --output-dir Build/e2e
@@ -33,6 +33,7 @@ WENDY_E2E_RUN_ID="$RUN_ID" \
 WENDY_E2E_RUN_DIR="$RUN_DIR" \
 WENDY_E2E_CLI_RUN_DIR="$CLI_RUN_DIR" \
 WENDY_E2E_AGENT_RUN_DIR="$AGENT_RUN_DIR" \
+WENDY_E2E_ISOLATION=per-run \
 swift test --filter WendyE2ETests
 ```
 
@@ -42,6 +43,12 @@ the suite file stem is the test file name with the `Tests` suffix removed. For
 example, `WendyDeviceInfoTests.swift` records under `wendy-device-info.*`.
 The `recording.sh.txt` file replays the captured `sh()` invocations in order for
 manual debugging while remaining browser-viewable from the HTML report.
+
+Sandbox isolation is controlled by `--isolation` or `WENDY_E2E_ISOLATION`:
+
+- `per-test` (default): one sandbox per role under each test recording directory. This is required for `--parallel`.
+- `per-run`: one stable `home/`, `tmp/`, and `home/work` sandbox per role. In non-parallel runs, the role sandbox is reset before each test's first command.
+- `none`: no synthetic `HOME`, `TMPDIR`, or working directory is configured, and existing machine state is left untouched.
 
 To render the HTML report from this package:
 

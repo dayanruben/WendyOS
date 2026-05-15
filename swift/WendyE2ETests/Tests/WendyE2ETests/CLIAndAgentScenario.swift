@@ -57,40 +57,38 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 fileURLWithPath: recorder.testDirectoryPath,
                 isDirectory: true
             ).path
-            let cliTestDirectory = Self.roleTestDirectoryPath(
+            let isolation = WendyE2EEnvironment.isolation
+            let resetDirectoriesOnFirstCommand =
+                isolation == .perRun
+                && !WendyE2EEnvironment.parallel
+            let cliSandbox = Self.roleSandbox(
                 role: "cli",
                 runDirectory: WendyE2EEnvironment.cliRunDirectory,
-                fallbackDirectory: Self.path(fallbackTestDirectory, "cli"),
-                testName: testName
+                fallbackTestDirectory: fallbackTestDirectory,
+                testName: testName,
+                isolation: isolation
             )
-            let agentTestDirectory = Self.roleTestDirectoryPath(
-                role: "agent",
-                runDirectory: WendyE2EEnvironment.agentRunDirectory,
-                fallbackDirectory: Self.path(fallbackTestDirectory, "agent"),
-                testName: testName
-            )
-            let cliHomeDirectory = Self.path(cliTestDirectory, "home")
-            let cliTemporaryDirectory = Self.path(cliTestDirectory, "tmp")
-            let cliWorkingDirectory = Self.path(cliHomeDirectory, "work")
             let cliBinDirectory = Self.roleBinDirectory(
                 runDirectory: WendyE2EEnvironment.cliRunDirectory,
                 fallbackDirectory: repositoryRootDirectoryURL.appendingPathComponent("go/bin").path
             )
             let cliEnvironment = Self.roleEnvironment(
-                homeDirectory: cliHomeDirectory,
-                temporaryDirectory: cliTemporaryDirectory,
+                sandbox: cliSandbox,
                 binDirectory: cliBinDirectory
             )
-            let agentHomeDirectory = Self.path(agentTestDirectory, "home")
-            let agentTemporaryDirectory = Self.path(agentTestDirectory, "tmp")
-            let agentWorkingDirectory = Self.path(agentHomeDirectory, "work")
+            let agentSandbox = Self.roleSandbox(
+                role: "agent",
+                runDirectory: WendyE2EEnvironment.agentRunDirectory,
+                fallbackTestDirectory: fallbackTestDirectory,
+                testName: testName,
+                isolation: isolation
+            )
             let agentBinDirectory = Self.roleBinDirectory(
                 runDirectory: WendyE2EEnvironment.agentRunDirectory,
                 fallbackDirectory: nil
             )
             let agentEnv = Self.roleEnvironment(
-                homeDirectory: agentHomeDirectory,
-                temporaryDirectory: agentTemporaryDirectory,
+                sandbox: agentSandbox,
                 binDirectory: agentBinDirectory
             )
             let cliMachine = WendyE2EMachine(
@@ -113,15 +111,17 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
 
             let cli = try await WendyE2ESession.begin(
                 for: cliMachine,
-                workingDirectory: cliWorkingDirectory,
+                workingDirectory: cliSandbox.workingDirectory,
                 env: cliEnvironment,
+                resetDirectoriesOnFirstCommand: resetDirectoriesOnFirstCommand,
                 recorder: recorder
             )
             cliSession = cli
             let agent = try await WendyE2ESession.begin(
                 for: agentMachine,
-                workingDirectory: agentWorkingDirectory,
+                workingDirectory: agentSandbox.workingDirectory,
                 env: agentEnv,
+                resetDirectoriesOnFirstCommand: resetDirectoriesOnFirstCommand,
                 recorder: recorder
             )
             agentSession = agent
@@ -162,17 +162,47 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
         }
     }
 
-    private static func roleTestDirectoryPath(
+    private struct RoleSandbox {
+        let homeDirectory: String?
+        let temporaryDirectory: String?
+        let workingDirectory: String?
+    }
+
+    private static func roleSandbox(
         role: String,
         runDirectory: String?,
-        fallbackDirectory: String,
-        testName: String
-    ) -> String {
-        guard let runDirectory else {
-            return fallbackDirectory
+        fallbackTestDirectory: String,
+        testName: String,
+        isolation: WendyE2EIsolation
+    ) -> RoleSandbox {
+        let roleDirectory: String?
+        switch isolation {
+        case .none:
+            roleDirectory = nil
+        case .perRun:
+            roleDirectory = runDirectory ?? Self.path(Self.parentPath(fallbackTestDirectory), role)
+        case .perTest:
+            if let runDirectory {
+                roleDirectory = Self.path(Self.parentPath(runDirectory), "tests", testName, role)
+            } else {
+                roleDirectory = Self.path(fallbackTestDirectory, role)
+            }
         }
 
-        return Self.path(Self.parentPath(runDirectory), "tests", testName, role)
+        guard let roleDirectory else {
+            return RoleSandbox(
+                homeDirectory: nil,
+                temporaryDirectory: nil,
+                workingDirectory: nil
+            )
+        }
+
+        let homeDirectory = Self.path(roleDirectory, "home")
+        return RoleSandbox(
+            homeDirectory: homeDirectory,
+            temporaryDirectory: Self.path(roleDirectory, "tmp"),
+            workingDirectory: Self.path(homeDirectory, "work")
+        )
     }
 
     private static func parentPath(_ path: String) -> String {
@@ -212,15 +242,18 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
     }
 
     private static func roleEnvironment(
-        homeDirectory: String,
-        temporaryDirectory: String,
+        sandbox: RoleSandbox,
         binDirectory: String?
     ) -> [String: String] {
         var environment = [
-            "HOME": homeDirectory,
-            "TMPDIR": temporaryDirectory,
-            "WENDY_ANALYTICS": "false",
+            "WENDY_ANALYTICS": "false"
         ]
+        if let homeDirectory = sandbox.homeDirectory {
+            environment["HOME"] = homeDirectory
+        }
+        if let temporaryDirectory = sandbox.temporaryDirectory {
+            environment["TMPDIR"] = temporaryDirectory
+        }
         if let binDirectory {
             environment["PATH"] = "\(binDirectory):$PATH"
         }

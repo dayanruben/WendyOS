@@ -1,5 +1,15 @@
 import Foundation
 
+public enum WendyE2EIsolation: String, Sendable {
+    case none
+    case perRun = "per-run"
+    case perTest = "per-test"
+
+    public init?(environmentValue: String) {
+        self.init(rawValue: environmentValue.lowercased())
+    }
+}
+
 public enum WendyE2EEnvironment {
     public static let runID: String = {
         let configured = value("WENDY_E2E_RUN_ID") ?? UUID().uuidString
@@ -10,8 +20,16 @@ public enum WendyE2EEnvironment {
         flag("WENDY_E2E_VERBOSE")
     }
 
+    public static var parallel: Bool {
+        flag("WENDY_E2E_PARALLEL")
+    }
+
     public static var runDirectory: String? {
         value("WENDY_E2E_RUN_DIR")
+    }
+
+    public static var isolation: WendyE2EIsolation {
+        value("WENDY_E2E_ISOLATION").flatMap(WendyE2EIsolation.init(environmentValue:)) ?? .perTest
     }
 
     public static var cliOS: WendyE2EMachineOS? {

@@ -18,6 +18,7 @@ public struct WendyE2ESession: Sendable {
         for machine: WendyE2EMachine,
         workingDirectory: String? = nil,
         env: [String: String] = [:],
+        resetDirectoriesOnFirstCommand: Bool = false,
         verbose: Bool = false,
         recorder: WendyE2ERecorder? = nil
     ) async throws -> WendyE2ESession {
@@ -25,6 +26,7 @@ public struct WendyE2ESession: Sendable {
             machine: machine,
             workingDirectory: workingDirectory,
             env: env,
+            resetDirectoriesOnFirstCommand: resetDirectoriesOnFirstCommand,
             recorder: recorder,
             verbose: verbose || WendyE2EEnvironment.verbose
         )
@@ -124,7 +126,8 @@ public struct WendyE2ESession: Sendable {
             Self.printCommand(machine: self.machine.name, command: command)
         }
 
-        let harnessPrefix = self.harnessPrefix()
+        let resetDirectories = await self.commandSetupState.resetDirectoriesForNextCommand()
+        let harnessPrefix = self.harnessPrefix(resetDirectories: resetDirectories)
         let invocation = self.invocation(for: command, harnessPrefix: harnessPrefix)
 
         let start = ContinuousClock.now
@@ -206,6 +209,7 @@ public struct WendyE2ESession: Sendable {
         machine: WendyE2EMachine,
         workingDirectory: String? = nil,
         env: [String: String] = [:],
+        resetDirectoriesOnFirstCommand: Bool = false,
         recorder: WendyE2ERecorder? = nil,
         verbose: Bool = false
     ) {
@@ -221,12 +225,16 @@ public struct WendyE2ESession: Sendable {
         self.workingDirectory =
             workingDirectory ?? (machine.isLocal ? FileManager.default.currentDirectoryPath : nil)
         self.env = env
+        self.commandSetupState = CommandSetupState(
+            resetDirectoriesOnFirstCommand: resetDirectoriesOnFirstCommand
+        )
         self.recorder = recorder
         self.verbose = verbose
     }
 
     // MARK: - Private
 
+    private let commandSetupState: CommandSetupState
     private let recorder: WendyE2ERecorder?
     private let verbose: Bool
 
@@ -305,12 +313,21 @@ public struct WendyE2ESession: Sendable {
         )
     }
 
-    private func harnessPrefix() -> [String] {
+    private func harnessPrefix(resetDirectories: Bool) -> [String] {
         var parts = self.env.keys.sorted().map { key in
             "export \(key)=\(Self.shellEnvironmentValue(self.env[key] ?? ""))"
         }
 
         let setupDirectories = self.setupDirectories()
+        if resetDirectories, !setupDirectories.isEmpty {
+            parts.append(
+                "rm -rf "
+                    + setupDirectories
+                    .map(Self.shellEnvironmentValue)
+                    .joined(separator: " ")
+            )
+        }
+
         if !setupDirectories.isEmpty {
             parts.append(
                 "mkdir -p "
@@ -489,6 +506,20 @@ public struct WendyE2ESession: Sendable {
             output: output,
             error: error
         )
+    }
+}
+
+private actor CommandSetupState {
+    private let resetDirectoriesOnFirstCommand: Bool
+    private var didRunCommand = false
+
+    init(resetDirectoriesOnFirstCommand: Bool) {
+        self.resetDirectoriesOnFirstCommand = resetDirectoriesOnFirstCommand
+    }
+
+    func resetDirectoriesForNextCommand() -> Bool {
+        defer { self.didRunCommand = true }
+        return self.resetDirectoriesOnFirstCommand && !self.didRunCommand
     }
 }
 
