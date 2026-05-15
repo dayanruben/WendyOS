@@ -419,6 +419,9 @@ private struct OpenAIChatResponse: Decodable {
     var choices: [Choice]
 }
 
+private let defaultAnthropicReviewModel = "claude-sonnet-4-6"
+private let defaultOpenAIReviewModel = "gpt-5.5"
+
 private func makeReviewer(provider: AIProvider, model: String?) throws -> any E2EAIReviewer {
     let environment = ProcessInfo.processInfo.environment
     let anthropicKey = environment["ANTHROPIC_API_KEY", default: ""]
@@ -433,7 +436,7 @@ private func makeReviewer(provider: AIProvider, model: String?) throws -> any E2
         }
         return AnthropicReviewer(
             apiKey: anthropicKey,
-            modelName: model ?? environment["ANTHROPIC_MODEL", default: "claude-3-5-sonnet-latest"]
+            modelName: model ?? environment["ANTHROPIC_MODEL", default: defaultAnthropicReviewModel]
         )
     case .openai:
         guard !openAIKey.isEmpty else {
@@ -441,20 +444,20 @@ private func makeReviewer(provider: AIProvider, model: String?) throws -> any E2
         }
         return OpenAIReviewer(
             apiKey: openAIKey,
-            modelName: model ?? environment["OPENAI_MODEL", default: "gpt-4o-mini"]
+            modelName: model ?? environment["OPENAI_MODEL", default: defaultOpenAIReviewModel]
         )
     case .auto:
         if !anthropicKey.isEmpty {
             return AnthropicReviewer(
                 apiKey: anthropicKey,
                 modelName: model
-                    ?? environment["ANTHROPIC_MODEL", default: "claude-3-5-sonnet-latest"]
+                    ?? environment["ANTHROPIC_MODEL", default: defaultAnthropicReviewModel]
             )
         }
         if !openAIKey.isEmpty {
             return OpenAIReviewer(
                 apiKey: openAIKey,
-                modelName: model ?? environment["OPENAI_MODEL", default: "gpt-4o-mini"]
+                modelName: model ?? environment["OPENAI_MODEL", default: defaultOpenAIReviewModel]
             )
         }
         return UnconfiguredReviewer()
