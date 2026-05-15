@@ -37,7 +37,7 @@ RUN_ID="${WENDY_E2E_RUN_ID:-}"
 RUN_DIR="${WENDY_E2E_RUN_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
-AGENT_WORKDIR="${WENDY_E2E_AGENT_WORKING_DIRECTORY:-}"
+AGENT_WORKDIR="${WENDY_E2E_AGENT_WORK_DIR:-}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
 GENERATE_REPORT="${WENDY_E2E_GENERATE_REPORT:-true}"
 PARALLEL="${WENDY_E2E_PARALLEL:-false}"
@@ -92,7 +92,7 @@ Environment:
   WENDY_E2E_RUN_DIR                   Defaults to Build/e2e-run.<run-id>.
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
   WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
-  WENDY_E2E_AGENT_WORKING_DIRECTORY   swift/ directory for the agent.
+  WENDY_E2E_AGENT_WORK_DIR            swift/ directory for the agent.
   WENDY_E2E_GENERATE_REPORT           Boolean; generates report.html.
   WENDY_E2E_PARALLEL                  Boolean; enables SwiftPM parallel tests.
   WENDY_E2E_VERBOSE                   Boolean; prints machine commands.
@@ -306,7 +306,7 @@ SWIFT_TEST_ENV=(
   "WENDY_E2E_RUN_DIR=$RUN_DIR"
   "WENDY_E2E_AGENT_USER=$AGENT_USER"
   "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
-  "WENDY_E2E_AGENT_WORKING_DIRECTORY=$AGENT_WORKDIR"
+  "WENDY_E2E_AGENT_WORK_DIR=$AGENT_WORKDIR"
   "WENDY_E2E_CLI_OS="
   "WENDY_E2E_CLI_USER="
   "WENDY_E2E_CLI_ADDRESS="

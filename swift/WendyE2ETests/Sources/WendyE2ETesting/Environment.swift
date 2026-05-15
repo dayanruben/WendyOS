@@ -43,7 +43,7 @@ public enum Environment {
     }
 
     public static var agentWorkingDirectory: String? {
-        value("WENDY_E2E_AGENT_WORKING_DIRECTORY")
+        value("WENDY_E2E_AGENT_WORK_DIR")
     }
 
     public static var testRecordsDirectory: String? {
