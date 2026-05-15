@@ -33,22 +33,34 @@ sanitize_run_id() {
   printf "%s" "$value"
 }
 
-RUN_ID="$(sanitize_run_id "${WENDY_E2E_RUN_ID:-$(default_run_id)}")"
-if [[ -z "$RUN_ID" ]]; then
-  RUN_ID="$(default_run_id)"
-fi
-
-DEFAULT_RUN_DIR="$SWIFT_DIR/Build/e2e-run.$RUN_ID"
-
-RUN_DIR="${WENDY_E2E_RUN_DIR:-$DEFAULT_RUN_DIR}"
+RUN_ID="${WENDY_E2E_RUN_ID:-}"
+RUN_DIR="${WENDY_E2E_RUN_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
 AGENT_WORKDIR="${WENDY_E2E_AGENT_WORKING_DIRECTORY:-}"
-CLI_ADDRESS="${WENDY_E2E_CLI_ADDRESS:-}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
 GENERATE_REPORT="${WENDY_E2E_GENERATE_REPORT:-true}"
 PARALLEL="${WENDY_E2E_PARALLEL:-false}"
 TEST_FILTERS=()
+
+normalize_bool() {
+  local name="$1"
+  local value
+  value="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    true|1|yes|on|enabled)
+      printf "true"
+      ;;
+    false|0|no|off|disabled)
+      printf "false"
+      ;;
+    *)
+      echo "ERROR: $name must be true or false." >&2
+      exit 64
+      ;;
+  esac
+}
 
 usage() {
   cat <<EOF
@@ -60,14 +72,18 @@ Options:
   --filter FILTER       Pass a SwiftPM test filter (can be repeated). If omitted,
                         WENDY_E2E_TEST_FILTERS may contain comma-separated
                         filters, otherwise the WendyE2ETests target is run.
+  --run-id ID           Run identifier used for default paths.
   --run-dir DIR         Directory for all generated E2E run files.
   --agent-user USER     Optional SSH user for the agent machine.
   --agent-address HOST  Optional address for the agent machine; defaults to hostname.
   --agent-work-dir DIR  Existing swift/ working directory to use for the agent.
   --parallel            Allow SwiftPM to run tests in parallel. Only valid when
                         both CLI and agent machines use local transport.
-  --verbose             Print each E2E machine command before it runs.
+  --no-parallel         Do not run SwiftPM tests in parallel.
+  --report              Generate report.html from the E2E run directory.
   --no-report           Do not generate report.html from the E2E run directory.
+  --verbose             Print each E2E machine command before it runs.
+  --no-verbose          Do not print each E2E machine command before it runs.
   --help                Show this help message.
 
 Environment:
@@ -77,9 +93,11 @@ Environment:
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
   WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
   WENDY_E2E_AGENT_WORKING_DIRECTORY   swift/ directory for the agent.
-  WENDY_E2E_GENERATE_REPORT           true/false; generates report.html.
-  WENDY_E2E_PARALLEL                  true/false; enables SwiftPM parallel tests.
-  WENDY_E2E_VERBOSE                   true/false; prints machine commands.
+  WENDY_E2E_GENERATE_REPORT           Boolean; generates report.html.
+  WENDY_E2E_PARALLEL                  Boolean; enables SwiftPM parallel tests.
+  WENDY_E2E_VERBOSE                   Boolean; prints machine commands.
+
+Boolean values accept true/false, 1/0, yes/no, on/off, enabled/disabled.
 EOF
 }
 
@@ -87,6 +105,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --filter)
       TEST_FILTERS+=("$2")
+      shift 2
+      ;;
+    --run-id)
+      RUN_ID="$2"
       shift 2
       ;;
     --run-dir)
@@ -109,12 +131,24 @@ while [[ $# -gt 0 ]]; do
       PARALLEL="true"
       shift
       ;;
-    --verbose)
-      VERBOSE="true"
+    --no-parallel)
+      PARALLEL="false"
+      shift
+      ;;
+    --report)
+      GENERATE_REPORT="true"
       shift
       ;;
     --no-report)
       GENERATE_REPORT="false"
+      shift
+      ;;
+    --verbose)
+      VERBOSE="true"
+      shift
+      ;;
+    --no-verbose)
+      VERBOSE="false"
       shift
       ;;
     --help|-h)
@@ -141,29 +175,22 @@ if [[ ${#TEST_FILTERS[@]} -eq 0 ]]; then
   TEST_FILTERS+=("WendyE2ETests")
 fi
 
-parallel_normalized="$(printf '%s' "$PARALLEL" | tr '[:upper:]' '[:lower:]')"
-case "$parallel_normalized" in
-  true|1|yes|on)
-    PARALLEL="true"
-    ;;
-  false|0|no|off)
-    PARALLEL="false"
-    ;;
-  *)
-    echo "ERROR: WENDY_E2E_PARALLEL must be true or false." >&2
-    exit 64
-    ;;
-esac
-
-if [[ "$PARALLEL" == "true" && ( -n "$CLI_ADDRESS" || -n "$AGENT_ADDRESS" ) ]]; then
-  echo "ERROR: --parallel is only valid when CLI and agent machines are local." >&2
-  echo "Unset WENDY_E2E_CLI_ADDRESS and WENDY_E2E_AGENT_ADDRESS, or omit --parallel." >&2
-  exit 64
+RUN_ID="$(sanitize_run_id "${RUN_ID:-$(default_run_id)}")"
+if [[ -z "$RUN_ID" ]]; then
+  RUN_ID="$(sanitize_run_id "$(default_run_id)")"
 fi
 
-if [[ -n "$CLI_ADDRESS" ]]; then
-  echo "ERROR: TestE2E.sh builds the wendy CLI into the local run directory." >&2
-  echo "Unset WENDY_E2E_CLI_ADDRESS to use the managed E2E CLI binary." >&2
+if [[ -z "$RUN_DIR" ]]; then
+  RUN_DIR="$SWIFT_DIR/Build/e2e-run.$RUN_ID"
+fi
+
+PARALLEL="$(normalize_bool "WENDY_E2E_PARALLEL" "$PARALLEL")"
+GENERATE_REPORT="$(normalize_bool "WENDY_E2E_GENERATE_REPORT" "$GENERATE_REPORT")"
+VERBOSE="$(normalize_bool "WENDY_E2E_VERBOSE" "$VERBOSE")"
+
+if [[ "$PARALLEL" == "true" && -n "$AGENT_ADDRESS" ]]; then
+  echo "ERROR: --parallel is only valid when CLI and agent machines are local." >&2
+  echo "Unset WENDY_E2E_AGENT_ADDRESS, or omit --parallel." >&2
   exit 64
 fi
 
@@ -280,6 +307,10 @@ SWIFT_TEST_ENV=(
   "WENDY_E2E_AGENT_USER=$AGENT_USER"
   "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
   "WENDY_E2E_AGENT_WORKING_DIRECTORY=$AGENT_WORKDIR"
+  "WENDY_E2E_CLI_OS="
+  "WENDY_E2E_CLI_USER="
+  "WENDY_E2E_CLI_ADDRESS="
+  "WENDY_E2E_CLI_WORKING_DIRECTORY="
   "WENDY_E2E_PARALLEL=$PARALLEL"
   "WENDY_E2E_VERBOSE=$VERBOSE"
 )
