@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -66,17 +67,15 @@ func newOSCacheListCmd() *cobra.Command {
 
 			var items []osCacheEntry
 			for _, entry := range entries {
-				if entry.IsDir() {
-					continue
-				}
-				info, err := entry.Info()
+				path := filepath.Join(dir, entry.Name())
+				size, err := entrySize(path)
 				if err != nil {
-					continue
+					return fmt.Errorf("determining OS cache entry size for %s: %w", entry.Name(), err)
 				}
-				sizeMB := float64(info.Size()) / (1024 * 1024)
+				sizeMB := float64(size) / (1024 * 1024)
 				items = append(items, osCacheEntry{
 					Name:      entry.Name(),
-					SizeBytes: info.Size(),
+					SizeBytes: size,
 					SizeMB:    sizeMB,
 				})
 			}

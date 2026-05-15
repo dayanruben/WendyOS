@@ -87,9 +87,31 @@ struct `'wendy os cache list'` {
      Unreadable or malformed cache metadata produces a diagnostic that
      identifies the affected entry while preserving the rest of the cache.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `reports unreadable cache metadata clearly`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh(
+                """
+                case "$(uname -s)" in
+                  Darwin) cache_root="$HOME/Library/Caches/wendy/os-images" ;;
+                  *) cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/wendy/os-images" ;;
+                esac
+                mkdir -p "$cache_root/unreadable"
+                chmod 000 "$cache_root/unreadable"
+                trap 'chmod 700 "$cache_root/unreadable" 2>/dev/null || true' EXIT
+                wendy os cache list
+                """
+            ) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(!terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(standardError.contains("determining OS cache entry size"))
+                #expect(standardError.contains("unreadable"))
+            }
+        }
     }
 
     /**
