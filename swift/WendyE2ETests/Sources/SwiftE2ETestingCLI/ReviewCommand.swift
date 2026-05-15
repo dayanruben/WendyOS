@@ -64,11 +64,22 @@ struct ReviewCommand: AsyncParsableCommand {
             print("    Tests:    \(reviewableTests.count)")
         } else {
             print("==> Swift E2E AI review skipped: no provider API key configured")
+            print("    Tests:    \(reviewableTests.count)")
+        }
+        if reviewableTests.isEmpty {
+            print("    No tests with // AI comments found.")
         }
 
         var results: [ReviewTestAIResult] = []
-        for test in reviewableTests {
+        let reviewableTestCount = reviewableTests.count
+        for (offset, test) in reviewableTests.enumerated() {
+            let progress = reviewProgressLabel(
+                for: test,
+                index: offset + 1,
+                total: reviewableTestCount
+            )
             guard let recordURL = test.recordURL else {
+                print("    Skipping \(progress): missing recording \(test.recordName)")
                 results.append(.missingRecord(test: test))
                 continue
             }
@@ -78,16 +89,19 @@ struct ReviewCommand: AsyncParsableCommand {
                 let existing = try String(contentsOf: reviewURL, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !existing.isEmpty {
+                    print("    Skipping \(progress): ai-review.md already exists")
                     results.append(.existing(test: test, path: reviewURL))
                     continue
                 }
             }
 
             guard reviewer.isConfigured else {
+                print("    Skipping \(progress): no provider configured")
                 results.append(.skipped(test: test))
                 continue
             }
 
+            print("    Reviewing \(progress)")
             let request = try ReviewAIRequest(
                 test: test,
                 source: clipped(test.sourceBody, limit: maxSourceCharacters),
@@ -98,6 +112,7 @@ struct ReviewCommand: AsyncParsableCommand {
             )
             let markdown = try await reviewer.review(request: request)
             try markdown.write(to: reviewURL, atomically: true, encoding: .utf8)
+            print("    Wrote \(reviewURL.path)")
             results.append(.written(test: test, path: reviewURL, markdown: markdown))
         }
 
@@ -149,6 +164,10 @@ private struct ReviewTestCase {
     var status: ReviewTestStatus
     var recordName: String
     var recordURL: URL?
+}
+
+private func reviewProgressLabel(for test: ReviewTestCase, index: Int, total: Int) -> String {
+    "[\(index)/\(total)] \(test.suite) › \(test.name)"
 }
 
 private enum ReviewTestStatus {
@@ -516,7 +535,7 @@ private func parseReviewTests(
         let lines = source.components(separatedBy: .newlines)
         var suite = sourceURL.deletingPathExtension().lastPathComponent
         var pendingTest: (line: Int, disabled: String?)?
-        var discovered: [(name: String, funcLine: Int, disabled: String?)] = []
+        var discovered: [(suite: String, name: String, funcLine: Int, disabled: String?)] = []
 
         for (offset, line) in lines.enumerated() {
             let lineNumber = offset + 1
@@ -536,7 +555,12 @@ private func parseReviewTests(
                 let test = pendingTest
             {
                 discovered.append(
-                    (name: functionName, funcLine: lineNumber, disabled: test.disabled)
+                    (
+                        suite: suite,
+                        name: functionName,
+                        funcLine: lineNumber,
+                        disabled: test.disabled
+                    )
                 )
                 pendingTest = nil
             }
@@ -549,7 +573,7 @@ private func parseReviewTests(
             let bodyLines = Array(lines[(test.funcLine - 1)..<(nextLine - 1)])
             let aiComments = extractReviewAIComments(from: bodyLines)
             let recordKey = "\(reviewRecordFileStem(sourceURL)).\(reviewSlug(test.name))"
-            let key = ReviewResultKey(suite: suite, name: test.name)
+            let key = ReviewResultKey(suite: test.suite, name: test.name)
             let status =
                 test.disabled.map { ReviewTestStatus.skipped($0) }
                 ?? testResults[key]
@@ -557,7 +581,7 @@ private func parseReviewTests(
             tests.append(
                 ReviewTestCase(
                     fileName: sourceURL.lastPathComponent,
-                    suite: suite,
+                    suite: test.suite,
                     name: test.name,
                     funcLine: test.funcLine,
                     nextLine: nextLine,
