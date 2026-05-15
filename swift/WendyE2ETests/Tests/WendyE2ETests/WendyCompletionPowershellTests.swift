@@ -38,9 +38,21 @@ struct `'wendy completion powershell'` {
      no stderr, exits successfully, and does not read or write shell
      rc files.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints the powershell completion script`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh("wendy completion powershell") {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput.contains("# powershell completion for wendy"))
+                #expect(standardOutput.contains("Register-ArgumentCompleter"))
+                #expect(standardOutput.contains("__wendyCompleterBlock"))
+                #expect(standardError == "")
+            }
+        }
     }
 
     /**
