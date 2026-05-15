@@ -245,11 +245,14 @@ if [[ "$PARALLEL" == "true" && ( -n "$CLI_ADDRESS" || -n "$AGENT_ADDRESS" ) ]]; 
   exit 64
 fi
 
-if [[ -n "$CLI_ADDRESS" ]]; then
-  echo "ERROR: remote CLI machines are not supported yet." >&2
-  echo "Remote CLI support needs target-side wendy provisioning before tests run." >&2
+if [[ -n "$CLI_ADDRESS" && -z "$CLI_REPO_DIR" ]]; then
+  echo "ERROR: --cli-repo-dir is required when --cli-address is set." >&2
   exit 64
 fi
+
+shell_quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
 
 expand_local_path() {
   local path="$1"
@@ -259,6 +262,12 @@ expand_local_path() {
       ;;
     '~/'*)
       printf "%s/%s" "${HOME:?}" "${path#~/}"
+      ;;
+    '\$HOME')
+      printf "%s" "${HOME:?}"
+      ;;
+    '\$HOME/'*)
+      printf "%s/%s" "${HOME:?}" "${path#\$HOME/}"
       ;;
     *)
       printf "%s" "$path"
@@ -301,54 +310,105 @@ TESTS_DIR="$RUN_DIR/tests"
 TEST_RESULTS_OUTPUT_BASE="$RUN_DIR/test-results.xml"
 
 rm -rf "$RUN_DIR"
-if [[ -z "$CLI_ADDRESS" ]]; then
-  rm -rf "$CLI_RUN_DIR"
-fi
 if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
 mkdir -p \
   "$RUN_DIR" \
-  "$CLI_BIN_DIR" \
   "$TESTS_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
   mkdir -p "$AGENT_BIN_DIR"
 fi
 
 ssh_target() {
-  local host="$AGENT_ADDRESS"
+  local user="$1"
+  local address="$2"
+  local host="$address"
   if [[ "$host" == *:* ]]; then
     host="[$host]"
   fi
 
-  if [[ -n "$AGENT_USER" ]]; then
-    printf "%s@%s" "$AGENT_USER" "$host"
+  if [[ -n "$user" ]]; then
+    printf "%s@%s" "$user" "$host"
   else
     printf "%s" "$host"
   fi
 }
 
+run_cli_command() {
+  local command="$1"
+
+  if [[ -n "$CLI_ADDRESS" ]]; then
+    ssh \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      -T \
+      "$(ssh_target "$CLI_USER" "$CLI_ADDRESS")" \
+      "bash -lc $(shell_quote "$command")"
+  else
+    bash -lc "$command"
+  fi
+}
+
 build_cli() {
-  local go_dir="$CLI_REPO_DIR/go"
   local wendy_path="$CLI_BIN_DIR/wendy"
 
   echo "==> Building wendy CLI"
+  echo "    Target: ${CLI_USER:+$CLI_USER@}${CLI_ADDRESS:-<local>}"
   echo "    Output: $wendy_path"
-  (
-    cd "$go_dir"
-    go build -o "$wendy_path" ./cmd/wendy
-  )
 
-  local resolved
-  resolved="$(PATH="$CLI_BIN_DIR:$PATH" command -v wendy || true)"
-  if [[ "$resolved" != "$wendy_path" ]]; then
-    echo "ERROR: managed wendy CLI was not first on PATH." >&2
-    echo "Expected: $wendy_path" >&2
-    echo "Resolved: ${resolved:-<not found>}" >&2
-    exit 1
-  fi
+  local command
+  command=$(cat <<EOF
+set -euo pipefail
 
-  echo "    Version: $("$wendy_path" --version)"
+expand_target_path() {
+  local path="\$1"
+  case "\$path" in
+    '~')
+      printf "%s" "\${HOME:?}"
+      ;;
+    '~/'*)
+      printf "%s/%s" "\${HOME:?}" "\${path#~/}"
+      ;;
+    '\$HOME')
+      printf "%s" "\${HOME:?}"
+      ;;
+    '\$HOME/'*)
+      printf "%s/%s" "\${HOME:?}" "\${path#\$HOME/}"
+      ;;
+    *)
+      printf "%s" "\$path"
+      ;;
+  esac
+}
+
+cli_run_dir="\$(expand_target_path $(shell_quote "$CLI_RUN_DIR"))"
+cli_repo_dir="\$(expand_target_path $(shell_quote "$CLI_REPO_DIR"))"
+cli_bin_dir="\$cli_run_dir/bin"
+wendy_path="\$cli_bin_dir/wendy"
+
+rm -rf "\$cli_run_dir"
+mkdir -p "\$cli_bin_dir"
+cd "\$cli_repo_dir/go"
+go build -o "\$wendy_path" ./cmd/wendy
+
+resolved="\$(PATH="\$cli_bin_dir:\$PATH" command -v wendy || true)"
+if [[ "\$resolved" != "\$wendy_path" ]]; then
+  echo "ERROR: managed wendy CLI was not first on PATH." >&2
+  echo "Expected: \$wendy_path" >&2
+  echo "Resolved: \${resolved:-<not found>}" >&2
+  exit 1
+fi
+
+"\$wendy_path" --version
+EOF
+)
+
+  local version
+  version="$(run_cli_command "$command")"
+  echo "    Version: $version"
 }
 
 generate_html_report() {
@@ -442,7 +502,7 @@ echo "    Parallel: $PARALLEL"
 echo "    HTML:     $REPORT"
 echo "    CLI target: ${CLI_USER:+$CLI_USER@}${CLI_ADDRESS:-<local>}:${CLI_REPO_DIR:-<no-repo>}"
 if [[ -n "$AGENT_ADDRESS" ]]; then
-  echo "    Agent:   $(ssh_target):${AGENT_REPO_DIR:-<no-repo>}"
+  echo "    Agent:   $(ssh_target "$AGENT_USER" "$AGENT_ADDRESS"):${AGENT_REPO_DIR:-<no-repo>}"
 else
   echo "    Agent:   <local>:${AGENT_REPO_DIR:-<no-repo>}"
 fi
