@@ -25,7 +25,7 @@ test: ## Run Swift package tests
 	bash ./Scripts/Test.sh
 
 test-e2e: ## Run Swift E2E tests and open the HTML report on macOS
-	WENDY_E2E_RUN_ID=$${WENDY_E2E_RUN_ID:-local} bash ./Scripts/TestE2E.sh --output-dir Build/e2e --parallel
+	WENDY_E2E_RUN_ID=$${WENDY_E2E_RUN_ID:-local} bash ./Scripts/TestE2E.sh --output-dir Build/e2e --cli-root-dir Build/e2e --agent-root-dir Build/e2e --parallel
 	@$(OPEN_E2E_REPORT)
 
 test-e2e-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
