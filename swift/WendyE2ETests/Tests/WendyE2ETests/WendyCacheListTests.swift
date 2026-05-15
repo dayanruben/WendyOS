@@ -87,9 +87,27 @@ struct `'wendy cache list'` {
      Unreadable or malformed cache metadata produces a diagnostic that
      identifies the affected entry while preserving the rest of the cache.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `reports unreadable cache metadata clearly`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh(
+                """
+                mkdir -p "$HOME/Library/Caches/wendy/unreadable"
+                chmod 000 "$HOME/Library/Caches/wendy/unreadable"
+                trap 'chmod 700 "$HOME/Library/Caches/wendy/unreadable" 2>/dev/null || true' EXIT
+                wendy cache list
+                """
+            ) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(!terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(standardError.contains("determining cache entry size"))
+                #expect(standardError.contains("unreadable"))
+            }
+        }
     }
 
     /**
