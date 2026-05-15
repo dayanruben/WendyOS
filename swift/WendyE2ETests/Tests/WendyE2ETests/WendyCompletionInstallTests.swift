@@ -40,9 +40,28 @@ struct `'wendy completion install'` {
      the conventional location, and adds an idempotent source line to
      the shell rc file when that shell needs one.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `installs completion for the detected shell`() async throws {
-        // TODO: implement.
+        try await self.scenario.run { cli, _ in
+            try await cli.sh(
+                """
+                SHELL=/bin/zsh wendy completion install
+                test -f "$HOME/.zfunc/_wendy"
+                test -f "$HOME/.zshrc"
+                grep -q '#compdef wendy' "$HOME/.zfunc/_wendy"
+                grep -q 'wendy-completion' "$HOME/.zshrc"
+                """
+            ) {
+                terminationStatus,
+                standardOutput,
+                standardError in
+
+                #expect(terminationStatus.isSuccess)
+                #expect(standardOutput == "")
+                #expect(standardError.contains("Wrote"))
+                #expect(standardError.contains("Updated"))
+            }
+        }
     }
 
     /**
