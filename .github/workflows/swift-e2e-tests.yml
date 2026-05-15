@@ -32,7 +32,7 @@ jobs:
       matrix:
         target:
           - id: macos-26-to-jetson-orin-nano
-            name: macOS 26 → Jetson Orin Nano 🚧
+            name: macOS 26 → Jetson Orin Nano
             status: enabled
             status_label: Enabled
             runner_id: macos-26
@@ -46,7 +46,7 @@ jobs:
             transport: lan
 
           - id: macos-26-to-mac-mini
-            name: macOS 26 → Mac mini 🚧
+            name: macOS 26 → Mac mini
             status: enabled
             status_label: Enabled
             runner_id: macos-26
@@ -84,7 +84,7 @@ jobs:
             transport: lan
 
           - id: macos-26-to-raspberry-pi-5
-            name: macOS 26 → Raspberry Pi 5 🚧
+            name: macOS 26 → Raspberry Pi 5
             status: enabled
             status_label: Enabled
             runner_id: macos-26
