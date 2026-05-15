@@ -68,14 +68,20 @@ func newOSCacheListCmd() *cobra.Command {
 			var items []osCacheEntry
 			for _, entry := range entries {
 				path := filepath.Join(dir, entry.Name())
-				size, err := entrySize(path)
-				if err != nil {
-					return fmt.Errorf("determining OS cache entry size for %s: %w", entry.Name(), err)
+				if entry.IsDir() {
+					if _, err := entrySize(path); err != nil {
+						return fmt.Errorf("determining OS cache entry size for %s: %w", entry.Name(), err)
+					}
+					continue
 				}
-				sizeMB := float64(size) / (1024 * 1024)
+				info, err := entry.Info()
+				if err != nil {
+					return fmt.Errorf("reading OS cache entry info for %s: %w", entry.Name(), err)
+				}
+				sizeMB := float64(info.Size()) / (1024 * 1024)
 				items = append(items, osCacheEntry{
 					Name:      entry.Name(),
-					SizeBytes: size,
+					SizeBytes: info.Size(),
 					SizeMB:    sizeMB,
 				})
 			}
