@@ -58,11 +58,13 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 isDirectory: true
             ).path
             let cliTestDirectory = Self.roleTestDirectoryPath(
+                role: "cli",
                 runDirectory: WendyE2EEnvironment.cliRunDirectory,
                 fallbackDirectory: Self.path(fallbackTestDirectory, "cli"),
                 testName: testName
             )
             let agentTestDirectory = Self.roleTestDirectoryPath(
+                role: "agent",
                 runDirectory: WendyE2EEnvironment.agentRunDirectory,
                 fallbackDirectory: Self.path(fallbackTestDirectory, "agent"),
                 testName: testName
@@ -161,6 +163,7 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
     }
 
     private static func roleTestDirectoryPath(
+        role: String,
         runDirectory: String?,
         fallbackDirectory: String,
         testName: String
@@ -169,7 +172,25 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
             return fallbackDirectory
         }
 
-        return Self.path(runDirectory, "tests", testName)
+        return Self.path(Self.parentPath(runDirectory), "tests", testName, role)
+    }
+
+    private static func parentPath(_ path: String) -> String {
+        var trimmed = path
+        while trimmed.count > 1, trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        guard trimmed != "/" else {
+            return "/"
+        }
+        guard let separatorIndex = trimmed.lastIndex(of: "/") else {
+            return "."
+        }
+        if separatorIndex == trimmed.startIndex {
+            return "/"
+        }
+
+        return String(trimmed[..<separatorIndex])
     }
 
     private static func roleBinDirectory(
