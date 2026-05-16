@@ -1,14 +1,12 @@
-public import Subprocess
-
 public enum WendyE2EMachineError: Error {
-    case commandFailed(machine: String, command: String, terminationStatus: TerminationStatus)
+    case commandFailed(machine: String, command: String, status: WendyE2EShellStatus)
     case powerShellUnavailable(machine: String)
     case pollTimedOut(
         machine: String,
         command: String,
         condition: String,
         timeout: Duration,
-        lastTerminationStatus: TerminationStatus?,
+        lastStatus: WendyE2EShellStatus?,
         message: String?
     )
 }
@@ -18,8 +16,8 @@ public enum WendyE2EMachineError: Error {
 extension WendyE2EMachineError: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .commandFailed(let machine, let command, let terminationStatus):
-            return "Command failed on \(machine) with \(terminationStatus): \(command)"
+        case .commandFailed(let machine, let command, let status):
+            return "Command failed on \(machine) with \(status): \(command)"
         case .powerShellUnavailable(let machine):
             return "PowerShell is not available on \(machine)"
         case .pollTimedOut(
@@ -27,13 +25,13 @@ extension WendyE2EMachineError: CustomStringConvertible {
             let command,
             let condition,
             let timeout,
-            let lastTerminationStatus,
+            let lastStatus,
             let message
         ):
             let prefix = message.map { "\($0): " } ?? ""
-            let lastStatus = lastTerminationStatus.map(String.init(describing:)) ?? "<none>"
+            let lastStatusDescription = lastStatus.map(String.init(describing:)) ?? "<none>"
             return "\(prefix)Command on \(machine) did not reach \(condition) within \(timeout)"
-                + " (last status: \(lastStatus)): \(command)"
+                + " (last status: \(lastStatusDescription)): \(command)"
         }
     }
 }

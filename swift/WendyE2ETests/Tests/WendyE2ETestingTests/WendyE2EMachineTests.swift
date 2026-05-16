@@ -1,5 +1,4 @@
 import Foundation
-import Subprocess
 import Testing
 
 @testable import WendyE2ETesting
@@ -71,15 +70,11 @@ struct `session` {
         let session = try await WendyE2ESession.begin(
             for: WendyE2EMachine(id: "local", name: "Local")
         )
-        let record = try await session.sh(
-            "printf 'wendy-machine-smoke'",
-            output: .string(limit: .max),
-            error: .string(limit: .max)
-        )
+        let result = try await session.posixShell("printf 'wendy-machine-smoke'")
 
-        #expect(record.terminationStatus.isSuccess)
-        #expect(record.standardOutput == "wendy-machine-smoke")
-        #expect(record.standardError == "")
+        #expect(result.isSuccess)
+        #expect(result.stdout == "wendy-machine-smoke")
+        #expect(result.stderr == "")
     }
 
     @Test
@@ -167,15 +162,11 @@ struct `session` {
             ]
         )
 
-        let record = try await session.sh(
-            "wendy",
-            output: .string(limit: .max),
-            error: .string(limit: .max)
-        )
+        let result = try await session.posixShell("wendy")
 
-        #expect(record.terminationStatus.isSuccess)
-        #expect(record.standardOutput == "HOME=\(homeDirectory.path)\nWENDY_ANALYTICS=false\n")
-        #expect(record.standardError == "")
+        #expect(result.isSuccess)
+        #expect(result.stdout == "HOME=\(homeDirectory.path)\nWENDY_ANALYTICS=false\n")
+        #expect(result.stderr == "")
     }
 
     @Test
@@ -294,15 +285,11 @@ struct `session` {
     @Test
     func `collected output API matches swift-subprocess style`() async throws {
         try await Self.withTemporarySession { session, _ in
-            let record = try await session.sh(
-                "printf 'hello'",
-                output: .string(limit: .max),
-                error: .string(limit: .max)
-            )
+            let result = try await session.posixShell("printf 'hello'")
 
-            #expect(record.terminationStatus.isSuccess)
-            #expect(record.standardOutput == "hello")
-            #expect(record.standardError == "")
+            #expect(result.isSuccess)
+            #expect(result.stdout == "hello")
+            #expect(result.stderr == "")
         }
     }
 

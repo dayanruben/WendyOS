@@ -1,5 +1,5 @@
 import Foundation
-public import Subprocess
+import Subprocess
 
 #if canImport(System)
     import System
@@ -170,90 +170,26 @@ public struct WendyE2ESession: Sendable {
         try await body(try await self.posixShell(command))
     }
 
-    public func sh<Output: OutputProtocol, Error: ErrorOutputProtocol>(
-        _ command: String,
-        output: Output,
-        error: Error = .discarded
-    ) async throws -> ExecutionRecord<Output, Error> {
-        if self.verbose {
-            Self.printCommand(machine: self.machine.name, command: command)
-        }
-
-        let resetDirectories = await self.commandSetupState.resetDirectoriesForNextCommand()
-        let harnessPrefix = self.harnessPrefix(resetDirectories: resetDirectories)
-        let invocation = self.invocation(for: command, harnessPrefix: harnessPrefix)
-
-        let start = ContinuousClock.now
-        let record = try await Self.invoke(
-            invocation,
-            output: output,
-            error: error
-        )
-        let duration = start.duration(to: .now)
-
-        self.recorder?.record(
-            session: self,
-            command: command,
-            processID: String(describing: record.processIdentifier),
-            status: String(describing: record.terminationStatus),
-            duration: duration,
-            standardOutput: Self.outputDescription(record.standardOutput),
-            standardError: Self.outputDescription(record.standardError),
-            harnessPrefix: harnessPrefix,
-            scriptShellName: Self.localShellName
-        )
-
-        return record
-    }
-
     public func sh<Result>(
         _ command: String,
-        output: StringOutput<UTF8> = .string(limit: .max),
-        error: StringOutput<UTF8> = .string(limit: .max),
         body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
     ) async throws -> Result {
-        let record = try await self.sh(
-            command,
-            output: output,
-            error: error
-        )
-
-        guard record.terminationStatus.isSuccess else {
-            throw WendyE2EMachineError.commandFailed(
-                machine: self.description,
-                command: command,
-                terminationStatus: record.terminationStatus
-            )
-        }
-
-        return try await body(
-            record.standardOutput ?? "",
-            record.standardError ?? ""
-        )
+        let result = try await self.posixShell(command)
+        try result.requireSuccess()
+        return try await body(result.standardOutput, result.standardError)
     }
 
     public func sh<Result>(
         _ command: String,
-        output: StringOutput<UTF8> = .string(limit: .max),
-        error: StringOutput<UTF8> = .string(limit: .max),
         body:
             @Sendable (
-                _ terminationStatus: TerminationStatus,
+                _ status: WendyE2EShellStatus,
                 _ standardOutput: String,
                 _ standardError: String
             ) async throws -> Result
     ) async throws -> Result {
-        let record = try await self.sh(
-            command,
-            output: output,
-            error: error
-        )
-
-        return try await body(
-            record.terminationStatus,
-            record.standardOutput ?? "",
-            record.standardError ?? ""
-        )
+        let result = try await self.posixShell(command)
+        return try await body(result.status, result.standardOutput, result.standardError)
     }
 
     // MARK: - Running PowerShell Commands
@@ -270,90 +206,26 @@ public struct WendyE2ESession: Sendable {
         try await body(try await self.powerShell(command))
     }
 
-    public func ps<Output: OutputProtocol, Error: ErrorOutputProtocol>(
-        _ command: String,
-        output: Output,
-        error: Error = .discarded
-    ) async throws -> ExecutionRecord<Output, Error> {
-        if self.verbose {
-            Self.printCommand(machine: self.machine.name, command: command)
-        }
-
-        let resetDirectories = await self.commandSetupState.resetDirectoriesForNextCommand()
-        let harnessPrefix = self.powerShellHarnessPrefix(resetDirectories: resetDirectories)
-        let invocation = try self.powerShellInvocation(for: command, harnessPrefix: harnessPrefix)
-
-        let start = ContinuousClock.now
-        let record = try await Self.invoke(
-            invocation,
-            output: output,
-            error: error
-        )
-        let duration = start.duration(to: .now)
-
-        self.recorder?.record(
-            session: self,
-            command: command,
-            processID: String(describing: record.processIdentifier),
-            status: String(describing: record.terminationStatus),
-            duration: duration,
-            standardOutput: Self.outputDescription(record.standardOutput),
-            standardError: Self.outputDescription(record.standardError),
-            harnessPrefix: harnessPrefix,
-            scriptShellName: Self.localPowerShellName
-        )
-
-        return record
-    }
-
     public func ps<Result>(
         _ command: String,
-        output: StringOutput<UTF8> = .string(limit: .max),
-        error: StringOutput<UTF8> = .string(limit: .max),
         body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
     ) async throws -> Result {
-        let record = try await self.ps(
-            command,
-            output: output,
-            error: error
-        )
-
-        guard record.terminationStatus.isSuccess else {
-            throw WendyE2EMachineError.commandFailed(
-                machine: self.description,
-                command: command,
-                terminationStatus: record.terminationStatus
-            )
-        }
-
-        return try await body(
-            record.standardOutput ?? "",
-            record.standardError ?? ""
-        )
+        let result = try await self.powerShell(command)
+        try result.requireSuccess()
+        return try await body(result.standardOutput, result.standardError)
     }
 
     public func ps<Result>(
         _ command: String,
-        output: StringOutput<UTF8> = .string(limit: .max),
-        error: StringOutput<UTF8> = .string(limit: .max),
         body:
             @Sendable (
-                _ terminationStatus: TerminationStatus,
+                _ status: WendyE2EShellStatus,
                 _ standardOutput: String,
                 _ standardError: String
             ) async throws -> Result
     ) async throws -> Result {
-        let record = try await self.ps(
-            command,
-            output: output,
-            error: error
-        )
-
-        return try await body(
-            record.terminationStatus,
-            record.standardOutput ?? "",
-            record.standardError ?? ""
-        )
+        let result = try await self.powerShell(command)
+        return try await body(result.status, result.standardOutput, result.standardError)
     }
 
     // MARK: - Internal
@@ -427,7 +299,7 @@ public struct WendyE2ESession: Sendable {
             machine: self.machine,
             command: command,
             processID: String(describing: record.processIdentifier),
-            status: record.terminationStatus,
+            status: WendyE2EShellStatus(record.terminationStatus),
             duration: duration,
             standardOutput: record.standardOutput ?? "",
             standardError: record.standardError ?? ""
