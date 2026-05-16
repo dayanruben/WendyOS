@@ -122,11 +122,19 @@ func listDrivesLinux() ([]drive, error) {
 	return drives, nil
 }
 
+// buildLsblkArgs returns the full argument list (including the command name)
+// used by lsblkCmd.  Extracting it into its own variable gives tests a seam
+// to assert that the -l flag is present without running a real process.
+var buildLsblkArgs = func(devPath string) []string {
+	return []string{"lsblk", "--json", "-l", "-o", "NAME,MOUNTPOINT", devPath}
+}
+
 // lsblkCmd is the function used to run lsblk for partition enumeration.
 // It is a package-level variable so tests can inject a fake implementation
 // without spawning a real process.
 var lsblkCmd = func(devPath string) ([]byte, error) {
-	return exec.Command("lsblk", "--json", "-l", "-o", "NAME,MOUNTPOINT", devPath).Output()
+	args := buildLsblkArgs(devPath)
+	return exec.Command(args[0], args[1:]...).Output()
 }
 
 // umountCmd is the function used to unmount a single partition path.

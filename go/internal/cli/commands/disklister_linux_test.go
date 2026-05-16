@@ -313,6 +313,37 @@ func TestUnmountDiskUsesLFlag(t *testing.T) {
 	}
 }
 
+// TestLsblkArgsIncludeFlatFlag verifies that buildLsblkArgs produces an
+// argument list that contains the -l (flat/list) flag.  This test will fail
+// if -l is ever removed from buildLsblkArgs, making the primary bug fix
+// directly observable without requiring a real lsblk process.
+func TestLsblkArgsIncludeFlatFlag(t *testing.T) {
+	args := buildLsblkArgs("/dev/sdb")
+
+	// The first element must be the command name.
+	if len(args) == 0 || args[0] != "lsblk" {
+		t.Fatalf("buildLsblkArgs(%q)[0] = %q, want \"lsblk\"", "/dev/sdb", args[0])
+	}
+
+	// The device path must be forwarded as the last argument.
+	if args[len(args)-1] != "/dev/sdb" {
+		t.Fatalf("buildLsblkArgs(%q) last arg = %q, want \"/dev/sdb\"", "/dev/sdb", args[len(args)-1])
+	}
+
+	// The -l flag must be present so lsblk returns a flat list of partitions
+	// rather than a nested hierarchy.
+	found := false
+	for _, a := range args {
+		if a == "-l" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("buildLsblkArgs(%q) = %v — missing required -l flag (flat output flag is the primary fix for WDY-774)", "/dev/sdb", args)
+	}
+}
+
 // TestParseLsblkOutputMatchesLinuxReport reproduces the exact lsblk -J output
 // from the bug report (WDY-774) to verify it parses without error.
 func TestParseLsblkOutputMatchesLinuxReport(t *testing.T) {
