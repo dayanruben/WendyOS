@@ -194,24 +194,27 @@ type pwDumpNode struct {
 	} `json:"info"`
 }
 
-// resolvePipeWireNodeID uses pw-dump to find the PipeWire node ID whose
+// resolvePipeWireNodeIDs uses pw-dump to find all PipeWire node IDs whose
 // alsa.card and alsa.device properties match the given card/device numbers.
-// Returns "" if no matching node is found or pw-dump is unavailable.
-func resolvePipeWireNodeID(ctx context.Context, card, device uint64) string {
+// A single ALSA card/device pair may appear as multiple PipeWire nodes (e.g.
+// one Audio/Sink and one Audio/Source), so we return all matches. Returns nil
+// if no matching nodes are found or pw-dump is unavailable.
+func resolvePipeWireNodeIDs(ctx context.Context, card, device uint64) []string {
 	cmd := exec.CommandContext(ctx, "pw-dump")
 	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		return nil
 	}
 
 	var nodes []pwDumpNode
 	if err := json.Unmarshal(out, &nodes); err != nil {
-		return ""
+		return nil
 	}
 
 	cardStr := fmt.Sprintf("%d", card)
 	deviceStr := fmt.Sprintf("%d", device)
 
+	var ids []string
 	for _, node := range nodes {
 		props := node.Info.Props
 		if props == nil {
@@ -225,10 +228,10 @@ func resolvePipeWireNodeID(ctx context.Context, card, device uint64) string {
 			continue
 		}
 
-		return fmt.Sprintf("%d", node.ID)
+		ids = append(ids, fmt.Sprintf("%d", node.ID))
 	}
 
-	return ""
+	return ids
 }
 
 // jsonPropMatches reports whether the named property in a pw-dump props map
@@ -347,23 +350,35 @@ func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.S
 
 	alsaCard, alsaDevice := decodeALSAID(req.GetDeviceId())
 
-	// Try PipeWire first: resolve the ALSA card/device to a PipeWire node ID.
-	nodeID := resolvePipeWireNodeID(ctx, alsaCard, alsaDevice)
-	if nodeID != "" {
-		cmd := exec.CommandContext(ctx, "wpctl", "set-default", nodeID)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			s.logger.Warn("wpctl set-default failed, falling back to PulseAudio",
-				zap.String("node_id", nodeID), zap.Error(err),
-				zap.String("output", strings.TrimSpace(string(output))))
-			// Fall through to PulseAudio fallback below.
-		} else {
-			s.logger.Info("Default audio device set via PipeWire",
-				zap.Uint32("device_id", req.GetDeviceId()),
-				zap.Uint64("alsa_card", alsaCard),
-				zap.Uint64("alsa_device", alsaDevice),
-				zap.String("pw_node_id", nodeID))
+	// Try PipeWire first: resolve the ALSA card/device to all matching PipeWire
+	// node IDs (a device may appear as both a sink and a source in PipeWire).
+	nodeIDs := resolvePipeWireNodeIDs(ctx, alsaCard, alsaDevice)
+	var wpctlErr error
+	if len(nodeIDs) > 0 {
+		var failedIDs []string
+		var lastWpctlOutput string
+		for _, nodeID := range nodeIDs {
+			cmd := exec.CommandContext(ctx, "wpctl", "set-default", nodeID)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				s.logger.Warn("wpctl set-default failed for node",
+					zap.String("node_id", nodeID), zap.Error(err),
+					zap.String("output", strings.TrimSpace(string(output))))
+				failedIDs = append(failedIDs, nodeID)
+				lastWpctlOutput = strings.TrimSpace(string(output))
+			} else {
+				s.logger.Info("Default audio device set via PipeWire",
+					zap.Uint32("device_id", req.GetDeviceId()),
+					zap.Uint64("alsa_card", alsaCard),
+					zap.Uint64("alsa_device", alsaDevice),
+					zap.String("pw_node_id", nodeID))
+			}
+		}
+		if len(failedIDs) < len(nodeIDs) {
+			// At least one wpctl call succeeded.
 			return &agentpb.SetDefaultAudioDeviceResponse{Success: true}, nil
 		}
+		// All wpctl calls failed; record the error for inclusion in the final message.
+		wpctlErr = fmt.Errorf("wpctl set-default failed for node(s) %v: %s", failedIDs, lastWpctlOutput)
 	}
 
 	s.logger.Debug("PipeWire node not found or wpctl failed for ALSA device, trying PulseAudio",
@@ -372,7 +387,12 @@ func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.S
 	// Fall back to PulseAudio: resolve the ALSA card/device to a sink/source name.
 	resp, paErr := s.setPulseAudioDefaultByALSA(ctx, req.GetDeviceId(), alsaCard, alsaDevice)
 	if paErr != nil {
-		errMsg := fmt.Sprintf("no PipeWire node or PulseAudio sink/source found for ALSA card %d device %d: %v", alsaCard, alsaDevice, paErr)
+		var errMsg string
+		if len(nodeIDs) > 0 && wpctlErr != nil {
+			errMsg = fmt.Sprintf("PipeWire node(s) found (%v) but wpctl failed; PulseAudio also failed: %v; wpctl error: %v", nodeIDs, paErr, wpctlErr)
+		} else {
+			errMsg = fmt.Sprintf("no PipeWire node or PulseAudio sink/source found for ALSA card %d device %d: %v", alsaCard, alsaDevice, paErr)
+		}
 		return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &errMsg}, nil
 	}
 	return resp, nil
