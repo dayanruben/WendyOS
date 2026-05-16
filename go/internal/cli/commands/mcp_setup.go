@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 
+	toml "github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 func newMCPSetupCmd() *cobra.Command {
@@ -87,9 +87,13 @@ func setupMCPForAllTools() []mcpSetupResult {
 		}
 	}
 
-	// Codex (~/.codex/config.yaml)
+	// Codex (~/.codex/config.toml)
 	if codexPath := codexConfigPath(); codexPath != "" {
-		if err := addMCPToYAMLConfig(codexPath, "mcpServers", "wendy", entry); err != nil {
+		codexEntry := map[string]any{
+			"command": wendyBin,
+			"args":    []string{"mcp", "serve"},
+		}
+		if err := addMCPToTOMLConfig(codexPath, "mcp_servers", "wendy", codexEntry); err != nil {
 			results = append(results, mcpSetupResult{tool: "Codex", path: codexPath, err: err})
 		} else {
 			results = append(results, mcpSetupResult{tool: "Codex", path: codexPath})
@@ -225,16 +229,16 @@ func addMCPToJSONConfig(path, topKey, name string, entry any) error {
 	return os.WriteFile(path, out, 0o644)
 }
 
-// addMCPToYAMLConfig reads a YAML config file, sets cfg[topKey][name] = entry,
+// addMCPToTOMLConfig reads a TOML config file, sets cfg[topKey][name] = entry,
 // and writes it back. Creates the file if it does not exist.
-func addMCPToYAMLConfig(path, topKey, name string, entry any) error {
+func addMCPToTOMLConfig(path, topKey, name string, entry any) error {
 	var cfg map[string]any
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
 	if len(data) > 0 {
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
+		if _, err := toml.Decode(string(data), &cfg); err != nil {
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 	}
@@ -247,17 +251,18 @@ func addMCPToYAMLConfig(path, topKey, name string, entry any) error {
 	}
 	top[name] = entry
 	cfg[topKey] = top
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o644)
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return toml.NewEncoder(f).Encode(cfg)
 }
 
-// codexConfigPath returns ~/.codex/config.yaml if Codex is installed.
+// codexConfigPath returns ~/.codex/config.toml if Codex is installed.
 func codexConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -265,10 +270,10 @@ func codexConfigPath() string {
 	}
 	dir := filepath.Join(home, ".codex")
 	if _, err := os.Stat(dir); err == nil {
-		return filepath.Join(dir, "config.yaml")
+		return filepath.Join(dir, "config.toml")
 	}
 	if _, err := exec.LookPath("codex"); err == nil {
-		return filepath.Join(dir, "config.yaml")
+		return filepath.Join(dir, "config.toml")
 	}
 	return ""
 }

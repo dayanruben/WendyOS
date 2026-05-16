@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	toml "github.com/BurntSushi/toml"
 )
 
 func TestCursorConfigPath_ReturnsDirBasedPath(t *testing.T) {
@@ -26,11 +26,11 @@ func TestWindsurfConfigPath_ReturnsDirBasedPath(t *testing.T) {
 	}
 }
 
-func TestAddMCPToYAMLConfig_CreatesFile(t *testing.T) {
+func TestAddMCPToTOMLConfig_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	entry := map[string]any{"type": "stdio", "command": "wendy", "args": []string{"mcp", "serve"}}
-	if err := addMCPToYAMLConfig(path, "mcpServers", "wendy", entry); err != nil {
+	path := filepath.Join(dir, "config.toml")
+	entry := map[string]any{"command": "wendy", "args": []string{"mcp", "serve"}}
+	if err := addMCPToTOMLConfig(path, "mcp_servers", "wendy", entry); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -38,12 +38,12 @@ func TestAddMCPToYAMLConfig_CreatesFile(t *testing.T) {
 		t.Fatalf("reading file: %v", err)
 	}
 	var out map[string]any
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		t.Fatalf("parsing YAML: %v", err)
+	if _, err := toml.Decode(string(data), &out); err != nil {
+		t.Fatalf("parsing TOML: %v", err)
 	}
-	servers, ok := out["mcpServers"].(map[string]any)
+	servers, ok := out["mcp_servers"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected mcpServers map, got: %T", out["mcpServers"])
+		t.Fatalf("expected mcp_servers map, got: %T", out["mcp_servers"])
 	}
 	wendyEntry, ok := servers["wendy"].(map[string]any)
 	if !ok {
@@ -54,15 +54,15 @@ func TestAddMCPToYAMLConfig_CreatesFile(t *testing.T) {
 	}
 }
 
-func TestAddMCPToYAMLConfig_PreservesExisting(t *testing.T) {
+func TestAddMCPToTOMLConfig_PreservesExisting(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	existing := "mcpServers:\n  other:\n    type: stdio\n    command: other\n"
+	path := filepath.Join(dir, "config.toml")
+	existing := "[mcp_servers.other]\ncommand = \"other\"\n"
 	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entry := map[string]any{"type": "stdio", "command": "wendy", "args": []string{"mcp", "serve"}}
-	if err := addMCPToYAMLConfig(path, "mcpServers", "wendy", entry); err != nil {
+	entry := map[string]any{"command": "wendy", "args": []string{"mcp", "serve"}}
+	if err := addMCPToTOMLConfig(path, "mcp_servers", "wendy", entry); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -70,12 +70,12 @@ func TestAddMCPToYAMLConfig_PreservesExisting(t *testing.T) {
 		t.Fatalf("reading file: %v", err)
 	}
 	var out map[string]any
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		t.Fatalf("parsing YAML: %v", err)
+	if _, err := toml.Decode(string(data), &out); err != nil {
+		t.Fatalf("parsing TOML: %v", err)
 	}
-	servers, ok := out["mcpServers"].(map[string]any)
+	servers, ok := out["mcp_servers"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected mcpServers map, got %T", out["mcpServers"])
+		t.Fatalf("expected mcp_servers map, got %T", out["mcp_servers"])
 	}
 	if _, ok := servers["other"]; !ok {
 		t.Error("expected 'other' entry to be preserved")
@@ -87,7 +87,7 @@ func TestAddMCPToYAMLConfig_PreservesExisting(t *testing.T) {
 
 func TestCodexConfigPath_ReturnsDirBasedPath(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".codex", "config.yaml")
+	want := filepath.Join(home, ".codex", "config.toml")
 	if got := codexConfigPath(); got != "" && got != want {
 		t.Fatalf("codexConfigPath() = %q, want %q or empty", got, want)
 	}
