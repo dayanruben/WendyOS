@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
+	"strings"
 
 	"github.com/dustin/go-humanize"
 )
@@ -155,14 +157,22 @@ func unmountDisk(devPath string) error {
 	// defence-in-depth measure for lsblk versions that ignore -l.
 	out, err := lsblkCmd(devPath)
 	if err != nil {
-		// If lsblk fails, the disk may not be mounted at all.
-		return nil
+		return fmt.Errorf("lsblk %s: %w", devPath, err)
 	}
 
 	var result lsblkOutput
 	if err := json.Unmarshal(out, &result); err != nil {
 		return nil
 	}
+
+	// Sort devices so that deeper mountpoints are unmounted first.
+	// This prevents a parent mount from being busy when we try to unmount it
+	// because a child mountpoint beneath it is still active.
+	sort.Slice(result.Blockdevices, func(i, j int) bool {
+		di := strings.Count(result.Blockdevices[i].Mountpoint, "/")
+		dj := strings.Count(result.Blockdevices[j].Mountpoint, "/")
+		return di > dj // deeper first; empty mountpoints (di==0) sort last
+	})
 
 	var firstErr error
 	for _, dev := range result.Blockdevices {
