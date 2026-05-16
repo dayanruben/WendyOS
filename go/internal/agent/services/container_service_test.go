@@ -556,7 +556,7 @@ func TestStartContainer_RegistersMonitor_UnlessStopped(t *testing.T) {
 			break
 		}
 		if err != nil {
-			break
+			t.Fatalf("unexpected recv error: %v", err)
 		}
 	}
 

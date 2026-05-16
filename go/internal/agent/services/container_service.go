@@ -265,9 +265,13 @@ func (s *ContainerService) streamContainerOutput(
 	}
 
 	// Register the container with the monitor if a restart policy is in effect.
+	// If the policy is nil or explicitly NO, unregister to clear any previous
+	// registration that may have been set by a prior start.
 	if s.monitor != nil {
 		if policy, maxRetries, ok := monitorPolicyInt(restartPolicy); ok {
 			s.monitor.Register(appName, policy, maxRetries)
+		} else {
+			s.monitor.Unregister(appName)
 		}
 	}
 
@@ -443,13 +447,13 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 
 // StopContainer stops a running container.
 func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopContainerRequest) (*agentpb.StopContainerResponse, error) {
-	// Mark the container as explicitly stopped before calling containerd so the
-	// monitor does not race to restart it.
-	if s.monitor != nil {
-		s.monitor.MarkExplicitStop(req.GetAppName())
-	}
 	if err := s.containerd.StopContainer(ctx, req.GetAppName()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
+	}
+	// Mark the container as explicitly stopped only after a successful stop so
+	// that a failed stop does not prevent future restarts.
+	if s.monitor != nil {
+		s.monitor.MarkExplicitStop(req.GetAppName())
 	}
 	s.logger.Info("Container stopped", zap.String("app_name", req.GetAppName()))
 	return &agentpb.StopContainerResponse{}, nil
@@ -459,6 +463,12 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.DeleteContainerRequest) (*agentpb.DeleteContainerResponse, error) {
 	if err := s.containerd.DeleteContainer(ctx, req.GetAppName(), req.GetDeleteImage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete container: %v", err)
+	}
+
+	// Unregister from the monitor to remove any stale restart entries.
+	// Safe to call even if the app was never registered.
+	if s.monitor != nil {
+		s.monitor.Unregister(req.GetAppName())
 	}
 
 	if req.GetDeleteVolumes() {
