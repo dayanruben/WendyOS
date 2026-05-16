@@ -83,6 +83,20 @@ struct `session` {
     }
 
     @Test
+    func `returns a rich shell result`() async throws {
+        let session = try await WendyE2ESession.begin(
+            for: WendyE2EMachine(id: "local", name: "Local")
+        )
+        let result = try await session.sh(.posix, "printf 'wendy-machine-smoke'")
+
+        #expect(result.dialect == .posix)
+        #expect(result.succeeded)
+        #expect(result.stdout == "wendy-machine-smoke")
+        #expect(result.stderr == "")
+        #expect(result.normalizedStdout == "wendy-machine-smoke")
+    }
+
+    @Test
     func `runs a simple PowerShell command when PowerShell is available`() async throws {
         guard Self.hasPowerShell else {
             return
