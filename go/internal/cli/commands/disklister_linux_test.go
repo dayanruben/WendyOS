@@ -210,8 +210,8 @@ func TestUnmountLsblkDeviceRecursesIntoChildren(t *testing.T) {
 	// unmountLsblkDevice behaves as if umount failed (normal in unit tests).
 	var attempted []string
 	orig := umountCmd
-	umountCmd = func(partPath string) ([]byte, error) {
-		attempted = append(attempted, partPath)
+	umountCmd = func(mountpoint string) ([]byte, error) {
+		attempted = append(attempted, mountpoint)
 		return []byte("mock error"), fmt.Errorf("exit status 1")
 	}
 	defer func() { umountCmd = orig }()
@@ -284,8 +284,8 @@ func TestUnmountDiskCallsLsblkCmd(t *testing.T) {
 
 	var unmounted []string
 	origUmount := umountCmd
-	umountCmd = func(partPath string) ([]byte, error) {
-		unmounted = append(unmounted, partPath)
+	umountCmd = func(mountpoint string) ([]byte, error) {
+		unmounted = append(unmounted, mountpoint)
 		return nil, nil // success
 	}
 	defer func() { umountCmd = origUmount }()

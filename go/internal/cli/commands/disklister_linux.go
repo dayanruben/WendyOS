@@ -189,6 +189,16 @@ func unmountLsblkDevice(dev lsblkDevice) error {
 	// unmount this node.  Collect the first error but continue visiting ALL
 	// siblings so that a single failure does not leave subsequent partitions
 	// mounted.
+	// Sort children so that deeper mountpoints are unmounted first.
+	// This mirrors the top-level sort in unmountDisk and prevents EBUSY when
+	// two sibling children have nested mountpoints (e.g. /mnt/disk and
+	// /mnt/disk/sub): the deeper one must be unmounted before the shallower.
+	sort.Slice(dev.Children, func(i, j int) bool {
+		di := strings.Count(dev.Children[i].Mountpoint, "/")
+		dj := strings.Count(dev.Children[j].Mountpoint, "/")
+		return di > dj // deeper first; empty mountpoints (di==0) sort last
+	})
+
 	var firstErr error
 	for _, child := range dev.Children {
 		if err := unmountLsblkDevice(child); err != nil && firstErr == nil {
