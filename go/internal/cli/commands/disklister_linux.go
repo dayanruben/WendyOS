@@ -176,7 +176,7 @@ func unmountDisk(devPath string) error {
 
 	var result lsblkOutput
 	if err := json.Unmarshal(out, &result); err != nil {
-		return nil
+		return fmt.Errorf("parsing lsblk output for %s: %w", devPath, err)
 	}
 
 	// Sort devices so that deeper mountpoints are unmounted first.
