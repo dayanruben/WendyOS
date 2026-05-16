@@ -159,13 +159,16 @@ func unmountLsblkDevice(dev lsblkDevice) error {
 		}
 	}
 	// Recurse into children for defence-in-depth: lsblk without -l returns
-	// partitions nested under the parent disk entry.
+	// partitions nested under the parent disk entry.  Collect the first error
+	// but continue visiting ALL siblings so that a single failure does not
+	// leave subsequent partitions mounted.
+	var firstErr error
 	for _, child := range dev.Children {
-		if err := unmountLsblkDevice(child); err != nil {
-			return err
+		if err := unmountLsblkDevice(child); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {
