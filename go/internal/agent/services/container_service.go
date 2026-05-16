@@ -252,17 +252,15 @@ func monitorPolicyIntFromLabel(label string) (policy int, maxRetries int, ok boo
 // parseRestartPolicyLabel splits a label like "on-failure:5" into ("on-failure", 5, true).
 // Returns ok=false when the retry count portion cannot be parsed as a non-negative integer.
 func parseRestartPolicyLabel(label string) (policyStr string, retries int, ok bool) {
-	idx := strings.LastIndex(label, ":")
-	if idx < 0 {
+	parts := strings.SplitN(label, ":", 2)
+	if len(parts) == 1 {
 		return label, 0, true
 	}
-	policy := label[:idx]
-	parts := strings.SplitN(label, ":", 2)
 	n, err := strconv.Atoi(parts[1])
 	if err != nil || n < 0 {
 		return "", 0, false
 	}
-	return policy, n, true
+	return parts[0], n, true
 }
 
 // monitorPolicyInt converts an agentpb.RestartPolicy to the integer constant
