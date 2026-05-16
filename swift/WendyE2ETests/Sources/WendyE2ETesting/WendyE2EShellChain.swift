@@ -1,10 +1,9 @@
-public struct WendyE2ESessionCommand: Sendable {
+public struct WendyE2EShellChain: Sendable {
     public enum PollCondition: Sendable {
         case success
         case failure
     }
 
-    public let session: WendyE2ESession
     public let command: String
 
     public func poll(
@@ -12,11 +11,11 @@ public struct WendyE2ESessionCommand: Sendable {
         step: Duration = .milliseconds(250),
         timeout: Duration = .seconds(10),
         timeoutMessage: String? = nil
-    ) -> WendyE2ESessionCommand {
+    ) -> WendyE2EShellChain {
         precondition(step > .zero, "step must be greater than zero")
         precondition(timeout >= .zero, "timeout must be greater than or equal to zero")
 
-        return WendyE2ESessionCommand(
+        return WendyE2EShellChain(
             session: self.session,
             command: self.command,
             pollConfiguration: PollConfiguration(
@@ -28,27 +27,19 @@ public struct WendyE2ESessionCommand: Sendable {
         )
     }
 
-    public func run() async throws {
+    @discardableResult
+    public func run() async throws -> WendyE2EShellResult {
         let result = try await self.result()
         if self.pollConfiguration == nil {
             try result.requireSuccess()
         }
+        return result
     }
 
     public func run<Result>(
         body: @Sendable (_ result: WendyE2EShellResult) async throws -> Result
     ) async throws -> Result {
         try await body(try await self.result())
-    }
-
-    public func run<Result>(
-        body: @Sendable (_ standardOutput: String, _ standardError: String) async throws -> Result
-    ) async throws -> Result {
-        let result = try await self.result()
-        if self.pollConfiguration == nil {
-            try result.requireSuccess()
-        }
-        return try await body(result.stdout, result.stderr)
     }
 
     // MARK: - Internal
@@ -61,6 +52,7 @@ public struct WendyE2ESessionCommand: Sendable {
 
     // MARK: - Private
 
+    private let session: WendyE2ESession
     private let pollConfiguration: PollConfiguration?
 
     private init(
@@ -75,7 +67,7 @@ public struct WendyE2ESessionCommand: Sendable {
 
     private func result() async throws -> WendyE2EShellResult {
         guard let pollConfiguration else {
-            return try await self.session.posixShell(self.command)
+            return try await self.runOnce()
         }
 
         return try await self.poll(pollConfiguration)
@@ -87,7 +79,7 @@ public struct WendyE2ESessionCommand: Sendable {
         var lastStatus: WendyE2EShellStatus?
 
         while true {
-            let result = try await self.session.posixShell(self.command)
+            let result = try await self.runOnce()
             lastStatus = result.status
 
             if configuration.condition.matches(result.status) {
@@ -109,11 +101,20 @@ public struct WendyE2ESessionCommand: Sendable {
             try await clock.sleep(for: min(configuration.step, configuration.timeout - elapsed))
         }
     }
+
+    private func runOnce() async throws -> WendyE2EShellResult {
+        switch self.session.machine.os {
+        case .windows:
+            try await self.session.powerShell(self.command)
+        case .macOS, .linux, .wendyOS:
+            try await self.session.posixShell(self.command)
+        }
+    }
 }
 
 // MARK: - CustomStringConvertible
 
-extension WendyE2ESessionCommand.PollCondition: CustomStringConvertible {
+extension WendyE2EShellChain.PollCondition: CustomStringConvertible {
     public var description: String {
         switch self {
         case .success:
@@ -127,13 +128,13 @@ extension WendyE2ESessionCommand.PollCondition: CustomStringConvertible {
 // MARK: - Private
 
 private struct PollConfiguration: Sendable {
-    let condition: WendyE2ESessionCommand.PollCondition
+    let condition: WendyE2EShellChain.PollCondition
     let step: Duration
     let timeout: Duration
     let timeoutMessage: String?
 }
 
-extension WendyE2ESessionCommand.PollCondition {
+extension WendyE2EShellChain.PollCondition {
     fileprivate func matches(_ status: WendyE2EShellStatus) -> Bool {
         switch self {
         case .success:

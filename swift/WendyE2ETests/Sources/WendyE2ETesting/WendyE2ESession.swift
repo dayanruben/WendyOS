@@ -158,16 +158,8 @@ public struct WendyE2ESession: Sendable {
         )
     }
 
-    public func sh(_ command: String) async throws {
-        let result = try await self.posixShell(command)
-        try result.requireSuccess()
-    }
-
-    public func sh<Result>(
-        _ command: String,
-        body: @Sendable (_ result: WendyE2EShellResult) async throws -> Result
-    ) async throws -> Result {
-        try await body(try await self.posixShell(command))
+    public func sh(_ command: String) -> WendyE2EShellChain {
+        WendyE2EShellChain(session: self, command: command)
     }
 
     // MARK: - Internal

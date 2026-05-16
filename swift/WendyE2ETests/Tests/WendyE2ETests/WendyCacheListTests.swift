@@ -16,7 +16,7 @@ struct `'wendy cache list'` {
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy cache list --help") { result in
+            try await cli.sh("wendy cache list --help").run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -41,7 +41,7 @@ struct `'wendy cache list'` {
     @Test
     func `lists cached items in a readable table`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy cache list") { result in
+            try await cli.sh("wendy cache list").run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -68,7 +68,7 @@ struct `'wendy cache list'` {
                 printf 'project artifact\n' > unrelated-project-file.txt
                 wendy cache list
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -98,7 +98,7 @@ struct `'wendy cache list'` {
                 trap 'chmod 700 "\(cacheDirectory)/unreadable" 2>/dev/null || true' EXIT
                 wendy cache list
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -119,7 +119,7 @@ struct `'wendy cache list'` {
     @Test
     func `prints JSON cache entries for automation`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy --json cache list") { result in
+            try await cli.sh("wendy --json cache list").run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -146,7 +146,7 @@ struct `'wendy cache list'` {
     @Test
     func `rejects undocumented arguments and flags`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy cache list extra") { result in
+            try await cli.sh("wendy cache list extra").run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr

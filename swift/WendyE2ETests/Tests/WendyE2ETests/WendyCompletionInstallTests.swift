@@ -18,7 +18,7 @@ struct `'wendy completion install'` {
         // can understand the difference between installing, printing paths,
         // printing scripts to stdout, and choosing a shell explicitly.
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy completion install --help") { result in
+            try await cli.sh("wendy completion install --help").run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -53,7 +53,7 @@ struct `'wendy completion install'` {
                 grep -q '#compdef wendy' "$HOME/.zfunc/_wendy"
                 grep -q 'wendy-completion' "$HOME/.zshrc"
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -84,7 +84,7 @@ struct `'wendy completion install'` {
                 test ! -e "$HOME/.bashrc"
                 test ! -e "$HOME/.zshrc"
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -111,7 +111,7 @@ struct `'wendy completion install'` {
                 test ! -e "$HOME/.zfunc/_wendy"
                 test ! -e "$HOME/.zshrc"
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -137,7 +137,7 @@ struct `'wendy completion install'` {
                 test ! -e "$HOME/.zshrc"
                 test ! -d "$HOME/.zsh"
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -167,7 +167,7 @@ struct `'wendy completion install'` {
                 test -f "$HOME/.zfunc/_wendy"
                 test "$(grep -c '^# wendy-completion$' "$HOME/.zshrc")" = 1
                 """
-            ) { result in
+            ).run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -189,7 +189,7 @@ struct `'wendy completion install'` {
     @Test
     func `rejects undocumented arguments and flags`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy completion install extra") { result in
+            try await cli.sh("wendy completion install extra").run { result in
                 let terminationStatus = result.status
                 let standardOutput = result.stdout
                 let standardError = result.stderr

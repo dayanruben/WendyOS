@@ -166,12 +166,12 @@ struct `'wendy help'` {
      */
     @Test
     func `prints top-level help`() async throws {
-        let result = try await self.cli.sh("./bin/wendy help")
-
-        #expect(result.terminationStatus.isSuccess)
-        #expect(result.standardOutput?.contains("Project Commands:") == true)
-        #expect(result.standardOutput?.contains("--json") == true)
-        #expect(result.standardError?.isEmpty == true)
+        try await self.cli.sh("./bin/wendy help").run { result in
+            #expect(result.status.isSuccess)
+            #expect(result.stdout.contains("Project Commands:"))
+            #expect(result.stdout.contains("--json"))
+            #expect(result.stderr.isEmpty)
+        }
     }
 }
 ```
@@ -205,9 +205,9 @@ As repeated patterns emerge, evolve the E2E DSL so requirements read naturally i
 Raw assertions are fine while a pattern is new:
 
 ```swift
-#expect(record.terminationStatus.isSuccess)
-#expect(record.standardError?.isEmpty == true)
-#expect(record.standardOutput?.contains("Project Commands:") == true)
+#expect(result.status.isSuccess)
+#expect(result.stderr.isEmpty)
+#expect(result.stdout.contains("Project Commands:"))
 ```
 
 When a pattern repeats, prefer named helpers or DSL concepts:
@@ -319,7 +319,7 @@ In a future session, use:
 @Test(.enabled(if: WendyE2EMachine.cli.os == .linux))
 func `uses linux behavior`() async throws {
     let cli = try await WendyE2ESession.begin(for: .cli)
-    try await cli.sh("./bin/wendy --version")
+    try await cli.sh("./bin/wendy --version").run()
     try await cli.end()
 }
 ```
@@ -340,23 +340,23 @@ machine's declared OS for a run.
 
 ```swift
 let cli = try await WendyE2ESession.begin(for: .cli)
-try await cli.sh("./bin/wendy --version")
+try await cli.sh("./bin/wendy --version").run()
 ```
 
 Use `WendyE2ESession.with` when a spec needs cleanup-safe session lifetimes:
 
 ```swift
 try await WendyE2ESession.with(.cli, .agent) { cli, agent in
-    try await cli.sh("./bin/wendy --version")
-    try await agent.sh("make agent-build")
+    try await cli.sh("./bin/wendy --version").run()
+    try await agent.sh("make agent-build").run()
 }
 ```
 
-Use `session.command(...).poll(...).run()` when a command needs DSL configuration before execution:
+`sh(...)` creates a shell chain. End every chain with `run()`, and attach modifiers such as polling between the command and execution:
 
 ```swift
 try await agent
-    .command("nc -z 127.0.0.1 50051")
+    .sh("nc -z 127.0.0.1 50051")
     .poll(until: .success)
     .run()
 ```

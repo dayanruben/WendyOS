@@ -119,7 +119,7 @@ struct `session` {
             for: machine,
             workingDirectory: directory.path
         )
-        try await session.sh("touch local.txt")
+        try await session.sh("touch local.txt").run()
 
         #expect(!session.machine.address.isEmpty)
         #expect(session.workingDirectory == directory.path)
@@ -230,7 +230,7 @@ struct `session` {
             ]
         )
 
-        try await session.sh("printf '%s' \"$PWD\"") { result in
+        try await session.sh("printf '%s' \"$PWD\"").run { result in
             try result.requireSuccess()
             let standardOutput = result.stdout
 
@@ -270,15 +270,15 @@ struct `session` {
             resetDirectoriesOnFirstCommand: true
         )
 
-        try await session.sh("test ! -e \"$HOME/stale\" && touch \"$HOME/fresh\"")
-        try await session.sh("test -e \"$HOME/fresh\"")
+        try await session.sh("test ! -e \"$HOME/stale\" && touch \"$HOME/fresh\"").run()
+        try await session.sh("test -e \"$HOME/fresh\"").run()
     }
 
     @Test
     func `runs commands locally by default`() async throws {
         try await Self.withTemporarySession { session, directory in
-            try await session.sh("touch first.txt")
-            try await session.sh("touch second.txt")
+            try await session.sh("touch first.txt").run()
+            try await session.sh("touch second.txt").run()
 
             #expect(FileManager.default.fileExists(atPath: directory.path + "/first.txt"))
             #expect(FileManager.default.fileExists(atPath: directory.path + "/second.txt"))
@@ -299,7 +299,7 @@ struct `session` {
     @Test
     func `collected output callback receives command output`() async throws {
         try await Self.withTemporarySession { session, _ in
-            try await session.sh("printf 'hello'; printf 'oops' >&2") { result in
+            try await session.sh("printf 'hello'; printf 'oops' >&2").run { result in
                 try result.requireSuccess()
                 let standardOutput = result.stdout
                 let standardError = result.stderr
@@ -315,14 +315,14 @@ struct `session` {
     func `simple shell command throws when the command exits non-zero`() async throws {
         try await Self.withTemporarySession { session, _ in
             await #expect(throws: WendyE2EMachineError.self) {
-                try await session.sh("exit 7")
+                try await session.sh("exit 7").run()
             }
             return ()
         }
     }
 
     @Test
-    func `command builder runs command`() async throws {
+    func `shell chain runs command`() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("machine-command-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -333,18 +333,18 @@ struct `session` {
             for: machine,
             workingDirectory: directory.path
         )
-        try await session.command("touch builder.txt").run()
+        try await session.sh("touch builder.txt").run()
 
         #expect(FileManager.default.fileExists(atPath: directory.path + "/builder.txt"))
     }
 
     @Test
-    func `command builder callback receives command output`() async throws {
+    func `shell chain callback receives command output`() async throws {
         let session = try await WendyE2ESession.begin(
             for: WendyE2EMachine(id: "local", name: "Local")
         )
 
-        try await session.command("printf 'hello'; printf 'oops' >&2").run { result in
+        try await session.sh("printf 'hello'; printf 'oops' >&2").run { result in
             try result.requireSuccess()
             let standardOutput = result.stdout
             let standardError = result.stderr
@@ -367,7 +367,7 @@ struct `session` {
             workingDirectory: directory.path
         )
         try await session
-            .command(
+            .sh(
                 """
                 count=$(cat counter.txt 2>/dev/null || echo 0)
                 count=$((count + 1))
@@ -398,7 +398,7 @@ struct `session` {
             workingDirectory: directory.path
         )
         try await session
-            .command(
+            .sh(
                 """
                 count=$(cat counter.txt 2>/dev/null || echo 0)
                 count=$((count + 1))
@@ -409,9 +409,9 @@ struct `session` {
                 """
             )
             .poll(until: .success, step: .milliseconds(10), timeout: .seconds(2))
-            .run { standardOutput, standardError in
-                #expect(standardOutput == "stdout:3\n")
-                #expect(standardError == "stderr:3\n")
+            .run { result in
+                #expect(result.stdout == "stdout:3\n")
+                #expect(result.stderr == "stderr:3\n")
             }
     }
 
@@ -423,7 +423,7 @@ struct `session` {
 
         await #expect(throws: WendyE2EMachineError.self) {
             try await session
-                .command("exit 1")
+                .sh("exit 1")
                 .poll(
                     until: .success,
                     step: .milliseconds(10),
