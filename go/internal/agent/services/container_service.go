@@ -27,6 +27,7 @@ type ContainerService struct {
 	logger     *zap.Logger
 	containerd ContainerdClient
 	logManager *ContainerLogManager
+	monitor    ContainerMonitorRegistrar
 }
 
 // NewContainerService creates a new ContainerService.
@@ -48,6 +49,15 @@ type ContainerServiceOption func(*ContainerService)
 func WithLogManager(lm *ContainerLogManager) ContainerServiceOption {
 	return func(s *ContainerService) {
 		s.logManager = lm
+	}
+}
+
+// WithMonitor sets the ContainerMonitorRegistrar on the ContainerService so
+// that containers started with a restart policy are registered for automatic
+// restart monitoring.
+func WithMonitor(m ContainerMonitorRegistrar) ContainerServiceOption {
+	return func(s *ContainerService) {
+		s.monitor = m
 	}
 }
 
@@ -214,6 +224,28 @@ func postStartAgentHookFromContext(ctx context.Context) string {
 	return values[len(values)-1]
 }
 
+// monitorPolicyInt converts an agentpb.RestartPolicy to the integer constant
+// used by ContainerMonitorRegistrar (which mirrors container.RestartPolicy):
+//
+//	0 = No, 1 = UnlessStopped, 2 = OnFailure, 3 = Always
+//
+// Returns -1 when the policy should not be registered (nil or explicit NO).
+func monitorPolicyInt(rp *agentpb.RestartPolicy) (policy int, maxRetries int, ok bool) {
+	if rp == nil {
+		return 0, 0, false
+	}
+	switch rp.GetMode() {
+	case agentpb.RestartPolicyMode_NO:
+		return 0, 0, false
+	case agentpb.RestartPolicyMode_DEFAULT, agentpb.RestartPolicyMode_UNLESS_STOPPED:
+		return 1, 0, true // RestartUnlessStopped
+	case agentpb.RestartPolicyMode_ON_FAILURE:
+		return 2, int(rp.GetOnFailureMaxRetries()), true // RestartOnFailure
+	default:
+		return 1, 0, true // default to unless-stopped
+	}
+}
+
 // streamContainerOutput starts a container and streams its stdout/stderr to the client.
 // When a ContainerLogManager is configured, it reads from the log manager subscription
 // instead of directly from containerd, enabling multi-subscriber fan-out and telemetry bridging.
@@ -227,6 +259,13 @@ func (s *ContainerService) streamContainerOutput(
 	outputCh, err := s.containerd.StartContainer(ctx, appName, postStartAgentCommand, restartPolicy)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
+	}
+
+	// Register the container with the monitor if a restart policy is in effect.
+	if s.monitor != nil {
+		if policy, maxRetries, ok := monitorPolicyInt(restartPolicy); ok {
+			s.monitor.Register(appName, policy, maxRetries)
+		}
 	}
 
 	// Send started notification.
@@ -401,6 +440,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 
 // StopContainer stops a running container.
 func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopContainerRequest) (*agentpb.StopContainerResponse, error) {
+	// Mark the container as explicitly stopped before calling containerd so the
+	// monitor does not race to restart it.
+	if s.monitor != nil {
+		s.monitor.MarkExplicitStop(req.GetAppName())
+	}
 	if err := s.containerd.StopContainer(ctx, req.GetAppName()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
 	}

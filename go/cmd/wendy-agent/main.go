@@ -45,6 +45,27 @@ const (
 	defaultOTELHTTPPort = "4318"
 )
 
+// containerMonitorAdapter wraps *container.ContainerMonitor so it satisfies
+// services.ContainerMonitorRegistrar without creating a circular import.
+// The services package cannot import the container package (container imports
+// services), so we use an adapter with plain-int policy values that mirror the
+// container.RestartPolicy iota.
+type containerMonitorAdapter struct {
+	m *container.ContainerMonitor
+}
+
+func (a *containerMonitorAdapter) Register(appName string, policy int, maxRetries int) {
+	a.m.Register(appName, container.RestartPolicy(policy), maxRetries)
+}
+
+func (a *containerMonitorAdapter) Unregister(appName string) {
+	a.m.Unregister(appName)
+}
+
+func (a *containerMonitorAdapter) MarkExplicitStop(appName string) {
+	a.m.MarkExplicitStop(appName)
+}
+
 func main() {
 	if handled, code := handleUtilityCommand(os.Args[1:]); handled {
 		os.Exit(code)
@@ -116,8 +137,14 @@ func main() {
 
 	logManager := services.NewContainerLogManager(logger, broadcaster)
 
+	// Start container monitor.
+	monitor := container.NewContainerMonitor(logger, containerdClient, 15*time.Second)
+
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager)
-	containerSvc := services.NewContainerService(logger, containerdClient, services.WithLogManager(logManager))
+	containerSvc := services.NewContainerService(logger, containerdClient,
+		services.WithLogManager(logManager),
+		services.WithMonitor(&containerMonitorAdapter{m: monitor}),
+	)
 	audioSvc := services.NewAudioService(logger)
 	videoSvc := services.NewVideoService(logger)
 
@@ -139,9 +166,6 @@ func main() {
 	otelLogReceiver := services.NewOTELLogsReceiver(broadcaster)
 	otelMetricReceiver := services.NewOTELMetricsReceiver(broadcaster)
 	otelTraceReceiver := services.NewOTELTraceReceiver(broadcaster)
-
-	// Start container monitor.
-	monitor := container.NewContainerMonitor(logger, containerdClient, 15*time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

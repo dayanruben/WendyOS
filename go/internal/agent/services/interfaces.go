@@ -55,6 +55,21 @@ type ContainerdClient interface {
 	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)
 }
 
+// ContainerMonitorRegistrar is the subset of container.ContainerMonitor used by
+// ContainerService. It is declared here (rather than importing the container
+// package) to avoid a circular dependency: container imports services.
+type ContainerMonitorRegistrar interface {
+	// Register adds appName to the monitor with the given restart policy.
+	// policy values mirror container.RestartPolicy: 0=No, 1=UnlessStopped,
+	// 2=OnFailure, 3=Always.
+	Register(appName string, policy int, maxRetries int)
+	// Unregister removes appName from the monitor.
+	Unregister(appName string)
+	// MarkExplicitStop marks appName as intentionally stopped so it won't be
+	// automatically restarted by an unless-stopped or on-failure policy.
+	MarkExplicitStop(appName string)
+}
+
 // ContainerOutput represents a chunk of output from a running container.
 type ContainerOutput struct {
 	Stdout []byte
