@@ -142,22 +142,30 @@ func unmountDisk(devPath string) error {
 		return nil
 	}
 
+	var firstErr error
 	for _, dev := range result.Blockdevices {
-		unmountLsblkDevice(dev)
+		if err := unmountLsblkDevice(dev); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
-func unmountLsblkDevice(dev lsblkDevice) {
+func unmountLsblkDevice(dev lsblkDevice) error {
 	if dev.Mountpoint != "" {
 		partPath := "/dev/" + dev.Name
-		exec.Command("sudo", "umount", partPath).Run() //nolint:errcheck
+		if out, err := exec.Command("sudo", "umount", partPath).CombinedOutput(); err != nil {
+			return fmt.Errorf("unmounting %s: %w\n%s", partPath, err, out)
+		}
 	}
 	// Recurse into children for defence-in-depth: lsblk without -l returns
 	// partitions nested under the parent disk entry.
 	for _, child := range dev.Children {
-		unmountLsblkDevice(child)
+		if err := unmountLsblkDevice(child); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {

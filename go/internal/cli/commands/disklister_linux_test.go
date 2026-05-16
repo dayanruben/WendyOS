@@ -4,6 +4,7 @@ package commands
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -195,6 +196,45 @@ func TestParseLsblkChildrenUnmarshaled(t *testing.T) {
 	}
 	if disk.Children[1].Mountpoint != "/media/user/data" {
 		t.Fatalf("Children[1].Mountpoint = %q, want \"/media/user/data\"", disk.Children[1].Mountpoint)
+	}
+}
+
+// TestUnmountLsblkDeviceRecursesIntoChildren verifies that unmountLsblkDevice
+// attempts to unmount nested child partitions, not just the top-level device.
+// The test builds a mock lsblkDevice with a mounted child and checks that an
+// unmount is attempted for the child's path (sudo umount will fail in the test
+// environment, so we expect a non-nil error containing the child's device path).
+func TestUnmountLsblkDeviceRecursesIntoChildren(t *testing.T) {
+	parent := lsblkDevice{
+		Name:       "sdb",
+		Type:       "disk",
+		Mountpoint: "", // parent disk itself is not mounted
+		Children: []lsblkDevice{
+			{
+				Name:       "sdb1",
+				Type:       "part",
+				Mountpoint: "/boot/efi",
+			},
+			{
+				Name:       "sdb2",
+				Type:       "part",
+				Mountpoint: "/media/user/data",
+			},
+		},
+	}
+
+	err := unmountLsblkDevice(parent)
+	// In a test environment sudo/umount will not succeed; what matters is that
+	// unmountLsblkDevice did NOT silently ignore the child mountpoints — it must
+	// have attempted the umount command and returned the failure rather than nil.
+	if err == nil {
+		t.Fatal("expected an error when unmounting children in a test environment (umount should fail), got nil — recursive unmount may not have been attempted")
+	}
+	// The error message must reference one of the child device paths to confirm
+	// that the recursion actually reached a mounted child.
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "/dev/sdb1") && !strings.Contains(errMsg, "/dev/sdb2") {
+		t.Fatalf("error %q does not mention a child device path — recursive unmount may not be working", errMsg)
 	}
 }
 
