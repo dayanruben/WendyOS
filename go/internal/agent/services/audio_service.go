@@ -276,17 +276,13 @@ func filterPipeWireNodeIDs(nodes []pwDumpNode, card, device uint64) []string {
 			continue
 		}
 
-		// Match card: accept either "alsa.card" (legacy) or "api.alsa.card" (native PipeWire).
-		cardMatch := jsonPropMatches(props, "alsa.card", cardStr) ||
-			jsonPropMatches(props, "api.alsa.card", cardStr)
-		if !cardMatch {
-			continue
-		}
-
-		// Match device: accept either "alsa.device" (legacy) or "api.alsa.pcm.device" (native PipeWire).
-		deviceMatch := jsonPropMatches(props, "alsa.device", deviceStr) ||
+		// Match card+device as a paired family to avoid cross-family mixing
+		// (e.g. alsa.card matching with api.alsa.pcm.device).
+		legacyMatch := jsonPropMatches(props, "alsa.card", cardStr) &&
+			jsonPropMatches(props, "alsa.device", deviceStr)
+		apiMatch := jsonPropMatches(props, "api.alsa.card", cardStr) &&
 			jsonPropMatches(props, "api.alsa.pcm.device", deviceStr)
-		if !deviceMatch {
+		if !legacyMatch && !apiMatch {
 			continue
 		}
 

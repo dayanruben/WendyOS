@@ -517,6 +517,37 @@ func TestFilterPipeWireNodeIDs_VirtualSourceFiltered(t *testing.T) {
 	}
 }
 
+// TestFilterPipeWireNodeIDs_CrossFamilyMixingRejected verifies that a node whose
+// properties span both property families (e.g. "alsa.card" from the legacy family
+// but "api.alsa.pcm.device" from the native PipeWire family) is NOT matched.
+// Each family must match as a pair; mixing across families must be rejected.
+func TestFilterPipeWireNodeIDs_CrossFamilyMixingRejected(t *testing.T) {
+	nodes := []pwDumpNode{
+		// alsa.card (legacy) paired with api.alsa.pcm.device (native) — cross-family, must be rejected.
+		makePWNode(80, "PipeWire:Interface:Node",
+			"media.class", "Audio/Sink",
+			"alsa.card", "0",
+			"api.alsa.pcm.device", "0",
+		),
+		// api.alsa.card (native) paired with alsa.device (legacy) — cross-family, must be rejected.
+		makePWNode(81, "PipeWire:Interface:Node",
+			"media.class", "Audio/Source",
+			"api.alsa.card", "0",
+			"alsa.device", "0",
+		),
+		// Correct legacy pair — must be included.
+		makePWNode(82, "PipeWire:Interface:Node",
+			"media.class", "Audio/Sink",
+			"alsa.card", "0",
+			"alsa.device", "0",
+		),
+	}
+	got := filterPipeWireNodeIDs(nodes, 0, 0)
+	if len(got) != 1 || got[0] != "82" {
+		t.Errorf("cross-family mixing: got %v; want [82]", got)
+	}
+}
+
 // --- SetDefaultAudioDevice flow tests ---
 //
 // These tests exercise the main control-flow branches of SetDefaultAudioDevice
