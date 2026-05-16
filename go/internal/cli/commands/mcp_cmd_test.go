@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestCursorConfigPath_ReturnsDirBasedPath(t *testing.T) {
@@ -35,8 +37,20 @@ func TestAddMCPToYAMLConfig_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading file: %v", err)
 	}
-	if !strings.Contains(string(data), "wendy") {
-		t.Fatalf("expected 'wendy' in output, got: %s", data)
+	var out map[string]any
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		t.Fatalf("parsing YAML: %v", err)
+	}
+	servers, ok := out["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers map, got: %T", out["mcpServers"])
+	}
+	wendyEntry, ok := servers["wendy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected wendy entry, got: %T %v", servers["wendy"], servers["wendy"])
+	}
+	if wendyEntry["command"] != "wendy" {
+		t.Errorf("expected command=wendy, got: %v", wendyEntry["command"])
 	}
 }
 
@@ -55,11 +69,19 @@ func TestAddMCPToYAMLConfig_PreservesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading file: %v", err)
 	}
-	if !strings.Contains(string(data), "other") {
-		t.Fatalf("expected 'other' to be preserved, got: %s", data)
+	var out map[string]any
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		t.Fatalf("parsing YAML: %v", err)
 	}
-	if !strings.Contains(string(data), "wendy") {
-		t.Fatalf("expected 'wendy' entry, got: %s", data)
+	servers, ok := out["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers map, got %T", out["mcpServers"])
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Error("expected 'other' entry to be preserved")
+	}
+	if _, ok := servers["wendy"]; !ok {
+		t.Error("expected 'wendy' entry to be present")
 	}
 }
 

@@ -192,6 +192,39 @@ func windsurfConfigPath() string {
 	return ""
 }
 
+// addMCPToJSONConfig reads a JSON config file, sets cfg[topKey][name] = entry,
+// and writes it back. Creates the file if it does not exist.
+func addMCPToJSONConfig(path, topKey, name string, entry any) error {
+	var cfg map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	top, _ := cfg[topKey].(map[string]any)
+	if top == nil {
+		top = map[string]any{}
+	}
+	top[name] = entry
+	cfg[topKey] = top
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
 // addMCPToYAMLConfig reads a YAML config file, sets cfg[topKey][name] = entry,
 // and writes it back. Creates the file if it does not exist.
 func addMCPToYAMLConfig(path, topKey, name string, entry any) error {
@@ -238,37 +271,4 @@ func codexConfigPath() string {
 		return filepath.Join(dir, "config.yaml")
 	}
 	return ""
-}
-
-// addMCPToJSONConfig reads a JSON config file, sets cfg[topKey][name] = entry,
-// and writes it back. Creates the file if it does not exist.
-func addMCPToJSONConfig(path, topKey, name string, entry any) error {
-	var cfg map[string]any
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading %s: %w", path, err)
-	}
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return fmt.Errorf("parsing %s: %w", path, err)
-		}
-	}
-	if cfg == nil {
-		cfg = map[string]any{}
-	}
-	top, _ := cfg[topKey].(map[string]any)
-	if top == nil {
-		top = map[string]any{}
-	}
-	top[name] = entry
-	cfg[topKey] = top
-
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, out, 0o644)
 }
