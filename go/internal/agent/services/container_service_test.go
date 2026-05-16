@@ -24,23 +24,25 @@ import (
 // ---------- mock containerd client ----------
 
 type mockContainerdClient struct {
-	containers     []*agentpb.AppContainer
-	listErr        error
-	stopErr        error
-	deleteErr      error
-	layers         []*agentpb.LayerHeader
-	listLayersErr  error
-	writeLayerErr  error
-	writtenDigest  string
-	writtenData    []byte
-	createErr      error
-	progressPhases []agentpb.CreateContainerProgress_Phase
-	startOutputCh  chan ContainerOutput
-	startErr       error
-	statsResult    []*agentpb.ContainerStats
-	statsErr       error
-	mcpPort        uint32
-	mcpPortErr     error
+	containers          []*agentpb.AppContainer
+	listErr             error
+	stopErr             error
+	deleteErr           error
+	layers              []*agentpb.LayerHeader
+	listLayersErr       error
+	writeLayerErr       error
+	writtenDigest       string
+	writtenData         []byte
+	createErr           error
+	progressPhases      []agentpb.CreateContainerProgress_Phase
+	startOutputCh       chan ContainerOutput
+	startErr            error
+	statsResult         []*agentpb.ContainerStats
+	statsErr            error
+	mcpPort             uint32
+	mcpPortErr          error
+	restartPolicyLabel  string
+	restartPolicyLabelErr error
 }
 
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
@@ -101,6 +103,10 @@ func (m *mockContainerdClient) GetContainerMetrics(_ context.Context, _ string) 
 
 func (m *mockContainerdClient) GetContainerMCPPort(_ context.Context, _ string) (uint32, error) {
 	return m.mcpPort, m.mcpPortErr
+}
+
+func (m *mockContainerdClient) GetContainerRestartPolicyLabel(_ context.Context, _ string) (string, error) {
+	return m.restartPolicyLabel, m.restartPolicyLabelErr
 }
 
 // attachTestMock embeds mockContainerdClient and overrides StartContainerWithStdin
@@ -616,6 +622,118 @@ func TestMonitorPolicyInt_NegativeRetries(t *testing.T) {
 	}
 	if maxRetries != 0 {
 		t.Errorf("maxRetries = %d; want 0 (clamped from -5)", maxRetries)
+	}
+}
+
+// TestStartContainer_RegistersMonitor_FromPersistedLabel verifies that when
+// StartContainer is called without a restart policy, the service reads the
+// persisted policy label from containerd and still registers with the monitor.
+func TestStartContainer_RegistersMonitor_FromPersistedLabel(t *testing.T) {
+	outputCh := make(chan ContainerOutput, 1)
+	outputCh <- ContainerOutput{Done: true}
+	close(outputCh)
+
+	mc := &mockContainerdClient{
+		startOutputCh:      outputCh,
+		restartPolicyLabel: "unless-stopped",
+	}
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	// StartContainer with no restart policy — should fall back to the label.
+	stream, err := client.StartContainer(context.Background(), &agentpb.StartContainerRequest{
+		AppName: "my-app",
+		// RestartPolicy intentionally omitted.
+	})
+	if err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected recv error: %v", err)
+		}
+	}
+
+	if len(mon.registerCalls) != 1 {
+		t.Fatalf("Register call count = %d; want 1 (from persisted label)", len(mon.registerCalls))
+	}
+	got := mon.registerCalls[0]
+	if got.appName != "my-app" {
+		t.Errorf("Register appName = %q; want my-app", got.appName)
+	}
+	if got.policy != RestartPolicyUnlessStopped {
+		t.Errorf("Register policy = %d; want %d (UnlessStopped)", got.policy, RestartPolicyUnlessStopped)
+	}
+}
+
+// TestStartContainer_ClearsExplicitStop verifies that a successful StartContainer
+// call clears any prior ExplicitStop mark, re-enabling automatic restarts.
+func TestStartContainer_ClearsExplicitStop(t *testing.T) {
+	outputCh := make(chan ContainerOutput, 1)
+	outputCh <- ContainerOutput{Done: true}
+	close(outputCh)
+
+	mc := &mockContainerdClient{startOutputCh: outputCh}
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	stream, err := client.StartContainer(context.Background(), &agentpb.StartContainerRequest{
+		AppName: "my-app",
+	})
+	if err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected recv error: %v", err)
+		}
+	}
+
+	// ClearExplicitStop must have been called once.
+	if len(mon.clearStopCalls) != 1 {
+		t.Fatalf("ClearExplicitStop call count = %d; want 1", len(mon.clearStopCalls))
+	}
+	if mon.clearStopCalls[0] != "my-app" {
+		t.Errorf("ClearExplicitStop appName = %q; want my-app", mon.clearStopCalls[0])
+	}
+}
+
+// TestMonitorPolicyIntFromLabel covers the label-based policy parser.
+func TestMonitorPolicyIntFromLabel(t *testing.T) {
+	cases := []struct {
+		label      string
+		wantPolicy int
+		wantOK     bool
+		wantRetries int
+	}{
+		{"", RestartPolicyNo, false, 0},
+		{"no", RestartPolicyNo, false, 0},
+		{"unless-stopped", RestartPolicyUnlessStopped, true, 0},
+		{"always", RestartPolicyUnlessStopped, true, 0},
+		{"on-failure", RestartPolicyOnFailure, true, 0},
+		{"on-failure:3", RestartPolicyOnFailure, true, 3},
+	}
+	for _, tc := range cases {
+		policy, maxRetries, ok := monitorPolicyIntFromLabel(tc.label)
+		if ok != tc.wantOK {
+			t.Errorf("label=%q ok=%v want %v", tc.label, ok, tc.wantOK)
+		}
+		if ok && policy != tc.wantPolicy {
+			t.Errorf("label=%q policy=%d want %d", tc.label, policy, tc.wantPolicy)
+		}
+		if ok && maxRetries != tc.wantRetries {
+			t.Errorf("label=%q maxRetries=%d want %d", tc.label, maxRetries, tc.wantRetries)
+		}
 	}
 }
 

@@ -53,6 +53,10 @@ type ContainerdClient interface {
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
 	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)
+	// GetContainerRestartPolicyLabel returns the raw restart policy label stored on
+	// the container (e.g. "unless-stopped", "on-failure:5", "no"). An empty string
+	// is returned when the container exists but has no restart policy label.
+	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
 }
 
 // Restart policy constants mirror container.RestartPolicy values and are used
