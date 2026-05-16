@@ -66,6 +66,10 @@ func (a *containerMonitorAdapter) MarkExplicitStop(appName string) {
 	a.m.MarkExplicitStop(appName)
 }
 
+func (a *containerMonitorAdapter) ClearExplicitStop(appName string) {
+	a.m.ClearExplicitStop(appName)
+}
+
 func main() {
 	if handled, code := handleUtilityCommand(os.Args[1:]); handled {
 		os.Exit(code)

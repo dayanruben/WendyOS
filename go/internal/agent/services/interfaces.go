@@ -77,6 +77,10 @@ type ContainerMonitorRegistrar interface {
 	// MarkExplicitStop marks appName as intentionally stopped so it won't be
 	// automatically restarted by an unless-stopped or on-failure policy.
 	MarkExplicitStop(appName string)
+	// ClearExplicitStop reverts a prior MarkExplicitStop call, re-enabling
+	// automatic restarts for appName. Used to undo a pre-emptive mark when the
+	// stop operation itself fails.
+	ClearExplicitStop(appName string)
 }
 
 // ContainerOutput represents a chunk of output from a running container.

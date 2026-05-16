@@ -265,14 +265,18 @@ func (s *ContainerService) streamContainerOutput(
 	}
 
 	// Register the container with the monitor if a restart policy is in effect.
-	// If the policy is nil or explicitly NO, unregister to clear any previous
-	// registration that may have been set by a prior start.
+	// If the policy is nil, leave the existing monitor state unchanged — many
+	// callers omit restart_policy and we must not clear a prior registration.
+	// Only unregister when the caller explicitly sets mode==NO.
 	if s.monitor != nil {
 		if policy, maxRetries, ok := monitorPolicyInt(restartPolicy); ok {
 			s.monitor.Register(appName, policy, maxRetries)
-		} else {
+		} else if restartPolicy != nil {
+			// restartPolicy is non-nil but monitorPolicyInt returned false,
+			// meaning the mode is explicitly NO — remove any existing entry.
 			s.monitor.Unregister(appName)
 		}
+		// nil restartPolicy: leave existing registration unchanged.
 	}
 
 	// Send started notification.
@@ -447,15 +451,22 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 
 // StopContainer stops a running container.
 func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopContainerRequest) (*agentpb.StopContainerResponse, error) {
-	if err := s.containerd.StopContainer(ctx, req.GetAppName()); err != nil {
+	appName := req.GetAppName()
+	// Mark the container as explicitly stopped BEFORE issuing the stop so that
+	// the monitor cannot observe the container exit and restart it in the window
+	// between StopContainer returning and MarkExplicitStop being called.
+	// If the stop fails we revert the mark via ClearExplicitStop.
+	if s.monitor != nil {
+		s.monitor.MarkExplicitStop(appName)
+	}
+	if err := s.containerd.StopContainer(ctx, appName); err != nil {
+		// Revert the explicit-stop mark so future restarts are not suppressed.
+		if s.monitor != nil {
+			s.monitor.ClearExplicitStop(appName)
+		}
 		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
 	}
-	// Mark the container as explicitly stopped only after a successful stop so
-	// that a failed stop does not prevent future restarts.
-	if s.monitor != nil {
-		s.monitor.MarkExplicitStop(req.GetAppName())
-	}
-	s.logger.Info("Container stopped", zap.String("app_name", req.GetAppName()))
+	s.logger.Info("Container stopped", zap.String("app_name", appName))
 	return &agentpb.StopContainerResponse{}, nil
 }
 

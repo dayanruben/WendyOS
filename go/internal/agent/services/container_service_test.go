@@ -476,8 +476,9 @@ func TestAttachContainer(t *testing.T) {
 // ---------- mock monitor registrar ----------
 
 type mockMonitorRegistrar struct {
-	registerCalls     []registerCall
-	explicitStopCalls []string
+	registerCalls      []registerCall
+	explicitStopCalls  []string
+	clearStopCalls     []string
 }
 
 type registerCall struct {
@@ -494,6 +495,10 @@ func (m *mockMonitorRegistrar) Unregister(_ string) {}
 
 func (m *mockMonitorRegistrar) MarkExplicitStop(appName string) {
 	m.explicitStopCalls = append(m.explicitStopCalls, appName)
+}
+
+func (m *mockMonitorRegistrar) ClearExplicitStop(appName string) {
+	m.clearStopCalls = append(m.clearStopCalls, appName)
 }
 
 // startContainerServerWithMonitor starts a gRPC bufconn server for ContainerService
