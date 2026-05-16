@@ -2,7 +2,6 @@ package mtls
 
 import (
 	"bytes"
-	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -157,6 +156,100 @@ func buildMLDSACACert(t *testing.T, subject pkix.Name, withCertSign bool) (*x509
 		cert, err = x509.ParseCertificate(raw.FullBytes)
 		if err != nil {
 			t.Fatalf("parsing ML-DSA CA certificate after ASN.1 trim: %v", err)
+		}
+	}
+
+	return cert, priv
+}
+
+// buildMLDSACACertExpired creates a self-signed CA certificate that is already
+// expired (NotBefore and NotAfter are both in the past). This causes
+// verifyMLDSAClientCert to reject it with "not valid at current time".
+func buildMLDSACACertExpired(t *testing.T, subject pkix.Name) (*x509.Certificate, circlSign.PrivateKey) {
+	t.Helper()
+
+	scheme := mldsa65.Scheme()
+	pub, priv, err := scheme.GenerateKey()
+	if err != nil {
+		t.Fatalf("generating ML-DSA key: %v", err)
+	}
+
+	pubBytes, err := pub.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshaling public key: %v", err)
+	}
+
+	subjectRDN, err := asn1.Marshal(subject.ToRDNSequence())
+	if err != nil {
+		t.Fatalf("marshaling subject: %v", err)
+	}
+
+	keyUsageExt, err := buildKeyUsageExt(x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign)
+	if err != nil {
+		t.Fatalf("building key usage extension: %v", err)
+	}
+
+	basicConstraintsExt, err := buildBasicConstraintsExt(true)
+	if err != nil {
+		t.Fatalf("building basic constraints extension: %v", err)
+	}
+
+	ekuExt, err := buildEKUExt([]asn1.ObjectIdentifier{
+		{1, 3, 6, 1, 5, 5, 7, 3, 2}, // id-kp-clientAuth
+	})
+	if err != nil {
+		t.Fatalf("building EKU extension: %v", err)
+	}
+
+	spki := spkiOuter{
+		Algorithm: algID{Algorithm: oidMLDSA65},
+		PublicKey: asn1.BitString{Bytes: pubBytes, BitLength: len(pubBytes) * 8},
+	}
+
+	// Place both NotBefore and NotAfter firmly in the past so the CA is expired.
+	past := time.Now().Add(-48 * time.Hour)
+	tbs := tbsCertificate{
+		Version:      2, // X.509v3
+		SerialNumber: big.NewInt(past.UnixNano()),
+		Signature:    algID{Algorithm: oidMLDSA65},
+		Issuer:       asn1.RawValue{FullBytes: subjectRDN},
+		Validity: validity{
+			NotBefore: past.Add(-time.Hour),
+			NotAfter:  past, // expired 48 h ago
+		},
+		Subject:              asn1.RawValue{FullBytes: subjectRDN},
+		SubjectPublicKeyInfo: spki,
+		Extensions:           []pkix.Extension{basicConstraintsExt, keyUsageExt, ekuExt},
+	}
+
+	tbsDER, err := asn1.Marshal(tbs)
+	if err != nil {
+		t.Fatalf("marshaling TBSCertificate: %v", err)
+	}
+
+	opts := &circlSign.SignatureOpts{Context: ""}
+	sig := scheme.Sign(priv, tbsDER, opts)
+
+	outer := certOuter{
+		TBSCertificate:     asn1.RawValue{FullBytes: tbsDER},
+		SignatureAlgorithm: algID{Algorithm: oidMLDSA65},
+		Signature:          asn1.BitString{Bytes: sig, BitLength: len(sig) * 8},
+	}
+
+	certDER, err := asn1.Marshal(outer)
+	if err != nil {
+		t.Fatalf("marshaling certificate: %v", err)
+	}
+
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		var raw asn1.RawValue
+		if _, asn1Err := asn1.Unmarshal(certDER, &raw); asn1Err != nil {
+			t.Fatalf("parsing expired ML-DSA CA certificate: %v (asn1 err: %v)", err, asn1Err)
+		}
+		cert, err = x509.ParseCertificate(raw.FullBytes)
+		if err != nil {
+			t.Fatalf("parsing expired ML-DSA CA certificate after ASN.1 trim: %v", err)
 		}
 	}
 
@@ -353,20 +446,25 @@ func TestVerifyMLDSAClientCert_MultipleCAsSameSubject_SecondCASucceeds(t *testin
 
 // TestVerifyMLDSAClientCert_MultipleCAsSameSubject_AllFail verifies that when
 // all CAs with the matching subject DN fail, the error returned is from the
-// last attempted CA — not the generic "issuer not found" message.
+// last attempted CA — not the generic "issuer not found" message and not the
+// error from the first CA.
 //
 // Setup:
-//   - CA1: same DN as CA2, KeyUsage has no CertSign => "not permitted to sign"
-//   - CA2: same DN as CA1, KeyUsage has no CertSign => "not permitted to sign"
+//   - CA1: same DN as CA2, but expired (NotAfter in the past) => "not valid at current time"
+//   - CA2: same DN as CA1, valid time but missing CertSign KeyUsage => "not permitted to sign"
 //   - Leaf: ML-DSA certificate whose RawIssuer matches both CA subjects
 //
-// Expected: error is non-nil and does NOT contain "issuer not found".
+// Expected: error is non-nil, mentions CA2's specific failure ("not permitted
+// to sign"), and does NOT mention CA1's failure ("not valid at current time").
+// This proves the loop continued past CA1 and returned the last (CA2) error.
 func TestVerifyMLDSAClientCert_MultipleCAsSameSubject_AllFail(t *testing.T) {
 	subject := sameSubjectName()
 
-	// Both CAs are missing CertSign.
-	ca1, _ := buildMLDSACACert(t, subject, false)
-	ca2, ca2Priv := buildMLDSACACert(t, subject, false)
+	// CA1 is expired — verifyMLDSAClientCert rejects it with "not valid at current time".
+	ca1, _ := buildMLDSACACertExpired(t, subject)
+
+	// CA2 has valid time but is missing CertSign — rejected with "not permitted to sign".
+	ca2, ca2Priv := buildMLDSACACert(t, subject, false /* withCertSign=false */)
 
 	// Sanity check: same RawSubject.
 	if !bytes.Equal(ca1.RawSubject, ca2.RawSubject) {
@@ -385,13 +483,20 @@ func TestVerifyMLDSAClientCert_MultipleCAsSameSubject_AllFail(t *testing.T) {
 	}
 
 	errMsg := err.Error()
-	if strings.Contains(errMsg, "issuer not found") {
-		t.Errorf("error %q contains %q; want a CA-specific error from the last failing CA", errMsg, "issuer not found")
+
+	// The returned error must be from CA2 (the last attempted CA): "not permitted to sign".
+	if !strings.Contains(errMsg, "not permitted to sign") {
+		t.Errorf("error %q does not contain %q; want the CA2-specific failure", errMsg, "not permitted to sign")
 	}
 
-	// The error should mention the CA that was last tried (CA2's CommonName).
-	if !strings.Contains(errMsg, subject.CommonName) {
-		t.Errorf("error %q does not mention CA CommonName %q", errMsg, subject.CommonName)
+	// If the loop bailed out at CA1, we'd see CA1's error instead — guard against that.
+	if strings.Contains(errMsg, "not valid at current time") {
+		t.Errorf("error %q contains %q; the loop must not have stopped at CA1", errMsg, "not valid at current time")
+	}
+
+	// The error must not be the generic "issuer not found" fallback.
+	if strings.Contains(errMsg, "issuer not found") {
+		t.Errorf("error %q contains %q; want a CA-specific error from the last failing CA", errMsg, "issuer not found")
 	}
 }
 
@@ -421,5 +526,3 @@ func TestVerifyMLDSAClientCert_IssuerNotFound(t *testing.T) {
 	}
 }
 
-// Ensure rand is imported (used by circl key generation internally).
-var _ = rand.Reader
