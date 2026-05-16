@@ -146,6 +146,20 @@ var umountCmd = func(mountpoint string) ([]byte, error) {
 	return exec.Command("sudo", "umount", mountpoint).CombinedOutput()
 }
 
+// maxMountpointDepth returns the maximum mountpoint depth (number of '/'
+// characters) across a device node and all of its descendants.  This is used
+// to sort devices so that the deepest subtree is always unmounted first, even
+// when a node has no mountpoint of its own but has deeply-mounted children.
+func maxMountpointDepth(dev lsblkDevice) int {
+	d := strings.Count(dev.Mountpoint, "/")
+	for _, child := range dev.Children {
+		if cd := maxMountpointDepth(child); cd > d {
+			d = cd
+		}
+	}
+	return d
+}
+
 // unmountDisk unmounts all partitions on a disk before writing.
 func unmountDisk(devPath string) error {
 	// Enumerate partitions via lsblk and unmount each one.
@@ -168,9 +182,11 @@ func unmountDisk(devPath string) error {
 	// Sort devices so that deeper mountpoints are unmounted first.
 	// This prevents a parent mount from being busy when we try to unmount it
 	// because a child mountpoint beneath it is still active.
+	// maxMountpointDepth is used so that a device with no mountpoint itself but
+	// with deeply-nested children is still sorted correctly.
 	sort.Slice(result.Blockdevices, func(i, j int) bool {
-		di := strings.Count(result.Blockdevices[i].Mountpoint, "/")
-		dj := strings.Count(result.Blockdevices[j].Mountpoint, "/")
+		di := maxMountpointDepth(result.Blockdevices[i])
+		dj := maxMountpointDepth(result.Blockdevices[j])
 		return di > dj // deeper first; empty mountpoints (di==0) sort last
 	})
 
@@ -194,8 +210,8 @@ func unmountLsblkDevice(dev lsblkDevice) error {
 	// two sibling children have nested mountpoints (e.g. /mnt/disk and
 	// /mnt/disk/sub): the deeper one must be unmounted before the shallower.
 	sort.Slice(dev.Children, func(i, j int) bool {
-		di := strings.Count(dev.Children[i].Mountpoint, "/")
-		dj := strings.Count(dev.Children[j].Mountpoint, "/")
+		di := maxMountpointDepth(dev.Children[i])
+		dj := maxMountpointDepth(dev.Children[j])
 		return di > dj // deeper first; empty mountpoints (di==0) sort last
 	})
 

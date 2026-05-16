@@ -5,7 +5,6 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -239,24 +238,23 @@ func TestUnmountLsblkDeviceRecursesIntoChildren(t *testing.T) {
 		t.Fatal("expected an error (mock umountCmd always fails), got nil — recursive unmount may not have been attempted")
 	}
 
-	// Verify that the first child's mountpoint (/boot/efi) was attempted.
-	// unmountLsblkDevice now unmounts by mountpoint rather than device path.
-	if !strings.Contains(err.Error(), "/boot/efi") {
-		t.Fatalf("error %q does not mention /boot/efi — recursive unmount of the first child may not be working", err.Error())
+	// Verify that BOTH child mountpoints were attempted.  We check the
+	// recorded attempted slice rather than the error message because the depth
+	// sort may cause either child to be processed first, meaning only the
+	// deeper one's path ends up in firstErr.
+	if len(attempted) != 2 {
+		t.Fatalf("expected 2 unmount attempts, got %d (attempted: %v)", len(attempted), attempted)
 	}
-
-	// Verify that /media/user/data (sdb2's mountpoint) was also attempted:
-	// unmountLsblkDevice must continue through ALL siblings even after the
-	// first failure.
-	foundSdb2 := false
+	wantAttempted := map[string]bool{"/boot/efi": false, "/media/user/data": false}
 	for _, p := range attempted {
-		if p == "/media/user/data" {
-			foundSdb2 = true
-			break
+		if _, ok := wantAttempted[p]; ok {
+			wantAttempted[p] = true
 		}
 	}
-	if !foundSdb2 {
-		t.Fatalf("unmount was not attempted for /media/user/data (attempted: %v) — recursion stopped after first failure", attempted)
+	for path, seen := range wantAttempted {
+		if !seen {
+			t.Errorf("unmount was not attempted for %s (attempted: %v) — recursion stopped after first failure", path, attempted)
+		}
 	}
 }
 
