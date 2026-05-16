@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"testing"
 
 	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
@@ -76,26 +77,35 @@ func TestDecodeALSARoundTrip(t *testing.T) {
 	}
 }
 
-// TestExtractJSONStringOrNumber verifies parsing of pw-dump JSON property lines.
-func TestExtractJSONStringOrNumber(t *testing.T) {
+// TestJSONPropMatches verifies that jsonPropMatches correctly handles both
+// JSON string and JSON number values for pw-dump props.
+func TestJSONPropMatches(t *testing.T) {
 	tests := []struct {
-		line string
-		want string
+		name    string
+		raw     string
+		key     string
+		wantStr string
+		want    bool
 	}{
-		{`"alsa.card": "0",`, "0"},
-		{`"alsa.card": "1"`, "1"},
-		{`"alsa.device": "0",`, "0"},
-		{`"alsa.device": "2"`, "2"},
-		{`"id": 42,`, "42"},
-		{`"id": 42`, "42"},
-		{`no colon here`, ""},
+		{"string value matches", `{"alsa.card": "0"}`, "alsa.card", "0", true},
+		{"string value no match", `{"alsa.card": "1"}`, "alsa.card", "0", false},
+		{"number value matches", `{"alsa.card": 0}`, "alsa.card", "0", true},
+		{"number value no match", `{"alsa.card": 2}`, "alsa.card", "0", false},
+		{"key absent", `{"alsa.device": "0"}`, "alsa.card", "0", false},
+		{"device string matches", `{"alsa.device": "2"}`, "alsa.device", "2", true},
 	}
 
 	for _, tt := range tests {
-		got := extractJSONStringOrNumber(tt.line)
-		if got != tt.want {
-			t.Errorf("extractJSONStringOrNumber(%q) = %q; want %q", tt.line, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			var props map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.raw), &props); err != nil {
+				t.Fatalf("unmarshal props: %v", err)
+			}
+			got := jsonPropMatches(props, tt.key, tt.wantStr)
+			if got != tt.want {
+				t.Errorf("jsonPropMatches(%q, %q) = %v; want %v", tt.key, tt.wantStr, got, tt.want)
+			}
+		})
 	}
 }
 

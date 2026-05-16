@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os/exec"
@@ -183,6 +184,16 @@ func decodeALSAID(id uint32) (card, device uint64) {
 	return encoded >> 8, encoded & 0xFF
 }
 
+// pwDumpNode models the relevant fields of a single object emitted by pw-dump.
+// pw-dump outputs a JSON array of such objects.
+type pwDumpNode struct {
+	ID   uint32 `json:"id"`
+	Type string `json:"type"`
+	Info struct {
+		Props map[string]json.RawMessage `json:"props"`
+	} `json:"info"`
+}
+
 // resolvePipeWireNodeID uses pw-dump to find the PipeWire node ID whose
 // alsa.card and alsa.device properties match the given card/device numbers.
 // Returns "" if no matching node is found or pw-dump is unavailable.
@@ -193,81 +204,51 @@ func resolvePipeWireNodeID(ctx context.Context, card, device uint64) string {
 		return ""
 	}
 
-	// pw-dump outputs JSON; parse it line-by-line to find matching node.
-	// We look for blocks containing "alsa.card" and "alsa.device" matching our values
-	// and extract the "id" field from the same object. We do a simple text scan
-	// to avoid a JSON dependency.
+	var nodes []pwDumpNode
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		return ""
+	}
+
 	cardStr := fmt.Sprintf("%d", card)
 	deviceStr := fmt.Sprintf("%d", device)
 
-	type candidate struct {
-		id        string
-		hasCard   bool
-		hasDevice bool
-	}
-
-	// pw-dump produces a JSON array of objects. Each object spans multiple lines.
-	// We track current node id and its ALSA properties.
-	var current candidate
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		// New top-level object: look for "id": <number>
-		if strings.HasPrefix(line, `"id":`) {
-			// Flush previous candidate if complete.
-			if current.hasCard && current.hasDevice && current.id != "" {
-				return current.id
-			}
-			// Start a new candidate when we encounter an "id" field.
-			// Reset on each "id" line to track the most recent node.
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				idVal := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(parts[1]), ","), " "))
-				current = candidate{id: idVal}
-			}
+	for _, node := range nodes {
+		props := node.Info.Props
+		if props == nil {
 			continue
 		}
 
-		// Check for alsa.card matching.
-		if strings.Contains(line, `"alsa.card"`) || strings.Contains(line, `"alsa.card.id"`) {
-			// We want "alsa.card": "N" or "alsa.card": N
-			if extractJSONStringOrNumber(line) == cardStr {
-				current.hasCard = true
-			}
+		if !jsonPropMatches(props, "alsa.card", cardStr) {
+			continue
+		}
+		if !jsonPropMatches(props, "alsa.device", deviceStr) {
+			continue
 		}
 
-		// Check for alsa.device matching.
-		if strings.Contains(line, `"alsa.device"`) {
-			if extractJSONStringOrNumber(line) == deviceStr {
-				current.hasDevice = true
-			}
-		}
-	}
-
-	// Check final candidate.
-	if current.hasCard && current.hasDevice && current.id != "" {
-		return current.id
+		return fmt.Sprintf("%d", node.ID)
 	}
 
 	return ""
 }
 
-// extractJSONStringOrNumber extracts the value from a JSON line of the form:
-// "key": "value" or "key": number, possibly with a trailing comma.
-func extractJSONStringOrNumber(line string) string {
-	colonIdx := strings.Index(line, ":")
-	if colonIdx < 0 {
-		return ""
+// jsonPropMatches reports whether the named property in a pw-dump props map
+// equals wantStr. The property value may be a JSON string ("N") or number (N).
+func jsonPropMatches(props map[string]json.RawMessage, key, wantStr string) bool {
+	raw, ok := props[key]
+	if !ok {
+		return false
 	}
-	val := strings.TrimSpace(line[colonIdx+1:])
-	val = strings.TrimSuffix(val, ",")
-	val = strings.TrimSpace(val)
-	// Remove surrounding quotes if present.
-	if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
-		return val[1 : len(val)-1]
+	// Try as a JSON string first.
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s == wantStr
 	}
-	return val
+	// Try as a number.
+	var n json.Number
+	if json.Unmarshal(raw, &n) == nil {
+		return n.String() == wantStr
+	}
+	return false
 }
 
 // resolvePulseAudioSinkOrSource finds the PulseAudio sink or source name whose
@@ -371,21 +352,21 @@ func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.S
 	if nodeID != "" {
 		cmd := exec.CommandContext(ctx, "wpctl", "set-default", nodeID)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			s.logger.Error("wpctl set-default failed",
+			s.logger.Warn("wpctl set-default failed, falling back to PulseAudio",
 				zap.String("node_id", nodeID), zap.Error(err),
 				zap.String("output", strings.TrimSpace(string(output))))
-			errMsg := fmt.Sprintf("wpctl set-default failed for node %s: %v: %s", nodeID, err, strings.TrimSpace(string(output)))
-			return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &errMsg}, nil
+			// Fall through to PulseAudio fallback below.
+		} else {
+			s.logger.Info("Default audio device set via PipeWire",
+				zap.Uint32("device_id", req.GetDeviceId()),
+				zap.Uint64("alsa_card", alsaCard),
+				zap.Uint64("alsa_device", alsaDevice),
+				zap.String("pw_node_id", nodeID))
+			return &agentpb.SetDefaultAudioDeviceResponse{Success: true}, nil
 		}
-		s.logger.Info("Default audio device set via PipeWire",
-			zap.Uint32("device_id", req.GetDeviceId()),
-			zap.Uint64("alsa_card", alsaCard),
-			zap.Uint64("alsa_device", alsaDevice),
-			zap.String("pw_node_id", nodeID))
-		return &agentpb.SetDefaultAudioDeviceResponse{Success: true}, nil
 	}
 
-	s.logger.Debug("PipeWire node not found for ALSA device, trying PulseAudio",
+	s.logger.Debug("PipeWire node not found or wpctl failed for ALSA device, trying PulseAudio",
 		zap.Uint64("alsa_card", alsaCard), zap.Uint64("alsa_device", alsaDevice))
 
 	// Fall back to PulseAudio: resolve the ALSA card/device to a sink/source name.
