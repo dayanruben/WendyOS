@@ -137,13 +137,21 @@ func main() {
 
 	logManager := services.NewContainerLogManager(logger, broadcaster)
 
-	// Start container monitor.
-	monitor := container.NewContainerMonitor(logger, containerdClient, 15*time.Second)
+	// Start container monitor only when containerd is available.
+	var monitor *container.ContainerMonitor
+	if containerdClient != nil {
+		monitor = container.NewContainerMonitor(logger, containerdClient, 15*time.Second)
+	}
 
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager)
-	containerSvc := services.NewContainerService(logger, containerdClient,
+	containerSvcOpts := []services.ContainerServiceOption{
 		services.WithLogManager(logManager),
-		services.WithMonitor(&containerMonitorAdapter{m: monitor}),
+	}
+	if monitor != nil {
+		containerSvcOpts = append(containerSvcOpts, services.WithMonitor(&containerMonitorAdapter{m: monitor}))
+	}
+	containerSvc := services.NewContainerService(logger, containerdClient,
+		containerSvcOpts...,
 	)
 	audioSvc := services.NewAudioService(logger)
 	videoSvc := services.NewVideoService(logger)
@@ -219,12 +227,14 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Start container monitor in background.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		monitor.Run(ctx)
-	}()
+	// Start container monitor in background (only when containerd is available).
+	if monitor != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			monitor.Run(ctx)
+		}()
+	}
 
 	// Collect CPU/memory metrics for all running containers.
 	if containerdClient != nil {

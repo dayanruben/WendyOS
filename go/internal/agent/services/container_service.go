@@ -229,7 +229,7 @@ func postStartAgentHookFromContext(ctx context.Context) string {
 //
 //	0 = No, 1 = UnlessStopped, 2 = OnFailure, 3 = Always
 //
-// Returns -1 when the policy should not be registered (nil or explicit NO).
+// Returns ok=false when the policy should not be registered (nil or explicit NO).
 func monitorPolicyInt(rp *agentpb.RestartPolicy) (policy int, maxRetries int, ok bool) {
 	if rp == nil {
 		return 0, 0, false
