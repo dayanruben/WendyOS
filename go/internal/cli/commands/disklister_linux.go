@@ -122,6 +122,20 @@ func listDrivesLinux() ([]drive, error) {
 	return drives, nil
 }
 
+// lsblkCmd is the function used to run lsblk for partition enumeration.
+// It is a package-level variable so tests can inject a fake implementation
+// without spawning a real process.
+var lsblkCmd = func(devPath string) ([]byte, error) {
+	return exec.Command("lsblk", "--json", "-l", "-o", "NAME,MOUNTPOINT", devPath).Output()
+}
+
+// umountCmd is the function used to unmount a single partition path.
+// It is a package-level variable so tests can inject a mock that records
+// calls without invoking privileged host commands.
+var umountCmd = func(partPath string) ([]byte, error) {
+	return exec.Command("sudo", "umount", partPath).CombinedOutput()
+}
+
 // unmountDisk unmounts all partitions on a disk before writing.
 func unmountDisk(devPath string) error {
 	// Enumerate partitions via lsblk and unmount each one.
@@ -131,7 +145,7 @@ func unmountDisk(devPath string) error {
 	// because older code did not recurse into children.  We also keep the
 	// Children field on lsblkDevice and recurse in unmountLsblkDevice as a
 	// defence-in-depth measure for lsblk versions that ignore -l.
-	out, err := exec.Command("lsblk", "--json", "-l", "-o", "NAME,MOUNTPOINT", devPath).Output()
+	out, err := lsblkCmd(devPath)
 	if err != nil {
 		// If lsblk fails, the disk may not be mounted at all.
 		return nil
@@ -154,7 +168,7 @@ func unmountDisk(devPath string) error {
 func unmountLsblkDevice(dev lsblkDevice) error {
 	if dev.Mountpoint != "" {
 		partPath := "/dev/" + dev.Name
-		if out, err := exec.Command("sudo", "umount", partPath).CombinedOutput(); err != nil {
+		if out, err := umountCmd(partPath); err != nil {
 			return fmt.Errorf("unmounting %s: %w\n%s", partPath, err, out)
 		}
 	}
