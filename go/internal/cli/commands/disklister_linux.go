@@ -137,11 +137,11 @@ var lsblkCmd = func(devPath string) ([]byte, error) {
 	return exec.Command(args[0], args[1:]...).Output()
 }
 
-// umountCmd is the function used to unmount a single partition path.
+// umountCmd is the function used to unmount a single mountpoint path.
 // It is a package-level variable so tests can inject a mock that records
 // calls without invoking privileged host commands.
-var umountCmd = func(partPath string) ([]byte, error) {
-	return exec.Command("sudo", "umount", partPath).CombinedOutput()
+var umountCmd = func(mountpoint string) ([]byte, error) {
+	return exec.Command("sudo", "umount", mountpoint).CombinedOutput()
 }
 
 // unmountDisk unmounts all partitions on a disk before writing.
@@ -174,23 +174,24 @@ func unmountDisk(devPath string) error {
 }
 
 func unmountLsblkDevice(dev lsblkDevice) error {
-	if dev.Mountpoint != "" {
-		// Unmount by mountpoint rather than device path so that device-mapper
-		// entries (e.g. mapper/data → /dev/mapper/data) and dm-* nodes are
-		// handled correctly.  The mountpoint is always the right argument to
-		// pass to umount when it is known.
-		if out, err := umountCmd(dev.Mountpoint); err != nil {
-			return fmt.Errorf("unmounting %s: %w\n%s", dev.Mountpoint, err, out)
-		}
-	}
-	// Recurse into children for defence-in-depth: lsblk without -l returns
-	// partitions nested under the parent disk entry.  Collect the first error
-	// but continue visiting ALL siblings so that a single failure does not
-	// leave subsequent partitions mounted.
+	// Children first: a parent mount cannot be unmounted until all child
+	// mounts beneath it are gone.  Recurse into children before attempting to
+	// unmount this node.  Collect the first error but continue visiting ALL
+	// siblings so that a single failure does not leave subsequent partitions
+	// mounted.
 	var firstErr error
 	for _, child := range dev.Children {
 		if err := unmountLsblkDevice(child); err != nil && firstErr == nil {
 			firstErr = err
+		}
+	}
+	// Then unmount self.  Unmount by mountpoint rather than device path so
+	// that device-mapper entries (e.g. mapper/data → /dev/mapper/data) and
+	// dm-* nodes are handled correctly.  The mountpoint is always the right
+	// argument to pass to umount when it is known.
+	if dev.Mountpoint != "" {
+		if out, err := umountCmd(dev.Mountpoint); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("unmounting %s: %w\n%s", dev.Mountpoint, err, out)
 		}
 	}
 	return firstErr
