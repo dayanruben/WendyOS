@@ -50,13 +50,14 @@ type lsblkOutput struct {
 }
 
 type lsblkDevice struct {
-	Name       string      `json:"name"`
-	Size       json.Number `json:"size"`
-	Type       string      `json:"type"`
-	Removable  flexBool    `json:"rm"`
-	Hotplug    flexBool    `json:"hotplug"`
-	Transport  string      `json:"tran"`
-	Mountpoint string      `json:"mountpoint"`
+	Name       string        `json:"name"`
+	Size       json.Number   `json:"size"`
+	Type       string        `json:"type"`
+	Removable  flexBool      `json:"rm"`
+	Hotplug    flexBool      `json:"hotplug"`
+	Transport  string        `json:"tran"`
+	Mountpoint string        `json:"mountpoint"`
+	Children   []lsblkDevice `json:"children"`
 }
 
 // listAllDrives lists external physical drives (USB, SD, hotplug) on Linux.
@@ -124,7 +125,13 @@ func listDrivesLinux() ([]drive, error) {
 // unmountDisk unmounts all partitions on a disk before writing.
 func unmountDisk(devPath string) error {
 	// Enumerate partitions via lsblk and unmount each one.
-	out, err := exec.Command("lsblk", "--json", "-o", "NAME,MOUNTPOINT", devPath).Output()
+	// The -l flag requests flat (list) output so every partition appears as a
+	// top-level entry in blockdevices rather than being nested under a parent
+	// disk's "children" array.  Without -l, partitions are silently dropped
+	// because older code did not recurse into children.  We also keep the
+	// Children field on lsblkDevice and recurse in unmountLsblkDevice as a
+	// defence-in-depth measure for lsblk versions that ignore -l.
+	out, err := exec.Command("lsblk", "--json", "-l", "-o", "NAME,MOUNTPOINT", devPath).Output()
 	if err != nil {
 		// If lsblk fails, the disk may not be mounted at all.
 		return nil
@@ -145,6 +152,11 @@ func unmountLsblkDevice(dev lsblkDevice) {
 	if dev.Mountpoint != "" {
 		partPath := "/dev/" + dev.Name
 		exec.Command("sudo", "umount", partPath).Run() //nolint:errcheck
+	}
+	// Recurse into children for defence-in-depth: lsblk without -l returns
+	// partitions nested under the parent disk entry.
+	for _, child := range dev.Children {
+		unmountLsblkDevice(child)
 	}
 }
 

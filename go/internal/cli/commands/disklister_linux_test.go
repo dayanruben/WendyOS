@@ -141,6 +141,63 @@ func TestParseLsblkOutput(t *testing.T) {
 	}
 }
 
+// TestParseLsblkChildrenUnmarshaled verifies that the Children field is populated
+// when lsblk emits hierarchical JSON (without -l), so that unmountLsblkDevice
+// can recurse into nested partitions (fix for bug_2683497e).
+func TestParseLsblkChildrenUnmarshaled(t *testing.T) {
+	const hierarchical = `{
+		"blockdevices": [
+			{
+				"name": "sdb",
+				"size": "16000000000",
+				"type": "disk",
+				"rm": true,
+				"hotplug": true,
+				"tran": "usb",
+				"mountpoint": null,
+				"children": [
+					{
+						"name": "sdb1",
+						"size": "536870912",
+						"type": "part",
+						"rm": true,
+						"hotplug": true,
+						"tran": "usb",
+						"mountpoint": "/boot/efi"
+					},
+					{
+						"name": "sdb2",
+						"size": "15463129088",
+						"type": "part",
+						"rm": true,
+						"hotplug": true,
+						"tran": "usb",
+						"mountpoint": "/media/user/data"
+					}
+				]
+			}
+		]
+	}`
+
+	var result lsblkOutput
+	if err := json.Unmarshal([]byte(hierarchical), &result); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if len(result.Blockdevices) != 1 {
+		t.Fatalf("got %d top-level devices, want 1", len(result.Blockdevices))
+	}
+	disk := result.Blockdevices[0]
+	if len(disk.Children) != 2 {
+		t.Fatalf("got %d children, want 2 — Children field not unmarshaled (this is the root cause of bug_2683497e)", len(disk.Children))
+	}
+	if disk.Children[0].Name != "sdb1" {
+		t.Fatalf("Children[0].Name = %q, want \"sdb1\"", disk.Children[0].Name)
+	}
+	if disk.Children[1].Mountpoint != "/media/user/data" {
+		t.Fatalf("Children[1].Mountpoint = %q, want \"/media/user/data\"", disk.Children[1].Mountpoint)
+	}
+}
+
 // TestParseLsblkOutputMatchesLinuxReport reproduces the exact lsblk -J output
 // from the bug report (WDY-774) to verify it parses without error.
 func TestParseLsblkOutputMatchesLinuxReport(t *testing.T) {
