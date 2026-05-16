@@ -72,6 +72,7 @@ func (s *mcpServer) handleDeviceConnect(ctx context.Context, req mcpgo.CallToolR
 	if err := s.ConnectTo(ctx, address); err != nil {
 		return mcpgo.NewToolResultError(fmt.Sprintf("connecting to %s: %s", address, err.Error())), nil
 	}
+	s.SetConnType("direct")
 	return mcpgo.NewToolResultText(fmt.Sprintf("connected to %s", address)), nil
 }
 

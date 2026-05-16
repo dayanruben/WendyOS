@@ -26,6 +26,7 @@ type mcpServer struct {
 	cfg          *config.Config
 	connectFn    ConnectFunc
 	conn         *grpcclient.AgentConnection
+	connType     string
 	cloudTunnels map[string]*mcpCloudTunnel
 	mu           sync.RWMutex
 }
@@ -51,6 +52,23 @@ func (s *mcpServer) SetConn(conn *grpcclient.AgentConnection) {
 		_ = s.conn.Close()
 	}
 	s.conn = conn
+	if conn == nil {
+		s.connType = ""
+	}
+}
+
+// SetConnType records the transport type of the active connection ("direct" or "cloud").
+func (s *mcpServer) SetConnType(t string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.connType = t
+}
+
+// GetConnType returns the transport type of the active connection.
+func (s *mcpServer) GetConnType() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connType
 }
 
 // ConnectTo connects to address and stores the result as the active connection.
@@ -72,6 +90,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 	)
+	s.registerStatusTools(srv)
 	s.registerDeviceTools(srv)
 	s.registerContainerTools(srv)
 	s.registerTelemetryTools(srv)

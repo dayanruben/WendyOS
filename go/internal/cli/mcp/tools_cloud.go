@@ -192,6 +192,7 @@ func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRe
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	s.SetConn(conn)
+	s.SetConnType("cloud")
 	return mcpgo.NewToolResultText(fmt.Sprintf("connected to %s via cloud", asset.GetName())), nil
 }
 
