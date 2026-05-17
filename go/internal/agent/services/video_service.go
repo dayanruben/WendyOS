@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -21,6 +22,10 @@ import (
 
 	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
 )
+
+var framePool = sync.Pool{
+	New: func() any { b := make([]byte, 0, 512*1024); return &b },
+}
 
 // V4L2 ioctl constants for Linux kernel video capture interface.
 const (
@@ -284,15 +289,18 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 			}
 			continue
 		}
-		data := make([]byte, n)
-		copy(data, mapped[idx].data[:n])
+		bp := framePool.Get().(*[]byte)
+		*bp = (*bp)[:0]
+		*bp = append(*bp, mapped[idx].data[:n]...)
 
 		if err := stream.Send(&agentpb.VideoFrame{
-			Data:        data,
+			Data:        *bp,
 			TimestampNs: uint64(time.Now().UnixNano()),
 		}); err != nil {
+			framePool.Put(bp)
 			return err
 		}
+		framePool.Put(bp)
 		framesSent++
 
 		// Re-queue the buffer.
@@ -374,7 +382,7 @@ func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerSt
 		}
 	}()
 
-	const chunkSize = 16 * 1024
+	const chunkSize = 256 * 1024
 	buf := make([]byte, chunkSize)
 
 	for {
@@ -386,10 +394,8 @@ func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerSt
 
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
 			if sendErr := stream.Send(&agentpb.VideoFrame{
-				Data:        data,
+				Data:        buf[:n],
 				TimestampNs: uint64(time.Now().UnixNano()),
 				Codec:       enc.codec,
 			}); sendErr != nil {
