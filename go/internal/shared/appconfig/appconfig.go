@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -304,6 +305,9 @@ func (c *AppConfig) Validate() error {
 		}
 		if svc.Context == "" {
 			return fmt.Errorf("services[%q]: context is required", name)
+		}
+		if filepath.IsAbs(svc.Context) {
+			return fmt.Errorf("services[%q]: context must be a relative path", name)
 		}
 		if containsDotDot(svc.Context) {
 			return fmt.Errorf("services[%q]: context must not contain '..' components", name)

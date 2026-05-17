@@ -40,7 +40,11 @@ func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only str
 	subset := map[string]*appconfig.ServiceConfig{only: svc}
 	var walk func(name string)
 	walk = func(name string) {
-		for _, dep := range services[name].DependsOn {
+		svc, ok := services[name]
+		if !ok || svc == nil {
+			return
+		}
+		for _, dep := range svc.DependsOn {
 			if _, seen := subset[dep]; !seen {
 				subset[dep] = services[dep]
 				walk(dep)
@@ -54,22 +58,30 @@ func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only str
 // serviceTopoOrder returns service names in topological order so that every
 // service appears after its dependsOn entries. Cycles are broken by appending
 // remaining names at the end (compose.go uses the same approach).
-func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) []string {
+// All deps must already be present in services (resolveServiceSubset guarantees
+// transitive closure); a missing dep returns an error.
+func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, error) {
 	visited := make(map[string]bool, len(services))
 	ordered := make([]string, 0, len(services))
 
-	var visit func(name string)
-	visit = func(name string) {
+	var visit func(name string) error
+	visit = func(name string) error {
 		if visited[name] {
-			return
+			return nil
 		}
 		visited[name] = true
 		if svc, ok := services[name]; ok {
 			for _, dep := range svc.DependsOn {
-				visit(dep)
+				if _, present := services[dep]; !present {
+					return fmt.Errorf("service %q depends on %q which is not in the build subset", name, dep)
+				}
+				if err := visit(dep); err != nil {
+					return err
+				}
 			}
 		}
 		ordered = append(ordered, name)
+		return nil
 	}
 
 	// Iterate in a stable order: collect names, sort, then visit.
@@ -79,9 +91,11 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) []string {
 	}
 	stableSort(names)
 	for _, n := range names {
-		visit(n)
+		if err := visit(n); err != nil {
+			return nil, err
+		}
 	}
-	return ordered
+	return ordered, nil
 }
 
 // stableSort sorts a string slice in place.
@@ -125,7 +139,10 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 
 	buildArgs := map[string]string{
 		"WENDY_PLATFORM": wendyPlatform(versionResp.GetDeviceType()),
-		"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
+	}
+	if opts.debug {
+		cliLogln("Warning: building with WENDY_DEBUG=true — do not deploy to production.")
+		buildArgs["WENDY_DEBUG"] = "true"
 	}
 	if dt := versionResp.GetDeviceType(); dt != "" {
 		buildArgs["WENDY_DEVICE_TYPE"] = dt
@@ -149,7 +166,10 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Create containers in dependency order.
-	ordered := serviceTopoOrder(services)
+	ordered, err := serviceTopoOrder(services)
+	if err != nil {
+		return err
+	}
 	for _, name := range ordered {
 		svc := services[name]
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
@@ -297,11 +317,14 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	// Ctrl+C stops all services.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
 		cliLogln("\nStopping services...")
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
 		for _, name := range ordered {
-			_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
+			_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
 				AppName: fmt.Sprintf("%s-%s", appID, name),
 			})
 		}
@@ -378,11 +401,9 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	for line := range lines {
 		prefix := serviceLogStyle.Render(fmt.Sprintf("[%s] ", line.service))
 		if line.stdout {
-			fmt.Fprint(os.Stdout, prefix)
-			os.Stdout.Write(line.data)
+			fmt.Fprintf(os.Stdout, "%s%s", prefix, line.data)
 		} else {
-			fmt.Fprint(os.Stderr, prefix)
-			os.Stderr.Write(line.data)
+			fmt.Fprintf(os.Stderr, "%s%s", prefix, line.data)
 		}
 	}
 
