@@ -37,8 +37,7 @@ type MultiSpinnerDoneMsg struct {
 }
 
 // MultiSpinnerAllDoneMsg signals that all service builds have completed.
-// Err is non-nil if any individual build failed.
-type MultiSpinnerAllDoneMsg struct{ Err error }
+type MultiSpinnerAllDoneMsg struct{}
 
 type multiSpinnerRow struct {
 	name   string
@@ -129,7 +128,6 @@ func (m MultiSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MultiSpinnerAllDoneMsg:
 		m.done = true
-		m.err = msg.Err
 		return m, tea.Quit
 	}
 
@@ -164,9 +162,10 @@ func (m MultiSpinnerModel) View() string {
 	for _, r := range m.rows {
 		switch r.status {
 		case MultiSpinnerPending:
-			sb.WriteString(fmt.Sprintf("  %s %s\n",
+			sb.WriteString(fmt.Sprintf("  %s %s%s\n",
 				msDimStyle.Render("·"),
-				msDimStyle.Render(msNameStyle.Render(r.name)+"waiting"),
+				msDimStyle.Render(msNameStyle.Render(r.name)),
+				msDimStyle.Render("waiting"),
 			))
 
 		case MultiSpinnerRunning:
@@ -202,18 +201,4 @@ func (m MultiSpinnerModel) View() string {
 // Err returns the first error recorded, if any.
 func (m MultiSpinnerModel) Err() error {
 	return m.err
-}
-
-// RunMultiSpinner runs a MultiSpinnerModel and returns when MultiSpinnerAllDoneMsg
-// is received. The returned error is the aggregate build error, if any.
-func RunMultiSpinner(m MultiSpinnerModel) error {
-	prog := tea.NewProgram(m)
-	final, runErr := prog.Run()
-	if runErr != nil {
-		return fmt.Errorf("multi-spinner TUI: %w", runErr)
-	}
-	if fm, ok := final.(MultiSpinnerModel); ok {
-		return fm.Err()
-	}
-	return nil
 }

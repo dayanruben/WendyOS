@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -38,30 +39,39 @@ func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only str
 	}
 
 	subset := map[string]*appconfig.ServiceConfig{only: svc}
-	var walk func(name string)
-	walk = func(name string) {
+	var walk func(name string) error
+	walk = func(name string) error {
 		svc, ok := services[name]
 		if !ok || svc == nil {
-			return
+			return nil
 		}
 		for _, dep := range svc.DependsOn {
 			if _, seen := subset[dep]; !seen {
-				subset[dep] = services[dep]
-				walk(dep)
+				depSvc, ok := services[dep]
+				if !ok {
+					return fmt.Errorf("service %q depends on unknown service %q", name, dep)
+				}
+				subset[dep] = depSvc
+				if err := walk(dep); err != nil {
+					return err
+				}
 			}
 		}
+		return nil
 	}
-	walk(only)
+	if err := walk(only); err != nil {
+		return nil, err
+	}
 	return subset, nil
 }
 
 // serviceTopoOrder returns service names in topological order so that every
-// service appears after its dependsOn entries. Cycles are broken by appending
-// remaining names at the end (compose.go uses the same approach).
-// All deps must already be present in services (resolveServiceSubset guarantees
-// transitive closure); a missing dep returns an error.
+// service appears after its dependsOn entries. Returns an error for cyclic
+// graphs. All deps must already be present in services (resolveServiceSubset
+// guarantees transitive closure); a missing dep returns an error.
 func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, error) {
 	visited := make(map[string]bool, len(services))
+	inStack := make(map[string]bool, len(services))
 	ordered := make([]string, 0, len(services))
 
 	var visit func(name string) error
@@ -69,7 +79,10 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 		if visited[name] {
 			return nil
 		}
-		visited[name] = true
+		if inStack[name] {
+			return fmt.Errorf("cycle detected in dependsOn graph involving service %q", name)
+		}
+		inStack[name] = true
 		if svc, ok := services[name]; ok {
 			for _, dep := range svc.DependsOn {
 				if _, present := services[dep]; !present {
@@ -80,6 +93,8 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 				}
 			}
 		}
+		delete(inStack, name)
+		visited[name] = true
 		ordered = append(ordered, name)
 		return nil
 	}
@@ -89,22 +104,13 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 	for n := range services {
 		names = append(names, n)
 	}
-	stableSort(names)
+	sort.Strings(names)
 	for _, n := range names {
 		if err := visit(n); err != nil {
 			return nil, err
 		}
 	}
 	return ordered, nil
-}
-
-// stableSort sorts a string slice in place.
-func stableSort(ss []string) {
-	for i := 1; i < len(ss); i++ {
-		for j := i; j > 0 && ss[j] < ss[j-1]; j-- {
-			ss[j], ss[j-1] = ss[j-1], ss[j]
-		}
-	}
 }
 
 // runMultiServiceWithAgent orchestrates the full build → push → create →
@@ -126,6 +132,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {
+		cliLogln("Warning: agent did not report CPU architecture; assuming arm64.")
 		architecture = "arm64"
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
@@ -194,7 +201,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		}
 
 		cliLogln("Creating container for service %s...", name)
-		if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
+		if err := createContainerWithoutProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
 		cliLogln("Service %s container created.", name)
@@ -224,7 +231,7 @@ func buildServicesParallel(
 	for n := range services {
 		names = append(names, n)
 	}
-	stableSort(names)
+	sort.Strings(names)
 
 	type result struct {
 		name string
@@ -261,7 +268,11 @@ func buildServicesParallel(
 			imageName := fmt.Sprintf("%s/%s-%s:latest",
 				registryAddr, strings.ToLower(appID), strings.ToLower(name))
 
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, buildArgs, os.Stdout, useMTLS)
+			buildOut := io.Writer(os.Stdout)
+			if prog != nil {
+				buildOut = io.Discard
+			}
+			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, buildArgs, buildOut, useMTLS)
 			dur := time.Since(start)
 
 			if prog != nil {
@@ -321,14 +332,20 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	go func() {
 		<-sigCh
 		cliLogln("\nStopping services...")
+		runCancel()
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
+		var stopWg sync.WaitGroup
 		for _, name := range ordered {
-			_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
-				AppName: fmt.Sprintf("%s-%s", appID, name),
-			})
+			stopWg.Add(1)
+			go func(name string) {
+				defer stopWg.Done()
+				_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
+					AppName: fmt.Sprintf("%s-%s", appID, name),
+				})
+			}(name)
 		}
-		runCancel()
+		stopWg.Wait()
 	}()
 
 	if opts.detach {
@@ -382,10 +399,18 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 					return
 				}
 				if out := resp.GetStdoutOutput(); out != nil {
-					lines <- logLine{service: name, stdout: true, data: out.GetData()}
+					select {
+					case lines <- logLine{service: name, stdout: true, data: out.GetData()}:
+					case <-runCtx.Done():
+						return
+					}
 				}
 				if out := resp.GetStderrOutput(); out != nil {
-					lines <- logLine{service: name, stdout: false, data: out.GetData()}
+					select {
+					case lines <- logLine{service: name, stdout: false, data: out.GetData()}:
+					case <-runCtx.Done():
+						return
+					}
 				}
 			}
 		}(name)

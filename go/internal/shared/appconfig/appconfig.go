@@ -309,7 +309,7 @@ func (c *AppConfig) Validate() error {
 		if filepath.IsAbs(svc.Context) {
 			return fmt.Errorf("services[%q]: context must be a relative path", name)
 		}
-		if containsDotDot(svc.Context) {
+		if cleaned := filepath.Clean(svc.Context); strings.HasPrefix(cleaned, "..") {
 			return fmt.Errorf("services[%q]: context must not contain '..' components", name)
 		}
 		for _, dep := range svc.DependsOn {
