@@ -131,16 +131,25 @@ jobs:
 
       - name: Prepare Docker
         run: |
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           if ! docker info >/dev/null 2>&1; then
-            echo "Docker not available, starting Colima..."
-            if ! command -v colima >/dev/null 2>&1; then
-              echo "Colima not found, installing via Homebrew..."
-              brew install colima
+            echo "Docker not available, attempting to start..."
+            if [ -d "/Applications/Docker.app" ]; then
+              echo "Starting Docker Desktop..."
+              open -a Docker
+              for i in $(seq 1 30); do
+                if docker info >/dev/null 2>&1; then break; fi
+                sleep 5
+              done
+            elif command -v colima >/dev/null 2>&1; then
+              colima start
+              until docker info >/dev/null 2>&1; do sleep 2; done
+            else
+              echo "ERROR: Neither Docker Desktop nor Colima found"
+              exit 1
             fi
-            colima start
-            until docker info >/dev/null 2>&1; do sleep 2; done
           else
-            echo "Docker already available, skipping Colima restart"
+            echo "Docker already available, skipping restart"
           fi
           docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
           docker system prune -f 2>/dev/null || true
