@@ -1758,11 +1758,6 @@ func sanitizeDockerImageName(name string) string {
 	return result
 }
 
-// ociEntitlementAnnotationPrefix is the OCI manifest annotation key prefix for
-// Wendy entitlements. Follows the same sh.wendy/entitlement.* scheme used by
-// the containerd container labels so the two representations stay consistent.
-const ociEntitlementAnnotationPrefix = "sh.wendy/entitlement."
-
 // mediaType constants for Docker v2, OCI image manifests, and OCI image indexes.
 const (
 	mediaTypeDockerManifestV2     = "application/vnd.docker.distribution.manifest.v2+json"
@@ -1915,10 +1910,7 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 	}
 
 	// Build per-entitlement annotation map.
-	annotations, err := buildEntitlementAnnotations(entitlements)
-	if err != nil {
-		return err
-	}
+	annotations := appconfig.BuildEntitlementAnnotations(entitlements)
 
 	// Sign the entitlement annotations with the developer certificate if one is
 	// available. A missing or non-EC cert is silently skipped so that unsigned
@@ -1965,50 +1957,6 @@ func annotateManifestWithEntitlements(ctx context.Context, registryAddr, repo, t
 	}
 
 	return nil
-}
-
-// buildEntitlementAnnotations converts a list of entitlements into OCI annotation
-// key/value pairs. The key format is sh.wendy/entitlement.<type>; when multiple
-// entitlements share the same type a numeric suffix (.0, .1, …) is appended.
-// Values are JSON-encoded entitlement objects with the "type" field omitted
-// (matching the containerd container label format in the agent's wendyLabels).
-// Entitlements with an empty type are skipped.
-func buildEntitlementAnnotations(entitlements []appconfig.Entitlement) (map[string]string, error) {
-	typeCounts := make(map[string]int)
-	for _, e := range entitlements {
-		if e.Type != "" {
-			typeCounts[e.Type]++
-		}
-	}
-	typeIndex := make(map[string]int)
-	out := make(map[string]string)
-	for _, e := range entitlements {
-		if e.Type == "" {
-			continue
-		}
-		var key string
-		if typeCounts[e.Type] == 1 {
-			key = ociEntitlementAnnotationPrefix + e.Type
-		} else {
-			key = fmt.Sprintf("%s%s.%d", ociEntitlementAnnotationPrefix, e.Type, typeIndex[e.Type])
-			typeIndex[e.Type]++
-		}
-		data, err := json.Marshal(e)
-		if err != nil {
-			return nil, fmt.Errorf("marshaling entitlement %q: %w", e.Type, err)
-		}
-		var m map[string]json.RawMessage
-		if err := json.Unmarshal(data, &m); err != nil {
-			return nil, fmt.Errorf("re-parsing entitlement %q: %w", e.Type, err)
-		}
-		delete(m, "type")
-		stripped, err := json.Marshal(m)
-		if err != nil {
-			return nil, fmt.Errorf("re-encoding entitlement %q: %w", e.Type, err)
-		}
-		out[key] = string(stripped)
-	}
-	return out, nil
 }
 
 // injectManifestAnnotations merges annotations into a manifest or index JSON

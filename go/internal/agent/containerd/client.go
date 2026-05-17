@@ -605,9 +605,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// the authoritative source (codesigned with the image) and override whatever
 	// was passed in app_config. This must happen before any entitlement-dependent
 	// setup (e.g. the D-Bus proxy below) so all decisions use the final set.
-	if manifestEntitlements, readErr := c.readEntitlementsFromManifest(ctx, image); readErr != nil {
-		c.logger.Warn("could not read entitlement annotations from manifest", zap.Error(readErr))
-	} else if len(manifestEntitlements) > 0 {
+	manifestEntitlements, readErr := c.readEntitlementsFromManifest(ctx, image)
+	if readErr != nil {
+		return fmt.Errorf("reading entitlements from manifest: %w", readErr)
+	}
+	if len(manifestEntitlements) > 0 {
 		appCfg.Entitlements = manifestEntitlements
 	}
 

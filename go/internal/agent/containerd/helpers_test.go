@@ -273,11 +273,11 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 	labels := wendyLabels("app", "1.0", nil, entitlements)
 
 	cases := []struct {
-		key      string
-		wantVal  string
+		key     string
+		wantVal string
 	}{
-		{labelKeyEntitlementPrefix + appconfig.EntitlementNetwork, "mode=host"},
-		{labelKeyEntitlementPrefix + appconfig.EntitlementGPU, ""},
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementNetwork, "mode=host"},
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, ""},
 	}
 	for _, tc := range cases {
 		raw, ok := labels[tc.key]
@@ -298,7 +298,7 @@ func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
 	labels := wendyLabels("app", "1.0", nil, entitlements)
 
 	for i, want := range entitlements {
-		key := fmt.Sprintf("%s%s.%d", labelKeyEntitlementPrefix, appconfig.EntitlementPersist, i)
+		key := fmt.Sprintf("%s%s.%d", appconfig.EntitlementAnnotationKeyPrefix, appconfig.EntitlementPersist, i)
 		raw, ok := labels[key]
 		if !ok {
 			t.Fatalf("missing entitlement label %q", key)
@@ -313,7 +313,7 @@ func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
 func TestWendyLabels_NoEntitlementsLabel(t *testing.T) {
 	labels := wendyLabels("app", "1.0", nil, nil)
 	for k := range labels {
-		if strings.HasPrefix(k, labelKeyEntitlementPrefix) {
+		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
 			t.Errorf("should not have entitlement label when entitlements are empty, got %q", k)
 		}
 	}
@@ -382,7 +382,7 @@ func TestParseEntitlementsFromAnnotations_RoundTrip(t *testing.T) {
 	labels := wendyLabels("app", "1.0", nil, original)
 	annotations := make(map[string]string)
 	for k, v := range labels {
-		if strings.HasPrefix(k, labelKeyEntitlementPrefix) {
+		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
 			annotations[k] = v
 		}
 	}

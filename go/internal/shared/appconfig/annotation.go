@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// EntitlementAnnotationKeyPrefix is the shared prefix for per-entitlement OCI
+// manifest annotations and containerd container labels.
+const EntitlementAnnotationKeyPrefix = "sh.wendy/entitlement."
+
 // EntitlementAnnotationValue encodes an entitlement's parameters as a
 // comma-separated key=value string suitable for an OCI manifest annotation
 // or a containerd container label value.
@@ -156,4 +160,34 @@ func isAnnotationKey(s string) bool {
 		}
 	}
 	return true
+}
+
+// BuildEntitlementAnnotations converts entitlements into a map of
+// sh.wendy/entitlement.* keys to their encoded values, suitable for use as OCI
+// manifest annotations or containerd container labels. When multiple entitlements
+// share the same type a numeric suffix (.0, .1, …) is appended to disambiguate.
+// Entitlements with an empty type are skipped.
+func BuildEntitlementAnnotations(entitlements []Entitlement) map[string]string {
+	typeCounts := make(map[string]int)
+	for _, e := range entitlements {
+		if e.Type != "" {
+			typeCounts[e.Type]++
+		}
+	}
+	typeIndex := make(map[string]int)
+	out := make(map[string]string)
+	for _, e := range entitlements {
+		if e.Type == "" {
+			continue
+		}
+		var key string
+		if typeCounts[e.Type] == 1 {
+			key = EntitlementAnnotationKeyPrefix + e.Type
+		} else {
+			key = EntitlementAnnotationKeyPrefix + e.Type + "." + strconv.Itoa(typeIndex[e.Type])
+			typeIndex[e.Type]++
+		}
+		out[key] = EntitlementAnnotationValue(e)
+	}
+	return out
 }

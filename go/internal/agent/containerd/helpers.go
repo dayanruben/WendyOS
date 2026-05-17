@@ -45,12 +45,6 @@ const labelKeyRestartPolicy = "sh.wendy/restart.policy"
 // labelKeyMCPPort stores the MCP server port for containers with an mcp entitlement.
 const labelKeyMCPPort = "sh.wendy/mcp.port"
 
-// labelKeyEntitlementPrefix is the prefix for per-entitlement labels; each
-// entitlement is stored as sh.wendy/entitlement.<type> (or
-// sh.wendy/entitlement.<type>.<n> when multiple entitlements share the same
-// type) so it can be codesigned alongside the rest of the container metadata.
-const labelKeyEntitlementPrefix = "sh.wendy/entitlement."
-
 // labelKeyGCRoot prevents garbage collection of content blobs.
 const labelKeyGCRoot = "containerd.io/gc.root"
 
@@ -125,25 +119,8 @@ func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy, 
 		}
 	}
 
-	typeCounts := make(map[string]int)
-	for _, e := range entitlements {
-		if e.Type != "" {
-			typeCounts[e.Type]++
-		}
-	}
-	typeIndex := make(map[string]int)
-	for _, e := range entitlements {
-		if e.Type == "" {
-			continue
-		}
-		var key string
-		if typeCounts[e.Type] == 1 {
-			key = labelKeyEntitlementPrefix + e.Type
-		} else {
-			key = fmt.Sprintf("%s%s.%d", labelKeyEntitlementPrefix, e.Type, typeIndex[e.Type])
-			typeIndex[e.Type]++
-		}
-		labels[key] = appconfig.EntitlementAnnotationValue(e)
+	for k, v := range appconfig.BuildEntitlementAnnotations(entitlements) {
+		labels[k] = v
 	}
 
 	return labels
@@ -164,10 +141,10 @@ func parseEntitlementsFromAnnotations(annotations map[string]string) []appconfig
 
 	var indexed []indexedEnt
 	for k, v := range annotations {
-		if !strings.HasPrefix(k, labelKeyEntitlementPrefix) {
+		if !strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
 			continue
 		}
-		suffix := k[len(labelKeyEntitlementPrefix):]
+		suffix := k[len(appconfig.EntitlementAnnotationKeyPrefix):]
 
 		entType := suffix
 		idx := 0
