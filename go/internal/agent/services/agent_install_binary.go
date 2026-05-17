@@ -30,7 +30,17 @@ func resolveExecPath() (string, os.FileMode, error) {
 // as execPath and sets it to the given permissions. Returns the open file (ready
 // for writing), its path, and a cleanup func that closes and removes it.
 func createUpdateTempFile(execPath string, perm os.FileMode) (*os.File, string, func(), error) {
-	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), ".agent-update-*")
+	dir := filepath.Dir(execPath)
+
+	// Refuse to write an update binary into a world-writable directory;
+	// that would allow a local attacker to swap the file before the rename.
+	if info, err := os.Stat(dir); err != nil {
+		return nil, "", nil, status.Errorf(codes.Internal, "failed to stat binary directory: %v", err)
+	} else if info.Mode()&0o002 != 0 {
+		return nil, "", nil, status.Error(codes.FailedPrecondition, "agent binary directory is world-writable; refusing update")
+	}
+
+	tmpFile, err := os.CreateTemp(dir, ".agent-update-*")
 	if err != nil {
 		return nil, "", nil, status.Errorf(codes.Internal, "failed to create update temp file: %v", err)
 	}
