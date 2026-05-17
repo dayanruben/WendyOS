@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -338,7 +339,10 @@ func TestWriteLayerAlreadyExists(t *testing.T) {
 	client, cleanup := startContainerServer(t, mock)
 	defer cleanup()
 
-	stream, err := client.WriteLayer(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.WriteLayer(ctx)
 	if err != nil {
 		t.Fatalf("WriteLayer: %v", err)
 	}
