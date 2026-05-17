@@ -71,13 +71,18 @@ func newBuildCmd() *cobra.Command {
 
 				// Swift projects without a Dockerfile: cross-compile on the host and
 				// build a Docker image, bypassing the provider's normal Build method.
-				projectType, _ := detectProjectType(cwd)
+				projectType, ptErr := detectProjectType(cwd)
+				if ptErr != nil {
+					cliLogln("Warning: could not detect project type: %v", ptErr)
+				}
 				if projectType == "swift" {
 					if _, ok := target.Provider.(providers.ImageBuilder); ok {
 						if err := swifttoolchain.EnsureSwiftVersion(cmd.Context(), &dimWriter{}, os.Stderr); err != nil {
 							return err
 						}
 						cliLogln("Building Swift project for %s...", target.Provider.DisplayName())
+						// runtime.GOARCH is correct here: Docker Desktop loads images into the
+						// host daemon, so the image must match the host architecture.
 						if _, err := buildSwiftDockerImage(cmd.Context(), cwd, product, runtime.GOARCH, &dimWriter{}, os.Stderr); err != nil {
 							return fmt.Errorf("building Swift Docker image: %w", err)
 						}
@@ -340,8 +345,7 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 	case "python":
 		return buildPythonProject(dir, imageName, platform)
 	case "swift":
-		// swift-container-plugin (used here) requires a host Swift toolchain.
-		// Only darwin and linux ship one, and the plugin does not support Windows.
+		// Cross-compiling Swift requires a host toolchain; only darwin and linux ship one.
 		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 			return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
 		}
@@ -467,6 +471,7 @@ func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string
 
 	product, err := swifttoolchain.FindSwiftProduct(dir)
 	if err != nil {
+		cliLogln("Warning: could not detect Swift product name (%v); using %q", err, appID)
 		product = appID
 	}
 
