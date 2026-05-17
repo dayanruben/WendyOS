@@ -285,6 +285,134 @@ func TestOTELTraceReceiver(t *testing.T) {
 	}
 }
 
+func TestBroadcaster_RingBufferWrapAround(t *testing.T) {
+	b := NewTelemetryBroadcaster()
+
+	// Publish more than defaultMaxCachedLogs entries so the ring buffer wraps.
+	total := defaultMaxCachedLogs + 5 // 25 entries
+	reqs := make([]*otelpb.ExportLogsServiceRequest, total)
+	for i := 0; i < total; i++ {
+		reqs[i] = &otelpb.ExportLogsServiceRequest{}
+		b.PublishLogs(reqs[i])
+	}
+
+	// The ring buffer should hold exactly defaultMaxCachedLogs entries.
+	if b.logCount != defaultMaxCachedLogs {
+		t.Errorf("logCount = %d; want %d", b.logCount, defaultMaxCachedLogs)
+	}
+
+	// Subscribe now; the pre-fill goroutine should deliver the last
+	// defaultMaxCachedLogs entries in chronological order.
+	_, ch := b.SubscribeLogs()
+
+	// Collect pre-filled entries (allow a brief window for the goroutine).
+	var got []*otelpb.ExportLogsServiceRequest
+	timeout := time.After(time.Second)
+	for len(got) < defaultMaxCachedLogs {
+		select {
+		case entry := <-ch:
+			got = append(got, entry)
+		case <-timeout:
+			t.Fatalf("timed out waiting for pre-filled logs; got %d, want %d", len(got), defaultMaxCachedLogs)
+		}
+	}
+
+	// Verify order: should be reqs[5..24] in order.
+	expected := reqs[total-defaultMaxCachedLogs:]
+	for i, want := range expected {
+		if got[i] != want {
+			t.Errorf("pre-filled entry %d: got %p, want %p", i, got[i], want)
+		}
+	}
+}
+
+func TestBroadcaster_SubscribeLogs_ChronologicalOrder(t *testing.T) {
+	b := NewTelemetryBroadcaster()
+
+	// Publish exactly defaultMaxCachedLogs entries (no wrap yet).
+	reqs := make([]*otelpb.ExportLogsServiceRequest, defaultMaxCachedLogs)
+	for i := 0; i < defaultMaxCachedLogs; i++ {
+		reqs[i] = &otelpb.ExportLogsServiceRequest{}
+		b.PublishLogs(reqs[i])
+	}
+
+	_, ch := b.SubscribeLogs()
+
+	var got []*otelpb.ExportLogsServiceRequest
+	timeout := time.After(time.Second)
+	for len(got) < defaultMaxCachedLogs {
+		select {
+		case entry := <-ch:
+			got = append(got, entry)
+		case <-timeout:
+			t.Fatalf("timed out; got %d entries, want %d", len(got), defaultMaxCachedLogs)
+		}
+	}
+
+	for i, want := range reqs {
+		if got[i] != want {
+			t.Errorf("entry %d: got %p, want %p", i, got[i], want)
+		}
+	}
+}
+
+func TestBroadcaster_PublishMetrics_PerServiceKey(t *testing.T) {
+	b := NewTelemetryBroadcaster()
+
+	// Build a request with two resource metrics for the same service, each with
+	// multiple scope metrics and individual metrics.
+	makeAttr := func(key, val string) *otelpb.KeyValue {
+		return &otelpb.KeyValue{
+			Key:   key,
+			Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: val}},
+		}
+	}
+	makeResource := func(svc string) *otelpb.Resource {
+		return &otelpb.Resource{Attributes: []*otelpb.KeyValue{makeAttr("service.name", svc)}}
+	}
+
+	req1 := &otelpb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*otelpb.ResourceMetrics{
+			{
+				Resource: makeResource("svc-a"),
+				ScopeMetrics: []*otelpb.ScopeMetrics{
+					{
+						Metrics: []*otelpb.Metric{
+							{Name: "metric.one"},
+							{Name: "metric.two"},
+						},
+					},
+				},
+			},
+		},
+	}
+	req2 := &otelpb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*otelpb.ResourceMetrics{
+			{Resource: makeResource("svc-b")},
+		},
+	}
+
+	b.PublishMetrics(req1)
+	b.PublishMetrics(req2)
+
+	// latestMetrics should have exactly 2 keys ("svc-a" and "svc-b"), not more.
+	b.mu.RLock()
+	mapLen := len(b.latestMetrics)
+	gotA := b.latestMetrics["svc-a"]
+	gotB := b.latestMetrics["svc-b"]
+	b.mu.RUnlock()
+
+	if mapLen != 2 {
+		t.Errorf("latestMetrics has %d entries; want 2", mapLen)
+	}
+	if gotA != req1 {
+		t.Errorf("latestMetrics[\"svc-a\"] = %p; want req1 (%p)", gotA, req1)
+	}
+	if gotB != req2 {
+		t.Errorf("latestMetrics[\"svc-b\"] = %p; want req2 (%p)", gotB, req2)
+	}
+}
+
 func TestBroadcaster_ConcurrentPublish(t *testing.T) {
 	b := NewTelemetryBroadcaster()
 

@@ -22,9 +22,10 @@ type TelemetryBroadcaster struct {
 	metricSubs    map[string]chan *otelpb.ExportMetricsServiceRequest
 	traceSubs     map[string]chan *otelpb.ExportTraceServiceRequest
 	nextID        uint64
-	recentLogs    []*otelpb.ExportLogsServiceRequest
-	maxCachedLogs int
-	latestMetrics map[string]*otelpb.ExportMetricsServiceRequest // keyed by "service:metric"
+	recentLogs    [defaultMaxCachedLogs]*otelpb.ExportLogsServiceRequest
+	logHead       int                                            // next write index (0..defaultMaxCachedLogs-1)
+	logCount      int                                            // number of valid entries (0..defaultMaxCachedLogs)
+	latestMetrics map[string]*otelpb.ExportMetricsServiceRequest // keyed by "service"
 }
 
 // NewTelemetryBroadcaster creates a new TelemetryBroadcaster.
@@ -33,7 +34,6 @@ func NewTelemetryBroadcaster() *TelemetryBroadcaster {
 		logSubs:       make(map[string]chan *otelpb.ExportLogsServiceRequest),
 		metricSubs:    make(map[string]chan *otelpb.ExportMetricsServiceRequest),
 		traceSubs:     make(map[string]chan *otelpb.ExportTraceServiceRequest),
-		maxCachedLogs: defaultMaxCachedLogs,
 		latestMetrics: make(map[string]*otelpb.ExportMetricsServiceRequest),
 	}
 }
@@ -53,9 +53,12 @@ func (b *TelemetryBroadcaster) SubscribeLogs() (string, <-chan *otelpb.ExportLog
 	b.logSubs[id] = ch
 
 	// Pre-fill cached logs into the channel in a goroutine.
-	if len(b.recentLogs) > 0 {
-		cached := make([]*otelpb.ExportLogsServiceRequest, len(b.recentLogs))
-		copy(cached, b.recentLogs)
+	if b.logCount > 0 {
+		cached := make([]*otelpb.ExportLogsServiceRequest, b.logCount)
+		start := (b.logHead - b.logCount + defaultMaxCachedLogs) % defaultMaxCachedLogs
+		for i := 0; i < b.logCount; i++ {
+			cached[i] = b.recentLogs[(start+i)%defaultMaxCachedLogs]
+		}
 		go func() {
 			for _, entry := range cached {
 				select {
@@ -83,15 +86,11 @@ func (b *TelemetryBroadcaster) UnsubscribeLogs(id string) {
 // PublishLogs sends a log export request to all log subscribers and caches the log.
 func (b *TelemetryBroadcaster) PublishLogs(req *otelpb.ExportLogsServiceRequest) {
 	b.mu.Lock()
-	// Append to recent logs ring buffer.
-	b.recentLogs = append(b.recentLogs, req)
-	if len(b.recentLogs) > b.maxCachedLogs {
-		b.recentLogs = b.recentLogs[len(b.recentLogs)-b.maxCachedLogs:]
+	b.recentLogs[b.logHead] = req
+	b.logHead = (b.logHead + 1) % defaultMaxCachedLogs
+	if b.logCount < defaultMaxCachedLogs {
+		b.logCount++
 	}
-	b.mu.Unlock()
-
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	for _, ch := range b.logSubs {
 		select {
 		case ch <- req:
@@ -99,6 +98,7 @@ func (b *TelemetryBroadcaster) PublishLogs(req *otelpb.ExportLogsServiceRequest)
 			// Drop if subscriber is slow.
 		}
 	}
+	b.mu.Unlock()
 }
 
 // SubscribeMetrics adds a metrics subscriber.
@@ -143,26 +143,17 @@ func (b *TelemetryBroadcaster) UnsubscribeMetrics(id string) {
 // PublishMetrics sends a metrics export request to all metrics subscribers and updates the cache.
 func (b *TelemetryBroadcaster) PublishMetrics(req *otelpb.ExportMetricsServiceRequest) {
 	b.mu.Lock()
-	// Update latestMetrics cache keyed by "serviceName:metricName".
 	for _, rm := range req.GetResourceMetrics() {
 		serviceName := resourceServiceName(rm.GetResource())
-		for _, sm := range rm.GetScopeMetrics() {
-			for _, m := range sm.GetMetrics() {
-				key := serviceName + ":" + m.GetName()
-				b.latestMetrics[key] = req
-			}
-		}
+		b.latestMetrics[serviceName] = req
 	}
-	b.mu.Unlock()
-
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	for _, ch := range b.metricSubs {
 		select {
 		case ch <- req:
 		default:
 		}
 	}
+	b.mu.Unlock()
 }
 
 // SubscribeTraces adds a traces subscriber.
