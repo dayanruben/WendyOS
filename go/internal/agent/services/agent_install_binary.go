@@ -1,6 +1,8 @@
 package services
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -8,6 +10,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// ErrDirFsync is returned by commitBinaryUpdate when the post-rename directory
+// fsync fails. The binary IS installed at this point; only power-loss durability
+// of the directory entry is at risk. Callers should log a warning and continue.
+var ErrDirFsync = errors.New("dir fsync after rename failed")
 
 // resolveExecPath returns the canonicalised path of the running binary.
 func resolveExecPath() (string, os.FileMode, error) {
@@ -26,11 +33,23 @@ func resolveExecPath() (string, os.FileMode, error) {
 	return execPath, info.Mode(), nil
 }
 
+// cleanStaleTempFiles removes any .agent-update-* temp files left behind by
+// previous aborted updates. Called at the start of each update attempt so that
+// repeated crashed updates cannot fill the filesystem with agent-sized files.
+func cleanStaleTempFiles(dir string) {
+	matches, _ := filepath.Glob(filepath.Join(dir, ".agent-update-*"))
+	for _, m := range matches {
+		os.Remove(m) //nolint:errcheck — best-effort cleanup
+	}
+}
+
 // createUpdateTempFile creates a uniquely-named temp file in the same directory
 // as execPath and sets it to the given permissions. Returns the open file (ready
 // for writing), its path, and a cleanup func that closes and removes it.
 func createUpdateTempFile(execPath string, perm os.FileMode) (*os.File, string, func(), error) {
 	dir := filepath.Dir(execPath)
+
+	cleanStaleTempFiles(dir)
 
 	// Refuse to write an update binary into a world-writable directory;
 	// that would allow a local attacker to swap the file before the rename.
@@ -73,15 +92,6 @@ func commitBinaryUpdate(tmpFile *os.File, tmpPath, execPath, sha256Hash string, 
 		return 0, status.Errorf(codes.Internal, "failed to install update: %v", err)
 	}
 
-	// fsync the directory so the rename is durable on power loss.
-	if dir, err := os.Open(filepath.Dir(execPath)); err == nil {
-		if syncErr := dir.Sync(); syncErr != nil {
-			logger.Warn("Failed to fsync update directory; rename may not survive power loss",
-				zap.Error(syncErr))
-		}
-		dir.Close()
-	}
-
 	info, _ := os.Stat(execPath)
 	var size int64
 	if info != nil {
@@ -91,5 +101,17 @@ func commitBinaryUpdate(tmpFile *os.File, tmpPath, execPath, sha256Hash string, 
 		zap.String("sha256", sha256Hash),
 		zap.Int64("size", size),
 	)
+
+	// fsync the directory so the rename is durable on power loss.
+	// Return ErrDirFsync if this fails; the binary IS installed — callers
+	// should log a warning and proceed rather than treating this as fatal.
+	if dir, err := os.Open(filepath.Dir(execPath)); err == nil {
+		syncErr := dir.Sync()
+		dir.Close()
+		if syncErr != nil {
+			return size, fmt.Errorf("%w: %v", ErrDirFsync, syncErr)
+		}
+	}
+
 	return size, nil
 }

@@ -3,6 +3,7 @@ package services
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"time"
@@ -79,7 +80,11 @@ func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb
 				}
 
 				if _, err := commitBinaryUpdate(tmpFile, tmpPath, execPath, computedHash, s.logger); err != nil {
-					return err
+					if errors.Is(err, ErrDirFsync) {
+						s.logger.Warn("Update dir fsync failed; binary installed but rename may not survive power loss", zap.Error(err))
+					} else {
+						return err
+					}
 				}
 				committed = true
 

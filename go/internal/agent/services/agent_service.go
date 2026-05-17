@@ -348,7 +348,12 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 				}
 
 				if _, err := commitBinaryUpdate(tmpFile, tmpPath, execPath, computedHash, s.logger); err != nil {
-					return err
+					if errors.Is(err, ErrDirFsync) {
+						// Binary is installed; only directory-entry durability is at risk.
+						s.logger.Warn("Update dir fsync failed; binary installed but rename may not survive power loss", zap.Error(err))
+					} else {
+						return err
+					}
 				}
 				committed = true
 
