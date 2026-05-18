@@ -114,16 +114,17 @@ func (b *TelemetryBroadcaster) SubscribeMetrics() (string, <-chan *otelpb.Export
 	ch := make(chan *otelpb.ExportMetricsServiceRequest, 64)
 	b.metricSubs[id] = ch
 
-	// Pre-fill cached metrics into the channel in a goroutine: one merged
-	// request per service. Dedup by pointer is a cheap safety net in case the
-	// same cached object is ever shared across keys.
+	// Pre-fill cached metrics into the channel in a goroutine. Clone each
+	// snapshot while the lock is still held so the goroutine sends immutable
+	// copies; without cloning, a concurrent PublishMetrics could mutate the
+	// cached object in place while the subscriber reads it.
 	if len(b.latestMetrics) > 0 {
 		seen := make(map[*otelpb.ExportMetricsServiceRequest]bool, len(b.latestMetrics))
 		cached := make([]*otelpb.ExportMetricsServiceRequest, 0, len(b.latestMetrics))
 		for _, v := range b.latestMetrics {
 			if !seen[v] {
 				seen[v] = true
-				cached = append(cached, v)
+				cached = append(cached, proto.Clone(v).(*otelpb.ExportMetricsServiceRequest))
 			}
 		}
 		go func() {
