@@ -62,11 +62,8 @@ func (l *dualStackListener) acceptLoop(lis net.Listener) {
 			case <-l.done:
 				return // normal shutdown
 			default:
+				continue // not shutting down; treat as transient and retry
 			}
-			if ne, ok := err.(net.Error); ok && ne.Temporary() { //nolint:staticcheck
-				continue // transient error (e.g. EMFILE); retry
-			}
-			return
 		}
 		// Prioritise done over enqueuing to avoid leaking connections after Close.
 		select {
