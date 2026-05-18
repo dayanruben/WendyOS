@@ -40,8 +40,8 @@ struct `'wendy device info'` {
                 mkdir -p "$HOME/.wendy"
                 printf '%s\n' '{"defaultDevice":"default-device-that-should-not-be-used.invalid"}' > "$HOME/.wendy/config.json"
                 """
-            ).run()
-            try await cli.sh("wendy --device \(agentAddress) device info --json").run { result in
+            )
+            try await cli.sh("wendy --device \(agentAddress) device info --json") { result in
                 let stdout = result.stdout
                 let stderr = result.stderr
 
@@ -71,9 +71,9 @@ struct `'wendy device info'` {
                 mkdir -p "$HOME/.wendy"
                 printf '%s\n' '{"defaultDevice":"\(agentAddress)"}' > "$HOME/.wendy/config.json"
                 """
-            ).run()
+            )
 
-            try await cli.sh("wendy device info --json").run { result in
+            try await cli.sh("wendy device info --json") { result in
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
@@ -86,7 +86,7 @@ struct `'wendy device info'` {
                 #expect(!result.stderr.contains("Select a device"))
             }
 
-            try await cli.sh("cat \"$HOME/.wendy/config.json\"").run { result in
+            try await cli.sh("cat \"$HOME/.wendy/config.json\"") { result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stdout == "{\"defaultDevice\":\"\(agentAddress)\"}\n")
@@ -141,7 +141,7 @@ struct `'wendy device info'` {
                 fatalError("Interactive device info is not supported on \(cli.machine.os) yet.")
             }
 
-            try await cli.sh(command).run { result in
+            try await cli.sh(command) { result in
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
@@ -164,7 +164,7 @@ struct `'wendy device info'` {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
 
-            try await cli.sh("wendy --json --device \(agentAddress) device info").run { result in
+            try await cli.sh("wendy --json --device \(agentAddress) device info") { result in
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
@@ -203,9 +203,9 @@ struct `'wendy device info'` {
                 mkdir -p "$HOME/.wendy"
                 printf '%s\n' '{"defaultDevice":"\(agentAddress)"}' > "$HOME/.wendy/config.json"
                 """
-            ).run()
+            )
 
-            try await cli.sh("wendy device info").run { result in
+            try await cli.sh("wendy device info") { result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stderr == "")
@@ -242,9 +242,9 @@ struct `'wendy device info'` {
                 mkdir -p "$HOME/.wendy"
                 printf '{ invalid json\n' > "$HOME/.wendy/config.json"
                 """
-            ).run()
+            )
 
-            try await cli.sh("wendy device info --json").run { result in
+            try await cli.sh("wendy device info --json") { result in
                 let stderr = result.stderr
 
                 #expect(!result.status.isSuccess)
@@ -265,7 +265,7 @@ struct `'wendy device info'` {
     @Test
     func `'--json' reports a missing device without prompting`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy device info --json").run { result in
+            try await cli.sh("wendy device info --json") { result in
 
                 #expect(!result.status.isSuccess)
                 #expect(result.stdout == "")
@@ -287,7 +287,7 @@ struct `'wendy device info'` {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
                 "wendy --device definitely-not-a-wendy-device.invalid device info --json"
-            ).run { result in
+            ) { result in
                 let stderr = result.stderr
 
                 #expect(!result.status.isSuccess)
@@ -331,7 +331,7 @@ struct `'wendy device info'` {
                 fatalError("Interactive update checks are not supported on \(cli.machine.os) yet.")
             }
 
-            try await cli.sh(command).run { result in
+            try await cli.sh(command) { result in
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
@@ -356,7 +356,7 @@ struct `'wendy device info'` {
 
             try await cli.sh(
                 "wendy --json --device \(agentAddress) device info --check-updates"
-            ).run { result in
+            ) { result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stderr == "")
@@ -385,7 +385,7 @@ struct `'wendy device info'` {
 
             try await cli.sh(
                 "wendy --json --device \(agentAddress) device info --check-updates --prerelease"
-            ).run { result in
+            ) { result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stderr == "")
@@ -414,7 +414,7 @@ struct `'wendy device info'` {
 
             try await cli.sh(
                 "NO_PROXY=\(agentAddress) HTTPS_PROXY=http://127.0.0.1:1 wendy --json --device \(agentAddress) device info --check-updates"
-            ).run { result in
+            ) { result in
                 let stderr = result.stderr
 
                 #expect(!result.status.isSuccess)
@@ -446,7 +446,7 @@ struct `'wendy device version'` {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
 
-            try await cli.sh("wendy --device \(agentAddress) device version").run { result in
+            try await cli.sh("wendy --device \(agentAddress) device version") { result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stderr.localizedCaseInsensitiveContains("deprecated"))
@@ -476,7 +476,7 @@ struct `'wendy device version'` {
     @Test
     func `'--json' aliases device info without contaminating JSON output`() async throws {
         try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy device version --json").run { result in
+            try await cli.sh("wendy device version --json") { result in
                 let stderr = result.stderr
 
                 #expect(!result.status.isSuccess)

@@ -158,8 +158,16 @@ public struct WendyE2ESession: Sendable {
         )
     }
 
-    public func sh(_ command: String) -> WendyE2EShellChain {
-        WendyE2EShellChain(session: self, command: command)
+    public func sh(_ command: String) async throws {
+        let result = try await self.defaultShell(command)
+        try result.requireSuccess()
+    }
+
+    public func sh<Result>(
+        _ command: String,
+        body: @Sendable (_ result: WendyE2EShellResult) async throws -> Result
+    ) async throws -> Result {
+        try await body(try await self.defaultShell(command))
     }
 
     // MARK: - Internal
@@ -200,6 +208,15 @@ public struct WendyE2ESession: Sendable {
     private static func end(_ sessions: [WendyE2ESession]) async throws {
         for session in sessions.reversed() {
             try await session.end()
+        }
+    }
+
+    private func defaultShell(_ command: String) async throws -> WendyE2EShellResult {
+        switch self.machine.os {
+        case .windows:
+            try await self.powerShell(command)
+        case .macOS, .linux, .wendyOS:
+            try await self.posixShell(command)
         }
     }
 

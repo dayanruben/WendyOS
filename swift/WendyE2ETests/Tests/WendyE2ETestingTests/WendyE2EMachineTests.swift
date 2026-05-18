@@ -119,7 +119,7 @@ struct `session` {
             for: machine,
             workingDirectory: directory.path
         )
-        try await session.sh("touch local.txt").run()
+        try await session.sh("touch local.txt")
 
         #expect(!session.machine.address.isEmpty)
         #expect(session.workingDirectory == directory.path)
@@ -230,7 +230,7 @@ struct `session` {
             ]
         )
 
-        try await session.sh("printf '%s' \"$PWD\"").run { result in
+        try await session.sh("printf '%s' \"$PWD\"") { result in
             try result.requireSuccess()
 
             #expect(result.stdout == workingDirectory.path)
@@ -269,15 +269,15 @@ struct `session` {
             resetDirectoriesOnFirstCommand: true
         )
 
-        try await session.sh("test ! -e \"$HOME/stale\" && touch \"$HOME/fresh\"").run()
-        try await session.sh("test -e \"$HOME/fresh\"").run()
+        try await session.sh("test ! -e \"$HOME/stale\" && touch \"$HOME/fresh\"")
+        try await session.sh("test -e \"$HOME/fresh\"")
     }
 
     @Test
     func `runs commands locally by default`() async throws {
         try await Self.withTemporarySession { session, directory in
-            try await session.sh("touch first.txt").run()
-            try await session.sh("touch second.txt").run()
+            try await session.sh("touch first.txt")
+            try await session.sh("touch second.txt")
 
             #expect(FileManager.default.fileExists(atPath: directory.path + "/first.txt"))
             #expect(FileManager.default.fileExists(atPath: directory.path + "/second.txt"))
@@ -298,7 +298,7 @@ struct `session` {
     @Test
     func `collected output callback receives command output`() async throws {
         try await Self.withTemporarySession { session, _ in
-            try await session.sh("printf 'hello'; printf 'oops' >&2").run { result in
+            try await session.sh("printf 'hello'; printf 'oops' >&2") { result in
                 try result.requireSuccess()
 
                 #expect(result.stdout == "hello")
@@ -312,14 +312,14 @@ struct `session` {
     func `simple shell command throws when the command exits non-zero`() async throws {
         try await Self.withTemporarySession { session, _ in
             await #expect(throws: WendyE2EMachineError.self) {
-                try await session.sh("exit 7").run()
+                try await session.sh("exit 7")
             }
             return ()
         }
     }
 
     @Test
-    func `shell chain runs command`() async throws {
+    func `sh runs command`() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("machine-command-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -330,102 +330,22 @@ struct `session` {
             for: machine,
             workingDirectory: directory.path
         )
-        try await session.sh("touch builder.txt").run()
+        try await session.sh("touch builder.txt")
 
         #expect(FileManager.default.fileExists(atPath: directory.path + "/builder.txt"))
     }
 
     @Test
-    func `shell chain callback receives command output`() async throws {
+    func `sh callback receives command output`() async throws {
         let session = try await WendyE2ESession.begin(
             for: WendyE2EMachine(id: "local", name: "Local")
         )
 
-        try await session.sh("printf 'hello'; printf 'oops' >&2").run { result in
+        try await session.sh("printf 'hello'; printf 'oops' >&2") { result in
             try result.requireSuccess()
 
             #expect(result.stdout == "hello")
             #expect(result.stderr == "oops")
-        }
-    }
-
-    @Test
-    func `poll retries command until it succeeds`() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("machine-poll-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let machine = WendyE2EMachine(id: "local", name: "Local")
-        let session = try await WendyE2ESession.begin(
-            for: machine,
-            workingDirectory: directory.path
-        )
-        try await session
-            .sh(
-                """
-                count=$(cat counter.txt 2>/dev/null || echo 0)
-                count=$((count + 1))
-                echo "$count" > counter.txt
-                test "$count" -ge 3
-                """
-            )
-            .poll(until: .success, step: .milliseconds(10), timeout: .seconds(2))
-            .run()
-
-        let count = try String(
-            contentsOf: directory.appendingPathComponent("counter.txt"),
-            encoding: .utf8
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(count == "3")
-    }
-
-    @Test
-    func `poll callback receives output from successful attempt`() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("machine-poll-output-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let machine = WendyE2EMachine(id: "local", name: "Local")
-        let session = try await WendyE2ESession.begin(
-            for: machine,
-            workingDirectory: directory.path
-        )
-        try await session
-            .sh(
-                """
-                count=$(cat counter.txt 2>/dev/null || echo 0)
-                count=$((count + 1))
-                echo "$count" > counter.txt
-                echo "stdout:$count"
-                echo "stderr:$count" >&2
-                test "$count" -ge 3
-                """
-            )
-            .poll(until: .success, step: .milliseconds(10), timeout: .seconds(2))
-            .run { result in
-                #expect(result.stdout == "stdout:3\n")
-                #expect(result.stderr == "stderr:3\n")
-            }
-    }
-
-    @Test
-    func `poll throws timeout error with timeout message`() async throws {
-        let session = try await WendyE2ESession.begin(
-            for: WendyE2EMachine(id: "local", name: "Local")
-        )
-
-        await #expect(throws: WendyE2EMachineError.self) {
-            try await session
-                .sh("exit 1")
-                .poll(
-                    until: .success,
-                    step: .milliseconds(10),
-                    timeout: .milliseconds(25),
-                    timeoutMessage: "command never succeeded"
-                )
-                .run()
         }
     }
 

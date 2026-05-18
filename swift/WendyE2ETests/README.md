@@ -166,7 +166,7 @@ struct `'wendy help'` {
      */
     @Test
     func `prints top-level help`() async throws {
-        try await self.cli.sh("./bin/wendy help").run { result in
+        try await self.cli.sh("./bin/wendy help") { result in
             #expect(result.status.isSuccess)
             #expect(result.stdout.contains("Project Commands:"))
             #expect(result.stdout.contains("--json"))
@@ -319,7 +319,7 @@ In a future session, use:
 @Test(.enabled(if: WendyE2EMachine.cli.os == .linux))
 func `uses linux behavior`() async throws {
     let cli = try await WendyE2ESession.begin(for: .cli)
-    try await cli.sh("./bin/wendy --version").run()
+    try await cli.sh("./bin/wendy --version")
     try await cli.end()
 }
 ```
@@ -340,25 +340,27 @@ machine's declared OS for a run.
 
 ```swift
 let cli = try await WendyE2ESession.begin(for: .cli)
-try await cli.sh("./bin/wendy --version").run()
+try await cli.sh("./bin/wendy --version")
 ```
 
 Use `WendyE2ESession.with` when a spec needs cleanup-safe session lifetimes:
 
 ```swift
 try await WendyE2ESession.with(.cli, .agent) { cli, agent in
-    try await cli.sh("./bin/wendy --version").run()
-    try await agent.sh("make agent-build").run()
+    try await cli.sh("./bin/wendy --version")
+    try await agent.sh("make agent-build")
 }
 ```
 
-`sh(...)` creates a shell chain. End every chain with `run()`, and attach modifiers such as polling between the command and execution:
+Use `sh(...)` for shell commands. The no-callback form requires the command to succeed; the callback form receives the full shell result for assertions:
 
 ```swift
-try await agent
-    .sh("nc -z 127.0.0.1 50051")
-    .poll(until: .success)
-    .run()
+try await agent.sh("nc -z 127.0.0.1 50051")
+
+try await agent.sh("nc -z 127.0.0.1 50051") { result in
+    #expect(result.status.isSuccess)
+    #expect(result.stderr.isEmpty)
+}
 ```
 
 Sessions run locally when `address` is omitted. If `address` is provided, commands run over SSH; `user` is included in the SSH target when provided. Local sessions still execute commands through a shell and honor configured working directories and environment. `WendyE2ESession.begin(for:verbose:)` enables command echoing for that session; `WENDY_E2E_VERBOSE=1` enables it globally.
