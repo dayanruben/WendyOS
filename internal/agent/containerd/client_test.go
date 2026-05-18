@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
 	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )

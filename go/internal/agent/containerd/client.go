@@ -502,6 +502,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if specErr == nil {
 		env = append(imageSpec.Config.Env, env...)
 	}
+	env = injectOTELEnvIfNeeded(env, appCfg)
 
 	// Build OCI spec using local oci package, then apply entitlements.
 	spec := localoci.DefaultSpec("rootfs", args)
@@ -781,13 +782,39 @@ func buildContainerBaseEnv() []string {
 	if h := deviceHostnameWithSuffix(); h != "" {
 		env = append(env, "WENDY_HOSTNAME="+h)
 	}
+	return env
+}
+
+// injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
+// networking is in effect and the endpoint is not already configured.
+// It must be called after the image env has been merged so that image-set
+// values take precedence.
+func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
+	if !hasHostNetworkEntitlement(appCfg) {
+		return env
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_ENDPOINT=") {
+			return env // already set; do not override
+		}
+	}
 	otelPort := os.Getenv("WENDY_OTEL_PORT")
 	if otelPort == "" {
 		otelPort = "4317"
 	}
-	env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
-	env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
-	return env
+	return append(env,
+		"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort,
+		"OTEL_EXPORTER_OTLP_PROTOCOL=grpc",
+	)
+}
+
+func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
+	for _, e := range appCfg.Entitlements {
+		if e.Type == appconfig.EntitlementNetwork && e.Mode != "none" {
+			return true
+		}
+	}
+	return false
 }
 
 func expandAgentHook(command, appName string) string {

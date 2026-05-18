@@ -12,14 +12,23 @@ import (
 // returned. Fails only when IPv4 also fails.
 func listenDualStackLoopback(port string) (net.Listener, error) {
 	lis4, err4 := net.Listen("tcp4", "127.0.0.1:"+port)
-	lis6, err6 := net.Listen("tcp6", "[::1]:"+port)
-
-	switch {
-	case err4 != nil && err6 != nil:
-		return nil, fmt.Errorf("failed to listen on loopback: %v; %v", err4, err6)
-	case err4 != nil:
+	if err4 != nil {
+		lis6, err6 := net.Listen("tcp6", "[::1]:"+port)
+		if err6 != nil {
+			return nil, fmt.Errorf("failed to listen on loopback: %v; %v", err4, err6)
+		}
 		return lis6, nil
-	case err6 != nil:
+	}
+	// When port is "0", the OS assigns an ephemeral port to lis4; extract it
+	// and reuse it for lis6 so both listeners share the same port number.
+	listenPort := port
+	if port == "0" {
+		if _, p, err := net.SplitHostPort(lis4.Addr().String()); err == nil {
+			listenPort = p
+		}
+	}
+	lis6, err6 := net.Listen("tcp6", "[::1]:"+listenPort)
+	if err6 != nil {
 		return lis4, nil
 	}
 	return newDualStackListener(lis4, lis6), nil
@@ -49,7 +58,22 @@ func (l *dualStackListener) acceptLoop(lis net.Listener) {
 	for {
 		conn, err := lis.Accept()
 		if err != nil {
-			return // listener closed or fatal; other side keeps going
+			select {
+			case <-l.done:
+				return // normal shutdown
+			default:
+			}
+			if ne, ok := err.(net.Error); ok && ne.Temporary() { //nolint:staticcheck
+				continue // transient error (e.g. EMFILE); retry
+			}
+			return
+		}
+		// Prioritise done over enqueuing to avoid leaking connections after Close.
+		select {
+		case <-l.done:
+			conn.Close()
+			return
+		default:
 		}
 		select {
 		case l.connCh <- conn:
