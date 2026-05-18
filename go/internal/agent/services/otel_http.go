@@ -19,7 +19,9 @@ import (
 
 const (
 	maxOTELHTTPBodySize           = 10 * 1024 * 1024 // 10 MB decompressed
-	maxOTELHTTPCompressedBodySize = 10 * 1024 * 1024 // 10 MB compressed (matched to decompressed cap)
+	maxOTELHTTPCompressedBodySize = 12 * 1024 * 1024 // 12 MB compressed — gzip NoCompression adds ~0.015% framing overhead,
+	// so the compressed cap must exceed the decompressed cap by at least that margin to avoid
+	// rejecting valid 10 MB payloads with poor compression ratios.
 )
 
 var (

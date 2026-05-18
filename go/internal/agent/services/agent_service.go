@@ -298,7 +298,16 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 	if !s.installer.TryLock() {
 		return status.Error(codes.FailedPrecondition, "an update is already in progress")
 	}
-	defer s.installer.Unlock()
+	// committed is declared before the defer so the closure captures it.
+	// On success the lock is intentionally NOT released: the process exits
+	// within 500 ms and holding the lock prevents a concurrent update from
+	// racing on the just-installed binary during that shutdown window.
+	committed := false
+	defer func() {
+		if !committed {
+			s.installer.Unlock()
+		}
+	}()
 
 	s.logger.Info("UpdateAgent stream started")
 
@@ -311,7 +320,6 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 	if err != nil {
 		return err
 	}
-	committed := false
 	defer func() {
 		if !committed {
 			cleanupTmp()

@@ -124,6 +124,11 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		grpc.WithInitialConnWindowSize(16*1024*1024),
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second,
+			Timeout:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	if err != nil {
 		closeTunnel()

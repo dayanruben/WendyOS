@@ -227,14 +227,12 @@ func TestOTELHTTPReceiver_CompressedBodyTooLarge(t *testing.T) {
 	broadcaster := NewTelemetryBroadcaster()
 	receiver := NewOTELHTTPReceiver(zap.NewNop(), broadcaster)
 
-	// Build a valid gzip stream whose compressed size exceeds the cap while its
-	// decompressed content is exactly maxOTELHTTPBodySize (not over). With
-	// gzip.NoCompression the output equals the input plus gzip envelope overhead
-	// (~1 KiB for 10 MiB), so compressed > maxOTELHTTPCompressedBodySize but
-	// decompressed == maxOTELHTTPBodySize. Without the compressed-size guard the
-	// gzip.Reader would succeed and the decompressed limit would not fire (the
-	// check is strictly greater-than), proving the two guards are independent.
-	decompressed := make([]byte, maxOTELHTTPBodySize)
+	// Build a gzip stream at NoCompression so compressed size ≈ decompressed + framing.
+	// Use maxOTELHTTPCompressedBodySize bytes of input so the NoCompression output
+	// is slightly larger than the compressed cap and triggers the 413 guard.
+	// (The decompressed payload also exceeds maxOTELHTTPBodySize, but the compressed
+	// cap is checked first so it is the guard that fires here.)
+	decompressed := make([]byte, maxOTELHTTPCompressedBodySize)
 	var buf bytes.Buffer
 	gz, err := gzip.NewWriterLevel(&buf, gzip.NoCompression)
 	if err != nil {
