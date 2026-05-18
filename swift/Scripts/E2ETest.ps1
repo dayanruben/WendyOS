@@ -84,7 +84,7 @@ function Invoke-CLICommand([string]$Command) {
 }
 
 function Build-CLI {
-    $exeName = if ($IsWindows) { 'wendy.exe' } else { 'wendy' }
+    $exeName = if ($env:OS -eq 'Windows_NT') { 'wendy.exe' } else { 'wendy' }
     $wendyPath = Join-Path $script:CLIBinDir $exeName
 
     Write-Output '==> Building wendy CLI'
