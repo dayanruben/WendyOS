@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -26,6 +27,7 @@ type ContainerService struct {
 	logger     *zap.Logger
 	containerd ContainerdClient
 	logManager *ContainerLogManager
+	monitor    ContainerMonitorRegistrar
 }
 
 // NewContainerService creates a new ContainerService.
@@ -47,6 +49,15 @@ type ContainerServiceOption func(*ContainerService)
 func WithLogManager(lm *ContainerLogManager) ContainerServiceOption {
 	return func(s *ContainerService) {
 		s.logManager = lm
+	}
+}
+
+// WithMonitor sets the ContainerMonitorRegistrar on the ContainerService so
+// that containers started with a restart policy are registered for automatic
+// restart monitoring.
+func WithMonitor(m ContainerMonitorRegistrar) ContainerServiceOption {
+	return func(s *ContainerService) {
+		s.monitor = m
 	}
 }
 
@@ -225,7 +236,8 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 
 // StartContainer starts an existing container and streams output.
 func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
-	return s.streamContainerOutput(stream.Context(), req.GetAppName(), postStartAgentHookFromContext(stream.Context()), req.GetRestartPolicy(), stream)
+	appName := req.GetAppName()
+	return s.streamContainerOutput(stream.Context(), appName, postStartAgentHookFromContext(stream.Context()), req.GetRestartPolicy(), stream)
 }
 
 func postStartAgentHookFromContext(ctx context.Context) string {
@@ -234,6 +246,104 @@ func postStartAgentHookFromContext(ctx context.Context) string {
 		return ""
 	}
 	return values[len(values)-1]
+}
+
+// monitorPolicyIntFromLabel converts a raw restart policy label string (e.g.
+// "unless-stopped", "on-failure:5", "no") to the integer constants used by
+// ContainerMonitorRegistrar. Returns ok=false for an empty or "no" label.
+func monitorPolicyIntFromLabel(label string) (policy int, maxRetries int, ok bool) {
+	if label == "" || label == "no" {
+		return RestartPolicyNo, 0, false
+	}
+	policyStr, retries, parseOK := parseRestartPolicyLabel(label)
+	if !parseOK {
+		return 0, 0, false
+	}
+	switch policyStr {
+	case "always":
+		return RestartPolicyAlways, 0, true
+	case "unless-stopped":
+		return RestartPolicyUnlessStopped, 0, true
+	case "on-failure":
+		return RestartPolicyOnFailure, retries, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// parseRestartPolicyLabel splits a label like "on-failure:5" into ("on-failure", 5, true).
+// Returns ok=false when the retry count portion cannot be parsed as a non-negative integer.
+func parseRestartPolicyLabel(label string) (policyStr string, retries int, ok bool) {
+	parts := strings.SplitN(label, ":", 2)
+	if len(parts) == 1 {
+		return label, 0, true
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil || n < 0 {
+		return "", 0, false
+	}
+	return parts[0], n, true
+}
+
+// monitorPolicyInt converts an agentpb.RestartPolicy to the integer constant
+// used by ContainerMonitorRegistrar (which mirrors container.RestartPolicy).
+// Use the RestartPolicy* constants defined in interfaces.go.
+//
+// Returns ok=false when the policy should not be registered (nil or explicit NO).
+func monitorPolicyInt(rp *agentpb.RestartPolicy) (policy int, maxRetries int, ok bool) {
+	if rp == nil {
+		return RestartPolicyNo, 0, false
+	}
+	switch rp.GetMode() {
+	case agentpb.RestartPolicyMode_NO:
+		return RestartPolicyNo, 0, false
+	case agentpb.RestartPolicyMode_DEFAULT, agentpb.RestartPolicyMode_UNLESS_STOPPED:
+		return RestartPolicyUnlessStopped, 0, true
+	case agentpb.RestartPolicyMode_ON_FAILURE:
+		retries := int(rp.GetOnFailureMaxRetries())
+		if retries < 0 {
+			retries = 0
+		}
+		return RestartPolicyOnFailure, retries, true
+	default:
+		return 0, 0, false // unknown mode — treat as no policy
+	}
+}
+
+// registerContainerWithMonitor registers appName with the monitor using the supplied
+// restart policy. When restartPolicy is nil the persisted containerd label is used.
+// This is factored out so that both streamContainerOutput and AttachContainer can
+// share the same registration logic without duplicating it.
+func (s *ContainerService) registerContainerWithMonitor(ctx context.Context, appName string, restartPolicy *agentpb.RestartPolicy) {
+	if s.monitor == nil {
+		return
+	}
+	if policy, maxRetries, ok := monitorPolicyInt(restartPolicy); ok {
+		s.monitor.Register(appName, policy, maxRetries)
+	} else if restartPolicy != nil && restartPolicy.GetMode() == agentpb.RestartPolicyMode_NO {
+		// Explicit NO — remove any existing registration.
+		s.monitor.Unregister(appName)
+	} else {
+		// nil restartPolicy or unrecognized/forward-compatible mode: fall back
+		// to the persisted label so we don't accidentally clear an existing
+		// registration when a newer client sends a mode this agent doesn't know.
+		if label, labelErr := s.containerd.GetContainerRestartPolicyLabel(ctx, appName); labelErr == nil {
+			if label == "" || label == "no" {
+				// No restart policy persisted — clear any stale registration.
+				s.monitor.Unregister(appName)
+			} else if policy, maxRetries, ok := monitorPolicyIntFromLabel(label); ok {
+				s.monitor.Register(appName, policy, maxRetries)
+			} else {
+				// Unknown label value — treat as no restart policy.
+				s.monitor.Unregister(appName)
+			}
+		} else {
+			s.logger.Warn("failed to read restart policy label; monitor registration skipped",
+				zap.String("app_name", appName),
+				zap.Error(labelErr),
+			)
+		}
+	}
 }
 
 // streamContainerOutput starts a container and streams its stdout/stderr to the client.
@@ -250,6 +360,25 @@ func (s *ContainerService) streamContainerOutput(
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
+
+	// The container started successfully. If it was previously explicitly
+	// stopped, clear that mark so automatic restarts are re-enabled.
+	// We clear it here (right after start succeeds) rather than after
+	// streaming completes so that stream errors (e.g. client disconnect)
+	// do not leave ExplicitStop set and suppress future automatic restarts.
+	if s.monitor != nil {
+		s.monitor.ClearExplicitStop(appName)
+	}
+
+	// Register the container with the monitor if a restart policy is in effect.
+	//
+	// When the caller provides an explicit restart policy, use it directly.
+	// When the caller omits it (nil), look up the policy persisted as a containerd
+	// label during CreateContainer so that a plain StartContainer call still
+	// registers the container correctly (e.g. after an agent restart or when the
+	// client does not re-supply the policy on start).
+	// Only unregister when the caller explicitly sets mode==NO.
+	s.registerContainerWithMonitor(ctx, appName, restartPolicy)
 
 	// Send started notification.
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
@@ -361,6 +490,13 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
 
+	// Mirror the same monitor bookkeeping as streamContainerOutput: clear any
+	// prior explicit-stop mark and register with the persisted restart policy.
+	if s.monitor != nil {
+		s.monitor.ClearExplicitStop(appName)
+	}
+	s.registerContainerWithMonitor(ctx, appName, nil)
+
 	// Send started notification.
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -423,15 +559,38 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 
 // StopContainer stops a running container.
 func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopContainerRequest) (*agentpb.StopContainerResponse, error) {
-	if err := s.containerd.StopContainer(ctx, req.GetAppName()); err != nil {
+	appName := req.GetAppName()
+	// Mark the container as explicitly stopped BEFORE issuing the stop so that
+	// the monitor cannot observe the container exit and restart it in the window
+	// between StopContainer returning and MarkExplicitStop being called.
+	// If the stop fails we revert the mark via ClearExplicitStop.
+	if s.monitor != nil {
+		s.monitor.MarkExplicitStop(appName)
+	}
+	if err := s.containerd.StopContainer(ctx, appName); err != nil {
+		// Revert the explicit-stop mark so future restarts are not suppressed.
+		if s.monitor != nil {
+			s.monitor.ClearExplicitStop(appName)
+		}
 		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
 	}
-	s.logger.Info("Container stopped", zap.String("app_name", req.GetAppName()))
+	s.logger.Info("Container stopped", zap.String("app_name", appName))
 	return &agentpb.StopContainerResponse{}, nil
 }
 
 // DeleteContainer deletes a container and optionally its image and volumes.
 func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.DeleteContainerRequest) (*agentpb.DeleteContainerResponse, error) {
+	// Unregister from the monitor BEFORE deletion to close the window where the
+	// monitor could attempt a restart while the container is being removed.
+	// MarkExplicitStop prevents a spurious restart attempt if the monitor fires
+	// between the two calls. Safe to call even if the app was never registered.
+	// If DeleteContainer subsequently fails, the container is left unregistered —
+	// that is acceptable: the caller will retry deletion.
+	if s.monitor != nil {
+		s.monitor.MarkExplicitStop(req.GetAppName())
+		s.monitor.Unregister(req.GetAppName())
+	}
+
 	if err := s.containerd.DeleteContainer(ctx, req.GetAppName(), req.GetDeleteImage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete container: %v", err)
 	}
