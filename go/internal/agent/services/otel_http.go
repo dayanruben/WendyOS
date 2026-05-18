@@ -19,7 +19,7 @@ import (
 
 const (
 	maxOTELHTTPBodySize           = 10 * 1024 * 1024 // 10 MB decompressed
-	maxOTELHTTPCompressedBodySize = 1024 * 1024      // 1 MB compressed
+	maxOTELHTTPCompressedBodySize = 10 * 1024 * 1024 // 10 MB compressed (matched to decompressed cap)
 )
 
 var (
@@ -147,12 +147,10 @@ func isGzipEncoded(req *http.Request) bool {
 func (r *OTELHTTPReceiver) readBody(req *http.Request) ([]byte, error) {
 	reader := io.Reader(req.Body)
 	if isGzipEncoded(req) {
-		// Cap compressed input well below the decompressed limit so that the
-		// two limits provide independent protection: a gzip bomb large enough
-		// to hit the decompressed limit cannot also reach the compressed limit.
-		// Buffer the compressed bytes first so an over-limit request is
-		// reported as a clear "too large" (413) instead of a truncated-stream
-		// decode error.
+		// Buffer the compressed bytes so an over-limit request returns a clear
+		// 413 rather than an opaque gzip decode error. The compressed cap
+		// matches the decompressed cap so valid payloads with poor compression
+		// ratios are not incorrectly rejected.
 		compressed, err := io.ReadAll(io.LimitReader(req.Body, maxOTELHTTPCompressedBodySize+1))
 		if err != nil {
 			return nil, err
