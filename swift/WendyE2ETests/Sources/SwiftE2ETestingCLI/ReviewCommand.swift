@@ -54,8 +54,8 @@ struct ReviewCommand: AsyncParsableCommand {
 
         if overwrite {
             try removeExistingPerTestReviews(in: recordingURL)
-            try? FileManager.default.removeItem(at: runURL.appendingPathComponent("ai-review.md"))
         }
+        try? FileManager.default.removeItem(at: runURL.appendingPathComponent("ai-review.md"))
 
         guard !reviewableTests.isEmpty else {
             try removeEmptyReviewSummary(runURL: runURL)
@@ -101,17 +101,7 @@ struct ReviewCommand: AsyncParsableCommand {
             return
         }
 
-        try writeReviewSummary(
-            runURL: runURL,
-            agent: agent,
-            tests: tests,
-            reviewableTests: reviewableTests,
-            reviewFiles: reviewFiles,
-            slowTestSeconds: slowTestSeconds
-        )
-        print(
-            "==> Wrote Swift E2E AI review summary: \(runURL.appendingPathComponent("ai-review.md").path)"
-        )
+        print("==> Swift E2E agent review wrote per-test concern reviews")
         print("    Per-test concern reviews: \(reviewFiles.count)")
     }
 }
@@ -916,48 +906,6 @@ private func parseReviewStatus(from markdown: String) -> String? {
         return String(status.split(separator: " ").first ?? "")
     }
     return nil
-}
-
-private func writeReviewSummary(
-    runURL: URL,
-    agent: any E2EAgentReviewer,
-    tests: [ReviewTestCase],
-    reviewableTests: [ReviewTestCase],
-    reviewFiles: [ReviewFile],
-    slowTestSeconds: Double
-) throws {
-    let markdownURL = runURL.appendingPathComponent("ai-review.md")
-    let aiTestCount = tests.filter { !$0.aiComments.isEmpty }.count
-    let failedTestCount = tests.filter(\.status.isFailed).count
-    let slowTestCount = tests.filter { ($0.durationSeconds ?? 0) >= slowTestSeconds }.count
-
-    var markdown: [String] = []
-    let summaryStatus = reviewFiles.contains { $0.status == "fail" } ? "fail" : "concern"
-
-    markdown.append("# Swift E2E AI Review")
-    markdown.append("")
-    markdown.append("Status: \(summaryStatus)")
-    markdown.append("")
-    markdown.append("- Agent: `\(agent.providerName)`")
-    markdown.append("- Model: `\(agent.modelName)`")
-    markdown.append("- Tests discovered: `\(tests.count)`")
-    markdown.append("- Tests with `// AI:` comments: `\(aiTestCount)`")
-    markdown.append("- Failed tests: `\(failedTestCount)`")
-    markdown.append("- Slow-ish tests: `\(slowTestCount)`")
-    markdown.append("- Tests selected for review: `\(reviewableTests.count)`")
-    markdown.append("- Per-test concern reviews: `\(reviewFiles.count)`")
-    markdown.append("")
-    markdown.append("## Per-test reviews")
-    markdown.append("")
-    for review in reviewFiles {
-        let relative = reviewRelativePath(review.url, base: runURL)
-        markdown.append("- `\(review.status)`: `\(review.testKey)` — `\(relative)`")
-    }
-    try markdown.joined(separator: "\n").appending("\n").write(
-        to: markdownURL,
-        atomically: true,
-        encoding: .utf8
-    )
 }
 
 private func reviewRelativePath(_ url: URL, base: URL) -> String {

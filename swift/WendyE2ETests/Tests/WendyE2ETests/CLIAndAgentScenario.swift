@@ -51,12 +51,16 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 line: line
             )
             let repositoryRootDirectoryURL = Self.repositoryRootDirectoryURL()
-            let testName = URL(fileURLWithPath: recorder.testDirectoryPath, isDirectory: true)
-                .lastPathComponent
-            let fallbackTestDirectory = URL(
+            let testDirectoryURL = URL(
                 fileURLWithPath: recorder.testDirectoryPath,
                 isDirectory: true
-            ).path
+            )
+            let testName = testDirectoryURL.lastPathComponent
+            let testDirectoryName = Self.path(
+                testDirectoryURL.deletingLastPathComponent().lastPathComponent,
+                testName
+            )
+            let fallbackTestDirectory = testDirectoryURL.path
             let isolation = WendyE2EEnvironment.isolation
             let resetDirectoriesOnFirstCommand =
                 isolation == .perRun
@@ -67,7 +71,7 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 role: "cli",
                 runDirectory: WendyE2EEnvironment.cliRunDirectory,
                 fallbackTestDirectory: fallbackTestDirectory,
-                testName: testName,
+                testName: testDirectoryName,
                 isolation: isolation
             )
             let cliBinDirectory = Self.roleBinDirectory(
@@ -83,7 +87,7 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 role: "agent",
                 runDirectory: WendyE2EEnvironment.agentRunDirectory,
                 fallbackTestDirectory: fallbackTestDirectory,
-                testName: testName,
+                testName: testDirectoryName,
                 isolation: isolation
             )
             let agentBinDirectory = Self.roleBinDirectory(
@@ -242,7 +246,8 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
         let separator = Self.preferredSeparator(for: first)
         return rest.reduce(first) { path, component in
             let suffix = component.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
-            return Self.hasTrailingSeparator(path) ? "\(path)\(suffix)" : "\(path)\(separator)\(suffix)"
+            return Self.hasTrailingSeparator(path)
+                ? "\(path)\(suffix)" : "\(path)\(separator)\(suffix)"
         }
     }
 
