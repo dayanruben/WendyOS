@@ -671,6 +671,8 @@ set +e
 TEST_STATUS=$?
 set -e
 
+bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --run-dir "$RUN_DIR"
+
 write_run_info "$TEST_STATUS"
 write_run_summary "$TEST_STATUS"
 exit "$TEST_STATUS"

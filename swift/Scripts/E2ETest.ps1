@@ -393,6 +393,10 @@ try {
     Pop-Location
 }
 
+& (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $script:RunDir
+$sanitizeStatus = $LASTEXITCODE
+if ($testStatus -eq 0 -and $sanitizeStatus -ne 0) { $testStatus = $sanitizeStatus }
+
 Write-RunInfo $testStatus
 Write-RunSummary $testStatus
 exit $testStatus

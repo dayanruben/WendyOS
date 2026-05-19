@@ -122,6 +122,8 @@ echo "    Package: $PACKAGE_DIR"
 echo "    Run dir: $RUN_DIR"
 echo "    Output:  $REPORT_PATH"
 
+bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --run-dir "$RUN_DIR"
+
 set +e
 (
   cd "$PACKAGE_DIR"

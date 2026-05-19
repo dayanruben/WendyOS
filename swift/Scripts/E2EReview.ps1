@@ -49,6 +49,9 @@ Write-Output "    Run dir:  $RunDir"
 Write-Output "    Provider: $Provider"
 if ($Model) { Write-Output "    Model:    $Model" }
 
+& (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $RunDir
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Push-Location $PackageDir
 try {
     & swift @commandArgs

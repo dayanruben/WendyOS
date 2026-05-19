@@ -122,6 +122,8 @@ if [[ -n "$MODEL" ]]; then
   echo "    Model:    $MODEL"
 fi
 
+bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --run-dir "$RUN_DIR"
+
 (
   cd "$PACKAGE_DIR"
   swift "${COMMAND_ARGS[@]}"

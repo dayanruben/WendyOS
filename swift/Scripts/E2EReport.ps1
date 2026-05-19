@@ -69,6 +69,9 @@ Write-Output "    Package: $PackageDir"
 Write-Output "    Run dir: $script:RunDir"
 Write-Output "    Output:  $ReportPath"
 
+& (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $script:RunDir
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Push-Location $PackageDir
 try {
     & swift run swift-e2e-testing report --run-dir $script:RunDir

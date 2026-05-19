@@ -84,7 +84,9 @@ Makefile E2E helpers default to global temporary output roots:
 - Windows: `C:\Windows\Temp\wendy\e2e\<run-id>`
 
 Set `WENDY_E2E_OUTPUT_DIR` or pass `--output-dir` to the scripts when you need a
-custom artifact location.
+custom artifact location. If Swift Testing writes terminal control characters
+that are invalid in XML 1.0, the harness sanitizes the xUnit file in place and
+preserves the original as `test-results-swift-testing.raw.xml`.
 
 The Makefile includes helpers for the common cases:
 
