@@ -406,6 +406,14 @@
       border: 1px solid var(--line);
     }
 
+    .badge.duration {
+      color: var(--muted);
+      background: var(--soft);
+      border: 1px solid var(--line);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
     .test-summary .badge.skipped,
     .test-summary .badge.unknown {
       display: inline-block;
@@ -911,7 +919,7 @@
         <!-- Repeat this details.test-details once per test function in the suite. Set data-has-ai to true when // AI: checklist items are present, and data-has-ai-review to true only when a generated Markdown report needs human review. Render TEST_AI_BADGE only when generated AI review notes exist. -->
         <details class="test-details" data-test-status="{{TEST_STATUS_CLASS}}" data-has-ai="{{TEST_HAS_AI}}" data-has-ai-review="{{TEST_HAS_AI_REVIEW}}">
           <summary class="test-summary">
-            {{TEST_REPORT_LINK}}<span class="test-path">{{TEST_PATH_TEXT}}</span><span class="badge {{TEST_STATUS_CLASS}}">{{TEST_STATUS_TEXT}}</span>{{TEST_AI_BADGE}}{{TEST_AI_FILTER_ANALYSIS}}
+            {{TEST_REPORT_LINK}}<span class="test-path">{{TEST_PATH_TEXT}}</span><span class="badge {{TEST_STATUS_CLASS}}">{{TEST_STATUS_TEXT}}</span><span class="badge duration">{{TEST_DURATION}}</span>{{TEST_AI_BADGE}}{{TEST_AI_FILTER_ANALYSIS}}
           </summary>
           <div class="test-body">
           <!-- Optional: render when the test has // AI: checklist items. -->

@@ -98,9 +98,9 @@ private struct TestResultKey: Hashable {
 }
 
 private enum ReportTestStatus {
-    case passed
-    case failed(String?)
-    case skipped(String?)
+    case passed(duration: String?)
+    case failed(String?, duration: String?)
+    case skipped(String?, duration: String?)
     case unknown
 
     var statusClass: String {
@@ -131,13 +131,26 @@ private enum ReportTestStatus {
 
     var detail: String? {
         switch self {
-        case .failed(let message):
+        case .failed(let message, _):
             return message
-        case .skipped(let reason):
+        case .skipped(let reason, _):
             return reason
         case .unknown:
             return "No Swift Testing result was found for this test in the recording."
         case .passed:
+            return nil
+        }
+    }
+
+    var duration: String? {
+        switch self {
+        case .passed(let duration):
+            return duration
+        case .failed(_, let duration):
+            return duration
+        case .skipped(_, let duration):
+            return duration
+        case .unknown:
             return nil
         }
     }
@@ -446,7 +459,8 @@ private func testResultsURL(in searchURLs: [URL]) throws -> URL? {
 private final class XUnitResultParser: NSObject, XMLParserDelegate {
     var results: [TestResultKey: ReportTestStatus] = [:]
 
-    private var current: (key: TestResultKey, failure: String?, skipped: String?)?
+    private var current:
+        (key: TestResultKey, duration: String?, failure: String?, skipped: String?)?
     private var currentElement: String?
     private var currentText = ""
 
@@ -465,7 +479,12 @@ private final class XUnitResultParser: NSObject, XMLParserDelegate {
                 current = nil
                 return
             }
-            current = (key: key, failure: nil, skipped: nil)
+            current = (
+                key: key,
+                duration: formattedTestDuration(attributeDict["time"]),
+                failure: nil,
+                skipped: nil
+            )
         case "failure", "skipped":
             currentElement = elementName
             currentText = ""
@@ -514,17 +533,43 @@ private final class XUnitResultParser: NSObject, XMLParserDelegate {
                 return
             }
             if let skipped = current.skipped {
-                results[current.key] = .skipped(skipped.isEmpty ? nil : skipped)
+                results[current.key] = .skipped(
+                    skipped.isEmpty ? nil : skipped,
+                    duration: current.duration
+                )
             } else if let failure = current.failure {
-                results[current.key] = .failed(failure.isEmpty ? nil : failure)
+                results[current.key] = .failed(
+                    failure.isEmpty ? nil : failure,
+                    duration: current.duration
+                )
             } else {
-                results[current.key] = .passed
+                results[current.key] = .passed(duration: current.duration)
             }
             self.current = nil
         default:
             break
         }
     }
+}
+
+private func formattedTestDuration(_ value: String?) -> String? {
+    guard let value, let seconds = Double(value), seconds >= 0 else {
+        return nil
+    }
+
+    if seconds < 0.01 {
+        return "<0.01s"
+    }
+    if seconds < 10 {
+        return String(format: "%.2fs", seconds)
+    }
+    if seconds < 60 {
+        return String(format: "%.1fs", seconds)
+    }
+
+    let minutes = Int(seconds / 60)
+    let remainingSeconds = Int(seconds.rounded()) % 60
+    return "\(minutes)m \(remainingSeconds)s"
 }
 
 private func testResultKey(classname: String, name: String) -> TestResultKey? {
@@ -602,7 +647,7 @@ private func parseTests(
                         name: functionName,
                         funcLine: lineNumber,
                         disabled: test.disabled,
-                        status: test.disabled.map { .skipped($0) } ?? .unknown
+                        status: test.disabled.map { .skipped($0, duration: nil) } ?? .unknown
                     )
                 )
                 pendingTest = nil
@@ -834,6 +879,10 @@ private func renderCards(
         for test in file.tests {
             let statusClass = test.status.statusClass
             let statusText = test.status.statusText
+            let durationBadge =
+                test.status.duration.map {
+                    "<span class=\"badge duration\" title=\"Test duration\">\(escapeHTML($0))</span>"
+                } ?? ""
             let hasAI = test.aiItems.isEmpty ? "false" : "true"
             let hasAIReview = test.aiReviewMarkdown.isEmpty ? "false" : "true"
             let recordURL = recordingURL.appendingPathComponent(test.recordName)
@@ -859,7 +908,7 @@ private func renderCards(
                 "<details class=\"test-details\" data-test-status=\"\(statusClass)\" data-has-ai=\"\(hasAI)\" data-has-ai-review=\"\(hasAIReview)\">"
             )
             cards.append(
-                "<summary class=\"test-summary\">\(recordLinks)<span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span>\(aiBadge)</summary>"
+                "<summary class=\"test-summary\">\(recordLinks)<span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span>\(durationBadge)\(aiBadge)</summary>"
             )
 
             var body: [String] = []
