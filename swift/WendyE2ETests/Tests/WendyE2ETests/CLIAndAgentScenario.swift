@@ -211,17 +211,17 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
 
     private static func parentPath(_ path: String) -> String {
         var trimmed = path
-        while trimmed.count > 1, trimmed.hasSuffix("/") {
+        while trimmed.count > 1, Self.hasTrailingSeparator(trimmed) {
             trimmed.removeLast()
         }
-        guard trimmed != "/" else {
-            return "/"
+        guard trimmed != "/", trimmed != "\\" else {
+            return trimmed
         }
-        guard let separatorIndex = trimmed.lastIndex(of: "/") else {
+        guard let separatorIndex = trimmed.lastIndex(where: Self.isPathSeparator) else {
             return "."
         }
         if separatorIndex == trimmed.startIndex {
-            return "/"
+            return String(trimmed[...separatorIndex])
         }
 
         return String(trimmed[..<separatorIndex])
@@ -239,10 +239,23 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
     }
 
     private static func path(_ first: String, _ rest: String...) -> String {
-        rest.reduce(first) { path, component in
-            let suffix = component.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            return path.hasSuffix("/") ? "\(path)\(suffix)" : "\(path)/\(suffix)"
+        let separator = Self.preferredSeparator(for: first)
+        return rest.reduce(first) { path, component in
+            let suffix = component.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+            return Self.hasTrailingSeparator(path) ? "\(path)\(suffix)" : "\(path)\(separator)\(suffix)"
         }
+    }
+
+    private static func preferredSeparator(for path: String) -> String {
+        path.contains("\\") && !path.contains("/") ? "\\" : "/"
+    }
+
+    private static func hasTrailingSeparator(_ path: String) -> Bool {
+        path.hasSuffix("/") || path.hasSuffix("\\")
+    }
+
+    private static func isPathSeparator(_ character: Character) -> Bool {
+        character == "/" || character == "\\"
     }
 
     private static func roleEnvironment(
