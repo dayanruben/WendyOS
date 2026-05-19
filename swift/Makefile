@@ -30,6 +30,7 @@ else
 SHELL := /bin/bash
 endif
 
+WINDOWS_E2E_OUTPUT_DIR := "$$env:TEMP/wendy-e2e"
 RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ETest.ps1 --default-run-id "$(1)" $(2)
 RUN_E2E_RUN_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ERun.ps1 --default-run-id "$(1)" $(2)
 
@@ -94,7 +95,7 @@ e2e-test: e2e-test-$(HOST_ENV) ## Run Swift E2E tests locally and write raw arti
 
 .PHONY: e2e-test-windows
 e2e-test-windows:
-	$(call RUN_E2E_TEST_WINDOWS,windows-to-raspberry-pi-5,--output-dir Build/e2e --agent-os wendyOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_TEST_WINDOWS,windows-to-raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-test-unix
 e2e-test-unix:
@@ -105,7 +106,7 @@ e2e-run: e2e-run-$(HOST_ENV) ## Run Swift E2E tests locally, review results, ren
 
 .PHONY: e2e-run-windows
 e2e-run-windows:
-	$(call RUN_E2E_RUN_WINDOWS,windows-to-raspberry-pi-5,--output-dir Build/e2e --agent-os wendyOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_RUN_WINDOWS,windows-to-raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-run-unix
 e2e-run-unix:
@@ -117,7 +118,7 @@ e2e-test-jetson-orin-nano: e2e-test-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2
 
 .PHONY: e2e-test-jetson-orin-nano-windows
 e2e-test-jetson-orin-nano-windows:
-	$(call RUN_E2E_TEST_WINDOWS,jetson-orin-nano,--output-dir Build/e2e --agent-os wendyOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_TEST_WINDOWS,jetson-orin-nano,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-test-jetson-orin-nano-unix
 e2e-test-jetson-orin-nano-unix:
@@ -128,7 +129,7 @@ e2e-run-jetson-orin-nano: e2e-run-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2E 
 
 .PHONY: e2e-run-jetson-orin-nano-windows
 e2e-run-jetson-orin-nano-windows:
-	$(call RUN_E2E_RUN_WINDOWS,jetson-orin-nano,--output-dir Build/e2e --agent-os wendyOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_RUN_WINDOWS,jetson-orin-nano,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-run-jetson-orin-nano-unix
 e2e-run-jetson-orin-nano-unix:
@@ -140,7 +141,7 @@ e2e-test-raspberry-pi-5: e2e-test-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E te
 
 .PHONY: e2e-test-raspberry-pi-5-windows
 e2e-test-raspberry-pi-5-windows:
-	$(call RUN_E2E_TEST_WINDOWS,raspberry-pi-5,--output-dir Build/e2e --agent-os wendyOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_TEST_WINDOWS,raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-test-raspberry-pi-5-unix
 e2e-test-raspberry-pi-5-unix:
@@ -151,7 +152,7 @@ e2e-run-raspberry-pi-5: e2e-run-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E test
 
 .PHONY: e2e-run-raspberry-pi-5-windows
 e2e-run-raspberry-pi-5-windows:
-	$(call RUN_E2E_RUN_WINDOWS,raspberry-pi-5,--output-dir Build/e2e --agent-os wendyOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_RUN_WINDOWS,raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-run-raspberry-pi-5-unix
 e2e-run-raspberry-pi-5-unix:
@@ -163,7 +164,7 @@ e2e-test-mac-mini: e2e-test-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against 
 
 .PHONY: e2e-test-mac-mini-windows
 e2e-test-mac-mini-windows:
-	$(call RUN_E2E_TEST_WINDOWS,mac-mini,--output-dir Build/e2e --agent-os macOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_TEST_WINDOWS,mac-mini,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-test-mac-mini-unix
 e2e-test-mac-mini-unix:
@@ -174,7 +175,7 @@ e2e-run-mac-mini: e2e-run-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against Ma
 
 .PHONY: e2e-run-mac-mini-windows
 e2e-run-mac-mini-windows:
-	$(call RUN_E2E_RUN_WINDOWS,mac-mini,--output-dir Build/e2e --agent-os macOS --agent-address "$(DEVICE)")
+	$(call RUN_E2E_RUN_WINDOWS,mac-mini,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
 
 .PHONY: e2e-run-mac-mini-unix
 e2e-run-mac-mini-unix:
