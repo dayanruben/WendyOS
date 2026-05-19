@@ -78,9 +78,6 @@ func newBuildCmd() *cobra.Command {
 				}
 				if projectType == "swift" {
 					if _, ok := target.Provider.(providers.ImageBuilder); ok {
-						if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-							return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
-						}
 						if err := swifttoolchain.EnsureSwiftVersion(cmd.Context(), &dimWriter{}, os.Stderr); err != nil {
 							return err
 						}
@@ -97,7 +94,7 @@ func newBuildCmd() *cobra.Command {
 
 				cliLogln("Building with %s provider...", target.Provider.DisplayName())
 				var (
-					app    *providers.BuiltApp
+					app      *providers.BuiltApp
 					buildErr error
 				)
 				if db, ok := target.Provider.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
