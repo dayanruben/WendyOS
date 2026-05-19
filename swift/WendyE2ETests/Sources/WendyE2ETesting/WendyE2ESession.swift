@@ -7,52 +7,6 @@ import Subprocess
     import SystemPackage
 #endif
 
-private actor WendyE2ESerializer {
-    static let pty = WendyE2ESerializer()
-
-    // Actors are reentrant across awaits, so keep an explicit reservation while
-    // the serialized operation runs. The PTY path uses this because the current
-    // implementation shells out to `script`, which is not safe to run
-    // concurrently in one test process: terminal status query responses can
-    // interleave or be consumed by the wrong command.
-    private var isRunning = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func serialize<Result: Sendable>(
-        _ operation: @Sendable () async throws -> Result
-    ) async throws -> Result {
-        await self.acquire()
-        do {
-            let result = try await operation()
-            self.release()
-            return result
-        } catch {
-            self.release()
-            throw error
-        }
-    }
-
-    private func acquire() async {
-        if !self.isRunning {
-            self.isRunning = true
-            return
-        }
-
-        await withCheckedContinuation { continuation in
-            self.waiters.append(continuation)
-        }
-    }
-
-    private func release() {
-        guard !self.waiters.isEmpty else {
-            self.isRunning = false
-            return
-        }
-
-        self.waiters.removeFirst().resume()
-    }
-}
-
 public actor WendyE2ESession {
     public nonisolated let machine: WendyE2EMachine
     public nonisolated let workingDirectory: String?
@@ -239,14 +193,15 @@ public actor WendyE2ESession {
         try await self.pty(posix: command, power: command, body: body)
     }
 
+    // WARNING: The POSIX PTY implementation currently shells out to `script`.
+    // If parallel PTY runs become flaky/hang again, reintroduce the
+    // process-wide serializer from
+    // https://github.com/wendylabsinc/wendy-agent/commit/e8a448fa02e5d3ac9bf9c76282346e2092eab30a.
     public func pty(posix: String, power: String) async throws {
-        let result = try await WendyE2ESerializer.pty.serialize {
-            try await self.defaultShell(
-                posix: Self.ptyPOSIXCommand(posix, os: self.machine.os),
-                power: Self.ptyPowerShellCommand(power, os: self.machine.os)
-            )
-        }
-        try result.requireSuccess()
+        try await self.sh(
+            posix: Self.ptyPOSIXCommand(posix, os: self.machine.os),
+            power: Self.ptyPowerShellCommand(power, os: self.machine.os)
+        )
     }
 
     public func pty<Result>(
@@ -254,13 +209,11 @@ public actor WendyE2ESession {
         power: String,
         body: @Sendable (_ result: WendyE2EShellResult) async throws -> Result
     ) async throws -> Result {
-        let result = try await WendyE2ESerializer.pty.serialize {
-            try await self.defaultShell(
-                posix: Self.ptyPOSIXCommand(posix, os: self.machine.os),
-                power: Self.ptyPowerShellCommand(power, os: self.machine.os)
-            )
-        }
-        return try await body(result)
+        try await self.sh(
+            posix: Self.ptyPOSIXCommand(posix, os: self.machine.os),
+            power: Self.ptyPowerShellCommand(power, os: self.machine.os),
+            body: body
+        )
     }
 
     // MARK: - Internal
@@ -320,7 +273,7 @@ public actor WendyE2ESession {
     private static func ptyPOSIXCommand(_ command: String, os: WendyE2EMachineOS) -> String {
         switch os {
         case .macOS:
-            return "script -q /dev/null sh -lc \(Self.shellQuote(command))"
+            return "script -q /dev/null sh -c \(Self.shellQuote(command))"
         case .linux, .wendyOS:
             return "script -q -c \(Self.shellQuote(command)) /dev/null"
         case .windows:
