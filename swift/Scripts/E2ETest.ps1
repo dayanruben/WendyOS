@@ -186,49 +186,6 @@ function Write-RunInfo([int]$Status) {
     Write-Output "==> Wrote Swift E2E run info: $path"
 }
 
-function Write-RunSummary([int]$Status) {
-    New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
-    $files = if (Test-Path -LiteralPath $script:RunDir) {
-        Get-ChildItem -LiteralPath $script:RunDir -Recurse -File | Sort-Object FullName | ForEach-Object { '- ' + $_.FullName.Substring($script:RunDir.Length).TrimStart('\', '/') }
-    } else { @() }
-
-    $content = @(
-        '# Swift E2E Test Reports',
-        '',
-        "- Exit status: ``$Status``",
-        "- Run ID: ``$script:RunID``",
-        "- Run directory: ``$script:RunDir``",
-        "- Info: ``$(Join-Path $script:RunDir 'info.json')``",
-        "- Output root directory: ``$script:OutputDir``",
-        "- CLI root directory: ``$script:CLIRootDir``",
-        "- CLI run directory: ``$script:CLIRunDir``",
-        "- CLI repo directory: ``$(if ($script:CLIRepoDir) { $script:CLIRepoDir } else { '<none>' })``",
-        "- CLI user: ``$(if ($script:CLIUser) { $script:CLIUser } else { '<none>' })``",
-        "- CLI address: ``$(if ($script:CLIAddress) { $script:CLIAddress } else { '<local>' })``",
-        "- CLI OS: ``$(if ($script:CLIOS) { $script:CLIOS } else { '<current>' })``",
-        "- CLI binary: ``$(Join-Path $script:CLIBinDir 'wendy.exe')``",
-        "- Agent root directory: ``$script:AgentRootDir``",
-        "- Agent run directory: ``$script:AgentRunDir``",
-        "- Agent repo directory: ``$(if ($script:AgentRepoDir) { $script:AgentRepoDir } else { '<none>' })``",
-        "- Agent binary directory: ``$script:AgentBinDir``",
-        "- Tests directory: ``$script:TestsDir``",
-        "- Isolation: ``$script:Isolation``",
-        "- Verbose: ``$script:Verbose``",
-        "- Parallel: ``$script:Parallel``",
-        "- HTML report: ``<not generated; run Scripts/E2EReport.ps1>``",
-        "- Agent user: ``$(if ($script:AgentUser) { $script:AgentUser } else { '<none>' })``",
-        "- Agent address: ``$(if ($script:AgentAddress) { $script:AgentAddress } else { '<local>' })``",
-        "- Agent OS: ``$(if ($script:AgentOS) { $script:AgentOS } else { '<current>' })``",
-        "- Transport: ``$(if ($script:Transport) { $script:Transport } else { '<none>' })``",
-        '',
-        '## Files'
-    ) + $files
-
-    $path = Join-Path $script:RunDir 'README.md'
-    $content | Set-Content -LiteralPath $path -Encoding UTF8
-    Write-Output "==> Wrote Swift E2E run summary: $path"
-}
-
 $RunID = $env:WENDY_E2E_RUN_ID
 $DefaultRunID = $null
 $OutputDir = $env:WENDY_E2E_OUTPUT_DIR
@@ -398,5 +355,4 @@ $sanitizeStatus = $LASTEXITCODE
 if ($testStatus -eq 0 -and $sanitizeStatus -ne 0) { $testStatus = $sanitizeStatus }
 
 Write-RunInfo $testStatus
-Write-RunSummary $testStatus
 exit $testStatus

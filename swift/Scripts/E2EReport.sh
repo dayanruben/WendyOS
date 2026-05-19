@@ -43,47 +43,6 @@ absolute_existing_dir_path() {
   (cd "$path" && pwd)
 }
 
-update_readme_block() {
-  local readme_path="$1"
-  local status="$2"
-  local report_path="$3"
-  local start="<!-- swift-e2e-report:start -->"
-  local end="<!-- swift-e2e-report:end -->"
-  local tmp_path
-  tmp_path="$(mktemp)"
-
-  if [[ -f "$readme_path" ]]; then
-    awk -v start="$start" -v end="$end" '
-      $0 == start { skipping = 1; next }
-      $0 == end { skipping = 0; next }
-      skipping != 1 { print }
-    ' "$readme_path" > "$tmp_path"
-  else
-    : > "$tmp_path"
-  fi
-
-  {
-    cat "$tmp_path"
-    if [[ -s "$tmp_path" ]]; then
-      printf '\n'
-    fi
-    echo "$start"
-    echo "## Report Rendering"
-    echo
-    echo "- Status: \`$status\`"
-    echo "- HTML report: \`$report_path\`"
-    if [[ -f "$RUN_DIR/ai-review.md" ]]; then
-      echo "- AI review: \`$RUN_DIR/ai-review.md\`"
-    fi
-    echo
-    echo "### Files after report rendering"
-    find "$RUN_DIR" -type f | sort | sed "s#^$RUN_DIR/#- #"
-    echo "$end"
-  } > "$readme_path"
-
-  rm -f "$tmp_path"
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-dir)
@@ -114,7 +73,6 @@ fi
 
 RUN_DIR="$(absolute_existing_dir_path "$RUN_DIR")"
 PACKAGE_DIR="$(absolute_existing_dir_path "$PACKAGE_DIR")"
-README_PATH="$RUN_DIR/README.md"
 REPORT_PATH="$RUN_DIR/report.html"
 
 echo "==> Rendering Swift E2E HTML report"
@@ -133,7 +91,6 @@ REPORT_STATUS=$?
 set -e
 
 if [[ "$REPORT_STATUS" -eq 0 && -f "$REPORT_PATH" ]]; then
-  update_readme_block "$README_PATH" "generated" "$REPORT_PATH"
   echo "==> Wrote Swift E2E HTML report: $REPORT_PATH"
   exit 0
 fi
@@ -143,6 +100,5 @@ if [[ "$FAILURE_STATUS" -eq 0 ]]; then
   FAILURE_STATUS=1
 fi
 
-update_readme_block "$README_PATH" "failed (exit $FAILURE_STATUS)" "$REPORT_PATH"
 echo "ERROR: Swift E2E HTML report generation failed." >&2
 exit "$FAILURE_STATUS"

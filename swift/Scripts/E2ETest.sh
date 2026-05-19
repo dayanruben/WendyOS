@@ -567,47 +567,6 @@ write_run_info() {
   echo "==> Wrote Swift E2E run info: $info_path"
 }
 
-write_run_summary() {
-  local status="$1"
-
-  mkdir -p "$RUN_DIR"
-
-  {
-    echo "# Swift E2E Test Reports"
-    echo
-    echo "- Exit status: \`$status\`"
-    echo "- Run ID: \`$RUN_ID\`"
-    echo "- Run directory: \`$RUN_DIR\`"
-    echo "- Info: \`$RUN_DIR/info.json\`"
-    echo "- Output root directory: \`$OUTPUT_DIR\`"
-    echo "- CLI root directory: \`$CLI_ROOT_DIR\`"
-    echo "- CLI run directory: \`$CLI_RUN_DIR\`"
-    echo "- CLI repo directory: \`${CLI_REPO_DIR:-<none>}\`"
-    echo "- CLI user: \`${CLI_USER:-<none>}\`"
-    echo "- CLI address: \`${CLI_ADDRESS:-<local>}\`"
-    echo "- CLI OS: \`${CLI_OS:-<current>}\`"
-    echo "- CLI binary: \`$CLI_BIN_DIR/wendy\`"
-    echo "- Agent root directory: \`$AGENT_ROOT_DIR\`"
-    echo "- Agent run directory: \`$AGENT_RUN_DIR\`"
-    echo "- Agent repo directory: \`${AGENT_REPO_DIR:-<none>}\`"
-    echo "- Agent binary directory: \`$AGENT_BIN_DIR\`"
-    echo "- Tests directory: \`$TESTS_DIR\`"
-    echo "- Isolation: \`$ISOLATION\`"
-    echo "- Verbose: \`$VERBOSE\`"
-    echo "- Parallel: \`$PARALLEL\`"
-    echo "- HTML report: \`<not generated; run Scripts/E2EReport.sh>\`"
-    echo "- Agent user: \`${AGENT_USER:-<none>}\`"
-    echo "- Agent address: \`${AGENT_ADDRESS:-<local>}\`"
-    echo "- Agent OS: \`${AGENT_OS:-<current>}\`"
-    echo "- Transport: \`${TRANSPORT:-<none>}\`"
-    echo
-    echo "## Files"
-    find "$RUN_DIR" -type f | sort | sed "s#^$RUN_DIR/#- #"
-  } > "$RUN_DIR/README.md"
-
-  echo "==> Wrote Swift E2E run summary: $RUN_DIR/README.md"
-}
-
 SWIFT_TEST_ARGS=("test")
 if [[ "$PARALLEL" != "true" ]]; then
   SWIFT_TEST_ARGS+=("--no-parallel")
@@ -674,5 +633,4 @@ set -e
 bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --run-dir "$RUN_DIR"
 
 write_run_info "$TEST_STATUS"
-write_run_summary "$TEST_STATUS"
 exit "$TEST_STATUS"

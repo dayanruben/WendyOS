@@ -109,7 +109,6 @@ struct ReviewCommand: AsyncParsableCommand {
             reviewFiles: reviewFiles,
             slowTestSeconds: slowTestSeconds
         )
-        updateReviewReadmeBlock(runURL: runURL, hasReview: true)
         print(
             "==> Wrote Swift E2E AI review summary: \(runURL.appendingPathComponent("ai-review.md").path)"
         )
@@ -219,7 +218,7 @@ private struct ReviewAgentRequest {
         lines.append("- the full source tree")
         lines.append("- git history via git log / git blame / git diff")
         lines.append("- all E2E run artifacts under the run directory")
-        lines.append("- recordings, xUnit XML, README/report metadata, and generated logs")
+        lines.append("- recordings, xUnit XML, report metadata, and generated logs")
         lines.append("")
         lines.append("Repository root: `\(repoURL.path)`")
         lines.append("Swift package: `\(packageURL.path)`")
@@ -975,57 +974,6 @@ private func reviewRelativePath(_ url: URL, base: URL) -> String {
 
 private func removeEmptyReviewSummary(runURL: URL) throws {
     try? FileManager.default.removeItem(at: runURL.appendingPathComponent("ai-review.md"))
-    updateReviewReadmeBlock(runURL: runURL, hasReview: false)
-}
-
-private func updateReviewReadmeBlock(runURL: URL, hasReview: Bool) {
-    let readmeURL = runURL.appendingPathComponent("README.md")
-    let start = "<!-- swift-e2e-review:start -->"
-    let end = "<!-- swift-e2e-review:end -->"
-    let original = (try? String(contentsOf: readmeURL, encoding: .utf8)) ?? ""
-    let withoutCurrentBlock = stripReviewBlock(from: original, start: start, end: end)
-    let withoutLegacyReviewBlock = stripReviewBlock(
-        from: withoutCurrentBlock,
-        start: "<!-- swift-e2e-ai-review:start -->",
-        end: "<!-- swift-e2e-ai-review:end -->"
-    )
-    let withoutLegacyAnalyzeBlock = stripReviewBlock(
-        from: withoutLegacyReviewBlock,
-        start: "<!-- swift-e2e-analyze:start -->",
-        end: "<!-- swift-e2e-analyze:end -->"
-    )
-    let stripped = withoutLegacyAnalyzeBlock.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard hasReview else {
-        guard !original.isEmpty else { return }
-        try? (stripped.isEmpty ? "" : stripped + "\n").write(
-            to: readmeURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        return
-    }
-
-    let block = """
-
-        \(start)
-        ## AI Review
-
-        - Markdown: `\(runURL.appendingPathComponent("ai-review.md").path)`
-        \(end)
-        """
-    let output =
-        stripped.isEmpty
-        ? block.trimmingCharacters(in: .whitespacesAndNewlines) : stripped + "\n" + block
-    try? output.appending("\n").write(to: readmeURL, atomically: true, encoding: .utf8)
-}
-
-private func stripReviewBlock(from text: String, start: String, end: String) -> String {
-    guard let startRange = text.range(of: start), let endRange = text.range(of: end) else {
-        return text
-    }
-    var output = text
-    output.removeSubrange(startRange.lowerBound..<endRange.upperBound)
-    return output
 }
 
 private func reviewRecordFileStem(_ sourceURL: URL) -> String {
