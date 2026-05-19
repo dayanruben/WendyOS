@@ -182,6 +182,36 @@ public actor WendyE2ESession {
         try await body(try await self.defaultShell(posix: posix, power: power))
     }
 
+    public func pty(_ command: String) async throws {
+        try await self.pty(posix: command, power: command)
+    }
+
+    public func pty<Result>(
+        _ command: String,
+        body: @Sendable (_ result: WendyE2EShellResult) async throws -> Result
+    ) async throws -> Result {
+        try await self.pty(posix: command, power: command, body: body)
+    }
+
+    public func pty(posix: String, power: String) async throws {
+        try await self.sh(
+            posix: Self.ptyPOSIXCommand(posix, os: self.machine.os),
+            power: Self.ptyPowerShellCommand(power, os: self.machine.os)
+        )
+    }
+
+    public func pty<Result>(
+        posix: String,
+        power: String,
+        body: @Sendable (_ result: WendyE2EShellResult) async throws -> Result
+    ) async throws -> Result {
+        try await self.sh(
+            posix: Self.ptyPOSIXCommand(posix, os: self.machine.os),
+            power: Self.ptyPowerShellCommand(power, os: self.machine.os),
+            body: body
+        )
+    }
+
     // MARK: - Internal
 
     private init(
@@ -233,6 +263,26 @@ public actor WendyE2ESession {
             try await self.powerShell(power)
         case .macOS, .linux, .wendyOS:
             try await self.posixShell(posix)
+        }
+    }
+
+    private static func ptyPOSIXCommand(_ command: String, os: WendyE2EMachineOS) -> String {
+        switch os {
+        case .macOS:
+            return "script -q /dev/null sh -lc \(Self.shellQuote(command))"
+        case .linux, .wendyOS:
+            return "script -q -c \(Self.shellQuote(command)) /dev/null"
+        case .windows:
+            return command
+        }
+    }
+
+    private static func ptyPowerShellCommand(_ command: String, os: WendyE2EMachineOS) -> String {
+        switch os {
+        case .windows:
+            return "throw 'PTY execution is not supported on Windows yet.'"
+        case .macOS, .linux, .wendyOS:
+            return command
         }
     }
 

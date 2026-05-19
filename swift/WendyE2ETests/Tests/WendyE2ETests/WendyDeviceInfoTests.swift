@@ -131,17 +131,8 @@ struct `'wendy device info'` {
         // and enough device context for a person to identify the target.
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
-            let command: String
-            switch cli.machine.os {
-            case .macOS:
-                command = "script -q /dev/null wendy --device \(agentAddress) device info"
-            case .linux:
-                command = "script -q -c 'wendy --device \(agentAddress) device info' /dev/null"
-            case .windows, .wendyOS:
-                fatalError("Interactive device info is not supported on \(cli.machine.os) yet.")
-            }
 
-            try await cli.sh(command) { result in
+            try await cli.pty("wendy --device \(agentAddress) device info") { result in
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
@@ -319,19 +310,8 @@ struct `'wendy device info'` {
         // should not overpromise when no update is available.
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
-            let command: String
-            switch cli.machine.os {
-            case .macOS:
-                command =
-                    "script -q /dev/null wendy --device \(agentAddress) device info --check-updates"
-            case .linux:
-                command =
-                    "script -q -c 'wendy --device \(agentAddress) device info --check-updates' /dev/null"
-            case .windows, .wendyOS:
-                fatalError("Interactive update checks are not supported on \(cli.machine.os) yet.")
-            }
 
-            try await cli.sh(command) { result in
+            try await cli.pty("wendy --device \(agentAddress) device info --check-updates") { result in
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
