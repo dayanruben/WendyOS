@@ -887,6 +887,10 @@ public actor WendyE2ESession {
 
     private static func invoke(_ invocation: Invocation) async throws -> StringExecutionRecord {
         #if os(Windows)
+            // WORKAROUND: swift-subprocess can leave the Windows E2E test
+            // process alive after Swift Testing has finished and written its
+            // results. Use the native WinSDK process APIs here so hardware
+            // runs return promptly instead of hanging in the harness teardown.
             try self.invokeWithWinSDK(invocation)
         #else
             let record = try await Subprocess.run(
