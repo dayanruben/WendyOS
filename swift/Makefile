@@ -36,6 +36,23 @@ RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets 
 RUN_E2E_RUN_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ERun.ps1 --default-run-id "$(1)" $(2)
 
 OPEN_E2E_REPORT_UNIX = report_path="$(1)"; if [ -f "$$report_path" ]; then if [ "$$(uname -s)" = "Darwin" ]; then open "$$report_path" || echo "HTML report: $$report_path"; else echo "HTML report: $$report_path"; fi; else echo "HTML report not found: $$report_path"; fi
+RUN_E2E_REPORT_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows report target requires PowerShell.' }; $$reportDir = '$(RUN_DIR)'; if (-not $$reportDir) { $$outputDir = $(WINDOWS_E2E_OUTPUT_DIR); if (Test-Path -LiteralPath $$outputDir) { $$reportDir = Get-ChildItem -LiteralPath $$outputDir -Directory -Filter 'swift-e2e-tests.*' | Where-Object { $$info = Join-Path $$_.FullName 'info.json'; if (-not (Test-Path -LiteralPath $$info)) { return $$false }; try { (Get-Content -Raw -LiteralPath $$info | ConvertFrom-Json).kind -eq 'swift-e2e-aggregate' } catch { $$false } } | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName } }; if (-not $$reportDir) { throw 'ERROR: RUN_DIR is required, or no aggregate report directory was found.' }; ./Scripts/E2EReport.ps1 --run-dir $$reportDir; $$reportPath = Join-Path $$reportDir 'index.html'; if (Test-Path -LiteralPath $$reportPath) { Start-Process $$reportPath } else { Write-Output "HTML report not found: $$reportPath" }
+RUN_E2E_REPORT_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
+	run_dir="$(RUN_DIR)"; \
+	if [ -z "$$run_dir" ]; then \
+		shopt -s nullglob; latest=""; latest_mtime=0; \
+		for path in "$$output_dir"/swift-e2e-tests.*; do \
+			[ -d "$$path" ] || continue; \
+			[ -f "$$path/info.json" ] || continue; \
+			grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-aggregate"' "$$path/info.json" || continue; \
+			mtime="$$(stat -f %m "$$path" 2>/dev/null || stat -c %Y "$$path" 2>/dev/null || echo 0)"; \
+			if [ "$$mtime" -ge "$$latest_mtime" ]; then latest_mtime="$$mtime"; latest="$$path"; fi; \
+		done; \
+		shopt -u nullglob; run_dir="$$latest"; \
+	fi; \
+	if [ -z "$$run_dir" ]; then echo "ERROR: RUN_DIR is required, or no aggregate report directory was found." >&2; exit 64; fi; \
+	bash ./Scripts/E2EReport.sh --run-dir "$$run_dir"; \
+	$(call OPEN_E2E_REPORT_UNIX,$$run_dir/index.html)
 E2E_RUN_ID_HELPERS_UNIX = e2e_cli_id() { case "$$(uname -s)" in Darwin) major="$$(sw_vers -productVersion | cut -d. -f1)"; printf "macos-%s" "$$major" ;; Linux) if [ -r /etc/os-release ]; then . /etc/os-release; version="$${VERSION_ID//./-}"; printf "%s-%s" "$${ID:-linux}" "$$version"; else printf "linux"; fi ;; *) uname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$$//' ;; esac; }; next_e2e_run_id() { output_dir="$$1"; run_name="$$2"; eval_id="local$$(date -u +%y%m%d)"; base="swift-e2e-tests.$$eval_id.$$run_name"; max=0; shopt -s nullglob; for path in "$$output_dir/$$base".[0-9][0-9][0-9][0-9]; do leaf="$$(basename "$$path")"; suffix="$$(printf '%s' "$$leaf" | awk -F. '{ print $$NF }')"; if [[ "$$suffix" =~ ^[0-9]{4}$$ ]]; then suffix_value="$$(expr "$$suffix" + 0)"; if [ "$$suffix_value" -gt "$$max" ]; then max="$$suffix_value"; fi; fi; done; shopt -u nullglob; printf "%s.%04d" "$$base" $$((max + 1)); }
 RUN_E2E_TEST_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
 	$(E2E_RUN_ID_HELPERS_UNIX); \
@@ -192,6 +209,17 @@ e2e-run-mac-mini-windows:
 .PHONY: e2e-run-mac-mini-unix
 e2e-run-mac-mini-unix:
 	$(call RUN_E2E_RUN_UNIX,mac-mini,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
+
+.PHONY: report
+report: report-$(HOST_ENV) ## Render the latest Swift E2E aggregate report and open it
+
+.PHONY: report-windows
+report-windows:
+	$(RUN_E2E_REPORT_WINDOWS)
+
+.PHONY: report-unix
+report-unix:
+	$(RUN_E2E_REPORT_UNIX)
 
 .PHONY: reference
 reference: reference-$(HOST_ENV) ## Generate Swift E2E HTML reference documentation and open it
