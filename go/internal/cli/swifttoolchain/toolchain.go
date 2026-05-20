@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
+
 	"github.com/wendylabsinc/wendy/internal/cli/tui"
 )
 
@@ -45,6 +47,9 @@ var execCommandContext = exec.CommandContext
 var execCommand = exec.Command
 var statFile = os.Stat
 var currentOS = runtime.GOOS
+var isTerminal = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
 var confirmFunc = func(question string) (bool, error) {
 	return tui.ConfirmDefaultYes(question)
 }
@@ -76,7 +81,7 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 			return nil
 		} else if errors.Is(err, exec.ErrNotFound) {
 			return fmt.Errorf("swiftly was installed via Homebrew but is not yet available; " +
-				"open a new terminal to reload your PATH")
+				`run: eval "$(brew shellenv)" or open a new terminal to reload your PATH`)
 		}
 		// swiftly binary is now available but this version is not installed — fall through to install
 	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -127,12 +132,18 @@ func tryBrewInstallSwiftly(ctx context.Context, stdout, stderr io.Writer) error 
 	if brewPath == "" {
 		return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
 	}
+	if !isTerminal() {
+		return fmt.Errorf("swiftly is required but not installed; run: brew install %s", brewFormula)
+	}
 	confirmed, err := confirmFunc("swiftly is not installed. Install it now via Homebrew? (brew install " + brewFormula + ")")
 	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return ErrUserCancelled
+		}
 		return fmt.Errorf("swiftly is required but not installed (prompt failed: %w); see https://swiftlang.github.io/swiftly for installation instructions", err)
 	}
 	if !confirmed {
-		return fmt.Errorf("swiftly is required but not installed; run: brew install " + brewFormula)
+		return fmt.Errorf("swiftly is required but not installed; run: brew install %s", brewFormula)
 	}
 	fmt.Fprintf(stdout, "Installing swiftly via Homebrew (brew install %s)...\n", brewFormula)
 	flushWriter(stdout)
