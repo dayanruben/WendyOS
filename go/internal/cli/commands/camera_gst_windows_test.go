@@ -38,6 +38,32 @@ func TestGstLaunchFallbackPaths_UsesInstallerEnvRoot(t *testing.T) {
 	}
 }
 
+func TestSanitizeGSTRoot(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		want  string
+		valid bool
+	}{
+		{"empty", "", "", false},
+		{"whitespace", "   ", "", false},
+		{"relative", `gstreamer\1.0`, "", false},
+		{"traversal", `C:\legit\..\Users\attacker`, "", false},
+		{"absolute is cleaned", `C:\gstreamer\1.0\msvc_x86_64\`, `C:\gstreamer\1.0\msvc_x86_64`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := sanitizeGSTRoot(tc.in)
+			if ok != tc.valid {
+				t.Fatalf("valid=%v, want %v (got=%q)", ok, tc.valid, got)
+			}
+			if tc.valid && got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveGSTLaunch_FoundViaRegistry reproduces the winget per-user install:
 // GStreamer is not on PATH and sets no env vars, but its InstallLocation is
 // recorded in the registry. resolveGSTLaunch must find it via that location.

@@ -79,6 +79,34 @@ func gstLaunchFallbackPaths() []string {
 	return paths
 }
 
+// sanitizeGSTRoot canonicalises a registry-supplied install root and rejects
+// values that aren't absolute or that contain traversal segments. HKCU is
+// user-writable, so a low-privileged process could create a fake "GStreamer"
+// uninstall entry pointing at an attacker-controlled directory; this filter
+// drops the obviously malformed cases. It is not a full trust boundary —
+// callers must still treat the resulting binary as user-supplied.
+func sanitizeGSTRoot(loc string) (string, bool) {
+	loc = strings.TrimSpace(loc)
+	if loc == "" {
+		return "", false
+	}
+	// Reject obvious traversal in the raw input. filepath.Clean would collapse
+	// these away, but the presence of ".." is a signal the registry entry is
+	// malformed or hostile, so refuse it outright.
+	for _, sep := range []string{`\`, `/`} {
+		for _, part := range strings.Split(loc, sep) {
+			if part == ".." {
+				return "", false
+			}
+		}
+	}
+	cleaned := filepath.Clean(loc)
+	if !filepath.IsAbs(cleaned) {
+		return "", false
+	}
+	return cleaned, true
+}
+
 // gstRootsFromRegistry returns GStreamer install locations recorded under the
 // standard Windows uninstall registry keys. Both machine (HKLM, including the
 // 32-bit WOW6432Node view) and per-user (HKCU) hives are checked, since winget
@@ -112,8 +140,10 @@ func gstRootsFromRegistry() []string {
 			}
 			displayName, _, _ := sub.GetStringValue("DisplayName")
 			if strings.HasPrefix(displayName, "GStreamer") {
-				if loc, _, err := sub.GetStringValue("InstallLocation"); err == nil && loc != "" {
-					roots = append(roots, loc)
+				if loc, _, err := sub.GetStringValue("InstallLocation"); err == nil {
+					if cleaned, ok := sanitizeGSTRoot(loc); ok {
+						roots = append(roots, cleaned)
+					}
 				}
 			}
 			sub.Close()
