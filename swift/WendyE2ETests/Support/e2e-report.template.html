@@ -509,8 +509,11 @@
     }
 
     .test-details {
+      display: block;
       margin: 1px 0;
       border-radius: 8px;
+      color: inherit;
+      text-decoration: none;
     }
 
     .test-summary {
@@ -781,6 +784,11 @@
       pointer-events: auto;
     }
 
+    .test-details-link:focus-visible {
+      outline: 3px solid var(--focus-ring);
+      outline-offset: 2px;
+    }
+
     .report-button:hover {
       border-color: var(--blue);
       color: var(--blue);
@@ -974,7 +982,7 @@
       <button class="filter-button" type="button" data-filter="fail" aria-pressed="false">Failed</button>
       <button class="filter-button" type="button" data-filter="unknown" aria-pressed="false">Unknown</button>
       <button class="filter-button" type="button" data-filter="ai" aria-pressed="false">AI</button>
-      <input class="search-field" type="search" data-search placeholder="Search tests, commands, stdout, stderr…" aria-label="Search tests, commands, stdout, and stderr" />
+      <input class="search-field" type="search" data-search placeholder="Search tests…" aria-label="Search tests" />
       <span class="filter-count" data-filter-count>{{VISIBLE_TEST_COUNT}} of {{TOTAL_TEST_COUNT}} tests shown</span>
     </section>
 
@@ -1043,7 +1051,7 @@
     </section>
 
     <footer>
-      Recording: <code>{{RECORDING_DIRECTORY}}</code>
+      Aggregate: <code>{{RECORDING_DIRECTORY}}</code>
     </footer>
   </main>
   <script>

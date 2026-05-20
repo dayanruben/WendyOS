@@ -323,17 +323,10 @@ jobs:
             --output-dir /tmp/wendy \
             "${run_dirs[@]}"
 
-      - name: Review Swift E2E aggregate with AI
+      - name: Skip Swift E2E aggregate AI review
         if: always()
-        working-directory: swift
         shell: bash
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          bash ./Scripts/E2EReview.sh \
-            --run-dir "${{ steps.e2e-aggregate.outputs.aggregate_dir }}"
+        run: echo "Swift E2E aggregate AI review is disabled for now."
 
       - name: Render Swift E2E aggregate index
         if: always()

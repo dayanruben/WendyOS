@@ -143,17 +143,14 @@ aggregate_observation_dirs() {
 }
 
 is_aggregate_dir() {
-  [[ ! -d "$RUN_DIR/tests" && ! -f "$RUN_DIR/recording.md" ]] \
-    && [[ -n "$(find "$RUN_DIR" -type f -name recording.md -print -quit)" ]]
+  [[ -f "$RUN_DIR/info.json" ]] \
+    && grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-aggregate"' "$RUN_DIR/info.json"
 }
 
 if is_aggregate_dir; then
-  status=0
-  while IFS= read -r observation_path; do
-    [[ -d "$observation_path" ]] || continue
-    review_single_run "$observation_path" || { step_status=$?; [[ "$status" -eq 0 ]] && status="$step_status"; }
-  done < <(aggregate_observation_dirs)
-  exit "$status"
+  echo "==> Swift E2E aggregate AI review skipped"
+  echo "    Per-test aggregate reviews are disabled for now."
+  exit 0
 fi
 
 review_single_run "$RUN_DIR"

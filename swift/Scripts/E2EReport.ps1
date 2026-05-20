@@ -29,15 +29,33 @@ if (-not $RunDir) { throw 'ERROR: --run-dir is required.' }
 
 $script:RunDir = Resolve-E2EPath $RunDir -Existing
 $PackageDir = Resolve-E2EPath $PackageDir -Existing
-$ReportPath = Join-Path $script:RunDir 'report.html'
+$ReportPath = Join-Path $script:RunDir 'index.html'
 
-Write-Output '==> Rendering Swift E2E HTML report'
+Write-Output '==> Rendering Swift E2E aggregate HTML report'
 Write-Output "    Package: $PackageDir"
 Write-Output "    Run dir: $script:RunDir"
 Write-Output "    Output:  $ReportPath"
 
-& (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $script:RunDir
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$resultPaths = @()
+Get-ChildItem -LiteralPath $script:RunDir -Directory | ForEach-Object {
+    $suiteDir = $_.FullName
+    Get-ChildItem -LiteralPath $suiteDir -Directory | ForEach-Object {
+        $testDir = $_.FullName
+        Get-ChildItem -LiteralPath $testDir -Directory | ForEach-Object {
+            $targetDir = $_.FullName
+            Get-ChildItem -LiteralPath $targetDir -Directory | ForEach-Object {
+                $candidate = Join-Path $_.FullName 'test-results.xml'
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    $resultPaths += $candidate
+                }
+            }
+        }
+    }
+}
+$resultPaths | Sort-Object | ForEach-Object {
+    & (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --file $_
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 Push-Location $PackageDir
 try {
@@ -48,10 +66,10 @@ try {
 }
 
 if ($reportStatus -eq 0 -and (Test-Path -LiteralPath $ReportPath)) {
-    Write-Output "==> Wrote Swift E2E HTML report: $ReportPath"
+    Write-Output "==> Wrote Swift E2E aggregate HTML report: $ReportPath"
     exit 0
 }
 
 $failureStatus = if ($reportStatus -eq 0) { 1 } else { $reportStatus }
-Write-Error 'ERROR: Swift E2E HTML report generation failed.'
+Write-Error 'ERROR: Swift E2E aggregate HTML report generation failed.'
 exit $failureStatus

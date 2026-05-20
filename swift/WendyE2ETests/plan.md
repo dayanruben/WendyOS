@@ -40,7 +40,7 @@ A raw individual run remains records-only:
         agent/
 ```
 
-No binaries are stored in the run directory. No per-run `report.html` is required once aggregate rendering exists.
+No binaries are stored in the run directory. Reports are rendered only from aggregate directories.
 
 ## Canonical aggregate shape
 
@@ -49,7 +49,7 @@ The aggregate layout transposes individual runs into a test-first hierarchy:
 ```text
 <workflow-name>.<run-id>/
   info.json
-  report.html
+  index.html
   review.md              # aggregate-level review/actions
 
   <suite-key>/
@@ -157,7 +157,7 @@ The E2E workflow should be split into four explicit commands/steps:
 
 4. `report`
    - Reads an aggregate directory.
-   - Writes the single aggregate `report.html`.
+   - Writes the single aggregate `index.html`.
    - Covers both one-run and multi-run aggregates.
 
 `make` targets and CI jobs should compose these steps rather than combining their responsibilities inside the test step.
@@ -181,26 +181,27 @@ The first implementation maps the current raw run output onto the aggregate hier
 
 - Preserve the current per-run files in that mapped location, including `recording.md`, `recording.sh.txt`, `review.md`, `cli/`, and `agent/`.
 
-`review` should remain per-run in this iteration:
+`review` is disabled while the aggregate report flow is being reshaped:
 
-- Keep writing `review.md` files beside each mapped `recording.md`.
-- Do not attempt cross-target or cross-attempt review yet.
+- Do not write per-observation `review.md` files from aggregate runs for now.
+- Reintroduce review later as cross-target/cross-attempt review, not per-observation review.
 
-`report` should remain per-run in this iteration:
+`report` is now aggregate-first:
 
-- Treat each `<suite-key>/<test-key>/<target-name>/<attempt>/` observation directory as the per-run unit for this iteration.
-- Keep rendering a `report.html` for each observation directory using the existing report renderer.
-- Add a top-level aggregate `index.html` that links to the per-run reports.
-- Do not attempt a single unified aggregate report yet.
+- Render a single top-level aggregate `index.html` under `<workflow-name>.<run-id>/`.
+- Keep the suite-grouped report UI with filters and search.
+- Each test row links to `<suite-key>/<test-key>/index.html` instead of expanding inline.
+- Per-test pages are placeholders that say `Not implemented yet` until the detailed test view is designed.
+- Per-test Shell, Record, and Report buttons are not rendered.
 
-This gives us a complete aggregate command and adapts review/report just enough to work with the new structure while preserving current behavior.
+This gives us a complete aggregate command and makes the aggregate report the canonical report surface.
 
 Completed pieces:
 
 - `swift-e2e-testing aggregate` writes the test-first aggregate hierarchy.
 - `Scripts/E2EAggregate.sh` wraps the aggregate command.
-- `Scripts/E2EReview.sh` detects aggregate roots and runs per-observation review.
-- `Scripts/E2EReport.sh` detects aggregate roots, renders per-observation reports, and writes aggregate `index.html`.
+- Aggregate AI review is disabled for now.
+- `Scripts/E2EReport.sh` renders the aggregate `index.html` directly.
 - Local `make e2e-run*` composes test → aggregate → review → report.
 - CI matrix jobs upload raw runs, and the aggregate job downloads, aggregates, reviews, reports, and uploads the aggregate.
 

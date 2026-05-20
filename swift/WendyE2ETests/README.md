@@ -19,8 +19,7 @@ Swift Testing results and command recordings:
 bash Scripts/E2ETest.sh --output-dir Build/e2e
 ```
 
-For the common local workflow that also reviews `// AI:` prompts, renders
-`report.html`, and opens it on macOS:
+For the common local workflow that aggregates the raw run, renders the aggregate `index.html`, and opens it on macOS:
 
 ```bash
 make e2e-run
@@ -61,10 +60,10 @@ Sandbox isolation is controlled by `--isolation` or `WENDY_E2E_ISOLATION`:
 - `per-run`: one stable `home/`, `tmp/`, and `home/work` sandbox per role. In non-parallel runs, the role sandbox is reset before each test's first command.
 - `none`: no synthetic `HOME`, `TMPDIR`, or working directory is configured, and existing machine state is left untouched.
 
-To render the HTML report from this package:
+To render the aggregate HTML report from this package:
 
 ```bash
-swift run swift-e2e-testing report --run-dir .build/e2e/current
+swift run swift-e2e-testing report --run-dir /tmp/wendy/<workflow-name>.<run-id>
 ```
 
 ## Behavioral spec workflow

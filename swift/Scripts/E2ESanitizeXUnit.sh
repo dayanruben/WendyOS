@@ -66,7 +66,7 @@ if [[ "$raw_path" == "$RESULT_PATH" ]]; then
   raw_path="$RESULT_PATH.raw"
 fi
 
-tmp_path="$(mktemp "$RESULT_PATH.sanitized.XXXXXX")"
+tmp_path="$(mktemp)"
 trap 'rm -f "$tmp_path"' EXIT
 
 perl -CSDA -0pe '
@@ -80,7 +80,8 @@ if cmp -s "$RESULT_PATH" "$tmp_path"; then
 fi
 
 cp -p "$RESULT_PATH" "$raw_path"
-mv "$tmp_path" "$RESULT_PATH"
+cat "$tmp_path" > "$RESULT_PATH"
+rm -f "$tmp_path"
 trap - EXIT
 
 echo "==> Sanitized Swift Testing xUnit results"

@@ -8,10 +8,9 @@ import Foundation
 struct ReportCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "report",
-        abstract: "Generate an HTML report from a Swift E2E recording.",
+        abstract: "Generate an aggregate HTML report from a Swift E2E aggregate run.",
         discussion: """
-            Generates the same static HTML report used by the E2E review skill,
-            using Swift test sources and an existing E2E recording directory.
+            Generates the static HTML index for an aggregate Swift E2E run.
             """
     )
 
@@ -24,11 +23,8 @@ struct ReportCommand: ParsableCommand {
     @Option(name: .long, help: "HTML report template path.")
     var template: String?
 
-    @Option(name: .long, help: "E2E run directory. Reads tests/ and writes report.html.")
-    var runDir: String?
-
-    @Option(name: [.short, .long], help: "Output HTML file path.")
-    var output: String?
+    @Option(name: .long, help: "Aggregate E2E run directory. Writes index.html.")
+    var runDir: String
 
     mutating func run() throws {
         let packageURL = URL(fileURLWithPath: packageDir)
@@ -40,47 +36,29 @@ struct ReportCommand: ParsableCommand {
                 ?? packageURL.appendingPathComponent("Support/e2e-report.template.html")
                 .path
         )
-        let runURL = runDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
-        let recordingURL = try resolvedRecordingDirectory(
-            runURL.flatMap(defaultRecordingDirectory)
-                ?? latestRecordingDirectory(packageURL: packageURL)
-        )
-        let outputURL = URL(
-            fileURLWithPath: output
-                ?? runURL?.appendingPathComponent("report.html").path
-                ?? recordingURL.appendingPathComponent("index.html").path
-        )
+        let runURL = URL(fileURLWithPath: runDir, isDirectory: true)
+        guard try isAggregateRunDirectory(runURL) else {
+            throw ValidationError("Report input must be a Swift E2E aggregate directory: \(runURL.path)")
+        }
 
-        let records = try loadRecords(in: recordingURL)
-        let aiReviews = try loadAIReviews(in: recordingURL)
-        let testResults = try loadTestResults(
-            in: recordingURL,
-            outputDirectoryURL: outputURL.deletingLastPathComponent()
-        )
-        var files = try parseTests(
+        let outputURL = runURL.appendingPathComponent("index.html")
+        let records = try loadRecords(in: runURL)
+        let aiReviews = try loadAIReviews(in: runURL)
+        let testResults = try loadAggregateTestResults(in: runURL)
+        let files = try parseTests(
             in: testsURL,
-            recordingURL: recordingURL,
+            recordingURL: runURL,
             records: records,
             aiReviews: aiReviews,
             testResults: testResults
         )
-        if FileManager.default.fileExists(
-            atPath: recordingURL.appendingPathComponent("recording.md").path
-        ) {
-            files = files.compactMap { file in
-                let tests = file.tests.filter { !$0.commands.isEmpty || !$0.aiReviewMarkdown.isEmpty }
-                guard !tests.isEmpty else { return nil }
-                var file = file
-                file.tests = tests
-                return file
-            }
-        }
         try renderReport(
             templateURL: templateURL,
-            recordingURL: recordingURL,
+            recordingURL: runURL,
             files: files,
             outputURL: outputURL
         )
+        try writeAggregatePlaceholderPages(files: files, aggregateURL: runURL)
     }
 }
 
@@ -221,37 +199,12 @@ private func defaultTestsDir(packageURL: URL) -> URL {
     return packageURL.appendingPathComponent("Tests")
 }
 
-private func latestRecordingDirectory(packageURL: URL) throws -> URL {
-    let buildURL = packageURL.appendingPathComponent(".build")
-    let currentURL = buildURL.appendingPathComponent("e2e-recording.current")
-    if FileManager.default.fileExists(atPath: currentURL.path) {
-        return currentURL
-    }
-    let contents = try FileManager.default.contentsOfDirectory(
-        at: buildURL,
-        includingPropertiesForKeys: [.isDirectoryKey]
-    )
-    let candidates = contents.filter { url in
-        guard
-            url.lastPathComponent.hasPrefix("e2e-recording.")
-        else {
-            return false
-        }
-        return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-    }.sorted { $0.path < $1.path }
-
-    guard let latest = candidates.last else {
-        throw ValidationError("No e2e-recording.* directory found in \(buildURL.path)")
-    }
-    return latest
-}
-
 private func loadRecords(in recordingURL: URL) throws -> [String: [CommandRun]] {
     let recordURLs = try commandRecordURLs(in: recordingURL)
 
     var records: [String: [CommandRun]] = [:]
     for recordURL in recordURLs {
-        records[recordKey(for: recordURL, relativeTo: recordingURL)] = try parseRecord(
+        records[recordKey(for: recordURL, relativeTo: recordingURL), default: []] += try parseRecord(
             at: recordURL,
             relativeTo: recordingURL
         )
@@ -264,18 +217,10 @@ private func loadAIReviews(in recordingURL: URL) throws -> [String: AIReview] {
         return [:]
     }
 
-    guard
-        let enumerator = FileManager.default.enumerator(
-            at: recordingURL,
-            includingPropertiesForKeys: nil
-        )
-    else {
-        throw ValidationError("Recording directory cannot be read: \(recordingURL.path)")
-    }
+    let reviewURLs = try aggregateObservationFileURLs(in: recordingURL, fileName: "review.md")
 
     var reviews: [String: AIReview] = [:]
-    for case let reviewURL as URL in enumerator
-    where reviewURL.lastPathComponent == "review.md" {
+    for reviewURL in reviewURLs {
         let recordURL = reviewURL.deletingLastPathComponent().appendingPathComponent("recording.md")
         guard FileManager.default.fileExists(atPath: recordURL.path) else {
             continue
@@ -310,39 +255,15 @@ private func commandRecordURLs(in recordingURL: URL) throws -> [URL] {
         return []
     }
 
-    guard
-        let enumerator = FileManager.default.enumerator(
-            at: recordingURL,
-            includingPropertiesForKeys: nil
-        )
-    else {
-        throw ValidationError("Recording directory cannot be read: \(recordingURL.path)")
-    }
-
-    return enumerator.compactMap { element -> URL? in
-        guard let url = element as? URL, isCommandRecord(url) else {
-            return nil
-        }
-        return url
-    }.sorted { $0.path < $1.path }
+    return try aggregateObservationFileURLs(in: recordingURL, fileName: "recording.md")
 }
 
 private func recordKey(for recordURL: URL, relativeTo recordingURL: URL) -> String {
     if recordURL.lastPathComponent == "recording.md" {
         let relative = relativePath(from: recordingURL, to: recordURL)
         let components = relative.split(separator: "/").map(String.init)
-        if components.count >= 3 {
-            return "\(components[components.count - 3]).\(components[components.count - 2])"
-        }
-        let attemptDirectory = recordURL.deletingLastPathComponent()
-        let targetDirectory = attemptDirectory.deletingLastPathComponent()
-        let testDirectory = targetDirectory.deletingLastPathComponent()
-        let suiteDirectory = testDirectory.deletingLastPathComponent()
-        if attemptDirectory.standardizedFileURL.path == recordingURL.standardizedFileURL.path,
-            !suiteDirectory.lastPathComponent.isEmpty,
-            !testDirectory.lastPathComponent.isEmpty
-        {
-            return "\(suiteDirectory.lastPathComponent).\(testDirectory.lastPathComponent)"
+        if components.count >= 2 {
+            return "\(components[0]).\(components[1])"
         }
         return recordURL.deletingLastPathComponent().lastPathComponent
     }
@@ -390,61 +311,23 @@ private func fenced(label: String, in text: String) -> String {
     firstMatch("### \(label)\\n\\n```text\\n([\\s\\S]*?)\\n```", in: text) ?? ""
 }
 
-private func defaultRecordingDirectory(runURL: URL) -> URL {
-    let nestedTestsURL = runURL.appendingPathComponent("tests", isDirectory: true)
-    if FileManager.default.fileExists(atPath: nestedTestsURL.path) {
-        return nestedTestsURL
-    }
-    return runURL
-}
-
-private func resolvedRecordingDirectory(_ url: URL) throws -> URL {
-    if try containsRecordingFiles(url) {
-        return url
-    }
-
-    let nestedRecordingURL = url.appendingPathComponent("recording", isDirectory: true)
-    if try containsRecordingFiles(nestedRecordingURL) {
-        return nestedRecordingURL
-    }
-
-    return url
-}
-
-private func containsRecordingFiles(_ url: URL) throws -> Bool {
-    guard FileManager.default.fileExists(atPath: url.path) else {
+private func isAggregateRunDirectory(_ runURL: URL) throws -> Bool {
+    let infoURL = runURL.appendingPathComponent("info.json")
+    guard FileManager.default.fileExists(atPath: infoURL.path) else {
         return false
     }
 
-    return try FileManager.default.contentsOfDirectory(
-        at: url,
-        includingPropertiesForKeys: nil
-    ).contains { candidate in
-        isCommandRecord(candidate)
-    }
-}
-
-private func isCommandRecord(_ url: URL) -> Bool {
-    url.pathExtension == "md"
-        && url.lastPathComponent != "review.md"
-}
-
-private func loadTestResults(
-    in recordingURL: URL,
-    outputDirectoryURL: URL
-) throws -> [TestResultKey: ReportTestStatus] {
+    let data = try Data(contentsOf: infoURL)
     guard
-        let resultURL = try testResultsURL(
-            in: [
-                recordingURL,
-                outputDirectoryURL,
-                recordingURL.deletingLastPathComponent(),
-            ]
-        )
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        object["kind"] as? String == "swift-e2e-aggregate"
     else {
-        return [:]
+        return false
     }
+    return true
+}
 
+private func parseXUnitResults(at resultURL: URL) throws -> [TestResultKey: ReportTestStatus] {
     let data = try Data(contentsOf: resultURL)
     let parser = XUnitResultParser()
     let xmlParser = XMLParser(data: data)
@@ -457,22 +340,80 @@ private func loadTestResults(
     return parser.results
 }
 
-private func testResultsURL(in searchURLs: [URL]) throws -> URL? {
-    var seen: Set<String> = []
-    for searchURL in searchURLs {
-        let path = searchURL.standardizedFileURL.path
-        guard !seen.contains(path) else {
-            continue
-        }
-        seen.insert(path)
+private func loadAggregateTestResults(in aggregateURL: URL) throws -> [TestResultKey: ReportTestStatus] {
+    let resultURLs = try aggregateTestResultURLs(in: aggregateURL)
+    var observed: [TestResultKey: [ReportTestStatus]] = [:]
 
-        let defaultURL = searchURL.appendingPathComponent("test-results.xml")
-        if FileManager.default.fileExists(atPath: defaultURL.path) {
-            return defaultURL
+    for resultURL in resultURLs {
+        let results = try parseXUnitResults(at: resultURL)
+        for (key, status) in results {
+            observed[key, default: []].append(status)
         }
     }
 
-    return nil
+    return observed.mapValues(combineAggregateStatuses)
+}
+
+private func aggregateTestResultURLs(in aggregateURL: URL) throws -> [URL] {
+    try aggregateObservationFileURLs(in: aggregateURL, fileName: "test-results.xml")
+}
+
+private func aggregateObservationFileURLs(in aggregateURL: URL, fileName: String) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: aggregateURL.path) else {
+        return []
+    }
+
+    var urls: [URL] = []
+    for suiteURL in try directoryChildren(of: aggregateURL) {
+        for testURL in try directoryChildren(of: suiteURL) {
+            for targetURL in try directoryChildren(of: testURL) {
+                for attemptURL in try directoryChildren(of: targetURL) {
+                    let candidate = attemptURL.appendingPathComponent(fileName)
+                    if FileManager.default.fileExists(atPath: candidate.path) {
+                        urls.append(candidate)
+                    }
+                }
+            }
+        }
+    }
+    return urls.sorted { $0.path < $1.path }
+}
+
+private func directoryChildren(of url: URL) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: url.path) else {
+        return []
+    }
+    return try FileManager.default.contentsOfDirectory(
+        at: url,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    )
+    .filter { isDirectory($0) }
+    .sorted { $0.path < $1.path }
+}
+
+private func isDirectory(_ url: URL) -> Bool {
+    (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+}
+
+private func combineAggregateStatuses(_ statuses: [ReportTestStatus]) -> ReportTestStatus {
+    guard !statuses.isEmpty else {
+        return .unknown
+    }
+
+    if let failed = statuses.first(where: { $0.statusClass == "fail" }) {
+        return .failed(failed.detail, duration: nil)
+    }
+    if statuses.contains(where: { $0.statusClass == "unknown" }) {
+        return .unknown
+    }
+    if statuses.allSatisfy({ $0.statusClass == "skipped" }) {
+        return .skipped(statuses.compactMap(\.detail).first, duration: nil)
+    }
+    if statuses.allSatisfy({ $0.statusClass == "pass" }) {
+        return .passed(duration: nil)
+    }
+    return .unknown
 }
 
 private final class XUnitResultParser: NSObject, XMLParserDelegate {
@@ -852,11 +793,7 @@ private func renderReport(
         throw ValidationError("Report template does not contain expected card/footer markers.")
     }
 
-    let testCards = renderCards(
-        files: files,
-        recordingURL: recordingURL,
-        recordLinkPrefix: recordLinkPrefix(recordingURL: recordingURL, outputURL: outputURL)
-    )
+    let testCards = renderCards(files: files)
 
     template.replaceSubrange(
         start.lowerBound..<footerStart.lowerBound,
@@ -867,8 +804,8 @@ private func renderReport(
         "{{REPORT_TITLE}}": "Wendy E2E Report",
         "{{REPORT_HEADING}}": "Wendy E2E Report",
         "{{REPORT_SUMMARY}}":
-            "Generated from Swift E2E tests, Swift Testing results, and captured command recordings.",
-        "{{RUN_ID}}": runID(recordingURL: recordingURL, outputURL: outputURL),
+            "Generated from aggregated Swift E2E runs, Swift Testing results, and captured command recordings.",
+        "{{RUN_ID}}": runID(outputURL: outputURL),
         "{{TESTS_PASSED_COUNT}}": String(passed),
         "{{TESTS_SKIPPED_COUNT}}": String(skipped),
         "{{TESTS_FAILED_COUNT}}": String(failed),
@@ -912,48 +849,11 @@ private func renderReport(
     )
 }
 
-private func runID(recordingURL: URL, outputURL: URL) -> String {
-    let candidates = [
-        outputURL.deletingLastPathComponent(),
-        recordingURL.deletingLastPathComponent(),
-        recordingURL,
-    ]
-
-    for candidate in candidates {
-        let name = candidate.lastPathComponent
-        if name.hasPrefix("e2e-run.") {
-            return String(name.dropFirst("e2e-run.".count))
-        }
-        if name.hasPrefix("e2e-report.") {
-            return String(name.dropFirst("e2e-report.".count))
-        }
-        if name.hasPrefix("e2e-recording.") {
-            return String(name.dropFirst("e2e-recording.".count))
-        }
-    }
-
-    return outputURL.deletingLastPathComponent().lastPathComponent
+private func runID(outputURL: URL) -> String {
+    outputURL.deletingLastPathComponent().lastPathComponent
 }
 
-private func recordLinkPrefix(recordingURL: URL, outputURL: URL) -> String {
-    let outputDirectoryPath = outputURL.deletingLastPathComponent().standardizedFileURL.path
-    let recordingPath = recordingURL.standardizedFileURL.path
-    let prefix =
-        outputDirectoryPath.hasSuffix("/") ? outputDirectoryPath : outputDirectoryPath + "/"
-
-    guard recordingPath.hasPrefix(prefix) else {
-        return ""
-    }
-
-    let relativePath = String(recordingPath.dropFirst(prefix.count))
-    return relativePath.isEmpty ? "" : relativePath + "/"
-}
-
-private func renderCards(
-    files: [ReportTestFile],
-    recordingURL: URL,
-    recordLinkPrefix: String
-) -> String {
+private func renderCards(files: [ReportTestFile]) -> String {
     var cards: [String] = []
 
     for file in files {
@@ -966,55 +866,69 @@ private func renderCards(
         for test in file.tests {
             let statusClass = test.status.statusClass
             let statusText = test.status.statusText
-            let durationBadge =
-                test.status.duration.map { duration in
-                    "<span class=\"badge duration\" title=\"Test duration: \(escapeHTML(duration.formatted))\" style=\"--duration-bar-color: \(duration.color); --duration-bar-width: \(duration.barWidth)\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">\(escapeHTML(duration.formatted))</span></span>"
-                } ?? "<span class=\"badge duration empty\" aria-hidden=\"true\"></span>"
             let hasAI = test.aiItems.isEmpty ? "false" : "true"
             let hasAIReview = test.aiReviewMarkdown.isEmpty ? "false" : "true"
-            let recordURL = recordingURL.appendingPathComponent(test.recordName)
-            let shellName = test.recordName.replacing(/\.md$/, with: ".sh.txt")
-            let shellURL = recordingURL.appendingPathComponent(shellName)
-            let aiReviewName = test.recordName.replacing(/recording\.md$/, with: "review.md")
-            let aiReviewURL = recordingURL.appendingPathComponent(aiReviewName)
-            let recordLinks = [
-                FileManager.default.fileExists(atPath: aiReviewURL.path)
-                    ? "<a class=\"report-button\" href=\"\(escapeHTML(recordLinkPrefix + aiReviewName))\">AI</a>"
-                    : "",
-                FileManager.default.fileExists(atPath: shellURL.path)
-                    ? "<a class=\"report-button\" href=\"\(escapeHTML(recordLinkPrefix + shellName))\">Shell</a>"
-                    : "",
-                FileManager.default.fileExists(atPath: recordURL.path)
-                    ? "<a class=\"report-button\" href=\"\(escapeHTML(recordLinkPrefix + test.recordName))\">Record</a>"
-                    : "",
-            ].joined()
             let aiBadge = hasAIReview == "true" ? renderAIReviewBadge(test.aiReview?.status) : ""
             let pathText = "\(test.suite) › \(test.name)"
+            let pagePath = aggregateTestPagePath(fileURL: file.url, testName: test.name)
 
             cards.append(
-                "<details class=\"test-details\" data-test-status=\"\(statusClass)\" data-has-ai=\"\(hasAI)\" data-has-ai-review=\"\(hasAIReview)\">"
+                "<a class=\"test-details test-details-link\" data-test-status=\"\(statusClass)\" data-has-ai=\"\(hasAI)\" data-has-ai-review=\"\(hasAIReview)\" href=\"\(escapeHTML(pagePath))\">"
             )
             cards.append(
-                "<summary class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span></span>\(durationBadge)\(aiBadge)<span class=\"report-links\">\(recordLinks)</span></summary>"
+                "<span class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span></span>\(aggregateDurationBadge())\(aiBadge)<span class=\"report-links\"></span></span>"
             )
-
-            var body: [String] = []
-            if let detail = test.status.detail {
-                body.append("<p class=\"skip-reason\">\(escapeHTML(detail))</p>")
-            }
-            body.append(renderAIChecklist(test))
-            body.append(renderAIReview(test.aiReviewMarkdown))
-            body.append(renderCommands(test.commands))
-            cards.append(
-                "<div class=\"test-body\">\(body.filter { !$0.isEmpty }.joined(separator: "\n"))</div>"
-            )
-            cards.append("</details>")
+            cards.append("</a>")
         }
 
         cards.append("</div></section>")
     }
 
     return cards.joined(separator: "\n")
+}
+
+private func aggregateDurationBadge() -> String {
+    "<span class=\"badge duration\" title=\"Test duration: 0.1s\" style=\"--duration-bar-color: \(durationColor(seconds: 0.1)); --duration-bar-width: 50%\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">0.1s</span></span>"
+}
+
+private func aggregateTestPagePath(fileURL: URL, testName: String) -> String {
+    "\(recordFileStem(fileURL))/\(slug(testName))/index.html"
+}
+
+private func writeAggregatePlaceholderPages(files: [ReportTestFile], aggregateURL: URL) throws {
+    for file in files {
+        for test in file.tests {
+            let relativePath = aggregateTestPagePath(fileURL: file.url, testName: test.name)
+            let pageURL = aggregateURL.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(
+                at: pageURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let pathText = "\(test.suite) › \(test.name)"
+            let html = """
+                <!doctype html>
+                <html lang=\"en\">
+                <head>
+                  <meta charset=\"utf-8\" />
+                  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+                  <title>\(escapeHTML(pathText))</title>
+                </head>
+                <body>
+                  <main>
+                    <p><a href=\"../../index.html\">Back to report</a></p>
+                    <h1>\(escapeHTML(pathText))</h1>
+                    <p>Not implemented yet.</p>
+                  </main>
+                </body>
+                </html>
+                """
+            try html.write(
+                to: pageURL,
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+    }
 }
 
 private func renderAIReviewBadge(_ status: AIReviewStatus?) -> String {
