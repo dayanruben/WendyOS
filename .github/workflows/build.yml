@@ -595,8 +595,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [determine-version, package-linux, test-templates, integration-tests]
     if: |
+      always() &&
       needs.determine-version.outputs.is_release == 'true' &&
       needs.determine-version.outputs.is_prerelease == 'false' &&
+      needs.package-linux.result == 'success' &&
+      needs.test-templates.result == 'success' &&
       (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped')
     permissions:
       contents: read
@@ -743,77 +746,6 @@ jobs:
               "$DISCORD_WEBHOOK_URL" && echo "Discord nightly notification sent" || echo "Discord nightly notification failed"
           else
             echo "DISCORD_NIGHTLY_WEBHOOK_URL not configured, skipping notification"
-          fi
-
-      # Discord notification for stable releases
-      - name: Notify Discord
-        if: needs.determine-version.outputs.is_prerelease == 'false'
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ needs.determine-version.outputs.tag_name }}"
-          REPO="${{ github.repository }}"
-          URL="https://github.com/${REPO}/releases/tag/${VERSION}"
-
-          # Fetch release body via gh CLI (safe from shell injection)
-          BODY=$(gh release view "$VERSION" --repo "$REPO" --json body -q .body 2>/dev/null || echo "")
-          BODY=$(echo "$BODY" | tr -d '\r')
-          SHORT_BODY=$(echo "$BODY" | head -c 800)
-
-          # Installation instructions
-          read -r -d '' INSTALL_INSTRUCTIONS << 'INSTALL_EOF' || true
-          ## Install the Wendy CLI
-
-          **Linux/macOS**
-          ```
-          curl -fsSL https://install.wendy.sh/cli.sh | bash
-          ```
-
-          **Windows (install)**
-          ```
-          winget install WendyLabs.Wendy
-          ```
-          **Windows (update)**
-          ```
-          winget upgrade WendyLabs.Wendy
-          ```
-
-          ## Install the Wendy Agent
-
-          **Linux/macOS**
-          ```
-          curl -fsSL https://install.wendy.sh/agent.sh | bash
-          ```
-          INSTALL_EOF
-
-          FULL_DESCRIPTION="${SHORT_BODY}
-
-          ${INSTALL_INSTRUCTIONS}"
-
-          ESCAPED_DESC=$(echo "$FULL_DESCRIPTION" | jq -Rs .)
-
-          cat > /tmp/discord_payload.json << PAYLOAD_EOF
-          {
-            "content": "🚀 **New CLI release**: **${VERSION}**",
-            "embeds": [
-              {
-                "title": "Release ${VERSION}",
-                "url": "${URL}",
-                "description": ${ESCAPED_DESC},
-                "color": 5814783,
-                "footer": { "text": "${REPO} • ${VERSION}" }
-              }
-            ]
-          }
-          PAYLOAD_EOF
-
-          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-            curl -sS -X POST -H "Content-Type: application/json" \
-              -d @/tmp/discord_payload.json \
-              "$DISCORD_WEBHOOK_URL" && echo "Discord notification sent" || echo "Discord notification failed"
-          else
-            echo "DISCORD_WEBHOOK_URL not configured, skipping notification"
           fi
 
       # Bump Homebrew tap formula and cask
@@ -1025,7 +957,11 @@ jobs:
     name: Publish AUR Packages
     runs-on: ubuntu-latest
     needs: [determine-version, release]
-    if: needs.determine-version.outputs.is_release == 'true' && needs.determine-version.outputs.is_prerelease == 'false'
+    if: |
+      always() &&
+      needs.release.result == 'success' &&
+      needs.determine-version.outputs.is_release == 'true' &&
+      needs.determine-version.outputs.is_prerelease == 'false'
     strategy:
       matrix:
         include:
@@ -1109,7 +1045,11 @@ jobs:
     name: Publish to Winget
     runs-on: windows-latest
     needs: [determine-version, release]
-    if: needs.determine-version.outputs.is_release == 'true' && needs.determine-version.outputs.is_prerelease == 'false'
+    if: |
+      always() &&
+      needs.release.result == 'success' &&
+      needs.determine-version.outputs.is_release == 'true' &&
+      needs.determine-version.outputs.is_prerelease == 'false'
     steps:
       - name: Install wingetcreate
         run: |
@@ -1337,6 +1277,110 @@ jobs:
             exit $submitResult.ExitCode
           }
           Write-Host "Initial Winget manifest submitted successfully."
+
+  announce:
+    name: Announce Release
+    runs-on: ubuntu-latest
+    needs: [determine-version, release, publish-linux-repos, publish-aur, publish-winget]
+    if: |
+      always() &&
+      needs.determine-version.result == 'success' &&
+      needs.release.result == 'success' &&
+      needs.publish-linux-repos.result == 'success' &&
+      needs.publish-aur.result == 'success' &&
+      needs.publish-winget.result == 'success' &&
+      needs.determine-version.outputs.is_prerelease == 'false'
+    permissions:
+      contents: read
+    steps:
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.determine-version.outputs.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          URL="https://github.com/${REPO}/releases/tag/${VERSION}"
+
+          # Fetch release body via gh CLI (safe from shell injection)
+          BODY=$(gh release view "$VERSION" --repo "$REPO" --json body -q .body 2>/dev/null || echo "")
+          BODY=$(echo "$BODY" | tr -d '\r')
+          SHORT_BODY=$(echo "$BODY" | head -c 800)
+
+          # Installation instructions
+          read -r -d '' INSTALL_INSTRUCTIONS << 'INSTALL_EOF' || true
+          ## Install the Wendy CLI
+
+          **Linux/macOS**
+          ```
+          curl -fsSL https://install.wendy.sh/cli.sh | bash
+          ```
+
+          **Windows (install)**
+          ```
+          winget install WendyLabs.Wendy
+          ```
+          **Windows (update)**
+          ```
+          winget upgrade WendyLabs.Wendy
+          ```
+
+          ## Install the Wendy Agent
+
+          **Linux/macOS**
+          ```
+          curl -fsSL https://install.wendy.sh/agent.sh | bash
+          ```
+          INSTALL_EOF
+
+          FULL_DESCRIPTION="${SHORT_BODY}
+
+          ${INSTALL_INSTRUCTIONS}"
+
+          PAYLOAD_FILE=$(mktemp /tmp/discord_payload.XXXXXX.json)
+          trap 'rm -f "$PAYLOAD_FILE"' EXIT
+
+          # Build payload via jq so all values are properly escaped (no JSON injection)
+          jq -n \
+            --arg version "$VERSION" \
+            --arg url "$URL" \
+            --arg desc "$FULL_DESCRIPTION" \
+            --arg repo "$REPO" \
+            '{
+              content: ("🚀 **New CLI release**: **" + $version + "**"),
+              embeds: [{
+                title: ("Release " + $version),
+                url: $url,
+                description: $desc,
+                color: 5814783,
+                footer: { text: ($repo + " • " + $version) }
+              }]
+            }' > "$PAYLOAD_FILE"
+
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            # Validate URL is a Discord webhook before use
+            if [[ ! "$DISCORD_WEBHOOK_URL" =~ ^https://discord(app)?\.com/api/webhooks/ ]]; then
+              echo "Invalid webhook URL format, skipping notification" >&2
+              exit 1
+            fi
+
+            for attempt in 1 2 3; do
+              if curl -sS --fail -X POST -H "Content-Type: application/json" \
+                  --url "$DISCORD_WEBHOOK_URL" \
+                  -d @"$PAYLOAD_FILE"; then
+                echo "Discord notification sent (attempt ${attempt})"
+                break
+              fi
+              echo "Attempt ${attempt} failed" >&2
+              if [ "$attempt" -eq 3 ]; then
+                echo "All Discord notification attempts failed — release succeeded, notification skipped" >&2
+              else
+                sleep 5
+              fi
+            done
+          else
+            echo "DISCORD_WEBHOOK_URL not configured, skipping notification"
+          fi
 
   test-templates:
     name: Template Tests
