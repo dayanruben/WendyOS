@@ -40,7 +40,7 @@ struct `'wendy completion install'` {
      the conventional location, and adds an idempotent source line to
      the shell rc file when that shell needs one.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `installs completion for the detected shell`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
@@ -70,7 +70,7 @@ struct `'wendy completion install'` {
      selected shell only. Other shell configuration files remain
      unchanged.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `uses the requested shell override`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
@@ -95,7 +95,7 @@ struct `'wendy completion install'` {
      The command exits successfully without creating directories or
      editing shell configuration.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `prints install paths without writing files`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
@@ -118,7 +118,7 @@ struct `'wendy completion install'` {
      `--stdout` emits the completion script to stdout and performs no
      installation. Stderr remains empty on success.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `prints the script to stdout when requested`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
@@ -141,7 +141,7 @@ struct `'wendy completion install'` {
      Running installation repeatedly leaves a single managed completion
      script and a single source line in the relevant shell rc file.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `is idempotent when completion is already installed`() async throws {
         // AI: Look for surprising repeated-install behavior in the command log.
         // The second run should read as safe and intentional, not as if it

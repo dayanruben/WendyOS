@@ -30,7 +30,7 @@ struct `'wendy device info'` {
     /**
      Use this form when the target device is already known. The command connects directly to the selected device and does not open the interactive picker.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `'--device' selects an explicit device`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
@@ -61,7 +61,7 @@ struct `'wendy device info'` {
     /**
      When no explicit device is passed, the saved default device is the target. The command treats this as a normal selection and leaves the saved default unchanged.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `uses the configured default device`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
@@ -124,7 +124,7 @@ struct `'wendy device info'` {
     /**
      The summary includes the agent version, OS, OS version, CPU architecture, and CLI version. Optional hardware fields appear when the agent reports them.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `prints human-readable device information`() async throws {
         // AI: Review the human-readable output for usefulness, not exact text.
         // It should be clean terminal output with coherent labels, no JSON leak,
@@ -184,7 +184,7 @@ struct `'wendy device info'` {
     /**
      When the CLI is not attached to an interactive terminal, `device info` behaves like `--json`: it avoids prompts and emits machine-readable output.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `non-interactive mode prints JSON device information`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
@@ -225,7 +225,7 @@ struct `'wendy device info'` {
     /**
      Device selection depends on the user's Wendy CLI configuration. If that configuration cannot be parsed, the command reports the configuration problem instead of opening the picker or contacting an agent.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `reports invalid CLI configuration before selecting a device`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
@@ -303,7 +303,7 @@ struct `'wendy device info'` {
     /**
      With `--check-updates`, the command compares the connected agent to the selected release channel and reports whether an update is available.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `'--check-updates' reports update status`() async throws {
         // AI: Review the update-check wording for ambiguity. The output should
         // clearly distinguish current device information from update status and
@@ -387,7 +387,7 @@ struct `'wendy device info'` {
     /**
      Update checks depend on the release source being reachable and returning a valid response. If the release source fails, the command reports the update-check failure rather than inventing an update status.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `'--check-updates' reports update-source failure`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address

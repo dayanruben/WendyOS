@@ -53,7 +53,7 @@ struct `'wendy os cache list'` {
      Configuration files, credentials, and project-local artifacts are not
      scanned or displayed.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `ignores unrelated files outside the cache root`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
@@ -79,7 +79,7 @@ struct `'wendy os cache list'` {
      Unreadable or malformed cache metadata produces a diagnostic that
      identifies the affected entry while preserving the rest of the cache.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `reports unreadable cache metadata clearly`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(

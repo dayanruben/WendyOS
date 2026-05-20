@@ -34,7 +34,7 @@ struct `'wendy completion bash'` {
      Writes a valid bash completion script to stdout. The command emits no
      stderr, exits successfully, and does not read or write shell rc files.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `prints the bash completion script`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(

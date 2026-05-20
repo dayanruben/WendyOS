@@ -34,7 +34,7 @@ struct `'wendy completion zsh'` {
      Writes a valid zsh completion script to stdout. The command emits no
      stderr, exits successfully, and does not read or write shell rc files.
      */
-    @Test
+    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
     func `prints the zsh completion script`() async throws {
         // AI: Skim the generated script for obvious zsh-completion quality
         // issues that substring assertions miss, such as broken function shape,
