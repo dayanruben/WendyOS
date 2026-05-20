@@ -29,9 +29,10 @@ concurrency:
 jobs:
   swift-e2e-tests:
     name: ${{ matrix.target.name }}
-    # Unsupported entries remain visible as no-op placeholders while supported
-    # macOS and Ubuntu entries run the Swift E2E harness against their target device.
-    runs-on: ${{ matrix.target.runner_id == 'macos-26' && fromJSON('["self-hosted", "macOS"]') || matrix.target.runner_id == 'ubuntu-24-04' && fromJSON('["self-hosted", "linux"]') || 'ubuntu-latest' }}
+    # Unsupported entries remain visible as no-op placeholders on GitHub-hosted
+    # runners while supported entries run the Swift E2E harness on their target
+    # self-hosted CLI runner.
+    runs-on: ${{ matrix.target.status == 'enabled' && matrix.target.runner_id == 'macos-26' && fromJSON('["self-hosted", "macOS"]') || matrix.target.status == 'enabled' && matrix.target.runner_id == 'ubuntu-24-04' && fromJSON('["self-hosted", "linux"]') || matrix.target.status == 'enabled' && matrix.target.runner_id == 'windows-11' && fromJSON('["self-hosted", "Windows", "X64", "windows-11"]') || 'ubuntu-latest' }}
     concurrency:
       group: ${{ matrix.target.status == 'enabled' && format('swift-e2e-{0}', matrix.target.device_id) || format('swift-e2e-placeholder-{0}', matrix.target.id) }}
       cancel-in-progress: false
@@ -97,15 +98,17 @@ jobs:
             transport: lan
 
           - id: windows-11-to-jetson-orin-nano
-            name: Windows 11 → Jetson Orin Nano 🚧
-            status: not-supported-yet
-            status_label: Not Supported Yet
+            name: Windows 11 → Jetson Orin Nano
+            status: enabled
+            status_label: Enabled
             runner_id: windows-11
             runner_name: Windows 11
             runner_labels: 'self-hosted, Windows, X64, windows-11'
             cli_os: windows
             device_id: jetson-orin-nano
             device_name: Jetson Orin Nano
+            device_address: wendyos-jetson-orin-nano.local
+            agent_os: wendyOS
             transport: lan
 
           - id: macos-26-to-raspberry-pi-5
@@ -137,15 +140,17 @@ jobs:
             transport: lan
 
           - id: windows-11-to-raspberry-pi-5
-            name: Windows 11 → Raspberry Pi 5 🚧
-            status: not-supported-yet
-            status_label: Not Supported Yet
+            name: Windows 11 → Raspberry Pi 5
+            status: enabled
+            status_label: Enabled
             runner_id: windows-11
             runner_name: Windows 11
             runner_labels: 'self-hosted, Windows, X64, windows-11'
             cli_os: windows
             device_id: raspberry-pi-5
             device_name: Raspberry Pi 5
+            device_address: wendyos-raspberry-pi-5.local
+            agent_os: wendyOS
             transport: lan
 
           - id: macos-26-to-esp32-c6
@@ -187,9 +192,9 @@ jobs:
       - uses: actions/checkout@v6
         if: matrix.target.status == 'enabled'
 
-      - name: Capture Swift toolchain version
-        if: matrix.target.status == 'enabled'
-        id: swift-toolchain
+      - name: Capture Swift toolchain version (Unix)
+        if: matrix.target.status == 'enabled' && matrix.target.runner_id != 'windows-11'
+        id: swift-toolchain-unix
         shell: bash
         run: |
           set -euo pipefail
@@ -200,6 +205,15 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Capture Swift toolchain version (Windows)
+        if: matrix.target.status == 'enabled' && matrix.target.runner_id == 'windows-11'
+        id: swift-toolchain-windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (& swift --version | Select-Object -First 1) -replace '[^A-Za-z0-9._-]+', '-'
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Cache SwiftPM package resolution
         if: matrix.target.status == 'enabled'
         uses: actions/cache@v5
@@ -209,14 +223,15 @@ jobs:
             swift/WendyE2ETests/.build/repositories
             ~/Library/Caches/org.swift.swiftpm
             ~/.cache/org.swift.swiftpm
-          key: swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain.outputs.version }}-${{ hashFiles('swift/WendyE2ETests/Package.resolved') }}
+            ~/AppData/Local/org.swift.swiftpm
+          key: swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain-unix.outputs.version || steps.swift-toolchain-windows.outputs.version }}-${{ hashFiles('swift/WendyE2ETests/Package.resolved') }}
           restore-keys: |
-            swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain.outputs.version }}-
+            swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain-unix.outputs.version || steps.swift-toolchain-windows.outputs.version }}-
             swift-e2e-swiftpm-${{ runner.os }}-
 
-      - name: Compute Swift E2E run ID
-        if: matrix.target.status == 'enabled'
-        id: e2e-run
+      - name: Compute Swift E2E run ID (Unix)
+        if: matrix.target.status == 'enabled' && matrix.target.runner_id != 'windows-11'
+        id: e2e-run-unix
         shell: bash
         run: |
           set -euo pipefail
@@ -231,13 +246,31 @@ jobs:
           printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
           echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${matrix_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
 
-      - name: Run Swift E2E tests
-        if: matrix.target.status == 'enabled'
+      - name: Compute Swift E2E run ID (Windows)
+        if: matrix.target.status == 'enabled' && matrix.target.runner_id == 'windows-11'
+        id: e2e-run-windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Convert-ToSlug([string]$Value) {
+            $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
+            $slug = $slug -replace '-+', '-'
+            return $slug.Trim('-')
+          }
+
+          $workflowID = Convert-ToSlug $(if ($env:GITHUB_WORKFLOW) { $env:GITHUB_WORKFLOW } else { 'swift-e2e-tests' })
+          $matrixID = Convert-ToSlug '${{ matrix.target.id }}'
+          $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
+          $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $matrixID, $attempt
+          "run_id=$runID" >> $env:GITHUB_OUTPUT
+
+      - name: Run Swift E2E tests (Unix)
+        if: matrix.target.status == 'enabled' && matrix.target.runner_id != 'windows-11'
         working-directory: swift
         shell: bash
         env:
           WENDY_E2E_TEST_FILTERS: ${{ inputs.tests || '' }}
-          WENDY_E2E_RUN_ID: ${{ steps.e2e-run.outputs.run_id }}
+          WENDY_E2E_RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
           WENDY_E2E_CLI_OS: ${{ matrix.target.cli_os }}
           WENDY_E2E_AGENT_OS: ${{ matrix.target.agent_os }}
           WENDY_E2E_TRANSPORT: ${{ matrix.target.transport }}
@@ -247,12 +280,37 @@ jobs:
             --output-dir /tmp/wendy \
             --agent-address "${{ matrix.target.device_address }}"
 
-      - name: Upload Swift E2E run
-        if: always() && matrix.target.status == 'enabled'
+      - name: Run Swift E2E tests (Windows)
+        if: matrix.target.status == 'enabled' && matrix.target.runner_id == 'windows-11'
+        working-directory: swift
+        shell: pwsh
+        env:
+          WENDY_E2E_TEST_FILTERS: ${{ inputs.tests || '' }}
+          WENDY_E2E_RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
+          WENDY_E2E_CLI_OS: ${{ matrix.target.cli_os }}
+          WENDY_E2E_AGENT_OS: ${{ matrix.target.agent_os }}
+          WENDY_E2E_TRANSPORT: ${{ matrix.target.transport }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
+          & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "${{ matrix.target.device_address }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Swift E2E run (Unix)
+        if: always() && matrix.target.status == 'enabled' && matrix.target.runner_id != 'windows-11'
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ steps.e2e-run.outputs.run_id }}
-          path: /tmp/wendy/${{ steps.e2e-run.outputs.run_id }}/**
+          name: ${{ steps.e2e-run-unix.outputs.run_id }}
+          path: /tmp/wendy/${{ steps.e2e-run-unix.outputs.run_id }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Swift E2E run (Windows)
+        if: always() && matrix.target.status == 'enabled' && matrix.target.runner_id == 'windows-11'
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.e2e-run-windows.outputs.run_id }}
+          path: ${{ runner.temp }}/wendy/${{ steps.e2e-run-windows.outputs.run_id }}/**
           if-no-files-found: warn
           retention-days: 14
 
