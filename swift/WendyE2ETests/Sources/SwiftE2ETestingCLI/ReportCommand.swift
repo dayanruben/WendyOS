@@ -43,7 +43,7 @@ struct ReportCommand: ParsableCommand {
 
         let outputURL = runURL.appendingPathComponent("index.html")
         let records = try loadRecords(in: runURL)
-        let aiReviews = try loadAIReviews(in: runURL)
+        let aiReviews = try loadAggregateAIReviews(in: runURL)
         let testResults = try loadAggregateTestResults(in: runURL)
         let files = try parseTests(
             in: testsURL,
@@ -56,6 +56,7 @@ struct ReportCommand: ParsableCommand {
             templateURL: templateURL,
             recordingURL: runURL,
             files: files,
+            aiReviews: aiReviews,
             outputURL: outputURL
         )
     }
@@ -316,6 +317,12 @@ private struct AIReview {
     var status: AIReviewStatus?
 }
 
+private struct AggregateAIReviews {
+    var root: AIReview?
+    var suites: [String: AIReview] = [:]
+    var tests: [AggregatePathKey: AIReview] = [:]
+}
+
 private enum AIReviewStatus: String {
     case pass
     case concern
@@ -335,6 +342,8 @@ private enum AIReviewStatus: String {
 
 private struct ReportTestFile {
     var url: URL
+    var suiteKey: String
+    var suiteReview: AIReview?
     var tests: [ReportTestCase]
 }
 
@@ -359,30 +368,47 @@ private func loadRecords(in recordingURL: URL) throws -> [String: [CommandRun]] 
     return records
 }
 
-private func loadAIReviews(in recordingURL: URL) throws -> [String: AIReview] {
-    guard FileManager.default.fileExists(atPath: recordingURL.path) else {
-        return [:]
+private func loadAggregateAIReviews(in aggregateURL: URL) throws -> AggregateAIReviews {
+    guard FileManager.default.fileExists(atPath: aggregateURL.path) else {
+        return AggregateAIReviews()
     }
 
-    let reviewURLs = try aggregateObservationFileURLs(in: recordingURL, fileName: "review.md")
+    var reviews = AggregateAIReviews(
+        root: try loadAIReview(at: aggregateURL.appendingPathComponent("review.md"))
+    )
 
-    var reviews: [String: AIReview] = [:]
-    for reviewURL in reviewURLs {
-        let recordURL = reviewURL.deletingLastPathComponent().appendingPathComponent("recording.md")
-        guard FileManager.default.fileExists(atPath: recordURL.path) else {
-            continue
+    for suiteURL in try directoryChildren(of: aggregateURL) {
+        let suiteKey = suiteURL.lastPathComponent
+        if let suiteReview = try loadAIReview(at: suiteURL.appendingPathComponent("review.md")) {
+            reviews.suites[suiteKey] = suiteReview
         }
-        let recordKey = recordKey(for: recordURL, relativeTo: recordingURL)
-        let review = try String(contentsOf: reviewURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !recordKey.isEmpty, !review.isEmpty {
-            reviews[recordKey] = AIReview(
-                markdown: review,
-                status: parseAIReviewStatus(from: review)
-            )
+
+        for testURL in try directoryChildren(of: suiteURL) {
+            let testKey = testURL.lastPathComponent
+            if let testReview = try loadAIReview(at: testURL.appendingPathComponent("review.md")) {
+                reviews.tests[AggregatePathKey(suiteKey: suiteKey, testKey: testKey)] = testReview
+            }
         }
     }
+
     return reviews
+}
+
+private func loadAIReview(at reviewURL: URL) throws -> AIReview? {
+    guard FileManager.default.fileExists(atPath: reviewURL.path) else {
+        return nil
+    }
+
+    let review = try String(contentsOf: reviewURL, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !review.isEmpty else {
+        return nil
+    }
+
+    return AIReview(
+        markdown: review,
+        status: parseAIReviewStatus(from: review)
+    )
 }
 
 private func parseAIReviewStatus(from markdown: String) -> AIReviewStatus? {
@@ -860,7 +886,7 @@ private func parseTests(
     in testsURL: URL,
     recordingURL: URL,
     records: [String: [CommandRun]],
-    aiReviews: [String: AIReview],
+    aiReviews: AggregateAIReviews,
     testResults: [AggregatePathKey: ReportAggregateTestResult]
 ) throws -> [ReportTestFile] {
     let sourceURLs = try swiftTestFiles(in: testsURL)
@@ -926,14 +952,14 @@ private func parseTests(
             } else {
                 tests[testIndex].recordName = nestedRecordName
             }
-            tests[testIndex].aiReview = aiReviews[recordKey]
+            let key = AggregatePathKey(suiteKey: recordSuiteKey, testKey: recordTestKey)
+            tests[testIndex].aiReview = aiReviews.tests[key]
             tests[testIndex].commands = records[recordKey, default: []].filter {
                 command in
                 command.sourceFile == sourceURL.lastPathComponent
                     && tests[testIndex].funcLine <= command.sourceLine
                     && command.sourceLine < nextLine
             }
-            let key = AggregatePathKey(suiteKey: recordSuiteKey, testKey: recordTestKey)
             if let result = testResults[key] {
                 tests[testIndex].targetOutcomes = result.targetOutcomes
                 tests[testIndex].durationRange = result.durationRange
@@ -942,7 +968,15 @@ private func parseTests(
         }
 
         if !tests.isEmpty {
-            files.append(ReportTestFile(url: sourceURL, tests: tests))
+            let suiteKey = recordFileStem(sourceURL)
+            files.append(
+                ReportTestFile(
+                    url: sourceURL,
+                    suiteKey: suiteKey,
+                    suiteReview: aiReviews.suites[suiteKey],
+                    tests: tests
+                )
+            )
         }
     }
 
@@ -1004,6 +1038,7 @@ private func renderReport(
     templateURL: URL,
     recordingURL: URL,
     files: [ReportTestFile],
+    aiReviews: AggregateAIReviews,
     outputURL: URL
 ) throws {
     let tests = files.flatMap(\.tests)
@@ -1032,11 +1067,12 @@ private func renderReport(
         throw ValidationError("Report template does not contain expected card/footer markers.")
     }
 
+    let reviewHTML = renderAggregateAIReview(aiReviews.root)
     let testCards = renderCards(files: files)
 
     template.replaceSubrange(
         start.lowerBound..<footerStart.lowerBound,
-        with: testCards + "\n\n"
+        with: reviewHTML + testCards + "\n\n"
     )
 
     let replacements: [String: String] = [
@@ -1094,6 +1130,38 @@ private func runID(outputURL: URL) -> String {
     outputURL.deletingLastPathComponent().lastPathComponent
 }
 
+private func renderAggregateAIReview(_ review: AIReview?) -> String {
+    renderScopedAIReview(review, className: "ai-review-inline ai-review-report", heading: "AI report review")
+}
+
+private func renderSuiteAIReview(_ review: AIReview?) -> String {
+    renderScopedAIReview(review, className: "ai-review-inline ai-review-suite", heading: "AI suite review")
+}
+
+private func renderTestAIReview(_ review: AIReview?) -> String {
+    renderScopedAIReview(review, className: "ai-review-inline ai-review-test", heading: "AI test review")
+}
+
+private func renderScopedAIReview(_ review: AIReview?, className: String, heading: String) -> String {
+    guard let review else {
+        return ""
+    }
+
+    return """
+        <section class="\(className)">
+        <h4>\(escapeHTML(heading))\(renderAIReviewStatusDot(review.status))</h4>
+        <div class="ai-review-markdown">\(renderMarkdown(review.markdown))</div>
+        </section>
+        """
+}
+
+private func renderAIReviewStatusDot(_ status: AIReviewStatus?) -> String {
+    guard let status else {
+        return ""
+    }
+    return "<span class=\"ai-status-dot \(status.rawValue)\" aria-label=\"\(escapeHTML(status.label))\"></span>"
+}
+
 private func renderCards(files: [ReportTestFile]) -> String {
     var cards: [String] = []
 
@@ -1102,6 +1170,7 @@ private func renderCards(files: [ReportTestFile]) -> String {
         cards.append(
             "<div class=\"card-title\"><h2>\(escapeHTML(displayName(file.url.lastPathComponent)))</h2></div>"
         )
+        cards.append(renderSuiteAIReview(file.suiteReview))
         cards.append("<div class=\"suite-group\">")
 
         for test in file.tests {
@@ -1120,7 +1189,7 @@ private func renderCards(files: [ReportTestFile]) -> String {
             cards.append(
                 "<summary class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span>\(outcomeBadges)</span>\(aggregateDurationBadge(test.durationRange))\(aiBadge)<span class=\"report-links\"></span></summary>"
             )
-            cards.append(renderObservations(test.observations))
+            cards.append(renderObservations(test.observations, aiReview: test.aiReview))
             cards.append("</details>")
         }
 
@@ -1150,9 +1219,9 @@ private func renderTargetOutcomeBadges(_ counts: ReportTargetOutcomeCounts) -> S
     }.joined()
 }
 
-private func renderObservations(_ observations: [ReportTestObservation]) -> String {
+private func renderObservations(_ observations: [ReportTestObservation], aiReview: AIReview?) -> String {
     guard !observations.isEmpty else {
-        return "<div class=\"test-body\"><p class=\"note\">No concrete observations were found for this test.</p></div>"
+        return "<div class=\"test-body\"><p class=\"note\">No concrete observations were found for this test.</p>\(renderTestAIReview(aiReview))</div>"
     }
 
     var chunks: [String] = [
@@ -1168,7 +1237,9 @@ private func renderObservations(_ observations: [ReportTestObservation]) -> Stri
             "<div class=\"observation-row\"><span class=\"observation-target\">\(target)</span><span class=\"observation-route-cell\">\(route)</span><span class=\"observation-spacer\" aria-hidden=\"true\"></span>\(renderObservationLinks(observation))<span class=\"observation-attempt\">\(escapeHTML(observation.attempt))</span><span class=\"badge \(observation.status.statusClass)\">\(observation.status.statusText)</span>\(observationDurationBadge(observation.duration))</div>"
         )
     }
-    chunks.append("</section></div>")
+    chunks.append("</section>")
+    chunks.append(renderTestAIReview(aiReview))
+    chunks.append("</div>")
     return chunks.joined(separator: "\n")
 }
 
