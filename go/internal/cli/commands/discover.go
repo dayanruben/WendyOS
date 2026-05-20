@@ -875,12 +875,19 @@ func runClipboardCommand(cmd *exec.Cmd, timeout time.Duration) error {
 	case err := <-done:
 		return err
 	case <-timer.C:
+		// Non-blocking check: if the command completed at the same moment the
+		// timer fired (select race), return the real exit status instead of a
+		// spurious timeout error.
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
 		select {
-		case err := <-done:
-			return err
+		case <-done:
 		case <-time.After(cmd.WaitDelay + 100*time.Millisecond):
 		}
 		return fmt.Errorf("timed out after %s", timeout)
