@@ -686,9 +686,8 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 				streamErr = stream.Send(&agentpb.AttachContainerRequest{
 					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appID},
 				})
-				if streamErr != nil {
-					_ = stream.CloseSend()
-				}
+				// Compose never forwards stdin; half-close so the server sees EOF.
+				_ = stream.CloseSend()
 			}
 			if streamErr != nil {
 				// Fall back to the server-streaming StartContainer when AttachContainer is unavailable.
