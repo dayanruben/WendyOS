@@ -22,3 +22,18 @@ jobs:
         run: |
           gh pr diff ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} > pr.diff
+
+      - name: Check out wendy-vscode
+        uses: actions/checkout@v6
+        with:
+          repository: wendylabsinc/wendy-vscode
+          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          path: vscode
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Anthropic SDK
+        run: pip install --quiet anthropic==0.97.0
