@@ -71,7 +71,7 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 		if err := checkCmd2.Run(); err == nil {
 			return nil
 		} else if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("swiftly was installed via Homebrew but is not yet in your PATH; " +
+			return fmt.Errorf("swiftly was installed via Homebrew but is not yet in your PATH; "+
 				"open a new terminal or run: eval $(%s shellenv)", findBrewPath())
 		}
 		// swiftly is available but this version is not installed yet — fall through to install
