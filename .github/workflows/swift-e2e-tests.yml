@@ -153,41 +153,6 @@ jobs:
             agent_os: wendyOS
             transport: lan
 
-          - id: macos-26-to-esp32-c6
-            name: macOS 26 → ESP32-C6 🚧
-            status: not-supported-yet
-            status_label: Not Supported Yet
-            runner_id: macos-26
-            runner_name: macOS 26
-            runner_labels: 'self-hosted, macOS, ARM64, macos-26'
-            cli_os: macOS
-            device_id: esp32-c6
-            device_name: ESP32-C6
-            transport: ble
-
-          - id: ubuntu-24-04-to-esp32-c6
-            name: Ubuntu 24.04 → ESP32-C6 🚧
-            status: not-supported-yet
-            status_label: Not Supported Yet
-            runner_id: ubuntu-24-04
-            runner_name: Ubuntu 24.04
-            runner_labels: 'self-hosted, Linux, X64, ubuntu-24-04'
-            cli_os: linux
-            device_id: esp32-c6
-            device_name: ESP32-C6
-            transport: ble
-
-          - id: windows-11-to-esp32-c6
-            name: Windows 11 → ESP32-C6 🚧
-            status: not-supported-yet
-            status_label: Not Supported Yet
-            runner_id: windows-11
-            runner_name: Windows 11
-            runner_labels: 'self-hosted, Windows, X64, windows-11'
-            cli_os: windows
-            device_id: esp32-c6
-            device_name: ESP32-C6
-            transport: ble
     steps:
       - uses: actions/checkout@v6
         if: matrix.target.status == 'enabled'
