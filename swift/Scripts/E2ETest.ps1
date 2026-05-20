@@ -35,12 +35,26 @@ function ConvertTo-Isolation([string]$Value) {
     throw 'ERROR: WENDY_E2E_ISOLATION must be none, per-run, or per-test.'
 }
 
-function New-DefaultRunID {
-    $timestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+function New-DefaultRunID([string]$OutputDirectory, [string]$RunName) {
+    if (-not $RunName) { $RunName = 'local' }
     if ($env:GITHUB_RUN_ID) {
-        return "gh$($env:GITHUB_RUN_ID)-attempt$(if ($env:GITHUB_RUN_ATTEMPT) { $env:GITHUB_RUN_ATTEMPT } else { '1' })-$timestamp-p$PID-r$(Get-Random)$(Get-Random)"
+        $attemptValue = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
+        return 'swift-e2e-tests.gh{0}.{1}.{2:D4}' -f $env:GITHUB_RUN_ID, $RunName, $attemptValue
     }
-    return "$timestamp-p$PID-r$(Get-Random)$(Get-Random)"
+
+    $evaluationID = 'local' + (Get-Date).ToUniversalTime().ToString('yyMMdd')
+    $base = "swift-e2e-tests.$evaluationID.$RunName"
+    $maxAttempt = 0
+    if ($OutputDirectory -and (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
+        Get-ChildItem -LiteralPath $OutputDirectory -Directory -Filter "$base.????" | ForEach-Object {
+            $suffix = $_.Name.Substring($_.Name.Length - 4)
+            $attempt = 0
+            if ([int]::TryParse($suffix, [ref]$attempt) -and $attempt -gt $maxAttempt) {
+                $maxAttempt = $attempt
+            }
+        }
+    }
+    return '{0}.{1:D4}' -f $base, ($maxAttempt + 1)
 }
 
 function ConvertTo-SafeRunID([string]$Value) {
@@ -188,6 +202,7 @@ function Write-RunInfo([int]$Status) {
 }
 
 $RunID = $env:WENDY_E2E_RUN_ID
+$RunName = if ($env:WENDY_E2E_RUN_NAME) { $env:WENDY_E2E_RUN_NAME } else { 'local' }
 $DefaultRunID = $null
 $OutputDir = $env:WENDY_E2E_OUTPUT_DIR
 $CLIRootDir = $env:WENDY_E2E_CLI_ROOT_DIR
@@ -215,6 +230,7 @@ while ($i -lt $script:RemainingArgs.Count) {
     switch ($script:RemainingArgs[$i]) {
         '--filter' { $TestFilters += Get-ValueOption '--filter' $i; $i += 2; continue }
         '--run-id' { $RunID = Get-ValueOption '--run-id' $i; $i += 2; continue }
+        '--run-name' { $RunName = Get-ValueOption '--run-name' $i; $i += 2; continue }
         '--default-run-id' { $DefaultRunID = Get-ValueOption '--default-run-id' $i; $i += 2; continue }
         '--output-dir' { $OutputDir = Get-ValueOption '--output-dir' $i; $i += 2; continue }
         '--cli-root-dir' { $CLIRootDir = Get-ValueOption '--cli-root-dir' $i; $i += 2; continue }
@@ -247,8 +263,6 @@ if ($TestFilters.Count -eq 0 -and $env:WENDY_E2E_TEST_FILTERS) {
 }
 if ($TestFilters.Count -eq 0) { $TestFilters = @('WendyE2ETests') }
 
-$RunID = ConvertTo-SafeRunID $(if ($RunID) { $RunID } elseif ($DefaultRunID) { $DefaultRunID } else { New-DefaultRunID })
-if (-not $RunID) { $RunID = ConvertTo-SafeRunID (New-DefaultRunID) }
 if (-not $OutputDir) { throw 'ERROR: --output-dir or WENDY_E2E_OUTPUT_DIR is required.' }
 
 if (-not $CLIRootDir) { $CLIRootDir = if ($CLIAddress) { '$HOME/.wendy/e2e' } else { Join-Path $HOME '.wendy/e2e' } }
@@ -261,6 +275,9 @@ if ($CLIAddress -and -not $CLIRepoDir) { throw 'ERROR: --cli-repo-dir is require
 
 $script:RepoDir = Resolve-E2EPath (Join-Path $SwiftDir '..') -Existing
 $script:OutputDir = Resolve-E2EPath $OutputDir -Create
+$RunName = ConvertTo-SafeRunID $RunName
+$RunID = ConvertTo-SafeRunID $(if ($RunID) { $RunID } elseif ($DefaultRunID) { $DefaultRunID } else { New-DefaultRunID $script:OutputDir $RunName })
+if (-not $RunID) { $RunID = ConvertTo-SafeRunID (New-DefaultRunID $script:OutputDir $RunName) }
 if (-not $CLIAddress) {
     $script:CLIRootDir = Resolve-E2EPath $CLIRootDir -Create
     $script:CLIRepoDir = Resolve-E2EPath $(if ($CLIRepoDir) { $CLIRepoDir } else { $script:RepoDir }) -Existing

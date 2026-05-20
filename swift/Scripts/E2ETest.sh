@@ -6,20 +6,29 @@ SWIFT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGE_DIR="$SWIFT_DIR/WendyE2ETests"
 
 default_run_id() {
-  local timestamp
-  timestamp="$(date -u +"%Y%m%dT%H%M%SZ")"
+  local output_dir="$1"
+  local run_name="${2:-local}"
+  local evaluation_id attempt base path leaf suffix max_attempt=0
 
   if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
-    printf "gh%s-attempt%s-%s-p%s-r%s%s" \
-      "$GITHUB_RUN_ID" \
-      "${GITHUB_RUN_ATTEMPT:-1}" \
-      "$timestamp" \
-      "$$" \
-      "$RANDOM" \
-      "$RANDOM"
+    evaluation_id="gh${GITHUB_RUN_ID}"
+    printf -v attempt "%04d" "${GITHUB_RUN_ATTEMPT:-1}"
   else
-    printf "%s-p%s-r%s%s" "$timestamp" "$$" "$RANDOM" "$RANDOM"
+    evaluation_id="local$(date -u +"%y%m%d")"
+    base="swift-e2e-tests.${evaluation_id}.${run_name}"
+    shopt -s nullglob
+    for path in "$output_dir/$base".[0-9][0-9][0-9][0-9]; do
+      leaf="${path##*/}"
+      suffix="${leaf##*.}"
+      if [[ "$suffix" =~ ^[0-9]{4}$ && $((10#$suffix)) -gt $max_attempt ]]; then
+        max_attempt=$((10#$suffix))
+      fi
+    done
+    shopt -u nullglob
+    printf -v attempt "%04d" "$((max_attempt + 1))"
   fi
+
+  printf "swift-e2e-tests.%s.%s.%s" "$evaluation_id" "$run_name" "$attempt"
 }
 
 sanitize_run_id() {
@@ -34,6 +43,7 @@ sanitize_run_id() {
 }
 
 RUN_ID="${WENDY_E2E_RUN_ID:-}"
+RUN_NAME="${WENDY_E2E_RUN_NAME:-local}"
 OUTPUT_DIR="${WENDY_E2E_OUTPUT_DIR:-}"
 CLI_ROOT_DIR="${WENDY_E2E_CLI_ROOT_DIR:-}"
 CLI_REPO_DIR="${WENDY_E2E_CLI_REPO_DIR:-}"
@@ -125,6 +135,7 @@ Options:
 Environment:
   WENDY_E2E_TEST_FILTERS              Comma-separated SwiftPM filters.
   WENDY_E2E_RUN_ID                    Optional run identifier for default paths.
+  WENDY_E2E_RUN_NAME                  Run name for generated run IDs; defaults to local.
   WENDY_E2E_OUTPUT_DIR                Required local root directory for runner output runs.
   WENDY_E2E_CLI_ROOT_DIR              Root directory for CLI machine runs.
   WENDY_E2E_CLI_REPO_DIR              wendy-agent repo root on the CLI machine.
@@ -256,11 +267,6 @@ if [[ ${#TEST_FILTERS[@]} -eq 0 ]]; then
   TEST_FILTERS+=("WendyE2ETests")
 fi
 
-RUN_ID="$(sanitize_run_id "${RUN_ID:-$(default_run_id)}")"
-if [[ -z "$RUN_ID" ]]; then
-  RUN_ID="$(sanitize_run_id "$(default_run_id)")"
-fi
-
 if [[ -z "$OUTPUT_DIR" ]]; then
   echo "ERROR: --output-dir or WENDY_E2E_OUTPUT_DIR is required." >&2
   exit 64
@@ -342,6 +348,12 @@ absolute_existing_dir_path() {
 
 REPO_DIR="$(absolute_existing_dir_path "$SWIFT_DIR/..")"
 OUTPUT_DIR="$(absolute_dir_path "$OUTPUT_DIR")"
+
+RUN_NAME="$(sanitize_run_id "$RUN_NAME")"
+RUN_ID="$(sanitize_run_id "${RUN_ID:-$(default_run_id "$OUTPUT_DIR" "$RUN_NAME")}")"
+if [[ -z "$RUN_ID" ]]; then
+  RUN_ID="$(sanitize_run_id "$(default_run_id "$OUTPUT_DIR" "$RUN_NAME")")"
+fi
 if [[ -z "$CLI_ADDRESS" ]]; then
   CLI_ROOT_DIR="$(absolute_dir_path "$CLI_ROOT_DIR")"
   CLI_REPO_DIR="${CLI_REPO_DIR:-$REPO_DIR}"

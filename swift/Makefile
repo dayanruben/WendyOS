@@ -30,18 +30,24 @@ else
 SHELL := /bin/bash
 endif
 
-WINDOWS_E2E_OUTPUT_DIR := "$$env:SystemRoot\Temp\wendy\e2e"
-UNIX_E2E_OUTPUT_DIR := "/tmp/wendy/e2e"
+WINDOWS_E2E_OUTPUT_DIR := "$$env:SystemRoot\Temp\wendy"
+UNIX_E2E_OUTPUT_DIR := "/tmp/wendy"
 RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ETest.ps1 --default-run-id "$(1)" $(2)
 RUN_E2E_RUN_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ERun.ps1 --default-run-id "$(1)" $(2)
 
 OPEN_E2E_REPORT_UNIX = report_path="$(1)"; if [ -f "$$report_path" ]; then if [ "$$(uname -s)" = "Darwin" ]; then open "$$report_path" || echo "HTML report: $$report_path"; else echo "HTML report: $$report_path"; fi; else echo "HTML report not found: $$report_path"; fi
-RUN_E2E_TEST_UNIX = @run_id="$${WENDY_E2E_RUN_ID:-$(1)}"; \
-	WENDY_E2E_RUN_ID="$$run_id" bash ./Scripts/E2ETest.sh $(2)
-RUN_E2E_RUN_UNIX = @run_id="$${WENDY_E2E_RUN_ID:-$(1)}"; \
-	output_dir=$(UNIX_E2E_OUTPUT_DIR); \
+E2E_RUN_ID_HELPERS_UNIX = e2e_cli_id() { case "$$(uname -s)" in Darwin) major="$$(sw_vers -productVersion | cut -d. -f1)"; printf "macos-%s" "$$major" ;; Linux) if [ -r /etc/os-release ]; then . /etc/os-release; version="$${VERSION_ID//./-}"; printf "%s-%s" "$${ID:-linux}" "$$version"; else printf "linux"; fi ;; *) uname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$$//' ;; esac; }; next_e2e_run_id() { output_dir="$$1"; run_name="$$2"; eval_id="local$$(date -u +%y%m%d)"; base="swift-e2e-tests.$$eval_id.$$run_name"; max=0; shopt -s nullglob; for path in "$$output_dir/$$base".[0-9][0-9][0-9][0-9]; do leaf="$$(basename "$$path")"; suffix="$$(printf '%s' "$$leaf" | awk -F. '{ print $$NF }')"; if [[ "$$suffix" =~ ^[0-9]{4}$$ ]]; then suffix_value="$$(expr "$$suffix" + 0)"; if [ "$$suffix_value" -gt "$$max" ]; then max="$$suffix_value"; fi; fi; done; shopt -u nullglob; printf "%s.%04d" "$$base" $$((max + 1)); }
+RUN_E2E_TEST_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
+	$(E2E_RUN_ID_HELPERS_UNIX); \
+	run_name="$$(e2e_cli_id)-to-$(1)"; \
+	run_id="$${WENDY_E2E_RUN_ID:-$$(next_e2e_run_id "$$output_dir" "$$run_name")}"; \
+	WENDY_E2E_RUN_ID="$$run_id" WENDY_E2E_RUN_NAME="$$run_name" bash ./Scripts/E2ETest.sh $(2)
+RUN_E2E_RUN_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
+	$(E2E_RUN_ID_HELPERS_UNIX); \
+	run_name="$$(e2e_cli_id)-to-$(1)"; \
+	run_id="$${WENDY_E2E_RUN_ID:-$$(next_e2e_run_id "$$output_dir" "$$run_name")}"; \
 	status=0; \
-	WENDY_E2E_RUN_ID="$$run_id" bash ./Scripts/E2ETest.sh $(2) || status=$$?; \
+	WENDY_E2E_RUN_ID="$$run_id" WENDY_E2E_RUN_NAME="$$run_name" bash ./Scripts/E2ETest.sh $(2) || status=$$?; \
 	bash ./Scripts/E2EReview.sh --run-dir "$$output_dir/$$run_id" || { step_status=$$?; [ $$status -eq 0 ] && status=$$step_status; }; \
 	bash ./Scripts/E2EReport.sh --run-dir "$$output_dir/$$run_id" || { step_status=$$?; [ $$status -eq 0 ] && status=$$step_status; }; \
 	$(call OPEN_E2E_REPORT_UNIX,$$output_dir/$$run_id/report.html); \

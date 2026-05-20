@@ -220,8 +220,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          slug() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+          }
+
+          workflow_id="$(slug "${GITHUB_WORKFLOW:-swift-e2e-tests}")"
+          matrix_id="$(slug "${{ matrix.target.id }}")"
           printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
-          echo "run_id=wendy-e2e.${{ matrix.target.id }}.gh${GITHUB_RUN_ID}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${matrix_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
 
       - name: Run Swift E2E tests
         if: matrix.target.status == 'enabled'
@@ -236,7 +244,7 @@ jobs:
         run: |
           set -euo pipefail
           bash ./Scripts/E2ETest.sh \
-            --output-dir Build/e2e \
+            --output-dir /tmp/wendy \
             --agent-address "${{ matrix.target.device_address }}"
 
       - name: Review Swift E2E results with AI
@@ -249,7 +257,7 @@ jobs:
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \
-            --run-dir "Build/e2e/${{ steps.e2e-run.outputs.run_id }}"
+            --run-dir "/tmp/wendy/${{ steps.e2e-run.outputs.run_id }}"
 
       - name: Render Swift E2E report
         if: always() && matrix.target.status == 'enabled'
@@ -258,14 +266,14 @@ jobs:
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReport.sh \
-            --run-dir "Build/e2e/${{ steps.e2e-run.outputs.run_id }}"
+            --run-dir "/tmp/wendy/${{ steps.e2e-run.outputs.run_id }}"
 
       - name: Upload Swift E2E report
         if: always() && matrix.target.status == 'enabled'
         uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.e2e-run.outputs.run_id }}
-          path: swift/Build/e2e/${{ steps.e2e-run.outputs.run_id }}/**
+          path: /tmp/wendy/${{ steps.e2e-run.outputs.run_id }}/**
           if-no-files-found: warn
           retention-days: 14
 
