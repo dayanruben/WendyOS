@@ -27,12 +27,6 @@ struct ReportCommand: ParsableCommand {
     @Option(name: .long, help: "E2E run directory. Reads tests/ and writes report.html.")
     var runDir: String?
 
-    @Option(
-        name: [.customLong("recording-dir"), .customLong("records-dir")],
-        help: "Directory containing E2E command recordings and Swift Testing results."
-    )
-    var recordingDir: String?
-
     @Option(name: [.short, .long], help: "Output HTML file path.")
     var output: String?
 
@@ -48,8 +42,7 @@ struct ReportCommand: ParsableCommand {
         )
         let runURL = runDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let recordingURL = try resolvedRecordingDirectory(
-            recordingDir.map { URL(fileURLWithPath: $0, isDirectory: true) }
-                ?? runURL.flatMap(defaultRecordingDirectory)
+            runURL.flatMap(defaultRecordingDirectory)
                 ?? latestRecordingDirectory(packageURL: packageURL)
         )
         let outputURL = URL(
@@ -234,11 +227,6 @@ private func latestRecordingDirectory(packageURL: URL) throws -> URL {
     if FileManager.default.fileExists(atPath: currentURL.path) {
         return currentURL
     }
-    let legacyCurrentURL = buildURL.appendingPathComponent("e2e-test-records.current")
-    if FileManager.default.fileExists(atPath: legacyCurrentURL.path) {
-        return legacyCurrentURL
-    }
-
     let contents = try FileManager.default.contentsOfDirectory(
         at: buildURL,
         includingPropertiesForKeys: [.isDirectoryKey]
@@ -246,7 +234,6 @@ private func latestRecordingDirectory(packageURL: URL) throws -> URL {
     let candidates = contents.filter { url in
         guard
             url.lastPathComponent.hasPrefix("e2e-recording.")
-                || url.lastPathComponent.hasPrefix("e2e-test-records.")
         else {
             return false
         }
@@ -439,8 +426,6 @@ private func containsRecordingFiles(_ url: URL) throws -> Bool {
 
 private func isCommandRecord(_ url: URL) -> Bool {
     url.pathExtension == "md"
-        && url.lastPathComponent != "README.md"
-        && url.lastPathComponent != "index.md"
         && url.lastPathComponent != "review.md"
 }
 
@@ -756,7 +741,6 @@ private func parseTests(
             let recordKey = "\(recordSuiteKey).\(recordTestKey)"
             let directRecordName = "recording.md"
             let nestedRecordName = "\(recordSuiteKey)/\(recordTestKey)/recording.md"
-            let legacyRecordName = "\(recordKey)/recording.md"
             if records[recordKey] != nil,
                 FileManager.default.fileExists(
                     atPath: recordingURL.appendingPathComponent(directRecordName).path
@@ -764,10 +748,7 @@ private func parseTests(
             {
                 tests[testIndex].recordName = directRecordName
             } else {
-                tests[testIndex].recordName =
-                    FileManager.default.fileExists(
-                        atPath: recordingURL.appendingPathComponent(nestedRecordName).path
-                    ) ? nestedRecordName : legacyRecordName
+                tests[testIndex].recordName = nestedRecordName
             }
             tests[testIndex].aiReview = aiReviews[recordKey]
             tests[testIndex].commands = records[recordKey, default: []].filter {

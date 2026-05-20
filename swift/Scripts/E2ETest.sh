@@ -125,9 +125,6 @@ Options:
   --parallel            Allow SwiftPM to run tests in parallel. Only valid when
                         both CLI and agent machines use local transport.
   --no-parallel         Do not run SwiftPM tests in parallel.
-  --report              Deprecated compatibility option; reports are generated
-                        by Scripts/E2EReport.sh after tests complete.
-  --no-report           Deprecated compatibility option; ignored.
   --verbose             Print each E2E machine command before it runs.
   --no-verbose          Do not print each E2E machine command before it runs.
   --help                Show this help message.
@@ -230,9 +227,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-parallel)
       PARALLEL="false"
-      shift
-      ;;
-    --report|--no-report)
       shift
       ;;
     --verbose)

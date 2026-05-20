@@ -164,9 +164,9 @@ The E2E workflow should be split into four explicit commands/steps:
 
 ## Implementation iterations
 
-### Iteration 1: transpose existing per-run artifacts
+### Iteration 1: transpose existing per-run artifacts — done
 
-Start by mapping the current raw run output onto the aggregate hierarchy without changing the per-run review and report behavior.
+The first implementation maps the current raw run output onto the aggregate hierarchy without changing the per-run review and report behavior.
 
 `aggregate` should be fully implemented for the current artifact set:
 
@@ -194,6 +194,15 @@ Start by mapping the current raw run output onto the aggregate hierarchy without
 - Do not attempt a single unified aggregate report yet.
 
 This gives us a complete aggregate command and adapts review/report just enough to work with the new structure while preserving current behavior.
+
+Completed pieces:
+
+- `swift-e2e-testing aggregate` writes the test-first aggregate hierarchy.
+- `Scripts/E2EAggregate.sh` wraps the aggregate command.
+- `Scripts/E2EReview.sh` detects aggregate roots and runs per-observation review.
+- `Scripts/E2EReport.sh` detects aggregate roots, renders per-observation reports, and writes aggregate `index.html`.
+- Local `make e2e-run*` composes test → aggregate → review → report.
+- CI matrix jobs upload raw runs, and the aggregate job downloads, aggregates, reviews, reports, and uploads the aggregate.
 
 ## Open plumbing questions
 

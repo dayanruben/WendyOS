@@ -248,8 +248,6 @@ while ($i -lt $script:RemainingArgs.Count) {
         '--isolation' { $Isolation = Get-ValueOption '--isolation' $i; $i += 2; continue }
         '--parallel' { $Parallel = $true; $i += 1; continue }
         '--no-parallel' { $Parallel = $false; $i += 1; continue }
-        '--report' { $i += 1; continue }
-        '--no-report' { $i += 1; continue }
         '--verbose' { $Verbose = $true; $i += 1; continue }
         '--no-verbose' { $Verbose = $false; $i += 1; continue }
         '--help' { Show-Usage; exit 0 }
