@@ -32,6 +32,10 @@ var ErrUserCancelled = errors.New("cancelled")
 // macOSBrewPaths lists the canonical Homebrew installation locations on macOS,
 // checked in order (Apple Silicon first, then Intel). Bypasses $PATH resolution
 // to avoid executing an unexpected binary in a compromised environment.
+// Security note: these paths are expected to be root-owned on a standard macOS
+// installation. A TOCTOU race between stat and exec is theoretically possible
+// in unusual environments (e.g. containers with world-writable /opt), but is
+// considered an acceptable risk for a developer-facing CLI running as the user.
 var macOSBrewPaths = []string{
 	"/opt/homebrew/bin/brew", // Apple Silicon (M-series)
 	"/usr/local/bin/brew",    // Intel
@@ -62,9 +66,8 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := checkCmd.Run(); err == nil {
 		return nil
 	} else if errors.Is(err, exec.ErrNotFound) {
-		brewPath, brewErr := tryBrewInstallSwiftly(ctx, stdout, stderr)
-		if brewErr != nil {
-			return brewErr
+		if err := tryBrewInstallSwiftly(ctx, stdout, stderr); err != nil {
+			return err
 		}
 		checkCmd2 := execCommandContext(ctx, "swiftly", "which", DefaultVersion)
 		checkCmd2.Stdout = io.Discard
@@ -72,8 +75,8 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 		if err := checkCmd2.Run(); err == nil {
 			return nil
 		} else if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("swiftly was installed via Homebrew but is not yet in your PATH; "+
-				"open a new terminal or run: eval $(%s shellenv)", brewPath)
+			return fmt.Errorf("swiftly was installed via Homebrew but is not yet available; " +
+				"open a new terminal to reload your PATH")
 		}
 		// swiftly binary is now available but this version is not installed — fall through to install
 	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -101,9 +104,9 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func tryBrewInstallSwiftly(ctx context.Context, stdout, stderr io.Writer) (string, error) {
+func tryBrewInstallSwiftly(ctx context.Context, stdout, stderr io.Writer) error {
 	if currentOS != "darwin" {
-		return "", fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
+		return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
 	}
 	brewPath := ""
 	for _, p := range macOSBrewPaths {
@@ -113,14 +116,14 @@ func tryBrewInstallSwiftly(ctx context.Context, stdout, stderr io.Writer) (strin
 		}
 	}
 	if brewPath == "" {
-		return "", fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
+		return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
 	}
 	confirmed, err := confirmFunc("swiftly is not installed. Install it now with Homebrew? (brew install swiftly)")
 	if err != nil {
-		return "", fmt.Errorf("swiftly is required but not installed (prompt failed: %w); see https://swiftlang.github.io/swiftly for installation instructions", err)
+		return fmt.Errorf("swiftly is required but not installed (prompt failed: %w); see https://swiftlang.github.io/swiftly for installation instructions", err)
 	}
 	if !confirmed {
-		return "", fmt.Errorf("swiftly is required but not installed; run: brew install swiftly")
+		return fmt.Errorf("swiftly is required but not installed; run: brew install swiftly")
 	}
 	fmt.Fprintln(stdout, "Installing swiftly via Homebrew...")
 	flushWriter(stdout)
@@ -130,11 +133,11 @@ func tryBrewInstallSwiftly(ctx context.Context, stdout, stderr io.Writer) (strin
 	if err := cmd.Run(); err != nil {
 		flushWriter(stdout)
 		flushWriter(stderr)
-		return "", fmt.Errorf("brew install swiftly: %w", err)
+		return fmt.Errorf("brew install swiftly: %w", err)
 	}
 	flushWriter(stdout)
 	flushWriter(stderr)
-	return brewPath, nil
+	return nil
 }
 
 func SwiftCommandContext(ctx context.Context, args ...string) *exec.Cmd {

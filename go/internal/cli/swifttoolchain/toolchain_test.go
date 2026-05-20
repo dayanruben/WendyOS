@@ -100,7 +100,7 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
 	currentOS = "darwin"
 	statFile = func(name string) (os.FileInfo, error) {
 		if name == "/opt/homebrew/bin/brew" {
-			return nil, nil // file exists
+			return os.Stat("/dev/null")
 		}
 		return nil, fmt.Errorf("not found")
 	}
@@ -166,7 +166,7 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewDeclined(t *testing.T) {
 	currentOS = "darwin"
 	statFile = func(name string) (os.FileInfo, error) {
 		if name == "/opt/homebrew/bin/brew" {
-			return nil, nil
+			return os.Stat("/dev/null")
 		}
 		return nil, fmt.Errorf("not found")
 	}
@@ -200,7 +200,7 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewFails(t *testing.T) {
 	currentOS = "darwin"
 	statFile = func(name string) (os.FileInfo, error) {
 		if name == "/opt/homebrew/bin/brew" {
-			return nil, nil
+			return os.Stat("/dev/null")
 		}
 		return nil, fmt.Errorf("not found")
 	}
