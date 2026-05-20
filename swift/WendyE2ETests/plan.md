@@ -162,6 +162,38 @@ The E2E workflow should be split into four explicit commands/steps:
 
 `make` targets and CI jobs should compose these steps rather than combining their responsibilities inside the test step.
 
+## Implementation iterations
+
+### Iteration 1: transpose existing per-run artifacts
+
+Start by mapping the current raw run output onto the aggregate hierarchy without changing the per-run review and report behavior.
+
+`aggregate` should be fully implemented for the current artifact set:
+
+- Read one or more raw run directories.
+- Parse each raw run ID into `<workflow-name>`, `<run-id>`, `<target-name>`, and `<attempt>`.
+- Create the aggregate root `<workflow-name>.<run-id>/`.
+- Place each raw run under the test-first aggregate path:
+
+  ```text
+  <workflow-name>.<run-id>/<suite-key>/<test-key>/<target-name>/<attempt>/
+  ```
+
+- Preserve the current per-run files in that mapped location, including `recording.md`, `recording.sh.txt`, `review.md`, `cli/`, and `agent/`.
+
+`review` should remain per-run in this iteration:
+
+- Keep writing `review.md` files beside each mapped `recording.md`.
+- Do not attempt cross-target or cross-attempt review yet.
+
+`report` should remain per-run in this iteration:
+
+- Keep rendering a `report.html` for each mapped run/attempt using the existing report renderer.
+- Add a top-level aggregate `index.html` that links to the per-run reports.
+- Do not attempt a single unified aggregate report yet.
+
+This gives us a complete aggregate command and adapts review/report just enough to work with the new structure while preserving current behavior.
+
 ## Open plumbing questions
 
 We still need to decide implementation details:
