@@ -221,7 +221,7 @@ jobs:
         run: |
           set -euo pipefail
           printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
-          echo "run_id=${{ matrix.target.id }}-gh${GITHUB_RUN_ID}-${attempt_suffix}" >> "$GITHUB_OUTPUT"
+          echo "run_id=wendy-e2e.${{ matrix.target.id }}.gh${GITHUB_RUN_ID}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
 
       - name: Run Swift E2E tests
         if: matrix.target.status == 'enabled'
@@ -264,7 +264,7 @@ jobs:
         if: always() && matrix.target.status == 'enabled'
         uses: actions/upload-artifact@v5
         with:
-          name: wendy-e2e-${{ steps.e2e-run.outputs.run_id }}
+          name: ${{ steps.e2e-run.outputs.run_id }}
           path: swift/Build/e2e/${{ steps.e2e-run.outputs.run_id }}/**
           if-no-files-found: warn
           retention-days: 14
