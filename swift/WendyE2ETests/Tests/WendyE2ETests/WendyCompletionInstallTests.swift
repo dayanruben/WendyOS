@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import WendyE2ETesting
 
@@ -95,20 +96,30 @@ struct `'wendy completion install'` {
      The command exits successfully without creating directories or
      editing shell configuration.
      */
-    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
+    @Test
     func `prints install paths without writing files`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
-                """
-                wendy completion install --print-path --shell zsh
-                test ! -e "$HOME/.zfunc/_wendy"
-                test ! -e "$HOME/.zshrc"
-                """
+                posix: """
+                    wendy completion install --print-path --shell zsh
+                    test ! -e "$HOME/.zfunc/_wendy"
+                    test ! -e "$HOME/.zshrc"
+                    """,
+                power: """
+                    wendy completion install --print-path --shell zsh
+                    if (Test-Path -LiteralPath (Join-Path (Join-Path $env:HOME '.zfunc') '_wendy')) {
+                        throw '_wendy should not exist'
+                    }
+                    if (Test-Path -LiteralPath (Join-Path $env:HOME '.zshrc')) {
+                        throw '.zshrc should not exist'
+                    }
+                    """
             ) { result in
+                let normalizedStdout = result.stdout.replacingOccurrences(of: "\\", with: "/")
 
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("/.zfunc/_wendy"))
-                #expect(result.stdout.contains("/.zshrc"))
+                #expect(normalizedStdout.contains("/.zfunc/_wendy"))
+                #expect(normalizedStdout.contains("/.zshrc"))
                 #expect(result.stderr == "")
             }
         }
