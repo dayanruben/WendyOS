@@ -855,32 +855,27 @@ private func aggregateSuitePrompt(
     lines.append("")
     lines.append("## Output contract")
     lines.append("")
-    lines.append("Write only concern-level Markdown reviews. Do not write `Status: pass` files.")
+    lines.append("Write Markdown reviews only for actionable findings. Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`.")
     lines.append("For any noteworthy finding, always write both `review.summary.md` and `review.details.md` at that scope.")
     lines.append("You may write per-test paired reviews at `<aggregate>/\(suite.suiteKey)/<test-key>/review.summary.md` and `review.details.md`.")
-    lines.append("You may write one paired suite review at `<aggregate>/\(suite.suiteKey)/review.summary.md` and `review.details.md`.")
+    lines.append("You may write one paired suite review at `<aggregate>/\(suite.suiteKey)/review.summary.md` and `review.details.md` only when there is a suite-level or cross-test action that is not already covered by per-test reviews.")
     lines.append("If nothing is noteworthy for a test or the suite, leave both files absent.")
     if !overwrite {
-        lines.append("If non-empty existing summary/details files are still valid, leave them in place.")
+        lines.append("If non-empty existing summary/details files are still valid and already satisfy this bullet-only, no-status contract, leave them in place; otherwise rewrite or remove stale files.")
     }
     lines.append("")
-    lines.append("Each `review.summary.md` should be very short and use:")
+    lines.append("Each `review.summary.md` must be only a short Markdown bullet list. Each bullet should be one clear, actionable finding; do not add headings, labels, prose paragraphs, or status/severity.")
+    lines.append("For suite summaries, include only suite-level/cross-test actions. Do not repeat or summarize per-test findings that are already covered at test scope.")
+    lines.append("")
+    lines.append("Example `review.summary.md`:")
     lines.append("")
     lines.append("```md")
-    lines.append("Status: concern|fail")
-    lines.append("Summary: One sentence, ideally under 140 characters.")
-    lines.append("Action: One concise next step.")
+    lines.append("- Seed cache fixtures across table and JSON tests so populated-list behavior is actually exercised.")
     lines.append("```")
     lines.append("")
     lines.append("Each `review.details.md` should use:")
     lines.append("")
     lines.append("```md")
-    lines.append("Status: concern|fail")
-    lines.append("")
-    lines.append("# Summary")
-    lines.append("")
-    lines.append("...")
-    lines.append("")
     lines.append("# Evidence")
     lines.append("")
     lines.append("- Cite source, result, recording, or artifact paths.")
@@ -917,11 +912,13 @@ private func aggregateReportPrompt(
     )
     lines.append("## Output contract")
     lines.append("")
-    lines.append("Write both top-level files: `\(aggregateURL.appendingPathComponent("review.summary.md").path)` and `\(aggregateURL.appendingPathComponent("review.details.md").path)`.")
-    lines.append("Use `Status: pass`, `Status: concern`, or `Status: fail` in both files.")
-    lines.append("The summary file should be brutally concise; the details file should contain evidence, action items, and links to relevant suite/test details.")
+    lines.append("Write top-level files only when there is at least one actionable aggregate-level or cross-suite finding: `\(aggregateURL.appendingPathComponent("review.summary.md").path)` and `\(aggregateURL.appendingPathComponent("review.details.md").path)`.")
+    lines.append("Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`.")
+    lines.append("The summary file must be only a short Markdown bullet list. Each bullet should be one clear, actionable aggregate-level finding.")
+    lines.append("Do not repeat or summarize suite/test findings that are already covered at lower levels, and do not restate obvious counts or statuses visible in the report.")
+    lines.append("The details file should contain evidence, action items, and links to relevant suite/test details.")
     if !overwrite {
-        lines.append("If existing top-level summary/details files are still valid, update them only when needed.")
+        lines.append("If existing top-level summary/details files are still valid and already satisfy this bullet-only, no-status contract, leave them in place; otherwise rewrite or remove stale files.")
     }
     lines.append("")
     lines.append("## Aggregate summary")
@@ -1108,15 +1105,15 @@ private func enforceAggregateSuiteReviewContract(in aggregateURL: URL) throws ->
 }
 
 private func enforceAggregateReportReviewContract(in aggregateURL: URL) throws {
-    try enforceReviewPair(in: aggregateURL, allowedStatuses: ["pass", "concern", "fail"])
+    try enforceReviewPair(in: aggregateURL)
 }
 
 private func enforceConcernReviewPair(in directoryURL: URL) throws -> Bool {
-    try enforceReviewPair(in: directoryURL, allowedStatuses: ["concern", "fail"])
+    try enforceReviewPair(in: directoryURL)
 }
 
 @discardableResult
-private func enforceReviewPair(in directoryURL: URL, allowedStatuses: Set<String>) throws -> Bool {
+private func enforceReviewPair(in directoryURL: URL) throws -> Bool {
     let summaryURL = directoryURL.appendingPathComponent("review.summary.md")
     let detailsURL = directoryURL.appendingPathComponent("review.details.md")
     let summary = try aggregateReviewMarkdown(at: summaryURL)
@@ -1128,15 +1125,28 @@ private func enforceReviewPair(in directoryURL: URL, allowedStatuses: Set<String
         return false
     }
     guard
-        let summaryStatus = parseReviewStatus(from: summary),
-        let detailsStatus = parseReviewStatus(from: details),
-        allowedStatuses.contains(summaryStatus),
-        allowedStatuses.contains(detailsStatus)
+        isBulletListAggregateReviewSummary(summary),
+        !containsAggregateReviewStatusLine(details)
     else {
         removeAggregateReviewPair(in: directoryURL)
         return false
     }
     return true
+}
+
+private func isBulletListAggregateReviewSummary(_ markdown: String) -> Bool {
+    let lines = markdown.components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    return !lines.isEmpty && lines.allSatisfy { $0.hasPrefix("- ") || $0.hasPrefix("* ") }
+}
+
+private func containsAggregateReviewStatusLine(_ markdown: String) -> Bool {
+    markdown.components(separatedBy: .newlines).contains { line in
+        line.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("status:")
+    }
 }
 
 private func defaultReviewTestsDir(packageURL: URL) -> URL {

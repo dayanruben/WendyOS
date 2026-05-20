@@ -314,7 +314,6 @@ private struct ReportTestCase {
 
 private struct AIReview {
     var markdown: String
-    var status: AIReviewStatus?
     var detailsPath: String?
 }
 
@@ -322,23 +321,6 @@ private struct AggregateAIReviews {
     var root: AIReview?
     var suites: [String: AIReview] = [:]
     var tests: [AggregatePathKey: AIReview] = [:]
-}
-
-private enum AIReviewStatus: String {
-    case pass
-    case concern
-    case fail
-
-    var label: String {
-        switch self {
-        case .pass:
-            "pass"
-        case .concern:
-            "concern"
-        case .fail:
-            "fail"
-        }
-    }
 }
 
 private struct ReportTestFile {
@@ -414,29 +396,37 @@ private func loadAIReview(summaryURL: URL, detailsURL: URL, aggregateURL: URL) t
 
     let review = try String(contentsOf: summaryURL, encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !review.isEmpty else {
+    guard isBulletListAIReviewSummary(review) else {
+        return nil
+    }
+    guard FileManager.default.fileExists(atPath: detailsURL.path) else {
+        return nil
+    }
+    let details = try String(contentsOf: detailsURL, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !details.isEmpty, !containsAIReviewStatusLine(details) else {
         return nil
     }
 
-    let detailsPath = FileManager.default.fileExists(atPath: detailsURL.path)
-        ? relativePath(from: aggregateURL, to: detailsURL) : nil
     return AIReview(
         markdown: review,
-        status: parseAIReviewStatus(from: review),
-        detailsPath: detailsPath
+        detailsPath: relativePath(from: aggregateURL, to: detailsURL)
     )
 }
 
-private func parseAIReviewStatus(from markdown: String) -> AIReviewStatus? {
-    guard
-        let value = firstMatch(
-            #"(?im)^\s*Status:\s*[\*_` ]*(pass|concern|fail)\b"#,
-            in: markdown
-        )?.lowercased()
-    else {
-        return nil
+private func isBulletListAIReviewSummary(_ markdown: String) -> Bool {
+    let lines = markdown.components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    return !lines.isEmpty && lines.allSatisfy { $0.hasPrefix("- ") || $0.hasPrefix("* ") }
+}
+
+private func containsAIReviewStatusLine(_ markdown: String) -> Bool {
+    markdown.components(separatedBy: .newlines).contains { line in
+        line.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("status:")
     }
-    return AIReviewStatus(rawValue: value)
 }
 
 private func commandRecordURLs(in recordingURL: URL) throws -> [URL] {
@@ -1165,17 +1155,10 @@ private func renderScopedAIReview(_ review: AIReview?, className: String, headin
 
     return """
         <section class="\(className)">
-        <h4>\(escapeHTML(heading))\(renderAIReviewStatusDot(review.status))\(renderAIReviewDetailsLink(review.detailsPath))</h4>
+        <h4>\(escapeHTML(heading))\(renderAIReviewDetailsLink(review.detailsPath))</h4>
         <div class="ai-review-markdown">\(renderMarkdown(review.markdown))</div>
         </section>
         """
-}
-
-private func renderAIReviewStatusDot(_ status: AIReviewStatus?) -> String {
-    guard let status else {
-        return ""
-    }
-    return "<span class=\"ai-status-dot \(status.rawValue)\" aria-label=\"\(escapeHTML(status.label))\"></span>"
 }
 
 private func renderAIReviewDetailsLink(_ detailsPath: String?) -> String {
@@ -1203,7 +1186,7 @@ private func renderCards(files: [ReportTestFile]) -> String {
             let outcomeBadges = renderTargetOutcomeBadges(targetOutcomes)
             let hasAI = test.aiItems.isEmpty ? "false" : "true"
             let hasAIReview = test.aiReviewMarkdown.isEmpty ? "false" : "true"
-            let aiBadge = hasAIReview == "true" ? renderAIReviewBadge(test.aiReview?.status) : ""
+            let aiBadge = hasAIReview == "true" ? renderAIReviewBadge() : ""
             let pathText = "\(test.suite) › \(test.name)"
 
             cards.append(
@@ -1487,13 +1470,8 @@ private func aggregateDurationBadge(_ duration: ReportTestDurationRange?) -> Str
     return "<span class=\"badge duration\" title=\"Test duration: \(escapeHTML(duration.formatted))\" style=\"--duration-bar-left: \(duration.barLeft); --duration-bar-width: \(duration.barWidth); --duration-bar-color: \(duration.barColor)\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">\(escapeHTML(duration.formatted))</span></span>"
 }
 
-private func renderAIReviewBadge(_ status: AIReviewStatus?) -> String {
-    guard let status else {
-        return "<span class=\"badge ai\">AI</span>"
-    }
-
-    return
-        "<span class=\"badge ai\" title=\"AI review: \(escapeHTML(status.label))\">AI<span class=\"ai-status-dot \(status.rawValue)\" aria-hidden=\"true\"></span></span>"
+private func renderAIReviewBadge() -> String {
+    "<span class=\"badge ai\">AI</span>"
 }
 
 private func renderAIChecklist(_ test: ReportTestCase) -> String {

@@ -413,30 +413,35 @@ Stage 1: suite-scoped review
     where needed, without recursively scanning copied sandboxes
   - existing test/suite reviews when `--overwrite` is false
 - The suite prompt should ask for two files when a review is warranted:
-  - `review.summary.md`: very concise inline summary, including `Status:`.
-  - `review.details.md`: supporting evidence and action items, including
-    `Status:`.
+  - `review.summary.md`: a very concise Markdown bullet list of clear,
+    actionable findings. It must not include status/severity, headings, labels,
+    or prose paragraphs.
+  - `review.details.md`: supporting evidence and action items. It must not
+    include status/severity.
+- Suite-level summaries should only include suite-level or cross-test actions;
+  they should not repeat per-test findings already covered at lower scope.
 - `review.summary.md` should be suitable for inline display, for example:
 
   ```md
-  Status: concern
-  Summary: macOS→Jetson flakes during tunnel setup.
-  Action: Inspect agent startup retry handling.
+  - Seed cache fixtures across table and JSON tests so populated-list behavior is actually exercised.
   ```
 
 Stage 2: report-level review
 
 - Run one AI agent after suite reviews complete.
 - The report prompt writes `<aggregate>/review.summary.md` and
-  `<aggregate>/review.details.md`.
+  `<aggregate>/review.details.md` only when there is an actionable
+  aggregate-level or cross-suite finding.
 - Inputs should include:
   - aggregate-wide status summary
   - failed/flaked/skipped target summaries
   - suite reviews generated in stage 1
   - per-test reviews generated in stage 1
   - links or relative paths to relevant suite/test details
-- The report review should highlight the most important results, include action
-  items, and link to details as needed.
+- The report summary should be only a concise bullet list of aggregate-level
+  actions. It should not repeat suite/test findings already covered at lower
+  levels or restate obvious counts/statuses visible in the report. Details can
+  include evidence and links as needed.
 - The report review should run even if no suite/test reviews were generated,
   because aggregate failures/flakes/skips may still require a top-level summary.
 

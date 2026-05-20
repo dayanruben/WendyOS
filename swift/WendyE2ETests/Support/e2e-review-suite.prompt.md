@@ -15,13 +15,16 @@ Guidelines:
 - For any noteworthy test or suite finding, always write both files:
   `review.summary.md` and `review.details.md`.
 - Do not write pass/OK reviews for tests or suites.
-- `review.summary.md` is rendered inline; keep it brutally concise.
+- Do not write status/severity lines such as `Status: pass`, `Status: concern`,
+  or `Status: fail`.
+- `review.summary.md` is rendered inline and must be only a short Markdown bullet
+  list.
+- Each summary bullet should be one clear, actionable finding.
+- For suite-level summaries, include only suite-level or cross-test actions; do
+  not repeat or summarize findings already covered by per-test reviews.
+- Do not restate obvious counts/statuses that the report already shows.
 - `review.details.md` is linked from the report; put evidence and reasoning
   there.
-- Use `Status: fail` when evidence points to a real broken requirement or
-  regression.
-- Use `Status: concern` for flakes, ambiguous behavior, test quality issues,
-  infrastructure issues, suspicious slowness, or items that need follow-up.
 - Cite concrete evidence in details: source paths, target/attempt names, result
   details, recording paths, and shell script paths.
 - Do not edit source code, tests, xUnit files, or recordings.
