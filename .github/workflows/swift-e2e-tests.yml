@@ -36,6 +36,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: macos-26-to-jetson-orin-nano
+      target_name: macOS 26 → Jetson Orin Nano
       runner_id: macos-26
       runs_on: '["self-hosted", "macOS"]'
       cli_os: macOS
@@ -52,6 +53,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: ubuntu-24-04-to-jetson-orin-nano
+      target_name: Ubuntu 24.04 → Jetson Orin Nano
       runner_id: ubuntu-24-04
       runs_on: '["self-hosted", "linux"]'
       cli_os: linux
@@ -68,6 +70,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: windows-11-to-jetson-orin-nano
+      target_name: Windows 11 → Jetson Orin Nano
       runner_id: windows-11
       runs_on: '["self-hosted", "Windows", "X64", "windows-11"]'
       cli_os: windows
@@ -82,6 +85,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: ubuntu-24-04-to-raspberry-pi-5
+      target_name: Ubuntu 24.04 → Raspberry Pi 5
       runner_id: ubuntu-24-04
       runs_on: '["self-hosted", "linux"]'
       cli_os: linux
@@ -98,6 +102,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: windows-11-to-raspberry-pi-5
+      target_name: Windows 11 → Raspberry Pi 5
       runner_id: windows-11
       runs_on: '["self-hosted", "Windows", "X64", "windows-11"]'
       cli_os: windows
@@ -114,6 +119,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: macos-26-to-raspberry-pi-5
+      target_name: macOS 26 → Raspberry Pi 5
       runner_id: macos-26
       runs_on: '["self-hosted", "macOS"]'
       cli_os: macOS
@@ -128,6 +134,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: windows-11-to-mac-mini
+      target_name: Windows 11 → Mac mini
       runner_id: windows-11
       runs_on: '["self-hosted", "Windows", "X64", "windows-11"]'
       cli_os: windows
@@ -144,6 +151,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: macos-26-to-mac-mini
+      target_name: macOS 26 → Mac mini
       runner_id: macos-26
       runs_on: '["self-hosted", "macOS"]'
       cli_os: macOS
@@ -160,6 +168,7 @@ jobs:
     with:
       tests: ${{ inputs.tests || '' }}
       target_id: ubuntu-24-04-to-mac-mini
+      target_name: Ubuntu 24.04 → Mac mini
       runner_id: ubuntu-24-04
       runs_on: '["self-hosted", "linux"]'
       cli_os: linux
@@ -169,7 +178,7 @@ jobs:
       transport: lan
 
   swift-e2e-aggregate:
-    name: Aggregate Swift E2E Results
+    name: Aggregate E2E Runs
     if: ${{ always() && !cancelled() }}
     needs:
       - e2e-macos-jetson-orin-nano
@@ -248,7 +257,7 @@ jobs:
           retention-days: 14
 
   swift-e2e-review:
-    name: Review Swift E2E Results
+    name: Review E2E Results
     if: ${{ !cancelled() && needs.swift-e2e-aggregate.result == 'success' }}
     needs: swift-e2e-aggregate
     runs-on: [self-hosted, linux]
@@ -289,7 +298,7 @@ jobs:
           retention-days: 14
 
   swift-e2e-report:
-    name: Report Swift E2E Results
+    name: Generate E2E Report
     if: ${{ always() && !cancelled() && needs.swift-e2e-aggregate.result == 'success' }}
     needs:
       - swift-e2e-aggregate

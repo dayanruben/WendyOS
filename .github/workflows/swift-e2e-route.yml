@@ -14,6 +14,9 @@ on:
       target_id:
         type: string
         required: true
+      target_name:
+        type: string
+        required: true
       runner_id:
         type: string
         required: true
@@ -39,6 +42,7 @@ on:
 
 jobs:
   run:
+    name: Run ${{ inputs.target_name }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     concurrency:
       group: swift-e2e-${{ inputs.device_id }}
