@@ -135,13 +135,37 @@ agent/
 
 Run-level files such as `info.json` and `test-results.xml` should be folded into scoped `info.json` files at the aggregate root, suite, test, target, or attempt level as appropriate.
 
+## Command model
+
+The E2E workflow should be split into four explicit commands/steps:
+
+1. `test`
+   - Runs deterministic Swift E2E tests.
+   - Produces one raw individual run directory.
+   - Does not review, aggregate, or render reports.
+
+2. `aggregate`
+   - Reads one or more raw individual run directories.
+   - Parses each run ID into `<workflow-name>`, `<run-id>`, `<target-name>`, and `<attempt>`.
+   - Transposes raw run artifacts into the canonical aggregate layout.
+   - Writes deterministic `info.json` files at the aggregate, suite, test, target, and attempt levels.
+
+3. `review`
+   - Reads an aggregate directory.
+   - Writes scoped `review.md` files at the appropriate levels.
+   - Keeps review separate from deterministic test execution.
+
+4. `report`
+   - Reads an aggregate directory.
+   - Writes the single aggregate `report.html`.
+   - Covers both one-run and multi-run aggregates.
+
+`make` targets and CI jobs should compose these steps rather than combining their responsibilities inside the test step.
+
 ## Open plumbing questions
 
-We still need to decide how to split this across scripts and tools:
+We still need to decide implementation details:
 
-1. Which command creates the aggregate directory and transposes raw runs?
-2. Which command writes deterministic `info.json` files at each level?
-3. Whether raw CI artifacts are uploaded as individual runs, aggregate only, or both during transition.
-4. Whether report rendering reads raw runs, aggregate layout, or both.
-5. Whether AI review runs before or after transposition.
-6. How local `make` targets should expose: test-only, aggregate, review, and report steps.
+1. Whether `aggregate`, `review`, and `report` live entirely in `swift-e2e-testing`, shell wrappers, or both.
+2. Whether raw CI artifacts are uploaded as individual runs, aggregate only, or both during transition.
+3. How local `make` targets should expose each step and composed workflows such as `e2e-run`.
