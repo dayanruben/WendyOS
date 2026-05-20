@@ -259,6 +259,51 @@ Default filter priority should surface actionable results first:
 3. AI review, once aggregate review is reintroduced
 4. all
 
+### Iteration 3: show aggregate duration ranges
+
+The top-level report should summarize duration as a range across all concrete
+observations for each test. Once this lands, the duration display and duration
+bar are no longer hardcoded placeholders.
+
+Duration collection:
+
+- For each test row, read durations from all matching observations under
+  `<suite-key>/<test-key>/<target-name>/<attempt>/test-results.xml`.
+- Compute the minimum and maximum duration from observations that include a
+  valid duration.
+- Ignore missing durations for the range calculation.
+- If no observations include a valid duration, render the existing empty
+  duration state.
+
+Duration text display rules:
+
+- If there is exactly one valid duration, render that single formatted value,
+  such as `0.4s`.
+- If multiple valid durations format to the same value, render that single
+  formatted value.
+- If the minimum and maximum differ, render a range, such as `0.2s–1.8s`.
+
+Duration bar semantics:
+
+- Keep the existing duration scale and duration-to-color mapping.
+- Treat the full bar track as the global duration scale.
+- Normalize `minDuration` and `maxDuration` onto that scale.
+- Render the filled segment from the normalized min position to the normalized
+  max position.
+- Color the segment as a gradient from the min-duration color to the
+  max-duration color.
+- Leave the track before the min position and after the max position unfilled.
+
+Single-point display:
+
+- If `minDuration == maxDuration`, render a small visible segment or marker at
+  the normalized duration position so single-observation or stable-duration
+  tests remain visible.
+- The marker should use the color for that duration.
+
+This makes the aggregate report communicate both absolute runtime and runtime
+variance across targets and attempts.
+
 ## Open plumbing questions
 
 We still need to decide implementation details:
