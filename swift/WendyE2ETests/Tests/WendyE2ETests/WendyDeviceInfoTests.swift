@@ -30,16 +30,20 @@ struct `'wendy device info'` {
     /**
      Use this form when the target device is already known. The command connects directly to the selected device and does not open the interactive picker.
      */
-    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
+    @Test
     func `'--device' selects an explicit device`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
 
             try await cli.sh(
-                """
-                mkdir -p "$HOME/.wendy"
-                printf '%s\n' '{"defaultDevice":"default-device-that-should-not-be-used.invalid"}' > "$HOME/.wendy/config.json"
-                """
+                posix: """
+                    mkdir -p "$HOME/.wendy"
+                    printf '%s\n' '{"defaultDevice":"default-device-that-should-not-be-used.invalid"}' > "$HOME/.wendy/config.json"
+                    """,
+                power: """
+                    New-Item -ItemType Directory -Force -Path (Join-Path $env:HOME '.wendy') | Out-Null
+                    Set-Content -LiteralPath (Join-Path $env:HOME '.wendy/config.json') -Value '{"defaultDevice":"default-device-that-should-not-be-used.invalid"}'
+                    """
             )
             try await cli.sh("wendy --device \(agentAddress) device info --json") { result in
                 let stdout = result.stdout
