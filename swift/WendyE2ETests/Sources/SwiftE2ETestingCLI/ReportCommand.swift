@@ -146,6 +146,74 @@ private enum ReportTestStatus {
     }
 }
 
+private struct ReportTargetOutcomeCounts {
+    var passed = 0
+    var flaked = 0
+    var skipped = 0
+    var failed = 0
+    var unknown = 0
+
+    var isEmpty: Bool {
+        passed == 0 && flaked == 0 && skipped == 0 && failed == 0 && unknown == 0
+    }
+
+    var primaryStatusClass: String {
+        if failed > 0 { return "fail" }
+        if flaked > 0 { return "flaked" }
+        if skipped > 0 { return "skipped" }
+        if passed > 0 { return "pass" }
+        return "unknown"
+    }
+
+    var filterStatusClasses: [String] {
+        var classes: [String] = []
+        if passed > 0 { classes.append("pass") }
+        if flaked > 0 { classes.append("flaked") }
+        if skipped > 0 { classes.append("skipped") }
+        if failed > 0 { classes.append("fail") }
+        if unknown > 0 { classes.append("unknown") }
+        return classes.isEmpty ? ["unknown"] : classes
+    }
+
+    mutating func add(_ outcome: ReportTargetOutcome) {
+        switch outcome {
+        case .passed:
+            passed += 1
+        case .flaked:
+            flaked += 1
+        case .skipped:
+            skipped += 1
+        case .failed:
+            failed += 1
+        case .unknown:
+            unknown += 1
+        }
+    }
+
+    static func fallback(for status: ReportTestStatus) -> ReportTargetOutcomeCounts {
+        var counts = ReportTargetOutcomeCounts()
+        switch status {
+        case .passed:
+            counts.passed = 1
+        case .failed:
+            counts.failed = 1
+        case .skipped:
+            counts.skipped = 1
+        case .unknown:
+            counts.unknown = 1
+        }
+        return counts
+    }
+}
+
+private enum ReportTargetOutcome {
+    case passed
+    case flaked
+    case skipped
+    case failed
+    case unknown
+}
+
 private struct ReportTestCase {
     var fileName: String
     var suite: String
@@ -153,6 +221,7 @@ private struct ReportTestCase {
     var funcLine: Int
     var disabled: String?
     var status: ReportTestStatus
+    var targetOutcomes = ReportTargetOutcomeCounts()
     var nextLine = 0
     var aiItems: [String] = []
     var recordName = ""
@@ -340,22 +409,38 @@ private func parseXUnitResults(at resultURL: URL) throws -> [TestResultKey: Repo
     return parser.results
 }
 
-private func loadAggregateTestResults(in aggregateURL: URL) throws -> [TestResultKey: ReportTestStatus] {
-    let resultURLs = try aggregateTestResultURLs(in: aggregateURL)
-    var observed: [TestResultKey: [ReportTestStatus]] = [:]
+private func loadAggregateTestResults(in aggregateURL: URL) throws -> [TestResultKey: ReportTargetOutcomeCounts] {
+    var observed: [TestResultKey: [String: [ReportTestStatus]]] = [:]
 
-    for resultURL in resultURLs {
-        let results = try parseXUnitResults(at: resultURL)
-        for (key, status) in results {
-            observed[key, default: []].append(status)
+    for suiteURL in try directoryChildren(of: aggregateURL) {
+        let suiteKey = suiteURL.lastPathComponent
+        for testURL in try directoryChildren(of: suiteURL) {
+            let testKey = testURL.lastPathComponent
+            for targetURL in try directoryChildren(of: testURL) {
+                let targetName = targetURL.lastPathComponent
+                for attemptURL in try directoryChildren(of: targetURL) {
+                    let resultURL = attemptURL.appendingPathComponent("test-results.xml")
+                    guard FileManager.default.fileExists(atPath: resultURL.path) else {
+                        continue
+                    }
+                    let results = try parseXUnitResults(at: resultURL)
+                    for (key, status) in results
+                    where slug(key.suite) == suiteKey && slug(key.name) == testKey
+                    {
+                        observed[key, default: [:]][targetName, default: []].append(status)
+                    }
+                }
+            }
         }
     }
 
-    return observed.mapValues(combineAggregateStatuses)
-}
-
-private func aggregateTestResultURLs(in aggregateURL: URL) throws -> [URL] {
-    try aggregateObservationFileURLs(in: aggregateURL, fileName: "test-results.xml")
+    return observed.mapValues { targets in
+        var counts = ReportTargetOutcomeCounts()
+        for statuses in targets.values {
+            counts.add(targetOutcome(for: statuses))
+        }
+        return counts
+    }
 }
 
 private func aggregateObservationFileURLs(in aggregateURL: URL, fileName: String) throws -> [URL] {
@@ -396,22 +481,27 @@ private func isDirectory(_ url: URL) -> Bool {
     (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
 }
 
-private func combineAggregateStatuses(_ statuses: [ReportTestStatus]) -> ReportTestStatus {
+private func targetOutcome(for statuses: [ReportTestStatus]) -> ReportTargetOutcome {
     guard !statuses.isEmpty else {
         return .unknown
     }
 
-    if let failed = statuses.first(where: { $0.statusClass == "fail" }) {
-        return .failed(failed.detail, duration: nil)
+    let passed = statuses.contains { $0.statusClass == "pass" }
+    let failed = statuses.contains { $0.statusClass == "fail" }
+    let skipped = statuses.contains { $0.statusClass == "skipped" }
+    let unknown = statuses.contains { $0.statusClass == "unknown" }
+
+    if skipped && !passed && !failed && !unknown {
+        return .skipped
     }
-    if statuses.contains(where: { $0.statusClass == "unknown" }) {
-        return .unknown
+    if passed && failed {
+        return .flaked
     }
-    if statuses.allSatisfy({ $0.statusClass == "skipped" }) {
-        return .skipped(statuses.compactMap(\.detail).first, duration: nil)
+    if passed && !failed && !skipped && !unknown {
+        return .passed
     }
-    if statuses.allSatisfy({ $0.statusClass == "pass" }) {
-        return .passed(duration: nil)
+    if failed && !passed && !skipped && !unknown {
+        return .failed
     }
     return .unknown
 }
@@ -626,7 +716,7 @@ private func parseTests(
     recordingURL: URL,
     records: [String: [CommandRun]],
     aiReviews: [String: AIReview],
-    testResults: [TestResultKey: ReportTestStatus]
+    testResults: [TestResultKey: ReportTargetOutcomeCounts]
 ) throws -> [ReportTestFile] {
     let sourceURLs = try swiftTestFiles(in: testsURL)
     var files: [ReportTestFile] = []
@@ -699,8 +789,8 @@ private func parseTests(
                     && command.sourceLine < nextLine
             }
             let key = TestResultKey(suite: tests[testIndex].suite, name: tests[testIndex].name)
-            if let status = testResults[key] {
-                tests[testIndex].status = status
+            if let targetOutcomes = testResults[key] {
+                tests[testIndex].targetOutcomes = targetOutcomes
             }
         }
 
@@ -770,10 +860,12 @@ private func renderReport(
     outputURL: URL
 ) throws {
     let tests = files.flatMap(\.tests)
-    let passed = tests.filter { $0.status.statusClass == "pass" }.count
-    let skipped = tests.filter { $0.status.statusClass == "skipped" }.count
-    let failed = tests.filter { $0.status.statusClass == "fail" }.count
-    let unknown = tests.filter { $0.status.statusClass == "unknown" }.count
+    let outcomeCounts = tests.map(displayOutcomeCounts(for:))
+    let passed = outcomeCounts.filter { $0.passed > 0 }.count
+    let flaked = outcomeCounts.filter { $0.flaked > 0 }.count
+    let skipped = outcomeCounts.filter { $0.skipped > 0 }.count
+    let failed = outcomeCounts.filter { $0.failed > 0 }.count
+    let unknown = outcomeCounts.filter { $0.unknown > 0 }.count
     let total = tests.count
     let commandCount = tests.map(\.commands.count).reduce(0, +)
 
@@ -807,6 +899,7 @@ private func renderReport(
             "Generated from aggregated Swift E2E runs, Swift Testing results, and captured command recordings.",
         "{{RUN_ID}}": runID(outputURL: outputURL),
         "{{TESTS_PASSED_COUNT}}": String(passed),
+        "{{TESTS_FLAKED_COUNT}}": String(flaked),
         "{{TESTS_SKIPPED_COUNT}}": String(skipped),
         "{{TESTS_FAILED_COUNT}}": String(failed),
         "{{TESTS_UNKNOWN_COUNT}}": String(unknown),
@@ -818,6 +911,7 @@ private func renderReport(
     let rawPlaceholders: Set<String> = [
         "{{REPORT_TITLE}}",
         "{{TESTS_PASSED_COUNT}}",
+        "{{TESTS_FLAKED_COUNT}}",
         "{{TESTS_SKIPPED_COUNT}}",
         "{{TESTS_FAILED_COUNT}}",
         "{{TESTS_UNKNOWN_COUNT}}",
@@ -845,7 +939,7 @@ private func renderReport(
 
     print(outputURL.path)
     print(
-        "tests=\(total) passed=\(passed) skipped=\(skipped) failed=\(failed) unknown=\(unknown) commands=\(commandCount)"
+        "tests=\(total) passed=\(passed) flaked=\(flaked) skipped=\(skipped) failed=\(failed) unknown=\(unknown) commands=\(commandCount)"
     )
 }
 
@@ -864,8 +958,10 @@ private func renderCards(files: [ReportTestFile]) -> String {
         cards.append("<div class=\"suite-group\">")
 
         for test in file.tests {
-            let statusClass = test.status.statusClass
-            let statusText = test.status.statusText
+            let targetOutcomes = displayOutcomeCounts(for: test)
+            let statusClass = targetOutcomes.primaryStatusClass
+            let statusClasses = targetOutcomes.filterStatusClasses.joined(separator: " ")
+            let outcomeBadges = renderTargetOutcomeBadges(targetOutcomes)
             let hasAI = test.aiItems.isEmpty ? "false" : "true"
             let hasAIReview = test.aiReviewMarkdown.isEmpty ? "false" : "true"
             let aiBadge = hasAIReview == "true" ? renderAIReviewBadge(test.aiReview?.status) : ""
@@ -873,10 +969,10 @@ private func renderCards(files: [ReportTestFile]) -> String {
             let pagePath = aggregateTestPagePath(fileURL: file.url, testName: test.name)
 
             cards.append(
-                "<a class=\"test-details test-details-link\" data-test-status=\"\(statusClass)\" data-has-ai=\"\(hasAI)\" data-has-ai-review=\"\(hasAIReview)\" href=\"\(escapeHTML(pagePath))\">"
+                "<a class=\"test-details test-details-link\" data-test-status=\"\(statusClass)\" data-test-statuses=\"\(escapeHTML(statusClasses))\" data-has-ai=\"\(hasAI)\" data-has-ai-review=\"\(hasAIReview)\" href=\"\(escapeHTML(pagePath))\">"
             )
             cards.append(
-                "<span class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span><span class=\"badge \(statusClass)\">\(statusText)</span></span>\(aggregateDurationBadge())\(aiBadge)<span class=\"report-links\"></span></span>"
+                "<span class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span>\(outcomeBadges)</span>\(aggregateDurationBadge())\(aiBadge)<span class=\"report-links\"></span></span>"
             )
             cards.append("</a>")
         }
@@ -885,6 +981,26 @@ private func renderCards(files: [ReportTestFile]) -> String {
     }
 
     return cards.joined(separator: "\n")
+}
+
+private func displayOutcomeCounts(for test: ReportTestCase) -> ReportTargetOutcomeCounts {
+    test.targetOutcomes.isEmpty ? .fallback(for: test.status) : test.targetOutcomes
+}
+
+private func renderTargetOutcomeBadges(_ counts: ReportTargetOutcomeCounts) -> String {
+    let buckets: [(className: String, label: String, count: Int)] = [
+        ("pass", "Passed", counts.passed),
+        ("flaked", "Flaked", counts.flaked),
+        ("skipped", "Skipped", counts.skipped),
+        ("fail", "Failed", counts.failed),
+        ("unknown", "Unknown", counts.unknown),
+    ].filter { $0.count > 0 }
+
+    let includeCounts = buckets.count > 1 || (buckets.first?.count ?? 0) > 1
+    return buckets.map { bucket in
+        let text = includeCounts ? "\(bucket.label) \(bucket.count)" : bucket.label
+        return "<span class=\"badge \(bucket.className)\">\(text)</span>"
+    }.joined()
 }
 
 private func aggregateDurationBadge() -> String {
