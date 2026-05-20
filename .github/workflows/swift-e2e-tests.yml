@@ -27,156 +27,191 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Route jobs are explicit per-device chains rather than one matrix. The first
+  # Run jobs are explicit per-device chains rather than one matrix. The first
   # batch spreads work across the one macOS, one Linux, and one Windows runner,
   # while each device chain still serializes access to its physical target.
   e2e-macos-jetson-orin-nano:
     name: macOS 26 → Jetson Orin Nano
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: macos-26-to-jetson-orin-nano
-      target_name: macOS 26 → Jetson Orin Nano
-      runner_id: macos-26
-      runs_on: '["self-hosted", "macOS"]'
-      cli_os: macOS
-      device_id: jetson-orin-nano
-      device_address: wendyos-jetson-orin-nano.local
-      agent_os: wendyOS
-      transport: lan
+    runs-on: ["self-hosted", "macOS"]
+    concurrency:
+      group: swift-e2e-jetson-orin-nano
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: macos-jetson-orin-nano
+          runner_id: macos-26
+          cli_os: macOS
+          device_address: wendyos-jetson-orin-nano.local
+          agent_os: wendyOS
+          transport: lan
 
   e2e-ubuntu-jetson-orin-nano:
     name: Ubuntu 24.04 → Jetson Orin Nano
     needs: e2e-macos-jetson-orin-nano
     if: ${{ always() && !cancelled() }}
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: ubuntu-24-04-to-jetson-orin-nano
-      target_name: Ubuntu 24.04 → Jetson Orin Nano
-      runner_id: ubuntu-24-04
-      runs_on: '["self-hosted", "linux"]'
-      cli_os: linux
-      device_id: jetson-orin-nano
-      device_address: wendyos-jetson-orin-nano.local
-      agent_os: wendyOS
-      transport: lan
+    runs-on: ["self-hosted", "linux"]
+    concurrency:
+      group: swift-e2e-jetson-orin-nano
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: ubuntu-jetson-orin-nano
+          runner_id: ubuntu-24-04
+          cli_os: linux
+          device_address: wendyos-jetson-orin-nano.local
+          agent_os: wendyOS
+          transport: lan
 
   e2e-windows-jetson-orin-nano:
     name: Windows 11 → Jetson Orin Nano
     needs: e2e-ubuntu-jetson-orin-nano
     if: ${{ always() && !cancelled() }}
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: windows-11-to-jetson-orin-nano
-      target_name: Windows 11 → Jetson Orin Nano
-      runner_id: windows-11
-      runs_on: '["self-hosted", "Windows", "X64", "windows-11"]'
-      cli_os: windows
-      device_id: jetson-orin-nano
-      device_address: wendyos-jetson-orin-nano.local
-      agent_os: wendyOS
-      transport: lan
+    runs-on: ["self-hosted", "Windows", "X64", "windows-11"]
+    concurrency:
+      group: swift-e2e-jetson-orin-nano
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: windows-jetson-orin-nano
+          runner_id: windows-11
+          cli_os: windows
+          device_address: wendyos-jetson-orin-nano.local
+          agent_os: wendyOS
+          transport: lan
 
   e2e-ubuntu-raspberry-pi-5:
     name: Ubuntu 24.04 → Raspberry Pi 5
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: ubuntu-24-04-to-raspberry-pi-5
-      target_name: Ubuntu 24.04 → Raspberry Pi 5
-      runner_id: ubuntu-24-04
-      runs_on: '["self-hosted", "linux"]'
-      cli_os: linux
-      device_id: raspberry-pi-5
-      device_address: wendyos-raspberry-pi-5.local
-      agent_os: wendyOS
-      transport: lan
+    runs-on: ["self-hosted", "linux"]
+    concurrency:
+      group: swift-e2e-raspberry-pi-5
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: ubuntu-raspberry-pi-5
+          runner_id: ubuntu-24-04
+          cli_os: linux
+          device_address: wendyos-raspberry-pi-5.local
+          agent_os: wendyOS
+          transport: lan
 
   e2e-windows-raspberry-pi-5:
     name: Windows 11 → Raspberry Pi 5
     needs: e2e-ubuntu-raspberry-pi-5
     if: ${{ always() && !cancelled() }}
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: windows-11-to-raspberry-pi-5
-      target_name: Windows 11 → Raspberry Pi 5
-      runner_id: windows-11
-      runs_on: '["self-hosted", "Windows", "X64", "windows-11"]'
-      cli_os: windows
-      device_id: raspberry-pi-5
-      device_address: wendyos-raspberry-pi-5.local
-      agent_os: wendyOS
-      transport: lan
+    runs-on: ["self-hosted", "Windows", "X64", "windows-11"]
+    concurrency:
+      group: swift-e2e-raspberry-pi-5
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: windows-raspberry-pi-5
+          runner_id: windows-11
+          cli_os: windows
+          device_address: wendyos-raspberry-pi-5.local
+          agent_os: wendyOS
+          transport: lan
 
   e2e-macos-raspberry-pi-5:
     name: macOS 26 → Raspberry Pi 5
     needs: e2e-windows-raspberry-pi-5
     if: ${{ always() && !cancelled() }}
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: macos-26-to-raspberry-pi-5
-      target_name: macOS 26 → Raspberry Pi 5
-      runner_id: macos-26
-      runs_on: '["self-hosted", "macOS"]'
-      cli_os: macOS
-      device_id: raspberry-pi-5
-      device_address: wendyos-raspberry-pi-5.local
-      agent_os: wendyOS
-      transport: lan
+    runs-on: ["self-hosted", "macOS"]
+    concurrency:
+      group: swift-e2e-raspberry-pi-5
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: macos-raspberry-pi-5
+          runner_id: macos-26
+          cli_os: macOS
+          device_address: wendyos-raspberry-pi-5.local
+          agent_os: wendyOS
+          transport: lan
 
   e2e-windows-mac-mini:
     name: Windows 11 → Mac mini
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: windows-11-to-mac-mini
-      target_name: Windows 11 → Mac mini
-      runner_id: windows-11
-      runs_on: '["self-hosted", "Windows", "X64", "windows-11"]'
-      cli_os: windows
-      device_id: mac-mini
-      device_address: mac-mini.local
-      agent_os: macOS
-      transport: lan
+    runs-on: ["self-hosted", "Windows", "X64", "windows-11"]
+    concurrency:
+      group: swift-e2e-mac-mini
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: windows-mac-mini
+          runner_id: windows-11
+          cli_os: windows
+          device_address: mac-mini.local
+          agent_os: macOS
+          transport: lan
 
   e2e-macos-mac-mini:
     name: macOS 26 → Mac mini
     needs: e2e-windows-mac-mini
     if: ${{ always() && !cancelled() }}
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: macos-26-to-mac-mini
-      target_name: macOS 26 → Mac mini
-      runner_id: macos-26
-      runs_on: '["self-hosted", "macOS"]'
-      cli_os: macOS
-      device_id: mac-mini
-      device_address: mac-mini.local
-      agent_os: macOS
-      transport: lan
+    runs-on: ["self-hosted", "macOS"]
+    concurrency:
+      group: swift-e2e-mac-mini
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: macos-mac-mini
+          runner_id: macos-26
+          cli_os: macOS
+          device_address: mac-mini.local
+          agent_os: macOS
+          transport: lan
 
   e2e-ubuntu-mac-mini:
     name: Ubuntu 24.04 → Mac mini
     needs: e2e-macos-mac-mini
     if: ${{ always() && !cancelled() }}
-    uses: ./.github/workflows/swift-e2e-route.yml
-    with:
-      tests: ${{ inputs.tests || '' }}
-      target_id: ubuntu-24-04-to-mac-mini
-      target_name: Ubuntu 24.04 → Mac mini
-      runner_id: ubuntu-24-04
-      runs_on: '["self-hosted", "linux"]'
-      cli_os: linux
-      device_id: mac-mini
-      device_address: mac-mini.local
-      agent_os: macOS
-      transport: lan
-
+    runs-on: ["self-hosted", "linux"]
+    concurrency:
+      group: swift-e2e-mac-mini
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: ubuntu-mac-mini
+          runner_id: ubuntu-24-04
+          cli_os: linux
+          device_address: mac-mini.local
+          agent_os: macOS
+          transport: lan
   swift-e2e-aggregate:
     name: Aggregate E2E Runs
     if: ${{ always() && !cancelled() }}
