@@ -7,7 +7,12 @@ struct SwiftE2ETestingCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "swift-e2e-testing",
         abstract: "Utilities for Swift E2E behavioral specs.",
-        subcommands: [ReferenceCommand.self, ReportCommand.self, ReviewCommand.self]
+        subcommands: [
+            ReferenceCommand.self,
+            AggregateCommand.self,
+            ReportCommand.self,
+            ReviewCommand.self,
+        ]
     )
 }
 
