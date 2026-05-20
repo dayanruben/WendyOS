@@ -34,14 +34,20 @@ struct `'wendy completion bash'` {
      Writes a valid bash completion script to stdout. The command emits no
      stderr, exits successfully, and does not read or write shell rc files.
      */
-    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
+    @Test
     func `prints the bash completion script`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
-                """
-                wendy completion bash
-                test ! -e "$HOME/.bashrc"
-                """
+                posix: """
+                    wendy completion bash
+                    test ! -e "$HOME/.bashrc"
+                    """,
+                power: """
+                    wendy completion bash
+                    if (Test-Path -LiteralPath (Join-Path $env:HOME '.bashrc')) {
+                        throw '.bashrc should not exist'
+                    }
+                    """
             ) { result in
 
                 #expect(result.status.isSuccess)
