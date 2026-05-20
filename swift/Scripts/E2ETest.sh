@@ -367,7 +367,7 @@ RUN_DIR="$OUTPUT_DIR/$RUN_ID"
 CLI_RUN_DIR="$CLI_ROOT_DIR/$RUN_ID/cli"
 AGENT_RUN_DIR="$AGENT_ROOT_DIR/$RUN_ID/agent"
 TESTS_DIR="$RUN_DIR/tests"
-TEST_RESULTS_OUTPUT_BASE="$RUN_DIR/test-results.xml"
+TEST_RESULTS_OUTPUT_PATH="$RUN_DIR/test-results.xml"
 
 rm -rf "$RUN_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
@@ -510,6 +510,14 @@ json_string_array() {
   printf "]"
 }
 
+normalize_xunit_output() {
+  local expanded_path="${TEST_RESULTS_OUTPUT_PATH%.xml}-swift-testing.xml"
+
+  if [[ -f "$expanded_path" ]]; then
+    mv -f "$expanded_path" "$TEST_RESULTS_OUTPUT_PATH"
+  fi
+}
+
 write_run_info() {
   local status="$1"
   local info_path="$RUN_DIR/info.json"
@@ -648,11 +656,12 @@ set +e
   cd "$PACKAGE_DIR"
   env "${SWIFT_TEST_ENV[@]}" \
     swift "${SWIFT_TEST_ARGS[@]}" \
-    --xunit-output "$TEST_RESULTS_OUTPUT_BASE"
+    --xunit-output "$TEST_RESULTS_OUTPUT_PATH"
 )
 TEST_STATUS=$?
 set -e
 
+normalize_xunit_output
 bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --run-dir "$RUN_DIR"
 
 write_run_info "$TEST_STATUS"

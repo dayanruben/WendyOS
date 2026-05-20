@@ -13,7 +13,7 @@ characters with printable escape text. When changes are needed, the original
 file is preserved next to the sanitized file with a .raw.xml suffix.
 
 Options:
-  --run-dir DIR  E2E run directory containing test-results-swift-testing.xml.
+  --run-dir DIR  E2E run directory containing test-results.xml.
   --file FILE    xUnit XML file to sanitize.
   --help         Show this help message.
 EOF
@@ -48,7 +48,7 @@ if [[ -n "$RUN_DIR" && -n "$RESULT_PATH" ]]; then
 fi
 
 if [[ -n "$RUN_DIR" ]]; then
-  RESULT_PATH="$RUN_DIR/test-results-swift-testing.xml"
+  RESULT_PATH="$RUN_DIR/test-results.xml"
 fi
 
 if [[ -z "$RESULT_PATH" ]]; then

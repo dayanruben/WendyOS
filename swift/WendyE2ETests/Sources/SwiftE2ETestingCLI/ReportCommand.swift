@@ -452,21 +452,9 @@ private func testResultsURL(in searchURLs: [URL]) throws -> URL? {
         }
         seen.insert(path)
 
-        let defaultURL = searchURL.appendingPathComponent("test-results-swift-testing.xml")
+        let defaultURL = searchURL.appendingPathComponent("test-results.xml")
         if FileManager.default.fileExists(atPath: defaultURL.path) {
             return defaultURL
-        }
-
-        guard FileManager.default.fileExists(atPath: searchURL.path) else {
-            continue
-        }
-        let candidates = try FileManager.default.contentsOfDirectory(
-            at: searchURL,
-            includingPropertiesForKeys: nil
-        ).filter { $0.lastPathComponent.hasSuffix("-swift-testing.xml") }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        if let candidate = candidates.first {
-            return candidate
         }
     }
 

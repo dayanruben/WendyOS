@@ -302,7 +302,8 @@ if ($AgentBinDir) {
     $script:AgentBinDir = $null
 }
 $script:TestsDir = Join-Path $script:RunDir 'tests'
-$TestResultsOutputBase = Join-Path $script:RunDir 'test-results.xml'
+$TestResultsOutputPath = Join-Path $script:RunDir 'test-results.xml'
+$ExpandedTestResultsOutputPath = Join-Path $script:RunDir 'test-results-swift-testing.xml'
 
 if (Test-Path -LiteralPath $script:RunDir) { Remove-Item -LiteralPath $script:RunDir -Recurse -Force }
 if (-not $AgentAddress -and (Test-Path -LiteralPath $script:AgentRunDir)) { Remove-Item -LiteralPath $script:AgentRunDir -Recurse -Force }
@@ -317,7 +318,7 @@ if ($TestFilters.Count -eq 1) {
 } else {
     $swiftArgs += @('--filter', ($TestFilters -join '|'))
 }
-$swiftArgs += @('--xunit-output', $TestResultsOutputBase)
+$swiftArgs += @('--xunit-output', $TestResultsOutputPath)
 
 $env:WENDY_E2E_RUN_ID = $RunID
 $env:WENDY_E2E_RUN_DIR = $script:RunDir
@@ -363,6 +364,10 @@ try {
     $testStatus = $LASTEXITCODE
 } finally {
     Pop-Location
+}
+
+if (Test-Path -LiteralPath $ExpandedTestResultsOutputPath -PathType Leaf) {
+    Move-Item -LiteralPath $ExpandedTestResultsOutputPath -Destination $TestResultsOutputPath -Force
 }
 
 & (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $script:RunDir

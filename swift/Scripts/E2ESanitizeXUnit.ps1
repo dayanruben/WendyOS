@@ -52,7 +52,7 @@ while ($i -lt $args.Count) {
 }
 
 if ($RunDir -and $ResultPath) { throw 'ERROR: pass either --run-dir or --file, not both.' }
-if ($RunDir) { $ResultPath = Join-Path $RunDir 'test-results-swift-testing.xml' }
+if ($RunDir) { $ResultPath = Join-Path $RunDir 'test-results.xml' }
 if (-not $ResultPath) { throw 'ERROR: --run-dir or --file is required.' }
 if (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf)) { exit 0 }
 
