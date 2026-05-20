@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -62,17 +63,17 @@ func TestEnsureSwiftVersion_InstallsWhenMissing(t *testing.T) {
 
 func TestEnsureSwiftVersion_SwiftlyNotFound(t *testing.T) {
 	origExec := execCommandContext
-	origLookPath := lookPath
+	origStat := statFile
 	t.Cleanup(func() {
 		execCommandContext = origExec
-		lookPath = origLookPath
+		statFile = origStat
 	})
 
 	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
 	}
-	lookPath = func(file string) (string, error) {
-		return "", fmt.Errorf("not found")
+	statFile = func(name string) (os.FileInfo, error) {
+		return nil, fmt.Errorf("not found")
 	}
 
 	err := EnsureSwiftVersion(context.Background(), io.Discard, io.Discard)
@@ -86,22 +87,22 @@ func TestEnsureSwiftVersion_SwiftlyNotFound(t *testing.T) {
 
 func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
 	origExec := execCommandContext
-	origLookPath := lookPath
+	origStat := statFile
 	origConfirm := confirmFunc
 	origOS := currentOS
 	t.Cleanup(func() {
 		execCommandContext = origExec
-		lookPath = origLookPath
+		statFile = origStat
 		confirmFunc = origConfirm
 		currentOS = origOS
 	})
 
 	currentOS = "darwin"
-	lookPath = func(file string) (string, error) {
-		if file == "brew" {
-			return "/opt/homebrew/bin/brew", nil
+	statFile = func(name string) (os.FileInfo, error) {
+		if name == "/opt/homebrew/bin/brew" {
+			return nil, nil // file exists
 		}
-		return "", fmt.Errorf("not found")
+		return nil, fmt.Errorf("not found")
 	}
 	confirmFunc = func(question string) (bool, error) { return true, nil }
 
@@ -152,22 +153,22 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
 
 func TestEnsureSwiftVersion_SwiftlyNotFound_BrewDeclined(t *testing.T) {
 	origExec := execCommandContext
-	origLookPath := lookPath
+	origStat := statFile
 	origConfirm := confirmFunc
 	origOS := currentOS
 	t.Cleanup(func() {
 		execCommandContext = origExec
-		lookPath = origLookPath
+		statFile = origStat
 		confirmFunc = origConfirm
 		currentOS = origOS
 	})
 
 	currentOS = "darwin"
-	lookPath = func(file string) (string, error) {
-		if file == "brew" {
-			return "/opt/homebrew/bin/brew", nil
+	statFile = func(name string) (os.FileInfo, error) {
+		if name == "/opt/homebrew/bin/brew" {
+			return nil, nil
 		}
-		return "", fmt.Errorf("not found")
+		return nil, fmt.Errorf("not found")
 	}
 	confirmFunc = func(question string) (bool, error) { return false, nil }
 
@@ -186,22 +187,22 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewDeclined(t *testing.T) {
 
 func TestEnsureSwiftVersion_SwiftlyNotFound_BrewFails(t *testing.T) {
 	origExec := execCommandContext
-	origLookPath := lookPath
+	origStat := statFile
 	origConfirm := confirmFunc
 	origOS := currentOS
 	t.Cleanup(func() {
 		execCommandContext = origExec
-		lookPath = origLookPath
+		statFile = origStat
 		confirmFunc = origConfirm
 		currentOS = origOS
 	})
 
 	currentOS = "darwin"
-	lookPath = func(file string) (string, error) {
-		if file == "brew" {
-			return "/opt/homebrew/bin/brew", nil
+	statFile = func(name string) (os.FileInfo, error) {
+		if name == "/opt/homebrew/bin/brew" {
+			return nil, nil
 		}
-		return "", fmt.Errorf("not found")
+		return nil, fmt.Errorf("not found")
 	}
 	confirmFunc = func(question string) (bool, error) { return true, nil }
 
