@@ -379,10 +379,16 @@ func ValidateJSON(data []byte) []string {
 	warnings = append(warnings, validateHooksJSON(raw["hooks"])...)
 
 	// Validate service-level entitlements when a services map is present.
+	// Unmarshal into map[string]json.RawMessage first so a null/invalid entry
+	// for one service doesn't silently drop warnings for all other services.
 	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
-		var services map[string]map[string]json.RawMessage
-		if err := json.Unmarshal(servicesRaw, &services); err == nil {
-			for name, svc := range services {
+		var serviceEntries map[string]json.RawMessage
+		if err := json.Unmarshal(servicesRaw, &serviceEntries); err == nil {
+			for name, svcRaw := range serviceEntries {
+				var svc map[string]json.RawMessage
+				if err := json.Unmarshal(svcRaw, &svc); err != nil {
+					continue
+				}
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 			}
