@@ -105,15 +105,22 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
 	}
 	confirmFunc = func(question string) (bool, error) { return true, nil }
 
+	const fakeBrew = "/opt/homebrew/bin/brew"
 	var calls [][]string
+	whichCallCount := 0
 	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		call := append([]string{name}, args...)
 		calls = append(calls, call)
 		switch {
 		case name == "swiftly" && len(args) > 0 && args[0] == "which":
-			// simulate swiftly binary not found
-			return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
-		case name == "brew":
+			whichCallCount++
+			if whichCallCount == 1 {
+				// first call: swiftly binary not in PATH at all
+				return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
+			}
+			// second call (post-brew): binary exists but version not installed yet
+			return exec.CommandContext(ctx, "false")
+		case name == fakeBrew:
 			return exec.CommandContext(ctx, "true") // brew install succeeds
 		default:
 			return exec.CommandContext(ctx, "true")
@@ -124,11 +131,11 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
 		t.Fatalf("EnsureSwiftVersion() unexpected error: %v", err)
 	}
 
-	// Expect: swiftly which, brew install swiftly, swiftly which (retry), swiftly install
+	// Expect: swiftly which, /opt/homebrew/bin/brew install swiftly, swiftly which (retry), swiftly install
 	brewCall := false
 	installCall := false
 	for _, c := range calls {
-		if c[0] == "brew" && len(c) >= 3 && c[1] == "install" && c[2] == "swiftly" {
+		if c[0] == fakeBrew && len(c) >= 3 && c[1] == "install" && c[2] == "swiftly" {
 			brewCall = true
 		}
 		if c[0] == "swiftly" && len(c) >= 2 && c[1] == "install" {
@@ -136,7 +143,7 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
 		}
 	}
 	if !brewCall {
-		t.Errorf("expected brew install swiftly call, calls: %v", calls)
+		t.Errorf("expected %s install swiftly call, calls: %v", fakeBrew, calls)
 	}
 	if !installCall {
 		t.Errorf("expected swiftly install call after brew, calls: %v", calls)
@@ -199,7 +206,7 @@ func TestEnsureSwiftVersion_SwiftlyNotFound_BrewFails(t *testing.T) {
 	confirmFunc = func(question string) (bool, error) { return true, nil }
 
 	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		if name == "brew" {
+		if name == "/opt/homebrew/bin/brew" {
 			return exec.CommandContext(ctx, "false") // brew install fails
 		}
 		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
