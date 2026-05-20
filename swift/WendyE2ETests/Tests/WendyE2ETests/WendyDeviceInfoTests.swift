@@ -135,7 +135,7 @@ struct `'wendy device info'` {
     /**
      The summary includes the agent version, OS, OS version, CPU architecture, and CLI version. Optional hardware fields appear when the agent reports them.
      */
-    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
+    @Test
     func `prints human-readable device information`() async throws {
         // AI: Review the human-readable output for usefulness, not exact text.
         // It should be clean terminal output with coherent labels, no JSON leak,
@@ -322,7 +322,7 @@ struct `'wendy device info'` {
     /**
      With `--check-updates`, the command compares the connected agent to the selected release channel and reports whether an update is available.
      */
-    @Test(.enabled(if: WendyE2EMachine.cli.os != .windows))
+    @Test
     func `'--check-updates' reports update status`() async throws {
         // AI: Review the update-check wording for ambiguity. The output should
         // clearly distinguish current device information from update status and
