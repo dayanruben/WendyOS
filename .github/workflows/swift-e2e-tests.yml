@@ -183,6 +183,11 @@ jobs:
       - e2e-ubuntu-mac-mini
     runs-on: [self-hosted, linux]
     timeout-minutes: 60
+    outputs:
+      aggregate_id: ${{ steps.e2e-aggregate.outputs.aggregate_id }}
+      aggregate_dir: ${{ steps.e2e-aggregate.outputs.aggregate_dir }}
+      aggregate_artifact: ${{ steps.e2e-aggregate.outputs.aggregate_artifact }}
+      reviewed_artifact: ${{ steps.e2e-aggregate.outputs.reviewed_artifact }}
     steps:
       - uses: actions/checkout@v6
 
@@ -199,13 +204,24 @@ jobs:
 
           workflow_id="$(slug "${GITHUB_WORKFLOW:-swift-e2e-tests}")"
           printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
-          echo "aggregate_id=${workflow_id}.gh${GITHUB_RUN_ID}.aggregate.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+          aggregate_id="${workflow_id}.gh${GITHUB_RUN_ID}.aggregate.${attempt_suffix}"
+          echo "aggregate_id=${aggregate_id}" >> "$GITHUB_OUTPUT"
           echo "aggregate_dir=/tmp/wendy/${workflow_id}.gh${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "aggregate_artifact=${aggregate_id}.aggregate" >> "$GITHUB_OUTPUT"
+          echo "reviewed_artifact=${aggregate_id}.reviewed" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Swift E2E aggregate workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf \
+            "/tmp/wendy-raw/${{ github.run_id }}" \
+            "${{ steps.e2e-aggregate.outputs.aggregate_dir }}"
 
       - name: Download Swift E2E runs
         uses: actions/download-artifact@v5
         with:
-          path: /tmp/wendy-raw
+          path: /tmp/wendy-raw/${{ github.run_id }}
           pattern: swift-e2e-tests.gh${{ github.run_id }}.*
 
       - name: Aggregate Swift E2E runs
@@ -213,7 +229,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t run_dirs < <(find /tmp/wendy-raw -mindepth 1 -maxdepth 1 -type d | sort)
+          mapfile -t run_dirs < <(find /tmp/wendy-raw/${{ github.run_id }} -mindepth 1 -maxdepth 1 -type d | sort)
           if [[ ${#run_dirs[@]} -eq 0 ]]; then
             echo "ERROR: no Swift E2E run artifacts downloaded." >&2
             exit 1
@@ -222,25 +238,92 @@ jobs:
             --output-dir /tmp/wendy \
             "${run_dirs[@]}"
 
-      - name: Skip Swift E2E aggregate AI review
+      - name: Upload Swift E2E aggregate input
         if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.e2e-aggregate.outputs.aggregate_artifact }}
+          path: ${{ steps.e2e-aggregate.outputs.aggregate_dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  swift-e2e-review:
+    name: Review Swift E2E Results
+    if: ${{ !cancelled() && needs.swift-e2e-aggregate.result == 'success' }}
+    needs: swift-e2e-aggregate
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare Swift E2E review workspace
         shell: bash
-        run: echo "Swift E2E aggregate AI review is disabled for now."
+        run: |
+          set -euo pipefail
+          rm -rf "${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}"
+
+      - name: Download Swift E2E aggregate input
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.swift-e2e-aggregate.outputs.aggregate_artifact }}
+          path: ${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}
+
+      - name: Review Swift E2E aggregate
+        working-directory: swift
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          bash ./Scripts/E2EReview.sh \
+            --run-dir "${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}"
+
+      - name: Upload Swift E2E reviewed aggregate
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ needs.swift-e2e-aggregate.outputs.reviewed_artifact }}
+          path: ${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  swift-e2e-report:
+    name: Report Swift E2E Results
+    if: ${{ always() && !cancelled() && needs.swift-e2e-aggregate.result == 'success' }}
+    needs:
+      - swift-e2e-aggregate
+      - swift-e2e-review
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare Swift E2E report workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}"
+
+      - name: Download Swift E2E reviewed aggregate
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.swift-e2e-aggregate.outputs.reviewed_artifact }}
+          path: ${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}
 
       - name: Render Swift E2E aggregate index
-        if: always()
         working-directory: swift
         shell: bash
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReport.sh \
-            --run-dir "${{ steps.e2e-aggregate.outputs.aggregate_dir }}"
+            --run-dir "${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}"
 
-      - name: Upload Swift E2E aggregate
+      - name: Upload Swift E2E aggregate report
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ steps.e2e-aggregate.outputs.aggregate_id }}
-          path: ${{ steps.e2e-aggregate.outputs.aggregate_dir }}/**
+          name: ${{ needs.swift-e2e-aggregate.outputs.aggregate_id }}
+          path: ${{ needs.swift-e2e-aggregate.outputs.aggregate_dir }}/**
           if-no-files-found: warn
           retention-days: 14
