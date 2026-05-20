@@ -54,6 +54,7 @@ jobs:
           python3 << 'PYEOF'
           import anthropic
           import json
+          import os
           import pathlib
 
           client = anthropic.Anthropic()
@@ -148,9 +149,27 @@ jobs:
               }],
           )
 
+          import re
+
           report = message.content[0].text[:20000]
           pathlib.Path('review.md').write_text(report + '\n')
           print(report)
+
+          # Deterministically parse the findings table the system prompt instructs
+          # Claude to emit (| Severity | ... |). Line-anchored and restricted to the
+          # five valid tokens so free-form prose cannot accidentally match.
+          severities = re.findall(
+              r'^\|\s*(CRITICAL|HIGH|MEDIUM|LOW|INFORMATIONAL)\s*\|',
+              report,
+              re.MULTILINE,
+          )
+          has_high = any(s in ('CRITICAL', 'HIGH') for s in severities)
+          print(f'Severities found: {severities}')
+
+          github_env = os.environ.get('GITHUB_ENV', '')
+          if github_env and has_high:
+              with open(github_env, 'a') as genv:
+                  genv.write('HAS_HIGH_SEVERITY=true\n')
           PYEOF
 
       - name: Post review as PR comment
@@ -204,3 +223,9 @@ jobs:
           else
             gh pr comment "${PR_NUM}" --repo "${REPO}" --body-file comment.md
           fi
+
+      - name: Fail on high or critical severity findings
+        if: env.HAS_HIGH_SEVERITY == 'true'
+        run: |
+          echo "Security review found HIGH or CRITICAL severity issues. Address them before merging."
+          exit 1
