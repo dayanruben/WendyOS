@@ -37,11 +37,13 @@ RUN_ID="${WENDY_E2E_RUN_ID:-}"
 OUTPUT_DIR="${WENDY_E2E_OUTPUT_DIR:-}"
 CLI_ROOT_DIR="${WENDY_E2E_CLI_ROOT_DIR:-}"
 CLI_REPO_DIR="${WENDY_E2E_CLI_REPO_DIR:-}"
+CLI_BIN_DIR="${WENDY_E2E_CLI_BIN_DIR:-}"
 CLI_USER="${WENDY_E2E_CLI_USER:-}"
 CLI_ADDRESS="${WENDY_E2E_CLI_ADDRESS:-}"
 CLI_OS="${WENDY_E2E_CLI_OS:-}"
 AGENT_ROOT_DIR="${WENDY_E2E_AGENT_ROOT_DIR:-}"
 AGENT_REPO_DIR="${WENDY_E2E_AGENT_REPO_DIR:-}"
+AGENT_BIN_DIR="${WENDY_E2E_AGENT_BIN_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
 AGENT_OS="${WENDY_E2E_AGENT_OS:-}"
@@ -99,11 +101,13 @@ Options:
   --output-dir DIR      Required local root directory for runner output runs.
   --cli-root-dir DIR    Root directory for CLI machine runs.
   --cli-repo-dir DIR    wendy-agent repo root on the CLI machine.
+  --cli-bin-dir DIR     Directory where the built wendy CLI is written.
   --cli-user USER       Optional SSH user for the CLI machine.
   --cli-address HOST    Optional address for the CLI machine.
   --cli-os OS           Optional OS override for the CLI machine.
   --agent-root-dir DIR  Root directory for agent machine runs.
   --agent-repo-dir DIR  wendy-agent repo root on the agent machine.
+  --agent-bin-dir DIR   Optional directory prepended to PATH on the agent machine.
   --agent-user USER     Optional SSH user for the agent machine.
   --agent-address HOST  Optional address for the agent machine; defaults to hostname.
   --agent-os OS         Optional OS override for the agent machine.
@@ -124,11 +128,13 @@ Environment:
   WENDY_E2E_OUTPUT_DIR                Required local root directory for runner output runs.
   WENDY_E2E_CLI_ROOT_DIR              Root directory for CLI machine runs.
   WENDY_E2E_CLI_REPO_DIR              wendy-agent repo root on the CLI machine.
+  WENDY_E2E_CLI_BIN_DIR               Directory where the built wendy CLI is written.
   WENDY_E2E_CLI_USER                  Optional SSH user for the CLI machine.
   WENDY_E2E_CLI_ADDRESS               Optional address for the CLI machine.
   WENDY_E2E_CLI_OS                    Optional OS override for the CLI machine.
   WENDY_E2E_AGENT_ROOT_DIR            Root directory for agent machine runs.
   WENDY_E2E_AGENT_REPO_DIR            wendy-agent repo root on the agent machine.
+  WENDY_E2E_AGENT_BIN_DIR             Optional directory prepended to PATH on the agent machine.
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
   WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
   WENDY_E2E_AGENT_OS                  Optional OS override for the agent machine.
@@ -163,6 +169,10 @@ while [[ $# -gt 0 ]]; do
       CLI_REPO_DIR="$2"
       shift 2
       ;;
+    --cli-bin-dir)
+      CLI_BIN_DIR="$2"
+      shift 2
+      ;;
     --cli-user)
       CLI_USER="$2"
       shift 2
@@ -181,6 +191,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --agent-repo-dir)
       AGENT_REPO_DIR="$2"
+      shift 2
+      ;;
+    --agent-bin-dir)
+      AGENT_BIN_DIR="$2"
       shift 2
       ;;
     --agent-user)
@@ -339,11 +353,19 @@ if [[ -z "$AGENT_ADDRESS" ]]; then
   AGENT_REPO_DIR="$(absolute_existing_dir_path "$AGENT_REPO_DIR")"
 fi
 
+if [[ -z "$CLI_BIN_DIR" ]]; then
+  CLI_BIN_DIR="${CLI_REPO_DIR%/}/go/bin"
+fi
+if [[ -z "$CLI_ADDRESS" ]]; then
+  CLI_BIN_DIR="$(absolute_dir_path "$CLI_BIN_DIR")"
+fi
+if [[ -n "$AGENT_BIN_DIR" && -z "$AGENT_ADDRESS" ]]; then
+  AGENT_BIN_DIR="$(absolute_dir_path "$AGENT_BIN_DIR")"
+fi
+
 RUN_DIR="$OUTPUT_DIR/$RUN_ID"
 CLI_RUN_DIR="$CLI_ROOT_DIR/$RUN_ID/cli"
 AGENT_RUN_DIR="$AGENT_ROOT_DIR/$RUN_ID/agent"
-CLI_BIN_DIR="$CLI_RUN_DIR/bin"
-AGENT_BIN_DIR="$AGENT_RUN_DIR/bin"
 TESTS_DIR="$RUN_DIR/tests"
 TEST_RESULTS_OUTPUT_BASE="$RUN_DIR/test-results.xml"
 
@@ -354,9 +376,6 @@ fi
 mkdir -p \
   "$RUN_DIR" \
   "$TESTS_DIR"
-if [[ -z "$AGENT_ADDRESS" ]]; then
-  mkdir -p "$AGENT_BIN_DIR"
-fi
 
 ssh_target() {
   local user="$1"
@@ -422,12 +441,10 @@ expand_target_path() {
   esac
 }
 
-cli_run_dir="\$(expand_target_path $(shell_quote "$CLI_RUN_DIR"))"
 cli_repo_dir="\$(expand_target_path $(shell_quote "$CLI_REPO_DIR"))"
-cli_bin_dir="\$cli_run_dir/bin"
+cli_bin_dir="\$(expand_target_path $(shell_quote "$CLI_BIN_DIR"))"
 wendy_path="\$cli_bin_dir/wendy"
 
-rm -rf "\$cli_run_dir"
 mkdir -p "\$cli_bin_dir"
 cd "\$cli_repo_dir/go"
 go build -o "\$wendy_path" ./cmd/wendy
@@ -548,7 +565,9 @@ write_run_info() {
     printf '    "runDirectory": '; json_string "$RUN_DIR"; echo ","
     printf '    "outputDirectory": '; json_string "$OUTPUT_DIR"; echo ","
     printf '    "cliRunDirectory": '; json_string "$CLI_RUN_DIR"; echo ","
+    printf '    "cliBinDirectory": '; json_string "$CLI_BIN_DIR"; echo ","
     printf '    "agentRunDirectory": '; json_string "$AGENT_RUN_DIR"; echo ","
+    printf '    "agentBinDirectory": '; json_string_or_null "$AGENT_BIN_DIR"; echo ","
     printf '    "testsDirectory": '; json_string "$TESTS_DIR"; echo
     echo '  },'
     echo '  "test": {'
@@ -559,7 +578,8 @@ write_run_info() {
     echo '  "tools": {'
     printf '    "swift": '; json_string_or_null "$swift_version"; echo ","
     printf '    "go": '; json_string_or_null "$go_version"; echo ","
-    printf '    "wendy": '; json_string_or_null "${WENDY_CLI_VERSION:-}"; echo
+    printf '    "wendy": '; json_string_or_null "${WENDY_CLI_VERSION:-}"; echo ","
+    printf '    "wendyPath": '; json_string "$CLI_BIN_DIR/wendy"; echo
     echo '  }'
     echo "}"
   } > "$info_path"
@@ -585,10 +605,12 @@ SWIFT_TEST_ENV=(
   "WENDY_E2E_RUN_DIR=$RUN_DIR"
   "WENDY_E2E_CLI_RUN_DIR=$CLI_RUN_DIR"
   "WENDY_E2E_CLI_REPO_DIR=$CLI_REPO_DIR"
+  "WENDY_E2E_CLI_BIN_DIR=$CLI_BIN_DIR"
   "WENDY_E2E_CLI_USER=$CLI_USER"
   "WENDY_E2E_CLI_ADDRESS=$CLI_ADDRESS"
   "WENDY_E2E_AGENT_RUN_DIR=$AGENT_RUN_DIR"
   "WENDY_E2E_AGENT_REPO_DIR=$AGENT_REPO_DIR"
+  "WENDY_E2E_AGENT_BIN_DIR=$AGENT_BIN_DIR"
   "WENDY_E2E_AGENT_USER=$AGENT_USER"
   "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
   "WENDY_E2E_CLI_OS=$CLI_OS"
@@ -603,6 +625,7 @@ echo "    Run ID:   $RUN_ID"
 echo "    Run dir:  $RUN_DIR"
 echo "    CLI run:  $CLI_RUN_DIR"
 echo "    Agent run: $AGENT_RUN_DIR"
+echo "    CLI bin:  $CLI_BIN_DIR"
 echo "    CLI:      $CLI_BIN_DIR/wendy"
 echo "    Tests:    $TESTS_DIR"
 echo "    Filters:  ${TEST_FILTERS[*]}"

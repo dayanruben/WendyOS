@@ -52,6 +52,10 @@ public enum WendyE2EEnvironment {
         value("WENDY_E2E_CLI_REPO_DIR")
     }
 
+    public static var cliBinDirectory: String? {
+        value("WENDY_E2E_CLI_BIN_DIR")
+    }
+
     public static var agentOS: WendyE2EMachineOS? {
         value("WENDY_E2E_AGENT_OS").flatMap(WendyE2EMachineOS.init(environmentValue:))
     }
@@ -70,6 +74,10 @@ public enum WendyE2EEnvironment {
 
     public static var agentRepoDirectory: String? {
         value("WENDY_E2E_AGENT_REPO_DIR")
+    }
+
+    public static var agentBinDirectory: String? {
+        value("WENDY_E2E_AGENT_BIN_DIR")
     }
 
     public static var testRecordsDirectory: String? {

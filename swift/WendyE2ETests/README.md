@@ -11,9 +11,9 @@ swift test --filter WendyE2ETests
 ```
 
 From `swift/`, the helper script writes runner output under an explicit
-output directory, builds the managed CLI into the CLI run directory, writes
-isolated CLI and agent sandboxes, and captures Swift Testing results and command
-recordings:
+output directory, builds the managed CLI into `go/bin` (or
+`WENDY_E2E_CLI_BIN_DIR`), writes isolated CLI and agent sandboxes, and captures
+Swift Testing results and command recordings:
 
 ```bash
 bash Scripts/E2ETest.sh --output-dir Build/e2e
@@ -32,13 +32,15 @@ For reproducible command recordings when invoking SwiftPM directly:
 RUN_ID="current"
 RUN_DIR="$PWD/.build/e2e/$RUN_ID"
 CLI_RUN_DIR="$HOME/.wendy/e2e/$RUN_ID/cli"
+CLI_BIN_DIR="$PWD/../../go/bin"
 AGENT_RUN_DIR="$HOME/.wendy/e2e/$RUN_ID/agent"
 rm -rf "$RUN_DIR" "$CLI_RUN_DIR" "$AGENT_RUN_DIR"
-mkdir -p "$CLI_RUN_DIR/bin" "$AGENT_RUN_DIR/bin"
-(cd ../../go && go build -o "$CLI_RUN_DIR/bin/wendy" ./cmd/wendy)
+mkdir -p "$CLI_BIN_DIR"
+(cd ../../go && go build -o "$CLI_BIN_DIR/wendy" ./cmd/wendy)
 WENDY_E2E_RUN_ID="$RUN_ID" \
 WENDY_E2E_RUN_DIR="$RUN_DIR" \
 WENDY_E2E_CLI_RUN_DIR="$CLI_RUN_DIR" \
+WENDY_E2E_CLI_BIN_DIR="$CLI_BIN_DIR" \
 WENDY_E2E_AGENT_RUN_DIR="$AGENT_RUN_DIR" \
 WENDY_E2E_ISOLATION=per-run \
 swift test --filter WendyE2ETests

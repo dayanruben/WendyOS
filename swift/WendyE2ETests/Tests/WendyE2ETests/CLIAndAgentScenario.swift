@@ -75,6 +75,7 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 isolation: isolation
             )
             let cliBinDirectory = Self.roleBinDirectory(
+                explicitDirectory: WendyE2EEnvironment.cliBinDirectory,
                 runDirectory: WendyE2EEnvironment.cliRunDirectory,
                 fallbackDirectory: repositoryRootDirectoryURL.appendingPathComponent("go/bin").path
             )
@@ -91,6 +92,7 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
                 isolation: isolation
             )
             let agentBinDirectory = Self.roleBinDirectory(
+                explicitDirectory: WendyE2EEnvironment.agentBinDirectory,
                 runDirectory: WendyE2EEnvironment.agentRunDirectory,
                 fallbackDirectory: nil
             )
@@ -232,9 +234,13 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
     }
 
     private static func roleBinDirectory(
+        explicitDirectory: String?,
         runDirectory: String?,
         fallbackDirectory: String?
     ) -> String? {
+        if let explicitDirectory {
+            return explicitDirectory
+        }
         guard let runDirectory else {
             return fallbackDirectory
         }

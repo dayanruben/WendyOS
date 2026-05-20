@@ -86,6 +86,7 @@ function Invoke-CLICommand([string]$Command) {
 function Build-CLI {
     $exeName = if ($env:OS -eq 'Windows_NT') { 'wendy.exe' } else { 'wendy' }
     $wendyPath = Join-Path $script:CLIBinDir $exeName
+    $script:WendyCLIPath = $wendyPath
 
     Write-Output '==> Building wendy CLI'
     Write-Output "    Target: $(if ($script:CLIAddress) { "${script:CLIUser}@${script:CLIAddress}" } else { '<local>' })"
@@ -95,9 +96,6 @@ function Build-CLI {
         throw 'ERROR: Remote CLI builds from Windows are not supported yet. Run the Windows E2E harness with a local CLI and remote agent.'
     }
 
-    if (Test-Path -LiteralPath $script:CLIRunDir) {
-        Remove-Item -LiteralPath $script:CLIRunDir -Recurse -Force
-    }
     New-Item -ItemType Directory -Force -Path $script:CLIBinDir | Out-Null
 
     Push-Location (Join-Path $script:CLIRepoDir 'go')
@@ -166,7 +164,9 @@ function Write-RunInfo([int]$Status) {
             runDirectory = $script:RunDir
             outputDirectory = $script:OutputDir
             cliRunDirectory = $script:CLIRunDir
+            cliBinDirectory = $script:CLIBinDir
             agentRunDirectory = $script:AgentRunDir
+            agentBinDirectory = if ($script:AgentBinDir) { $script:AgentBinDir } else { $null }
             testsDirectory = $script:TestsDir
         }
         test = [ordered]@{
@@ -178,6 +178,7 @@ function Write-RunInfo([int]$Status) {
             swift = if ($swiftVersion) { $swiftVersion } else { $null }
             go = if ($goVersion) { $goVersion } else { $null }
             wendy = if ($script:WendyCLIVersion) { $script:WendyCLIVersion } else { $null }
+            wendyPath = if ($script:WendyCLIPath) { $script:WendyCLIPath } else { $null }
         }
     }
 
@@ -191,11 +192,13 @@ $DefaultRunID = $null
 $OutputDir = $env:WENDY_E2E_OUTPUT_DIR
 $CLIRootDir = $env:WENDY_E2E_CLI_ROOT_DIR
 $CLIRepoDir = $env:WENDY_E2E_CLI_REPO_DIR
+$CLIBinDir = $env:WENDY_E2E_CLI_BIN_DIR
 $CLIUser = $env:WENDY_E2E_CLI_USER
 $CLIAddress = $env:WENDY_E2E_CLI_ADDRESS
 $CLIOS = if ($env:WENDY_E2E_CLI_OS) { $env:WENDY_E2E_CLI_OS } else { 'windows' }
 $AgentRootDir = $env:WENDY_E2E_AGENT_ROOT_DIR
 $AgentRepoDir = $env:WENDY_E2E_AGENT_REPO_DIR
+$AgentBinDir = $env:WENDY_E2E_AGENT_BIN_DIR
 $AgentUser = $env:WENDY_E2E_AGENT_USER
 $AgentAddress = $env:WENDY_E2E_AGENT_ADDRESS
 $AgentOS = $env:WENDY_E2E_AGENT_OS
@@ -216,11 +219,13 @@ while ($i -lt $script:RemainingArgs.Count) {
         '--output-dir' { $OutputDir = Get-ValueOption '--output-dir' $i; $i += 2; continue }
         '--cli-root-dir' { $CLIRootDir = Get-ValueOption '--cli-root-dir' $i; $i += 2; continue }
         '--cli-repo-dir' { $CLIRepoDir = Get-ValueOption '--cli-repo-dir' $i; $i += 2; continue }
+        '--cli-bin-dir' { $CLIBinDir = Get-ValueOption '--cli-bin-dir' $i; $i += 2; continue }
         '--cli-user' { $CLIUser = Get-ValueOption '--cli-user' $i; $i += 2; continue }
         '--cli-address' { $CLIAddress = Get-ValueOption '--cli-address' $i; $i += 2; continue }
         '--cli-os' { $CLIOS = Get-ValueOption '--cli-os' $i; $i += 2; continue }
         '--agent-root-dir' { $AgentRootDir = Get-ValueOption '--agent-root-dir' $i; $i += 2; continue }
         '--agent-repo-dir' { $AgentRepoDir = Get-ValueOption '--agent-repo-dir' $i; $i += 2; continue }
+        '--agent-bin-dir' { $AgentBinDir = Get-ValueOption '--agent-bin-dir' $i; $i += 2; continue }
         '--agent-user' { $AgentUser = Get-ValueOption '--agent-user' $i; $i += 2; continue }
         '--agent-address' { $AgentAddress = Get-ValueOption '--agent-address' $i; $i += 2; continue }
         '--agent-os' { $AgentOS = Get-ValueOption '--agent-os' $i; $i += 2; continue }
@@ -286,15 +291,22 @@ $script:TestFilters = @($TestFilters)
 $script:RunDir = Join-Path $script:OutputDir $RunID
 $script:CLIRunDir = if ($CLIAddress) { "$script:CLIRootDir/$RunID/cli" } else { Join-Path (Join-Path $script:CLIRootDir $RunID) 'cli' }
 $script:AgentRunDir = if ($AgentAddress) { "$script:AgentRootDir/$RunID/agent" } else { Join-Path (Join-Path $script:AgentRootDir $RunID) 'agent' }
-$script:CLIBinDir = if ($CLIAddress) { "$script:CLIRunDir/bin" } else { Join-Path $script:CLIRunDir 'bin' }
-$script:AgentBinDir = if ($AgentAddress) { "$script:AgentRunDir/bin" } else { Join-Path $script:AgentRunDir 'bin' }
+if ($CLIBinDir) {
+    $script:CLIBinDir = if ($CLIAddress) { ConvertTo-RemotePath $CLIBinDir } else { Resolve-E2EPath $CLIBinDir -Create }
+} else {
+    $script:CLIBinDir = if ($CLIAddress) { "$script:CLIRepoDir/go/bin" } else { Resolve-E2EPath (Join-Path (Join-Path $script:CLIRepoDir 'go') 'bin') -Create }
+}
+if ($AgentBinDir) {
+    $script:AgentBinDir = if ($AgentAddress) { ConvertTo-RemotePath $AgentBinDir } else { Resolve-E2EPath $AgentBinDir -Create }
+} else {
+    $script:AgentBinDir = $null
+}
 $script:TestsDir = Join-Path $script:RunDir 'tests'
 $TestResultsOutputBase = Join-Path $script:RunDir 'test-results.xml'
 
 if (Test-Path -LiteralPath $script:RunDir) { Remove-Item -LiteralPath $script:RunDir -Recurse -Force }
 if (-not $AgentAddress -and (Test-Path -LiteralPath $script:AgentRunDir)) { Remove-Item -LiteralPath $script:AgentRunDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $script:RunDir, $script:TestsDir | Out-Null
-if (-not $AgentAddress) { New-Item -ItemType Directory -Force -Path $script:AgentBinDir | Out-Null }
 
 Build-CLI
 
@@ -311,10 +323,12 @@ $env:WENDY_E2E_RUN_ID = $RunID
 $env:WENDY_E2E_RUN_DIR = $script:RunDir
 $env:WENDY_E2E_CLI_RUN_DIR = $script:CLIRunDir
 $env:WENDY_E2E_CLI_REPO_DIR = if ($script:CLIRepoDir) { $script:CLIRepoDir } else { '' }
+$env:WENDY_E2E_CLI_BIN_DIR = if ($script:CLIBinDir) { $script:CLIBinDir } else { '' }
 $env:WENDY_E2E_CLI_USER = if ($CLIUser) { $CLIUser } else { '' }
 $env:WENDY_E2E_CLI_ADDRESS = if ($CLIAddress) { $CLIAddress } else { '' }
 $env:WENDY_E2E_AGENT_RUN_DIR = $script:AgentRunDir
 $env:WENDY_E2E_AGENT_REPO_DIR = if ($script:AgentRepoDir) { $script:AgentRepoDir } else { '' }
+$env:WENDY_E2E_AGENT_BIN_DIR = if ($script:AgentBinDir) { $script:AgentBinDir } else { '' }
 $env:WENDY_E2E_AGENT_USER = if ($AgentUser) { $AgentUser } else { '' }
 $env:WENDY_E2E_AGENT_ADDRESS = if ($AgentAddress) { $AgentAddress } else { '' }
 $env:WENDY_E2E_CLI_OS = if ($CLIOS) { $CLIOS } else { '' }
@@ -329,7 +343,8 @@ Write-Output "    Run ID:   $RunID"
 Write-Output "    Run dir:  $script:RunDir"
 Write-Output "    CLI run:  $script:CLIRunDir"
 Write-Output "    Agent run: $script:AgentRunDir"
-Write-Output "    CLI:      $(Join-Path $script:CLIBinDir 'wendy.exe')"
+Write-Output "    CLI bin:  $script:CLIBinDir"
+Write-Output "    CLI:      $script:WendyCLIPath"
 Write-Output "    Tests:    $script:TestsDir"
 Write-Output "    Filters:  $($TestFilters -join ' ')"
 Write-Output "    Isolation: $Isolation"
