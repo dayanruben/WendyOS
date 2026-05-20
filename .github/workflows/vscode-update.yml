@@ -1,0 +1,24 @@
+name: VSCode Extension Update
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - 'go/internal/cli/commands/**'
+
+jobs:
+  vscode-update:
+    name: Propose update to wendylabsinc/wendy-vscode
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'ai-suggestion')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} > pr.diff
