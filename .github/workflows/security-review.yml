@@ -148,9 +148,18 @@ jobs:
               }],
           )
 
+          import os
+          import re
+
           report = message.content[0].text[:20000]
           pathlib.Path('review.md').write_text(report + '\n')
           print(report)
+
+          has_high = bool(re.search(r'\|\s*(?:CRITICAL|HIGH)\s*\|', report))
+          github_env = os.environ.get('GITHUB_ENV', '')
+          if github_env and has_high:
+              with open(github_env, 'a') as genv:
+                  genv.write('HAS_HIGH_SEVERITY=true\n')
           PYEOF
 
       - name: Post review as PR comment
@@ -204,3 +213,9 @@ jobs:
           else
             gh pr comment "${PR_NUM}" --repo "${REPO}" --body-file comment.md
           fi
+
+      - name: Fail on high or critical severity findings
+        if: env.HAS_HIGH_SEVERITY == 'true'
+        run: |
+          echo "Security review found HIGH or CRITICAL severity issues. Address them before merging."
+          exit 1
