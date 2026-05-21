@@ -19,7 +19,7 @@ Swift Testing results and command recordings:
 bash Scripts/E2ETest.sh --output-dir Build/e2e
 ```
 
-For the common local workflow, run raw tests first and then analyze all raw runs found in the output directory:
+For the common local workflow, run raw tests first and then analyze raw runs matching the current aggregate run ID:
 
 ```bash
 make e2e-test

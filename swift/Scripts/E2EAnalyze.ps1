@@ -14,10 +14,11 @@ $DefaultOutputDir = if ($env:WENDY_E2E_OUTPUT_DIR) {
 $OutputDir = $DefaultOutputDir
 $OpenReport = $true
 $Stage = 'all'
+$RunPrefix = $env:WENDY_E2E_ANALYZE_RUN_ID
 
 function Show-Usage {
     @"
-Usage: E2EAnalyze.ps1 [--output-dir DIR] [--stage STAGE] [--open|--no-open]
+Usage: E2EAnalyze.ps1 [--output-dir DIR] [--run-id ID] [--stage STAGE] [--open|--no-open]
 
 Analyze raw Swift E2E runs found in an output directory.
 
@@ -33,6 +34,7 @@ $i = 0
 while ($i -lt $args.Count) {
     switch ($args[$i]) {
         '--output-dir' { $OutputDir = $args[$i + 1]; $i += 2; continue }
+        '--run-id' { $RunPrefix = $args[$i + 1]; $i += 2; continue }
         '--stage' { $Stage = $args[$i + 1]; $i += 2; continue }
         '--open' { $OpenReport = $true; $i += 1; continue }
         '--no-open' { $OpenReport = $false; $i += 1; continue }
@@ -47,11 +49,25 @@ if ($Stage -notin @('aggregate', 'review', 'report', 'all')) {
     throw 'ERROR: --stage must be aggregate, review, report, or all.'
 }
 
+function Get-DefaultRunPrefix {
+    if ($env:WENDY_E2E_RUN_ID) {
+        $withoutAttempt = $env:WENDY_E2E_RUN_ID -replace '\.[^.]+$', ''
+        return $withoutAttempt -replace '\.[^.]+$', ''
+    }
+    if ($env:GITHUB_RUN_ID) {
+        return "swift-e2e-tests.gh$env:GITHUB_RUN_ID"
+    }
+    return 'swift-e2e-tests.local0000'
+}
+
 $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
+if (-not $RunPrefix) { $RunPrefix = Get-DefaultRunPrefix }
+$RunPrefix = $RunPrefix.TrimEnd('.')
 
 function Test-RawRunDirectory([System.IO.DirectoryInfo]$Directory) {
+    if (-not $Directory.Name.StartsWith("$RunPrefix.")) { return $false }
     if ($Directory.Name -notmatch '\.\d{4}$') { return $false }
     $infoPath = Join-Path $Directory.FullName 'info.json'
     if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { return $false }
@@ -90,6 +106,7 @@ if ($runDirs) {
         Sort-Object -Unique
 } else {
     $aggregateDirs = Get-ChildItem -LiteralPath $OutputDir -Directory |
+        Where-Object { $_.Name -eq $RunPrefix } |
         Where-Object { Test-AggregateDirectory $_ } |
         Sort-Object Name |
         ForEach-Object { $_.FullName }
@@ -104,6 +121,7 @@ if ($Stage -in @('review', 'report') -and -not $aggregateDirs) {
 
 Write-Output '==> Analyzing Swift E2E runs'
 Write-Output "    Stage:      $Stage"
+Write-Output "    Run ID:     $RunPrefix"
 Write-Output "    Output dir: $OutputDir"
 $runDirs | ForEach-Object { Write-Output "    Run:        $($_.FullName)" }
 $aggregateDirs | ForEach-Object { Write-Output "    Aggregate:  $_" }

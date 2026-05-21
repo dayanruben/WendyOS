@@ -66,8 +66,10 @@ when you need lower-level control:
   `<output-root>/<run-id>/tests`. They accept options such as `--filter`,
   `--agent-address`, `--agent-user`, and `--verbose`.
 - `Scripts/E2EAnalyze.sh` and `Scripts/E2EAnalyze.ps1` analyze raw runs in an
-  output directory. They support `aggregate`, `review`, `report`, and `all`
-  stages; the aggregate stage updates matching aggregate folders in place.
+  output directory. By default, they only consider runs matching the current
+  aggregate run ID, such as `swift-e2e-tests.local0000`. They support
+  `aggregate`, `review`, `report`, and `all` stages; the aggregate stage updates
+  matching aggregate folders in place.
 - `Scripts/E2EReport.sh` and `Scripts/E2EReport.ps1` render an existing
   aggregate report at `<output-root>/<workflow-name>.<run-id>/index.html`.
 
@@ -99,13 +101,13 @@ The Makefile includes helpers for the common cases:
   `wendyos-jetson-orin-nano.local`.
 - `make e2e-test-raspberry-pi-5` runs raw tests against
   `wendyos-raspberry-pi-5.local`.
-- `make e2e-aggregate` integrates all raw runs found in the output directory,
+- `make e2e-aggregate` integrates raw runs for the current aggregate run ID,
   updating aggregate folders in place.
 - `make e2e-review` reviews existing aggregate results.
 - `make e2e-report` renders aggregate HTML reports and opens the newest report
   on macOS.
 - `make e2e-analyze` runs `e2e-aggregate`, `e2e-review`, and `e2e-report` in
-  order.
+  order for the current aggregate run ID.
 
 Device-targeted helpers accept a `DEVICE` override:
 

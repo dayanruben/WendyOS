@@ -8,10 +8,11 @@ DEFAULT_OUTPUT_DIR="${WENDY_E2E_OUTPUT_DIR:-/tmp/wendy}"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 OPEN_REPORT="true"
 STAGE="all"
+RUN_PREFIX="${WENDY_E2E_ANALYZE_RUN_ID:-}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--output-dir DIR] [--stage STAGE] [--open|--no-open]
+Usage: $(basename "$0") [--output-dir DIR] [--run-id ID] [--stage STAGE] [--open|--no-open]
 
 Analyze raw Swift E2E runs found in an output directory.
 
@@ -24,6 +25,8 @@ Stages:
 Options:
   --output-dir DIR  Directory containing raw Swift E2E run directories;
                     defaults to $DEFAULT_OUTPUT_DIR.
+  --run-id ID       Analyze runs matching this aggregate run ID prefix;
+                    defaults to today's local run, or WENDY_E2E_RUN_ID/GITHUB_RUN_ID.
   --stage STAGE     aggregate, review, report, or all.
   --open            Open the newest generated report when supported; default.
   --no-open         Do not open a report.
@@ -59,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
+    --run-id)
+      RUN_PREFIX="$2"
+      shift 2
+      ;;
     --stage)
       STAGE="$2"
       shift 2
@@ -92,12 +99,31 @@ case "$STAGE" in
     ;;
 esac
 
+default_run_prefix() {
+  if [[ -n "${WENDY_E2E_RUN_ID:-}" ]]; then
+    local value="${WENDY_E2E_RUN_ID}"
+    local without_attempt="${value%.*}"
+    printf "%s" "${without_attempt%.*}"
+    return
+  fi
+
+  if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
+    printf "swift-e2e-tests.gh%s" "${GITHUB_RUN_ID}"
+    return
+  fi
+
+  printf "swift-e2e-tests.local0000"
+}
+
 OUTPUT_DIR="$(absolute_dir_path "$OUTPUT_DIR")"
+RUN_PREFIX="${RUN_PREFIX:-$(default_run_prefix)}"
+RUN_PREFIX="${RUN_PREFIX%.}"
 
 is_raw_run_dir() {
   local dir="$1"
   local base="${dir##*/}"
   [[ -d "$dir" ]] || return 1
+  [[ "$base" == "$RUN_PREFIX".* ]] || return 1
   [[ "$base" =~ \.[0-9][0-9][0-9][0-9]$ ]] || return 1
   [[ -f "$dir/info.json" ]] || return 1
   ! grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-aggregate"' "$dir/info.json"
@@ -135,6 +161,7 @@ load_aggregate_dirs() {
   fi
 
   find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d | sort | while IFS= read -r dir; do
+    [[ "${dir##*/}" == "$RUN_PREFIX" ]] || continue
     if is_aggregate_dir "$dir"; then
       printf '%s\n' "$dir"
     fi
@@ -160,6 +187,7 @@ fi
 
 echo "==> Analyzing Swift E2E runs"
 echo "    Stage:      $STAGE"
+echo "    Run ID:     $RUN_PREFIX"
 echo "    Output dir: $OUTPUT_DIR"
 for run_dir in "${RUN_DIRS[@]}"; do
   echo "    Run:        $run_dir"

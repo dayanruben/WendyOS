@@ -42,7 +42,7 @@ function New-DefaultRunID([string]$OutputDirectory, [string]$RunName) {
         return 'swift-e2e-tests.gh{0}.{1}.{2:D4}' -f $env:GITHUB_RUN_ID, $RunName, $attemptValue
     }
 
-    $evaluationID = 'local' + (Get-Date).ToUniversalTime().ToString('yyMMdd')
+    $evaluationID = 'local0000'
     $base = "swift-e2e-tests.$evaluationID.$RunName"
     $maxAttempt = 0
     if ($OutputDirectory -and (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {

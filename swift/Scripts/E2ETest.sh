@@ -14,7 +14,7 @@ default_run_id() {
     evaluation_id="gh${GITHUB_RUN_ID}"
     printf -v attempt "%04d" "${GITHUB_RUN_ATTEMPT:-1}"
   else
-    evaluation_id="local$(date -u +"%y%m%d")"
+    evaluation_id="local0000"
     base="swift-e2e-tests.${evaluation_id}.${run_name}"
     shopt -s nullglob
     for path in "$output_dir/$base".[0-9][0-9][0-9][0-9]; do
