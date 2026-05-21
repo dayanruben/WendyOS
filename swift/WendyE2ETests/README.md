@@ -19,10 +19,11 @@ Swift Testing results and command recordings:
 bash Scripts/E2ETest.sh --output-dir Build/e2e
 ```
 
-For the common local workflow that aggregates the raw run, renders the aggregate `index.html`, and opens it on macOS:
+For the common local workflow, run raw tests first and then analyze all raw runs found in the output directory:
 
 ```bash
-make e2e-run
+make e2e-test
+make e2e-analyze
 ```
 
 For reproducible command recordings when invoking SwiftPM directly:

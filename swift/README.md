@@ -65,23 +65,26 @@ when you need lower-level control:
   under the CLI and agent run directories, and write recordings under
   `<output-root>/<run-id>/tests`. They accept options such as `--filter`,
   `--agent-address`, `--agent-user`, and `--verbose`.
-- Aggregate AI review is currently disabled while the aggregate report flow is
-  being reshaped.
-- `Scripts/E2EReport.sh` and `Scripts/E2EReport.ps1` render the aggregate
-  report at `<output-root>/<workflow-name>.<run-id>/index.html`.
+- `Scripts/E2EAnalyze.sh` and `Scripts/E2EAnalyze.ps1` analyze raw runs in an
+  output directory: they delete matching previous aggregate folders, aggregate
+  all raw runs they find, review the aggregate results, render HTML reports, and
+  open the newest report when supported.
+- `Scripts/E2EReport.sh` and `Scripts/E2EReport.ps1` render an existing
+  aggregate report at `<output-root>/<workflow-name>.<run-id>/index.html`.
 
-Typical local setup and full run:
+Typical local setup and two-step run:
 
 ```bash
 cd swift
 bash Scripts/E2ESetup.sh
-make e2e-run
+make e2e-test
+make e2e-analyze
 ```
 
 Makefile E2E helpers default to global temporary output roots:
 
-- Unix/macOS: `/tmp/wendy/e2e/<run-id>`
-- Windows: `C:\Windows\Temp\wendy\e2e\<run-id>`
+- Unix/macOS: `/tmp/wendy/<run-id>`
+- Windows: `C:\Windows\Temp\wendy\<run-id>`
 
 Set `WENDY_E2E_OUTPUT_DIR` or pass `--output-dir` to the scripts when you need a
 custom artifact location. If Swift Testing writes terminal control characters
@@ -92,20 +95,20 @@ The Makefile includes helpers for the common cases:
 
 - `make e2e-test` runs the E2E suite against the local host and writes raw
   artifacts only.
-- `make e2e-run` runs local tests, reviews results, renders the HTML report, and
-  opens it in the browser on macOS.
-- `make e2e-run-mac-mini` runs the full local pipeline against
-  `mac-mini.local`.
-- `make e2e-run-jetson-orin-nano` runs the full local pipeline against
+- `make e2e-test-mac-mini` runs raw tests against `mac-mini.local`.
+- `make e2e-test-jetson-orin-nano` runs raw tests against
   `wendyos-jetson-orin-nano.local`.
-- `make e2e-run-raspberry-pi-5` runs the full local pipeline against
+- `make e2e-test-raspberry-pi-5` runs raw tests against
   `wendyos-raspberry-pi-5.local`.
+- `make e2e-analyze` analyzes all raw runs found in the output directory,
+  deleting previous aggregate folders first, then opens the newest report on
+  macOS.
 
-The device-targeted `e2e-test-*` helpers are also available when you only need
-raw test artifacts. Device-targeted helpers accept a `DEVICE` override:
+Device-targeted helpers accept a `DEVICE` override:
 
 ```bash
-make e2e-run-mac-mini DEVICE=my-mac.local
+make e2e-test-mac-mini DEVICE=my-mac.local
+make e2e-analyze
 ```
 
 ## Project structure

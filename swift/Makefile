@@ -33,7 +33,7 @@ endif
 WINDOWS_E2E_OUTPUT_DIR := "$$env:SystemRoot\Temp\wendy"
 UNIX_E2E_OUTPUT_DIR := "/tmp/wendy"
 RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ETest.ps1 --default-run-id "$(1)" $(2)
-RUN_E2E_RUN_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ERun.ps1 --default-run-id "$(1)" $(2)
+RUN_E2E_ANALYZE_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2EAnalyze.ps1 --output-dir $(WINDOWS_E2E_OUTPUT_DIR)
 
 OPEN_E2E_REPORT_UNIX = report_path="$(1)"; if [ -f "$$report_path" ]; then if [ "$$(uname -s)" = "Darwin" ]; then open "$$report_path" || echo "HTML report: $$report_path"; else echo "HTML report: $$report_path"; fi; else echo "HTML report not found: $$report_path"; fi
 RUN_E2E_REPORT_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows report target requires PowerShell.' }; $$reportDir = '$(RUN_DIR)'; if (-not $$reportDir) { $$outputDir = $(WINDOWS_E2E_OUTPUT_DIR); if (Test-Path -LiteralPath $$outputDir) { $$reportDir = Get-ChildItem -LiteralPath $$outputDir -Directory -Filter 'swift-e2e-tests.*' | Where-Object { $$info = Join-Path $$_.FullName 'info.json'; if (-not (Test-Path -LiteralPath $$info)) { return $$false }; try { (Get-Content -Raw -LiteralPath $$info | ConvertFrom-Json).kind -eq 'swift-e2e-aggregate' } catch { $$false } } | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName } }; if (-not $$reportDir) { throw 'ERROR: RUN_DIR is required, or no aggregate report directory was found.' }; ./Scripts/E2EReport.ps1 --run-dir $$reportDir; $$reportPath = Join-Path $$reportDir 'index.html'; if (Test-Path -LiteralPath $$reportPath) { Start-Process $$reportPath } else { Write-Output "HTML report not found: $$reportPath" }
@@ -59,20 +59,7 @@ RUN_E2E_TEST_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
 	run_name="$$(e2e_cli_id)-to-$(1)"; \
 	run_id="$${WENDY_E2E_RUN_ID:-$$(next_e2e_run_id "$$output_dir" "$$run_name")}"; \
 	WENDY_E2E_RUN_ID="$$run_id" WENDY_E2E_RUN_NAME="$$run_name" bash ./Scripts/E2ETest.sh $(2)
-RUN_E2E_RUN_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
-	$(E2E_RUN_ID_HELPERS_UNIX); \
-	run_name="$$(e2e_cli_id)-to-$(1)"; \
-	run_id="$${WENDY_E2E_RUN_ID:-$$(next_e2e_run_id "$$output_dir" "$$run_name")}"; \
-	run_base="$${run_id%.*}"; \
-	aggregate_name="$${run_base%.*}"; \
-	aggregate_dir="$$output_dir/$$aggregate_name"; \
-	status=0; \
-	WENDY_E2E_RUN_ID="$$run_id" WENDY_E2E_RUN_NAME="$$run_name" bash ./Scripts/E2ETest.sh $(2) || status=$$?; \
-	bash ./Scripts/E2EAggregate.sh --output-dir "$$output_dir" "$$output_dir/$$run_id" || { step_status=$$?; [ $$status -eq 0 ] && status=$$step_status; }; \
-	bash ./Scripts/E2EReview.sh --run-dir "$$aggregate_dir" || { step_status=$$?; [ $$status -eq 0 ] && status=$$step_status; }; \
-	bash ./Scripts/E2EReport.sh --run-dir "$$aggregate_dir" || { step_status=$$?; [ $$status -eq 0 ] && status=$$step_status; }; \
-	$(call OPEN_E2E_REPORT_UNIX,$$aggregate_dir/index.html); \
-	exit $$status
+RUN_E2E_ANALYZE_UNIX = @bash ./Scripts/E2EAnalyze.sh --output-dir $(UNIX_E2E_OUTPUT_DIR)
 
 .PHONY: help
 help: help-$(HOST_ENV) ## Show this help message
@@ -118,7 +105,7 @@ test-windows:
 test-unix:
 	bash ./Scripts/Test.sh
 
-e2e-test e2e-run: DEVICE ?= wendyos-raspberry-pi-5.local
+e2e-test: DEVICE ?= wendyos-raspberry-pi-5.local
 .PHONY: e2e-test
 e2e-test: e2e-test-$(HOST_ENV) ## Run Swift E2E tests locally and write raw artifacts
 
@@ -130,18 +117,18 @@ e2e-test-windows:
 e2e-test-unix:
 	$(call RUN_E2E_TEST_UNIX,local,--output-dir $(UNIX_E2E_OUTPUT_DIR) --cli-root-dir $(UNIX_E2E_OUTPUT_DIR) --agent-root-dir $(UNIX_E2E_OUTPUT_DIR) --parallel)
 
-.PHONY: e2e-run
-e2e-run: e2e-run-$(HOST_ENV) ## Run Swift E2E tests locally, review results, render the report, and open it
+.PHONY: e2e-analyze
+e2e-analyze: e2e-analyze-$(HOST_ENV) ## Analyze all Swift E2E raw runs and open the latest report
 
-.PHONY: e2e-run-windows
-e2e-run-windows:
-	$(call RUN_E2E_RUN_WINDOWS,windows-to-raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
+.PHONY: e2e-analyze-windows
+e2e-analyze-windows:
+	$(RUN_E2E_ANALYZE_WINDOWS)
 
-.PHONY: e2e-run-unix
-e2e-run-unix:
-	$(call RUN_E2E_RUN_UNIX,local,--output-dir $(UNIX_E2E_OUTPUT_DIR) --cli-root-dir $(UNIX_E2E_OUTPUT_DIR) --agent-root-dir $(UNIX_E2E_OUTPUT_DIR) --parallel)
+.PHONY: e2e-analyze-unix
+e2e-analyze-unix:
+	$(RUN_E2E_ANALYZE_UNIX)
 
-e2e-test-jetson-orin-nano e2e-run-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
+e2e-test-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
 .PHONY: e2e-test-jetson-orin-nano
 e2e-test-jetson-orin-nano: e2e-test-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2E tests against Jetson Orin Nano and write raw artifacts
 
@@ -153,18 +140,7 @@ e2e-test-jetson-orin-nano-windows:
 e2e-test-jetson-orin-nano-unix:
 	$(call RUN_E2E_TEST_UNIX,jetson-orin-nano,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
-.PHONY: e2e-run-jetson-orin-nano
-e2e-run-jetson-orin-nano: e2e-run-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2E tests against Jetson Orin Nano, review results, render the report, and open it
-
-.PHONY: e2e-run-jetson-orin-nano-windows
-e2e-run-jetson-orin-nano-windows:
-	$(call RUN_E2E_RUN_WINDOWS,jetson-orin-nano,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
-
-.PHONY: e2e-run-jetson-orin-nano-unix
-e2e-run-jetson-orin-nano-unix:
-	$(call RUN_E2E_RUN_UNIX,jetson-orin-nano,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
-
-e2e-test-raspberry-pi-5 e2e-run-raspberry-pi-5: DEVICE ?= wendyos-raspberry-pi-5.local
+e2e-test-raspberry-pi-5: DEVICE ?= wendyos-raspberry-pi-5.local
 .PHONY: e2e-test-raspberry-pi-5
 e2e-test-raspberry-pi-5: e2e-test-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E tests against Raspberry Pi 5 and write raw artifacts
 
@@ -176,18 +152,7 @@ e2e-test-raspberry-pi-5-windows:
 e2e-test-raspberry-pi-5-unix:
 	$(call RUN_E2E_TEST_UNIX,raspberry-pi-5,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
-.PHONY: e2e-run-raspberry-pi-5
-e2e-run-raspberry-pi-5: e2e-run-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E tests against Raspberry Pi 5, review results, render the report, and open it
-
-.PHONY: e2e-run-raspberry-pi-5-windows
-e2e-run-raspberry-pi-5-windows:
-	$(call RUN_E2E_RUN_WINDOWS,raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
-
-.PHONY: e2e-run-raspberry-pi-5-unix
-e2e-run-raspberry-pi-5-unix:
-	$(call RUN_E2E_RUN_UNIX,raspberry-pi-5,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
-
-e2e-test-mac-mini e2e-run-mac-mini: DEVICE ?= mac-mini.local
+e2e-test-mac-mini: DEVICE ?= mac-mini.local
 .PHONY: e2e-test-mac-mini
 e2e-test-mac-mini: e2e-test-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against Mac mini and write raw artifacts
 
@@ -198,17 +163,6 @@ e2e-test-mac-mini-windows:
 .PHONY: e2e-test-mac-mini-unix
 e2e-test-mac-mini-unix:
 	$(call RUN_E2E_TEST_UNIX,mac-mini,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
-
-.PHONY: e2e-run-mac-mini
-e2e-run-mac-mini: e2e-run-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against Mac mini, review results, render the report, and open it
-
-.PHONY: e2e-run-mac-mini-windows
-e2e-run-mac-mini-windows:
-	$(call RUN_E2E_RUN_WINDOWS,mac-mini,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
-
-.PHONY: e2e-run-mac-mini-unix
-e2e-run-mac-mini-unix:
-	$(call RUN_E2E_RUN_UNIX,mac-mini,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
 
 .PHONY: report
 report: report-$(HOST_ENV) ## Render the latest Swift E2E aggregate report and open it
