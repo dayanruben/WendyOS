@@ -33,7 +33,7 @@ endif
 WINDOWS_E2E_OUTPUT_DIR := "$$env:SystemRoot\Temp\wendy"
 UNIX_E2E_OUTPUT_DIR := "/tmp/wendy"
 RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ETest.ps1 --default-run-id "$(1)" $(2)
-RUN_E2E_ANALYZE_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2EAnalyze.ps1 --output-dir $(WINDOWS_E2E_OUTPUT_DIR)
+RUN_E2E_ANALYZE_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2EAnalyze.ps1 --output-dir $(WINDOWS_E2E_OUTPUT_DIR) --stage $(1)
 
 OPEN_E2E_REPORT_UNIX = report_path="$(1)"; if [ -f "$$report_path" ]; then if [ "$$(uname -s)" = "Darwin" ]; then open "$$report_path" || echo "HTML report: $$report_path"; else echo "HTML report: $$report_path"; fi; else echo "HTML report not found: $$report_path"; fi
 RUN_E2E_REPORT_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows report target requires PowerShell.' }; $$reportDir = '$(RUN_DIR)'; if (-not $$reportDir) { $$outputDir = $(WINDOWS_E2E_OUTPUT_DIR); if (Test-Path -LiteralPath $$outputDir) { $$reportDir = Get-ChildItem -LiteralPath $$outputDir -Directory -Filter 'swift-e2e-tests.*' | Where-Object { $$info = Join-Path $$_.FullName 'info.json'; if (-not (Test-Path -LiteralPath $$info)) { return $$false }; try { (Get-Content -Raw -LiteralPath $$info | ConvertFrom-Json).kind -eq 'swift-e2e-aggregate' } catch { $$false } } | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName } }; if (-not $$reportDir) { throw 'ERROR: RUN_DIR is required, or no aggregate report directory was found.' }; ./Scripts/E2EReport.ps1 --run-dir $$reportDir; $$reportPath = Join-Path $$reportDir 'index.html'; if (Test-Path -LiteralPath $$reportPath) { Start-Process $$reportPath } else { Write-Output "HTML report not found: $$reportPath" }
@@ -59,7 +59,7 @@ RUN_E2E_TEST_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
 	run_name="$$(e2e_cli_id)-to-$(1)"; \
 	run_id="$${WENDY_E2E_RUN_ID:-$$(next_e2e_run_id "$$output_dir" "$$run_name")}"; \
 	WENDY_E2E_RUN_ID="$$run_id" WENDY_E2E_RUN_NAME="$$run_name" bash ./Scripts/E2ETest.sh $(2)
-RUN_E2E_ANALYZE_UNIX = @bash ./Scripts/E2EAnalyze.sh --output-dir $(UNIX_E2E_OUTPUT_DIR)
+RUN_E2E_ANALYZE_UNIX = @bash ./Scripts/E2EAnalyze.sh --output-dir $(UNIX_E2E_OUTPUT_DIR) --stage $(1)
 
 .PHONY: help
 help: help-$(HOST_ENV) ## Show this help message
@@ -118,15 +118,40 @@ e2e-test-unix:
 	$(call RUN_E2E_TEST_UNIX,local,--output-dir $(UNIX_E2E_OUTPUT_DIR) --cli-root-dir $(UNIX_E2E_OUTPUT_DIR) --agent-root-dir $(UNIX_E2E_OUTPUT_DIR) --parallel)
 
 .PHONY: e2e-analyze
-e2e-analyze: e2e-analyze-$(HOST_ENV) ## Analyze all Swift E2E raw runs and open the latest report
+e2e-analyze: e2e-aggregate e2e-review e2e-report ## Aggregate, review, and report all Swift E2E raw runs
 
-.PHONY: e2e-analyze-windows
-e2e-analyze-windows:
-	$(RUN_E2E_ANALYZE_WINDOWS)
+.PHONY: e2e-aggregate
+e2e-aggregate: e2e-aggregate-$(HOST_ENV) ## Aggregate all Swift E2E raw runs
 
-.PHONY: e2e-analyze-unix
-e2e-analyze-unix:
-	$(RUN_E2E_ANALYZE_UNIX)
+.PHONY: e2e-aggregate-windows
+e2e-aggregate-windows:
+	$(call RUN_E2E_ANALYZE_WINDOWS,aggregate)
+
+.PHONY: e2e-aggregate-unix
+e2e-aggregate-unix:
+	$(call RUN_E2E_ANALYZE_UNIX,aggregate)
+
+.PHONY: e2e-review
+e2e-review: e2e-review-$(HOST_ENV) ## Review Swift E2E aggregate results
+
+.PHONY: e2e-review-windows
+e2e-review-windows:
+	$(call RUN_E2E_ANALYZE_WINDOWS,review)
+
+.PHONY: e2e-review-unix
+e2e-review-unix:
+	$(call RUN_E2E_ANALYZE_UNIX,review)
+
+.PHONY: e2e-report
+e2e-report: e2e-report-$(HOST_ENV) ## Render Swift E2E aggregate reports and open the latest
+
+.PHONY: e2e-report-windows
+e2e-report-windows:
+	$(call RUN_E2E_ANALYZE_WINDOWS,report)
+
+.PHONY: e2e-report-unix
+e2e-report-unix:
+	$(call RUN_E2E_ANALYZE_UNIX,report)
 
 e2e-test-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
 .PHONY: e2e-test-jetson-orin-nano

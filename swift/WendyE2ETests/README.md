@@ -26,6 +26,14 @@ make e2e-test
 make e2e-analyze
 ```
 
+The analysis step is also available as individual stages:
+
+```bash
+make e2e-aggregate
+make e2e-review
+make e2e-report
+```
+
 For reproducible command recordings when invoking SwiftPM directly:
 
 ```bash
