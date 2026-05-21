@@ -180,11 +180,82 @@ func TestBuildGStreamerArgs_X264ProfileIsCapsFilter(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
 	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "x264enc tune=zerolatency profile=high") {
-		t.Fatalf("profile=high must be an output capsfilter, not an x264enc property: %v", args)
-	}
-	if !strings.Contains(joined, "x264enc tune=zerolatency ! video/x-h264,profile=high") {
+	// profile=high must be an output capsfilter (,profile=high), not an x264enc
+	// element property ( profile=high) — as a property x264enc may select a
+	// 4:4:4 High profile that hardware decoders reject. The capsfilter only
+	// constrains the negotiated output.
+	if !strings.Contains(joined, "! video/x-h264,profile=high") {
 		t.Fatalf("expected x264enc output capsfilter for high profile: %v", args)
+	}
+	if strings.Contains(joined, " profile=high") {
+		t.Fatalf("profile=high must be a capsfilter, not an x264enc property: %v", args)
+	}
+}
+
+func TestKeyframeIntervalFrames(t *testing.T) {
+	cases := []struct {
+		fps  uint32
+		want int
+	}{
+		{0, 15},  // device default is treated as 30fps
+		{30, 15}, // ~0.5s GOP
+		{60, 30},
+		{1, 1}, // never below 1
+	}
+	for _, c := range cases {
+		if got := keyframeIntervalFrames(c.fps); got != c.want {
+			t.Errorf("keyframeIntervalFrames(%d) = %d, want %d", c.fps, got, c.want)
+		}
+	}
+}
+
+func TestBuildGStreamerArgs_X264SetsShortKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	joined := strings.Join(args, " ")
+	// fps 0 -> default 30 -> a keyframe every ~0.5s -> 15 frames. A short GOP
+	// lets a client resync within ~0.5s after a dropped or skipped frame.
+	if !strings.Contains(joined, "key-int-max=15") {
+		t.Errorf("x264enc pipeline must cap the GOP via key-int-max: %v", args)
+	}
+	if !strings.Contains(joined, "bframes=0") {
+		t.Errorf("x264enc pipeline must disable B-frames so decoder reorder depth is 0: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_KeyframeIntervalScalesWithFramerate(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{Framerate: 60}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "key-int-max=30") {
+		t.Errorf("at 60fps the GOP should be 30 frames (~0.5s): %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_VP8SetsShortKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "keyframe-max-dist=15") {
+		t.Errorf("vp8enc pipeline must cap the GOP via keyframe-max-dist: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_NVV4L2SetsKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "iframeinterval=15") {
+		t.Errorf("nvv4l2h264enc pipeline must set iframeinterval: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_V4L2SetsKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "h264_i_frame_period=15") {
+		t.Errorf("v4l2h264enc pipeline must set the I-frame period via extra-controls: %v", args)
 	}
 }
 

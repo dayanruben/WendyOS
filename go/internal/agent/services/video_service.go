@@ -507,9 +507,26 @@ func listGSTElements(inspectPath string) (map[string]bool, error) {
 	return elements, nil
 }
 
+// keyframeIntervalFrames returns the GOP size (keyframe interval, in frames)
+// for the given framerate: a keyframe roughly every 0.5s. A short GOP bounds
+// how long the preview stays corrupted after a dropped frame and how long a
+// client waits to resync when joining or skipping mid-stream. A framerate of 0
+// (device default) is treated as 30fps.
+func keyframeIntervalFrames(fps uint32) int {
+	if fps == 0 {
+		fps = 30
+	}
+	gop := int(fps) / 2
+	if gop < 1 {
+		gop = 1
+	}
+	return gop
+}
+
 // buildGStreamerArgs constructs the gst-launch-1.0 argument list for V4L2 encode.
 func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
 	src := fmt.Sprintf("v4l2src device=%s", devicePath)
+	gop := keyframeIntervalFrames(req.GetFramerate())
 
 	var capsParts []string
 	if req.GetWidth() > 0 {
@@ -525,9 +542,9 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	var pipeline string
 	if len(capsParts) > 0 {
 		caps := "video/x-raw," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", src, caps, encoderSegment(encoder, hasH264Parse))
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", src, caps, encoderSegment(encoder, hasH264Parse, gop))
 	} else {
-		pipeline = fmt.Sprintf("%s ! %s ! fdsink fd=1", src, encoderSegment(encoder, hasH264Parse))
+		pipeline = fmt.Sprintf("%s ! %s ! fdsink fd=1", src, encoderSegment(encoder, hasH264Parse, gop))
 	}
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
@@ -546,6 +563,31 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 // repeated SPS/PPS also lets the client sync mid-stream.
 const h264ByteStream = " ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au"
 
+// keyframeArg returns the encoder-specific property string (with a leading
+// space) that caps the keyframe interval to gop frames, or "" for encoders
+// whose keyframe-interval property name is not known — those keep their
+// firmware/library default rather than risk a pipeline that will not launch.
+func keyframeArg(encoder string, gop int) string {
+	switch encoder {
+	case "x264enc":
+		// bframes=0 is implied by tune=zerolatency; set it explicitly so the
+		// decoder's frame-reorder depth is provably 0.
+		return fmt.Sprintf(" key-int-max=%d bframes=0", gop)
+	case "nvv4l2h264enc":
+		return fmt.Sprintf(" iframeinterval=%d", gop)
+	case "avenc_h264", "openh264enc":
+		return fmt.Sprintf(" gop-size=%d", gop)
+	case "v4l2h264enc":
+		// V4L2 M2M encoders take the I-frame period through the extra-controls
+		// GStreamer structure property; gst-launch parses the quotes itself.
+		// An unknown control name is warned-and-ignored by the v4l2 element,
+		// so this is safe even where the driver names the control differently.
+		return fmt.Sprintf(" extra-controls=\"controls,h264_i_frame_period=%d\"", gop)
+	default:
+		return ""
+	}
+}
+
 // encoderSegment returns the GStreamer pipeline segment for the given encoder element.
 // Most H.264 encoders force I420 (4:2:0) input to avoid 4:4:4 output paths that
 // can make encoders such as x264enc select profile 244 (High 4:4:4 Predictive),
@@ -555,28 +597,32 @@ const h264ByteStream = " ! h264parse config-interval=-1 ! video/x-h264,stream-fo
 // with h264ByteStream to normalize to Annex B byte-stream. When h264parse is absent
 // (gst-plugins-bad not installed), hardware encoders such as nvv4l2h264enc and
 // v4l2h264enc output byte-stream natively; x264enc may output AVC in that case.
-func encoderSegment(encoder string, hasH264Parse bool) string {
+// gop is the keyframe interval in frames (see keyframeIntervalFrames).
+func encoderSegment(encoder string, hasH264Parse bool, gop int) string {
 	if encoder == "vp8enc" {
 		// webmmux streamable=true writes headers that matroskademux can parse from a pipe.
-		return "videoconvert ! vp8enc deadline=1 ! webmmux streamable=true"
+		// keyframe-max-dist caps the GOP so a dropped frame self-heals quickly.
+		return fmt.Sprintf("videoconvert ! vp8enc deadline=1 keyframe-max-dist=%d ! webmmux streamable=true", gop)
 	}
+
+	kf := keyframeArg(encoder, gop)
 
 	var enc string
 	switch encoder {
 	case "nvv4l2h264enc":
 		// Jetson L4T hardware encoder; NV12 is its preferred input format.
-		enc = "videoconvert ! video/x-raw,format=NV12 ! nvv4l2h264enc"
+		enc = "videoconvert ! video/x-raw,format=NV12 ! nvv4l2h264enc" + kf
 	case "v4l2h264enc":
-		enc = "videoconvert ! video/x-raw,format=I420 ! v4l2h264enc ! video/x-h264,profile=baseline"
+		enc = "videoconvert ! video/x-raw,format=I420 ! v4l2h264enc" + kf + " ! video/x-h264,profile=baseline"
 	case "x264enc":
-		enc = "videoconvert ! video/x-raw,format=I420 ! x264enc tune=zerolatency ! video/x-h264,profile=high"
+		enc = "videoconvert ! video/x-raw,format=I420 ! x264enc tune=zerolatency" + kf + " ! video/x-h264,profile=high"
 	case "openh264enc":
-		enc = "videoconvert ! video/x-raw,format=I420 ! openh264enc"
+		enc = "videoconvert ! video/x-raw,format=I420 ! openh264enc" + kf
 	case "avenc_h264":
-		enc = "videoconvert ! video/x-raw,format=I420 ! avenc_h264"
+		enc = "videoconvert ! video/x-raw,format=I420 ! avenc_h264" + kf
 	default:
 		// For other H.264-family encoders, force I420 to avoid 4:4:4 profile selection.
-		enc = "videoconvert ! video/x-raw,format=I420 ! " + encoder
+		enc = "videoconvert ! video/x-raw,format=I420 ! " + encoder + kf
 	}
 	if hasH264Parse {
 		return enc + h264ByteStream
