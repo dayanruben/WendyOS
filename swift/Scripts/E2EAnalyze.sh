@@ -141,7 +141,7 @@ aggregate_dir_for_run() {
   local run_base aggregate_name
   run_base="${run_id%.*}"
   aggregate_name="${run_base%.*}"
-  printf "%s/%s" "$OUTPUT_DIR" "$aggregate_name"
+  printf '%s/%s\n' "$OUTPUT_DIR" "$aggregate_name"
 }
 
 load_raw_runs() {
