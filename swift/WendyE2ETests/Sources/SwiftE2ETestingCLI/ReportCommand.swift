@@ -1033,6 +1033,8 @@ private func renderReport(
         throw ValidationError("Report template does not contain expected card/footer markers.")
     }
 
+    try renderReviewAggregateHTMLIfPresent(runURL: runURL)
+
     let reviewHTML = renderRunAIReview(aiReviews.root)
     let testCards = renderCards(files: files)
 
@@ -1103,7 +1105,112 @@ private func renderReviewAggregateLink(runURL: URL) -> String {
     guard FileManager.default.fileExists(atPath: reviewURL.path) else {
         return ""
     }
-    return " · <a href=\"review.md\">review.md</a>"
+    return " · Review: <a href=\"review.html\">HTML</a>, <a href=\"review.md\">Markdown</a>"
+}
+
+private func renderReviewAggregateHTMLIfPresent(runURL: URL) throws {
+    let markdownURL = runURL.appendingPathComponent("review.md")
+    guard FileManager.default.fileExists(atPath: markdownURL.path) else {
+        return
+    }
+
+    let markdown = try String(contentsOf: markdownURL, encoding: .utf8)
+    let html = renderReviewAggregateHTML(
+        markdown: markdown,
+        title: "Swift E2E Review",
+        runID: runURL.lastPathComponent
+    )
+    try html.write(
+        to: runURL.appendingPathComponent("review.html"),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
+private func renderReviewAggregateHTML(markdown: String, title: String, runID: String) -> String {
+    """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>\(escapeHTML(title))</title>
+      <style>
+        :root {
+          color-scheme: light dark;
+          --bg: #f7f8fb;
+          --panel: #ffffff;
+          --text: #18202f;
+          --muted: #687083;
+          --line: #d9dfeb;
+          --soft: #f0f3f9;
+          --accent: #2563eb;
+        }
+        @media (prefers-color-scheme: dark) {
+          :root {
+            --bg: #0f1117;
+            --panel: #171b24;
+            --text: #edf1fa;
+            --muted: #a7afc0;
+            --line: #303746;
+            --soft: #232936;
+            --accent: #8fa0ff;
+          }
+        }
+        body {
+          margin: 0;
+          padding: 32px;
+          background: var(--bg);
+          color: var(--text);
+          font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        main {
+          max-width: 920px;
+          margin: 0 auto;
+          padding: 28px;
+          border: 1px solid var(--line);
+          border-radius: 16px;
+          background: var(--panel);
+        }
+        h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.03em; }
+        h2 { margin: 22px 0 10px; font-size: 18px; }
+        p { margin: 8px 0; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code {
+          padding: .12em .34em;
+          border: 1px solid var(--line);
+          border-radius: 5px;
+          background: var(--soft);
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-size: .9em;
+        }
+        ul, ol { padding-left: 22px; }
+        details {
+          margin: 12px 0;
+          padding: 12px 14px;
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          background: color-mix(in srgb, var(--panel), var(--bg) 35%);
+        }
+        summary {
+          cursor: pointer;
+          font-weight: 800;
+        }
+        .run-meta {
+          margin: 0 0 22px;
+          color: var(--muted);
+        }
+      </style>
+    </head>
+    <body>
+      <main>
+        <p class="run-meta">Run ID: <code>\(escapeHTML(runID))</code> · <a href="index.html">index.html</a> · <a href="review.md">review.md</a></p>
+        \(renderMarkdown(markdown, headingBase: 1, allowDisclosureHTML: true))
+      </main>
+    </body>
+    </html>
+    """
 }
 
 private func renderRunAIReview(_ reviews: [E2EReview]) -> String {
@@ -1542,7 +1649,11 @@ private func renderAIReview(_ markdown: String) -> String {
         """
 }
 
-private func renderMarkdown(_ markdown: String) -> String {
+private func renderMarkdown(
+    _ markdown: String,
+    headingBase: Int = 5,
+    allowDisclosureHTML: Bool = false
+) -> String {
     let lines = markdown.components(separatedBy: .newlines)
     var chunks: [String] = []
     var paragraph: [String] = []
@@ -1616,7 +1727,14 @@ private func renderMarkdown(_ markdown: String) -> String {
             continue
         }
 
-        if let heading = markdownHeading(from: trimmed) {
+        if allowDisclosureHTML, isDisclosureHTMLLine(trimmed) {
+            flushParagraph()
+            flushLists()
+            chunks.append(trimmed)
+            continue
+        }
+
+        if let heading = markdownHeading(from: trimmed, base: headingBase) {
             flushParagraph()
             flushLists()
             chunks.append("<\(heading.tag)>\(renderInlineMarkdown(heading.text))</\(heading.tag)>")
@@ -1650,7 +1768,14 @@ private func renderMarkdown(_ markdown: String) -> String {
     return chunks.joined(separator: "\n")
 }
 
-private func markdownHeading(from line: String) -> (tag: String, text: String)? {
+private func isDisclosureHTMLLine(_ line: String) -> Bool {
+    line == "</details>"
+        || line == "</summary>"
+        || line.hasPrefix("<details")
+        || line.hasPrefix("<summary>")
+}
+
+private func markdownHeading(from line: String, base: Int) -> (tag: String, text: String)? {
     let hashes = line.prefix { $0 == "#" }.count
     guard hashes > 0, hashes <= 6 else {
         return nil
@@ -1659,7 +1784,8 @@ private func markdownHeading(from line: String) -> (tag: String, text: String)? 
     guard !text.isEmpty else {
         return nil
     }
-    return (hashes == 1 ? "h5" : "h6", text)
+    let level = min(6, max(1, base + hashes - 1))
+    return ("h\(level)", text)
 }
 
 private func markdownUnorderedListItem(from line: String) -> String? {
