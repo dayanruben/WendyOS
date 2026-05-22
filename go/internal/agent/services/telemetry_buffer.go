@@ -95,6 +95,9 @@ func readFramesFrom(path string, startOffset int64, signal SignalType, maxN int)
 		}
 		var hdr [4]byte
 		if _, err := io.ReadFull(f, hdr[:]); err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				return msgs, offset, err
+			}
 			break
 		}
 		length := binary.BigEndian.Uint32(hdr[:])
@@ -103,6 +106,9 @@ func readFramesFrom(path string, startOffset int64, signal SignalType, maxN int)
 		}
 		data := make([]byte, length)
 		if _, err := io.ReadFull(f, data); err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				return msgs, offset, err
+			}
 			break
 		}
 		if err := proto.Unmarshal(data, msg); err != nil {
