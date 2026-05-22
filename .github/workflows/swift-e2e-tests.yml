@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - kb.swift-e2e-tests
+  pull_request:
+    paths:
+      - 'swift/**'
+      - 'Proto/**'
+      - '.github/actions/swift-e2e-run/**'
+      - '.github/workflows/swift-e2e-tests.yml'
   workflow_dispatch:
     inputs:
       tests:
@@ -308,17 +314,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          REPO: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
           PR_NUM: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_LABEL: ${{ github.event.pull_request.head.label || github.head_ref || github.ref_name }}
           COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
         run: |
           set -euo pipefail
-          if [[ -n "$HEAD_REPO" && "$HEAD_REPO" != "$REPO" ]]; then
-            echo "Swift E2E review comments are skipped for forked PRs."
-            exit 0
-          fi
           if [[ ! -f "$COMMENT_PATH" ]]; then
             echo "No Swift E2E review aggregate found at $COMMENT_PATH; skipping."
             exit 0
@@ -326,6 +328,14 @@ jobs:
 
           pr_num="$PR_NUM"
           if [[ -z "$pr_num" ]]; then
+            pr_num="$(gh pr list \
+              --repo "$REPO" \
+              --head "$HEAD_LABEL" \
+              --state open \
+              --json number \
+              --jq '.[0].number // ""')"
+          fi
+          if [[ -z "$pr_num" && "$HEAD_LABEL" != "$HEAD_REF" ]]; then
             pr_num="$(gh pr list \
               --repo "$REPO" \
               --head "$HEAD_REF" \
