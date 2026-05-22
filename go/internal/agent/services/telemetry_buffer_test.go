@@ -4,8 +4,11 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
 	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
@@ -124,5 +127,104 @@ func TestReadFramesFrom_MaxN(t *testing.T) {
 	}
 	if len(msgs) != 3 {
 		t.Errorf("want 3 messages (maxN respected), got %d", len(msgs))
+	}
+}
+
+func makeTestBuffer(t *testing.T, maxTotal, segmentSize int64) (*TelemetryBuffer, string) {
+	t.Helper()
+	dir := t.TempDir()
+	broadcaster := NewTelemetryBroadcaster()
+	cfg := TelemetryBufferConfig{
+		Dir:           dir,
+		MaxTotalBytes: maxTotal,
+		SegmentBytes:  segmentSize,
+	}
+	buf, err := NewTelemetryBuffer(cfg, broadcaster, nopLogger())
+	if err != nil {
+		t.Fatalf("NewTelemetryBuffer: %v", err)
+	}
+	return buf, dir
+}
+
+func nopLogger() *zap.Logger { return zap.NewNop() }
+
+func makeLogReq(body string) *otelpb.ExportLogsServiceRequest {
+	return &otelpb.ExportLogsServiceRequest{
+		ResourceLogs: []*otelpb.ResourceLogs{{
+			ScopeLogs: []*otelpb.ScopeLogs{{
+				LogRecords: []*otelpb.LogRecord{{
+					Body: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: body}},
+				}},
+			}},
+		}},
+	}
+}
+
+func TestTelemetryBuffer_WriteAndRead(t *testing.T) {
+	buf, dir := makeTestBuffer(t, 10*1024*1024, 1*1024*1024)
+
+	buf.PublishLogs(makeLogReq("first"))
+	buf.PublishLogs(makeLogReq("second"))
+
+	segs, _ := listSegments(dir, SignalLogs)
+	if len(segs) == 0 {
+		t.Fatal("expected at least one segment file")
+	}
+	msgs, _, _ := readFramesFrom(filepath.Join(dir, segs[len(segs)-1]), 0, SignalLogs, 10)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 frames on disk, got %d", len(msgs))
+	}
+}
+
+func TestTelemetryBuffer_Rotation(t *testing.T) {
+	// Set segment size tiny (50 bytes) to force rotation after ~1 entry.
+	buf, dir := makeTestBuffer(t, 10*1024*1024, 50)
+
+	for i := 0; i < 5; i++ {
+		buf.PublishLogs(makeLogReq("entry"))
+	}
+
+	segs, _ := listSegments(dir, SignalLogs)
+	if len(segs) < 2 {
+		t.Errorf("expected multiple segments after rotation, got %d", len(segs))
+	}
+}
+
+func TestTelemetryBuffer_Eviction(t *testing.T) {
+	// MaxTotalBytes = 200, SegmentBytes = 50 → evicts oldest when cap exceeded.
+	buf, dir := makeTestBuffer(t, 200, 50)
+
+	for i := 0; i < 20; i++ {
+		buf.PublishLogs(makeLogReq("entry"))
+	}
+
+	// Total size must not exceed MaxTotalBytes.
+	var total int64
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".bin") {
+			fi, _ := e.Info()
+			total += fi.Size()
+		}
+	}
+	if total > 200 {
+		t.Errorf("total segment size %d exceeds cap 200", total)
+	}
+	_ = buf
+}
+
+func TestTelemetryBuffer_BroadcastStillFires(t *testing.T) {
+	buf, _ := makeTestBuffer(t, 1*1024*1024, 512*1024)
+	_, ch := buf.broadcaster.SubscribeLogs()
+
+	buf.PublishLogs(makeLogReq("live"))
+
+	select {
+	case msg := <-ch:
+		if msg == nil {
+			t.Error("received nil from broadcast channel")
+		}
+	case <-time.After(time.Second):
+		t.Error("broadcast did not fire within 1s")
 	}
 }
