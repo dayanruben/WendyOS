@@ -1,9 +1,6 @@
 name: Swift E2E Tests
 
 on:
-  push:
-    branches:
-      - kb.swift-e2e-tests
   pull_request:
     paths:
       - 'swift/**'
