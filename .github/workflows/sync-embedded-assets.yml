@@ -3,7 +3,7 @@ name: Sync Embedded Assets
 on:
   workflow_dispatch:
   schedule:
-    # Run nightly to pick up docs/skills updates.
+    # Run nightly to pick up skills updates.
     - cron: "0 3 * * *"
 
 jobs:
@@ -19,13 +19,6 @@ jobs:
         with:
           token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
 
-      - name: Check out docs
-        uses: actions/checkout@v4
-        with:
-          repository: wendylabsinc/docs
-          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
-          path: _docs_src
-
       - name: Check out claude-skills
         uses: actions/checkout@v4
         with:
@@ -36,7 +29,7 @@ jobs:
       - name: Sync docs
         run: |
           DOCS_DST=go/internal/cli/assets/docs
-          DOCS_SRC=_docs_src
+          DOCS_SRC=docs
           rm -rf "$DOCS_DST"
           mkdir -p "$DOCS_DST"
           rsync -a \
@@ -74,8 +67,8 @@ jobs:
           title: "chore: sync embedded docs and skills"
           body: |
             Automated sync of embedded documentation and skill files from:
-            - `wendylabsinc/docs`
             - `wendylabsinc/claude-skills`
+            - in-repo `docs/`
           commit-message: "chore: sync embedded docs and skills"
           base: main
           delete-branch: true
