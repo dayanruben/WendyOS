@@ -15,7 +15,8 @@ This guide covers everything you need to contribute to the `wendy-agent` reposit
 
 ```
 wendy-agent/
-  go/                   Go module (CLI + agent)
+  go.mod                Go module root
+  go/                   Go source tree (CLI + agent)
     cmd/wendy/          CLI entry point
     cmd/wendy-agent/    Agent entry point
     internal/
@@ -24,7 +25,10 @@ wendy-agent/
       shared/           Code shared between CLI and agent
     proto/gen/          Generated protobuf bindings (do not edit by hand)
     scripts/            Build helpers, proto generation, CI test runner
-  Proto/                Protobuf definitions (shared source of truth)
+    Makefile            Build targets (run from go/)
+  proto-defs/           Protobuf definitions (shared source of truth)
+  docs/                 Documentation (symlink → go/internal/cli/assets/docs)
+  plugins/              Claude Code plugins
   swift/                macOS companion app (WendyAgentMac)
   packaging/            Linux .deb/.rpm packaging scripts
   .github/workflows/    CI pipelines
@@ -35,10 +39,10 @@ wendy-agent/
 ```sh
 # Clone
 git clone https://github.com/wendylabsinc/wendy-agent.git
-cd wendy-agent/go
+cd wendy-agent
 
-# Build both binaries
-make build
+# Build both binaries (run make from go/)
+cd go && make build
 
 # Run unit tests
 make test
