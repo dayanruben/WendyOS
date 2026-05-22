@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -36,18 +37,29 @@ const (
 	// guarding against integer overflow in the tsUS*1000 multiplication.
 	maxReasonableTsUS = int64(100 * 365 * 24 * 3600 * 1e6) // 100 years in µs
 
+	// dmesgDPIAConfirmFile must exist on-disk with non-empty content to enable
+	// dmesg collection. A file-based confirmation:
+	//   1. Requires explicit operator action on the host (cannot be satisfied by
+	//      copying an env-var block in a container spec or systemd override).
+	//   2. Produces an auditable filesystem-access record.
+	//   3. Content is read and logged at startup for non-repudiation.
+	dmesgDPIAConfirmFile = "/etc/wendy/dmesg-dpia-confirmed"
+
 	// dmesgPIIAllowFile must exist on-disk to enable WENDY_DMESG_REDACT=false.
-	// Requiring a filesystem artefact provides out-of-band confirmation in a
-	// separate permission domain from environment variables: an actor who can
-	// only set env vars (e.g. via a container spec or systemd override) cannot
-	// bypass PII redaction without also having write access to the host filesystem.
+	// Requires filesystem write access separate from env-var permission domain.
 	dmesgPIIAllowFile = "/etc/wendy/dmesg-pii-allowed"
+
+	// dmesgPIIRecheckInterval controls how often the PII allow-file is re-validated.
+	// If the file is removed after startup, redaction is re-enabled within this interval
+	// so a momentary file creation cannot permanently disable redaction for the process
+	// lifetime (TOCTOU mitigation).
+	dmesgPIIRecheckInterval = 60 * time.Second
 )
 
-// piiPatterns matches common host-identifying values in kernel messages for
-// redaction when WENDY_DMESG_REDACT is enabled. Applied first to every message.
+// piiPatterns matches host-identifying values in kernel messages for redaction.
 // Covers: MAC (colon/hyphen), IPv4, USB serial numbers, OOM process names+PIDs,
-// filesystem home paths, kernel comm= annotations, and Bluetooth bdaddr values.
+// filesystem home paths, kernel comm= annotations, Bluetooth bdaddr values,
+// network interface names, and block device node paths.
 var piiPatterns = regexp.MustCompile(
 	`(?i)(?:` +
 		// MAC address (colon separated, exactly 6 octets)
@@ -67,14 +79,20 @@ var piiPatterns = regexp.MustCompile(
 		`|comm=\S+` +
 		// Bluetooth device address (e.g. "bdaddr 00:11:22:33:44:55")
 		`|bdaddr\s+(?:[0-9a-f]{2}:){5}[0-9a-f]{2}` +
+		// Network interface names (e.g. "eth0", "wlan0", "enp3s0", "docker0").
+		// These are hardware-identifying and appear in kernel network messages.
+		`|\b(?:eth|wlan|ens|enp|wlp|docker|veth|br-|virbr)\w+\b` +
+		// Block device node paths (e.g. "/dev/sda", "/dev/nvme0n1", "/dev/mmcblk0").
+		// These are hardware-identifying and appear in storage/filesystem messages.
+		`|/dev/(?:sd[a-z]\w*|nvme\w+|mmcblk\w+|vd[a-z]\w*)` +
 		`)`,
 )
 
-// piiIPv6Pattern matches IPv6 address strings (conservative: 4+ colon-hex groups).
-// Kept separate from piiPatterns and gated behind a strings.Contains(':') pre-check
-// so the regex engine only runs on messages that can plausibly contain IPv6, reducing
-// per-message cost at 500 msg/sec. False positives are preferable to PII leakage.
-var piiIPv6Pattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{0,4}`)
+// piiIPv6Pattern matches IPv6 addresses including abbreviated forms (::1, fe80::1,
+// 2001:db8::1). Requires ≥2 colon-terminated hex groups to exclude single colons.
+// Kept separate from piiPatterns and gated behind strings.ContainsRune(':') to
+// avoid running the regex on messages without colons.
+var piiIPv6Pattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}`)
 
 // piiKernelPtrPattern matches kernel pointer addresses (e.g. "0xffffffff81234567").
 // Kept separate and gated behind strings.Contains("0x") to avoid scanning messages
@@ -94,36 +112,42 @@ var csiRemnantPattern = regexp.MustCompile(`\[[0-9;?!<>=]*[A-Za-z]|\]\d+;[^\x00-
 // OTel log records at debug/trace severity. It replays buffered kernel messages
 // first, then follows new ones. Blocks until ctx is cancelled.
 //
+// Requires /etc/wendy/dmesg-dpia-confirmed with non-empty content (DPIA record).
 // PII redaction is enabled by default. To disable, set WENDY_DMESG_REDACT=false
-// AND create /etc/wendy/dmesg-pii-allowed on the host filesystem. Requiring both
-// provides separation between env-var and filesystem permission domains. Note that
-// redaction is best-effort; operators should review their data-minimisation
-// requirements independently.
+// AND create /etc/wendy/dmesg-pii-allowed on the host filesystem.
 //
 // NOTE: All kernel severity levels are intentionally mapped into the OTel
 // debug/trace band. KERN_EMERG/ALERT/CRIT additionally emit a zap.Warn so
 // they are visible in the agent's own log stream. See kernelLevelToOTEL.
 func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *TelemetryBroadcaster) {
-	// WENDY_DMESG_DPIA_CONFIRMED=true is required as an explicit operator
-	// acknowledgement that a Data Protection Impact Assessment has been conducted
-	// before forwarding kernel messages (which may contain PII) to an external
-	// telemetry backend. Fail fast if the confirmation is absent.
-	if confirmed, _ := strconv.ParseBool(os.Getenv("WENDY_DMESG_DPIA_CONFIRMED")); !confirmed {
-		logger.Error("kernel dmesg collection requires WENDY_DMESG_DPIA_CONFIRMED=true",
-			zap.String("reason", "GDPR Art.25 requires a Data Protection Impact Assessment before forwarding kernel messages to an external backend"),
+	// Require a file-based DPIA confirmation. Unlike an env var, a file:
+	//   - Cannot be satisfied by copying an env block in a container spec
+	//   - Produces a filesystem access log entry (audit trail)
+	//   - Content is logged below for non-repudiation
+	dpiaContent, readErr := os.ReadFile(dmesgDPIAConfirmFile)
+	if readErr != nil || len(strings.TrimSpace(string(dpiaContent))) == 0 {
+		logger.Error("kernel dmesg collection requires "+dmesgDPIAConfirmFile+" with non-empty content",
+			zap.String("reason", "GDPR Art.35 requires a documented DPIA before forwarding kernel messages to an external backend"),
 		)
 		return
 	}
+	logger.Info("dmesg DPIA confirmation found",
+		zap.String("file", dmesgDPIAConfirmFile),
+		zap.String("confirmation", strings.TrimSpace(string(dpiaContent))),
+	)
 
-	// Default redact to true (safe by default). Disabling requires both
-	// WENDY_DMESG_REDACT=false (env var domain) and the existence of
-	// dmesgPIIAllowFile (filesystem domain). These are separate permission
-	// domains — an actor who can only set env vars cannot bypass redaction
-	// without also having filesystem write access to the host.
-	redact := true
+	// redactAtomic: 1 = redact enabled (safe default), 0 = redact disabled.
+	// Using an atomic int32 allows the periodic re-check goroutine below to
+	// re-enable redaction if the allow-file disappears after startup, so a
+	// momentary file creation cannot permanently disable redaction.
+	//
+	// Disabling requires BOTH WENDY_DMESG_REDACT=false (env-var domain) AND
+	// the existence of dmesgPIIAllowFile (filesystem domain). Separate permission
+	// domains: an actor who can only set env vars cannot bypass redaction.
+	var redactAtomic int32 = 1
 	if v, err := strconv.ParseBool(os.Getenv("WENDY_DMESG_REDACT")); err == nil && !v {
 		if _, statErr := os.Stat(dmesgPIIAllowFile); statErr == nil {
-			redact = false
+			atomic.StoreInt32(&redactAtomic, 0)
 		} else {
 			logger.Warn("WENDY_DMESG_REDACT=false requires "+dmesgPIIAllowFile+" to exist; keeping redaction enabled",
 				zap.String("reason", "file-based out-of-band confirmation required; env-var alone is insufficient"),
@@ -131,12 +155,12 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}
 	}
 
-	// Capture hostname only when redact=false, where it is intentionally
-	// included in the OTel resource as service.instance.id. When redact=true,
-	// hostname is fetched fresh per-message to avoid retaining PII in-process
-	// between messages and to eliminate TOCTOU skew if the hostname changes.
+	// Capture hostname only when redact is disabled at startup, where it is
+	// intentionally included in the OTel resource as service.instance.id.
+	// When redact is enabled, hostname is fetched fresh per-message to avoid
+	// retaining PII in-process between messages and to eliminate TOCTOU skew.
 	var hostname string
-	if !redact {
+	if atomic.LoadInt32(&redactAtomic) == 0 {
 		hostname, _ = os.Hostname()
 	}
 
@@ -175,30 +199,27 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}
 	}
 
-	if redact {
+	if atomic.LoadInt32(&redactAtomic) != 0 {
 		// Warn explicitly about best-effort scope so the gaps are visible in the
-		// audit log regardless of downstream monitoring thresholds. This prevents
-		// operators from mistaking regex-based filtering for full GDPR compliance.
+		// audit log regardless of downstream monitoring thresholds.
 		logger.Warn("kernel dmesg collection started; PII redaction is best-effort only",
 			zap.String("source", "/dev/kmsg"),
-			zap.Bool("redact", redact),
+			zap.Bool("redact", true),
 			zap.Strings("redact_covered", []string{
 				"MAC-address", "IPv4-address", "IPv6-address", "USB-SerialNumber", "ID_SERIAL",
 				"Bluetooth-bdaddr", "OOM-process-name+PID", "filesystem-home-paths",
-				"comm=", "kernel-pointer-addresses", "hostname",
+				"comm=", "kernel-pointer-addresses", "network-interface-names",
+				"block-device-paths", "hostname",
 			}),
 			zap.Strings("redact_not_covered", []string{
-				"process-argv", "NFS-paths",
-				"unlabelled-kernel-fields",
+				"process-argv", "NFS-paths", "unlabelled-kernel-fields",
 			}),
-			zap.String("dpia_required", "operators must conduct a Data Protection Impact Assessment before forwarding dmesg to a cloud backend"),
+			zap.String("dpia_file", dmesgDPIAConfirmFile),
 		)
 	} else {
-		// WARN so the redact=false state is visible in default INFO+ log streams
-		// and produces an auditable record of the intentional PII-redaction bypass.
 		logger.Warn("kernel dmesg collection started with PII redaction DISABLED",
 			zap.String("source", "/dev/kmsg"),
-			zap.Bool("redact", redact),
+			zap.Bool("redact", false),
 			zap.String("compliance_note", "raw kernel messages forwarded; GDPR/compliance obligations are operator responsibility"),
 		)
 	}
@@ -214,7 +235,30 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 	}()
 	defer closeFile()
 
-	resource := dmesgResource(redact, hostname)
+	// Periodically re-validate the PII allow-file. If it disappears after startup,
+	// re-enable redaction so that a momentary file creation does not permanently
+	// disable redaction for the process lifetime (TOCTOU mitigation).
+	if atomic.LoadInt32(&redactAtomic) == 0 {
+		go func() {
+			ticker := time.NewTicker(dmesgPIIRecheckInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if _, statErr := os.Stat(dmesgPIIAllowFile); statErr != nil {
+						atomic.StoreInt32(&redactAtomic, 1)
+						logger.Warn("dmesg: PII allow-file removed; redaction re-enabled",
+							zap.String("file", dmesgPIIAllowFile),
+						)
+					}
+				}
+			}
+		}()
+	}
+
+	resource := dmesgResource(atomic.LoadInt32(&redactAtomic) != 0, hostname)
 	bootEpoch := kmsgBootEpochNanoseconds()
 
 	// Sliding-window rate limiter for non-critical messages only.
@@ -261,7 +305,7 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		if len(message) > dmesgMaxMessageLen {
 			message = message[:dmesgMaxMessageLen]
 		}
-		if redact {
+		if atomic.LoadInt32(&redactAtomic) != 0 {
 			message = piiPatterns.ReplaceAllString(message, "<redacted>")
 			// IPv6 and kernel-pointer patterns run only when the message contains
 			// the necessary prefix, keeping per-message regex cost proportional to
@@ -403,12 +447,12 @@ func parseKmsgLine(line string) (level int, message string, timestampUS int64, o
 		}
 		// Drop ASCII control chars (C0/C1) and selected Unicode characters that
 		// could be used for log injection or terminal escape sequences:
-		//   0x200B zero-width space, 0xFEFF BOM
+		//   0x200B zero-width space, 0x200E/0x200F directional marks, 0xFEFF BOM
 		//   0x2028–0x2029 line/paragraph separators
 		//   0x202A–0x202E bidirectional override characters (LRE/RLE/PDF/LRO/RLO)
 		//   0x2066–0x2069 bidirectional isolation characters (LRI/RLI/FSI/PDI)
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) ||
-			r == 0x200b || r == 0xfeff ||
+			r == 0x200b || r == 0x200e || r == 0x200f || r == 0xfeff ||
 			(r >= 0x2028 && r <= 0x202e) ||
 			(r >= 0x2066 && r <= 0x2069) {
 			return -1
