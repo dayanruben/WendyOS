@@ -80,6 +80,10 @@ var piiPatterns = regexp.MustCompile(
 		`|/(?:home|Users|root)/[^\s/]+` +
 		// Kernel process name annotations (e.g. "comm=nginx")
 		`|comm=\S+` +
+		// Audit-log argument values (e.g. a0="bash" a1="-c" a2="/tmp/secret-token")
+		`|a\d+="[^"]*"` +
+		// OOM/audit argv arrays (e.g. argv[0]=/usr/bin/nginx)
+		`|argv\[\d+\]=[^\s,]+` +
 		// Bluetooth device address (e.g. "bdaddr 00:11:22:33:44:55")
 		`|bdaddr\s+(?:[0-9a-f]{2}:){5}[0-9a-f]{2}` +
 		// Network interface names (e.g. "eth0", "wlan0", "enp3s0", "docker0").
@@ -219,11 +223,11 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			zap.Strings("redact_covered", []string{
 				"MAC-address", "IPv4-address", "IPv6-address", "USB-SerialNumber", "ID_SERIAL",
 				"Bluetooth-bdaddr", "OOM-process-name+PID", "filesystem-home-paths",
-				"comm=", "kernel-pointer-addresses", "network-interface-names",
+				"comm=", "process-argv", "kernel-pointer-addresses", "network-interface-names",
 				"block-device-paths", "hostname",
 			}),
 			zap.Strings("redact_not_covered", []string{
-				"process-argv", "NFS-paths", "unlabelled-kernel-fields",
+				"NFS-paths", "unlabelled-kernel-fields",
 				"hostname-FQDN-variants", "hostname-mDNS-aliases",
 			}),
 			zap.String("dpia_file", dmesgDPIAConfirmFile),
@@ -270,6 +274,28 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}()
 	}
 
+	// Periodically re-validate the DPIA confirmation file. If it is removed
+	// after startup, stop collection so a revoked DPIA takes effect within one
+	// recheck interval (TOCTOU mitigation).
+	go func() {
+		ticker := time.NewTicker(dmesgPIIRecheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, statErr := os.Stat(dmesgDPIAConfirmFile); statErr != nil {
+					logger.Warn("dmesg: DPIA confirmation file removed; stopping kernel log collection",
+						zap.String("file", dmesgDPIAConfirmFile),
+					)
+					closeFile()
+					return
+				}
+			}
+		}
+	}()
+
 	resource := dmesgResource(atomic.LoadInt32(&redactAtomic) != 0, hostname)
 	bootEpoch := kmsgBootEpochNanoseconds()
 
@@ -304,7 +330,26 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 	}
 
 	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
+	scanner.Buffer(make([]byte, 0, 8192), 256*1024)
+	for {
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				if errors.Is(err, bufio.ErrTooLong) {
+					// A single oversized kmsg line must not terminate collection.
+					// Recreating the scanner on the same fd is safe: /dev/kmsg
+					// advances the read position per-record at the kernel level,
+					// so the next Read() starts at the following message.
+					logger.Warn("dmesg: oversized kernel message dropped; restarting scanner")
+					scanner = bufio.NewScanner(f)
+					scanner.Buffer(make([]byte, 0, 8192), 256*1024)
+					continue
+				}
+				if !errors.Is(err, os.ErrClosed) {
+					logger.Warn("dmesg scanner exited with error", zap.Error(err))
+				}
+			}
+			break
+		}
 		line := scanner.Text()
 		if len(line) == 0 || line[0] == ' ' {
 			continue
@@ -378,11 +423,6 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 				},
 			},
 		})
-	}
-
-	// Check scanner error; ErrClosed is expected when ctx is cancelled.
-	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
-		logger.Warn("dmesg scanner exited with error", zap.Error(err))
 	}
 
 	// Flush any drops accumulated in the current window that were never reported
