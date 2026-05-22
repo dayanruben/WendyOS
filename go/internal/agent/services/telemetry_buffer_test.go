@@ -2,7 +2,6 @@ package services
 
 import (
 	"encoding/binary"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,6 +300,3 @@ func TestTelemetryBuffer_Cursor(t *testing.T) {
 
 	_ = dir
 }
-
-// Ensure fmt is used (required by import).
-var _ = fmt.Sprintf

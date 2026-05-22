@@ -51,7 +51,8 @@ func (b *TelemetryBroadcaster) nextSubID() string {
 	return fmt.Sprintf("sub-%d", b.nextID)
 }
 
-// Cached recent logs are pre-filled into the channel asynchronously.
+// SubscribeLogs adds a log subscriber and returns the channel and subscription ID.
+// Cached recent logs are pre-filled into the channel synchronously before returning.
 func (b *TelemetryBroadcaster) SubscribeLogs() (string, <-chan *otelpb.ExportLogsServiceRequest) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -59,25 +60,15 @@ func (b *TelemetryBroadcaster) SubscribeLogs() (string, <-chan *otelpb.ExportLog
 	ch := make(chan *otelpb.ExportLogsServiceRequest, 64)
 	b.logSubs[id] = ch
 
-	// Pre-fill cached logs into the channel in a goroutine.
+	// Pre-fill cached logs synchronously while the lock is held. The 64-slot
+	// buffer is always larger than defaultMaxCachedLogs (20), so these sends
+	// never block and eliminate the data race between a background goroutine
+	// sending on ch and UnsubscribeLogs closing it.
 	if b.logCount > 0 {
-		cached := make([]*otelpb.ExportLogsServiceRequest, b.logCount)
 		start := (b.logHead - b.logCount + defaultMaxCachedLogs) % defaultMaxCachedLogs
 		for i := 0; i < b.logCount; i++ {
-			cached[i] = b.recentLogs[(start+i)%defaultMaxCachedLogs]
+			ch <- b.recentLogs[(start+i)%defaultMaxCachedLogs]
 		}
-		go func() {
-			// recover guards against a send on closed channel if the subscriber
-			// calls UnsubscribeLogs before this goroutine finishes pre-filling.
-			defer func() { _ = recover() }()
-			for _, entry := range cached {
-				select {
-				case ch <- entry:
-				default:
-					return // channel full, stop pre-filling
-				}
-			}
-		}()
 	}
 
 	return id, ch
@@ -109,7 +100,8 @@ func (b *TelemetryBroadcaster) PublishLogs(req *otelpb.ExportLogsServiceRequest)
 	b.mu.Unlock()
 }
 
-// Cached latest metrics are pre-filled into the channel asynchronously.
+// SubscribeMetrics adds a metrics subscriber.
+// Cached latest metrics are pre-filled into the channel synchronously before returning.
 func (b *TelemetryBroadcaster) SubscribeMetrics() (string, <-chan *otelpb.ExportMetricsServiceRequest) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -117,29 +109,21 @@ func (b *TelemetryBroadcaster) SubscribeMetrics() (string, <-chan *otelpb.Export
 	ch := make(chan *otelpb.ExportMetricsServiceRequest, 64)
 	b.metricSubs[id] = ch
 
-	// Pre-fill cached metrics into the channel in a goroutine. Clone each
-	// snapshot while the lock is still held so the goroutine sends immutable
-	// copies; without cloning, a concurrent PublishMetrics could mutate the
-	// cached object in place while the subscriber reads it.
+	// Pre-fill one snapshot per service synchronously. Clones are made while
+	// the lock is held so concurrent PublishMetrics cannot mutate the cached
+	// object after it is enqueued. Non-blocking sends guard against the
+	// unlikely case where the number of distinct service names exceeds 64.
 	if len(b.latestMetrics) > 0 {
 		seen := make(map[*otelpb.ExportMetricsServiceRequest]bool, len(b.latestMetrics))
-		cached := make([]*otelpb.ExportMetricsServiceRequest, 0, len(b.latestMetrics))
 		for _, v := range b.latestMetrics {
 			if !seen[v] {
 				seen[v] = true
-				cached = append(cached, proto.Clone(v).(*otelpb.ExportMetricsServiceRequest))
-			}
-		}
-		go func() {
-			defer func() { _ = recover() }()
-			for _, entry := range cached {
 				select {
-				case ch <- entry:
+				case ch <- proto.Clone(v).(*otelpb.ExportMetricsServiceRequest):
 				default:
-					return
 				}
 			}
-		}()
+		}
 	}
 
 	return id, ch

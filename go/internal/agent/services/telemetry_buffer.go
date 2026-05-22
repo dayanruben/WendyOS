@@ -119,6 +119,9 @@ const (
 	defaultMaxTotalBytes int64 = 100 * 1024 * 1024 // 100 MB
 	defaultSegmentBytes  int64 = 4 * 1024 * 1024   // 4 MB
 	defaultTelemetryDir        = "/var/lib/wendy-agent/telemetry"
+	// maxReplayFrames caps last_n replay requests to prevent a malicious or
+	// misconfigured client from driving unbounded disk reads per stream open.
+	maxReplayFrames = 1000
 )
 
 // TelemetryBufferConfig configures TelemetryBuffer storage limits.
@@ -180,7 +183,7 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		writers:     make(map[SignalType]*segWriter),
 	}
 
-	if err := os.MkdirAll(cfg.Dir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0700); err != nil {
 		logger.Warn("telemetry buffer: cannot create dir, disk writes disabled", zap.Error(err))
 		return b, nil
 	}
@@ -209,7 +212,7 @@ func (b *TelemetryBuffer) openLatestWriter(sig SignalType) error {
 	}
 
 	path := filepath.Join(b.cfg.Dir, segmentFilename(sig, seqNum))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
@@ -226,12 +229,14 @@ func (b *TelemetryBuffer) rotateWriter(sig SignalType) error {
 	w := b.writers[sig]
 	seqNum := 1
 	if w != nil {
-		w.f.Close()
+		if err := w.f.Close(); err != nil {
+			return fmt.Errorf("telemetry buffer: closing segment: %w", err)
+		}
 		seqNum = w.seqNum + 1
 	}
 	b.writers[sig] = nil // cleared so a subsequent open failure leaves a known state
 	path := filepath.Join(b.cfg.Dir, segmentFilename(sig, seqNum))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
@@ -295,6 +300,10 @@ func (b *TelemetryBuffer) writeFrame(sig SignalType, msg proto.Message) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		b.logger.Warn("telemetry buffer: marshal failed", zap.Error(err))
+		return
+	}
+	if uint32(len(data)) > maxSegmentFrameBytes {
+		b.logger.Warn("telemetry buffer: frame exceeds max size, dropping", zap.Int("size", len(data)))
 		return
 	}
 
@@ -414,9 +423,13 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 
 // ReadLastN returns up to n recent entries for sig in ascending time order.
 // It reads segment files newest-to-oldest and prepends older frames.
+// n is capped at maxReplayFrames to bound per-call disk I/O.
 func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
 	if n <= 0 {
 		return nil
+	}
+	if n > maxReplayFrames {
+		n = maxReplayFrames
 	}
 	segs, _ := listSegments(b.cfg.Dir, sig)
 	var result []proto.Message
