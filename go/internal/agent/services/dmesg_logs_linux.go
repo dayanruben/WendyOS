@@ -37,16 +37,10 @@ const (
 	maxReasonableTsUS = int64(100 * 365 * 24 * 3600 * 1e6) // 100 years in µs
 )
 
-// piiPatterns matches host-identifying values in kernel messages for redaction
-// when WENDY_DMESG_REDACT is enabled:
-//   - MAC addresses (colon and hyphen separated)
-//   - IPv4 addresses
-//   - USB SerialNumber values (GDPR Recital 30: device serial numbers are PII)
-//   - Process names and PIDs in OOM killer messages
-//
-// IPv6 is intentionally omitted: a simple colon-hex pattern has too many false
-// positives in kernel messages; proper IPv6 redaction requires a dedicated
-// parser that is out of scope here.
+// piiPatterns matches common host-identifying values in kernel messages for
+// redaction when WENDY_DMESG_REDACT is enabled. Applied first to every message.
+// Covers: MAC (colon/hyphen), IPv4, USB serial numbers, OOM process names+PIDs,
+// filesystem home paths, kernel comm= annotations, and Bluetooth bdaddr values.
 var piiPatterns = regexp.MustCompile(
 	`(?i)(?:` +
 		// MAC address (colon separated, exactly 6 octets)
@@ -66,19 +60,28 @@ var piiPatterns = regexp.MustCompile(
 		`|comm=\S+` +
 		// Bluetooth device address (e.g. "bdaddr 00:11:22:33:44:55")
 		`|bdaddr\s+(?:[0-9a-f]{2}:){5}[0-9a-f]{2}` +
-		// IPv6 address (conservative: 4+ colon-separated hex groups). False
-		// positives are preferable to PII leakage per GDPR Recital 30.
-		`|(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{0,4}` +
-		// Kernel pointer addresses (32/64-bit hex, e.g. "0xffffffff81234567")
-		`|0x[0-9a-f]{8,16}` +
 		`)`,
 )
 
-// csiRemnantPattern strips orphaned ANSI CSI sequences left after ESC (U+001B,
-// removed by parseKmsgLine's r < 0x20 check) is stripped. Without this, a
-// kernel message containing "\x1b[31m" would leave "[31m" in the output, which
-// some log viewers render as an ANSI colour code.
-var csiRemnantPattern = regexp.MustCompile(`\[[0-9;]*[A-Za-z]`)
+// piiIPv6Pattern matches IPv6 address strings (conservative: 4+ colon-hex groups).
+// Kept separate from piiPatterns and gated behind a strings.Contains(':') pre-check
+// so the regex engine only runs on messages that can plausibly contain IPv6, reducing
+// per-message cost at 500 msg/sec. False positives are preferable to PII leakage.
+var piiIPv6Pattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{0,4}`)
+
+// piiKernelPtrPattern matches kernel pointer addresses (e.g. "0xffffffff81234567").
+// Kept separate and gated behind strings.Contains("0x") to avoid scanning messages
+// that cannot contain a pointer, reducing per-message cost at high message rates.
+var piiKernelPtrPattern = regexp.MustCompile(`(?i)0x[0-9a-f]{8,16}`)
+
+// csiRemnantPattern strips orphaned ANSI/VT escape remnants left after ESC
+// (U+001B, removed by strings.Map's r < 0x20 check) is stripped:
+//   - Standard CSI: "[" + decimal/semicolon params + letter (e.g. "[31m")
+//   - Private/intermediate CSI: "[" + "?", "!", "<", ">", "=" + params + letter
+//     (e.g. "[?25l" cursor visibility, "[>c" device attributes)
+//   - OSC remnants: "]" + numeric param + ";" + text, terminator already removed
+//     by the control-char strip above (BEL=0x07, ST=0x9c are both <0x20 or C1)
+var csiRemnantPattern = regexp.MustCompile(`\[[0-9;?!<>=]*[A-Za-z]|\]\d+;[^\x00-\x1f]*`)
 
 // CollectDmesgLogs reads kernel messages from /dev/kmsg and publishes them as
 // OTel log records at debug/trace severity. It replays buffered kernel messages
@@ -164,13 +167,13 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			zap.String("source", "/dev/kmsg"),
 			zap.Bool("redact", redact),
 			zap.Strings("redact_covered", []string{
-				"MAC-address", "IPv4-address", "USB-SerialNumber", "ID_SERIAL",
+				"MAC-address", "IPv4-address", "IPv6-address", "USB-SerialNumber", "ID_SERIAL",
 				"Bluetooth-bdaddr", "OOM-process-name+PID", "filesystem-home-paths",
-				"comm=", "hostname",
+				"comm=", "kernel-pointer-addresses", "hostname",
 			}),
 			zap.Strings("redact_not_covered", []string{
-				"IPv6", "process-argv", "NFS-paths",
-				"unlabelled-kernel-fields", "kernel-memory-addresses",
+				"process-argv", "NFS-paths",
+				"unlabelled-kernel-fields",
 			}),
 			zap.String("dpia_required", "operators must conduct a Data Protection Impact Assessment before forwarding dmesg to a cloud backend"),
 		)
@@ -244,6 +247,15 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}
 		if redact {
 			message = piiPatterns.ReplaceAllString(message, "<redacted>")
+			// IPv6 and kernel-pointer patterns run only when the message contains
+			// the necessary prefix, keeping per-message regex cost proportional to
+			// message content rather than always scanning the full 4096-byte budget.
+			if strings.ContainsRune(message, ':') {
+				message = piiIPv6Pattern.ReplaceAllString(message, "<redacted>")
+			}
+			if strings.Contains(message, "0x") {
+				message = piiKernelPtrPattern.ReplaceAllString(message, "<redacted>")
+			}
 			// Redact the hostname literal separately; regex-escaping it at
 			// compile time is not possible since it is only known at runtime.
 			if hostname != "" {
