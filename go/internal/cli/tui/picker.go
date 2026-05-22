@@ -279,20 +279,12 @@ var pickerColumnDefs = []pickerColumnDef{
 	{
 		title:    "Type",
 		minWidth: 12,
-		maxWidth: 18,
+		maxWidth: 28,
 		value: func(item PickerItem) string {
-			return item.Type
-		},
-	},
-	{
-		title:    "USB",
-		minWidth: 5,
-		maxWidth: 5,
-		value: func(item PickerItem) string {
-			if item.USB == "" {
-				return ""
+			if item.USB != "" && !strings.Contains(item.Type, "USB") {
+				return "USB, " + item.Type
 			}
-			return "Yes"
+			return item.Type
 		},
 	},
 	{

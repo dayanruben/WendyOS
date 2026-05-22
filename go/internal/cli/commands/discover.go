@@ -888,23 +888,6 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 			defaultDevice: defaultDevice,
 		})
 	}
-	for _, d := range collection.EthernetInterfaces {
-		items = append(items, discoverTableItem{
-			picker: tui.PickerItem{
-				Name:     discoverDisplayName(d.DisplayName, d.AgentVersion),
-				Type:     "Ethernet",
-				Address:  d.IPAddress,
-				DedupKey: d.DisplayName,
-			},
-			info: discoverDeviceInfo{
-				Name:    d.DisplayName,
-				Type:    "Ethernet",
-				Address: d.IPAddress,
-				Version: d.AgentVersion,
-			},
-			defaultDevice: firstNonEmpty(d.IPAddress, d.DisplayName),
-		})
-	}
 	for _, d := range collection.ExternalDevices {
 		// Wendy Lite devices are merged with BLE Lite in MergedDevices().
 		if d.ProviderKey == "wendy-lite" {
@@ -918,6 +901,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Type:     deviceType,
 				Address:  addr,
 				DedupKey: d.DisplayName,
+				SortKey:  externalProviderSortKey(d.ProviderKey, d.DisplayName),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -973,6 +957,16 @@ func externalProviderDisplayName(key string) string {
 		}
 	}
 	return key
+}
+
+func externalProviderSortKey(providerKey, name string) string {
+	switch providerKey {
+	case "docker":
+		return "~0_" + strings.ToLower(name)
+	case "local":
+		return "~1_" + strings.ToLower(name)
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

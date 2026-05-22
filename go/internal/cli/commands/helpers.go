@@ -1224,10 +1224,12 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							})
 						} else {
 							items = append(items, tui.PickerItem{
-								Name:    devices[i].DisplayName,
-								Type:    prov.DisplayName(),
-								Address: fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
-								Value:   &pickerEntry{externalDevice: &devices[i], provider: prov},
+								Name:     devices[i].DisplayName,
+								Type:     prov.DisplayName(),
+								Address:  fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								DedupKey: devices[i].DisplayName,
+								SortKey:  externalProviderSortKey(prov.Key(), devices[i].DisplayName),
+								Value:    &pickerEntry{externalDevice: &devices[i], provider: prov},
 							})
 						}
 					}

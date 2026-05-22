@@ -23,7 +23,7 @@ type localBuildContext struct {
 type LocalProvider struct{}
 
 func (p *LocalProvider) Key() string         { return "local" }
-func (p *LocalProvider) DisplayName() string { return "Local (This Device)" }
+func (p *LocalProvider) DisplayName() string { return "This Device" }
 
 func (p *LocalProvider) IsAvailable(_ context.Context) bool { return true }
 

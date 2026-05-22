@@ -217,8 +217,8 @@ func TestDiscoverTableItemsPrioritizesUSBDevices(t *testing.T) {
 	}
 
 	_, rows := tui.PickerTableData(discoverPickerItems(items), "", true)
-	if rows[0][3] != "Yes" {
-		t.Fatalf("USB display cell = %q, want Yes", rows[0][3])
+	if rows[0][2] != "USB, LAN" {
+		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
 	}
 }
 
@@ -237,8 +237,8 @@ func TestDiscoverTableItemsAnnotatesLANUSBFromEthernetInterface(t *testing.T) {
 	}
 
 	items := discoverTableItems(collection)
-	if len(items) != 2 {
-		t.Fatalf("got %d items, want LAN and Ethernet rows", len(items))
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (ethernet hidden)", len(items))
 	}
 	if items[0].info.Name != "wendy-usb" {
 		t.Fatalf("first item name = %q, want annotated LAN device first", items[0].info.Name)
@@ -249,8 +249,8 @@ func TestDiscoverTableItemsAnnotatesLANUSBFromEthernetInterface(t *testing.T) {
 	}
 
 	_, rows := tui.PickerTableData(discoverPickerItems(items), "", true)
-	if rows[0][3] != "Yes" {
-		t.Fatalf("USB display cell = %q, want Yes", rows[0][3])
+	if rows[0][2] != "USB, LAN" {
+		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
 	}
 }
 

@@ -78,7 +78,7 @@ func TestPickerModel_ShowsDescriptionColumnWhenPresent(t *testing.T) {
 	}
 }
 
-func TestPickerModel_ShowsUSBColumnAsYes(t *testing.T) {
+func TestPickerModel_ShowsUSBInTypeColumn(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
@@ -87,13 +87,8 @@ func TestPickerModel_ShowsUSBColumnAsYes(t *testing.T) {
 	pm := updated.(PickerModel)
 
 	view := pm.View()
-	for _, want := range []string{"USB", "Yes"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("expected picker view to contain %q, got %q", want, view)
-		}
-	}
-	if strings.Contains(view, "WendyOS Device sunny-daisy") {
-		t.Fatalf("expected picker USB cell to hide long detail, got %q", view)
+	if !strings.Contains(view, "USB, LAN") {
+		t.Fatalf("expected picker view to contain %q, got %q", "USB, LAN", view)
 	}
 }
 
