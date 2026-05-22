@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -163,6 +164,7 @@ type TelemetryBuffer struct {
 	broadcaster *TelemetryBroadcaster
 	logger      *zap.Logger
 	mu          sync.Mutex
+	cursorMu    sync.Mutex // protects cursor.json read-modify-write
 	writers     map[SignalType]*segWriter
 }
 
@@ -358,12 +360,15 @@ type cursorMap map[SignalType]flushCursor
 
 // LoadCursor returns the persisted flush cursor for sig, or a zero cursor.
 func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
+	b.cursorMu.Lock()
+	defer b.cursorMu.Unlock()
 	data, err := os.ReadFile(filepath.Join(b.cfg.Dir, cursorFile))
 	if err != nil {
 		return flushCursor{}
 	}
 	var m cursorMap
 	if err := json.Unmarshal(data, &m); err != nil {
+		b.logger.Warn("telemetry buffer: corrupt cursor.json, resetting", zap.Error(err))
 		return flushCursor{}
 	}
 	return m[sig]
@@ -371,10 +376,14 @@ func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 
 // SaveCursor persists cursor for sig to cursor.json atomically.
 func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
+	b.cursorMu.Lock()
+	defer b.cursorMu.Unlock()
 	path := filepath.Join(b.cfg.Dir, cursorFile)
 	var m cursorMap
 	if data, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(data, &m) //nolint:errcheck
+		if jerr := json.Unmarshal(data, &m); jerr != nil {
+			b.logger.Warn("telemetry buffer: corrupt cursor.json on save, resetting", zap.Error(jerr))
+		}
 	}
 	if m == nil {
 		m = make(cursorMap)
@@ -384,11 +393,23 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	// Use os.CreateTemp so concurrent callers write to distinct temp files.
+	tmp, err := os.CreateTemp(b.cfg.Dir, "cursor-*.json.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpPath := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpPath) // no-op if rename succeeded
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // ReadLastN returns up to n recent entries for sig in ascending time order.
@@ -400,12 +421,13 @@ func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
 	segs, _ := listSegments(b.cfg.Dir, sig)
 	var result []proto.Message
 	for i := len(segs) - 1; i >= 0 && len(result) < n; i-- {
-		frames, _, _ := readFramesFrom(filepath.Join(b.cfg.Dir, segs[i]), 0, sig, n)
+		// Read all frames in the segment so we can correctly take the trailing ones.
+		frames, _, _ := readFramesFrom(filepath.Join(b.cfg.Dir, segs[i]), 0, sig, math.MaxInt32)
 		need := n - len(result)
 		if len(frames) > need {
 			frames = frames[len(frames)-need:]
 		}
-		result = append(frames, result...) // prepend to maintain ascending order
+		result = append(frames, result...) // prepend older frames to maintain ascending order
 	}
 	return result
 }
