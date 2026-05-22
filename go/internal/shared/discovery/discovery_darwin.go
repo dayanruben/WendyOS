@@ -31,6 +31,8 @@ func discoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 	if err != nil {
 		return nil, err
 	}
+	// darwinInterfaceDisplayNameMap shells out to networksetup once per scan and
+	// returns a map reused across all dnssdResolve calls below — not per instance.
 	interfaceDisplayNames := darwinInterfaceDisplayNameMap(ctx)
 	linkSpeeds := make(map[string]string)
 
