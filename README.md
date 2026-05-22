@@ -55,7 +55,7 @@ To build and run an app on a discovered WendyOS device:
 wendy run
 ```
 
-## (Optional) Install Wendy-Agent
+## (Optional) Install wendy-agent
 
 You do not need to install `wendy-agent` separately on WendyOS. WendyOS
 _already_ has `wendy-agent` installed and configured.
@@ -116,7 +116,7 @@ installed `wendy`:
 
 ```sh
 wendy-dev() {
-  (cd /path/to/wendyos/go && go run ./cmd/wendy "$@")
+  (cd /path/to/WendyOS/go && go run ./cmd/wendy "$@")
 }
 ```
 
@@ -131,7 +131,7 @@ You can do the same for the agent:
 
 ```sh
 wendy-agent-dev() {
-  (cd /path/to/wendyos/go && go run ./cmd/wendy-agent "$@")
+  (cd /path/to/WendyOS/go && go run ./cmd/wendy-agent "$@")
 }
 ```
 
