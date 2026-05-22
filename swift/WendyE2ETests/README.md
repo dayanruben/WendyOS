@@ -19,7 +19,7 @@ Swift Testing results and command recordings:
 bash Scripts/E2ETest.sh --output-dir Build/e2e
 ```
 
-For the common local workflow, run raw tests first and then analyze raw runs matching the current aggregate run ID:
+For the common local workflow, run test attempts first and then analyze attempts matching the current run ID:
 
 ```bash
 make e2e-test
@@ -69,7 +69,7 @@ Sandbox isolation is controlled by `--isolation` or `WENDY_E2E_ISOLATION`:
 - `per-run`: one stable `home/`, `tmp/`, and `home/work` sandbox per role. In non-parallel runs, the role sandbox is reset before each test's first command.
 - `none`: no synthetic `HOME`, `TMPDIR`, or working directory is configured, and existing machine state is left untouched.
 
-To render the aggregate HTML report from this package:
+To render the HTML report from this package:
 
 ```bash
 swift run swift-e2e-testing report --run-dir /tmp/wendy/<workflow-name>.<run-id>

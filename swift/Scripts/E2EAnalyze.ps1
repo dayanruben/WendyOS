@@ -20,13 +20,13 @@ function Show-Usage {
     @"
 Usage: E2EAnalyze.ps1 [--output-dir DIR] [--run-id ID] [--stage STAGE] [--open|--no-open]
 
-Analyze raw Swift E2E runs found in an output directory.
+Analyze Swift E2E attempts found in an output directory.
 
 Stages:
-  aggregate  Aggregate raw runs into matching aggregate directories.
-  review     Review existing aggregate results.
-  report     Render existing aggregate HTML reports.
-  all        Run aggregate, review, and report; default.
+  aggregate  Aggregate attempts into matching run directories.
+  review     Review existing run results.
+  report     Render existing run HTML reports.
+  all        Aggregate attempts, review runs, and render reports; default.
 "@ | Write-Output
 }
 
@@ -66,72 +66,72 @@ $OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
 if (-not $RunPrefix) { $RunPrefix = Get-DefaultRunPrefix }
 $RunPrefix = $RunPrefix.TrimEnd('.')
 
-function Test-RawRunDirectory([System.IO.DirectoryInfo]$Directory) {
+function Test-AttemptDirectory([System.IO.DirectoryInfo]$Directory) {
     if (-not $Directory.Name.StartsWith("$RunPrefix.")) { return $false }
     if ($Directory.Name -notmatch '\.\d{4}$') { return $false }
     $infoPath = Join-Path $Directory.FullName 'info.json'
     if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { return $false }
     try {
         $info = Get-Content -Raw -LiteralPath $infoPath | ConvertFrom-Json
-        return $info.kind -ne 'swift-e2e-aggregate'
+        return $info.kind -ne 'swift-e2e-run'
     } catch {
         return $false
     }
 }
 
-function Test-AggregateDirectory([System.IO.DirectoryInfo]$Directory) {
+function Test-RunDirectory([System.IO.DirectoryInfo]$Directory) {
     $infoPath = Join-Path $Directory.FullName 'info.json'
     if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { return $false }
     try {
         $info = Get-Content -Raw -LiteralPath $infoPath | ConvertFrom-Json
-        return $info.kind -eq 'swift-e2e-aggregate'
+        return $info.kind -eq 'swift-e2e-run'
     } catch {
         return $false
     }
 }
 
-function Get-AggregateDirectoryForRun([string]$RunID) {
+function Get-RunDirectoryForAttempt([string]$RunID) {
     $runBase = $RunID -replace '\.[^.]+$', ''
-    $aggregateName = $runBase -replace '\.[^.]+$', ''
-    return Join-Path $OutputDir $aggregateName
+    $runName = $runBase -replace '\.[^.]+$', ''
+    return Join-Path $OutputDir $runName
 }
 
-$runDirs = Get-ChildItem -LiteralPath $OutputDir -Directory |
-    Where-Object { Test-RawRunDirectory $_ } |
+$attemptDirs = Get-ChildItem -LiteralPath $OutputDir -Directory |
+    Where-Object { Test-AttemptDirectory $_ } |
     Sort-Object Name
 
-if ($runDirs) {
-    $aggregateDirs = $runDirs |
-        ForEach-Object { Get-AggregateDirectoryForRun $_.Name } |
+if ($attemptDirs) {
+    $runDirs = $attemptDirs |
+        ForEach-Object { Get-RunDirectoryForAttempt $_.Name } |
         Sort-Object -Unique
 } else {
-    $aggregateDirs = Get-ChildItem -LiteralPath $OutputDir -Directory |
+    $runDirs = Get-ChildItem -LiteralPath $OutputDir -Directory |
         Where-Object { $_.Name -eq $RunPrefix } |
-        Where-Object { Test-AggregateDirectory $_ } |
+        Where-Object { Test-RunDirectory $_ } |
         Sort-Object Name |
         ForEach-Object { $_.FullName }
 }
 
-if ($Stage -in @('aggregate', 'all') -and -not $runDirs) {
-    throw "ERROR: no raw Swift E2E run directories found in $OutputDir."
+if ($Stage -in @('aggregate', 'all') -and -not $attemptDirs) {
+    throw "ERROR: no Swift E2E attempt directories found in $OutputDir."
 }
-if ($Stage -in @('review', 'report') -and -not $aggregateDirs) {
-    throw "ERROR: no Swift E2E aggregate directories found in $OutputDir."
+if ($Stage -in @('review', 'report') -and -not $runDirs) {
+    throw "ERROR: no Swift E2E run directories found in $OutputDir."
 }
 
 Write-Output '==> Analyzing Swift E2E runs'
 Write-Output "    Stage:      $Stage"
 Write-Output "    Run ID:     $RunPrefix"
 Write-Output "    Output dir: $OutputDir"
-$runDirs | ForEach-Object { Write-Output "    Run:        $($_.FullName)" }
-$aggregateDirs | ForEach-Object { Write-Output "    Aggregate:  $_" }
+$attemptDirs | ForEach-Object { Write-Output "    Attempt:    $($_.FullName)" }
+$runDirs | ForEach-Object { Write-Output "    Run:        $_" }
 
 $status = 0
 
 if ($Stage -in @('aggregate', 'all')) {
     Push-Location $PackageDir
     try {
-        & swift run swift-e2e-testing aggregate --output-dir $OutputDir @($runDirs | ForEach-Object { $_.FullName })
+        & swift run swift-e2e-testing aggregate --output-dir $OutputDir @($attemptDirs | ForEach-Object { $_.FullName })
         $aggregateStatus = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -140,21 +140,21 @@ if ($Stage -in @('aggregate', 'all')) {
 }
 
 if ($Stage -in @('review', 'all')) {
-    foreach ($aggregateDir in $aggregateDirs) {
-        & (Join-Path $ScriptDir 'E2EReview.ps1') --run-dir $aggregateDir
+    foreach ($runDir in $runDirs) {
+        & (Join-Path $ScriptDir 'E2EReview.ps1') --run-dir $runDir
         $reviewStatus = $LASTEXITCODE
         if ($status -eq 0 -and $reviewStatus -ne 0) { $status = $reviewStatus }
     }
 }
 
 if ($Stage -in @('report', 'all')) {
-    foreach ($aggregateDir in $aggregateDirs) {
-        & (Join-Path $ScriptDir 'E2EReport.ps1') --run-dir $aggregateDir
+    foreach ($runDir in $runDirs) {
+        & (Join-Path $ScriptDir 'E2EReport.ps1') --run-dir $runDir
         $reportStatus = $LASTEXITCODE
         if ($status -eq 0 -and $reportStatus -ne 0) { $status = $reportStatus }
     }
 
-    $latestReport = $aggregateDirs |
+    $latestReport = $runDirs |
         ForEach-Object { Join-Path $_ 'index.html' } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
         Sort-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc } |
@@ -167,7 +167,7 @@ if ($Stage -in @('report', 'all')) {
             Write-Output "HTML report: $latestReport"
         }
     } else {
-        Write-Error 'HTML report not found in analyzed aggregate directories.'
+        Write-Error 'HTML report not found in analyzed run directories.'
         if ($status -eq 0) { $status = 1 }
     }
 }

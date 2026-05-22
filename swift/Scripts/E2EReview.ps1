@@ -27,8 +27,8 @@ while ($i -lt $args.Count) {
         '--provider' { $Provider = $args[$i + 1]; $i += 2; continue }
         '--model' { $Model = $args[$i + 1]; $i += 2; continue }
         '--overwrite' { $Overwrite = $true; $i += 1; continue }
-        '--help' { 'Usage: E2EReview.ps1 --run-dir AGGREGATE_DIR [OPTIONS]'; exit 0 }
-        '-h' { 'Usage: E2EReview.ps1 --run-dir AGGREGATE_DIR [OPTIONS]'; exit 0 }
+        '--help' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [OPTIONS]'; exit 0 }
+        '-h' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [OPTIONS]'; exit 0 }
         default { $ExtraArgs += $args[$i]; $i += 1; continue }
     }
 }
@@ -43,7 +43,7 @@ if ($Model) { $commandArgs += @('--model', $Model) }
 if ($Overwrite) { $commandArgs += '--overwrite' }
 $commandArgs += $ExtraArgs
 
-Write-Output '==> Reviewing Swift E2E aggregate results'
+Write-Output '==> Reviewing Swift E2E run results'
 Write-Output "    Package:  $PackageDir"
 Write-Output "    Run dir:  $RunDir"
 Write-Output "    Provider: $Provider"

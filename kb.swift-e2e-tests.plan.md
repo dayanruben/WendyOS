@@ -205,22 +205,23 @@ This order is for focus and reviewability only. Later areas are not optional.
 
 ## Running tests
 
-Use an explicit records directory while iterating:
+Use the scripted attempt → run workflow while iterating:
 
 ```bash
-cd swift/WendyE2ETests
-WENDY_AGENT_E2E_TEST_RECORDS_DIR="$PWD/.build/e2e-test-records.current" swift test --filter WendyE2ETests
+cd swift
+make e2e-test
+make e2e-analyze
 ```
 
-For focused work:
+For focused SwiftPM work from `swift/WendyE2ETests`:
 
 ```bash
 swift test --filter '<suite-or-test-fragment>'
 ```
 
-Inspect the Markdown command records after each command family. Records are part
-of the feedback loop: they should show whether the implementation matches the
-spec or where it falls short.
+Inspect the Markdown command records in the generated run after each command
+family. Records are part of the feedback loop: they should show whether the
+implementation matches the spec or where it falls short.
 
 ## Acceptance criteria
 

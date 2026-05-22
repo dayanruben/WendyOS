@@ -36,7 +36,7 @@ RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets 
 RUN_E2E_ANALYZE_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2EAnalyze.ps1 --output-dir $(WINDOWS_E2E_OUTPUT_DIR) --stage $(1)
 
 OPEN_E2E_REPORT_UNIX = report_path="$(1)"; if [ -f "$$report_path" ]; then if [ "$$(uname -s)" = "Darwin" ]; then open "$$report_path" || echo "HTML report: $$report_path"; else echo "HTML report: $$report_path"; fi; else echo "HTML report not found: $$report_path"; fi
-RUN_E2E_REPORT_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows report target requires PowerShell.' }; $$reportDir = '$(RUN_DIR)'; if (-not $$reportDir) { $$outputDir = $(WINDOWS_E2E_OUTPUT_DIR); if (Test-Path -LiteralPath $$outputDir) { $$reportDir = Get-ChildItem -LiteralPath $$outputDir -Directory -Filter 'swift-e2e-tests.*' | Where-Object { $$info = Join-Path $$_.FullName 'info.json'; if (-not (Test-Path -LiteralPath $$info)) { return $$false }; try { (Get-Content -Raw -LiteralPath $$info | ConvertFrom-Json).kind -eq 'swift-e2e-aggregate' } catch { $$false } } | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName } }; if (-not $$reportDir) { throw 'ERROR: RUN_DIR is required, or no aggregate report directory was found.' }; ./Scripts/E2EReport.ps1 --run-dir $$reportDir; $$reportPath = Join-Path $$reportDir 'index.html'; if (Test-Path -LiteralPath $$reportPath) { Start-Process $$reportPath } else { Write-Output "HTML report not found: $$reportPath" }
+RUN_E2E_REPORT_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows report target requires PowerShell.' }; $$reportDir = '$(RUN_DIR)'; if (-not $$reportDir) { $$outputDir = $(WINDOWS_E2E_OUTPUT_DIR); if (Test-Path -LiteralPath $$outputDir) { $$reportDir = Get-ChildItem -LiteralPath $$outputDir -Directory -Filter 'swift-e2e-tests.*' | Where-Object { $$info = Join-Path $$_.FullName 'info.json'; if (-not (Test-Path -LiteralPath $$info)) { return $$false }; try { (Get-Content -Raw -LiteralPath $$info | ConvertFrom-Json).kind -eq 'swift-e2e-run' } catch { $$false } } | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName } }; if (-not $$reportDir) { throw 'ERROR: RUN_DIR is required, or no run report directory was found.' }; ./Scripts/E2EReport.ps1 --run-dir $$reportDir; $$reportPath = Join-Path $$reportDir 'index.html'; if (Test-Path -LiteralPath $$reportPath) { Start-Process $$reportPath } else { Write-Output "HTML report not found: $$reportPath" }
 RUN_E2E_REPORT_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
 	run_dir="$(RUN_DIR)"; \
 	if [ -z "$$run_dir" ]; then \
@@ -44,13 +44,13 @@ RUN_E2E_REPORT_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
 		for path in "$$output_dir"/swift-e2e-tests.*; do \
 			[ -d "$$path" ] || continue; \
 			[ -f "$$path/info.json" ] || continue; \
-			grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-aggregate"' "$$path/info.json" || continue; \
+			grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-run"' "$$path/info.json" || continue; \
 			mtime="$$(stat -f %m "$$path" 2>/dev/null || stat -c %Y "$$path" 2>/dev/null || echo 0)"; \
 			if [ "$$mtime" -ge "$$latest_mtime" ]; then latest_mtime="$$mtime"; latest="$$path"; fi; \
 		done; \
 		shopt -u nullglob; run_dir="$$latest"; \
 	fi; \
-	if [ -z "$$run_dir" ]; then echo "ERROR: RUN_DIR is required, or no aggregate report directory was found." >&2; exit 64; fi; \
+	if [ -z "$$run_dir" ]; then echo "ERROR: RUN_DIR is required, or no run report directory was found." >&2; exit 64; fi; \
 	bash ./Scripts/E2EReport.sh --run-dir "$$run_dir"; \
 	$(call OPEN_E2E_REPORT_UNIX,$$run_dir/index.html)
 E2E_RUN_ID_HELPERS_UNIX = e2e_cli_id() { case "$$(uname -s)" in Darwin) major="$$(sw_vers -productVersion | cut -d. -f1)"; printf "macos-%s" "$$major" ;; Linux) if [ -r /etc/os-release ]; then . /etc/os-release; version="$${VERSION_ID//./-}"; printf "%s-%s" "$${ID:-linux}" "$$version"; else printf "linux"; fi ;; *) uname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$$//' ;; esac; }; next_e2e_run_id() { output_dir="$$1"; run_name="$$2"; base="swift-e2e-tests.local0000.$$run_name"; max=0; shopt -s nullglob; for path in "$$output_dir/$$base".[0-9][0-9][0-9][0-9]; do leaf="$$(basename "$$path")"; suffix="$$(printf '%s' "$$leaf" | awk -F. '{ print $$NF }')"; if [[ "$$suffix" =~ ^[0-9]{4}$$ ]]; then suffix_value="$$(expr "$$suffix" + 0)"; if [ "$$suffix_value" -gt "$$max" ]; then max="$$suffix_value"; fi; fi; done; shopt -u nullglob; printf "%s.%04d" "$$base" $$((max + 1)); }
@@ -107,7 +107,7 @@ test-unix:
 
 e2e-test: DEVICE ?= wendyos-raspberry-pi-5.local
 .PHONY: e2e-test
-e2e-test: e2e-test-$(HOST_ENV) ## Run Swift E2E tests locally and write raw artifacts
+e2e-test: e2e-test-$(HOST_ENV) ## Run Swift E2E tests locally and write attempt artifacts
 
 .PHONY: e2e-test-windows
 e2e-test-windows:
@@ -118,10 +118,10 @@ e2e-test-unix:
 	$(call RUN_E2E_TEST_UNIX,local,--output-dir $(UNIX_E2E_OUTPUT_DIR) --cli-root-dir $(UNIX_E2E_OUTPUT_DIR) --agent-root-dir $(UNIX_E2E_OUTPUT_DIR) --parallel)
 
 .PHONY: e2e-analyze
-e2e-analyze: e2e-aggregate e2e-review e2e-report ## Aggregate, review, and report all Swift E2E raw runs
+e2e-analyze: e2e-aggregate e2e-review e2e-report ## Aggregate, review, and report all Swift E2E attempts
 
 .PHONY: e2e-aggregate
-e2e-aggregate: e2e-aggregate-$(HOST_ENV) ## Aggregate all Swift E2E raw runs
+e2e-aggregate: e2e-aggregate-$(HOST_ENV) ## Aggregate all Swift E2E attempts
 
 .PHONY: e2e-aggregate-windows
 e2e-aggregate-windows:
@@ -132,7 +132,7 @@ e2e-aggregate-unix:
 	$(call RUN_E2E_ANALYZE_UNIX,aggregate)
 
 .PHONY: e2e-review
-e2e-review: e2e-review-$(HOST_ENV) ## Review Swift E2E aggregate results
+e2e-review: e2e-review-$(HOST_ENV) ## Review Swift E2E run results
 
 .PHONY: e2e-review-windows
 e2e-review-windows:
@@ -143,7 +143,7 @@ e2e-review-unix:
 	$(call RUN_E2E_ANALYZE_UNIX,review)
 
 .PHONY: e2e-report
-e2e-report: e2e-report-$(HOST_ENV) ## Render Swift E2E aggregate reports and open the latest
+e2e-report: e2e-report-$(HOST_ENV) ## Render Swift E2E run reports and open the latest
 
 .PHONY: e2e-report-windows
 e2e-report-windows:
@@ -155,7 +155,7 @@ e2e-report-unix:
 
 e2e-test-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
 .PHONY: e2e-test-jetson-orin-nano
-e2e-test-jetson-orin-nano: e2e-test-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2E tests against Jetson Orin Nano and write raw artifacts
+e2e-test-jetson-orin-nano: e2e-test-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2E tests against Jetson Orin Nano and write attempt artifacts
 
 .PHONY: e2e-test-jetson-orin-nano-windows
 e2e-test-jetson-orin-nano-windows:
@@ -167,7 +167,7 @@ e2e-test-jetson-orin-nano-unix:
 
 e2e-test-raspberry-pi-5: DEVICE ?= wendyos-raspberry-pi-5.local
 .PHONY: e2e-test-raspberry-pi-5
-e2e-test-raspberry-pi-5: e2e-test-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E tests against Raspberry Pi 5 and write raw artifacts
+e2e-test-raspberry-pi-5: e2e-test-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E tests against Raspberry Pi 5 and write attempt artifacts
 
 .PHONY: e2e-test-raspberry-pi-5-windows
 e2e-test-raspberry-pi-5-windows:
@@ -179,7 +179,7 @@ e2e-test-raspberry-pi-5-unix:
 
 e2e-test-mac-mini: DEVICE ?= mac-mini.local
 .PHONY: e2e-test-mac-mini
-e2e-test-mac-mini: e2e-test-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against Mac mini and write raw artifacts
+e2e-test-mac-mini: e2e-test-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against Mac mini and write attempt artifacts
 
 .PHONY: e2e-test-mac-mini-windows
 e2e-test-mac-mini-windows:
@@ -190,7 +190,7 @@ e2e-test-mac-mini-unix:
 	$(call RUN_E2E_TEST_UNIX,mac-mini,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
 
 .PHONY: report
-report: report-$(HOST_ENV) ## Render the latest Swift E2E aggregate report and open it
+report: report-$(HOST_ENV) ## Render the latest Swift E2E run report and open it
 
 .PHONY: report-windows
 report-windows:

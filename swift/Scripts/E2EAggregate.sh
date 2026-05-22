@@ -7,16 +7,16 @@ DEFAULT_PACKAGE_DIR="$SWIFT_DIR/WendyE2ETests"
 
 OUTPUT_DIR=""
 PACKAGE_DIR="$DEFAULT_PACKAGE_DIR"
-RUN_DIRS=()
+ATTEMPT_DIRS=()
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --output-dir DIR RUN_DIR...
+Usage: $(basename "$0") --output-dir DIR ATTEMPT_DIR...
 
-Aggregate one or more Swift E2E run directories into the canonical aggregate layout.
+Aggregate one or more Swift E2E attempt directories into the canonical run layout.
 
 Options:
-  --output-dir DIR  Directory where the aggregate root is written.
+  --output-dir DIR  Directory where the E2E run is written.
   --package-dir DIR Swift package directory containing swift-e2e-testing;
                     defaults to $DEFAULT_PACKAGE_DIR.
   --help            Show this help message.
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
       exit 64
       ;;
     *)
-      RUN_DIRS+=("$1")
+      ATTEMPT_DIRS+=("$1")
       shift
       ;;
   esac
@@ -82,8 +82,8 @@ if [[ -z "$OUTPUT_DIR" ]]; then
   usage >&2
   exit 64
 fi
-if [[ ${#RUN_DIRS[@]} -eq 0 ]]; then
-  echo "ERROR: at least one RUN_DIR is required." >&2
+if [[ ${#ATTEMPT_DIRS[@]} -eq 0 ]]; then
+  echo "ERROR: at least one ATTEMPT_DIR is required." >&2
   usage >&2
   exit 64
 fi
@@ -91,21 +91,21 @@ fi
 OUTPUT_DIR="$(absolute_dir_path "$OUTPUT_DIR")"
 PACKAGE_DIR="$(absolute_existing_dir_path "$PACKAGE_DIR")"
 
-ABSOLUTE_RUN_DIRS=()
-for run_dir in "${RUN_DIRS[@]}"; do
-  ABSOLUTE_RUN_DIRS+=("$(absolute_existing_dir_path "$run_dir")")
+ABSOLUTE_ATTEMPT_DIRS=()
+for attempt_dir in "${ATTEMPT_DIRS[@]}"; do
+  ABSOLUTE_ATTEMPT_DIRS+=("$(absolute_existing_dir_path "$attempt_dir")")
 done
 
-echo "==> Aggregating Swift E2E runs"
+echo "==> Aggregating Swift E2E attempts"
 echo "    Package:    $PACKAGE_DIR"
 echo "    Output dir: $OUTPUT_DIR"
-for run_dir in "${ABSOLUTE_RUN_DIRS[@]}"; do
-  echo "    Run:        $run_dir"
+for attempt_dir in "${ABSOLUTE_ATTEMPT_DIRS[@]}"; do
+  echo "    Attempt:    $attempt_dir"
 done
 
 (
   cd "$PACKAGE_DIR"
   swift run swift-e2e-testing aggregate \
     --output-dir "$OUTPUT_DIR" \
-    "${ABSOLUTE_RUN_DIRS[@]}"
+    "${ABSOLUTE_ATTEMPT_DIRS[@]}"
 )

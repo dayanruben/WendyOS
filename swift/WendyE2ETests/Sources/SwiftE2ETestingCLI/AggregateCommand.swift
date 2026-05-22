@@ -4,81 +4,90 @@ import Foundation
 struct AggregateCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "aggregate",
-        abstract: "Transpose Swift E2E runs into an aggregate layout."
+        abstract: "Aggregate Swift E2E attempts into a run layout."
     )
 
-    @Option(name: .long, help: "Directory where the aggregate root is written. Defaults to the first run's parent.")
+    @Option(
+        name: .long,
+        help: "Directory where the E2E run is written. Defaults to the first attempt's parent."
+    )
     var outputDir: String?
 
-    @Argument(help: "Raw Swift E2E run directories to aggregate.")
-    var runDirs: [String] = []
+    @Argument(help: "Swift E2E attempt directories to aggregate.")
+    var attemptDirs: [String] = []
 
     mutating func run() throws {
-        guard !runDirs.isEmpty else {
-            throw ValidationError("Missing run directory.")
+        guard !attemptDirs.isEmpty else {
+            throw ValidationError("Missing attempt directory.")
         }
 
-        let rawRunURLs = runDirs.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
-        let firstRunURL = rawRunURLs[0]
+        let attemptURLs = attemptDirs.map {
+            URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL
+        }
+        let firstAttemptURL = attemptURLs[0]
         let outputURL = URL(
-            fileURLWithPath: outputDir ?? firstRunURL.deletingLastPathComponent().path,
+            fileURLWithPath: outputDir ?? firstAttemptURL.deletingLastPathComponent().path,
             isDirectory: true
         ).standardizedFileURL
 
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
-        var aggregateRoots: Set<URL> = []
-        var mappedRuns: [AggregateMappedRun] = []
-        for rawRunURL in rawRunURLs {
-            let runID = rawRunURL.lastPathComponent
-            let components = try AggregateRunID(runID)
-            let aggregateRootURL = outputURL.appendingPathComponent(
+        var runURLs: Set<URL> = []
+        var mappedAttempts: [MappedAttempt] = []
+        for attemptURL in attemptURLs {
+            let attemptID = attemptURL.lastPathComponent
+            let components = try AttemptID(attemptID)
+            let runURL = outputURL.appendingPathComponent(
                 "\(components.workflowName).\(components.runID)",
                 isDirectory: true
             )
-            aggregateRoots.insert(aggregateRootURL)
+            runURLs.insert(runURL)
             try FileManager.default.createDirectory(
-                at: aggregateRootURL,
+                at: runURL,
                 withIntermediateDirectories: true
             )
 
-            let mappedRun = try aggregateRun(
-                rawRunURL: rawRunURL,
-                runID: runID,
+            let mappedAttempt = try mapAttempt(
+                attemptURL: attemptURL,
+                attemptID: attemptID,
                 components: components,
-                aggregateRootURL: aggregateRootURL
+                runURL: runURL
             )
-            mappedRuns.append(mappedRun)
+            mappedAttempts.append(mappedAttempt)
         }
 
-        for aggregateRootURL in aggregateRoots {
-            try writeAggregateInfo(at: aggregateRootURL, mappedRuns: mappedRuns.filter { run in
-                run.aggregateRootURL == aggregateRootURL
-            })
+        for runURL in runURLs {
+            try writeRunInfo(
+                at: runURL,
+                mappedAttempts: mappedAttempts.filter { mappedAttempt in
+                    mappedAttempt.runURL == runURL
+                }
+            )
         }
 
-        for root in aggregateRoots.sorted(by: { $0.path < $1.path }) {
-            print("==> Wrote Swift E2E aggregate: \(root.path)")
+        for root in runURLs.sorted(by: { $0.path < $1.path }) {
+            print("==> Wrote Swift E2E run: \(root.path)")
         }
     }
 
-    private func aggregateRun(
-        rawRunURL: URL,
-        runID: String,
-        components: AggregateRunID,
-        aggregateRootURL: URL
-    ) throws -> AggregateMappedRun {
-        guard FileManager.default.fileExists(atPath: rawRunURL.path) else {
-            throw ValidationError("Run directory does not exist: \(rawRunURL.path)")
+    private func mapAttempt(
+        attemptURL: URL,
+        attemptID: String,
+        components: AttemptID,
+        runURL: URL
+    ) throws -> MappedAttempt {
+        guard FileManager.default.fileExists(atPath: attemptURL.path) else {
+            throw ValidationError("Attempt directory does not exist: \(attemptURL.path)")
         }
 
-        let testsURL = rawRunURL.appendingPathComponent("tests", isDirectory: true)
-        let testDirectories = try aggregateTestDirectories(in: testsURL)
-        var mappedTests: [AggregateMappedTest] = []
+        let testsURL = attemptURL.appendingPathComponent("tests", isDirectory: true)
+        let testDirectories = try attemptTestDirectories(in: testsURL)
+        var mappedTests: [MappedTest] = []
         for testDirectory in testDirectories {
             let suiteKey = testDirectory.deletingLastPathComponent().lastPathComponent
             let testKey = testDirectory.lastPathComponent
-            let destinationURL = aggregateRootURL
+            let destinationURL =
+                runURL
                 .appendingPathComponent(suiteKey, isDirectory: true)
                 .appendingPathComponent(testKey, isDirectory: true)
                 .appendingPathComponent(components.targetName, isDirectory: true)
@@ -90,19 +99,19 @@ struct AggregateCommand: ParsableCommand {
                 withIntermediateDirectories: true
             )
             try copyItem(at: testDirectory, to: destinationURL)
-            try copyRunLevelFiles(from: rawRunURL, to: destinationURL)
+            try copyAttemptLevelFiles(from: attemptURL, to: destinationURL)
             mappedTests.append(
-                AggregateMappedTest(
+                MappedTest(
                     suiteKey: suiteKey,
                     testKey: testKey,
-                    path: aggregateRelativePath(destinationURL, base: aggregateRootURL)
+                    path: runRelativePath(destinationURL, base: runURL)
                 )
             )
         }
 
-        return AggregateMappedRun(
-            runID: runID,
-            aggregateRootURL: aggregateRootURL,
+        return MappedAttempt(
+            attemptID: attemptID,
+            runURL: runURL,
             workflowName: components.workflowName,
             workflowRunID: components.runID,
             targetName: components.targetName,
@@ -112,7 +121,7 @@ struct AggregateCommand: ParsableCommand {
     }
 }
 
-private struct AggregateRunID {
+private struct AttemptID {
     var workflowName: String
     var runID: String
     var targetName: String
@@ -122,7 +131,7 @@ private struct AggregateRunID {
         let parts = value.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 4 else {
             throw ValidationError(
-                "Run ID must have shape <workflow-name>.<run-id>.<target-name>.<attempt>: \(value)"
+                "Attempt ID must have shape <workflow-name>.<run-id>.<target-name>.<attempt>: \(value)"
             )
         }
         self.workflowName = parts[0]
@@ -130,22 +139,22 @@ private struct AggregateRunID {
         self.targetName = parts.dropFirst(2).dropLast().joined(separator: ".")
         self.attempt = parts[parts.count - 1]
         guard !workflowName.isEmpty, !runID.isEmpty, !targetName.isEmpty, !attempt.isEmpty else {
-            throw ValidationError("Run ID contains an empty component: \(value)")
+            throw ValidationError("Attempt ID contains an empty component: \(value)")
         }
     }
 }
 
-private struct AggregateMappedRun: Encodable {
-    var runID: String
-    var aggregateRootURL: URL
+private struct MappedAttempt: Encodable {
+    var attemptID: String
+    var runURL: URL
     var workflowName: String
     var workflowRunID: String
     var targetName: String
     var attempt: String
-    var mappedTests: [AggregateMappedTest]
+    var mappedTests: [MappedTest]
 
     enum CodingKeys: String, CodingKey {
-        case runID
+        case attemptID = "attemptId"
         case workflowName
         case workflowRunID = "runId"
         case targetName
@@ -154,19 +163,19 @@ private struct AggregateMappedRun: Encodable {
     }
 }
 
-private struct AggregateMappedTest: Encodable {
+private struct MappedTest: Encodable {
     var suiteKey: String
     var testKey: String
     var path: String
 }
 
-private struct AggregateInfo: Encodable {
+private struct RunInfo: Encodable {
     var kind: String
     var generatedAt: String
-    var runs: [AggregateMappedRun]
+    var attempts: [MappedAttempt]
 }
 
-private func aggregateTestDirectories(in testsURL: URL) throws -> [URL] {
+private func attemptTestDirectories(in testsURL: URL) throws -> [URL] {
     guard FileManager.default.fileExists(atPath: testsURL.path) else {
         return []
     }
@@ -189,9 +198,9 @@ private func aggregateTestDirectories(in testsURL: URL) throws -> [URL] {
     return directories.sorted { $0.path < $1.path }
 }
 
-private func copyRunLevelFiles(from rawRunURL: URL, to destinationURL: URL) throws {
+private func copyAttemptLevelFiles(from attemptURL: URL, to destinationURL: URL) throws {
     for fileName in ["info.json", "test-results.xml", "test-results.raw.xml"] {
-        let sourceURL = rawRunURL.appendingPathComponent(fileName)
+        let sourceURL = attemptURL.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
         try copyItem(at: sourceURL, to: destinationURL.appendingPathComponent(fileName))
     }
@@ -204,19 +213,19 @@ private func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
     try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
 }
 
-private func writeAggregateInfo(at aggregateRootURL: URL, mappedRuns: [AggregateMappedRun]) throws {
-    let info = AggregateInfo(
-        kind: "swift-e2e-aggregate",
+private func writeRunInfo(at runURL: URL, mappedAttempts: [MappedAttempt]) throws {
+    let info = RunInfo(
+        kind: "swift-e2e-run",
         generatedAt: ISO8601DateFormatter().string(from: Date()),
-        runs: mappedRuns.sorted { $0.runID < $1.runID }
+        attempts: mappedAttempts.sorted { $0.attemptID < $1.attemptID }
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(info)
-    try data.write(to: aggregateRootURL.appendingPathComponent("info.json"))
+    try data.write(to: runURL.appendingPathComponent("info.json"))
 }
 
-private func aggregateRelativePath(_ url: URL, base: URL) -> String {
+private func runRelativePath(_ url: URL, base: URL) -> String {
     let basePath = base.standardizedFileURL.path
     let path = url.standardizedFileURL.path
     let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"

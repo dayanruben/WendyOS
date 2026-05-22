@@ -65,13 +65,13 @@ when you need lower-level control:
   under the CLI and agent run directories, and write recordings under
   `<output-root>/<run-id>/tests`. They accept options such as `--filter`,
   `--agent-address`, `--agent-user`, and `--verbose`.
-- `Scripts/E2EAnalyze.sh` and `Scripts/E2EAnalyze.ps1` analyze raw runs in an
-  output directory. By default, they only consider runs matching the current
-  aggregate run ID, such as `swift-e2e-tests.local0000`. They support
+- `Scripts/E2EAnalyze.sh` and `Scripts/E2EAnalyze.ps1` analyze attempt
+  directories in an output directory. By default, they only consider attempts
+  matching the current run ID, such as `swift-e2e-tests.local0000`. They support
   `aggregate`, `review`, `report`, and `all` stages; the aggregate stage updates
-  matching aggregate folders in place.
-- `Scripts/E2EReport.sh` and `Scripts/E2EReport.ps1` render an existing
-  aggregate report at `<output-root>/<workflow-name>.<run-id>/index.html`.
+  matching run directories in place.
+- `Scripts/E2EReport.sh` and `Scripts/E2EReport.ps1` render an existing run
+  report at `<output-root>/<workflow-name>.<run-id>/index.html`.
 
 Typical local setup and two-step run:
 
@@ -94,20 +94,20 @@ preserves the original as `test-results-swift-testing.raw.xml`.
 
 The Makefile includes helpers for the common cases:
 
-- `make e2e-test` runs the E2E suite against the local host and writes raw
+- `make e2e-test` runs the E2E suite against the local host and writes attempt
   artifacts only.
-- `make e2e-test-mac-mini` runs raw tests against `mac-mini.local`.
-- `make e2e-test-jetson-orin-nano` runs raw tests against
+- `make e2e-test-mac-mini` runs an attempt against `mac-mini.local`.
+- `make e2e-test-jetson-orin-nano` runs an attempt against
   `wendyos-jetson-orin-nano.local`.
-- `make e2e-test-raspberry-pi-5` runs raw tests against
+- `make e2e-test-raspberry-pi-5` runs an attempt against
   `wendyos-raspberry-pi-5.local`.
-- `make e2e-aggregate` integrates raw runs for the current aggregate run ID,
-  updating aggregate folders in place.
-- `make e2e-review` reviews existing aggregate results.
-- `make e2e-report` renders aggregate HTML reports and opens the newest report
-  on macOS.
+- `make e2e-aggregate` integrates attempts for the current run ID, updating run
+  directories in place.
+- `make e2e-review` reviews existing run results.
+- `make e2e-report` renders run HTML reports and opens the newest report on
+  macOS.
 - `make e2e-analyze` runs `e2e-aggregate`, `e2e-review`, and `e2e-report` in
-  order for the current aggregate run ID.
+  order for the current run ID.
 
 Device-targeted helpers accept a `DEVICE` override:
 

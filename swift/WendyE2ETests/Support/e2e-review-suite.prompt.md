@@ -1,4 +1,4 @@
-You are reviewing one suite of WendyAgent Swift E2E aggregate results.
+You are reviewing one suite of a WendyAgent Swift E2E run.
 
 Focus on findings that a human should act on: real regressions, product bugs,
 test bugs, flaky behavior, suspicious slowness, missing assertions, misleading

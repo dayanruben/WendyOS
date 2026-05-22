@@ -230,8 +230,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Compute Swift E2E aggregate ID
-        id: e2e-aggregate
+      - name: Compute Swift E2E run ID
+        id: e2e-run
         shell: bash
         run: |
           set -euo pipefail
@@ -243,8 +243,8 @@ jobs:
 
           workflow_id="$(slug "${GITHUB_WORKFLOW:-swift-e2e-tests}")"
           printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
-          echo "aggregate_id=${workflow_id}.gh${GITHUB_RUN_ID}.aggregate.${attempt_suffix}" >> "$GITHUB_OUTPUT"
-          echo "aggregate_dir=/tmp/wendy/${workflow_id}.gh${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "run_artifact_id=${workflow_id}.gh${GITHUB_RUN_ID}.run.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+          echo "run_dir=/tmp/wendy/${workflow_id}.gh${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Swift E2E analysis workspace
         shell: bash
@@ -252,29 +252,29 @@ jobs:
           set -euo pipefail
           rm -rf \
             "/tmp/wendy-raw/${{ github.run_id }}" \
-            "${{ steps.e2e-aggregate.outputs.aggregate_dir }}"
+            "${{ steps.e2e-run.outputs.run_dir }}"
 
-      - name: Download Swift E2E runs
+      - name: Download Swift E2E attempts
         uses: actions/download-artifact@v5
         with:
           path: /tmp/wendy-raw/${{ github.run_id }}
           pattern: swift-e2e-tests.gh${{ github.run_id }}.*
 
-      - name: Aggregate Swift E2E runs
+      - name: Aggregate Swift E2E attempts
         working-directory: swift
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t run_dirs < <(find /tmp/wendy-raw/${{ github.run_id }} -mindepth 1 -maxdepth 1 -type d | sort)
-          if [[ ${#run_dirs[@]} -eq 0 ]]; then
-            echo "ERROR: no Swift E2E run artifacts downloaded." >&2
+          mapfile -t attempt_dirs < <(find /tmp/wendy-raw/${{ github.run_id }} -mindepth 1 -maxdepth 1 -type d | sort)
+          if [[ ${#attempt_dirs[@]} -eq 0 ]]; then
+            echo "ERROR: no Swift E2E attempt artifacts downloaded." >&2
             exit 1
           fi
           bash ./Scripts/E2EAggregate.sh \
             --output-dir /tmp/wendy \
-            "${run_dirs[@]}"
+            "${attempt_dirs[@]}"
 
-      - name: Review Swift E2E aggregate
+      - name: Review Swift E2E run
         working-directory: swift
         shell: bash
         env:
@@ -283,22 +283,22 @@ jobs:
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \
-            --run-dir "${{ steps.e2e-aggregate.outputs.aggregate_dir }}"
+            --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
 
-      - name: Render Swift E2E aggregate index
+      - name: Render Swift E2E run index
         if: always()
         working-directory: swift
         shell: bash
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReport.sh \
-            --run-dir "${{ steps.e2e-aggregate.outputs.aggregate_dir }}"
+            --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
 
-      - name: Upload Swift E2E aggregate report
+      - name: Upload Swift E2E run report
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ steps.e2e-aggregate.outputs.aggregate_id }}
-          path: ${{ steps.e2e-aggregate.outputs.aggregate_dir }}/**
+          name: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          path: ${{ steps.e2e-run.outputs.run_dir }}/**
           if-no-files-found: warn
           retention-days: 14

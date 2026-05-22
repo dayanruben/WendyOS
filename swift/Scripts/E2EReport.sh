@@ -12,10 +12,10 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") --run-dir DIR [--package-dir DIR]
 
-Render the WendyAgent Swift E2E aggregate HTML report for an aggregate run directory.
+Render the WendyAgent Swift E2E HTML report for a run directory.
 
 Options:
-  --run-dir DIR      Required aggregate E2E run directory produced by E2EAggregate.sh.
+  --run-dir DIR      Required Swift E2E run directory produced by E2EAggregate.sh.
   --package-dir DIR  Swift package directory containing swift-e2e-testing;
                      defaults to $DEFAULT_PACKAGE_DIR.
   --help             Show this help message.
@@ -75,7 +75,7 @@ RUN_DIR="$(absolute_existing_dir_path "$RUN_DIR")"
 PACKAGE_DIR="$(absolute_existing_dir_path "$PACKAGE_DIR")"
 REPORT_PATH="$RUN_DIR/index.html"
 
-aggregate_test_result_files() {
+run_test_result_files() {
   local suite_dir test_dir target_dir attempt_dir result_path
   for suite_dir in "$RUN_DIR"/*; do
     [[ -d "$suite_dir" ]] || continue
@@ -94,18 +94,18 @@ aggregate_test_result_files() {
   done | sort -u
 }
 
-sanitize_aggregate_xunit() {
+sanitize_run_xunit() {
   while IFS= read -r result_path; do
     bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --file "$result_path"
-  done < <(aggregate_test_result_files)
+  done < <(run_test_result_files)
 }
 
-echo "==> Rendering Swift E2E aggregate HTML report"
+echo "==> Rendering Swift E2E HTML report"
 echo "    Package: $PACKAGE_DIR"
 echo "    Run dir: $RUN_DIR"
 echo "    Output:  $REPORT_PATH"
 
-sanitize_aggregate_xunit
+sanitize_run_xunit
 
 set +e
 (
@@ -116,7 +116,7 @@ report_status=$?
 set -e
 
 if [[ "$report_status" -eq 0 && -f "$REPORT_PATH" ]]; then
-  echo "==> Wrote Swift E2E aggregate HTML report: $REPORT_PATH"
+  echo "==> Wrote Swift E2E HTML report: $REPORT_PATH"
   exit 0
 fi
 
@@ -124,5 +124,5 @@ if [[ "$report_status" -eq 0 ]]; then
   report_status=1
 fi
 
-echo "ERROR: Swift E2E aggregate HTML report generation failed." >&2
+echo "ERROR: Swift E2E HTML report generation failed." >&2
 exit "$report_status"

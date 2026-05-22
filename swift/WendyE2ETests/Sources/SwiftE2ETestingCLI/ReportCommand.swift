@@ -8,9 +8,9 @@ import Foundation
 struct ReportCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "report",
-        abstract: "Generate an aggregate HTML report from a Swift E2E aggregate run.",
+        abstract: "Generate an HTML report from a Swift E2E run.",
         discussion: """
-            Generates the static HTML index for an aggregate Swift E2E run.
+            Generates the static HTML index for a Swift E2E run.
             """
     )
 
@@ -23,7 +23,7 @@ struct ReportCommand: ParsableCommand {
     @Option(name: .long, help: "HTML report template path.")
     var template: String?
 
-    @Option(name: .long, help: "Aggregate E2E run directory. Writes index.html.")
+    @Option(name: .long, help: "Swift E2E run directory. Writes index.html.")
     var runDir: String
 
     mutating func run() throws {
@@ -37,24 +37,24 @@ struct ReportCommand: ParsableCommand {
                 .path
         )
         let runURL = URL(fileURLWithPath: runDir, isDirectory: true)
-        guard try isAggregateRunDirectory(runURL) else {
-            throw ValidationError("Report input must be a Swift E2E aggregate directory: \(runURL.path)")
+        guard try isRunDirectory(runURL) else {
+            throw ValidationError("Report input must be a Swift E2E run directory: \(runURL.path)")
         }
 
         let outputURL = runURL.appendingPathComponent("index.html")
         let records = try loadRecords(in: runURL)
-        let aiReviews = try loadAggregateAIReviews(in: runURL)
-        let testResults = try loadAggregateTestResults(in: runURL)
+        let aiReviews = try loadRunAIReviews(in: runURL)
+        let testResults = try loadRunTestResults(in: runURL)
         let files = try parseTests(
             in: testsURL,
-            recordingURL: runURL,
+            runURL: runURL,
             records: records,
             aiReviews: aiReviews,
             testResults: testResults
         )
         try renderReport(
             templateURL: templateURL,
-            recordingURL: runURL,
+            runURL: runURL,
             files: files,
             aiReviews: aiReviews,
             outputURL: outputURL
@@ -80,7 +80,7 @@ private struct TestResultKey: Hashable {
     var name: String
 }
 
-private struct AggregatePathKey: Hashable {
+private struct RunPathKey: Hashable {
     var suiteKey: String
     var testKey: String
 }
@@ -111,7 +111,9 @@ private struct ReportTestDurationRange {
         let maxPercent = durationBarPercent(seconds: maxSeconds)
         if minPercent == maxPercent {
             let markerWidth = 2.0
-            return percentString(Swift.min(Swift.max(minPercent - (markerWidth / 2), 0), 100 - markerWidth))
+            return percentString(
+                Swift.min(Swift.max(minPercent - (markerWidth / 2), 0), 100 - markerWidth)
+            )
         }
         return percentString(minPercent)
     }
@@ -145,7 +147,7 @@ private struct ReportTestDurationRange {
     }
 }
 
-private struct ReportAggregateTestResult {
+private struct ReportRunTestResult {
     var targetOutcomes: ReportTargetOutcomeCounts
     var durationRange: ReportTestDurationRange?
     var observations: [ReportTestObservation]
@@ -317,10 +319,10 @@ private struct AIReview {
     var detailsPath: String?
 }
 
-private struct AggregateAIReviews {
+private struct RunAIReviews {
     var root: AIReview?
     var suites: [String: AIReview] = [:]
-    var tests: [AggregatePathKey: AIReview] = [:]
+    var tests: [RunPathKey: AIReview] = [:]
 }
 
 private struct ReportTestFile {
@@ -338,38 +340,39 @@ private func defaultTestsDir(packageURL: URL) -> URL {
     return packageURL.appendingPathComponent("Tests")
 }
 
-private func loadRecords(in recordingURL: URL) throws -> [String: [CommandRun]] {
-    let recordURLs = try commandRecordURLs(in: recordingURL)
+private func loadRecords(in runURL: URL) throws -> [String: [CommandRun]] {
+    let recordURLs = try commandRecordURLs(in: runURL)
 
     var records: [String: [CommandRun]] = [:]
     for recordURL in recordURLs {
-        records[recordKey(for: recordURL, relativeTo: recordingURL), default: []] += try parseRecord(
-            at: recordURL,
-            relativeTo: recordingURL
-        )
+        records[recordKey(for: recordURL, relativeTo: runURL), default: []] +=
+            try parseRecord(
+                at: recordURL,
+                relativeTo: runURL
+            )
     }
     return records
 }
 
-private func loadAggregateAIReviews(in aggregateURL: URL) throws -> AggregateAIReviews {
-    guard FileManager.default.fileExists(atPath: aggregateURL.path) else {
-        return AggregateAIReviews()
+private func loadRunAIReviews(in runURL: URL) throws -> RunAIReviews {
+    guard FileManager.default.fileExists(atPath: runURL.path) else {
+        return RunAIReviews()
     }
 
-    var reviews = AggregateAIReviews(
+    var reviews = RunAIReviews(
         root: try loadAIReview(
-            summaryURL: aggregateURL.appendingPathComponent("review.summary.md"),
-            detailsURL: aggregateURL.appendingPathComponent("review.details.md"),
-            aggregateURL: aggregateURL
+            summaryURL: runURL.appendingPathComponent("review.summary.md"),
+            detailsURL: runURL.appendingPathComponent("review.details.md"),
+            runURL: runURL
         )
     )
 
-    for suiteURL in try directoryChildren(of: aggregateURL) {
+    for suiteURL in try directoryChildren(of: runURL) {
         let suiteKey = suiteURL.lastPathComponent
         if let suiteReview = try loadAIReview(
             summaryURL: suiteURL.appendingPathComponent("review.summary.md"),
             detailsURL: suiteURL.appendingPathComponent("review.details.md"),
-            aggregateURL: aggregateURL
+            runURL: runURL
         ) {
             reviews.suites[suiteKey] = suiteReview
         }
@@ -379,9 +382,9 @@ private func loadAggregateAIReviews(in aggregateURL: URL) throws -> AggregateAIR
             if let testReview = try loadAIReview(
                 summaryURL: testURL.appendingPathComponent("review.summary.md"),
                 detailsURL: testURL.appendingPathComponent("review.details.md"),
-                aggregateURL: aggregateURL
+                runURL: runURL
             ) {
-                reviews.tests[AggregatePathKey(suiteKey: suiteKey, testKey: testKey)] = testReview
+                reviews.tests[RunPathKey(suiteKey: suiteKey, testKey: testKey)] = testReview
             }
         }
     }
@@ -389,7 +392,7 @@ private func loadAggregateAIReviews(in aggregateURL: URL) throws -> AggregateAIR
     return reviews
 }
 
-private func loadAIReview(summaryURL: URL, detailsURL: URL, aggregateURL: URL) throws -> AIReview? {
+private func loadAIReview(summaryURL: URL, detailsURL: URL, runURL: URL) throws -> AIReview? {
     guard FileManager.default.fileExists(atPath: summaryURL.path) else {
         return nil
     }
@@ -410,7 +413,7 @@ private func loadAIReview(summaryURL: URL, detailsURL: URL, aggregateURL: URL) t
 
     return AIReview(
         markdown: review,
-        detailsPath: relativePath(from: aggregateURL, to: detailsURL)
+        detailsPath: relativePath(from: runURL, to: detailsURL)
     )
 }
 
@@ -429,17 +432,17 @@ private func containsAIReviewStatusLine(_ markdown: String) -> Bool {
     }
 }
 
-private func commandRecordURLs(in recordingURL: URL) throws -> [URL] {
-    guard FileManager.default.fileExists(atPath: recordingURL.path) else {
+private func commandRecordURLs(in runURL: URL) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: runURL.path) else {
         return []
     }
 
-    return try aggregateObservationFileURLs(in: recordingURL, fileName: "recording.md")
+    return try runObservationFileURLs(in: runURL, fileName: "recording.md")
 }
 
-private func recordKey(for recordURL: URL, relativeTo recordingURL: URL) -> String {
+private func recordKey(for recordURL: URL, relativeTo runURL: URL) -> String {
     if recordURL.lastPathComponent == "recording.md" {
-        let relative = relativePath(from: recordingURL, to: recordURL)
+        let relative = relativePath(from: runURL, to: recordURL)
         let components = relative.split(separator: "/").map(String.init)
         if components.count >= 2 {
             return "\(components[0]).\(components[1])"
@@ -459,7 +462,7 @@ private func relativePath(from baseURL: URL, to url: URL) -> String {
     return String(path.dropFirst(prefix.count))
 }
 
-private func parseRecord(at recordURL: URL, relativeTo recordingURL: URL) throws -> [CommandRun] {
+private func parseRecord(at recordURL: URL, relativeTo runURL: URL) throws -> [CommandRun] {
     let text = try String(contentsOf: recordURL, encoding: .utf8)
     var commands: [CommandRun] = []
 
@@ -468,7 +471,7 @@ private func parseRecord(at recordURL: URL, relativeTo recordingURL: URL) throws
         let sourceLine =
             Int(firstMatch(#"- Source: `([^`]+):(\d+)`"#, in: part, group: 2) ?? "") ?? -1
         var command = CommandRun(
-            record: relativePath(from: recordingURL, to: recordURL),
+            record: relativePath(from: runURL, to: recordURL),
             sourcePath: sourcePath,
             sourceFile: sourcePath.isEmpty
                 ? "" : URL(fileURLWithPath: sourcePath).lastPathComponent,
@@ -490,7 +493,7 @@ private func fenced(label: String, in text: String) -> String {
     firstMatch("### \(label)\\n\\n```text\\n([\\s\\S]*?)\\n```", in: text) ?? ""
 }
 
-private func isAggregateRunDirectory(_ runURL: URL) throws -> Bool {
+private func isRunDirectory(_ runURL: URL) throws -> Bool {
     let infoURL = runURL.appendingPathComponent("info.json")
     guard FileManager.default.fileExists(atPath: infoURL.path) else {
         return false
@@ -499,7 +502,7 @@ private func isAggregateRunDirectory(_ runURL: URL) throws -> Bool {
     let data = try Data(contentsOf: infoURL)
     guard
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-        object["kind"] as? String == "swift-e2e-aggregate"
+        object["kind"] as? String == "swift-e2e-run"
     else {
         return false
     }
@@ -519,21 +522,23 @@ private func parseXUnitResults(at resultURL: URL) throws -> [TestResultKey: Repo
     return parser.results
 }
 
-private func loadAggregateTestResults(in aggregateURL: URL) throws -> [AggregatePathKey: ReportAggregateTestResult] {
-    var observed: [AggregatePathKey: [String: [ReportTestStatus]]] = [:]
-    var durations: [AggregatePathKey: [Double]] = [:]
-    var observations: [AggregatePathKey: [ReportTestObservation]] = [:]
+private func loadRunTestResults(
+    in runURL: URL
+) throws -> [RunPathKey: ReportRunTestResult] {
+    var observed: [RunPathKey: [String: [ReportTestStatus]]] = [:]
+    var durations: [RunPathKey: [Double]] = [:]
+    var observations: [RunPathKey: [ReportTestObservation]] = [:]
 
-    for suiteURL in try directoryChildren(of: aggregateURL) {
+    for suiteURL in try directoryChildren(of: runURL) {
         let suiteKey = suiteURL.lastPathComponent
         for testURL in try directoryChildren(of: suiteURL) {
             let testKey = testURL.lastPathComponent
-            let pathKey = AggregatePathKey(suiteKey: suiteKey, testKey: testKey)
+            let pathKey = RunPathKey(suiteKey: suiteKey, testKey: testKey)
             for targetURL in try directoryChildren(of: testURL) {
                 let targetName = targetURL.lastPathComponent
                 for attemptURL in try directoryChildren(of: targetURL) {
                     let attemptName = attemptURL.lastPathComponent
-                    let status = try aggregateObservationStatus(
+                    let status = try runObservationStatus(
                         suiteKey: suiteKey,
                         testKey: testKey,
                         attemptURL: attemptURL
@@ -548,12 +553,12 @@ private func loadAggregateTestResults(in aggregateURL: URL) throws -> [Aggregate
                             recordingPath: observationFilePath(
                                 fileName: "recording.md",
                                 attemptURL: attemptURL,
-                                aggregateURL: aggregateURL
+                                runURL: runURL
                             ),
                             shellPath: observationFilePath(
                                 fileName: "recording.sh.txt",
                                 attemptURL: attemptURL,
-                                aggregateURL: aggregateURL
+                                runURL: runURL
                             )
                         )
                     )
@@ -566,31 +571,33 @@ private func loadAggregateTestResults(in aggregateURL: URL) throws -> [Aggregate
     }
 
     let keys = Set(observed.keys).union(durations.keys).union(observations.keys)
-    return Dictionary(uniqueKeysWithValues: keys.map { key in
-        var counts = ReportTargetOutcomeCounts()
-        for statuses in observed[key, default: [:]].values {
-            counts.add(targetOutcome(for: statuses))
-        }
-        return (
-            key,
-            ReportAggregateTestResult(
-                targetOutcomes: counts,
-                durationRange: ReportTestDurationRange(durations[key, default: []]),
-                observations: observations[key, default: []].sorted(by: observationSort)
+    return Dictionary(
+        uniqueKeysWithValues: keys.map { key in
+            var counts = ReportTargetOutcomeCounts()
+            for statuses in observed[key, default: [:]].values {
+                counts.add(targetOutcome(for: statuses))
+            }
+            return (
+                key,
+                ReportRunTestResult(
+                    targetOutcomes: counts,
+                    durationRange: ReportTestDurationRange(durations[key, default: []]),
+                    observations: observations[key, default: []].sorted(by: observationSort)
+                )
             )
-        )
-    })
+        }
+    )
 }
 
-private func observationFilePath(fileName: String, attemptURL: URL, aggregateURL: URL) -> String? {
+private func observationFilePath(fileName: String, attemptURL: URL, runURL: URL) -> String? {
     let fileURL = attemptURL.appendingPathComponent(fileName)
     guard FileManager.default.fileExists(atPath: fileURL.path) else {
         return nil
     }
-    return relativePath(from: aggregateURL, to: fileURL)
+    return relativePath(from: runURL, to: fileURL)
 }
 
-private func aggregateObservationStatus(
+private func runObservationStatus(
     suiteKey: String,
     testKey: String,
     attemptURL: URL
@@ -613,13 +620,13 @@ private func observationSort(_ lhs: ReportTestObservation, _ rhs: ReportTestObse
     return lhs.attempt < rhs.attempt
 }
 
-private func aggregateObservationFileURLs(in aggregateURL: URL, fileName: String) throws -> [URL] {
-    guard FileManager.default.fileExists(atPath: aggregateURL.path) else {
+private func runObservationFileURLs(in runURL: URL, fileName: String) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: runURL.path) else {
         return []
     }
 
     var urls: [URL] = []
-    for suiteURL in try directoryChildren(of: aggregateURL) {
+    for suiteURL in try directoryChildren(of: runURL) {
         for testURL in try directoryChildren(of: suiteURL) {
             for targetURL in try directoryChildren(of: testURL) {
                 for attemptURL in try directoryChildren(of: targetURL) {
@@ -890,10 +897,10 @@ private func stripBackticks(_ value: String) -> String {
 
 private func parseTests(
     in testsURL: URL,
-    recordingURL: URL,
+    runURL: URL,
     records: [String: [CommandRun]],
-    aiReviews: AggregateAIReviews,
-    testResults: [AggregatePathKey: ReportAggregateTestResult]
+    aiReviews: RunAIReviews,
+    testResults: [RunPathKey: ReportRunTestResult]
 ) throws -> [ReportTestFile] {
     let sourceURLs = try swiftTestFiles(in: testsURL)
     var files: [ReportTestFile] = []
@@ -951,14 +958,14 @@ private func parseTests(
             let nestedRecordName = "\(recordSuiteKey)/\(recordTestKey)/recording.md"
             if records[recordKey] != nil,
                 FileManager.default.fileExists(
-                    atPath: recordingURL.appendingPathComponent(directRecordName).path
+                    atPath: runURL.appendingPathComponent(directRecordName).path
                 )
             {
                 tests[testIndex].recordName = directRecordName
             } else {
                 tests[testIndex].recordName = nestedRecordName
             }
-            let key = AggregatePathKey(suiteKey: recordSuiteKey, testKey: recordTestKey)
+            let key = RunPathKey(suiteKey: recordSuiteKey, testKey: recordTestKey)
             tests[testIndex].aiReview = aiReviews.tests[key]
             tests[testIndex].commands = records[recordKey, default: []].filter {
                 command in
@@ -1042,9 +1049,9 @@ private func extractAIItems(from lines: [String]) -> [String] {
 
 private func renderReport(
     templateURL: URL,
-    recordingURL: URL,
+    runURL: URL,
     files: [ReportTestFile],
-    aiReviews: AggregateAIReviews,
+    aiReviews: RunAIReviews,
     outputURL: URL
 ) throws {
     let tests = files.flatMap(\.tests)
@@ -1073,7 +1080,7 @@ private func renderReport(
         throw ValidationError("Report template does not contain expected card/footer markers.")
     }
 
-    let reviewHTML = renderAggregateAIReview(aiReviews.root)
+    let reviewHTML = renderRunAIReview(aiReviews.root)
     let testCards = renderCards(files: files)
 
     template.replaceSubrange(
@@ -1085,7 +1092,7 @@ private func renderReport(
         "{{REPORT_TITLE}}": "Wendy E2E Report",
         "{{REPORT_HEADING}}": "Wendy E2E Report",
         "{{REPORT_SUMMARY}}":
-            "Generated from aggregated Swift E2E runs, Swift Testing results, and captured command recordings.",
+            "Generated from Swift E2E run results, Swift Testing results, and captured command recordings.",
         "{{RUN_ID}}": runID(outputURL: outputURL),
         "{{TESTS_PASSED_COUNT}}": String(passed),
         "{{TESTS_FLAKED_COUNT}}": String(flaked),
@@ -1095,7 +1102,7 @@ private func renderReport(
         "{{COMMAND_RUN_COUNT}}": String(commandCount),
         "{{VISIBLE_TEST_COUNT}}": String(total),
         "{{TOTAL_TEST_COUNT}}": String(total),
-        "{{RECORDING_DIRECTORY}}": recordingURL.path,
+        "{{RUN_DIRECTORY}}": runURL.path,
     ]
     let rawPlaceholders: Set<String> = [
         "{{REPORT_TITLE}}",
@@ -1136,19 +1143,32 @@ private func runID(outputURL: URL) -> String {
     outputURL.deletingLastPathComponent().lastPathComponent
 }
 
-private func renderAggregateAIReview(_ review: AIReview?) -> String {
-    renderScopedAIReview(review, className: "ai-review-inline ai-review-report", heading: "AI report review")
+private func renderRunAIReview(_ review: AIReview?) -> String {
+    renderScopedAIReview(
+        review,
+        className: "ai-review-inline ai-review-report",
+        heading: "AI report review"
+    )
 }
 
 private func renderSuiteAIReview(_ review: AIReview?) -> String {
-    renderScopedAIReview(review, className: "ai-review-inline ai-review-suite", heading: "AI suite review")
+    renderScopedAIReview(
+        review,
+        className: "ai-review-inline ai-review-suite",
+        heading: "AI suite review"
+    )
 }
 
 private func renderTestAIReview(_ review: AIReview?) -> String {
-    renderScopedAIReview(review, className: "ai-review-inline ai-review-test", heading: "AI test review")
+    renderScopedAIReview(
+        review,
+        className: "ai-review-inline ai-review-test",
+        heading: "AI test review"
+    )
 }
 
-private func renderScopedAIReview(_ review: AIReview?, className: String, heading: String) -> String {
+private func renderScopedAIReview(_ review: AIReview?, className: String, heading: String) -> String
+{
     guard let review else {
         return ""
     }
@@ -1193,7 +1213,7 @@ private func renderCards(files: [ReportTestFile]) -> String {
                 "<details class=\"test-details\" data-test-status=\"\(statusClass)\" data-test-statuses=\"\(escapeHTML(statusClasses))\" data-has-ai=\"\(hasAI)\" data-has-ai-review=\"\(hasAIReview)\">"
             )
             cards.append(
-                "<summary class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span>\(outcomeBadges)\(aiBadge)</span>\(aggregateDurationBadge(test.durationRange))<span class=\"report-links\"></span></summary>"
+                "<summary class=\"test-summary\"><span class=\"test-title\"><span class=\"test-path\">\(escapeHTML(pathText))</span>\(outcomeBadges)\(aiBadge)</span>\(runDurationBadge(test.durationRange))<span class=\"report-links\"></span></summary>"
             )
             cards.append(renderObservations(test.observations, aiReview: test.aiReview))
             cards.append("</details>")
@@ -1225,9 +1245,13 @@ private func renderTargetOutcomeBadges(_ counts: ReportTargetOutcomeCounts) -> S
     }.joined()
 }
 
-private func renderObservations(_ observations: [ReportTestObservation], aiReview: AIReview?) -> String {
+private func renderObservations(
+    _ observations: [ReportTestObservation],
+    aiReview: AIReview?
+) -> String {
     guard !observations.isEmpty else {
-        return "<div class=\"test-body\"><p class=\"note\">No concrete observations were found for this test.</p>\(renderTestAIReview(aiReview))</div>"
+        return
+            "<div class=\"test-body\"><p class=\"note\">No concrete observations were found for this test.</p>\(renderTestAIReview(aiReview))</div>"
     }
 
     var chunks: [String] = [
@@ -1240,7 +1264,8 @@ private func renderObservations(_ observations: [ReportTestObservation], aiRevie
         let isFirstTargetRow = observation.target != previousTarget
         previousTarget = observation.target
         let target = isFirstTargetRow ? escapeHTML(observation.target) : ""
-        let route = isFirstTargetRow ? renderTargetRoute(observation.route, title: observation.target) : ""
+        let route =
+            isFirstTargetRow ? renderTargetRoute(observation.route, title: observation.target) : ""
         let rowClass = isFirstTargetRow ? "observation-row" : "observation-row same-target"
         chunks.append(
             "<div class=\"\(rowClass)\"><span class=\"observation-route-cell\">\(route)</span><span class=\"observation-target\">\(target)</span><span class=\"observation-spacer\" aria-hidden=\"true\"></span>\(renderObservationLinks(observation))<span class=\"observation-attempt\">\(escapeHTML(observation.attempt))</span><span class=\"badge \(observation.status.statusClass)\">\(observation.status.statusText)</span>\(observationDurationBadge(observation.duration))</div>"
@@ -1269,8 +1294,10 @@ private func renderObservationLinks(_ observation: ReportTestObservation) -> Str
 private func renderTargetRoute(_ route: TargetRoute, title: String) -> String {
     let cli = "<span class=\"target-route-cli\">\(renderTargetLogo(route.cli))</span>"
     let arrow = "<span class=\"target-route-arrow\" aria-hidden=\"true\">›</span>"
-    let agent = "<span class=\"target-route-agent\">\(route.agent.map(renderTargetLogo) ?? "")</span>"
-    return "<span class=\"target-route\" title=\"\(escapeHTML(title))\">\(cli)\(arrow)\(agent)</span>"
+    let agent =
+        "<span class=\"target-route-agent\">\(route.agent.map(renderTargetLogo) ?? "")</span>"
+    return
+        "<span class=\"target-route\" title=\"\(escapeHTML(title))\">\(cli)\(arrow)\(agent)</span>"
 }
 
 private func targetRoute(for target: String, attemptURL: URL) throws -> TargetRoute {
@@ -1352,7 +1379,8 @@ private func targetPlatformForOS(_ value: String) -> TargetPlatform {
     if normalized.contains("windows") || normalized == "win" {
         return .windows
     }
-    if normalized.contains("linux") || normalized.contains("ubuntu") || normalized.contains("debian")
+    if normalized.contains("linux") || normalized.contains("ubuntu")
+        || normalized.contains("debian")
         || normalized.contains("wendyos")
     {
         return .linux
@@ -1383,7 +1411,9 @@ private func targetPlatform(for value: String) -> TargetPlatform {
     if normalized.contains("windows") || normalized.contains("win") {
         return .windows
     }
-    if normalized.contains("linux") || normalized.contains("ubuntu") || normalized.contains("debian") {
+    if normalized.contains("linux") || normalized.contains("ubuntu")
+        || normalized.contains("debian")
+    {
         return .linux
     }
     return .unknown
@@ -1456,18 +1486,22 @@ private enum TargetPlatform {
 
 private func observationDurationBadge(_ duration: ReportTestDuration?) -> String {
     guard let duration else {
-        return "<span class=\"badge duration empty\" aria-hidden=\"true\"><span class=\"duration-bar\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\"></span></span>"
+        return
+            "<span class=\"badge duration empty\" aria-hidden=\"true\"><span class=\"duration-bar\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\"></span></span>"
     }
 
-    return "<span class=\"badge duration\" title=\"Test duration: \(escapeHTML(duration.formatted))\" style=\"--duration-bar-color: \(duration.color); --duration-bar-width: \(duration.barWidth)\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">\(escapeHTML(duration.formatted))</span></span>"
+    return
+        "<span class=\"badge duration\" title=\"Test duration: \(escapeHTML(duration.formatted))\" style=\"--duration-bar-color: \(duration.color); --duration-bar-width: \(duration.barWidth)\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">\(escapeHTML(duration.formatted))</span></span>"
 }
 
-private func aggregateDurationBadge(_ duration: ReportTestDurationRange?) -> String {
+private func runDurationBadge(_ duration: ReportTestDurationRange?) -> String {
     guard let duration else {
-        return "<span class=\"badge duration empty\" aria-hidden=\"true\"><span class=\"duration-bar\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\"></span></span>"
+        return
+            "<span class=\"badge duration empty\" aria-hidden=\"true\"><span class=\"duration-bar\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\"></span></span>"
     }
 
-    return "<span class=\"badge duration\" title=\"Test duration: \(escapeHTML(duration.formatted))\" style=\"--duration-bar-left: \(duration.barLeft); --duration-bar-width: \(duration.barWidth); --duration-bar-color: \(duration.barColor)\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">\(escapeHTML(duration.formatted))</span></span>"
+    return
+        "<span class=\"badge duration\" title=\"Test duration: \(escapeHTML(duration.formatted))\" style=\"--duration-bar-left: \(duration.barLeft); --duration-bar-width: \(duration.barWidth); --duration-bar-color: \(duration.barColor)\"><span class=\"duration-bar\" aria-hidden=\"true\"><span class=\"duration-bar-fill\"></span></span><span class=\"duration-value\">\(escapeHTML(duration.formatted))</span></span>"
 }
 
 private func renderAIReviewBadge() -> String {

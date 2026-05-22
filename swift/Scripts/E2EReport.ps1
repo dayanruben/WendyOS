@@ -31,7 +31,7 @@ $script:RunDir = Resolve-E2EPath $RunDir -Existing
 $PackageDir = Resolve-E2EPath $PackageDir -Existing
 $ReportPath = Join-Path $script:RunDir 'index.html'
 
-Write-Output '==> Rendering Swift E2E aggregate HTML report'
+Write-Output '==> Rendering Swift E2E HTML report'
 Write-Output "    Package: $PackageDir"
 Write-Output "    Run dir: $script:RunDir"
 Write-Output "    Output:  $ReportPath"
@@ -66,10 +66,10 @@ try {
 }
 
 if ($reportStatus -eq 0 -and (Test-Path -LiteralPath $ReportPath)) {
-    Write-Output "==> Wrote Swift E2E aggregate HTML report: $ReportPath"
+    Write-Output "==> Wrote Swift E2E HTML report: $ReportPath"
     exit 0
 }
 
 $failureStatus = if ($reportStatus -eq 0) { 1 } else { $reportStatus }
-Write-Error 'ERROR: Swift E2E aggregate HTML report generation failed.'
+Write-Error 'ERROR: Swift E2E HTML report generation failed.'
 exit $failureStatus

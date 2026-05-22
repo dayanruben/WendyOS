@@ -1,150 +1,90 @@
 ---
 name: run-e2e-tests-and-analyze
-description: Run WendyAgent Swift E2E tests and analyze AI review instructions against generated command records. Use when asked to run E2E tests, inspect E2E records, evaluate `// AI:` comments, or produce AI review results for WendyAgent E2E tests.
+description: Run WendyAgent Swift E2E attempts, aggregate them into a run, review // AI: comments, and render the HTML report.
 ---
 
-# Run E2E Tests and Analyze Records
+# Run Swift E2E Tests and Analyze the Run
 
-Use this skill in the `wendy-agent` repository when asked to run Swift E2E
-tests and evaluate the `// AI:` review instructions in test files.
+Use this skill in the `wendy-agent` repository when asked to run Swift E2E tests,
+inspect E2E recordings, evaluate `// AI:` comments, or produce AI review results.
 
-## Run the Tests
+Terminology:
 
-From the repository root, run the Swift E2E package:
+- **attempt**: one raw target execution produced by the test harness.
+- **run**: the canonical merged result directory produced from one or more
+  attempts.
+- **report**: `index.html` rendered inside the run directory.
+
+## Common Local Workflow
+
+From `swift/WendyE2ETests`:
 
 ```bash
-cd swift/WendyAgentE2ETests
-swift test --filter WendyAgentE2ETests
+make e2e-test
+make e2e-analyze
 ```
 
-For a fresh, easy-to-find record location, prefer setting
-`WENDY_AGENT_E2E_TEST_RECORDS_DIR` to an explicit directory:
+Or run the stages separately:
 
 ```bash
-cd swift/WendyAgentE2ETests
-WENDY_AGENT_E2E_TEST_RECORDS_DIR="$PWD/.build/e2e-test-records.current" swift test --filter WendyAgentE2ETests
+make e2e-aggregate
+make e2e-review
+make e2e-report
 ```
 
-When `WENDY_AGENT_E2E_TEST_RECORDS_DIR` is set, record files are written
-directly into that directory. The harness empties the directory before writing
-records for the test process.
+The analysis step aggregates matching attempts into a run, reviews the run, and
+renders the report.
 
-Without `WENDY_AGENT_E2E_TEST_RECORDS_DIR`, the harness writes records to a
-timestamped UTC directory:
+## Direct Script Workflow
+
+From `swift/`:
+
+```bash
+Scripts/E2ETest.sh --run-id <attempt-id>
+Scripts/E2EAnalyze.sh --run-id <run-id>
+```
+
+`Scripts/E2EAnalyze.sh` discovers attempt directories, aggregates them into the
+matching run directory, runs AI review, and renders `index.html`.
+
+## AI Review
+
+`Scripts/E2EReview.sh --run-dir <run-dir>` invokes `swift-e2e-testing review`.
+The reviewer reads source `// AI:` comments, failed attempt observations,
+recordings, xUnit results, and existing run artifacts. It writes paired review
+files only for actionable findings:
 
 ```text
-swift/WendyAgentE2ETests/.build/e2e-test-records.YYYY-MM-DD.HH-MM-SS/
+<run>/review.summary.md
+<run>/review.details.md
+<run>/<suite>/review.summary.md
+<run>/<suite>/review.details.md
+<run>/<suite>/<test>/review.summary.md
+<run>/<suite>/<test>/review.details.md
 ```
 
-## Generate the HTML Report
+Passing or purely informational items should not produce review files.
 
-A helper script in this skill folder appends AI review sections to matching
-Markdown command records and renders the HTML report from Swift test files,
-command records, and the package HTML template:
+## Report
 
-```bash
-.agents/skills/run-e2e-tests-and-analyze/render-e2e-report.py \
-  --records-dir swift/WendyAgentE2ETests/.build/e2e-test-records.current
-```
-
-By default, the script writes `index.html` into the records directory and updates
-matching `*.md` command records only when there is something noteworthy for a
-human to review. Each appended `AI review` section includes the full source
-`// AI:` comment block first, followed by a prose Markdown report. Passing,
-unsurprising checklist items should not generate a report. Existing generated AI
-review sections are replaced, so rerunning the script is idempotent. The HTML
-`AI` filter matches only tests with an actual generated report, not every test
-that merely has a `// AI:` checklist. When the `AI` filter is active, the
-Markdown report appears verbatim in a fixed-width block under each matching test
-row. Use `--no-append-ai-to-records` to render HTML without touching Markdown
-records. Use `--include-fake-analysis` to add deterministic fake prose reports
-for UI testing. Override paths with `--package-dir`, `--tests-dir`, `--template`,
-`--records-dir`, and `--output` when needed.
-
-## Locate Records
-
-After the run, locate the records directory.
-
-If `WENDY_AGENT_E2E_TEST_RECORDS_DIR` was set, use that directory directly.
-Otherwise, find the newest timestamped records directory:
-
-```bash
-find swift/WendyAgentE2ETests/.build -maxdepth 1 -type d -name 'e2e-test-records.*' | sort | tail -1
-```
-
-Each test record is a Markdown file named:
+`Scripts/E2EReport.sh --run-dir <run-dir>` renders the Swift E2E HTML report at:
 
 ```text
-<TestFileNameWithoutSwift>.<test-function-slug>.md
+<run>/index.html
 ```
 
-Example:
+The report shows run, suite, and test review summaries inline and links to the
+corresponding details files.
+
+## Manual Inspection
+
+A run is laid out as:
 
 ```text
-CLIBasicsTests.wendy-version-prints-the-cli-version.md
+<run>/<suite>/<test>/<target>/<attempt>/recording.md
+<run>/<suite>/<test>/<target>/<attempt>/recording.sh.txt
+<run>/<suite>/<test>/<target>/<attempt>/test-results.xml
 ```
 
-A single test may run multiple commands; those command records are appended in
-the same file and separated with Markdown `---` rules.
-
-## Analyze Test Files One by One
-
-1. Enumerate only the WendyAgent E2E test files:
-
-   ```bash
-   find swift/WendyAgentE2ETests/Tests/WendyAgentE2ETests -name '*Tests.swift' | sort
-   ```
-
-2. Read one test file completely.
-
-3. For each `@Test` function:
-   - Find the `// AI:` checklist inside that test.
-   - If there is no `// AI:` section, skip AI evaluation for that test.
-   - Identify the matching record file in the newest records directory.
-   - Read the full record file.
-   - Compare the captured stdout/stderr and command metadata against each
-     checklist item.
-
-4. Evaluate each checklist item with status emojis:
-   - `✅ pass` — the record clearly satisfies the instruction.
-   - `⚠️ concern` — the record is ambiguous, noisy, incomplete, or surprising.
-   - `❌ fail` — the record contradicts the instruction.
-
-   Prefer these symbols over colored hearts because they are more explicit in
-   plain-text logs and easier to scan in Markdown.
-
-5. Continue test-by-test until every `// AI:` section has been evaluated.
-
-## Matching Tips
-
-- The record file name uses the test file name without `.swift` verbatim, then a
-  slug of the test function name.
-- If the exact slug is unclear, list the records and match by file prefix:
-
-  ```bash
-  find <records-dir> -maxdepth 1 -type f -name 'CLIBasicsTests.*.md' | sort
-  ```
-
-- Commands executed by setup helpers, such as `Machine+WendyAgentE2ETests`, may
-  have their own records. Treat those as setup evidence unless the test's
-  `// AI:` instructions explicitly refer to setup behavior.
-
-## Report Format
-
-Summarize results by test file and test function:
-
-```markdown
-## CLIBasicsTests.swift
-
-### 'wendy --help' describes the top-level command groups
-
-Record: `CLIBasicsTests.wendy-help-describes-the-top-level-command-groups.md`
-
-- ✅ pass: Help text is readable and well-grouped.
-- ✅ pass: Group names match the CLI docs.
-
-Notes: No stderr output was captured.
-```
-
-Include concise evidence for any `⚠️ concern` or `❌ fail`, quoting only the
-relevant record lines.
+Use `recording.md` for human-readable evidence and `recording.sh.txt` to replay
+captured shell commands manually.

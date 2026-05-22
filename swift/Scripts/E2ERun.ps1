@@ -32,29 +32,29 @@ $env:WENDY_E2E_RUN_ID = $RunID
 & (Join-Path $ScriptDir 'E2ETest.ps1') @args
 $status = $LASTEXITCODE
 
-$runDir = Join-Path $OutputDir $RunID
+$attemptDir = Join-Path $OutputDir $RunID
 $runBase = $RunID -replace '\.[^.]+$', ''
-$aggregateName = $runBase -replace '\.[^.]+$', ''
-$aggregateDir = Join-Path $OutputDir $aggregateName
+$runName = $runBase -replace '\.[^.]+$', ''
+$runDir = Join-Path $OutputDir $runName
 
 Push-Location $PackageDir
 try {
-    & swift run swift-e2e-testing aggregate --output-dir $OutputDir $runDir
+    & swift run swift-e2e-testing aggregate --output-dir $OutputDir $attemptDir
     $aggregateStatus = $LASTEXITCODE
 } finally {
     Pop-Location
 }
 if ($status -eq 0 -and $aggregateStatus -ne 0) { $status = $aggregateStatus }
 
-& (Join-Path $ScriptDir 'E2EReview.ps1') --run-dir $aggregateDir
+& (Join-Path $ScriptDir 'E2EReview.ps1') --run-dir $runDir
 $reviewStatus = $LASTEXITCODE
 if ($status -eq 0 -and $reviewStatus -ne 0) { $status = $reviewStatus }
 
-& (Join-Path $ScriptDir 'E2EReport.ps1') --run-dir $aggregateDir
+& (Join-Path $ScriptDir 'E2EReport.ps1') --run-dir $runDir
 $reportStatus = $LASTEXITCODE
 if ($status -eq 0 -and $reportStatus -ne 0) { $status = $reportStatus }
 
-$reportPath = Join-Path $aggregateDir 'index.html'
+$reportPath = Join-Path $runDir 'index.html'
 if (Test-Path -LiteralPath $reportPath) {
     Start-Process $reportPath
 } else {

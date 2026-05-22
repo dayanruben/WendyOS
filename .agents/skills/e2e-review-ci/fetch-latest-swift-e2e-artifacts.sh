@@ -2,7 +2,7 @@
 set -euo pipefail
 
 WORKFLOW="${WORKFLOW:-swift-e2e-tests.yml}"
-ARTIFACT_PATTERN="${ARTIFACT_PATTERN:-wendy-e2e-*}"
+ARTIFACT_PATTERN="${ARTIFACT_PATTERN:-swift-e2e-tests.*.run.*}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-swift/Build/e2e-ci-review}"
 BRANCH="${BRANCH:-}"
 REPO="${REPO:-}"
@@ -16,7 +16,7 @@ the current branch/PR.
 
 Environment:
   WORKFLOW          Workflow name or file; defaults to swift-e2e-tests.yml.
-  ARTIFACT_PATTERN  Artifact glob; defaults to wendy-e2e-*.
+  ARTIFACT_PATTERN  Artifact glob; defaults to swift-e2e-tests.*.run.*.
   BRANCH            Branch override.
   REPO              GitHub repository override (OWNER/REPO).
   OUTPUT_ROOT       Output root; defaults to swift/Build/e2e-ci-review.

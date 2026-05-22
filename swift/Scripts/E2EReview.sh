@@ -14,19 +14,18 @@ EXTRA_ARGS=()
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --run-dir AGGREGATE_DIR [OPTIONS]
+Usage: $(basename "$0") --run-dir RUN_DIR [OPTIONS]
 
-Review WendyAgent Swift E2E aggregate artifacts with Claude Code or Codex.
+Review WendyAgent Swift E2E run artifacts with Claude Code or Codex.
 
 Options:
-  --run-dir DIR      Required E2E aggregate directory produced by E2EAggregate.sh.
+  --run-dir DIR      Required E2E run directory produced by E2EAggregate.sh.
   --package-dir DIR  Swift package directory containing swift-e2e-testing;
                      defaults to $DEFAULT_PACKAGE_DIR.
   --provider NAME    AI agent: auto, claude, codex, or none; defaults to auto.
-                    Legacy aliases claude-code/anthropic and openai are accepted.
   --model NAME       Provider model override. Use latest/default to let the
                      agent CLI choose its default model.
-  --overwrite        Overwrite existing aggregate review files.
+  --overwrite        Overwrite existing run review files.
   --help             Show this help message.
 
 Environment:
@@ -122,7 +121,7 @@ review_single_run() {
   fi
   command_args+=("${EXTRA_ARGS[@]}")
 
-  echo "==> Reviewing Swift E2E aggregate results"
+  echo "==> Reviewing Swift E2E run results"
   echo "    Package:  $PACKAGE_DIR"
   echo "    Run dir:  $run_dir"
   echo "    Provider: $PROVIDER"
