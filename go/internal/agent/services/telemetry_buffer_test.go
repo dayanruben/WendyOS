@@ -25,8 +25,12 @@ func writeFrameTo(t *testing.T, path string, msg proto.Message) {
 	defer f.Close()
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(data)))
-	f.Write(hdr[:])
-	f.Write(data)
+	if _, err := f.Write(hdr[:]); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
 }
 
 func TestSegmentFilename(t *testing.T) {
@@ -114,7 +118,10 @@ func TestReadFramesFrom_MaxN(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		writeFrameTo(t, path, entry)
 	}
-	msgs, _, _ := readFramesFrom(path, 0, SignalLogs, 3)
+	msgs, _, err := readFramesFrom(path, 0, SignalLogs, 3)
+	if err != nil {
+		t.Fatalf("readFramesFrom: %v", err)
+	}
 	if len(msgs) != 3 {
 		t.Errorf("want 3 messages (maxN respected), got %d", len(msgs))
 	}

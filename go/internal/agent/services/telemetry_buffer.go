@@ -22,6 +22,8 @@ const (
 	SignalTraces  SignalType = "traces"
 )
 
+const maxSegmentFrameBytes = 10 * 1024 * 1024
+
 // segmentFilename returns the filename for a segment file, e.g. "logs-000001.bin".
 func segmentFilename(signal SignalType, seqNum int) string {
 	return fmt.Sprintf("%s-%06d.bin", signal, seqNum)
@@ -63,7 +65,7 @@ func newProtoForSignal(signal SignalType) proto.Message {
 // readFramesFrom reads up to maxN length-prefixed protobuf frames from path
 // starting at startOffset. Returns the decoded messages, the byte offset after
 // the last successfully read frame, and any I/O error (os.ErrNotExist included).
-// A partial or corrupted frame at the end of the file is silently skipped.
+// A partial frame or unmarshal error stops reading cleanly; no partial data is returned.
 func readFramesFrom(path string, startOffset int64, signal SignalType, maxN int) ([]proto.Message, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -81,29 +83,25 @@ func readFramesFrom(path string, startOffset int64, signal SignalType, maxN int)
 	var msgs []proto.Message
 
 	for len(msgs) < maxN {
-		var hdr [4]byte
-		if _, err := io.ReadFull(f, hdr[:]); err != nil {
-			break // EOF or partial header — stop cleanly
-		}
-		length := binary.BigEndian.Uint32(hdr[:])
-		if length > 10*1024*1024 { // sanity: skip corrupt header
-			break
-		}
-		var data []byte
-		if length > 0 {
-			data = make([]byte, length)
-			if _, err := io.ReadFull(f, data); err != nil {
-				break // partial payload — stop cleanly
-			}
-		}
+		// Allocate the destination proto first so we catch unknown signals before I/O.
 		msg := newProtoForSignal(signal)
 		if msg == nil {
 			break
 		}
+		var hdr [4]byte
+		if _, err := io.ReadFull(f, hdr[:]); err != nil {
+			break
+		}
+		length := binary.BigEndian.Uint32(hdr[:])
+		if length > maxSegmentFrameBytes {
+			break
+		}
+		data := make([]byte, length)
+		if _, err := io.ReadFull(f, data); err != nil {
+			break
+		}
 		if err := proto.Unmarshal(data, msg); err != nil {
-			// Corrupted frame: skip it and keep reading.
-			offset += int64(4 + length)
-			continue
+			break // corrupted frame — stop reading this file cleanly
 		}
 		msgs = append(msgs, msg)
 		offset += int64(4 + length)
