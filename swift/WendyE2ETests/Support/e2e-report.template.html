@@ -1300,7 +1300,7 @@
       <span class="filter-count" data-filter-count>{{VISIBLE_TEST_COUNT}} of {{TOTAL_TEST_COUNT}} tests shown</span>
     </section>
 
-    <!-- Repeat this .card section once per test file. Use prose display names, e.g. WendyAnalyticsTests.swift → Wendy Analytics. Set data-has-ai-review to true when the suite/file has generated AI review notes. -->
+    <!-- Repeat this .card section once per test file. Use prose display names, e.g. WendyAnalyticsTests.swift → Wendy Analytics. Set data-has-ai-review to true when the suite/file has generated AI review issues. -->
     <section class="card" data-test-file-card data-has-ai-review="{{SUITE_HAS_AI_REVIEW}}">
       <div class="card-title">
         <h2>{{TEST_FILE_DISPLAY_NAME}}</h2>
@@ -1308,7 +1308,7 @@
 
       <!-- Repeat this .suite-group once per suite in the file. Do not add a visible suite heading; the suite appears in each test sentence. -->
       <div class="suite-group">
-        <!-- Repeat this details.test-details once per test function in the suite. Set data-has-ai to true when // AI: checklist items are present, and data-has-ai-review to true only when a generated Markdown report needs human review. Render TEST_AI_BADGE only when generated AI review notes exist. -->
+        <!-- Repeat this details.test-details once per test function in the suite. Set data-has-ai to true when // AI: checklist items are present, and data-has-ai-review to true only when generated AI review issues need human review. Render TEST_AI_BADGE only when generated AI review issues exist. -->
         <details class="test-details" data-test-status="{{TEST_STATUS_CLASS}}" data-has-ai="{{TEST_HAS_AI}}" data-has-ai-review="{{TEST_HAS_AI_REVIEW}}">
           <summary class="test-summary">
             <span class="test-title"><span class="test-path">{{TEST_PATH_TEXT}}</span><span class="badge {{TEST_STATUS_CLASS}}">{{TEST_STATUS_TEXT}}</span></span><span class="badge duration" style="--duration-bar-color: {{TEST_DURATION_BAR_COLOR}}; --duration-bar-width: {{TEST_DURATION_BAR_WIDTH}}"><span class="duration-bar" aria-hidden="true"><span class="duration-bar-fill"></span></span><span class="duration-value">{{TEST_DURATION}}</span></span>{{TEST_AI_BADGE}}<span class="report-links">{{TEST_REPORT_LINK}}</span>{{TEST_AI_FILTER_ANALYSIS}}

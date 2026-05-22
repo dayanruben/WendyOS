@@ -16,7 +16,7 @@ struct E2EReviewMetadata: Codable, Sendable {
     var title: String
     var scope: String
     var reviewer: String
-    var severity: E2EReviewSeverity?
+    var severity: E2EReviewSeverity
     var confidence: String?
     var locations: [E2EReviewLocation]?
     var evidence: [E2EReviewEvidence]?
@@ -178,9 +178,6 @@ func parseE2EReview(
         throw ValidationError(
             "Review reviewer `\(metadata.reviewer)` does not match expected reviewer `\(expectedReviewer)`: \(url.path)"
         )
-    }
-    guard metadata.severity != nil else {
-        throw ValidationError("Review severity must be info, concern, or fail: \(url.path)")
     }
     let expectedFilename = e2eReviewSlug(title) + ".md"
     guard url.lastPathComponent == expectedFilename else {

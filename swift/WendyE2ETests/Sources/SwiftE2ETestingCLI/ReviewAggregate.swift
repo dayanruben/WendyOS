@@ -16,7 +16,7 @@ private struct E2EReviewAggregateIssue {
     var review: E2EReview
 
     var severity: E2EReviewSeverity {
-        review.metadata.severity ?? .concern
+        review.metadata.severity
     }
 }
 
