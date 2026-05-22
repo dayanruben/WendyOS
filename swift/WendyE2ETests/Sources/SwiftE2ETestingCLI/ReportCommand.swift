@@ -1103,7 +1103,7 @@ private func renderReviewAggregateLink(runURL: URL) -> String {
     guard FileManager.default.fileExists(atPath: reviewURL.path) else {
         return ""
     }
-    return " · Review: <a href=\"review.md\">review.md</a>"
+    return " · <a href=\"review.md\">review.md</a>"
 }
 
 private func renderRunAIReview(_ reviews: [E2EReview]) -> String {
