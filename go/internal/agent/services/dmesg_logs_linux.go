@@ -144,6 +144,9 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		)
 		return
 	}
+	// Zero the content immediately; the variable must not be accessible after this
+	// point — the file may contain operator names, DPO contacts, or ticket IDs.
+	dpiaContent = nil
 	logger.Info("dmesg DPIA confirmation found",
 		zap.String("file", DmesgDPIAConfirmFile),
 		zap.Bool("confirmation_present", true),
@@ -215,9 +218,9 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 	}
 
 	if atomic.LoadInt32(&redactAtomic) != 0 {
-		logger.Warn("kernel dmesg collection started with PII redaction enabled",
+		logger.Warn("kernel dmesg collection started with partial PII redaction",
 			zap.String("source", "/dev/kmsg"),
-			zap.Bool("redact", true),
+			zap.String("redact", "partial"),
 			zap.Strings("redact_covered", []string{
 				"MAC-address", "IPv4-address", "IPv6-address", "USB-SerialNumber", "ID_SERIAL",
 				"Bluetooth-bdaddr", "OOM-process-name+PID", "filesystem-home-paths",
@@ -450,8 +453,10 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 // service.instance.id (hostname) is gated behind redact=false so the device
 // hostname is not forwarded when PII redaction is enabled. The wendy.dmesg.redact
 // attribute records the effective redaction state for downstream monitoring.
+// "partial" indicates redaction is active but has documented gaps (see startup log);
+// "false" means no redaction at all (requires dual-domain consent).
 func dmesgResource(redact bool, hostname string) *otelpb.Resource {
-	redactStr := "true"
+	redactStr := "partial"
 	if !redact {
 		redactStr = "false"
 	}
