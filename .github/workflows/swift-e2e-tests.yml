@@ -311,52 +311,80 @@ jobs:
 
       - name: Post Swift E2E review PR comment
         if: always()
-        shell: bash
+        uses: actions/github-script@v9
         env:
-          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
           PR_NUM: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
           HEAD_LABEL: ${{ github.event.pull_request.head.label || github.head_ref || github.ref_name }}
           COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
-        run: |
-          set -euo pipefail
-          if [[ ! -f "$COMMENT_PATH" ]]; then
-            echo "No Swift E2E review aggregate found at $COMMENT_PATH; skipping."
-            exit 0
-          fi
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
 
-          pr_num="$PR_NUM"
-          if [[ -z "$pr_num" ]]; then
-            pr_num="$(gh pr list \
-              --repo "$REPO" \
-              --head "$HEAD_LABEL" \
-              --state open \
-              --json number \
-              --jq '.[0].number // ""')"
-          fi
-          if [[ -z "$pr_num" && "$HEAD_LABEL" != "$HEAD_REF" ]]; then
-            pr_num="$(gh pr list \
-              --repo "$REPO" \
-              --head "$HEAD_REF" \
-              --state open \
-              --json number \
-              --jq '.[0].number // ""')"
-          fi
-          if [[ -z "$pr_num" ]]; then
-            echo "No open PR found for $HEAD_REF; skipping Swift E2E review comment."
-            exit 0
-          fi
+            const commentPath = process.env.COMMENT_PATH;
+            if (!fs.existsSync(commentPath)) {
+              core.info(`No Swift E2E review aggregate found at ${commentPath}; skipping.`);
+              return;
+            }
 
-          existing="$(gh api "repos/${REPO}/issues/${pr_num}/comments" \
-            --jq '.[] | select(.body | startswith("# Swift E2E Review")) | .id' \
-            | head -1)"
-          if [[ -n "$existing" ]]; then
-            jq -n --rawfile body "$COMMENT_PATH" '{body: $body}' > payload.json
-            gh api --method PATCH "repos/${REPO}/issues/comments/${existing}" --input payload.json
-          else
-            gh pr comment "$pr_num" --repo "$REPO" --body-file "$COMMENT_PATH"
-          fi
+            const [owner, repo] = process.env.REPO.split('/');
+            const headRef = process.env.HEAD_REF;
+            const headLabel = process.env.HEAD_LABEL;
+            let prNumber = process.env.PR_NUM;
+
+            if (!prNumber) {
+              const qualifiedHead = headLabel?.includes(':') ? headLabel : `${context.repo.owner}:${headRef}`;
+              const heads = [qualifiedHead, headLabel, headRef].filter((value, index, values) =>
+                value && values.indexOf(value) === index
+              );
+              for (const head of heads) {
+                const { data: pulls } = await github.rest.pulls.list({
+                  owner,
+                  repo,
+                  state: 'open',
+                  head,
+                  per_page: 1,
+                });
+                if (pulls.length > 0) {
+                  prNumber = String(pulls[0].number);
+                  break;
+                }
+              }
+            }
+
+            if (!prNumber) {
+              core.info(`No open PR found for ${headRef}; skipping Swift E2E review comment.`);
+              return;
+            }
+
+            const body = fs.readFileSync(commentPath, 'utf8');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: Number(prNumber),
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.body?.startsWith('# Swift E2E Review')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: Number(prNumber),
+                body,
+              });
+            }
 
       - name: Upload Swift E2E run report
         if: always()
