@@ -1033,6 +1033,7 @@ private func renderReport(
         throw ValidationError("Report template does not contain expected card/footer markers.")
     }
 
+    try writeE2EReviewAggregate(in: runURL)
     try renderReviewAggregateHTMLIfPresent(runURL: runURL)
 
     let reviewHTML = renderRunAIReview(aiReviews.root)

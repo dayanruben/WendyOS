@@ -118,7 +118,6 @@ extension ReviewCommand {
             }
             print("    Reviewer:       \(reviewer)")
             print("    Suites:         \(suites.count)")
-            try writeE2EReviewAggregate(in: runURL)
             return
         }
 
@@ -204,7 +203,6 @@ extension ReviewCommand {
             print("==> Run report AI review complete")
         }
 
-        try writeE2EReviewAggregate(in: runURL)
     }
 }
 

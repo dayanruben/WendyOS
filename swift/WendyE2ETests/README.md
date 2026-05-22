@@ -57,8 +57,9 @@ Review artifacts are Markdown files in predictable locations:
 <run>/<suite>/<test>/review.<model-or-provider-default>/<slugged-title>.md
 ```
 
-The top-level `review.md` is a compact aggregate of all review issues and is
-safe to post as a CI review comment. Scoped review Markdown files live under
+The report stage writes top-level `review.md` and `review.html` as compact
+aggregates of all review issues; `review.md` is safe to post as a CI review
+comment. Scoped review Markdown files live under
 `review.<model-or-provider-default>/` directories and start with a JSON front
 matter block, followed by a single `# Title`, a GitHub-comment-sized summary,
 and `## Details` for the full analysis/evidence. Review issue severity is stored
