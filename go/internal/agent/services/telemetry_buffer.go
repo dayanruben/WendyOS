@@ -27,7 +27,7 @@ const (
 	SignalTraces  SignalType = "traces"
 )
 
-const maxSegmentFrameBytes = 10 * 1024 * 1024
+const maxSegmentFrameBytes = 1 * 1024 * 1024 // 1 MB per frame; single OTLP batch upper bound
 
 // segmentFilename returns the filename for a segment file, e.g. "logs-000001.bin".
 func segmentFilename(signal SignalType, seqNum int) string {
