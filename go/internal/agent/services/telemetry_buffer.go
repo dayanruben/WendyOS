@@ -187,6 +187,7 @@ type TelemetryBuffer struct {
 
 // NewTelemetryBuffer creates a TelemetryBuffer, creating the storage directory
 // if needed. Falls back gracefully if the directory cannot be created.
+// A nil *TelemetryBuffer is a no-op for all methods.
 func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadcaster, logger *zap.Logger) (*TelemetryBuffer, error) {
 	cfg.applyDefaults()
 
@@ -197,14 +198,27 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		writers:     make(map[SignalType]*segWriter),
 	}
 
+	// For production paths, resolve symlinks on the PARENT directory before
+	// MkdirAll. This closes the TOCTOU window where a symlink under
+	// /var/lib/wendy-agent/ could redirect writes after Clean but before Create.
+	if strings.HasPrefix(cfg.Dir+"/", "/var/lib/wendy-agent/") {
+		parent := filepath.Dir(cfg.Dir)
+		resolvedParent, err := filepath.EvalSymlinks(parent)
+		if err != nil || !strings.HasPrefix(resolvedParent+"/", "/var/lib/wendy-agent/") {
+			logger.Warn("telemetry buffer: dir parent resolves outside allowed prefix, disk writes disabled",
+				zap.String("dir", cfg.Dir))
+			return b, nil
+		}
+		cfg.Dir = filepath.Join(resolvedParent, filepath.Base(cfg.Dir))
+		b.cfg.Dir = cfg.Dir
+	}
+
 	if err := os.MkdirAll(cfg.Dir, 0700); err != nil {
 		logger.Warn("telemetry buffer: cannot create dir, disk writes disabled", zap.Error(err))
 		return b, nil
 	}
 
-	// For production paths, resolve symlinks after MkdirAll and re-validate.
-	// filepath.Clean does not follow symlinks, so an attacker who controls a
-	// symlink inside /var/lib/wendy-agent/ could otherwise redirect writes.
+	// Re-validate after MkdirAll in case the directory itself was created as a symlink.
 	if strings.HasPrefix(cfg.Dir+"/", "/var/lib/wendy-agent/") {
 		resolved, err := filepath.EvalSymlinks(cfg.Dir)
 		if err != nil || !strings.HasPrefix(resolved+"/", "/var/lib/wendy-agent/") {
@@ -373,18 +387,27 @@ func (b *TelemetryBuffer) writeFrame(sig SignalType, msg proto.Message) {
 
 // PublishLogs writes req to disk then fans out to the broadcaster.
 func (b *TelemetryBuffer) PublishLogs(req *otelpb.ExportLogsServiceRequest) {
+	if b == nil {
+		return
+	}
 	b.writeFrame(SignalLogs, req)
 	b.broadcaster.PublishLogs(req)
 }
 
 // PublishMetrics writes req to disk then fans out to the broadcaster.
 func (b *TelemetryBuffer) PublishMetrics(req *otelpb.ExportMetricsServiceRequest) {
+	if b == nil {
+		return
+	}
 	b.writeFrame(SignalMetrics, req)
 	b.broadcaster.PublishMetrics(req)
 }
 
 // PublishTraces writes req to disk then fans out to the broadcaster.
 func (b *TelemetryBuffer) PublishTraces(req *otelpb.ExportTraceServiceRequest) {
+	if b == nil {
+		return
+	}
 	b.writeFrame(SignalTraces, req)
 	b.broadcaster.PublishTraces(req)
 }
@@ -410,6 +433,9 @@ func cursorStateCRC(m cursorMap) (uint32, error) {
 
 // LoadCursor returns the persisted flush cursor for sig, or a zero cursor.
 func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
+	if b == nil {
+		return flushCursor{}
+	}
 	b.cursorMu.Lock()
 	defer b.cursorMu.Unlock()
 	data, err := os.ReadFile(filepath.Join(b.cfg.Dir, cursorFile))
@@ -431,6 +457,9 @@ func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 
 // SaveCursor persists cursor for sig to cursor.json atomically.
 func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
+	if b == nil {
+		return nil
+	}
 	b.cursorMu.Lock()
 	defer b.cursorMu.Unlock()
 	path := filepath.Join(b.cfg.Dir, cursorFile)
@@ -482,6 +511,9 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 // It reads segment files newest-to-oldest and prepends older frames.
 // n is capped at maxReplayFrames to bound per-call disk I/O.
 func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
+	if b == nil {
+		return nil
+	}
 	if n <= 0 {
 		return nil
 	}
@@ -518,6 +550,9 @@ var _ TelemetryPublisher = (*TelemetryBuffer)(nil)
 // If cursor.File is empty, reads from the oldest segment.
 // If cursor.File was evicted, falls back to current oldest.
 func (b *TelemetryBuffer) ReadFromCursor(sig SignalType, cursor flushCursor, maxN int) ([]proto.Message, flushCursor, error) {
+	if b == nil {
+		return nil, cursor, nil
+	}
 	segs, err := listSegments(b.cfg.Dir, sig)
 	if err != nil || len(segs) == 0 {
 		return nil, cursor, err
