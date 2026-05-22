@@ -8,7 +8,7 @@ import Foundation
 struct ReviewCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "review",
-        abstract: "Review Swift E2E recordings with an AI coding agent."
+        abstract: "Review Swift E2E aggregate results with an AI coding agent."
     )
 
     @Option(name: .long, help: "Swift package directory.")
@@ -17,7 +17,10 @@ struct ReviewCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Directory containing Swift E2E test sources.")
     var testsDir: String?
 
-    @Option(name: .long, help: "E2E run directory. Reads tests/ and writes AI review files.")
+    @Option(
+        name: .long,
+        help: "E2E aggregate directory. Reads aggregate results and writes AI review files."
+    )
     var runDir: String
 
     @Option(name: .long, help: "AI agent: auto, claude, codex, or none.")
@@ -35,9 +38,6 @@ struct ReviewCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Aggregate review stage: suites, report, or all.")
     var stage: AggregateReviewStage = .all
 
-    @Option(name: .long, help: "Tests at or above this duration are reviewed as slow-ish.")
-    var slowTestSeconds = 5.0
-
     @Flag(name: .long, help: "Overwrite existing review files.")
     var overwrite = false
 
@@ -47,86 +47,21 @@ struct ReviewCommand: AsyncParsableCommand {
             fileURLWithPath: testsDir ?? defaultReviewTestsDir(packageURL: packageURL).path
         ).standardizedFileURL
         let runURL = URL(fileURLWithPath: runDir, isDirectory: true).standardizedFileURL
-        let recordingURL = defaultReviewRecordingDirectory(runURL: runURL)
         let repoURL = packageURL.deletingLastPathComponent().deletingLastPathComponent()
             .standardizedFileURL
 
-        if try isReviewAggregateRunDirectory(runURL) {
-            try await runAggregateReview(
-                packageURL: packageURL,
-                testsURL: testsURL,
-                runURL: runURL,
-                repoURL: repoURL
+        guard try isReviewAggregateRunDirectory(runURL) else {
+            throw ValidationError(
+                "Swift E2E review now supports aggregate directories only. Run E2EAggregate first, then pass the aggregate directory to --run-dir."
             )
-            return
         }
 
-        let records = try loadReviewRecords(in: recordingURL)
-        let testResults = try loadReviewTestResults(
-            in: recordingURL,
-            outputDirectoryURL: runURL
-        )
-        var tests = try parseReviewTests(in: testsURL, records: records, testResults: testResults)
-        if FileManager.default.fileExists(
-            atPath: recordingURL.appendingPathComponent("recording.md").path
-        ) {
-            tests = tests.filter { $0.recordURL != nil }
-        }
-        let reviewableTests = tests.filter {
-            $0.requiresAgentReview(slowTestSeconds: slowTestSeconds)
-        }
-
-        if overwrite {
-            try removeExistingPerTestReviews(in: recordingURL)
-        }
-        try? FileManager.default.removeItem(at: runURL.appendingPathComponent("review.md"))
-
-        guard !reviewableTests.isEmpty else {
-            try removeEmptyReviewSummary(runURL: runURL)
-            print("==> Swift E2E agent review skipped: no failed, annotated, or slow-ish tests")
-            print("    Tests discovered: \(tests.count)")
-            print("    Slow threshold:   \(formatSeconds(slowTestSeconds))s")
-            return
-        }
-
-        let agent = try makeAgent(provider: provider, model: model)
-        guard agent.isConfigured else {
-            try removeEmptyReviewSummary(runURL: runURL)
-            print("==> Swift E2E agent review skipped: no agent API key configured")
-            print("    Tests discovered: \(tests.count)")
-            print("    Tests selected:   \(reviewableTests.count)")
-            return
-        }
-
-        print("==> Running Swift E2E agent review")
-        print("    Agent:    \(agent.providerName)")
-        print("    Model:    \(agent.modelName)")
-        print("    Repo:     \(repoURL.path)")
-        print("    Run dir:  \(runURL.path)")
-        print("    Tests:    \(reviewableTests.count)")
-
-        let request = ReviewAgentRequest(
-            repoURL: repoURL,
+        try await runAggregateReview(
             packageURL: packageURL,
             testsURL: testsURL,
             runURL: runURL,
-            recordingURL: recordingURL,
-            tests: tests,
-            reviewableTests: reviewableTests,
-            slowTestSeconds: slowTestSeconds,
-            overwrite: overwrite
+            repoURL: repoURL
         )
-        try agent.review(request: request)
-
-        let reviewFiles = try enforceConcernOnlyReviews(in: recordingURL)
-        if reviewFiles.isEmpty {
-            try removeEmptyReviewSummary(runURL: runURL)
-            print("==> Swift E2E agent review found no concern-level issues")
-            return
-        }
-
-        print("==> Swift E2E agent review wrote per-test concern reviews")
-        print("    Per-test concern reviews: \(reviewFiles.count)")
     }
 }
 
@@ -264,10 +199,6 @@ private struct ReviewTestCase {
     var durationSeconds: Double?
     var recordName: String
     var recordURL: URL?
-
-    func requiresAgentReview(slowTestSeconds: Double) -> Bool {
-        status.isFailed || !aiComments.isEmpty || (durationSeconds ?? 0) >= slowTestSeconds
-    }
 }
 
 private enum ReviewTestStatus {
@@ -327,12 +258,6 @@ private struct AggregateReviewTest {
     var observations: [AggregateReviewObservation]
     var existingSummary: String?
     var existingDetails: String?
-
-    var hasReviewTrigger: Bool {
-        !test.aiComments.isEmpty
-            || observations.contains { $0.isFailed }
-            || observations.contains { ($0.durationSeconds ?? 0) >= 5 }
-    }
 }
 
 private struct AggregateReviewSuite {
@@ -349,155 +274,11 @@ private struct ReviewResultKey: Hashable {
     var name: String
 }
 
-private struct ReviewAgentRequest {
-    var repoURL: URL
-    var packageURL: URL
-    var testsURL: URL
-    var runURL: URL
-    var recordingURL: URL
-    var tests: [ReviewTestCase]
-    var reviewableTests: [ReviewTestCase]
-    var slowTestSeconds: Double
-    var overwrite: Bool
-
-    var prompt: String {
-        var lines: [String] = []
-        lines.append(
-            "You are reviewing WendyAgent Swift end-to-end test artifacts as a coding agent."
-        )
-        lines.append("")
-        lines.append("You are running from the repository root and may inspect:")
-        lines.append("- the full source tree")
-        lines.append("- git history via git log / git blame / git diff")
-        lines.append("- all E2E run artifacts under the run directory")
-        lines.append("- recordings, xUnit XML, report metadata, and generated logs")
-        lines.append("")
-        lines.append("Repository root: `\(repoURL.path)`")
-        lines.append("Swift package: `\(packageURL.path)`")
-        lines.append("Swift E2E tests: `\(testsURL.path)`")
-        lines.append("E2E run directory: `\(runURL.path)`")
-        lines.append("Recorded tests directory: `\(recordingURL.path)`")
-        lines.append("Slow-ish threshold: `\(formatSeconds(slowTestSeconds))s`")
-        lines.append("")
-        lines.append("## Progress output")
-        lines.append("")
-        lines.append(
-            "Print brief progress updates to stdout while you work so CI shows a health signal. Mention what test, artifact, source file, or hypothesis you are currently inspecting. Keep updates short and useful, for example:"
-        )
-        lines.append(
-            "- `Progress: inspecting wendy-device-info.prints-human-readable-device-information recording.md`"
-        )
-        lines.append("- `Progress: checking device info implementation for terminal probe output`")
-        lines.append("- `Progress: writing concern for tests/<suite-key>/<test-key>/review.md`")
-        lines.append(
-            "Print a progress line at least before each selected test and before writing each review file. Do not wait until the final summary to report progress."
-        )
-        lines.append("")
-        lines.append("## Task")
-        lines.append("")
-        lines.append(
-            "Investigate the selected tests below. They were selected because they failed, contain `// AI:` review notes, or are slow-ish."
-        )
-        lines.append(
-            "For each selected test, inspect its recording, source, relevant implementation code, nearby tests, and git history as needed."
-        )
-        lines.append(
-            "Look for real issues that a human reviewer should discuss: regressions, product bugs, test bugs, flaky or infrastructure problems, suspicious slowness, misleading output, missing assertions, or unresolved `// AI:` concerns."
-        )
-        lines.append("")
-        lines.append("## Output contract")
-        lines.append("")
-        lines.append(
-            "Write Markdown review files only for tests with at least a concern-level issue."
-        )
-        lines.append(
-            "Do not write any file for tests that are OK, expected, or purely informational."
-        )
-        lines.append(
-            "Do not write `Status: pass` reviews. A missing `review.md` means no concern."
-        )
-        lines.append(
-            "Do not edit product code, tests, or generated recordings. Only create, replace, or remove per-test `review.md` files under the E2E run directory."
-        )
-        if !overwrite {
-            lines.append(
-                "If a non-empty `review.md` already exists, leave it in place unless it is clearly stale or says the test passed."
-            )
-        }
-        lines.append("")
-        lines.append("Each concern file must use this shape:")
-        lines.append("")
-        lines.append("```markdown")
-        lines.append("# AI Review")
-        lines.append("")
-        lines.append("Status: concern|fail")
-        lines.append("Source: `path/to/TestFile.swift:line`")
-        lines.append("Record: `tests/<suite-key>/<test-key>/recording.md`")
-        lines.append("")
-        lines.append("## Issue")
-        lines.append("One concise paragraph naming the issue.")
-        lines.append("")
-        lines.append("## Evidence")
-        lines.append("- Quote or cite exact recording/source/result evidence.")
-        lines.append("")
-        lines.append("## Likely cause")
-        lines.append("Best current hypothesis. Say when uncertain.")
-        lines.append("")
-        lines.append("## Suggested actions")
-        lines.append("- Concrete options for a human or follow-up agent.")
-        lines.append("```")
-        lines.append("")
-        lines.append(
-            "Prefer `Status: fail` when the evidence points to a real regression or broken required behavior. Use `Status: concern` for flakes, slowness, ambiguous behavior, missing evidence, or follow-up-worthy test quality issues."
-        )
-        lines.append("")
-        lines.append("## Selected tests")
-        lines.append("")
-        for test in reviewableTests {
-            lines.append("### \(test.suite) › \(test.name)")
-            lines.append("- Status: `\(test.status.statusText)`")
-            if let duration = test.durationSeconds {
-                lines.append("- Duration: `\(formatSeconds(duration))s`")
-            }
-            if let detail = test.status.detail, !detail.isEmpty {
-                lines.append("- Failure/skipped detail:")
-                lines.append("  ```")
-                lines.append(indent(detail, prefix: "  "))
-                lines.append("  ```")
-            }
-            lines.append("- Source: `\(test.sourcePath):\(test.funcLine)`")
-            lines.append("- Record: `\(test.recordName)`")
-            if let recordURL = test.recordURL {
-                lines.append("- Recording path: `\(recordURL.path)`")
-                lines.append(
-                    "- Review path: `\(recordURL.deletingLastPathComponent().appendingPathComponent("review.md").path)`"
-                )
-            } else {
-                lines.append("- Recording path: `<missing>`")
-            }
-            if !test.aiComments.isEmpty {
-                lines.append("- `// AI:` comments:")
-                for comment in test.aiComments {
-                    lines.append("  - \(comment.replacingOccurrences(of: "\n", with: "\n    "))")
-                }
-            }
-            lines.append("")
-        }
-        lines.append("## All-run context")
-        lines.append("")
-        lines.append(
-            "The full xUnit result file and all other test recordings are available in the run directory. You may inspect non-selected tests to compare behavior or identify shared causes, but only write per-test review files for concern-level findings."
-        )
-        return lines.joined(separator: "\n")
-    }
-}
-
 private protocol E2EAgentReviewer {
     var isConfigured: Bool { get }
     var providerName: String { get }
     var modelName: String { get }
 
-    func review(request: ReviewAgentRequest) throws
     func review(prompt: String, repoURL: URL, runURL: URL, recordingURL: URL) throws
 }
 
@@ -506,10 +287,6 @@ private struct UnconfiguredAgentReviewer: E2EAgentReviewer {
     var isConfigured: Bool { false }
     var providerName: String { "none" }
     var modelName: String { "none" }
-
-    func review(request _: ReviewAgentRequest) throws {
-        throw ValidationError(reason)
-    }
 
     func review(prompt _: String, repoURL _: URL, runURL _: URL, recordingURL _: URL) throws {
         throw ValidationError(reason)
@@ -523,15 +300,6 @@ private struct ShellAgentReviewer: E2EAgentReviewer {
     var modelEnvironmentKey: String?
 
     var isConfigured: Bool { true }
-
-    func review(request: ReviewAgentRequest) throws {
-        try review(
-            prompt: request.prompt,
-            repoURL: request.repoURL,
-            runURL: request.runURL,
-            recordingURL: request.recordingURL
-        )
-    }
 
     func review(prompt: String, repoURL: URL, runURL: URL, recordingURL: URL) throws {
         let promptURL = runURL.appendingPathComponent(
@@ -668,7 +436,10 @@ private func isReviewAggregateRunDirectory(_ runURL: URL) throws -> Bool {
     return true
 }
 
-private func loadAggregateReviewSuites(testsURL: URL, aggregateURL: URL) throws -> [AggregateReviewSuite] {
+private func loadAggregateReviewSuites(
+    testsURL: URL,
+    aggregateURL: URL
+) throws -> [AggregateReviewSuite] {
     let tests = try parseReviewTests(in: testsURL, records: [:], testResults: [:])
     let testsByPathKey = Dictionary(grouping: tests) { test in
         let sourceURL = URL(fileURLWithPath: test.sourcePath)
@@ -687,9 +458,11 @@ private func loadAggregateReviewSuites(testsURL: URL, aggregateURL: URL) throws 
 
         for testURL in try aggregateReviewDirectoryChildren(of: suiteURL) {
             let testKey = testURL.lastPathComponent
-            guard let test = testsByPathKey[
-                AggregateReviewPathKey(suiteKey: suiteKey, testKey: testKey)
-            ]?.first else {
+            guard
+                let test = testsByPathKey[
+                    AggregateReviewPathKey(suiteKey: suiteKey, testKey: testKey)
+                ]?.first
+            else {
                 continue
             }
             let testSourceURL = URL(fileURLWithPath: test.sourcePath)
@@ -815,7 +588,11 @@ private func aggregateReviewDirectoryChildren(of url: URL) throws -> [URL] {
     .sorted { $0.path < $1.path }
 }
 
-private func aggregateReviewRelativeFilePath(fileName: String, attemptURL: URL, aggregateURL: URL) -> String? {
+private func aggregateReviewRelativeFilePath(
+    fileName: String,
+    attemptURL: URL,
+    aggregateURL: URL
+) -> String? {
     let url = attemptURL.appendingPathComponent(fileName)
     guard FileManager.default.fileExists(atPath: url.path) else { return nil }
     return reviewRelativePath(url, base: aggregateURL)
@@ -850,27 +627,47 @@ private func aggregateSuitePrompt(
     lines.append("- Suite key: `\(suite.suiteKey)`")
     lines.append("- Suite name: `\(suite.displayName)`")
     lines.append("- Source: `\(suite.sourceURL.path)`")
-    lines.append("- Suite summary path: `\(aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent("review.summary.md").path)`")
-    lines.append("- Suite details path: `\(aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent("review.details.md").path)`")
+    lines.append(
+        "- Suite summary path: `\(aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent("review.summary.md").path)`"
+    )
+    lines.append(
+        "- Suite details path: `\(aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent("review.details.md").path)`"
+    )
     lines.append("")
     lines.append("## Output contract")
     lines.append("")
-    lines.append("Write Markdown reviews only for actionable findings. Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`.")
-    lines.append("For any noteworthy finding, always write both `review.summary.md` and `review.details.md` at that scope.")
-    lines.append("You may write per-test paired reviews at `<aggregate>/\(suite.suiteKey)/<test-key>/review.summary.md` and `review.details.md`.")
-    lines.append("You may write one paired suite review at `<aggregate>/\(suite.suiteKey)/review.summary.md` and `review.details.md` only when there is a suite-level or cross-test action that is not already covered by per-test reviews.")
+    lines.append(
+        "Write Markdown reviews only for actionable findings. Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
+    )
+    lines.append(
+        "For any noteworthy finding, always write both `review.summary.md` and `review.details.md` at that scope."
+    )
+    lines.append(
+        "You may write per-test paired reviews at `<aggregate>/\(suite.suiteKey)/<test-key>/review.summary.md` and `review.details.md`."
+    )
+    lines.append(
+        "You may write one paired suite review at `<aggregate>/\(suite.suiteKey)/review.summary.md` and `review.details.md` only when there is a suite-level or cross-test action that is not already covered by per-test reviews."
+    )
     lines.append("If nothing is noteworthy for a test or the suite, leave both files absent.")
     if !overwrite {
-        lines.append("If non-empty existing summary/details files are still valid and already satisfy this bullet-only, no-status contract, leave them in place; otherwise rewrite or remove stale files.")
+        lines.append(
+            "If non-empty existing summary/details files are still valid and already satisfy this bullet-only, no-status contract, leave them in place; otherwise rewrite or remove stale files."
+        )
     }
     lines.append("")
-    lines.append("Each `review.summary.md` must be only a short Markdown bullet list. Each bullet should be one clear, actionable finding; do not add headings, labels, prose paragraphs, or status/severity.")
-    lines.append("For suite summaries, include only suite-level/cross-test actions. Do not repeat or summarize per-test findings that are already covered at test scope.")
+    lines.append(
+        "Each `review.summary.md` must be only a short Markdown bullet list. Each bullet should be one clear, actionable finding; do not add headings, labels, prose paragraphs, or status/severity."
+    )
+    lines.append(
+        "For suite summaries, include only suite-level/cross-test actions. Do not repeat or summarize per-test findings that are already covered at test scope."
+    )
     lines.append("")
     lines.append("Example `review.summary.md`:")
     lines.append("")
     lines.append("```md")
-    lines.append("- Seed cache fixtures across table and JSON tests so populated-list behavior is actually exercised.")
+    lines.append(
+        "- Seed cache fixtures across table and JSON tests so populated-list behavior is actually exercised."
+    )
     lines.append("```")
     lines.append("")
     lines.append("Each `review.details.md` should use:")
@@ -912,13 +709,25 @@ private func aggregateReportPrompt(
     )
     lines.append("## Output contract")
     lines.append("")
-    lines.append("Write top-level files only when there is at least one actionable aggregate-level or cross-suite finding: `\(aggregateURL.appendingPathComponent("review.summary.md").path)` and `\(aggregateURL.appendingPathComponent("review.details.md").path)`.")
-    lines.append("Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`.")
-    lines.append("The summary file must be only a short Markdown bullet list. Each bullet should be one clear, actionable aggregate-level finding.")
-    lines.append("Do not repeat or summarize suite/test findings that are already covered at lower levels, and do not restate obvious counts or statuses visible in the report.")
-    lines.append("The details file should contain evidence, action items, and links to relevant suite/test details.")
+    lines.append(
+        "Write top-level files only when there is at least one actionable aggregate-level or cross-suite finding: `\(aggregateURL.appendingPathComponent("review.summary.md").path)` and `\(aggregateURL.appendingPathComponent("review.details.md").path)`."
+    )
+    lines.append(
+        "Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
+    )
+    lines.append(
+        "The summary file must be only a short Markdown bullet list. Each bullet should be one clear, actionable aggregate-level finding."
+    )
+    lines.append(
+        "Do not repeat or summarize suite/test findings that are already covered at lower levels, and do not restate obvious counts or statuses visible in the report."
+    )
+    lines.append(
+        "The details file should contain evidence, action items, and links to relevant suite/test details."
+    )
     if !overwrite {
-        lines.append("If existing top-level summary/details files are still valid and already satisfy this bullet-only, no-status contract, leave them in place; otherwise rewrite or remove stale files.")
+        lines.append(
+            "If existing top-level summary/details files are still valid and already satisfy this bullet-only, no-status contract, leave them in place; otherwise rewrite or remove stale files."
+        )
     }
     lines.append("")
     lines.append("## Aggregate summary")
@@ -926,7 +735,9 @@ private func aggregateReportPrompt(
     for suite in suites {
         lines.append("### \(suite.displayName) (`\(suite.suiteKey)`)")
         if let suiteSummary = try aggregateReviewMarkdown(
-            at: aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent("review.summary.md")
+            at: aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent(
+                "review.summary.md"
+            )
         ) {
             lines.append("- Suite review summary:")
             lines.append("  ```md")
@@ -936,7 +747,9 @@ private func aggregateReportPrompt(
             lines.append("- Suite review summary: `<none>`")
         }
         if let suiteDetails = try aggregateReviewMarkdown(
-            at: aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent("review.details.md")
+            at: aggregateURL.appendingPathComponent(suite.suiteKey).appendingPathComponent(
+                "review.details.md"
+            )
         ) {
             lines.append("- Suite review details:")
             lines.append("  ```md")
@@ -944,19 +757,26 @@ private func aggregateReportPrompt(
             lines.append("  ```")
         }
         for test in suite.tests {
-            let testURL = aggregateURL
+            let testURL =
+                aggregateURL
                 .appendingPathComponent(test.suiteKey)
                 .appendingPathComponent(test.testKey)
             let failures = test.observations.filter(\.isFailed).count
             let flaked = aggregateReviewTargetOutcomeCounts(test.observations).flaked
-            lines.append("- `\(test.test.name)` (`\(test.suiteKey)/\(test.testKey)`): observations=\(test.observations.count), failed=\(failures), flaked-targets=\(flaked)")
-            if let summary = try aggregateReviewMarkdown(at: testURL.appendingPathComponent("review.summary.md")) {
+            lines.append(
+                "- `\(test.test.name)` (`\(test.suiteKey)/\(test.testKey)`): observations=\(test.observations.count), failed=\(failures), flaked-targets=\(flaked)"
+            )
+            if let summary = try aggregateReviewMarkdown(
+                at: testURL.appendingPathComponent("review.summary.md")
+            ) {
                 lines.append("  - Test review summary:")
                 lines.append("    ```md")
                 lines.append(indent(summary, prefix: "    "))
                 lines.append("    ```")
             }
-            if let details = try aggregateReviewMarkdown(at: testURL.appendingPathComponent("review.details.md")) {
+            if let details = try aggregateReviewMarkdown(
+                at: testURL.appendingPathComponent("review.details.md")
+            ) {
                 lines.append("  - Test review details:")
                 lines.append("    ```md")
                 lines.append(indent(details, prefix: "    "))
@@ -1002,8 +822,12 @@ private func appendAggregateReviewTest(
     lines.append("### \(test.test.suite) › \(test.test.name)")
     lines.append("- Test key: `\(test.suiteKey)/\(test.testKey)`")
     lines.append("- Source: `\(test.test.sourcePath):\(test.test.funcLine)`")
-    lines.append("- Summary path: `\(aggregateURL.appendingPathComponent(test.suiteKey).appendingPathComponent(test.testKey).appendingPathComponent("review.summary.md").path)`")
-    lines.append("- Details path: `\(aggregateURL.appendingPathComponent(test.suiteKey).appendingPathComponent(test.testKey).appendingPathComponent("review.details.md").path)`")
+    lines.append(
+        "- Summary path: `\(aggregateURL.appendingPathComponent(test.suiteKey).appendingPathComponent(test.testKey).appendingPathComponent("review.summary.md").path)`"
+    )
+    lines.append(
+        "- Details path: `\(aggregateURL.appendingPathComponent(test.suiteKey).appendingPathComponent(test.testKey).appendingPathComponent("review.details.md").path)`"
+    )
     if let existingSummary = test.existingSummary {
         lines.append("- Existing summary:")
         lines.append("  ```md")
@@ -1029,7 +853,9 @@ private func appendAggregateReviewTest(
     lines.append("- Target outcomes: \(aggregateReviewTargetOutcomeSummary(test.observations))")
     lines.append("- Observations:")
     for observation in test.observations {
-        lines.append("  - target=`\(observation.target)` attempt=`\(observation.attempt)` status=`\(observation.status.statusText)` duration=`\(observation.durationSeconds.map(formatSeconds) ?? "unknown")`")
+        lines.append(
+            "  - target=`\(observation.target)` attempt=`\(observation.attempt)` status=`\(observation.status.statusText)` duration=`\(observation.durationSeconds.map(formatSeconds) ?? "unknown")`"
+        )
         if let detail = observation.status.detail, !detail.isEmpty {
             lines.append("    detail: \(detail.replacingOccurrences(of: "\n", with: "\n      "))")
         }
@@ -1043,14 +869,20 @@ private func appendAggregateReviewTest(
     lines.append("")
 }
 
-private func aggregateReviewTargetOutcomeSummary(_ observations: [AggregateReviewObservation]) -> String {
+private func aggregateReviewTargetOutcomeSummary(
+    _ observations: [AggregateReviewObservation]
+) -> String {
     let counts = aggregateReviewTargetOutcomeCounts(observations)
-    return "passed=\(counts.passed), flaked=\(counts.flaked), failed=\(counts.failed), skipped=\(counts.skipped), unknown=\(counts.unknown)"
+    return
+        "passed=\(counts.passed), flaked=\(counts.flaked), failed=\(counts.failed), skipped=\(counts.skipped), unknown=\(counts.unknown)"
 }
 
-private func aggregateReviewTargetOutcomeCounts(_ observations: [AggregateReviewObservation]) -> (passed: Int, flaked: Int, failed: Int, skipped: Int, unknown: Int) {
+private func aggregateReviewTargetOutcomeCounts(
+    _ observations: [AggregateReviewObservation]
+) -> (passed: Int, flaked: Int, failed: Int, skipped: Int, unknown: Int) {
     var counts = (passed: 0, flaked: 0, failed: 0, skipped: 0, unknown: 0)
-    for statuses in Dictionary(grouping: observations, by: \.target).values.map({ $0.map(\.status) }) {
+    for statuses in Dictionary(grouping: observations, by: \.target).values.map({ $0.map(\.status) }
+    ) {
         let passed = statuses.contains { $0.statusText == "passed" }
         let failed = statuses.contains { $0.statusText == "failed" }
         let skipped = statuses.contains { $0.statusText == "skipped" }
@@ -1084,8 +916,12 @@ private func removeExistingAggregateReviews(in aggregateURL: URL) throws {
 }
 
 private func removeAggregateReviewPair(in directoryURL: URL) {
-    try? FileManager.default.removeItem(at: directoryURL.appendingPathComponent("review.summary.md"))
-    try? FileManager.default.removeItem(at: directoryURL.appendingPathComponent("review.details.md"))
+    try? FileManager.default.removeItem(
+        at: directoryURL.appendingPathComponent("review.summary.md")
+    )
+    try? FileManager.default.removeItem(
+        at: directoryURL.appendingPathComponent("review.details.md")
+    )
 }
 
 @discardableResult
@@ -1155,68 +991,6 @@ private func defaultReviewTestsDir(packageURL: URL) -> URL {
         return e2eTestsURL
     }
     return packageURL.appendingPathComponent("Tests")
-}
-
-private func defaultReviewRecordingDirectory(runURL: URL) -> URL {
-    let nestedTestsURL = runURL.appendingPathComponent("tests", isDirectory: true)
-    if FileManager.default.fileExists(atPath: nestedTestsURL.path) {
-        return nestedTestsURL
-    }
-    return runURL
-}
-
-private func loadReviewRecords(in recordingURL: URL) throws -> [String: URL] {
-    guard FileManager.default.fileExists(atPath: recordingURL.path) else {
-        return [:]
-    }
-    guard
-        let enumerator = FileManager.default.enumerator(
-            at: recordingURL,
-            includingPropertiesForKeys: nil
-        )
-    else {
-        throw ValidationError("Recording directory cannot be read: \(recordingURL.path)")
-    }
-
-    var records: [String: URL] = [:]
-    for case let recordURL as URL in enumerator where recordURL.lastPathComponent == "recording.md"
-    {
-        if let key = reviewRecordKeyFromRecordingHeader(recordURL) {
-            records[key] = recordURL
-        }
-        let relative = reviewRelativePath(recordURL, base: recordingURL)
-        let components = relative.split(separator: "/").map(String.init)
-        if components.count >= 3 {
-            records["\(components[components.count - 3]).\(components[components.count - 2])"] =
-                recordURL
-        } else {
-            let attemptDirectory = recordURL.deletingLastPathComponent()
-            let targetDirectory = attemptDirectory.deletingLastPathComponent()
-            let testDirectory = targetDirectory.deletingLastPathComponent()
-            let suiteDirectory = testDirectory.deletingLastPathComponent()
-            if !suiteDirectory.lastPathComponent.isEmpty,
-                !testDirectory.lastPathComponent.isEmpty
-            {
-                records["\(suiteDirectory.lastPathComponent).\(testDirectory.lastPathComponent)"] =
-                    recordURL
-            } else {
-                records[recordURL.deletingLastPathComponent().lastPathComponent] = recordURL
-            }
-        }
-    }
-    return records
-}
-
-private func reviewRecordKeyFromRecordingHeader(_ recordURL: URL) -> String? {
-    guard let text = try? String(contentsOf: recordURL, encoding: .utf8) else {
-        return nil
-    }
-    guard let sourcePath = reviewFirstMatch(#"(?m)^- Source: `([^`]+)`"#, in: text),
-        let testName = reviewFirstMatch(#"(?m)^- Test: `([^`]+)`"#, in: text)
-    else {
-        return nil
-    }
-    return "\(reviewRecordFileStem(URL(fileURLWithPath: sourcePath))).\(reviewSlug(testName))"
 }
 
 private func parseReviewTests(
@@ -1376,42 +1150,6 @@ private func stripReviewCommentPrefix(from line: String) -> String {
     return value
 }
 
-private func loadReviewTestResults(
-    in recordingURL: URL,
-    outputDirectoryURL: URL
-) throws -> [ReviewResultKey: ReviewTestObservation] {
-    guard
-        let resultURL = try reviewTestResultsURL(
-            in: [recordingURL, outputDirectoryURL, recordingURL.deletingLastPathComponent()]
-        )
-    else {
-        return [:]
-    }
-
-    let data = try Data(contentsOf: resultURL)
-    let parser = ReviewXUnitResultParser()
-    let xmlParser = XMLParser(data: data)
-    xmlParser.delegate = parser
-    guard xmlParser.parse() else {
-        throw ValidationError("Could not parse Swift Testing xUnit results: \(resultURL.path)")
-    }
-    return parser.results
-}
-
-private func reviewTestResultsURL(in searchURLs: [URL]) throws -> URL? {
-    var seen: Set<String> = []
-    for searchURL in searchURLs {
-        let path = searchURL.standardizedFileURL.path
-        guard !seen.contains(path) else { continue }
-        seen.insert(path)
-        let defaultURL = searchURL.appendingPathComponent("test-results.xml")
-        if FileManager.default.fileExists(atPath: defaultURL.path) {
-            return defaultURL
-        }
-    }
-    return nil
-}
-
 private final class ReviewXUnitResultParser: NSObject, XMLParserDelegate {
     var results: [ReviewResultKey: ReviewTestObservation] = [:]
 
@@ -1530,79 +1268,6 @@ private func reviewStripBackticks(_ value: String) -> String {
     return value
 }
 
-private struct ReviewFile {
-    var testKey: String
-    var url: URL
-    var status: String
-}
-
-private func removeExistingPerTestReviews(in recordingURL: URL) throws {
-    guard FileManager.default.fileExists(atPath: recordingURL.path),
-        let enumerator = FileManager.default.enumerator(
-            at: recordingURL,
-            includingPropertiesForKeys: nil
-        )
-    else { return }
-
-    for case let reviewURL as URL in enumerator where reviewURL.lastPathComponent == "review.md"
-    {
-        let recordURL = reviewURL.deletingLastPathComponent().appendingPathComponent("recording.md")
-        guard FileManager.default.fileExists(atPath: recordURL.path) else { continue }
-        try FileManager.default.removeItem(at: reviewURL)
-    }
-}
-
-private func enforceConcernOnlyReviews(in recordingURL: URL) throws -> [ReviewFile] {
-    guard FileManager.default.fileExists(atPath: recordingURL.path),
-        let enumerator = FileManager.default.enumerator(
-            at: recordingURL,
-            includingPropertiesForKeys: nil
-        )
-    else { return [] }
-
-    var reviewFiles: [ReviewFile] = []
-    for case let reviewURL as URL in enumerator where reviewURL.lastPathComponent == "review.md"
-    {
-        let recordURL = reviewURL.deletingLastPathComponent().appendingPathComponent("recording.md")
-        guard FileManager.default.fileExists(atPath: recordURL.path) else { continue }
-        let markdown = try String(contentsOf: reviewURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !markdown.isEmpty else {
-            try FileManager.default.removeItem(at: reviewURL)
-            continue
-        }
-        guard let status = parseReviewStatus(from: markdown), status != "pass" else {
-            try FileManager.default.removeItem(at: reviewURL)
-            continue
-        }
-        guard status == "concern" || status == "fail" else {
-            try FileManager.default.removeItem(at: reviewURL)
-            continue
-        }
-        reviewFiles.append(
-            ReviewFile(
-                testKey: reviewURL.deletingLastPathComponent().deletingLastPathComponent()
-                    .lastPathComponent
-                    + "." + reviewURL.deletingLastPathComponent().lastPathComponent,
-                url: reviewURL,
-                status: status
-            )
-        )
-    }
-    return reviewFiles.sorted { $0.url.path < $1.url.path }
-}
-
-private func parseReviewStatus(from markdown: String) -> String? {
-    for line in markdown.components(separatedBy: .newlines) {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard trimmed.hasPrefix("status:") else { continue }
-        let status = trimmed.dropFirst("status:".count)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return String(status.split(separator: " ").first ?? "")
-    }
-    return nil
-}
-
 private func reviewRelativePath(_ url: URL, base: URL) -> String {
     let path = url.path
     let basePath = base.path
@@ -1613,10 +1278,6 @@ private func reviewRelativePath(_ url: URL, base: URL) -> String {
         return "tests/" + path[range.upperBound...]
     }
     return path
-}
-
-private func removeEmptyReviewSummary(runURL: URL) throws {
-    try? FileManager.default.removeItem(at: runURL.appendingPathComponent("review.md"))
 }
 
 private func reviewRecordFileStem(_ sourceURL: URL) -> String {
