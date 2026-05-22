@@ -11,13 +11,14 @@ session may write both per-test reviews and suite reviews.
 Guidelines:
 
 - Prefer no files over low-value files.
-- Write one Markdown file per actionable diff-related review in the review
+- Write one Markdown file per actionable diff-related review issue in the review
   directory named in the generated prompt.
 - If nothing diff-related is noteworthy for a test or suite, write no review
   files for that scope.
 - Do not write pass/OK reviews for tests or suites.
-- Do not write status/severity lines such as `Status: pass`, `Status: concern`,
-  or `Status: fail`.
+- Use JSON `severity` to classify each issue as `info`, `concern`, or
+  `fail`. Do not write prose status/severity lines such as `Status: pass`,
+  `Status: concern`, or `Status: fail`.
 - Each review summary should be GitHub-comment-sized: one concise explanation
   tied to the diff plus the suggested action.
 - Put evidence, reasoning, targeted diff references, and longer analysis under

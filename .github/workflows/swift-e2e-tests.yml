@@ -26,6 +26,12 @@ concurrency:
   group: swift-e2e-tests-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: read
+
 jobs:
   # Run jobs are explicit per-device chains rather than one matrix. The first
   # batch spreads work across the one macOS, one Linux, and one Windows runner,
@@ -296,6 +302,51 @@ jobs:
           set -euo pipefail
           bash ./Scripts/E2EReport.sh \
             --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
+
+      - name: Post Swift E2E review PR comment
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
+        run: |
+          set -euo pipefail
+          if [[ -n "$HEAD_REPO" && "$HEAD_REPO" != "$REPO" ]]; then
+            echo "Swift E2E review comments are skipped for forked PRs."
+            exit 0
+          fi
+          if [[ ! -f "$COMMENT_PATH" ]]; then
+            echo "No Swift E2E review aggregate found at $COMMENT_PATH; skipping."
+            exit 0
+          fi
+
+          pr_num="$PR_NUM"
+          if [[ -z "$pr_num" ]]; then
+            pr_num="$(gh pr list \
+              --repo "$REPO" \
+              --head "$HEAD_REF" \
+              --state open \
+              --json number \
+              --jq '.[0].number // ""')"
+          fi
+          if [[ -z "$pr_num" ]]; then
+            echo "No open PR found for $HEAD_REF; skipping Swift E2E review comment."
+            exit 0
+          fi
+
+          existing="$(gh api "repos/${REPO}/issues/${pr_num}/comments" \
+            --jq '.[] | select((.body | contains("<!-- wendy-e2e-review-aggregate:v1 -->")) or (.body | startswith("## Swift E2E AI Review"))) | .id' \
+            | head -1)"
+          if [[ -n "$existing" ]]; then
+            jq -n --rawfile body "$COMMENT_PATH" '{body: $body}' > payload.json
+            gh api --method PATCH "repos/${REPO}/issues/comments/${existing}" --input payload.json
+          else
+            gh pr comment "$pr_num" --repo "$REPO" --body-file "$COMMENT_PATH"
+          fi
 
       - name: Upload Swift E2E run report
         if: always()

@@ -1047,6 +1047,7 @@ private func renderReport(
         "{{REPORT_SUMMARY}}":
             "Generated from Swift E2E run results, Swift Testing results, and captured command recordings.",
         "{{RUN_ID}}": runID(outputURL: outputURL),
+        "{{REVIEW_AGGREGATE_LINK}}": renderReviewAggregateLink(runURL: runURL),
         "{{TESTS_PASSED_COUNT}}": String(passed),
         "{{TESTS_FLAKED_COUNT}}": String(flaked),
         "{{TESTS_SKIPPED_COUNT}}": String(skipped),
@@ -1067,6 +1068,7 @@ private func renderReport(
         "{{COMMAND_RUN_COUNT}}",
         "{{VISIBLE_TEST_COUNT}}",
         "{{TOTAL_TEST_COUNT}}",
+        "{{REVIEW_AGGREGATE_LINK}}",
     ]
 
     for (placeholder, value) in replacements {
@@ -1094,6 +1096,14 @@ private func renderReport(
 
 private func runID(outputURL: URL) -> String {
     outputURL.deletingLastPathComponent().lastPathComponent
+}
+
+private func renderReviewAggregateLink(runURL: URL) -> String {
+    let reviewURL = runURL.appendingPathComponent("review.md")
+    guard FileManager.default.fileExists(atPath: reviewURL.path) else {
+        return ""
+    }
+    return " · Review: <a href=\"review.md\">review.md</a>"
 }
 
 private func renderRunAIReview(_ reviews: [E2EReview]) -> String {

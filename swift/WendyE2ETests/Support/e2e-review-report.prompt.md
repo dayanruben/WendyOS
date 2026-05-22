@@ -7,10 +7,11 @@ investigate next.
 Guidelines:
 
 - Prefer no top-level files over low-value files.
-- Write one Markdown file per actionable run-level or cross-suite review under
+- Write one Markdown file per actionable run-level or cross-suite review issue under
   the top-level review directory named in the generated prompt.
-- Do not write status/severity lines such as `Status: pass`, `Status: concern`,
-  or `Status: fail`.
+- Use JSON `severity` to classify each issue as `info`, `concern`, or
+  `fail`. Do not write prose status/severity lines such as `Status: pass`,
+  `Status: concern`, or `Status: fail`.
 - Each review summary should be GitHub-comment-sized: one concise explanation
   plus the suggested action.
 - Put evidence, reasoning, links to relevant suite/test details, and longer

@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://wendy.build/schemas/wendy-e2e-review.schema.json",
-  "title": "Wendy E2E Review Front Matter",
+  "title": "Wendy E2E Review Issue Front Matter",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "title", "scope", "reviewer"],
+  "required": ["schema", "title", "scope", "reviewer", "severity"],
   "properties": {
     "schema": { "const": "wendy.e2e.review.v1" },
     "title": { "type": "string", "minLength": 1 },
@@ -16,20 +16,9 @@
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
     },
-    "kind": {
+    "severity": {
       "type": "string",
-      "enum": [
-        "regression",
-        "product-bug",
-        "test-bug",
-        "test-gap",
-        "flake",
-        "infra",
-        "performance",
-        "behavior-change",
-        "documentation",
-        "unknown"
-      ]
+      "enum": ["info", "concern", "fail"]
     },
     "confidence": {
       "type": "string",

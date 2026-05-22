@@ -16,10 +16,49 @@ struct E2EReviewMetadata: Codable, Sendable {
     var title: String
     var scope: String
     var reviewer: String
-    var kind: String?
+    var severity: E2EReviewSeverity?
     var confidence: String?
     var locations: [E2EReviewLocation]?
     var evidence: [E2EReviewEvidence]?
+}
+
+enum E2EReviewSeverity: String, Codable, Sendable {
+    case fail
+    case concern
+    case info
+
+    var sortRank: Int {
+        switch self {
+        case .fail:
+            0
+        case .concern:
+            1
+        case .info:
+            2
+        }
+    }
+
+    var heart: String {
+        switch self {
+        case .fail:
+            "❤️"
+        case .concern:
+            "🧡"
+        case .info:
+            "💙"
+        }
+    }
+
+    func pluralizedLabel(count: Int) -> String {
+        switch self {
+        case .fail:
+            count == 1 ? "fail" : "fails"
+        case .concern:
+            count == 1 ? "concern" : "concerns"
+        case .info:
+            "info"
+        }
+    }
 }
 
 struct E2EReviewLocation: Codable, Sendable {
@@ -139,6 +178,9 @@ func parseE2EReview(
         throw ValidationError(
             "Review reviewer `\(metadata.reviewer)` does not match expected reviewer `\(expectedReviewer)`: \(url.path)"
         )
+    }
+    guard metadata.severity != nil else {
+        throw ValidationError("Review severity must be info, concern, or fail: \(url.path)")
     }
     let expectedFilename = e2eReviewSlug(title) + ".md"
     guard url.lastPathComponent == expectedFilename else {

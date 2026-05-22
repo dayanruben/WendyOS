@@ -118,6 +118,7 @@ extension ReviewCommand {
             }
             print("    Reviewer:       \(reviewer)")
             print("    Suites:         \(suites.count)")
+            try writeE2EReviewAggregate(in: runURL)
             return
         }
 
@@ -202,6 +203,8 @@ extension ReviewCommand {
             try enforceRunReportReviewContract(in: runURL, reviewer: reviewer)
             print("==> Run report AI review complete")
         }
+
+        try writeE2EReviewAggregate(in: runURL)
     }
 }
 
@@ -982,13 +985,13 @@ private func appendReviewOutputContract(
     lines.append("## Output contract")
     lines.append("")
     lines.append(
-        "Write one Markdown file per actionable review under the appropriate `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes)."
+        "Write one Markdown file per actionable review issue under the appropriate `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes)."
     )
     lines.append(
         "The file name must be the review title slug with `.md`: lowercase ASCII letters/digits, non-alphanumerics replaced by `-`, repeated dashes collapsed, and leading/trailing dashes removed. Example: `seed-cache-fixtures-before-listing.md`."
     )
     lines.append(
-        "Do not write status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
+        "Use JSON `severity` to classify each issue as `info`, `concern`, or `fail`. Do not write prose status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
     )
     lines.append(
         "If nothing is noteworthy at a scope, leave that `\(reviewDirectoryName)/` directory absent or empty."
@@ -1008,7 +1011,7 @@ private func appendReviewOutputContract(
     lines.append("  \"title\": \"Seed cache fixtures before listing values\",")
     lines.append("  \"scope\": \"test\",")
     lines.append("  \"reviewer\": \"\(reviewer)\",")
-    lines.append("  \"kind\": \"test-gap\",")
+    lines.append("  \"severity\": \"concern\",")
     lines.append("  \"confidence\": \"medium\",")
     lines.append("  \"locations\": [")
     lines.append(
