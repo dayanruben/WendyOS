@@ -432,6 +432,17 @@ func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
 	return result
 }
 
+// TelemetryPublisher is the minimal interface for publishing OTel telemetry.
+// Both *TelemetryBroadcaster and *TelemetryBuffer implement it.
+type TelemetryPublisher interface {
+	PublishLogs(req *otelpb.ExportLogsServiceRequest)
+	PublishMetrics(req *otelpb.ExportMetricsServiceRequest)
+	PublishTraces(req *otelpb.ExportTraceServiceRequest)
+}
+
+var _ TelemetryPublisher = (*TelemetryBroadcaster)(nil)
+var _ TelemetryPublisher = (*TelemetryBuffer)(nil)
+
 // ReadFromCursor reads up to maxN frames starting at cursor for sig.
 // Returns frames, the updated cursor, and any I/O error.
 // If cursor.File is empty, reads from the oldest segment.

@@ -15,8 +15,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 const (

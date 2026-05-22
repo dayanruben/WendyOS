@@ -473,10 +473,11 @@ func (s *TelemetryService) StreamTraces(req *agentpb.StreamTracesRequest, stream
 
 type OTELLogsReceiver struct {
 	otelpb.UnimplementedLogsServiceServer
-	broadcaster *TelemetryBroadcaster
+	broadcaster TelemetryPublisher
 }
 
-func NewOTELLogsReceiver(b *TelemetryBroadcaster) *OTELLogsReceiver {
+// NewOTELLogsReceiver creates a new OTELLogsReceiver.
+func NewOTELLogsReceiver(b TelemetryPublisher) *OTELLogsReceiver {
 	return &OTELLogsReceiver{broadcaster: b}
 }
 
@@ -487,10 +488,11 @@ func (r *OTELLogsReceiver) Export(_ context.Context, req *otelpb.ExportLogsServi
 
 type OTELMetricsReceiver struct {
 	otelpb.UnimplementedMetricsServiceServer
-	broadcaster *TelemetryBroadcaster
+	broadcaster TelemetryPublisher
 }
 
-func NewOTELMetricsReceiver(b *TelemetryBroadcaster) *OTELMetricsReceiver {
+// NewOTELMetricsReceiver creates a new OTELMetricsReceiver.
+func NewOTELMetricsReceiver(b TelemetryPublisher) *OTELMetricsReceiver {
 	return &OTELMetricsReceiver{broadcaster: b}
 }
 
@@ -501,10 +503,11 @@ func (r *OTELMetricsReceiver) Export(_ context.Context, req *otelpb.ExportMetric
 
 type OTELTraceReceiver struct {
 	otelpb.UnimplementedTraceServiceServer
-	broadcaster *TelemetryBroadcaster
+	broadcaster TelemetryPublisher
 }
 
-func NewOTELTraceReceiver(b *TelemetryBroadcaster) *OTELTraceReceiver {
+// NewOTELTraceReceiver creates a new OTELTraceReceiver.
+func NewOTELTraceReceiver(b TelemetryPublisher) *OTELTraceReceiver {
 	return &OTELTraceReceiver{broadcaster: b}
 }
 
