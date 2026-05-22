@@ -91,7 +91,11 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 			return
 		}
 
-		conn, client, err := f.dial(ctx, cloudHost, certPEM, chainPEM, keyPEM)
+		// Convert the key string to []byte once per dial so dial can wipe it.
+		// The keyPEM string's backing bytes remain in memory (Go strings are
+		// immutable); this is a known limitation of using string-typed certs.
+		keyData := []byte(keyPEM)
+		conn, client, err := f.dial(ctx, cloudHost, certPEM, chainPEM, keyData)
 		if err != nil {
 			f.logger.Warn("cloud flusher: dial failed", zap.Error(err))
 			f.sleep(ctx, attempt)
@@ -131,14 +135,15 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 	}
 }
 
-func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM, keyPEM string) (*grpc.ClientConn, cloudpb.RemoteLoggingServiceClient, error) {
-	keyBytes := []byte(keyPEM)
+// dial establishes a TLS 1.3 gRPC connection. keyData is zeroed on return as
+// best-effort protection; crypto/tls may retain additional internal copies.
+func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, cloudpb.RemoteLoggingServiceClient, error) {
 	defer func() {
-		for i := range keyBytes {
-			keyBytes[i] = 0
+		for i := range keyData {
+			keyData[i] = 0
 		}
 	}()
-	cert, err := tls.X509KeyPair([]byte(certPEM), keyBytes)
+	cert, err := tls.X509KeyPair([]byte(certPEM), keyData)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cloud flusher: parse key pair: %w", err)
 	}

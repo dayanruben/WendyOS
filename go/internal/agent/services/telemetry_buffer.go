@@ -201,6 +201,19 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		return b, nil
 	}
 
+	// For production paths, resolve symlinks after MkdirAll and re-validate.
+	// filepath.Clean does not follow symlinks, so an attacker who controls a
+	// symlink inside /var/lib/wendy-agent/ could otherwise redirect writes.
+	if strings.HasPrefix(cfg.Dir+"/", "/var/lib/wendy-agent/") {
+		resolved, err := filepath.EvalSymlinks(cfg.Dir)
+		if err != nil || !strings.HasPrefix(resolved+"/", "/var/lib/wendy-agent/") {
+			logger.Warn("telemetry buffer: dir resolves outside allowed prefix, disk writes disabled",
+				zap.String("dir", cfg.Dir))
+			return b, nil
+		}
+		b.cfg.Dir = resolved
+	}
+
 	b.evictIfNeeded()
 
 	for _, sig := range []SignalType{SignalLogs, SignalMetrics, SignalTraces} {
