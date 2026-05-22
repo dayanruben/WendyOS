@@ -80,8 +80,7 @@
         "cliRunDirectory": { "type": "string" },
         "cliBinDirectory": { "type": "string" },
         "agentRunDirectory": { "type": "string" },
-        "agentBinDirectory": { "type": ["string", "null"] },
-        "testsDirectory": { "type": "string", "deprecated": true }
+        "agentBinDirectory": { "type": ["string", "null"] }
       }
     },
     "test": {

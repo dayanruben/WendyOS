@@ -116,23 +116,32 @@ private func attemptTestDirectories(in attemptURL: URL) throws -> [URL] {
     guard FileManager.default.fileExists(atPath: attemptURL.path) else {
         return []
     }
-    guard
-        let enumerator = FileManager.default.enumerator(
-            at: attemptURL,
-            includingPropertiesForKeys: [.isDirectoryKey]
-        )
-    else {
-        throw ValidationError("Attempt directory cannot be read: \(attemptURL.path)")
-    }
+
+    let suiteURLs = try FileManager.default.contentsOfDirectory(
+        at: attemptURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    )
 
     var directories: [URL] = []
-    for case let url as URL in enumerator {
-        let recordURL = url.appendingPathComponent("recording.md")
-        if FileManager.default.fileExists(atPath: recordURL.path) {
-            directories.append(url)
+    for suiteURL in suiteURLs where try isDirectory(suiteURL) {
+        let testURLs = try FileManager.default.contentsOfDirectory(
+            at: suiteURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        for testURL in testURLs where try isDirectory(testURL) {
+            let recordURL = testURL.appendingPathComponent("recording.md")
+            if FileManager.default.fileExists(atPath: recordURL.path) {
+                directories.append(testURL)
+            }
         }
     }
     return directories.sorted { $0.path < $1.path }
+}
+
+private func isDirectory(_ url: URL) throws -> Bool {
+    try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
 }
 
 private func copyAttemptLevelFiles(from attemptURL: URL, to destinationURL: URL) throws {
