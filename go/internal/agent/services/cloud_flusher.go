@@ -132,7 +132,13 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 }
 
 func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM, keyPEM string) (*grpc.ClientConn, cloudpb.RemoteLoggingServiceClient, error) {
-	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	keyBytes := []byte(keyPEM)
+	defer func() {
+		for i := range keyBytes {
+			keyBytes[i] = 0
+		}
+	}()
+	cert, err := tls.X509KeyPair([]byte(certPEM), keyBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cloud flusher: parse key pair: %w", err)
 	}

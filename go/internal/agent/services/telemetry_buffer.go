@@ -133,8 +133,15 @@ type TelemetryBufferConfig struct {
 
 func (c *TelemetryBufferConfig) applyDefaults() {
 	if c.Dir == "" {
-		if d := os.Getenv("WENDY_TELEMETRY_DIR"); d != "" && filepath.IsAbs(d) {
-			c.Dir = filepath.Clean(d)
+		if d := os.Getenv("WENDY_TELEMETRY_DIR"); d != "" {
+			cleaned := filepath.Clean(d)
+			// Require an absolute path within the agent's data directory to
+			// prevent writing telemetry to security-sensitive locations.
+			if filepath.IsAbs(cleaned) && strings.HasPrefix(cleaned+"/", "/var/lib/wendy-agent/") {
+				c.Dir = cleaned
+			} else {
+				c.Dir = defaultTelemetryDir
+			}
 		} else {
 			c.Dir = defaultTelemetryDir
 		}
@@ -192,7 +199,8 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 
 	for _, sig := range []SignalType{SignalLogs, SignalMetrics, SignalTraces} {
 		if err := b.openLatestWriter(sig); err != nil {
-			return nil, fmt.Errorf("opening writer for %s: %w", sig, err)
+			logger.Warn("telemetry buffer: cannot open writer, disk writes disabled",
+				zap.String("signal", string(sig)), zap.Error(err))
 		}
 	}
 
