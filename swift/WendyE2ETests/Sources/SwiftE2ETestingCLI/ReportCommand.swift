@@ -1142,7 +1142,7 @@ private func renderScopedAIReviews(
     let renderedReviews = reviews.map { review in
         """
         <article class="ai-review">
-        <h5><span class="ai-review-title">\(escapeHTML(review.title))</span>\(renderAIReviewerBadge(review.metadata.reviewer))\(renderAIReviewDetailsLink(review.path))</h5>
+        <h5><span class="ai-review-title">\(escapeHTML(review.title))</span>\(renderAIReviewerBadge(review.metadata.reviewer))\(renderAIReviewSeverityBadge(review.metadata.severity))\(renderAIReviewDetailsLink(review.path))</h5>
         <div class="ai-review-markdown">\(renderMarkdown(review.summaryMarkdown))</div>
         </article>
         """
@@ -1158,6 +1158,10 @@ private func renderScopedAIReviews(
 
 private func renderAIReviewDetailsLink(_ detailsPath: String) -> String {
     "<a class=\"ai-review-details-link\" href=\"\(escapeHTML(detailsPath))\">Details</a>"
+}
+
+private func renderAIReviewSeverityBadge(_ severity: E2EReviewSeverity) -> String {
+    "<span class=\"ai-review-severity-badge \(severity.rawValue)\"><span aria-hidden=\"true\">\(severity.heart)</span>\(escapeHTML(severity.rawValue))</span>"
 }
 
 private func renderAIReviewerBadge(_ reviewer: String) -> String {
