@@ -57,12 +57,11 @@ struct AggregateCommand: ParsableCommand {
         }
 
         for runURL in runURLs {
-            try writeRunInfo(
-                at: runURL,
-                mappedAttempts: mappedAttempts.filter { mappedAttempt in
-                    mappedAttempt.runURL == runURL
-                }
-            )
+            let runAttempts = mappedAttempts.filter { mappedAttempt in
+                mappedAttempt.runURL == runURL
+            }
+            try writeRunStructureInfo(at: runURL, mappedAttempts: runAttempts)
+            try writeAggregateInfo(at: runURL, mappedAttempts: runAttempts)
         }
 
         for root in runURLs.sorted(by: { $0.path < $1.path }) {
@@ -169,10 +168,40 @@ private struct MappedTest: Encodable {
     var path: String
 }
 
-private struct RunInfo: Encodable {
+private struct AggregateInfo: Encodable {
     var kind: String
+    var version: Int
     var generatedAt: String
     var attempts: [MappedAttempt]
+}
+
+private struct SuiteInfo: Encodable {
+    var kind: String
+    var version: Int
+    var suiteKey: String
+    var tests: [String]
+}
+
+private struct TestInfo: Encodable {
+    var kind: String
+    var version: Int
+    var suiteKey: String
+    var testKey: String
+    var attempts: [TestAttemptInfo]
+}
+
+private struct TestAttemptInfo: Encodable {
+    var attemptID: String
+    var targetName: String
+    var attempt: String
+    var path: String
+
+    enum CodingKeys: String, CodingKey {
+        case attemptID = "attemptId"
+        case targetName
+        case attempt
+        case path
+    }
 }
 
 private func attemptTestDirectories(in testsURL: URL) throws -> [URL] {
@@ -199,7 +228,7 @@ private func attemptTestDirectories(in testsURL: URL) throws -> [URL] {
 }
 
 private func copyAttemptLevelFiles(from attemptURL: URL, to destinationURL: URL) throws {
-    for fileName in ["info.json", "test-results.xml", "test-results.raw.xml"] {
+    for fileName in ["attempt.json", "test-results.xml", "test-results.raw.xml"] {
         let sourceURL = attemptURL.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
         try copyItem(at: sourceURL, to: destinationURL.appendingPathComponent(fileName))
@@ -213,16 +242,81 @@ private func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
     try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
 }
 
-private func writeRunInfo(at runURL: URL, mappedAttempts: [MappedAttempt]) throws {
-    let info = RunInfo(
-        kind: "swift-e2e-run",
-        generatedAt: ISO8601DateFormatter().string(from: Date()),
-        attempts: mappedAttempts.sorted { $0.attemptID < $1.attemptID }
+private func writeRunStructureInfo(at runURL: URL, mappedAttempts: [MappedAttempt]) throws {
+    var testAttempts: [RunTestKey: [TestAttemptInfo]] = [:]
+    for mappedAttempt in mappedAttempts {
+        for test in mappedAttempt.mappedTests {
+            let key = RunTestKey(suiteKey: test.suiteKey, testKey: test.testKey)
+            testAttempts[key, default: []].append(
+                TestAttemptInfo(
+                    attemptID: mappedAttempt.attemptID,
+                    targetName: mappedAttempt.targetName,
+                    attempt: mappedAttempt.attempt,
+                    path: test.path
+                )
+            )
+        }
+    }
+
+    let testsBySuite = Dictionary(grouping: testAttempts.keys, by: \.suiteKey)
+    for suiteKey in testsBySuite.keys.sorted() {
+        let testKeys = testsBySuite[suiteKey, default: []].map(\.testKey).sorted()
+        let suiteURL = runURL.appendingPathComponent(suiteKey, isDirectory: true)
+        try writeJSON(
+            SuiteInfo(
+                kind: "swift-e2e-suite",
+                version: 1,
+                suiteKey: suiteKey,
+                tests: testKeys
+            ),
+            to: suiteURL.appendingPathComponent("suite.json")
+        )
+
+        for testKey in testKeys {
+            let testURL = suiteURL.appendingPathComponent(testKey, isDirectory: true)
+            let attempts = testAttempts[
+                RunTestKey(suiteKey: suiteKey, testKey: testKey),
+                default: []
+            ].sorted {
+                if $0.targetName != $1.targetName { return $0.targetName < $1.targetName }
+                return $0.attempt < $1.attempt
+            }
+            try writeJSON(
+                TestInfo(
+                    kind: "swift-e2e-test",
+                    version: 1,
+                    suiteKey: suiteKey,
+                    testKey: testKey,
+                    attempts: attempts
+                ),
+                to: testURL.appendingPathComponent("test.json")
+            )
+        }
+    }
+}
+
+private struct RunTestKey: Hashable {
+    var suiteKey: String
+    var testKey: String
+}
+
+private func writeAggregateInfo(at runURL: URL, mappedAttempts: [MappedAttempt]) throws {
+    try writeJSON(
+        AggregateInfo(
+            kind: "swift-e2e-aggregate",
+            version: 1,
+            generatedAt: ISO8601DateFormatter().string(from: Date()),
+            attempts: mappedAttempts.sorted { $0.attemptID < $1.attemptID }
+        ),
+        to: runURL.appendingPathComponent("aggregate.json")
     )
+}
+
+private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(info)
-    try data.write(to: runURL.appendingPathComponent("info.json"))
+    let data = try encoder.encode(value)
+    try data.write(to: url, options: .atomic)
 }
 
 private func runRelativePath(_ url: URL, base: URL) -> String {

@@ -136,9 +136,11 @@ The agent should not be asked to read a full saved patch by default.
 
 ## Review output files
 
-Keep current Markdown outputs for report rendering:
+Keep current Markdown outputs for report rendering, with review step metadata
+kept separate from prose:
 
 ```text
+<run>/review.json
 <run>/review.summary.md
 <run>/review.details.md
 <run>/<suite>/review.summary.md
@@ -147,7 +149,9 @@ Keep current Markdown outputs for report rendering:
 <run>/<suite>/<test>/review.details.md
 ```
 
-Future automation can add structured output:
+`review.json` should contain only database-style fields such as mode, status,
+diff context paths, and review output paths. Future automation can add a
+structured findings index without inlining review prose:
 
 ```text
 <run>/review.findings.json

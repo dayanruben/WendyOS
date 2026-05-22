@@ -59,6 +59,10 @@ struct ReportCommand: ParsableCommand {
             aiReviews: aiReviews,
             outputURL: outputURL
         )
+        try writeReportMetadata(
+            runURL: runURL,
+            outputURL: outputURL
+        )
     }
 }
 
@@ -164,6 +168,13 @@ private struct ReportTestObservation {
     var duration: ReportTestDuration? {
         status.duration
     }
+}
+
+private struct ReportMetadata: Encodable {
+    var kind: String
+    var version: Int
+    var generatedAt: String
+    var htmlPath: String
 }
 
 private enum ReportTestStatus {
@@ -494,19 +505,35 @@ private func fenced(label: String, in text: String) -> String {
 }
 
 private func isRunDirectory(_ runURL: URL) throws -> Bool {
-    let infoURL = runURL.appendingPathComponent("info.json")
-    guard FileManager.default.fileExists(atPath: infoURL.path) else {
+    let aggregateURL = runURL.appendingPathComponent("aggregate.json")
+    guard FileManager.default.fileExists(atPath: aggregateURL.path) else {
         return false
     }
 
-    let data = try Data(contentsOf: infoURL)
+    let data = try Data(contentsOf: aggregateURL)
     guard
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-        object["kind"] as? String == "swift-e2e-run"
+        object["kind"] as? String == "swift-e2e-aggregate"
     else {
         return false
     }
     return true
+}
+
+private func writeReportMetadata(
+    runURL: URL,
+    outputURL: URL
+) throws {
+    let metadata = ReportMetadata(
+        kind: "swift-e2e-report",
+        version: 1,
+        generatedAt: ISO8601DateFormatter().string(from: Date()),
+        htmlPath: relativePath(from: runURL, to: outputURL)
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(metadata)
+    try data.write(to: runURL.appendingPathComponent("report.json"), options: .atomic)
 }
 
 private func parseXUnitResults(at resultURL: URL) throws -> [TestResultKey: ReportTestStatus] {
@@ -1251,13 +1278,13 @@ private func renderObservations(
 ) -> String {
     guard !observations.isEmpty else {
         return
-            "<div class=\"test-body\"><p class=\"note\">No concrete observations were found for this test.</p>\(renderTestAIReview(aiReview))</div>"
+            "<div class=\"test-body\"><p class=\"note\">No attempt results were found for this test.</p>\(renderTestAIReview(aiReview))</div>"
     }
 
     var chunks: [String] = [
         "<div class=\"test-body\">",
         renderTestAIReview(aiReview),
-        "<section class=\"observations\" aria-label=\"Concrete observations\">",
+        "<section class=\"observations\" aria-label=\"Attempt results\">",
     ]
     var previousTarget: String?
     for observation in observations.sorted(by: observationSort) {
@@ -1321,12 +1348,12 @@ private func targetRouteComponents(for target: String) -> (cli: String, agent: S
 }
 
 private func targetInfo(at attemptURL: URL) throws -> (cliOS: String?, agentOS: String?) {
-    let infoURL = attemptURL.appendingPathComponent("info.json")
-    guard FileManager.default.fileExists(atPath: infoURL.path) else {
+    let attemptInfoURL = attemptURL.appendingPathComponent("attempt.json")
+    guard FileManager.default.fileExists(atPath: attemptInfoURL.path) else {
         return (nil, nil)
     }
 
-    let data = try Data(contentsOf: infoURL)
+    let data = try Data(contentsOf: attemptInfoURL)
     guard
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
         let target = object["target"] as? [String: Any]

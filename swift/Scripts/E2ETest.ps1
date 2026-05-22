@@ -8,7 +8,7 @@ function Show-Usage {
     @"
 Usage: E2ETest.ps1 [OPTIONS]
 
-Run the WendyAgent Swift E2E tests and write generated files to an E2E run directory.
+Run the WendyAgent Swift E2E tests and write generated files to an E2E attempt directory.
 
 Options match Scripts/E2ETest.sh.
 "@ | Write-Output
@@ -135,7 +135,7 @@ function Build-CLI {
     Write-Output "    Version: $script:WendyCLIVersion"
 }
 
-function Write-RunInfo([int]$Status) {
+function Write-AttemptInfo([int]$Status) {
     New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
     $gitCommit = (& git -C $script:RepoDir rev-parse HEAD 2>$null) -join ''
     $gitBranch = (& git -C $script:RepoDir branch --show-current 2>$null) -join ''
@@ -146,7 +146,9 @@ function Write-RunInfo([int]$Status) {
     $goVersion = (& go version 2>$null) -join ''
 
     $info = [ordered]@{
-        runID = $script:RunID
+        kind = 'swift-e2e-attempt'
+        version = 1
+        attemptID = $script:RunID
         createdAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         exitStatus = $Status
         git = [ordered]@{
@@ -175,7 +177,7 @@ function Write-RunInfo([int]$Status) {
             transport = if ($script:Transport) { $script:Transport } else { $null }
         }
         paths = [ordered]@{
-            runDirectory = $script:RunDir
+            attemptDirectory = $script:RunDir
             outputDirectory = $script:OutputDir
             cliRunDirectory = $script:CLIRunDir
             cliBinDirectory = $script:CLIBinDir
@@ -196,9 +198,9 @@ function Write-RunInfo([int]$Status) {
         }
     }
 
-    $path = Join-Path $script:RunDir 'info.json'
+    $path = Join-Path $script:RunDir 'attempt.json'
     $info | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding UTF8
-    Write-Output "==> Wrote Swift E2E run info: $path"
+    Write-Output "==> Wrote Swift E2E attempt info: $path"
 }
 
 $RunID = $env:WENDY_E2E_RUN_ID
@@ -355,8 +357,8 @@ $env:WENDY_E2E_VERBOSE = $Verbose.ToString().ToLowerInvariant()
 
 Write-Output '==> Running Swift E2E tests'
 Write-Output "    Package:  $PackageDir"
-Write-Output "    Run ID:   $RunID"
-Write-Output "    Run dir:  $script:RunDir"
+Write-Output "    Attempt ID:  $RunID"
+Write-Output "    Attempt dir: $script:RunDir"
 Write-Output "    CLI run:  $script:CLIRunDir"
 Write-Output "    Agent run: $script:AgentRunDir"
 Write-Output "    CLI bin:  $script:CLIBinDir"
@@ -389,5 +391,5 @@ if (Test-Path -LiteralPath $ExpandedTestResultsOutputPath -PathType Leaf) {
 $sanitizeStatus = $LASTEXITCODE
 if ($testStatus -eq 0 -and $sanitizeStatus -ne 0) { $testStatus = $sanitizeStatus }
 
-Write-RunInfo $testStatus
+Write-AttemptInfo $testStatus
 exit $testStatus

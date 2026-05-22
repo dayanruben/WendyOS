@@ -101,7 +101,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Run the WendyAgent Swift E2E tests and write generated files to an E2E run directory.
+Run the WendyAgent Swift E2E tests and write generated files to an E2E attempt directory.
 
 Options:
   --filter FILTER       Pass a SwiftPM test filter (can be repeated). If omitted,
@@ -131,9 +131,9 @@ Options:
 
 Environment:
   WENDY_E2E_TEST_FILTERS              Comma-separated SwiftPM filters.
-  WENDY_E2E_RUN_ID                    Optional run identifier for default paths.
-  WENDY_E2E_RUN_NAME                  Run name for generated run IDs; defaults to local.
-  WENDY_E2E_OUTPUT_DIR                Required local root directory for runner output runs.
+  WENDY_E2E_RUN_ID                    Optional attempt identifier for default paths.
+  WENDY_E2E_RUN_NAME                  Attempt name for generated attempt IDs; defaults to local.
+  WENDY_E2E_OUTPUT_DIR                Required local root directory for attempt output.
   WENDY_E2E_CLI_ROOT_DIR              Root directory for CLI machine runs.
   WENDY_E2E_CLI_REPO_DIR              wendy-agent repo root on the CLI machine.
   WENDY_E2E_CLI_BIN_DIR               Directory where the built wendy CLI is written.
@@ -524,9 +524,9 @@ normalize_xunit_output() {
   fi
 }
 
-write_run_info() {
+write_attempt_info() {
   local status="$1"
-  local info_path="$RUN_DIR/info.json"
+  local info_path="$RUN_DIR/attempt.json"
 
   mkdir -p "$RUN_DIR"
 
@@ -547,7 +547,9 @@ write_run_info() {
 
   {
     echo "{"
-    printf '  "runID": '; json_string "$RUN_ID"; echo ","
+    printf '  "kind": '; json_string "swift-e2e-attempt"; echo ","
+    printf '  "version": 1,\n'
+    printf '  "attemptID": '; json_string "$RUN_ID"; echo ","
     printf '  "createdAt": '; json_string "$created_at"; echo ","
     printf '  "exitStatus": %s,\n' "$status"
     echo '  "git": {'
@@ -576,7 +578,7 @@ write_run_info() {
     printf '    "transport": '; json_string_or_null "$TRANSPORT"; echo
     echo '  },'
     echo '  "paths": {'
-    printf '    "runDirectory": '; json_string "$RUN_DIR"; echo ","
+    printf '    "attemptDirectory": '; json_string "$RUN_DIR"; echo ","
     printf '    "outputDirectory": '; json_string "$OUTPUT_DIR"; echo ","
     printf '    "cliRunDirectory": '; json_string "$CLI_RUN_DIR"; echo ","
     printf '    "cliBinDirectory": '; json_string "$CLI_BIN_DIR"; echo ","
@@ -598,7 +600,7 @@ write_run_info() {
     echo "}"
   } > "$info_path"
 
-  echo "==> Wrote Swift E2E run info: $info_path"
+  echo "==> Wrote Swift E2E attempt info: $info_path"
 }
 
 SWIFT_TEST_ARGS=("test")
@@ -635,8 +637,8 @@ SWIFT_TEST_ENV=(
 )
 echo "==> Running Swift E2E tests"
 echo "    Package:  $PACKAGE_DIR"
-echo "    Run ID:   $RUN_ID"
-echo "    Run dir:  $RUN_DIR"
+echo "    Attempt ID:  $RUN_ID"
+echo "    Attempt dir: $RUN_DIR"
 echo "    CLI run:  $CLI_RUN_DIR"
 echo "    Agent run: $AGENT_RUN_DIR"
 echo "    CLI bin:  $CLI_BIN_DIR"
@@ -670,5 +672,5 @@ set -e
 normalize_xunit_output
 bash "$SCRIPT_DIR/E2ESanitizeXUnit.sh" --run-dir "$RUN_DIR"
 
-write_run_info "$TEST_STATUS"
+write_attempt_info "$TEST_STATUS"
 exit "$TEST_STATUS"

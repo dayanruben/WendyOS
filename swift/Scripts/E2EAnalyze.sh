@@ -131,15 +131,15 @@ is_attempt_dir() {
   [[ -d "$dir" ]] || return 1
   [[ "$base" == "$RUN_PREFIX".* ]] || return 1
   [[ "$base" =~ \.[0-9][0-9][0-9][0-9]$ ]] || return 1
-  [[ -f "$dir/info.json" ]] || return 1
-  ! grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-run"' "$dir/info.json"
+  [[ -f "$dir/attempt.json" ]] || return 1
+  [[ ! -f "$dir/aggregate.json" ]]
 }
 
 is_run_dir() {
   local dir="$1"
   [[ -d "$dir" ]] || return 1
-  [[ -f "$dir/info.json" ]] || return 1
-  grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-run"' "$dir/info.json"
+  [[ -f "$dir/aggregate.json" ]] || return 1
+  grep -q '"kind"[[:space:]]*:[[:space:]]*"swift-e2e-aggregate"' "$dir/aggregate.json"
 }
 
 run_dir_for_attempt() {

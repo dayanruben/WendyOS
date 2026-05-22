@@ -71,22 +71,18 @@ $RunPrefix = $RunPrefix.TrimEnd('.')
 function Test-AttemptDirectory([System.IO.DirectoryInfo]$Directory) {
     if (-not $Directory.Name.StartsWith("$RunPrefix.")) { return $false }
     if ($Directory.Name -notmatch '\.\d{4}$') { return $false }
-    $infoPath = Join-Path $Directory.FullName 'info.json'
-    if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { return $false }
-    try {
-        $info = Get-Content -Raw -LiteralPath $infoPath | ConvertFrom-Json
-        return $info.kind -ne 'swift-e2e-run'
-    } catch {
-        return $false
-    }
+    $attemptPath = Join-Path $Directory.FullName 'attempt.json'
+    if (-not (Test-Path -LiteralPath $attemptPath -PathType Leaf)) { return $false }
+    $aggregatePath = Join-Path $Directory.FullName 'aggregate.json'
+    return -not (Test-Path -LiteralPath $aggregatePath -PathType Leaf)
 }
 
 function Test-RunDirectory([System.IO.DirectoryInfo]$Directory) {
-    $infoPath = Join-Path $Directory.FullName 'info.json'
-    if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { return $false }
+    $aggregatePath = Join-Path $Directory.FullName 'aggregate.json'
+    if (-not (Test-Path -LiteralPath $aggregatePath -PathType Leaf)) { return $false }
     try {
-        $info = Get-Content -Raw -LiteralPath $infoPath | ConvertFrom-Json
-        return $info.kind -eq 'swift-e2e-run'
+        $info = Get-Content -Raw -LiteralPath $aggregatePath | ConvertFrom-Json
+        return $info.kind -eq 'swift-e2e-aggregate'
     } catch {
         return $false
     }
