@@ -1033,7 +1033,7 @@ private func renderReport(
         throw ValidationError("Report template does not contain expected card/footer markers.")
     }
 
-    try renderReviewAggregateHTMLIfPresent(runURL: runURL)
+    try renderE2EReviewAggregateHTMLIfPresent(runURL: runURL)
 
     let reviewHTML = renderRunAIReview(aiReviews.root)
     let testCards = renderCards(files: files)
@@ -1108,7 +1108,7 @@ private func renderReviewAggregateLink(runURL: URL) -> String {
     return " · Review: <a href=\"review.html\">HTML</a>, <a href=\"review.md\">Markdown</a>"
 }
 
-private func renderReviewAggregateHTMLIfPresent(runURL: URL) throws {
+func renderE2EReviewAggregateHTMLIfPresent(runURL: URL) throws {
     let markdownURL = runURL.appendingPathComponent("review.md")
     guard FileManager.default.fileExists(atPath: markdownURL.path) else {
         return

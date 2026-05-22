@@ -5,8 +5,10 @@ func writeE2EReviewAggregate(in runURL: URL) throws {
     let markdown = renderE2EReviewAggregate(issues: issues)
     let outputURL = runURL.appendingPathComponent("review.md")
     try markdown.write(to: outputURL, atomically: true, encoding: .utf8)
+    try renderE2EReviewAggregateHTMLIfPresent(runURL: runURL)
     print("==> Wrote Swift E2E review aggregate")
-    print("    Review: \(outputURL.path)")
+    print("    Markdown: \(outputURL.path)")
+    print("    HTML:     \(runURL.appendingPathComponent("review.html").path)")
 }
 
 private struct E2EReviewAggregateIssue {
