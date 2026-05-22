@@ -89,10 +89,17 @@ var csiRemnantPattern = regexp.MustCompile(`\[[0-9;]*[A-Za-z]`)
 // debug/trace band. KERN_EMERG/ALERT/CRIT additionally emit a zap.Warn so
 // they are visible in the agent's own log stream. See kernelLevelToOTEL.
 func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *TelemetryBroadcaster) {
-	// Default redact to true (safe by default); only disable when explicitly set.
+	// Default redact to true (safe by default).
+	// Disabling requires BOTH WENDY_DMESG_REDACT=false AND WENDY_DMESG_ALLOW_PII=true
+	// as a two-factor compensating control against accidental or unauthorised disable.
 	redact := true
-	if v, err := strconv.ParseBool(os.Getenv("WENDY_DMESG_REDACT")); err == nil {
-		redact = v
+	if v, err := strconv.ParseBool(os.Getenv("WENDY_DMESG_REDACT")); err == nil && !v {
+		allowPII, _ := strconv.ParseBool(os.Getenv("WENDY_DMESG_ALLOW_PII"))
+		if allowPII {
+			redact = false
+		} else {
+			logger.Warn("WENDY_DMESG_REDACT=false requires WENDY_DMESG_ALLOW_PII=true; keeping redaction enabled")
+		}
 	}
 
 	// Capture hostname once for per-message redaction and resource gating.
@@ -134,9 +141,22 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 	}
 
 	if redact {
-		logger.Info("kernel dmesg collection started",
+		// Warn explicitly about best-effort scope so the gaps are visible in the
+		// audit log regardless of downstream monitoring thresholds. This prevents
+		// operators from mistaking regex-based filtering for full GDPR compliance.
+		logger.Warn("kernel dmesg collection started; PII redaction is best-effort only",
 			zap.String("source", "/dev/kmsg"),
 			zap.Bool("redact", redact),
+			zap.Strings("redact_covered", []string{
+				"MAC-address", "IPv4-address", "USB-SerialNumber", "ID_SERIAL",
+				"Bluetooth-bdaddr", "OOM-process-name+PID", "filesystem-home-paths",
+				"comm=", "hostname",
+			}),
+			zap.Strings("redact_not_covered", []string{
+				"IPv6", "process-argv", "NFS-paths",
+				"unlabelled-kernel-fields", "kernel-memory-addresses",
+			}),
+			zap.String("dpia_required", "operators must conduct a Data Protection Impact Assessment before forwarding dmesg to a cloud backend"),
 		)
 	} else {
 		// WARN so the redact=false state is visible in default INFO+ log streams
@@ -144,7 +164,7 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		logger.Warn("kernel dmesg collection started with PII redaction DISABLED",
 			zap.String("source", "/dev/kmsg"),
 			zap.Bool("redact", redact),
-			zap.String("compliance_note", "WENDY_DMESG_REDACT=false: raw kernel messages forwarded; verify GDPR/compliance obligations are met"),
+			zap.String("compliance_note", "raw kernel messages forwarded; GDPR/compliance obligations are operator responsibility"),
 		)
 	}
 	defer logger.Info("kernel dmesg collection stopped")
@@ -270,13 +290,18 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 }
 
 // dmesgResource returns the OTel resource for kernel log records.
-// When redact is true, service.instance.id (hostname) is omitted to avoid
-// leaking a device-identifying value through the resource attributes
-// independently of the per-message PII redaction.
+// service.instance.id (hostname) is gated behind redact=false so the device
+// hostname is not forwarded when PII redaction is enabled. The wendy.dmesg.redact
+// attribute records the effective redaction state for downstream monitoring.
 func dmesgResource(redact bool, hostname string) *otelpb.Resource {
+	redactStr := "true"
+	if !redact {
+		redactStr = "false"
+	}
 	attrs := []*otelpb.KeyValue{
 		stringKV("service.name", "kernel"),
 		stringKV("service.namespace", "wendy"),
+		stringKV("wendy.dmesg.redact", redactStr),
 	}
 	if !redact && hostname != "" {
 		attrs = append(attrs, stringKV("service.instance.id", hostname))
