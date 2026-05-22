@@ -416,23 +416,17 @@ func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 	if err != nil {
 		return flushCursor{}
 	}
-	// Try the checksummed format first.
 	var state cursorState
-	if err := json.Unmarshal(data, &state); err == nil && state.Cursors != nil {
-		want, cerr := cursorStateCRC(state.Cursors)
-		if cerr != nil || want != state.CRC32 {
-			b.logger.Warn("telemetry buffer: cursor.json checksum mismatch, resetting")
-			return flushCursor{}
-		}
-		return state.Cursors[sig]
-	}
-	// Fall back to the legacy format (plain cursorMap) for backward compatibility.
-	var m cursorMap
-	if err := json.Unmarshal(data, &m); err != nil {
-		b.logger.Warn("telemetry buffer: corrupt cursor.json, resetting", zap.Error(err))
+	if err := json.Unmarshal(data, &state); err != nil || state.Cursors == nil {
+		b.logger.Warn("telemetry buffer: corrupt cursor.json, resetting")
 		return flushCursor{}
 	}
-	return m[sig]
+	want, cerr := cursorStateCRC(state.Cursors)
+	if cerr != nil || want != state.CRC32 {
+		b.logger.Warn("telemetry buffer: cursor.json checksum mismatch, resetting")
+		return flushCursor{}
+	}
+	return state.Cursors[sig]
 }
 
 // SaveCursor persists cursor for sig to cursor.json atomically.
@@ -442,7 +436,6 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 	path := filepath.Join(b.cfg.Dir, cursorFile)
 	var m cursorMap
 	if data, err := os.ReadFile(path); err == nil {
-		// Prefer the checksummed format; fall back to legacy.
 		var state cursorState
 		if jerr := json.Unmarshal(data, &state); jerr == nil && state.Cursors != nil {
 			if want, cerr := cursorStateCRC(state.Cursors); cerr == nil && want == state.CRC32 {
@@ -450,8 +443,8 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 			} else {
 				b.logger.Warn("telemetry buffer: cursor.json checksum mismatch on save, resetting")
 			}
-		} else if jerr := json.Unmarshal(data, &m); jerr != nil {
-			b.logger.Warn("telemetry buffer: corrupt cursor.json on save, resetting", zap.Error(jerr))
+		} else {
+			b.logger.Warn("telemetry buffer: corrupt cursor.json on save, resetting")
 		}
 	}
 	if m == nil {
