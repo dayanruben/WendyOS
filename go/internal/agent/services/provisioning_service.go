@@ -65,7 +65,7 @@ type ProvisioningService struct {
 	cloudHost     string
 	orgID         int32
 	assetID       int32
-	keyPEM        string
+	keyPEM        []byte // stored as []byte so it can be zeroed on rotation/shutdown
 	certPEM       string
 	chainPEM      string
 	CloudDialer   CloudDialer
@@ -83,14 +83,14 @@ func NewProvisioningService(logger *zap.Logger, configPath string) *Provisioning
 }
 
 // ProvisioningCerts returns the stored certificate material if the agent is provisioned.
-// The private key is returned as []byte so callers can zero it after use;
-// the internal string copy in ProvisioningService cannot be zeroed (Go string
-// immutability) but the returned slice minimises the key-material window.
+// The private key is returned as a copy so callers can zero it after use.
 // Returns empty cert/chain and nil key if not provisioned.
 func (s *ProvisioningService) ProvisioningCerts() (certPEM, chainPEM string, keyData []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.certPEM, s.chainPEM, []byte(s.keyPEM)
+	keyData = make([]byte, len(s.keyPEM))
+	copy(keyData, s.keyPEM)
+	return s.certPEM, s.chainPEM, keyData
 }
 
 func (s *ProvisioningService) ProvisioningInfo() (cloudHost string, orgID, assetID int32, enrolled bool) {
@@ -146,7 +146,7 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 
 	// Generate CSR using org and asset as common name.
 	commonName := fmt.Sprintf("sh/wendy/%d/%d", req.GetOrganizationId(), req.GetAssetId())
-	csrPEM, err := certs.GenerateCSR(keyPEM, commonName)
+	csrPEM, err := certs.GenerateCSR(string(keyPEM), commonName)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate CSR: %v", err)
 	}
@@ -193,7 +193,7 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		CloudHost: req.GetCloudHost(),
 		OrgID:     req.GetOrganizationId(),
 		AssetID:   req.GetAssetId(),
-		KeyPEM:    keyPEM,
+		KeyPEM:    string(keyPEM),
 		CertPEM:   certPEM,
 		ChainPEM:  chainPEM,
 	}
@@ -212,7 +212,7 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	s.chainPEM = chainPEM
 
 	// Write individual PEM files so the container registry can mount and use them.
-	if err := s.writePEMFiles(keyPEM, certPEM, chainPEM); err != nil {
+	if err := s.writePEMFiles(string(keyPEM), certPEM, chainPEM); err != nil {
 		s.logger.Error("Failed to write PEM files for registry", zap.Error(err))
 		// Non-fatal: provisioning.json is the source of truth.
 	}
@@ -226,7 +226,7 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	// the mutex here, to avoid interfering with any deferred Unlock.
 	cb := s.OnProvisioned
 	if cb != nil {
-		cb(certPEM, chainPEM, keyPEM)
+		cb(certPEM, chainPEM, string(keyPEM))
 	}
 
 	return &agentpb.StartProvisioningResponse{}, nil
@@ -253,33 +253,37 @@ func (s *ProvisioningService) loadState() {
 	s.cloudHost = state.CloudHost
 	s.orgID = state.OrgID
 	s.assetID = state.AssetID
-	s.keyPEM = state.KeyPEM
+	s.keyPEM = []byte(state.KeyPEM)
 	s.certPEM = state.CertPEM
 	s.chainPEM = state.ChainPEM
 
 	// Ensure PEM files exist on disk (may have been lost during OTA update).
-	if s.enrolled && s.keyPEM != "" && s.certPEM != "" {
-		if err := s.writePEMFiles(s.keyPEM, s.certPEM, s.chainPEM); err != nil {
+	if s.enrolled && len(s.keyPEM) > 0 && s.certPEM != "" {
+		if err := s.writePEMFiles(string(s.keyPEM), s.certPEM, s.chainPEM); err != nil {
 			s.logger.Warn("Failed to restore PEM files from provisioning state", zap.Error(err))
 		}
 	}
 }
 
-func (s *ProvisioningService) loadOrGenerateKey() (string, error) {
+// loadOrGenerateKey returns the PEM-encoded private key for this device as []byte.
+// It reuses the key at {configPath}/device-key.pem if it exists, otherwise
+// generates a new one and persists it.
+func (s *ProvisioningService) loadOrGenerateKey() ([]byte, error) {
 	keyPath := filepath.Join(s.configPath, "device-key.pem")
 	if data, err := os.ReadFile(keyPath); err == nil && len(data) > 0 {
 		s.logger.Info("Reusing existing device key", zap.String("path", keyPath))
-		return string(data), nil
+		return data, nil
 	}
 
-	keyPEM, err := certs.GenerateKeyPair()
+	keyStr, err := certs.GenerateKeyPair()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	keyPEM := []byte(keyStr)
 
 	// Persist the key so it's reused on future provisioning.
 	if err := os.MkdirAll(s.configPath, 0o700); err == nil {
-		_ = os.WriteFile(keyPath, []byte(keyPEM), 0o600)
+		_ = os.WriteFile(keyPath, keyPEM, 0o600)
 	}
 
 	return keyPEM, nil

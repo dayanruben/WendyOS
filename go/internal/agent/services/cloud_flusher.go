@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"go.uber.org/zap"
@@ -186,12 +187,21 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 	// Group entries by app ID (service.name resource attribute).
 	appEntries := f.groupByApp(msgs)
 
+	// Sort app IDs for deterministic iteration order so that partial-failure
+	// retries always re-send apps in the same sequence.
+	appIDs := make([]string, 0, len(appEntries))
+	for appID := range appEntries {
+		appIDs = append(appIDs, appID)
+	}
+	sort.Strings(appIDs)
+
 	// Each app's entries are sent in a separate RPC. On partial failure (some apps
-	// succeed, then one fails), the cursor is NOT advanced and the entire batch
-	// is retried on the next pass — entries from already-uploaded apps will be
-	// re-sent. This is intentional at-least-once delivery; the cloud accepts duplicates.
+	// succeed, then one fails), the cursor is NOT advanced and the entire batch is
+	// retried — entries from already-uploaded apps will be re-sent. This is
+	// intentional at-least-once delivery; the cloud accepts duplicates.
 	collectorStr := cloudFlusherCollector
-	for appID, entries := range appEntries {
+	for i, appID := range appIDs {
+		entries := appEntries[appID]
 		req := &cloudpb.WriteLogEntriesRequest{
 			OrganizationId: orgID,
 			AssetId:        assetID,
@@ -200,6 +210,13 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 			Entries:        entries,
 		}
 		if _, err := client.WriteLogEntries(ctx, req); err != nil {
+			if i > 0 {
+				// Warn operators that already-uploaded entries will be re-sent on retry.
+				f.logger.Warn("cloud flusher: partial batch failure; prior apps will be re-sent on retry",
+					zap.Int("apps_already_sent", i),
+					zap.String("failed_app", appID),
+				)
+			}
 			// Do NOT advance cursor; caller will retry.
 			return fmt.Errorf("cloud flusher: WriteLogEntries (app=%s): %w", appID, err)
 		}
