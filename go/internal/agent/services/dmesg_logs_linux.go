@@ -136,10 +136,12 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 	// email addresses, ticket numbers, or other PII. The hash provides
 	// non-repudiation without exposing the content to log sinks.
 	h := sha256.Sum256(dpiaContent)
+	// confirmation_len is intentionally omitted: byte-length is metadata that
+	// could narrow dictionary attacks against the confirmation text.
+	// The SHA-256 hash alone is sufficient for non-repudiation.
 	logger.Info("dmesg DPIA confirmation found",
 		zap.String("file", DmesgDPIAConfirmFile),
 		zap.String("confirmation_sha256", hex.EncodeToString(h[:])),
-		zap.Int("confirmation_len", len(strings.TrimSpace(string(dpiaContent)))),
 		// Best-effort caveat in the non-repudiation record so the limitation
 		// is visible alongside the DPIA acknowledgement rather than only in a
 		// later startup-warning log line that an operator might overlook.
@@ -147,6 +149,8 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		zap.Strings("pii_redact_gaps", []string{
 			"NFS-paths", "unlabelled-kernel-fields",
 			"hostname-FQDN-variants", "hostname-mDNS-aliases",
+			"kernel-audit-uid-gid-pid", "wifi-ssid",
+			"usb-product-strings", "oom-cmdline", "custom-kernel-module-output",
 		}),
 	)
 
@@ -229,6 +233,8 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			zap.Strings("redact_not_covered", []string{
 				"NFS-paths", "unlabelled-kernel-fields",
 				"hostname-FQDN-variants", "hostname-mDNS-aliases",
+				"kernel-audit-uid-gid-pid", "wifi-ssid",
+				"usb-product-strings", "oom-cmdline", "custom-kernel-module-output",
 			}),
 			zap.String("dpia_file", DmesgDPIAConfirmFile),
 		)
