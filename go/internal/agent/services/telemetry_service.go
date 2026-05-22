@@ -293,12 +293,15 @@ type TelemetryService struct {
 	agentpb.UnimplementedWendyTelemetryServiceServer
 	logger      *zap.Logger
 	broadcaster *TelemetryBroadcaster
+	buffer      *TelemetryBuffer // nil if disk buffering is unavailable
 }
 
-func NewTelemetryService(logger *zap.Logger, broadcaster *TelemetryBroadcaster) *TelemetryService {
+// NewTelemetryService creates a new TelemetryService.
+func NewTelemetryService(logger *zap.Logger, broadcaster *TelemetryBroadcaster, buffer *TelemetryBuffer) *TelemetryService {
 	return &TelemetryService{
 		logger:      logger,
 		broadcaster: broadcaster,
+		buffer:      buffer,
 	}
 }
 
@@ -308,6 +311,26 @@ func (s *TelemetryService) Broadcaster() *TelemetryBroadcaster {
 
 func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grpc.ServerStreamingServer[agentpb.StreamLogsResponse]) error {
 	ctx := stream.Context()
+
+	// Replay history if requested.
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+		entries := s.buffer.ReadLastN(SignalLogs, int(*req.LastN))
+		for _, e := range entries {
+			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
+			if !ok {
+				continue
+			}
+			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
+				logs = filterLogs(logs, req)
+				if logs == nil {
+					continue
+				}
+			}
+			if err := stream.Send(&agentpb.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
+				return err
+			}
+		}
+	}
 
 	id, ch := s.broadcaster.SubscribeLogs()
 	defer s.broadcaster.UnsubscribeLogs(id)
@@ -343,6 +366,25 @@ func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grp
 func (s *TelemetryService) StreamMetrics(req *agentpb.StreamMetricsRequest, stream grpc.ServerStreamingServer[agentpb.StreamMetricsResponse]) error {
 	ctx := stream.Context()
 
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+		entries := s.buffer.ReadLastN(SignalMetrics, int(*req.LastN))
+		for _, e := range entries {
+			metrics, ok := e.(*otelpb.ExportMetricsServiceRequest)
+			if !ok {
+				continue
+			}
+			if req.ServiceName != nil || req.AppName != nil || req.MetricNamePrefix != nil {
+				metrics = filterMetrics(metrics, req)
+				if metrics == nil {
+					continue
+				}
+			}
+			if err := stream.Send(&agentpb.StreamMetricsResponse{Metrics: metrics, IsHistory: true}); err != nil {
+				return err
+			}
+		}
+	}
+
 	id, ch := s.broadcaster.SubscribeMetrics()
 	defer s.broadcaster.UnsubscribeMetrics(id)
 
@@ -377,6 +419,25 @@ func (s *TelemetryService) StreamMetrics(req *agentpb.StreamMetricsRequest, stre
 
 func (s *TelemetryService) StreamTraces(req *agentpb.StreamTracesRequest, stream grpc.ServerStreamingServer[agentpb.StreamTracesResponse]) error {
 	ctx := stream.Context()
+
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+		entries := s.buffer.ReadLastN(SignalTraces, int(*req.LastN))
+		for _, e := range entries {
+			traces, ok := e.(*otelpb.ExportTraceServiceRequest)
+			if !ok {
+				continue
+			}
+			if req.ServiceName != nil || req.AppName != nil || req.SpanNamePrefix != nil {
+				traces = filterTraces(traces, req)
+				if traces == nil {
+					continue
+				}
+			}
+			if err := stream.Send(&agentpb.StreamTracesResponse{Traces: traces, IsHistory: true}); err != nil {
+				return err
+			}
+		}
+	}
 
 	id, ch := s.broadcaster.SubscribeTraces()
 	defer s.broadcaster.UnsubscribeTraces(id)

@@ -171,7 +171,7 @@ func main() {
 	videoSvc := services.NewVideoService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
@@ -181,7 +181,7 @@ func main() {
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
-	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster)
+	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, nil)
 
 	otelLogReceiver := services.NewOTELLogsReceiver(broadcaster)
 	otelMetricReceiver := services.NewOTELMetricsReceiver(broadcaster)

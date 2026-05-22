@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 // writeFrameTo is a test helper that writes a single length-prefixed frame.

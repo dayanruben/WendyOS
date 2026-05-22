@@ -159,7 +159,7 @@ drained:
 func TestStreamLogs_Integration(t *testing.T) {
 	broadcaster := NewTelemetryBroadcaster()
 	logger := zap.NewNop()
-	svc := NewTelemetryService(logger, broadcaster)
+	svc := NewTelemetryService(logger, broadcaster, nil)
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()
@@ -497,5 +497,66 @@ func TestBroadcaster_ConcurrentPublish(t *testing.T) {
 	// We might have received fewer than n if the buffer filled up.
 	if received == 0 {
 		t.Error("expected at least some messages to be received")
+	}
+}
+
+func TestStreamLogs_LastN(t *testing.T) {
+	dir := t.TempDir()
+	broadcaster := NewTelemetryBroadcaster()
+	buf, err := NewTelemetryBuffer(TelemetryBufferConfig{
+		Dir:           dir,
+		MaxTotalBytes: 10 * 1024 * 1024,
+		SegmentBytes:  1 * 1024 * 1024,
+	}, broadcaster, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewTelemetryBuffer: %v", err)
+	}
+
+	// Write 5 log entries to disk before any client connects.
+	for i := 0; i < 5; i++ {
+		buf.PublishLogs(makeLogReq(fmt.Sprintf("msg-%d", i)))
+	}
+
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	go srv.Serve(lis) //nolint:errcheck
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lastN := int32(3)
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{LastN: &lastN})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	var historyCount int
+	for i := 0; i < 3; i++ {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv[%d]: %v", i, err)
+		}
+		if resp.IsHistory {
+			historyCount++
+		}
+	}
+	if historyCount != 3 {
+		t.Errorf("want 3 history records, got %d", historyCount)
 	}
 }
