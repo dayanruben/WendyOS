@@ -114,7 +114,7 @@ licenses-update:
 
 # Sync embedded docs and skills from sibling repos (requires them checked out at ../docs and ../claude-skills)
 sync-assets:
-	@DOCS_SRC=../docs SKILLS_SRC=../claude-skills ASSETS=internal/cli/assets; \
+	@DOCS_SRC=docs SKILLS_SRC=../claude-skills ASSETS=internal/cli/assets; \
 	if [ ! -d "$$DOCS_SRC" ]; then echo "Docs repo not found at $$DOCS_SRC — skipping"; else \
 	  rm -rf "$$ASSETS/docs" && mkdir -p "$$ASSETS/docs" && \
 	  rsync -a --exclude='.git' --exclude='superpowers/' --exclude='operations/' \
