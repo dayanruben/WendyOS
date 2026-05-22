@@ -9,10 +9,11 @@ OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 OPEN_REPORT="true"
 STAGE="all"
 RUN_PREFIX="${WENDY_E2E_ANALYZE_RUN_ID:-}"
+DIFF=""
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--output-dir DIR] [--run-id ID] [--stage STAGE] [--open|--no-open]
+Usage: $(basename "$0") [--output-dir DIR] [--run-id ID] [--stage STAGE] [--diff RANGE] [--open|--no-open]
 
 Analyze Swift E2E attempts found in an output directory.
 
@@ -28,6 +29,7 @@ Options:
   --run-id ID       Analyze attempts matching this run ID prefix;
                     defaults to today's local run, or WENDY_E2E_RUN_ID/GITHUB_RUN_ID.
   --stage STAGE     aggregate, review, report, or all.
+  --diff RANGE      Git diff range to pass to review stage.
   --open            Open the newest generated report when supported; default.
   --no-open         Do not open a report.
   --help            Show this help message.
@@ -68,6 +70,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stage)
       STAGE="$2"
+      shift 2
+      ;;
+    --diff)
+      DIFF="$2"
       shift 2
       ;;
     --open)
@@ -189,6 +195,9 @@ echo "==> Analyzing Swift E2E runs"
 echo "    Stage:      $STAGE"
 echo "    Run ID:     $RUN_PREFIX"
 echo "    Output dir: $OUTPUT_DIR"
+if [[ -n "$DIFF" ]]; then
+  echo "    Diff:       $DIFF"
+fi
 for attempt_dir in "${ATTEMPT_DIRS[@]}"; do
   echo "    Attempt:    $attempt_dir"
 done
@@ -205,8 +214,12 @@ if [[ "$STAGE" == "aggregate" || "$STAGE" == "all" ]]; then
 fi
 
 if [[ "$STAGE" == "review" || "$STAGE" == "all" ]]; then
+  review_args=()
+  if [[ -n "$DIFF" ]]; then
+    review_args+=(--diff "$DIFF")
+  fi
   for run_dir in "${RUN_DIRS[@]}"; do
-    bash "$SCRIPT_DIR/E2EReview.sh" --run-dir "$run_dir" || {
+    bash "$SCRIPT_DIR/E2EReview.sh" --run-dir "$run_dir" "${review_args[@]}" || {
       step_status=$?
       [[ $status -eq 0 ]] && status=$step_status
     }

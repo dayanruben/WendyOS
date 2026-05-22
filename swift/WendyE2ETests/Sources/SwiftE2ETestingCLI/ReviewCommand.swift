@@ -38,6 +38,9 @@ struct ReviewCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Run review stage: suites, report, or all.")
     var stage: RunReviewStage = .all
 
+    @Option(name: .long, help: "Git diff range for diff-scoped review, for example origin/main...HEAD.")
+    var diff: String?
+
     @Flag(name: .long, help: "Overwrite existing review files.")
     var overwrite = false
 
@@ -72,13 +75,15 @@ extension ReviewCommand {
         runURL: URL,
         repoURL: URL
     ) async throws {
+        let reviewMode = try ReviewMode(diff: diff)
+        let context = try reviewMode.prepareContext(runURL: runURL, repoURL: repoURL)
         let suitePromptURL = URL(
             fileURLWithPath: suiteReviewPrompt
-                ?? packageURL.appendingPathComponent("Support/e2e-review-suite.prompt.md").path
+                ?? packageURL.appendingPathComponent("Support/\(reviewMode.suitePromptFileName)").path
         ).standardizedFileURL
         let reportPromptURL = URL(
             fileURLWithPath: reportReviewPrompt
-                ?? packageURL.appendingPathComponent("Support/e2e-review-report.prompt.md").path
+                ?? packageURL.appendingPathComponent("Support/\(reviewMode.reportPromptFileName)").path
         ).standardizedFileURL
         let suitePrompt = try String(contentsOf: suitePromptURL, encoding: .utf8)
         let reportPrompt = try String(contentsOf: reportPromptURL, encoding: .utf8)
@@ -87,7 +92,14 @@ extension ReviewCommand {
         let probeAgent = try makeAgent(provider: provider, model: model)
         guard probeAgent.isConfigured else {
             print("==> Swift E2E run AI review skipped: no agent API key configured")
-            print("    Suites discovered: \(suites.count)")
+            print("    Mode:           \(reviewMode.name)")
+            if let range = reviewMode.diffRange {
+                print("    Diff:           \(range)")
+            }
+            if let diffURL = context.diffURL {
+                print("    Diff context:   \(diffURL.path)")
+            }
+            print("    Suites:         \(suites.count)")
             return
         }
 
@@ -96,6 +108,13 @@ extension ReviewCommand {
         print("    Model:          \(probeAgent.modelName)")
         print("    Repo:           \(repoURL.path)")
         print("    Run:            \(runURL.path)")
+        print("    Mode:           \(reviewMode.name)")
+        if let range = reviewMode.diffRange {
+            print("    Diff:           \(range)")
+        }
+        if let diffURL = context.diffURL {
+            print("    Diff context:   \(diffURL.path)")
+        }
         print("    Suites:         \(suites.count)")
         print("    Suite prompt:   \(suitePromptURL.path)")
         print("    Report prompt:  \(reportPromptURL.path)")
@@ -117,6 +136,7 @@ extension ReviewCommand {
                             packageURL: packageURL,
                             testsURL: testsURL,
                             runURL: runURL,
+                            context: context,
                             overwrite: overwrite
                         )
                         print("Progress: reviewing suite \(suite.suiteKey)")
@@ -143,6 +163,7 @@ extension ReviewCommand {
                 packageURL: packageURL,
                 testsURL: testsURL,
                 runURL: runURL,
+                context: context,
                 overwrite: overwrite
             )
             try probeAgent.review(
@@ -154,6 +175,85 @@ extension ReviewCommand {
             print("==> Run report AI review complete")
         }
     }
+}
+
+private enum ReviewMode {
+    case full
+    case diff(String)
+
+    init(diff: String?) throws {
+        guard let diff else {
+            self = .full
+            return
+        }
+        let trimmed = diff.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ValidationError("--diff must not be empty.")
+        }
+        self = .diff(trimmed)
+    }
+
+    var name: String {
+        switch self {
+        case .full:
+            "full"
+        case .diff:
+            "diff"
+        }
+    }
+
+    var diffRange: String? {
+        if case .diff(let range) = self { range } else { nil }
+    }
+
+    var suitePromptFileName: String {
+        "e2e-review-suite.\(name).prompt.md"
+    }
+
+    var reportPromptFileName: String {
+        "e2e-review-report.\(name).prompt.md"
+    }
+
+    func prepareContext(runURL: URL, repoURL: URL) throws -> ReviewContext {
+        switch self {
+        case .full:
+            return ReviewContext(mode: self, diffURL: nil, changedFilesURL: nil, diffstatURL: nil)
+        case .diff(let range):
+            let diffURL = runURL.appendingPathComponent("diff", isDirectory: true)
+            let changedFilesURL = diffURL.appendingPathComponent("git-diff-name-only.txt")
+            let diffstatURL = diffURL.appendingPathComponent("git-diff-stat.txt")
+
+            try FileManager.default.createDirectory(
+                at: diffURL,
+                withIntermediateDirectories: true
+            )
+            try runGitDiffContext(
+                arguments: ["diff", "--name-only", range],
+                outputURL: changedFilesURL,
+                repoURL: repoURL,
+                diffRange: range
+            )
+            try runGitDiffContext(
+                arguments: ["diff", "--stat", range],
+                outputURL: diffstatURL,
+                repoURL: repoURL,
+                diffRange: range
+            )
+            return ReviewContext(
+                mode: self,
+                diffURL: diffURL,
+                changedFilesURL: changedFilesURL,
+                diffstatURL: diffstatURL
+            )
+        }
+    }
+}
+
+private struct ReviewContext {
+    var mode: ReviewMode
+    var diffURL: URL?
+    var changedFilesURL: URL?
+    var diffstatURL: URL?
 }
 
 enum RunReviewStage: String, ExpressibleByArgument {
@@ -420,6 +520,50 @@ private func isReviewRunDirectory(_ runURL: URL) throws -> Bool {
     return true
 }
 
+private func runGitDiffContext(
+    arguments: [String],
+    outputURL: URL,
+    repoURL: URL,
+    diffRange: String
+) throws {
+    try Data().write(to: outputURL, options: .atomic)
+    let output = try FileHandle(forWritingTo: outputURL)
+    defer { try? output.close() }
+
+    let errorPipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["git"] + arguments
+    process.currentDirectoryURL = repoURL
+    process.standardOutput = output
+    process.standardError = errorPipe
+
+    do {
+        try process.run()
+    } catch {
+        try? FileManager.default.removeItem(at: outputURL)
+        throw error
+    }
+    process.waitUntilExit()
+
+    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+    let errorText = String(decoding: errorData, as: UTF8.self)
+
+    guard process.terminationStatus == 0 else {
+        try? FileManager.default.removeItem(at: outputURL)
+        let command = (["git"] + arguments).joined(separator: " ")
+        var message =
+            "Could not resolve Git diff range `\(diffRange)` while generating Swift E2E review context."
+        message += " Ensure the repository has enough history and the range is fetchable."
+        message += " Command `\(command)` failed with exit status \(process.terminationStatus)."
+        let detail = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !detail.isEmpty {
+            message += "\n\(detail)"
+        }
+        throw ValidationError(message)
+    }
+}
+
 private func loadRunReviewSuites(
     testsURL: URL,
     runURL: URL
@@ -596,6 +740,7 @@ private func runSuitePrompt(
     packageURL: URL,
     testsURL: URL,
     runURL: URL,
+    context: ReviewContext,
     overwrite: Bool
 ) -> String {
     var lines = runPromptHeader(
@@ -604,7 +749,8 @@ private func runSuitePrompt(
         repoURL: repoURL,
         packageURL: packageURL,
         testsURL: testsURL,
-        runURL: runURL
+        runURL: runURL,
+        context: context
     )
     lines.append("## Suite")
     lines.append("")
@@ -681,6 +827,7 @@ private func runReportPrompt(
     packageURL: URL,
     testsURL: URL,
     runURL: URL,
+    context: ReviewContext,
     overwrite: Bool
 ) throws -> String {
     var lines = runPromptHeader(
@@ -689,7 +836,8 @@ private func runReportPrompt(
         repoURL: repoURL,
         packageURL: packageURL,
         testsURL: testsURL,
-        runURL: runURL
+        runURL: runURL,
+        context: context
     )
     lines.append("## Output contract")
     lines.append("")
@@ -778,9 +926,10 @@ private func runPromptHeader(
     repoURL: URL,
     packageURL: URL,
     testsURL: URL,
-    runURL: URL
+    runURL: URL,
+    context: ReviewContext
 ) -> [String] {
-    [
+    var lines = [
         "# \(title)",
         "",
         basePrompt.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -796,6 +945,46 @@ private func runPromptHeader(
         "Print short `Progress:` lines while reviewing so CI shows activity.",
         "",
     ]
+
+    appendReviewContext(context, to: &lines)
+    return lines
+}
+
+private func appendReviewContext(_ context: ReviewContext, to lines: inout [String]) {
+    lines.append("## Review mode")
+    lines.append("")
+    lines.append("- Mode: `\(context.mode.name)`")
+
+    guard case .diff(let range) = context.mode else {
+        lines.append("")
+        return
+    }
+
+    lines.append("- Git diff range: `\(range)`")
+    if let diffURL = context.diffURL {
+        lines.append("- Diff context directory: `\(diffURL.path)`")
+    }
+    if let changedFilesURL = context.changedFilesURL {
+        lines.append("- Changed files: `\(changedFilesURL.path)`")
+    }
+    if let diffstatURL = context.diffstatURL {
+        lines.append("- Diffstat: `\(diffstatURL.path)`")
+    }
+    lines.append("")
+    lines.append(
+        "Only report findings plausibly related to the supplied Git diff range. Treat unrelated pre-existing failures, flakes, or test quality issues as background unless the diff appears to introduce or worsen them."
+    )
+    lines.append(
+        "Do not look for a saved full patch; inspect targeted diffs on demand with commands like:"
+    )
+    lines.append("")
+    lines.append("```bash")
+    lines.append("git diff --stat \(range)")
+    lines.append("git diff --name-only \(range)")
+    lines.append("git diff \(range) -- <specific-file>")
+    lines.append("git diff \(range) -U80 -- <specific-file>")
+    lines.append("```")
+    lines.append("")
 }
 
 private func appendRunReviewTest(

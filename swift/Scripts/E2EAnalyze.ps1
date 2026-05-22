@@ -15,10 +15,11 @@ $OutputDir = $DefaultOutputDir
 $OpenReport = $true
 $Stage = 'all'
 $RunPrefix = $env:WENDY_E2E_ANALYZE_RUN_ID
+$Diff = $null
 
 function Show-Usage {
     @"
-Usage: E2EAnalyze.ps1 [--output-dir DIR] [--run-id ID] [--stage STAGE] [--open|--no-open]
+Usage: E2EAnalyze.ps1 [--output-dir DIR] [--run-id ID] [--stage STAGE] [--diff RANGE] [--open|--no-open]
 
 Analyze Swift E2E attempts found in an output directory.
 
@@ -36,6 +37,7 @@ while ($i -lt $args.Count) {
         '--output-dir' { $OutputDir = $args[$i + 1]; $i += 2; continue }
         '--run-id' { $RunPrefix = $args[$i + 1]; $i += 2; continue }
         '--stage' { $Stage = $args[$i + 1]; $i += 2; continue }
+        '--diff' { $Diff = $args[$i + 1]; $i += 2; continue }
         '--open' { $OpenReport = $true; $i += 1; continue }
         '--no-open' { $OpenReport = $false; $i += 1; continue }
         '--help' { Show-Usage; exit 0 }
@@ -123,6 +125,7 @@ Write-Output '==> Analyzing Swift E2E runs'
 Write-Output "    Stage:      $Stage"
 Write-Output "    Run ID:     $RunPrefix"
 Write-Output "    Output dir: $OutputDir"
+if ($Diff) { Write-Output "    Diff:       $Diff" }
 $attemptDirs | ForEach-Object { Write-Output "    Attempt:    $($_.FullName)" }
 $runDirs | ForEach-Object { Write-Output "    Run:        $_" }
 
@@ -140,8 +143,10 @@ if ($Stage -in @('aggregate', 'all')) {
 }
 
 if ($Stage -in @('review', 'all')) {
+    $reviewArgs = @()
+    if ($Diff) { $reviewArgs += @('--diff', $Diff) }
     foreach ($runDir in $runDirs) {
-        & (Join-Path $ScriptDir 'E2EReview.ps1') --run-dir $runDir
+        & (Join-Path $ScriptDir 'E2EReview.ps1') --run-dir $runDir @reviewArgs
         $reviewStatus = $LASTEXITCODE
         if ($status -eq 0 -and $reviewStatus -ne 0) { $status = $reviewStatus }
     }

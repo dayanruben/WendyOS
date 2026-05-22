@@ -9,6 +9,7 @@ RUN_DIR=""
 PACKAGE_DIR="$DEFAULT_PACKAGE_DIR"
 PROVIDER="${WENDY_E2E_AI_PROVIDER:-auto}"
 MODEL="${WENDY_E2E_AI_MODEL:-}"
+DIFF=""
 OVERWRITE="false"
 EXTRA_ARGS=()
 
@@ -25,6 +26,8 @@ Options:
   --provider NAME    AI agent: auto, claude, codex, or none; defaults to auto.
   --model NAME       Provider model override. Use latest/default to let the
                      agent CLI choose its default model.
+  --diff RANGE       Git diff range for diff-scoped review, for example
+                     origin/main...HEAD.
   --overwrite        Overwrite existing run review files.
   --help             Show this help message.
 
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       MODEL="$2"
       shift 2
       ;;
+    --diff)
+      DIFF="$2"
+      shift 2
+      ;;
     --overwrite)
       OVERWRITE="true"
       shift
@@ -116,6 +123,9 @@ review_single_run() {
   if [[ -n "$MODEL" ]]; then
     command_args+=("--model" "$MODEL")
   fi
+  if [[ -n "$DIFF" ]]; then
+    command_args+=("--diff" "$DIFF")
+  fi
   if [[ "$OVERWRITE" == "true" ]]; then
     command_args+=("--overwrite")
   fi
@@ -127,6 +137,9 @@ review_single_run() {
   echo "    Provider: $PROVIDER"
   if [[ -n "$MODEL" ]]; then
     echo "    Model:    $MODEL"
+  fi
+  if [[ -n "$DIFF" ]]; then
+    echo "    Diff:     $DIFF"
   fi
 
   (

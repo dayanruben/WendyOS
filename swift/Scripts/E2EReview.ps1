@@ -16,6 +16,7 @@ $RunDir = $null
 $PackageDir = $DefaultPackageDir
 $Provider = if ($env:WENDY_E2E_AI_PROVIDER) { $env:WENDY_E2E_AI_PROVIDER } else { 'auto' }
 $Model = $env:WENDY_E2E_AI_MODEL
+$Diff = $null
 $Overwrite = $false
 $ExtraArgs = @()
 
@@ -26,9 +27,10 @@ while ($i -lt $args.Count) {
         '--package-dir' { $PackageDir = $args[$i + 1]; $i += 2; continue }
         '--provider' { $Provider = $args[$i + 1]; $i += 2; continue }
         '--model' { $Model = $args[$i + 1]; $i += 2; continue }
+        '--diff' { $Diff = $args[$i + 1]; $i += 2; continue }
         '--overwrite' { $Overwrite = $true; $i += 1; continue }
-        '--help' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [OPTIONS]'; exit 0 }
-        '-h' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [OPTIONS]'; exit 0 }
+        '--help' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [OPTIONS]'; exit 0 }
+        '-h' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [OPTIONS]'; exit 0 }
         default { $ExtraArgs += $args[$i]; $i += 1; continue }
     }
 }
@@ -40,6 +42,7 @@ $PackageDir = Resolve-E2EPath $PackageDir -Existing
 
 $commandArgs = @('run', 'swift-e2e-testing', 'review', '--run-dir', $RunDir, '--provider', $Provider)
 if ($Model) { $commandArgs += @('--model', $Model) }
+if ($Diff) { $commandArgs += @('--diff', $Diff) }
 if ($Overwrite) { $commandArgs += '--overwrite' }
 $commandArgs += $ExtraArgs
 
@@ -48,6 +51,7 @@ Write-Output "    Package:  $PackageDir"
 Write-Output "    Run dir:  $RunDir"
 Write-Output "    Provider: $Provider"
 if ($Model) { Write-Output "    Model:    $Model" }
+if ($Diff) { Write-Output "    Diff:     $Diff" }
 
 & (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $RunDir
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

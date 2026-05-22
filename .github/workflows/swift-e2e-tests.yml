@@ -229,6 +229,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Compute Swift E2E run ID
         id: e2e-run
@@ -283,7 +285,8 @@ jobs:
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \
-            --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
+            --run-dir "${{ steps.e2e-run.outputs.run_dir }}" \
+            --diff "origin/main...HEAD"
 
       - name: Render Swift E2E run index
         if: always()
