@@ -96,8 +96,11 @@ extension ReviewCommand {
             if let range = reviewMode.diffRange {
                 print("    Diff:           \(range)")
             }
-            if let diffURL = context.diffURL {
-                print("    Diff context:   \(diffURL.path)")
+            if let changedFilesURL = context.changedFilesURL {
+                print("    Name-only diff: \(changedFilesURL.path)")
+            }
+            if let diffstatURL = context.diffstatURL {
+                print("    Diff stat:      \(diffstatURL.path)")
             }
             print("    Suites:         \(suites.count)")
             return
@@ -112,8 +115,11 @@ extension ReviewCommand {
         if let range = reviewMode.diffRange {
             print("    Diff:           \(range)")
         }
-        if let diffURL = context.diffURL {
-            print("    Diff context:   \(diffURL.path)")
+        if let changedFilesURL = context.changedFilesURL {
+            print("    Name-only diff: \(changedFilesURL.path)")
+        }
+        if let diffstatURL = context.diffstatURL {
+            print("    Diff stat:      \(diffstatURL.path)")
         }
         print("    Suites:         \(suites.count)")
         print("    Suite prompt:   \(suitePromptURL.path)")
@@ -217,16 +223,11 @@ private enum ReviewMode {
     func prepareContext(runURL: URL, repoURL: URL) throws -> ReviewContext {
         switch self {
         case .full:
-            return ReviewContext(mode: self, diffURL: nil, changedFilesURL: nil, diffstatURL: nil)
+            return ReviewContext(mode: self, changedFilesURL: nil, diffstatURL: nil)
         case .diff(let range):
-            let diffURL = runURL.appendingPathComponent("diff", isDirectory: true)
-            let changedFilesURL = diffURL.appendingPathComponent("git-diff-name-only.txt")
-            let diffstatURL = diffURL.appendingPathComponent("git-diff-stat.txt")
+            let changedFilesURL = runURL.appendingPathComponent("git-diff-name-only.txt")
+            let diffstatURL = runURL.appendingPathComponent("git-diff-stat.txt")
 
-            try FileManager.default.createDirectory(
-                at: diffURL,
-                withIntermediateDirectories: true
-            )
             try runGitDiffContext(
                 arguments: ["diff", "--name-only", range],
                 outputURL: changedFilesURL,
@@ -241,7 +242,6 @@ private enum ReviewMode {
             )
             return ReviewContext(
                 mode: self,
-                diffURL: diffURL,
                 changedFilesURL: changedFilesURL,
                 diffstatURL: diffstatURL
             )
@@ -251,7 +251,6 @@ private enum ReviewMode {
 
 private struct ReviewContext {
     var mode: ReviewMode
-    var diffURL: URL?
     var changedFilesURL: URL?
     var diffstatURL: URL?
 }
@@ -961,9 +960,6 @@ private func appendReviewContext(_ context: ReviewContext, to lines: inout [Stri
     }
 
     lines.append("- Git diff range: `\(range)`")
-    if let diffURL = context.diffURL {
-        lines.append("- Diff context directory: `\(diffURL.path)`")
-    }
     if let changedFilesURL = context.changedFilesURL {
         lines.append("- Changed files: `\(changedFilesURL.path)`")
     }

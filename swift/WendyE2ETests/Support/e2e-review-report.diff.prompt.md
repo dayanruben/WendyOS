@@ -26,5 +26,5 @@ Guidelines:
 - `review.details.md` is linked from the report; use it for evidence, reasoning,
   action items, and links to relevant suite/test details.
 - Prefer concise synthesis over copying suite findings.
-- Do not edit source code, tests, xUnit files, recordings, or files under the
-  run's `diff/` directory.
+- Do not edit source code, tests, xUnit files, recordings, or the run's
+  top-level `git-diff-*.txt` files.

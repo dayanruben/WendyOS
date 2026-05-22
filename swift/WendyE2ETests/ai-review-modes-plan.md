@@ -83,18 +83,17 @@ Do **not** write the full patch by default; it may be huge.
 Create lightweight context under the run directory only when `--diff` is given:
 
 ```text
-<run>/diff/
-  git-diff-name-only.txt
-  git-diff-stat.txt
+<run>/git-diff-name-only.txt
+<run>/git-diff-stat.txt
 ```
 
-Do not write a separate mode manifest. Full mode writes no diff context folder.
+Do not write a separate mode manifest. Full mode writes no diff context files.
 
 Generate diff context mechanically before invoking the agent:
 
 ```bash
-git diff --name-only "$DIFF" > "$RUN_DIR/diff/git-diff-name-only.txt"
-git diff --stat "$DIFF" > "$RUN_DIR/diff/git-diff-stat.txt"
+git diff --name-only "$DIFF" > "$RUN_DIR/git-diff-name-only.txt"
+git diff --stat "$DIFF" > "$RUN_DIR/git-diff-stat.txt"
 ```
 
 If those commands fail, fail review early with a clear error explaining the diff
@@ -122,8 +121,8 @@ constraint:
 The generated agent prompt should include:
 
 - review mode
-- for diff mode, path to `<run>/diff/` and its `git-diff-name-only.txt` and
-  `git-diff-stat.txt`
+- for diff mode, paths to `<run>/git-diff-name-only.txt` and
+  `<run>/git-diff-stat.txt`
 - recommended targeted commands:
 
 ```bash
@@ -176,8 +175,9 @@ Policy examples:
 
 1. Add `diff: String?` to `ReviewCommand`.
 2. Add a small `ReviewMode` model derived from `diff`.
-3. Add a `<run>/diff/` directory only when `--diff` is given.
-4. In diff mode, write `git-diff-name-only.txt` and `git-diff-stat.txt` with `git diff`.
+3. In diff mode, write top-level `git-diff-name-only.txt` and
+   `git-diff-stat.txt` files.
+4. Generate those files mechanically with `git diff`.
 5. Split current prompt files into `.full.prompt.md` equivalents.
 6. Add `.diff.prompt.md` prompt files with diff-scoped instructions.
 7. Select prompt files based on mode unless explicitly overridden.

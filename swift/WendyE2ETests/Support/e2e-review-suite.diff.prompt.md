@@ -29,5 +29,5 @@ Guidelines:
 - Cite concrete evidence in details: source paths, target/attempt names, result
   details, recording paths, shell script paths, and the targeted diff files or
   hunks you inspected.
-- Do not edit source code, tests, xUnit files, recordings, or files under the
-  run's `diff/` directory.
+- Do not edit source code, tests, xUnit files, recordings, or the run's
+  top-level `git-diff-*.txt` files.
