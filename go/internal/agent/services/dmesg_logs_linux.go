@@ -33,17 +33,19 @@ const (
 	maxFutureSkewNs = int64(24 * time.Hour)
 )
 
-// piiPatterns matches common PII patterns in kernel messages (MAC addresses,
-// IPv4/IPv6 addresses) for optional redaction when WENDY_DMESG_REDACT=true.
+// piiPatterns matches MAC addresses and IPv4 addresses in kernel messages for
+// redaction when WENDY_DMESG_REDACT is enabled. IPv6 is intentionally omitted
+// because a simple colon-hex pattern is far too broad and generates both false
+// positives and false negatives; proper IPv6 redaction requires a dedicated
+// parser that is out of scope here.
 var piiPatterns = regexp.MustCompile(
 	`(?i)(?:` +
-		// MAC address (colon or hyphen separated)
-		`[0-9a-f]{2}(?::[0-9a-f]{2}){5}` +
-		`|[0-9a-f]{2}(?:-[0-9a-f]{2}){5}` +
-		// IPv4
-		`|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b` +
-		// IPv6 (simplified: groups of hex separated by colons, at least 2 colons)
-		`|[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7}` +
+		// MAC address (colon separated, exactly 6 octets)
+		`(?:[0-9a-f]{2}:){5}[0-9a-f]{2}` +
+		// MAC address (hyphen separated, exactly 6 octets)
+		`|(?:[0-9a-f]{2}-){5}[0-9a-f]{2}` +
+		// IPv4 address
+		`|\b(?:\d{1,3}\.){3}\d{1,3}\b` +
 		`)`,
 )
 
@@ -51,16 +53,21 @@ var piiPatterns = regexp.MustCompile(
 // OTel log records at debug/trace severity. It replays buffered kernel messages
 // first, then follows new ones. Blocks until ctx is cancelled.
 //
-// Set WENDY_DMESG_REDACT=true to enable best-effort redaction of MAC addresses
-// and IP addresses before forwarding. Note that kernel messages may also contain
-// USB serial numbers, process names, PIDs, and filesystem paths that are not
-// redacted; operators should review their data-minimisation requirements.
+// MAC addresses and IPv4 addresses are redacted by default (WENDY_DMESG_REDACT
+// defaults to true). Set WENDY_DMESG_REDACT=false to disable. Note that kernel
+// messages may also contain USB serial numbers, process names, PIDs, and
+// filesystem paths that are not redacted by this best-effort filter; operators
+// should review their data-minimisation requirements.
 //
 // NOTE: All kernel severity levels are intentionally mapped into the OTel
 // debug/trace band. KERN_EMERG/ALERT/CRIT additionally emit a zap.Warn so
 // they are visible in the agent's own log stream. See kernelLevelToOTEL.
 func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *TelemetryBroadcaster) {
-	redact, _ := strconv.ParseBool(os.Getenv("WENDY_DMESG_REDACT"))
+	// Default redact to true (safe by default); only disable when explicitly set.
+	redact := true
+	if v, err := strconv.ParseBool(os.Getenv("WENDY_DMESG_REDACT")); err == nil {
+		redact = v
+	}
 
 	f, err := os.Open("/dev/kmsg")
 	if err != nil {
@@ -104,6 +111,8 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 
 	// Sliding-window rate limiter for non-critical messages only.
 	// KERN_EMERG (0), KERN_ALERT (1), KERN_CRIT (2) bypass this entirely.
+	// All three window variables are accessed exclusively from the scanner
+	// goroutine below — there is no concurrent access and no mutex is needed.
 	var (
 		windowStart = time.Now()
 		windowCount int
@@ -247,8 +256,16 @@ func parseKmsgLine(line string) (level int, message string, timestampUS int64, o
 		if r == '\t' {
 			return r
 		}
-		// Drop ASCII control chars and Unicode Cc/Cf categories.
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == 0x200b || r == 0xfeff {
+		// Drop ASCII control chars (C0/C1) and selected Unicode characters that
+		// could be used for log injection or terminal escape sequences:
+		//   0x200B zero-width space, 0xFEFF BOM
+		//   0x2028–0x2029 line/paragraph separators
+		//   0x202A–0x202E bidirectional override characters (LRE/RLE/PDF/LRO/RLO)
+		//   0x2066–0x2069 bidirectional isolation characters (LRI/RLI/FSI/PDI)
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) ||
+			r == 0x200b || r == 0xfeff ||
+			(r >= 0x2028 && r <= 0x202e) ||
+			(r >= 0x2066 && r <= 0x2069) {
 			return -1
 		}
 		return r
