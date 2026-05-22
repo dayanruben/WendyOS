@@ -1206,11 +1206,22 @@ private func renderReviewAggregateHTML(markdown: String, title: String, runID: S
     <body>
       <main>
         <p class="run-meta">Run ID: <code>\(escapeHTML(runID))</code> · <a href="index.html">index.html</a> · <a href="review.md">review.md</a></p>
-        \(renderMarkdown(markdown, headingBase: 1, allowDisclosureHTML: true))
+        \(renderMarkdown(
+            reviewAggregateHTMLMarkdown(markdown),
+            headingBase: 1,
+            allowDisclosureHTML: true
+        ))
       </main>
     </body>
     </html>
     """
+}
+
+private func reviewAggregateHTMLMarkdown(_ markdown: String) -> String {
+    markdown
+        .replacingOccurrences(of: "## ❤️ fail", with: "## fail")
+        .replacingOccurrences(of: "## 🧡 concern", with: "## concern")
+        .replacingOccurrences(of: "## 💙 info", with: "## info")
 }
 
 private func renderRunAIReview(_ reviews: [E2EReview]) -> String {
@@ -1268,7 +1279,7 @@ private func renderAIReviewDetailsLink(_ detailsPath: String) -> String {
 }
 
 private func renderAIReviewSeverityBadge(_ severity: E2EReviewSeverity) -> String {
-    "<span class=\"ai-review-severity-badge \(severity.rawValue)\"><span aria-hidden=\"true\">\(severity.heart)</span>\(escapeHTML(severity.rawValue))</span>"
+    "<span class=\"ai-review-severity-badge \(severity.rawValue)\">\(escapeHTML(severity.rawValue))</span>"
 }
 
 private func renderAIReviewerBadge(_ reviewer: String) -> String {

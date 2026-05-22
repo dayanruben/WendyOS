@@ -135,11 +135,14 @@ private func appendE2EReviewAggregateIssue(
     to lines: inout [String]
 ) {
     let review = issue.review
-    let openAttribute = issue.severity == .fail ? " open" : ""
-    lines.append("<details\(openAttribute)>")
-    lines.append("<summary>\(reviewAggregateSummaryLine(for: issue))</summary>")
+    lines.append(reviewAggregateTitleLine(for: issue))
     lines.append("")
     lines.append(review.summaryMarkdown)
+    lines.append("")
+    lines.append("<details>")
+    lines.append("<summary>Details</summary>")
+    lines.append("")
+    lines.append(review.detailsMarkdown)
     lines.append("")
     appendE2EReviewAggregateMetadata(issue, to: &lines)
     lines.append("")
@@ -147,17 +150,17 @@ private func appendE2EReviewAggregateIssue(
     lines.append("")
 }
 
-private func reviewAggregateSummaryLine(for issue: E2EReviewAggregateIssue) -> String {
+private func reviewAggregateTitleLine(for issue: E2EReviewAggregateIssue) -> String {
     let severity = issue.severity
     var parts = [
         "\(severity.heart) \(severity.rawValue)",
         issue.scope.summaryTitle,
     ]
     if let scopePath = reviewAggregateScopePath(for: issue) {
-        parts.append("<code>\(reviewAggregateEscapeHTML(scopePath))</code>")
+        parts.append("`\(scopePath)`")
     }
     let prefix = parts.joined(separator: " · ")
-    return "\(prefix) — \(reviewAggregateEscapeHTML(reviewAggregateSingleLine(issue.review.title)))"
+    return "## \(prefix) — \(reviewAggregateSingleLine(issue.review.title))"
 }
 
 private func appendE2EReviewAggregateMetadata(
@@ -214,12 +217,4 @@ private func reviewAggregateSingleLine(_ value: String) -> String {
         .replacingOccurrences(of: "\r", with: " ")
         .replacingOccurrences(of: "\n", with: " ")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
-private func reviewAggregateEscapeHTML(_ value: String) -> String {
-    value
-        .replacingOccurrences(of: "&", with: "&amp;")
-        .replacingOccurrences(of: "<", with: "&lt;")
-        .replacingOccurrences(of: ">", with: "&gt;")
-        .replacingOccurrences(of: "\"", with: "&quot;")
 }
