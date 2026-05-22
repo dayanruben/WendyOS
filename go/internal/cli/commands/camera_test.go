@@ -236,6 +236,67 @@ func TestLastKeyframeOffset_Empty(t *testing.T) {
 	}
 }
 
+func TestLastKeyframeOffset_MultiSliceKeyframe(t *testing.T) {
+	// A keyframe picture is often coded as several IDR slices (e.g. x264enc
+	// tune=zerolatency uses sliced threads). They are one access unit, which
+	// begins at the SPS — not at the last slice.
+	data := joinBytes(
+		h264NAL(nalHdrSPS), h264NAL(nalHdrPPS),
+		h264NAL(nalHdrIDR, 0x01), h264NAL(nalHdrIDR, 0x02), h264NAL(nalHdrIDR, 0x03),
+	)
+	off, ok := lastKeyframeOffset(data)
+	if !ok || off != 0 {
+		t.Errorf("multi-slice keyframe must start at the SPS (offset 0), got off=%d ok=%v", off, ok)
+	}
+}
+
+func TestLastKeyframeOffset_PicksMostRecentMultiSlice(t *testing.T) {
+	leading := joinBytes(
+		h264NAL(nalHdrSPS), h264NAL(nalHdrPPS),
+		h264NAL(nalHdrIDR, 0x01), h264NAL(nalHdrIDR, 0x02),
+	)
+	data := joinBytes(leading,
+		h264NAL(nalHdrSPS), h264NAL(nalHdrPPS),
+		h264NAL(nalHdrIDR, 0x03), h264NAL(nalHdrIDR, 0x04),
+	)
+	off, ok := lastKeyframeOffset(data)
+	if !ok || off != len(leading) {
+		t.Errorf("expected the second multi-slice keyframe at offset %d, got off=%d ok=%v", len(leading), off, ok)
+	}
+}
+
+func TestLastKeyframeOffset_MultiSliceIDRWithoutSPS(t *testing.T) {
+	// IDR slices with no SPS in this data: the keyframe begins at the first
+	// slice, not the last.
+	leading := h264NAL(nalHdrP, 0x09)
+	data := joinBytes(leading, h264NAL(nalHdrIDR, 0x01), h264NAL(nalHdrIDR, 0x02))
+	off, ok := lastKeyframeOffset(data)
+	if !ok || off != len(leading) {
+		t.Errorf("expected the keyframe at the first IDR slice (offset %d), got off=%d ok=%v", len(leading), off, ok)
+	}
+}
+
+func TestH264FeedBuffer_RetainsSPSofMultiSliceKeyframes(t *testing.T) {
+	feed := newH264FeedBuffer()
+	keyframe := func(tag byte) []byte {
+		return joinBytes(
+			h264NAL(nalHdrSPS), h264NAL(nalHdrPPS),
+			h264NAL(nalHdrIDR, tag, 0x01), h264NAL(nalHdrIDR, tag, 0x02),
+		)
+	}
+	// Writer is behind: two multi-slice keyframes pile up before a take.
+	feed.push(keyframe(0xA1))
+	feed.push(keyframe(0xB2))
+
+	data, _, _ := feed.take(context.Background())
+	if len(data) < 5 || data[4]&0x1F != h264NalTypeSPS {
+		t.Fatalf("taken bytes must start with an SPS, not a bare IDR slice")
+	}
+	if off, ok := lastKeyframeOffset(data); !ok || off != 0 {
+		t.Errorf("taken bytes must begin at a keyframe, got off=%d ok=%v", off, ok)
+	}
+}
+
 func TestH264FeedBuffer_PushTakeRoundTrips(t *testing.T) {
 	feed := newH264FeedBuffer()
 	idr := joinBytes(h264NAL(nalHdrSPS), h264NAL(nalHdrIDR, 0x11))

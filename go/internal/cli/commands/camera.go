@@ -340,28 +340,41 @@ func nextStartCode(data []byte, from int) (codeStart, headerIdx int, found bool)
 }
 
 // lastKeyframeOffset scans Annex-B H.264 data and returns the byte offset of
-// the start code that begins the most recent keyframe — the SPS preceding an
-// IDR slice (the agent repeats SPS/PPS before every keyframe via h264parse
-// config-interval=-1), or the IDR's own start code when no SPS precedes it in
-// this data. found is false when data contains no keyframe.
+// the start code that begins the most recent keyframe access unit — the SPS
+// preceding the IDR (the agent repeats SPS/PPS before every keyframe via
+// h264parse config-interval=-1), or the first IDR slice when no SPS precedes it
+// in this data. A keyframe picture is frequently coded as several IDR slices
+// (e.g. x264enc tune=zerolatency uses sliced threads); those slices form one
+// access unit, so only the first slice — not each one — marks a keyframe.
+// found is false when data contains no keyframe.
 func lastKeyframeOffset(data []byte) (offset int, found bool) {
-	spsStart := -1
+	sps := -1             // start code of an SPS not yet consumed by a keyframe
+	inIDRPicture := false // within a run of IDR slice NALs forming one picture
 	for i := 0; ; {
 		codeStart, headerIdx, ok := nextStartCode(data, i)
 		if !ok || headerIdx >= len(data) {
 			break
 		}
-		switch data[headerIdx] & 0x1F {
+		nalType := data[headerIdx] & 0x1F
+		switch nalType {
 		case h264NalTypeSPS:
-			spsStart = codeStart
+			sps = codeStart
 		case h264NalTypeIDR:
-			if spsStart >= 0 {
-				offset = spsStart
-			} else {
-				offset = codeStart
+			if !inIDRPicture {
+				// First slice of a keyframe access unit.
+				if sps >= 0 {
+					offset = sps
+				} else {
+					offset = codeStart
+				}
+				found = true
+				inIDRPicture = true
+				sps = -1
 			}
-			found = true
-			spsStart = -1
+		}
+		// A non-IDR NAL ends the current IDR picture's run of slices.
+		if nalType != h264NalTypeIDR {
+			inIDRPicture = false
 		}
 		i = headerIdx
 	}
