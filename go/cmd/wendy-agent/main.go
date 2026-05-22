@@ -270,6 +270,13 @@ func main() {
 		services.CollectAgentMetrics(ctx, broadcaster)
 	}()
 
+	// Collect kernel messages from /dev/kmsg as OTel debug/trace logs.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.CollectDmesgLogs(ctx, broadcaster)
+	}()
+
 	// Main agent gRPC server port.
 	agentPort := defaultAgentPort
 	if p := os.Getenv("WENDY_AGENT_PORT"); p != "" {
