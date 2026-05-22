@@ -50,7 +50,7 @@ jobs:
           transport: lan
 
   e2e-ubuntu-jetson-orin-nano:
-    name: Ubuntu 24.04 → Jetson Orin Nano
+    name: Ubuntu 24 → Jetson Orin Nano
     needs: e2e-macos-jetson-orin-nano
     if: ${{ always() && !cancelled() }}
     runs-on: ["self-hosted", "linux"]
@@ -92,7 +92,7 @@ jobs:
           transport: lan
 
   e2e-ubuntu-raspberry-pi-5:
-    name: Ubuntu 24.04 → Raspberry Pi 5
+    name: Ubuntu 24 → Raspberry Pi 5
     runs-on: ["self-hosted", "linux"]
     concurrency:
       group: swift-e2e-raspberry-pi-5
@@ -193,7 +193,7 @@ jobs:
           transport: lan
 
   e2e-ubuntu-mac-mini:
-    name: Ubuntu 24.04 → Mac mini
+    name: Ubuntu 24 → Mac mini
     needs: e2e-macos-mac-mini
     if: ${{ always() && !cancelled() }}
     runs-on: ["self-hosted", "linux"]
