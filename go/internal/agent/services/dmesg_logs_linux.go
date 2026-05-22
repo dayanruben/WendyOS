@@ -5,6 +5,9 @@ package services
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"regexp"
 	"strconv"
@@ -88,11 +91,13 @@ var piiPatterns = regexp.MustCompile(
 		`)`,
 )
 
-// piiIPv6Pattern matches IPv6 addresses including abbreviated forms (::1, fe80::1,
-// 2001:db8::1). Requires ≥2 colon-terminated hex groups to exclude single colons.
-// Kept separate from piiPatterns and gated behind strings.ContainsRune(':') to
-// avoid running the regex on messages without colons.
-var piiIPv6Pattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}`)
+// piiIPv6Pattern matches IPv6-style addresses (≥2 colon-terminated hex groups of
+// 1–4 chars). Requires non-empty groups ({1,4}) to avoid over-matching version
+// strings, kernel load addresses, and other colon-separated hex values.
+// Abbreviated forms with leading :: (e.g. ::1, fe80::1) are not matched by this
+// pattern; full-form addresses (2001:db8:...) are covered.
+// Kept separate from piiPatterns and gated behind strings.ContainsRune(':').
+var piiIPv6Pattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}`)
 
 // piiKernelPtrPattern matches kernel pointer addresses (e.g. "0xffffffff81234567").
 // Kept separate and gated behind strings.Contains("0x") to avoid scanning messages
@@ -131,9 +136,14 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		)
 		return
 	}
+	// Log hash + length, not content: the file may contain operator names,
+	// email addresses, ticket numbers, or other PII. The hash provides
+	// non-repudiation without exposing the content to log sinks.
+	h := sha256.Sum256(dpiaContent)
 	logger.Info("dmesg DPIA confirmation found",
 		zap.String("file", dmesgDPIAConfirmFile),
-		zap.String("confirmation", strings.TrimSpace(string(dpiaContent))),
+		zap.String("confirmation_sha256", hex.EncodeToString(h[:])),
+		zap.Int("confirmation_len", len(strings.TrimSpace(string(dpiaContent)))),
 	)
 
 	// redactAtomic: 1 = redact enabled (safe default), 0 = redact disabled.
@@ -155,14 +165,15 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}
 	}
 
-	// Capture hostname only when redact is disabled at startup, where it is
-	// intentionally included in the OTel resource as service.instance.id.
-	// When redact is enabled, hostname is fetched fresh per-message to avoid
-	// retaining PII in-process between messages and to eliminate TOCTOU skew.
-	var hostname string
-	if atomic.LoadInt32(&redactAtomic) == 0 {
-		hostname, _ = os.Hostname()
-	}
+	// Capture hostname once at startup for both redact paths:
+	// - redact=true: used for per-message literal hostname substitution.
+	// - redact=false: included in the OTel resource as service.instance.id.
+	// Note: only the exact os.Hostname() string is redacted; FQDN variants,
+	// mDNS (.local) names, and hostname aliases are not covered and are
+	// listed in redact_not_covered at startup. The hostname is a process
+	// constant already present in kernel memory — caching it here adds no
+	// additional retention risk vs. fetching it per-message.
+	hostname, _ := os.Hostname()
 
 	f, err := os.Open("/dev/kmsg")
 	if err != nil {
@@ -213,6 +224,7 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			}),
 			zap.Strings("redact_not_covered", []string{
 				"process-argv", "NFS-paths", "unlabelled-kernel-fields",
+				"hostname-FQDN-variants", "hostname-mDNS-aliases",
 			}),
 			zap.String("dpia_file", dmesgDPIAConfirmFile),
 		)
@@ -316,12 +328,11 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			if strings.Contains(message, "0x") {
 				message = piiKernelPtrPattern.ReplaceAllString(message, "<redacted>")
 			}
-			// Fetch hostname fresh each message: avoids retaining PII in-process
-			// between messages (GDPR data minimisation) and eliminates TOCTOU skew
-			// if the hostname changes during collection. os.Hostname() is a fast
-			// syscall (uname(2)) with negligible overhead at 500 msg/sec.
-			if hn, err := os.Hostname(); err == nil && hn != "" {
-				message = strings.ReplaceAll(message, hn, "<redacted>")
+			// Redact exact hostname literal. Cached at startup; FQDN variants
+			// and mDNS names are not covered (see redact_not_covered in the
+			// startup warning).
+			if hostname != "" {
+				message = strings.ReplaceAll(message, hostname, "<redacted>")
 			}
 		}
 
@@ -367,6 +378,11 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 				},
 			},
 		})
+	}
+
+	// Check scanner error; ErrClosed is expected when ctx is cancelled.
+	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
+		logger.Warn("dmesg scanner exited with error", zap.Error(err))
 	}
 
 	// Flush any drops accumulated in the current window that were never reported
