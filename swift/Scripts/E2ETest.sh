@@ -372,16 +372,13 @@ fi
 RUN_DIR="$OUTPUT_DIR/$RUN_ID"
 CLI_RUN_DIR="$CLI_ROOT_DIR/$RUN_ID/cli"
 AGENT_RUN_DIR="$AGENT_ROOT_DIR/$RUN_ID/agent"
-TESTS_DIR="$RUN_DIR/tests"
 TEST_RESULTS_OUTPUT_PATH="$RUN_DIR/test-results.xml"
 
 rm -rf "$RUN_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
-mkdir -p \
-  "$RUN_DIR" \
-  "$TESTS_DIR"
+mkdir -p "$RUN_DIR"
 
 ssh_target() {
   local user="$1"
@@ -583,8 +580,7 @@ write_attempt_info() {
     printf '    "cliRunDirectory": '; json_string "$CLI_RUN_DIR"; echo ","
     printf '    "cliBinDirectory": '; json_string "$CLI_BIN_DIR"; echo ","
     printf '    "agentRunDirectory": '; json_string "$AGENT_RUN_DIR"; echo ","
-    printf '    "agentBinDirectory": '; json_string_or_null "$AGENT_BIN_DIR"; echo ","
-    printf '    "testsDirectory": '; json_string "$TESTS_DIR"; echo
+    printf '    "agentBinDirectory": '; json_string_or_null "$AGENT_BIN_DIR"; echo
     echo '  },'
     echo '  "test": {'
     printf '    "filters": '; json_string_array "${TEST_FILTERS[@]}"; echo ","
@@ -643,7 +639,6 @@ echo "    CLI run:  $CLI_RUN_DIR"
 echo "    Agent run: $AGENT_RUN_DIR"
 echo "    CLI bin:  $CLI_BIN_DIR"
 echo "    CLI:      $CLI_BIN_DIR/wendy"
-echo "    Tests:    $TESTS_DIR"
 echo "    Filters:  ${TEST_FILTERS[*]}"
 echo "    Isolation: $ISOLATION"
 echo "    Verbose:  $VERBOSE"

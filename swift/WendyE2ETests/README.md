@@ -45,6 +45,7 @@ front matter:
 
 ```text
 <attempt>/attempt.json
+<attempt>/<suite>/<test>/recording.md
 <run>/<suite>/<test>/<target>/<attempt>/attempt.json
 ```
 
@@ -104,11 +105,11 @@ swift test --filter WendyE2ETests
 ```
 
 Each implemented test writes recordings under
-`<run-dir>/tests/<suite-file-stem-dasherized>/<test-name-dasherized>/`, where
-the suite file stem is the test file name with the `Tests` suffix removed. For
+`<run-dir>/<suite-file-stem-dasherized>/<test-name-dasherized>/`, where the
+suite file stem is the test file name with the `Tests` suffix removed. For
 example, `WendyDeviceInfoTests.swift` records under
-`wendy-device-info/<test-name>/`. This keeps per-suite space available for
-suite-level artifacts while each test retains its own recording directory. The
+`wendy-device-info/<test-name>/`. This keeps attempt and aggregate layouts
+aligned while each test retains its own recording directory. The
 `recording.sh.txt` file replays the captured `sh()` invocations in order for
 manual debugging while remaining browser-viewable from the HTML report.
 

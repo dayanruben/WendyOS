@@ -72,8 +72,7 @@
         "cliRunDirectory",
         "cliBinDirectory",
         "agentRunDirectory",
-        "agentBinDirectory",
-        "testsDirectory"
+        "agentBinDirectory"
       ],
       "properties": {
         "attemptDirectory": { "type": "string" },
@@ -82,7 +81,7 @@
         "cliBinDirectory": { "type": "string" },
         "agentRunDirectory": { "type": "string" },
         "agentBinDirectory": { "type": ["string", "null"] },
-        "testsDirectory": { "type": "string" }
+        "testsDirectory": { "type": "string", "deprecated": true }
       }
     },
     "test": {

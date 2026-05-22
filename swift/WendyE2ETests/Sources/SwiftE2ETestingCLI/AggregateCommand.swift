@@ -67,8 +67,7 @@ struct AggregateCommand: ParsableCommand {
             throw ValidationError("Attempt directory does not exist: \(attemptURL.path)")
         }
 
-        let testsURL = attemptURL.appendingPathComponent("tests", isDirectory: true)
-        let testDirectories = try attemptTestDirectories(in: testsURL)
+        let testDirectories = try attemptTestDirectories(in: attemptURL)
         for testDirectory in testDirectories {
             let suiteKey = testDirectory.deletingLastPathComponent().lastPathComponent
             let testKey = testDirectory.lastPathComponent
@@ -113,17 +112,17 @@ private struct AttemptID {
     }
 }
 
-private func attemptTestDirectories(in testsURL: URL) throws -> [URL] {
-    guard FileManager.default.fileExists(atPath: testsURL.path) else {
+private func attemptTestDirectories(in attemptURL: URL) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: attemptURL.path) else {
         return []
     }
     guard
         let enumerator = FileManager.default.enumerator(
-            at: testsURL,
+            at: attemptURL,
             includingPropertiesForKeys: [.isDirectoryKey]
         )
     else {
-        throw ValidationError("Tests directory cannot be read: \(testsURL.path)")
+        throw ValidationError("Attempt directory cannot be read: \(attemptURL.path)")
     }
 
     var directories: [URL] = []

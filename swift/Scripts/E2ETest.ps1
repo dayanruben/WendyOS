@@ -183,7 +183,6 @@ function Write-AttemptInfo([int]$Status) {
             cliBinDirectory = $script:CLIBinDir
             agentRunDirectory = $script:AgentRunDir
             agentBinDirectory = if ($script:AgentBinDir) { $script:AgentBinDir } else { $null }
-            testsDirectory = $script:TestsDir
         }
         test = [ordered]@{
             filters = $script:TestFilters
@@ -318,13 +317,12 @@ if ($AgentBinDir) {
 } else {
     $script:AgentBinDir = $null
 }
-$script:TestsDir = Join-Path $script:RunDir 'tests'
 $TestResultsOutputPath = Join-Path $script:RunDir 'test-results.xml'
 $ExpandedTestResultsOutputPath = Join-Path $script:RunDir 'test-results-swift-testing.xml'
 
 if (Test-Path -LiteralPath $script:RunDir) { Remove-Item -LiteralPath $script:RunDir -Recurse -Force }
 if (-not $AgentAddress -and (Test-Path -LiteralPath $script:AgentRunDir)) { Remove-Item -LiteralPath $script:AgentRunDir -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $script:RunDir, $script:TestsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
 
 Build-CLI
 
@@ -363,7 +361,6 @@ Write-Output "    CLI run:  $script:CLIRunDir"
 Write-Output "    Agent run: $script:AgentRunDir"
 Write-Output "    CLI bin:  $script:CLIBinDir"
 Write-Output "    CLI:      $script:WendyCLIPath"
-Write-Output "    Tests:    $script:TestsDir"
 Write-Output "    Filters:  $($TestFilters -join ' ')"
 Write-Output "    Isolation: $Isolation"
 Write-Output "    Verbose:  $Verbose"
