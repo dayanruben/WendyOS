@@ -44,11 +44,12 @@ const (
 	// Requires filesystem write access separate from env-var permission domain.
 	dmesgPIIAllowFile = "/etc/wendy/dmesg-pii-allowed"
 
-	// dmesgPIIRecheckInterval controls how often the PII allow-file is re-validated.
-	// If the file is removed after startup, redaction is re-enabled within this interval
-	// so a momentary file creation cannot permanently disable redaction for the process
-	// lifetime (TOCTOU mitigation).
-	dmesgPIIRecheckInterval = 60 * time.Second
+	// dmesgPIIRecheckInterval controls how often the DPIA confirmation file and PII
+	// allow-file are re-validated. Set to 5 s to bound the TOCTOU window: if an
+	// operator revokes consent (removes the DPIA file) or removes the PII allow-file,
+	// collection / unredacted forwarding stops within this interval.
+	// 60 s was too long a grace period for a consent-revocation control.
+	dmesgPIIRecheckInterval = 5 * time.Second
 )
 
 // piiPatterns matches host-identifying values in kernel messages for redaction.
@@ -403,9 +404,12 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			continue
 		}
 		if isCritical {
-			// Log level only — message body is omitted to avoid routing
-			// partially-redacted content to a second log sink with potentially
-			// different retention/access policies. Full content is in OTel.
+			// Emit kernel_level to the Zap logger (agent's own log stream) so
+			// critical events are visible at INFO+ without exposing the message
+			// body to Zap's sink (which may have different retention/access
+			// policies than the OTel backend). The full message body — already
+			// redacted if redactAtomic==1 — is forwarded exclusively via OTel
+			// below, which is the authorised telemetry channel.
 			logger.Warn("critical kernel message received",
 				zap.Int("kernel_level", level),
 			)
