@@ -5,7 +5,7 @@ package providers
 import (
 	"context"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // DeviceProvider is implemented by each target backend (local, Docker, ADB, etc.).
@@ -44,6 +44,12 @@ type BuiltApp struct {
 
 // RunOutputType classifies a line of output from a running app.
 type RunOutputType int
+
+// Provider key constants for the built-in providers.
+const (
+	ProviderKeyDocker = "docker"
+	ProviderKeyLocal  = "local"
+)
 
 const (
 	RunOutputStarted RunOutputType = iota
