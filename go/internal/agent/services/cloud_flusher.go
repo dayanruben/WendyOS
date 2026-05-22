@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	cloudFlusherMaxBackoff  = 60 * time.Second
-	cloudFlusherBatchSize   = 500
-	cloudFlusherDefaultApp  = "device"
-	cloudFlusherCollector   = "wendy-agent"
+	cloudFlusherMaxBackoff = 60 * time.Second
+	cloudFlusherBatchSize  = 500
+	cloudFlusherDefaultApp = "device"
+	cloudFlusherCollector  = "wendy-agent"
 )
 
 // CloudFlusher reads log segments from TelemetryBuffer via ReadFromCursor,
@@ -105,7 +105,9 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		if err != nil {
 			f.logger.Warn("cloud flusher: flush failed", zap.Error(err))
 			f.sleep(ctx, attempt)
-			attempt++
+			if attempt < 6 { // 2^6 = 64s > 60s cap; further increments have no effect
+				attempt++
+			}
 		} else {
 			attempt = 0
 			// Brief pause between successful passes to avoid busy-looping.
@@ -171,6 +173,10 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 	// Group entries by app ID (service.name resource attribute).
 	appEntries := f.groupByApp(msgs)
 
+	// Each app's entries are sent in a separate RPC. On partial failure (some apps
+	// succeed, then one fails), the cursor is NOT advanced and the entire batch
+	// is retried on the next pass — entries from already-uploaded apps will be
+	// re-sent. This is intentional at-least-once delivery; the cloud accepts duplicates.
 	collectorStr := cloudFlusherCollector
 	for appID, entries := range appEntries {
 		req := &cloudpb.WriteLogEntriesRequest{
@@ -189,6 +195,7 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 	// All batches succeeded — advance the cursor.
 	if err := f.buffer.SaveCursor(SignalLogs, next); err != nil {
 		f.logger.Warn("cloud flusher: failed to save cursor", zap.Error(err))
+		return fmt.Errorf("saving cursor: %w", err)
 	}
 	return nil
 }
