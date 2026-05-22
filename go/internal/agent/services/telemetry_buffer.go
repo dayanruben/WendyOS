@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"os"
@@ -272,6 +273,9 @@ func (b *TelemetryBuffer) rotateWriter(sig SignalType) error {
 	return nil
 }
 
+// evictIfNeeded removes oldest segment files until total disk use is within
+// MaxTotalBytes. Callers must hold b.mu, except during NewTelemetryBuffer
+// initialization where no concurrent writers exist yet.
 func (b *TelemetryBuffer) evictIfNeeded() {
 	for b.totalSegmentSize() > b.cfg.MaxTotalBytes {
 		oldest := b.findOldestSegment()
@@ -389,6 +393,21 @@ const cursorFile = "cursor.json"
 
 type cursorMap map[SignalType]flushCursor
 
+// cursorState wraps cursorMap with a CRC32 checksum to detect tampering or
+// corruption. The checksum covers the JSON-encoded Cursors field.
+type cursorState struct {
+	Cursors cursorMap `json:"cursors"`
+	CRC32   uint32    `json:"crc32"`
+}
+
+func cursorStateCRC(m cursorMap) (uint32, error) {
+	payload, err := json.Marshal(m)
+	if err != nil {
+		return 0, err
+	}
+	return crc32.ChecksumIEEE(payload), nil
+}
+
 // LoadCursor returns the persisted flush cursor for sig, or a zero cursor.
 func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 	b.cursorMu.Lock()
@@ -397,6 +416,17 @@ func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 	if err != nil {
 		return flushCursor{}
 	}
+	// Try the checksummed format first.
+	var state cursorState
+	if err := json.Unmarshal(data, &state); err == nil && state.Cursors != nil {
+		want, cerr := cursorStateCRC(state.Cursors)
+		if cerr != nil || want != state.CRC32 {
+			b.logger.Warn("telemetry buffer: cursor.json checksum mismatch, resetting")
+			return flushCursor{}
+		}
+		return state.Cursors[sig]
+	}
+	// Fall back to the legacy format (plain cursorMap) for backward compatibility.
 	var m cursorMap
 	if err := json.Unmarshal(data, &m); err != nil {
 		b.logger.Warn("telemetry buffer: corrupt cursor.json, resetting", zap.Error(err))
@@ -412,7 +442,15 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 	path := filepath.Join(b.cfg.Dir, cursorFile)
 	var m cursorMap
 	if data, err := os.ReadFile(path); err == nil {
-		if jerr := json.Unmarshal(data, &m); jerr != nil {
+		// Prefer the checksummed format; fall back to legacy.
+		var state cursorState
+		if jerr := json.Unmarshal(data, &state); jerr == nil && state.Cursors != nil {
+			if want, cerr := cursorStateCRC(state.Cursors); cerr == nil && want == state.CRC32 {
+				m = state.Cursors
+			} else {
+				b.logger.Warn("telemetry buffer: cursor.json checksum mismatch on save, resetting")
+			}
+		} else if jerr := json.Unmarshal(data, &m); jerr != nil {
 			b.logger.Warn("telemetry buffer: corrupt cursor.json on save, resetting", zap.Error(jerr))
 		}
 	}
@@ -420,7 +458,11 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 		m = make(cursorMap)
 	}
 	m[sig] = cursor
-	data, err := json.Marshal(m)
+	checksum, err := cursorStateCRC(m)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(cursorState{Cursors: m, CRC32: checksum})
 	if err != nil {
 		return err
 	}

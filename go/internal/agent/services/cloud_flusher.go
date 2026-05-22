@@ -83,7 +83,12 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		}
 	}
 
-	certPEM, chainPEM, keyPEM := f.provisioningSvc.ProvisioningCerts()
+	// NOTE: ProvisioningService holds the private key as a Go string (immutable).
+	// Go strings cannot be zeroed by user code; the key backing bytes persist until
+	// the runtime GCs them. Certs are re-fetched per dial so the keyData []byte copy
+	// is scoped to each connection attempt and zeroed by dial on return, minimising
+	// the key-material window. Crash dumps should be disabled on the device for
+	// defence-in-depth (ulimit -c 0 / RLIMIT_CORE=0).
 
 	attempt := 0
 	for {
@@ -91,9 +96,7 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 			return
 		}
 
-		// Convert the key string to []byte once per dial so dial can wipe it.
-		// The keyPEM string's backing bytes remain in memory (Go strings are
-		// immutable); this is a known limitation of using string-typed certs.
+		certPEM, chainPEM, keyPEM := f.provisioningSvc.ProvisioningCerts()
 		keyData := []byte(keyPEM)
 		conn, client, err := f.dial(ctx, cloudHost, certPEM, chainPEM, keyData)
 		if err != nil {
