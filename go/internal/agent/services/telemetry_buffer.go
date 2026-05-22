@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -349,4 +350,137 @@ func (b *TelemetryBuffer) PublishMetrics(req *otelpb.ExportMetricsServiceRequest
 func (b *TelemetryBuffer) PublishTraces(req *otelpb.ExportTraceServiceRequest) {
 	b.writeFrame(SignalTraces, req)
 	b.broadcaster.PublishTraces(req)
+}
+
+const cursorFile = "cursor.json"
+
+type cursorMap map[SignalType]flushCursor
+
+// LoadCursor returns the persisted flush cursor for sig, or a zero cursor.
+func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
+	data, err := os.ReadFile(filepath.Join(b.cfg.Dir, cursorFile))
+	if err != nil {
+		return flushCursor{}
+	}
+	var m cursorMap
+	if err := json.Unmarshal(data, &m); err != nil {
+		return flushCursor{}
+	}
+	return m[sig]
+}
+
+// SaveCursor persists cursor for sig to cursor.json atomically.
+func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
+	path := filepath.Join(b.cfg.Dir, cursorFile)
+	var m cursorMap
+	if data, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(data, &m) //nolint:errcheck
+	}
+	if m == nil {
+		m = make(cursorMap)
+	}
+	m[sig] = cursor
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ReadLastN returns up to n recent entries for sig in ascending time order.
+// It reads segment files newest-to-oldest and prepends older frames.
+func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
+	if n <= 0 {
+		return nil
+	}
+	segs, _ := listSegments(b.cfg.Dir, sig)
+	var result []proto.Message
+	for i := len(segs) - 1; i >= 0 && len(result) < n; i-- {
+		frames, _, _ := readFramesFrom(filepath.Join(b.cfg.Dir, segs[i]), 0, sig, n)
+		need := n - len(result)
+		if len(frames) > need {
+			frames = frames[len(frames)-need:]
+		}
+		result = append(frames, result...) // prepend to maintain ascending order
+	}
+	return result
+}
+
+// ReadFromCursor reads up to maxN frames starting at cursor for sig.
+// Returns frames, the updated cursor, and any I/O error.
+// If cursor.File is empty, reads from the oldest segment.
+// If cursor.File was evicted, falls back to current oldest.
+func (b *TelemetryBuffer) ReadFromCursor(sig SignalType, cursor flushCursor, maxN int) ([]proto.Message, flushCursor, error) {
+	segs, err := listSegments(b.cfg.Dir, sig)
+	if err != nil || len(segs) == 0 {
+		return nil, cursor, err
+	}
+
+	startFile := cursor.File
+	startOffset := cursor.Offset
+
+	if startFile == "" {
+		startFile = segs[0]
+		startOffset = 0
+	}
+
+	startIdx := 0
+	found := false
+	for i, s := range segs {
+		if s == startFile {
+			startIdx = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		// Cursor file evicted — start from current oldest.
+		startIdx = 0
+		startFile = segs[0]
+		startOffset = 0
+	}
+
+	var msgs []proto.Message
+	currentIdx := startIdx
+	currentFile := startFile
+	currentOffset := startOffset
+
+	for len(msgs) < maxN && currentIdx < len(segs) {
+		need := maxN - len(msgs)
+		path := filepath.Join(b.cfg.Dir, segs[currentIdx])
+		batch, endOffset, readErr := readFramesFrom(path, currentOffset, sig, need)
+
+		if os.IsNotExist(readErr) {
+			currentIdx++
+			if currentIdx < len(segs) {
+				currentFile = segs[currentIdx]
+				currentOffset = 0
+			}
+			continue
+		}
+		if readErr != nil {
+			return msgs, flushCursor{File: currentFile, Offset: currentOffset}, readErr
+		}
+
+		msgs = append(msgs, batch...)
+		currentFile = segs[currentIdx]
+		currentOffset = endOffset
+
+		if len(batch) < need {
+			// File exhausted — advance to next segment.
+			currentIdx++
+			if currentIdx < len(segs) {
+				currentFile = segs[currentIdx]
+				currentOffset = 0
+			}
+		} else {
+			break
+		}
+	}
+
+	return msgs, flushCursor{File: currentFile, Offset: currentOffset}, nil
 }

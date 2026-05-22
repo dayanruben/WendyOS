@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,3 +229,78 @@ func TestTelemetryBuffer_BroadcastStillFires(t *testing.T) {
 		t.Error("broadcast did not fire within 1s")
 	}
 }
+
+func TestTelemetryBuffer_ReadLastN(t *testing.T) {
+	// Use tiny segments (50 bytes) so 5 entries span multiple segments.
+	buf, dir := makeTestBuffer(t, 10*1024*1024, 50)
+
+	bodies := []string{"a", "b", "c", "d", "e"}
+	for _, b := range bodies {
+		buf.PublishLogs(makeLogReq(b))
+	}
+
+	msgs := buf.ReadLastN(SignalLogs, 3)
+	if len(msgs) != 3 {
+		t.Fatalf("want 3 messages, got %d", len(msgs))
+	}
+	// Should be c, d, e in order.
+	for i, want := range []string{"c", "d", "e"} {
+		req := msgs[i].(*otelpb.ExportLogsServiceRequest)
+		got := req.GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0].GetBody().GetStringValue()
+		if got != want {
+			t.Errorf("msg[%d]: want %q, got %q", i, want, got)
+		}
+	}
+	_ = dir
+}
+
+func TestTelemetryBuffer_ReadLastN_FewerThanN(t *testing.T) {
+	buf, _ := makeTestBuffer(t, 10*1024*1024, 1*1024*1024)
+	buf.PublishLogs(makeLogReq("only"))
+
+	msgs := buf.ReadLastN(SignalLogs, 100)
+	if len(msgs) != 1 {
+		t.Errorf("want 1 message, got %d", len(msgs))
+	}
+}
+
+func TestTelemetryBuffer_Cursor(t *testing.T) {
+	buf, dir := makeTestBuffer(t, 10*1024*1024, 1*1024*1024)
+	buf.PublishLogs(makeLogReq("x"))
+	buf.PublishLogs(makeLogReq("y"))
+
+	// Cursor starts at zero (nothing flushed yet).
+	cur := buf.LoadCursor(SignalLogs)
+	if cur.Offset != 0 {
+		t.Errorf("expected zero cursor, got offset %d", cur.Offset)
+	}
+
+	// Read from cursor and advance it.
+	msgs, next, err := buf.ReadFromCursor(SignalLogs, cur, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("want 2 messages from cursor, got %d", len(msgs))
+	}
+
+	// Save + reload cursor.
+	if err := buf.SaveCursor(SignalLogs, next); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := buf.LoadCursor(SignalLogs)
+	if reloaded.File != next.File || reloaded.Offset != next.Offset {
+		t.Errorf("cursor reload mismatch: want %+v, got %+v", next, reloaded)
+	}
+
+	// Reading again from the saved cursor returns nothing.
+	msgs2, _, _ := buf.ReadFromCursor(SignalLogs, reloaded, 10)
+	if len(msgs2) != 0 {
+		t.Errorf("expected no new messages after cursor advanced, got %d", len(msgs2))
+	}
+
+	_ = dir
+}
+
+// Ensure fmt is used (required by import).
+var _ = fmt.Sprintf
