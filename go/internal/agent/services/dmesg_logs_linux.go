@@ -66,6 +66,11 @@ var piiPatterns = regexp.MustCompile(
 		`|comm=\S+` +
 		// Bluetooth device address (e.g. "bdaddr 00:11:22:33:44:55")
 		`|bdaddr\s+(?:[0-9a-f]{2}:){5}[0-9a-f]{2}` +
+		// IPv6 address (conservative: 4+ colon-separated hex groups). False
+		// positives are preferable to PII leakage per GDPR Recital 30.
+		`|(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{0,4}` +
+		// Kernel pointer addresses (32/64-bit hex, e.g. "0xffffffff81234567")
+		`|0x[0-9a-f]{8,16}` +
 		`)`,
 )
 
@@ -89,6 +94,17 @@ var csiRemnantPattern = regexp.MustCompile(`\[[0-9;]*[A-Za-z]`)
 // debug/trace band. KERN_EMERG/ALERT/CRIT additionally emit a zap.Warn so
 // they are visible in the agent's own log stream. See kernelLevelToOTEL.
 func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *TelemetryBroadcaster) {
+	// WENDY_DMESG_DPIA_CONFIRMED=true is required as an explicit operator
+	// acknowledgement that a Data Protection Impact Assessment has been conducted
+	// before forwarding kernel messages (which may contain PII) to an external
+	// telemetry backend. Fail fast if the confirmation is absent.
+	if confirmed, _ := strconv.ParseBool(os.Getenv("WENDY_DMESG_DPIA_CONFIRMED")); !confirmed {
+		logger.Error("kernel dmesg collection requires WENDY_DMESG_DPIA_CONFIRMED=true",
+			zap.String("reason", "GDPR Art.25 requires a Data Protection Impact Assessment before forwarding kernel messages to an external backend"),
+		)
+		return
+	}
+
 	// Default redact to true (safe by default).
 	// Disabling requires BOTH WENDY_DMESG_REDACT=false AND WENDY_DMESG_ALLOW_PII=true
 	// as a two-factor compensating control against accidental or unauthorised disable.
@@ -379,6 +395,12 @@ func parseKmsgLine(line string) (level int, message string, timestampUS int64, o
 
 	priority, err := strconv.Atoi(parts[0])
 	if err != nil {
+		return 0, "", 0, false
+	}
+	// The kmsg priority byte is facility|level (8 bits). Reject values outside
+	// this range — a negative or oversized value indicates a crafted/malformed
+	// record and could silently coerce to an unexpected severity via & 7.
+	if priority < 0 || priority > 0xFF {
 		return 0, "", 0, false
 	}
 
