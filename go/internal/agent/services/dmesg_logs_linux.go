@@ -64,6 +64,8 @@ var piiPatterns = regexp.MustCompile(
 		`|/(?:home|Users|root)/[^\s/]+` +
 		// Kernel process name annotations (e.g. "comm=nginx")
 		`|comm=\S+` +
+		// Bluetooth device address (e.g. "bdaddr 00:11:22:33:44:55")
+		`|bdaddr\s+(?:[0-9a-f]{2}:){5}[0-9a-f]{2}` +
 		`)`,
 )
 
@@ -131,10 +133,20 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}
 	}
 
-	logger.Info("kernel dmesg collection started",
-		zap.String("source", "/dev/kmsg"),
-		zap.Bool("redact", redact),
-	)
+	if redact {
+		logger.Info("kernel dmesg collection started",
+			zap.String("source", "/dev/kmsg"),
+			zap.Bool("redact", redact),
+		)
+	} else {
+		// WARN so the redact=false state is visible in default INFO+ log streams
+		// and produces an auditable record of the intentional PII-redaction bypass.
+		logger.Warn("kernel dmesg collection started with PII redaction DISABLED",
+			zap.String("source", "/dev/kmsg"),
+			zap.Bool("redact", redact),
+			zap.String("compliance_note", "WENDY_DMESG_REDACT=false: raw kernel messages forwarded; verify GDPR/compliance obligations are met"),
+		)
+	}
 	defer logger.Info("kernel dmesg collection stopped")
 
 	// sync.Once ensures only one close fires even though both the ctx-cancel
