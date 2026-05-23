@@ -1287,31 +1287,7 @@ private func renderAIReviewerBadge(_ reviewer: String) -> String {
 private func aiReviewerIdentity(
     reviewer: String
 ) -> (cssClass: String, logo: String, harnessLabel: String, modelLabel: String) {
-    let normalized = reviewer.lowercased()
-    if normalized.hasPrefix("claude-code-") {
-        return ("anthropic", "A", "Claude Code", String(reviewer.dropFirst("claude-code-".count)))
-    }
-    if normalized.hasPrefix("codex-") {
-        return ("openai", "O", "Codex", String(reviewer.dropFirst("codex-".count)))
-    }
-    if normalized.hasPrefix("pi-") {
-        return ("unknown", "PI", "Pi", String(reviewer.dropFirst("pi-".count)))
-    }
-    if normalized.hasPrefix("claude-") {
-        return ("anthropic", "A", "Claude Code", reviewer)
-    }
-    if normalized == "anthropic-default" || normalized == "claude-default" {
-        return ("anthropic", "A", "Claude Code", "default")
-    }
-    if normalized.hasPrefix("gpt-") || normalized.hasPrefix("o1") || normalized.hasPrefix("o3")
-        || normalized.hasPrefix("o4") || normalized.hasPrefix("o5")
-    {
-        return ("openai", "O", "Codex", reviewer)
-    }
-    if normalized == "openai-default" || normalized == "codex-default" {
-        return ("openai", "O", "Codex", "default")
-    }
-    return ("unknown", "AI", reviewer.isEmpty ? "AI" : reviewer, reviewer)
+    return ("pi", "PI", "Pi", reviewer.isEmpty ? "default" : reviewer)
 }
 
 private func renderCards(files: [ReportTestFile]) -> String {

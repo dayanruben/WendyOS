@@ -53,22 +53,21 @@ Review artifacts are Markdown files in predictable locations:
 
 ```text
 <run>/review.md
-<run>/review.<harness-and-model>/<slugged-title>.md
-<run>/<suite>/review.<harness-and-model>/<slugged-title>.md
-<run>/<suite>/<test>/review.<harness-and-model>/<slugged-title>.md
+<run>/review.<model>/<slugged-title>.md
+<run>/<suite>/review.<model>/<slugged-title>.md
+<run>/<suite>/<test>/review.<model>/<slugged-title>.md
 ```
 
 The report stage writes top-level `review.md` and `review.html` as compact
 aggregates of all review issues; `review.md` is safe to post as a CI review
 comment. Scoped review Markdown files live under
-`review.<harness-and-model>/` directories and start with a JSON front matter
+`review.<model>/` directories and start with a JSON front matter
 block, followed by a single `# Title`, a GitHub-comment-sized summary, and
 `## Details` for the full analysis/evidence. Review issue severity is stored as
 `severity: info | concern | fail` in the front matter. The file name must be the
 slugged review title, and the front matter `reviewer` must match the directory
-suffix. Reviewer IDs include the review harness and model, such as
-`review.pi-openai-gpt-4o`; unresolved defaults use the harness, such as
-`review.codex-default`.
+suffix. Reviewer IDs are model names, such as `review.openai-gpt-4o`;
+unresolved defaults use `review.default`.
 
 JSON schemas live under `Support/Schemas/`:
 

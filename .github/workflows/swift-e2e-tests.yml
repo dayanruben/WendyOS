@@ -20,8 +20,6 @@ on:
         required: false
         default: ''
     secrets:
-      ANTHROPIC_API_KEY:
-        required: false
       OPENAI_API_KEY:
         required: false
 
@@ -302,8 +300,7 @@ jobs:
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          WENDY_E2E_AI_HARNESS: pi
-          WENDY_E2E_AI_MODEL: openai/gpt-4o
+          WENDY_E2E_PI_MODEL: openai/gpt-4o
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \

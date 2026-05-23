@@ -61,13 +61,12 @@ struct E2EReviewEvidence: Codable, Sendable {
     var title: String?
 }
 
-func e2eReviewReviewer(harness: String, model: String) -> String {
-    let harnessSlug = e2eReviewSlug(harness)
+func e2eReviewReviewer(model: String) -> String {
     let modelSlug = e2eReviewSlug(model)
     guard modelSlug != "review", modelSlug != "default", modelSlug != "latest" else {
-        return "\(harnessSlug)-default"
+        return "default"
     }
-    return "\(harnessSlug)-\(modelSlug)"
+    return modelSlug
 }
 
 func e2eReviewDirectoryName(reviewer: String) -> String {

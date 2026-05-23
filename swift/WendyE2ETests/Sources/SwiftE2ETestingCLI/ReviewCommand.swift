@@ -8,7 +8,7 @@ import Foundation
 struct ReviewCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "review",
-        abstract: "Review a Swift E2E run with an AI review harness."
+        abstract: "Review a Swift E2E run with Pi."
     )
 
     @Option(name: .long, help: "Swift package directory.")
@@ -23,10 +23,7 @@ struct ReviewCommand: AsyncParsableCommand {
     )
     var runDir: String
 
-    @Option(name: .long, help: "AI harness: auto, claude-code, codex, pi, or none.")
-    var harness: AIHarness = .auto
-
-    @Option(name: .long, help: "Model name. Passed through as harness-specific environment.")
+    @Option(name: .long, help: "Pi model name. Passed through as WENDY_E2E_PI_MODEL.")
     var model: String?
 
     @Option(name: .long, help: "Suite review prompt path.")
@@ -92,37 +89,17 @@ extension ReviewCommand {
         ).standardizedFileURL
         let suitePrompt = try String(contentsOf: suitePromptURL, encoding: .utf8)
         let reportPrompt = try String(contentsOf: reportPromptURL, encoding: .utf8)
-        let probeHarness = try makeHarness(harness: harness, model: model)
-        let resolvedModel = try resolveHarnessModel(harness: probeHarness)
-        let reviewer = e2eReviewReviewer(
-            harness: probeHarness.harnessName,
-            model: resolvedModel
-        )
+        let piHarness = try makePiHarness(model: model)
+        let resolvedModel = piHarness.modelName
+        let reviewer = e2eReviewReviewer(model: resolvedModel)
         let reviewDirectoryName = e2eReviewDirectoryName(reviewer: reviewer)
         let suites = try loadRunReviewSuites(
             testsURL: testsURL,
             runURL: runURL,
             reviewer: reviewer
         )
-        guard probeHarness.isConfigured else {
-            print("==> Swift E2E run AI review skipped: no review harness configured")
-            print("    Mode:           \(reviewMode.name)")
-            if let range = reviewMode.diffRange {
-                print("    Diff:           \(range)")
-            }
-            if let changedFilesURL = context.changedFilesURL {
-                print("    Name-only diff: \(changedFilesURL.path)")
-            }
-            if let diffstatURL = context.diffstatURL {
-                print("    Diff stat:      \(diffstatURL.path)")
-            }
-            print("    Reviewer:       \(reviewer)")
-            print("    Suites:         \(suites.count)")
-            return
-        }
-
         print("==> Running Swift E2E run AI review")
-        print("    Harness:        \(probeHarness.harnessName)")
+        print("    Harness:        pi")
         print("    Model:          \(resolvedModel)")
         print("    Repo:           \(repoURL.path)")
         print("    Run:            \(runURL.path)")
@@ -151,7 +128,7 @@ extension ReviewCommand {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for suite in suites {
                     group.addTask {
-                        let reviewHarness = try makeHarness(harness: harness, model: resolvedModel)
+                        let reviewHarness = try makePiHarness(model: resolvedModel)
                         let prompt = runSuitePrompt(
                             basePrompt: suitePrompt,
                             suite: suite,
@@ -193,7 +170,7 @@ extension ReviewCommand {
                 reviewDirectoryName: reviewDirectoryName,
                 overwrite: overwrite
             )
-            let reportHarness = try makeHarness(harness: harness, model: resolvedModel)
+            let reportHarness = try makePiHarness(model: resolvedModel)
             try reportHarness.review(
                 prompt: prompt,
                 repoURL: repoURL,
@@ -288,41 +265,6 @@ enum RunReviewStage: String, ExpressibleByArgument {
     }
 }
 
-enum AIHarness: ExpressibleByArgument {
-    case auto
-    case claudeCode
-    case codex
-    case pi
-    case none
-
-    init?(argument: String) {
-        switch argument.lowercased() {
-        case "auto":
-            self = .auto
-        case "claude", "claude-code":
-            self = .claudeCode
-        case "codex":
-            self = .codex
-        case "pi":
-            self = .pi
-        case "none":
-            self = .none
-        default:
-            return nil
-        }
-    }
-
-    var name: String {
-        switch self {
-        case .auto: "auto"
-        case .claudeCode: "claude-code"
-        case .codex: "codex"
-        case .pi: "pi"
-        case .none: "none"
-        }
-    }
-}
-
 private struct ReviewTestCase {
     var sourcePath: String
     var suite: String
@@ -403,32 +345,10 @@ private struct ReviewResultKey: Hashable {
     var name: String
 }
 
-private protocol E2EReviewHarness {
-    var isConfigured: Bool { get }
-    var harnessName: String { get }
-    var modelName: String { get }
-
-    func review(prompt: String, repoURL: URL, runURL: URL) throws
-}
-
-private struct UnconfiguredReviewHarness: E2EReviewHarness {
-    var reason: String
-    var isConfigured: Bool { false }
-    var harnessName: String { "none" }
-    var modelName: String { "none" }
-
-    func review(prompt _: String, repoURL _: URL, runURL _: URL) throws {
-        throw ValidationError(reason)
-    }
-}
-
-private struct ShellReviewHarness: E2EReviewHarness {
-    var harnessName: String
+private struct ShellReviewHarness {
     var modelName: String
     var shellCommand: String
     var modelEnvironmentKey: String?
-
-    var isConfigured: Bool { true }
 
     func review(prompt: String, repoURL: URL, runURL: URL) throws {
         let promptURL = runURL.appendingPathComponent(
@@ -460,87 +380,18 @@ private struct ShellReviewHarness: E2EReviewHarness {
 
         guard process.terminationStatus == 0 else {
             throw ValidationError(
-                "\(harnessName) review harness failed with exit status \(process.terminationStatus)."
+                "Pi review failed with exit status \(process.terminationStatus)."
             )
         }
     }
 }
 
-private func makeHarness(harness: AIHarness, model: String?) throws -> any E2EReviewHarness {
+private func makePiHarness(model: String?) throws -> ShellReviewHarness {
     let environment = ProcessInfo.processInfo.environment
-    let anthropicKey = environment["ANTHROPIC_API_KEY", default: ""]
-    let openAIKey = environment["OPENAI_API_KEY", default: ""]
-
-    switch harness {
-    case .none:
-        return UnconfiguredReviewHarness(reason: "AI review disabled with --harness none.")
-    case .claudeCode:
-        guard !anthropicKey.isEmpty else {
-            throw ValidationError("ANTHROPIC_API_KEY is required for --harness claude-code.")
-        }
-        if environment["WENDY_E2E_CLAUDE_CODE_COMMAND", default: ""].isEmpty {
-            try requireExecutable("claude", harness: "claude-code")
-        }
-        return claudeCodeHarness(model: model, environment: environment)
-    case .codex:
-        guard !openAIKey.isEmpty else {
-            throw ValidationError("OPENAI_API_KEY is required for --harness codex.")
-        }
-        if environment["WENDY_E2E_CODEX_COMMAND", default: ""].isEmpty {
-            try requireExecutable("codex", harness: "codex")
-        }
-        return codexHarness(model: model, environment: environment)
-    case .pi:
-        if environment["WENDY_E2E_PI_COMMAND", default: ""].isEmpty {
-            try requireExecutable("pi", harness: "pi")
-        }
-        return piHarness(model: model, environment: environment)
-    case .auto:
-        if !anthropicKey.isEmpty {
-            if environment["WENDY_E2E_CLAUDE_CODE_COMMAND", default: ""].isEmpty {
-                try requireExecutable("claude", harness: "claude-code")
-            }
-            return claudeCodeHarness(model: model, environment: environment)
-        }
-        if !openAIKey.isEmpty {
-            if environment["WENDY_E2E_CODEX_COMMAND", default: ""].isEmpty {
-                try requireExecutable("codex", harness: "codex")
-            }
-            return codexHarness(model: model, environment: environment)
-        }
-        return UnconfiguredReviewHarness(reason: "No AI review harness credentials configured.")
+    if environment["WENDY_E2E_PI_COMMAND", default: ""].isEmpty {
+        try requireExecutable("pi", harness: "pi")
     }
-}
-
-private func claudeCodeHarness(model: String?, environment: [String: String]) -> ShellReviewHarness {
-    ShellReviewHarness(
-        harnessName: "claude-code",
-        modelName: model ?? environment["ANTHROPIC_MODEL", default: "default"],
-        shellCommand: environment[
-            "WENDY_E2E_CLAUDE_CODE_COMMAND",
-            default:
-                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${ANTHROPIC_MODEL:-}" ]]; then claude --model "$ANTHROPIC_MODEL" -p "$prompt" --dangerously-skip-permissions; else claude -p "$prompt" --dangerously-skip-permissions; fi"#
-        ],
-        modelEnvironmentKey: "ANTHROPIC_MODEL"
-    )
-}
-
-private func codexHarness(model: String?, environment: [String: String]) -> ShellReviewHarness {
-    ShellReviewHarness(
-        harnessName: "codex",
-        modelName: model ?? environment["OPENAI_MODEL", default: "default"],
-        shellCommand: environment[
-            "WENDY_E2E_CODEX_COMMAND",
-            default:
-                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${OPENAI_MODEL:-}" ]]; then codex exec --model "$OPENAI_MODEL" --sandbox workspace-write --ask-for-approval never "$prompt"; else codex exec --sandbox workspace-write --ask-for-approval never "$prompt"; fi"#
-        ],
-        modelEnvironmentKey: "OPENAI_MODEL"
-    )
-}
-
-private func piHarness(model: String?, environment: [String: String]) -> ShellReviewHarness {
-    ShellReviewHarness(
-        harnessName: "pi",
+    return ShellReviewHarness(
         modelName: model ?? environment["WENDY_E2E_PI_MODEL", default: "default"],
         shellCommand: environment[
             "WENDY_E2E_PI_COMMAND",
@@ -549,93 +400,6 @@ private func piHarness(model: String?, environment: [String: String]) -> ShellRe
         ],
         modelEnvironmentKey: "WENDY_E2E_PI_MODEL"
     )
-}
-
-private func resolveHarnessModel(harness: any E2EReviewHarness) throws -> String {
-    guard harness.isConfigured, harness.harnessName == "claude-code" else {
-        return harness.modelName
-    }
-    guard ProcessInfo.processInfo.environment["WENDY_E2E_CLAUDE_CODE_COMMAND", default: ""].isEmpty
-    else {
-        return harness.modelName
-    }
-    return try resolveClaudeModelName(requestedModel: harness.modelName)
-}
-
-private func resolveClaudeModelName(requestedModel: String) throws -> String {
-    if isConcreteClaudeModelName(requestedModel) {
-        return requestedModel
-    }
-
-    var arguments = [
-        "-p",
-        "Reply with exactly ok.",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-budget-usd",
-        ProcessInfo.processInfo.environment[
-            "WENDY_E2E_CLAUDE_MODEL_PROBE_BUDGET_USD",
-            default: "0.05"
-        ],
-        "--dangerously-skip-permissions",
-    ]
-    if !usesHarnessDefaultModel(requestedModel) {
-        arguments.insert(contentsOf: ["--model", requestedModel], at: 2)
-    }
-
-    let outputPipe = Pipe()
-    let errorPipe = Pipe()
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["claude"] + arguments
-    process.standardOutput = outputPipe
-    process.standardError = errorPipe
-
-    try process.run()
-    process.waitUntilExit()
-
-    let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
-    let error = errorPipe.fileHandleForReading.readDataToEndOfFile()
-    if let resolved = firstClaudeModelName(in: output) {
-        return resolved
-    }
-
-    guard process.terminationStatus == 0 else {
-        let detail = String(decoding: error, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        throw ValidationError(
-            "Could not resolve Claude default model. `claude --output-format stream-json` exited with status \(process.terminationStatus).\(detail.isEmpty ? "" : "\n\(detail)")"
-        )
-    }
-
-    return requestedModel
-}
-
-private func isConcreteClaudeModelName(_ modelName: String) -> Bool {
-    let normalized = modelName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return normalized.hasPrefix("claude-")
-}
-
-private func firstClaudeModelName(in data: Data) -> String? {
-    let output = String(decoding: data, as: UTF8.self)
-    for line in output.split(separator: "\n") {
-        guard let lineData = String(line).data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
-        else {
-            continue
-        }
-        if let model = object["model"] as? String, !model.isEmpty {
-            return model
-        }
-        if let message = object["message"] as? [String: Any],
-            let model = message["model"] as? String,
-            !model.isEmpty
-        {
-            return model
-        }
-    }
-    return nil
 }
 
 private func usesHarnessDefaultModel(_ modelName: String) -> Bool {

@@ -7,8 +7,7 @@ DEFAULT_PACKAGE_DIR="$SWIFT_DIR/WendyE2ETests"
 
 RUN_DIR=""
 PACKAGE_DIR="$DEFAULT_PACKAGE_DIR"
-HARNESS="${WENDY_E2E_AI_HARNESS:-auto}"
-MODEL="${WENDY_E2E_AI_MODEL:-}"
+MODEL="${WENDY_E2E_PI_MODEL:-}"
 DIFF=""
 OVERWRITE="false"
 EXTRA_ARGS=()
@@ -17,34 +16,23 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") --run-dir RUN_DIR [OPTIONS]
 
-Review WendyAgent Swift E2E run artifacts with an AI review harness.
+Review WendyAgent Swift E2E run artifacts with Pi.
 
 Options:
   --run-dir DIR      Required E2E run directory produced by E2EAggregate.sh.
   --package-dir DIR  Swift package directory containing swift-e2e-testing;
                      defaults to $DEFAULT_PACKAGE_DIR.
-  --harness NAME     AI harness: auto, claude-code, codex, pi, or none;
-                     defaults to auto.
-  --model NAME       Harness model override. Use latest/default to let the
-                     harness choose its default model.
+  --model NAME       Pi model override. Use latest/default to let Pi choose
+                     its default model.
   --diff RANGE       Git diff range for diff-scoped review, for example
                      origin/main...HEAD.
   --overwrite        Overwrite existing run review files.
   --help             Show this help message.
 
 Environment:
-  ANTHROPIC_API_KEY  Enables the Claude Code harness when selected or auto.
-  ANTHROPIC_MODEL    Optional Claude Code model override.
-  OPENAI_API_KEY     Enables OpenAI-backed harnesses when selected or auto.
-  OPENAI_MODEL       Optional Codex model override.
-  WENDY_E2E_AI_HARNESS  Default harness override.
-  WENDY_E2E_AI_MODEL    Default model override.
-  WENDY_E2E_CLAUDE_CODE_COMMAND Optional shell command for Claude Code. Reads
-                                the prompt from WENDY_E2E_REVIEW_PROMPT.
-  WENDY_E2E_CODEX_COMMAND       Optional shell command for Codex. Reads the
-                                prompt from WENDY_E2E_REVIEW_PROMPT.
-  WENDY_E2E_PI_COMMAND          Optional shell command for Pi. Reads the prompt
-                                from WENDY_E2E_REVIEW_PROMPT.
+  WENDY_E2E_PI_MODEL    Default Pi model override.
+  WENDY_E2E_PI_COMMAND  Optional shell command for Pi. Reads the prompt from
+                         WENDY_E2E_REVIEW_PROMPT.
 EOF
 }
 
@@ -77,10 +65,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --package-dir)
       PACKAGE_DIR="$2"
-      shift 2
-      ;;
-    --harness)
-      HARNESS="$2"
       shift 2
       ;;
     --model)
@@ -120,7 +104,6 @@ review_single_run() {
   local command_args=(
     "run" "swift-e2e-testing" "review"
     "--run-dir" "$run_dir"
-    "--harness" "$HARNESS"
   )
 
   if [[ -n "$MODEL" ]]; then
@@ -137,7 +120,6 @@ review_single_run() {
   echo "==> Reviewing Swift E2E run results"
   echo "    Package:  $PACKAGE_DIR"
   echo "    Run dir:  $run_dir"
-  echo "    Harness:  $HARNESS"
   if [[ -n "$MODEL" ]]; then
     echo "    Model:    $MODEL"
   fi
