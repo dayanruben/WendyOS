@@ -1278,7 +1278,7 @@ private func renderAIReviewSeverityBadge(_ severity: E2EReviewSeverity) -> Strin
 
 private func renderAIReviewerBadge(_ reviewer: String) -> String {
     let identity = aiReviewerIdentity(reviewer: reviewer)
-    let label = "\(identity.providerLabel) \(identity.modelLabel)"
+    let label = "\(identity.harnessLabel) \(identity.modelLabel)"
     return """
         <span class=\"ai-reviewer-badge \(identity.cssClass)\" title=\"\(escapeHTML(label))\"><span class=\"ai-reviewer-logo\" aria-hidden=\"true\">\(escapeHTML(identity.logo))</span><span class=\"ai-reviewer-model\">\(escapeHTML(identity.modelLabel))</span></span>
         """
@@ -1286,21 +1286,30 @@ private func renderAIReviewerBadge(_ reviewer: String) -> String {
 
 private func aiReviewerIdentity(
     reviewer: String
-) -> (cssClass: String, logo: String, providerLabel: String, modelLabel: String) {
+) -> (cssClass: String, logo: String, harnessLabel: String, modelLabel: String) {
     let normalized = reviewer.lowercased()
+    if normalized.hasPrefix("claude-code-") {
+        return ("anthropic", "A", "Claude Code", String(reviewer.dropFirst("claude-code-".count)))
+    }
+    if normalized.hasPrefix("codex-") {
+        return ("openai", "O", "Codex", String(reviewer.dropFirst("codex-".count)))
+    }
+    if normalized.hasPrefix("pi-") {
+        return ("unknown", "PI", "Pi", String(reviewer.dropFirst("pi-".count)))
+    }
     if normalized.hasPrefix("claude-") {
-        return ("anthropic", "A", "Anthropic", reviewer)
+        return ("anthropic", "A", "Claude Code", reviewer)
     }
     if normalized == "anthropic-default" || normalized == "claude-default" {
-        return ("anthropic", "A", "Anthropic", "default")
+        return ("anthropic", "A", "Claude Code", "default")
     }
     if normalized.hasPrefix("gpt-") || normalized.hasPrefix("o1") || normalized.hasPrefix("o3")
         || normalized.hasPrefix("o4") || normalized.hasPrefix("o5")
     {
-        return ("openai", "O", "OpenAI", reviewer)
+        return ("openai", "O", "Codex", reviewer)
     }
     if normalized == "openai-default" || normalized == "codex-default" {
-        return ("openai", "O", "OpenAI", "default")
+        return ("openai", "O", "Codex", "default")
     }
     return ("unknown", "AI", reviewer.isEmpty ? "AI" : reviewer, reviewer)
 }

@@ -285,12 +285,25 @@ jobs:
             --output-dir /tmp/wendy \
             "${attempt_dirs[@]}"
 
+      - name: Install Pi coding agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pi >/dev/null 2>&1; then
+            prefix="${RUNNER_TEMP:-/tmp}/pi-coding-agent"
+            npm install -g --ignore-scripts --prefix "$prefix" @earendil-works/pi-coding-agent
+            echo "$prefix/bin" >> "$GITHUB_PATH"
+            export PATH="$prefix/bin:$PATH"
+          fi
+          pi --version
+
       - name: Review Swift E2E run
         working-directory: swift
         shell: bash
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WENDY_E2E_AI_HARNESS: pi
+          WENDY_E2E_AI_MODEL: openai/gpt-4o
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \

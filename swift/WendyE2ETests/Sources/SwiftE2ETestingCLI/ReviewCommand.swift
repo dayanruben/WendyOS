@@ -8,7 +8,7 @@ import Foundation
 struct ReviewCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "review",
-        abstract: "Review a Swift E2E run with an AI coding agent."
+        abstract: "Review a Swift E2E run with an AI review harness."
     )
 
     @Option(name: .long, help: "Swift package directory.")
@@ -23,10 +23,10 @@ struct ReviewCommand: AsyncParsableCommand {
     )
     var runDir: String
 
-    @Option(name: .long, help: "AI agent: auto, claude, codex, or none.")
-    var provider: AIProvider = .auto
+    @Option(name: .long, help: "AI harness: auto, claude-code, codex, pi, or none.")
+    var harness: AIHarness = .auto
 
-    @Option(name: .long, help: "Model name. Passed through as provider-specific environment.")
+    @Option(name: .long, help: "Model name. Passed through as harness-specific environment.")
     var model: String?
 
     @Option(name: .long, help: "Suite review prompt path.")
@@ -92,10 +92,10 @@ extension ReviewCommand {
         ).standardizedFileURL
         let suitePrompt = try String(contentsOf: suitePromptURL, encoding: .utf8)
         let reportPrompt = try String(contentsOf: reportPromptURL, encoding: .utf8)
-        let probeAgent = try makeAgent(provider: provider, model: model)
-        let resolvedModel = try resolveAgentModel(agent: probeAgent)
+        let probeHarness = try makeHarness(harness: harness, model: model)
+        let resolvedModel = try resolveHarnessModel(harness: probeHarness)
         let reviewer = e2eReviewReviewer(
-            provider: probeAgent.providerName,
+            harness: probeHarness.harnessName,
             model: resolvedModel
         )
         let reviewDirectoryName = e2eReviewDirectoryName(reviewer: reviewer)
@@ -104,8 +104,8 @@ extension ReviewCommand {
             runURL: runURL,
             reviewer: reviewer
         )
-        guard probeAgent.isConfigured else {
-            print("==> Swift E2E run AI review skipped: no agent API key configured")
+        guard probeHarness.isConfigured else {
+            print("==> Swift E2E run AI review skipped: no review harness configured")
             print("    Mode:           \(reviewMode.name)")
             if let range = reviewMode.diffRange {
                 print("    Diff:           \(range)")
@@ -122,7 +122,7 @@ extension ReviewCommand {
         }
 
         print("==> Running Swift E2E run AI review")
-        print("    Agent:          \(probeAgent.providerName)")
+        print("    Harness:        \(probeHarness.harnessName)")
         print("    Model:          \(resolvedModel)")
         print("    Repo:           \(repoURL.path)")
         print("    Run:            \(runURL.path)")
@@ -151,7 +151,7 @@ extension ReviewCommand {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for suite in suites {
                     group.addTask {
-                        let agent = try makeAgent(provider: provider, model: resolvedModel)
+                        let reviewHarness = try makeHarness(harness: harness, model: resolvedModel)
                         let prompt = runSuitePrompt(
                             basePrompt: suitePrompt,
                             suite: suite,
@@ -165,7 +165,7 @@ extension ReviewCommand {
                             overwrite: overwrite
                         )
                         print("Progress: reviewing suite \(suite.suiteKey)")
-                        try agent.review(
+                        try reviewHarness.review(
                             prompt: prompt,
                             repoURL: repoURL,
                             runURL: runURL
@@ -193,8 +193,8 @@ extension ReviewCommand {
                 reviewDirectoryName: reviewDirectoryName,
                 overwrite: overwrite
             )
-            let reportAgent = try makeAgent(provider: provider, model: resolvedModel)
-            try reportAgent.review(
+            let reportHarness = try makeHarness(harness: harness, model: resolvedModel)
+            try reportHarness.review(
                 prompt: prompt,
                 repoURL: repoURL,
                 runURL: runURL
@@ -288,14 +288,38 @@ enum RunReviewStage: String, ExpressibleByArgument {
     }
 }
 
-enum AIProvider: String, ExpressibleByArgument {
+enum AIHarness: ExpressibleByArgument {
     case auto
-    case claude
+    case claudeCode
     case codex
+    case pi
     case none
 
     init?(argument: String) {
-        self.init(rawValue: argument.lowercased())
+        switch argument.lowercased() {
+        case "auto":
+            self = .auto
+        case "claude", "claude-code":
+            self = .claudeCode
+        case "codex":
+            self = .codex
+        case "pi":
+            self = .pi
+        case "none":
+            self = .none
+        default:
+            return nil
+        }
+    }
+
+    var name: String {
+        switch self {
+        case .auto: "auto"
+        case .claudeCode: "claude-code"
+        case .codex: "codex"
+        case .pi: "pi"
+        case .none: "none"
+        }
     }
 }
 
@@ -379,18 +403,18 @@ private struct ReviewResultKey: Hashable {
     var name: String
 }
 
-private protocol E2EAgentReviewer {
+private protocol E2EReviewHarness {
     var isConfigured: Bool { get }
-    var providerName: String { get }
+    var harnessName: String { get }
     var modelName: String { get }
 
     func review(prompt: String, repoURL: URL, runURL: URL) throws
 }
 
-private struct UnconfiguredAgentReviewer: E2EAgentReviewer {
+private struct UnconfiguredReviewHarness: E2EReviewHarness {
     var reason: String
     var isConfigured: Bool { false }
-    var providerName: String { "none" }
+    var harnessName: String { "none" }
     var modelName: String { "none" }
 
     func review(prompt _: String, repoURL _: URL, runURL _: URL) throws {
@@ -398,8 +422,8 @@ private struct UnconfiguredAgentReviewer: E2EAgentReviewer {
     }
 }
 
-private struct ShellAgentReviewer: E2EAgentReviewer {
-    var providerName: String
+private struct ShellReviewHarness: E2EReviewHarness {
+    var harnessName: String
     var modelName: String
     var shellCommand: String
     var modelEnvironmentKey: String?
@@ -408,17 +432,17 @@ private struct ShellAgentReviewer: E2EAgentReviewer {
 
     func review(prompt: String, repoURL: URL, runURL: URL) throws {
         let promptURL = runURL.appendingPathComponent(
-            ".agent-review-prompt-\(UUID().uuidString).md"
+            ".review-harness-prompt-\(UUID().uuidString).md"
         )
         try prompt.write(to: promptURL, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: promptURL) }
 
         var environment = ProcessInfo.processInfo.environment
-        environment["WENDY_E2E_AGENT_PROMPT"] = promptURL.path
+        environment["WENDY_E2E_REVIEW_PROMPT"] = promptURL.path
         environment["WENDY_E2E_REVIEW_RUN_DIR"] = runURL.path
         environment["WENDY_E2E_REVIEW_REPO_DIR"] = repoURL.path
         if let modelEnvironmentKey {
-            if usesAgentDefaultModel(modelName) {
+            if usesHarnessDefaultModel(modelName) {
                 environment.removeValue(forKey: modelEnvironmentKey)
             } else {
                 environment[modelEnvironmentKey] = modelName
@@ -436,88 +460,106 @@ private struct ShellAgentReviewer: E2EAgentReviewer {
 
         guard process.terminationStatus == 0 else {
             throw ValidationError(
-                "\(providerName) agent review failed with exit status \(process.terminationStatus)."
+                "\(harnessName) review harness failed with exit status \(process.terminationStatus)."
             )
         }
     }
 }
 
-private func makeAgent(provider: AIProvider, model: String?) throws -> any E2EAgentReviewer {
+private func makeHarness(harness: AIHarness, model: String?) throws -> any E2EReviewHarness {
     let environment = ProcessInfo.processInfo.environment
     let anthropicKey = environment["ANTHROPIC_API_KEY", default: ""]
     let openAIKey = environment["OPENAI_API_KEY", default: ""]
 
-    switch provider {
+    switch harness {
     case .none:
-        return UnconfiguredAgentReviewer(reason: "AI review disabled with --provider none.")
-    case .claude:
+        return UnconfiguredReviewHarness(reason: "AI review disabled with --harness none.")
+    case .claudeCode:
         guard !anthropicKey.isEmpty else {
-            throw ValidationError("ANTHROPIC_API_KEY is required for --provider claude.")
+            throw ValidationError("ANTHROPIC_API_KEY is required for --harness claude-code.")
         }
-        if environment["WENDY_E2E_CLAUDE_COMMAND", default: ""].isEmpty {
-            try requireExecutable("claude", provider: "claude")
+        if environment["WENDY_E2E_CLAUDE_CODE_COMMAND", default: ""].isEmpty {
+            try requireExecutable("claude", harness: "claude-code")
         }
-        return claudeAgent(model: model, environment: environment)
+        return claudeCodeHarness(model: model, environment: environment)
     case .codex:
         guard !openAIKey.isEmpty else {
-            throw ValidationError("OPENAI_API_KEY is required for --provider codex.")
+            throw ValidationError("OPENAI_API_KEY is required for --harness codex.")
         }
         if environment["WENDY_E2E_CODEX_COMMAND", default: ""].isEmpty {
-            try requireExecutable("codex", provider: "codex")
+            try requireExecutable("codex", harness: "codex")
         }
-        return codexAgent(model: model, environment: environment)
+        return codexHarness(model: model, environment: environment)
+    case .pi:
+        if environment["WENDY_E2E_PI_COMMAND", default: ""].isEmpty {
+            try requireExecutable("pi", harness: "pi")
+        }
+        return piHarness(model: model, environment: environment)
     case .auto:
         if !anthropicKey.isEmpty {
-            if environment["WENDY_E2E_CLAUDE_COMMAND", default: ""].isEmpty {
-                try requireExecutable("claude", provider: "claude")
+            if environment["WENDY_E2E_CLAUDE_CODE_COMMAND", default: ""].isEmpty {
+                try requireExecutable("claude", harness: "claude-code")
             }
-            return claudeAgent(model: model, environment: environment)
+            return claudeCodeHarness(model: model, environment: environment)
         }
         if !openAIKey.isEmpty {
             if environment["WENDY_E2E_CODEX_COMMAND", default: ""].isEmpty {
-                try requireExecutable("codex", provider: "codex")
+                try requireExecutable("codex", harness: "codex")
             }
-            return codexAgent(model: model, environment: environment)
+            return codexHarness(model: model, environment: environment)
         }
-        return UnconfiguredAgentReviewer(reason: "No agent API key configured.")
+        return UnconfiguredReviewHarness(reason: "No AI review harness credentials configured.")
     }
 }
 
-private func claudeAgent(model: String?, environment: [String: String]) -> ShellAgentReviewer {
-    ShellAgentReviewer(
-        providerName: "claude",
+private func claudeCodeHarness(model: String?, environment: [String: String]) -> ShellReviewHarness {
+    ShellReviewHarness(
+        harnessName: "claude-code",
         modelName: model ?? environment["ANTHROPIC_MODEL", default: "default"],
         shellCommand: environment[
-            "WENDY_E2E_CLAUDE_COMMAND",
+            "WENDY_E2E_CLAUDE_CODE_COMMAND",
             default:
-                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_AGENT_PROMPT."; if [[ -n "${ANTHROPIC_MODEL:-}" ]]; then claude --model "$ANTHROPIC_MODEL" -p "$prompt" --dangerously-skip-permissions; else claude -p "$prompt" --dangerously-skip-permissions; fi"#
+                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${ANTHROPIC_MODEL:-}" ]]; then claude --model "$ANTHROPIC_MODEL" -p "$prompt" --dangerously-skip-permissions; else claude -p "$prompt" --dangerously-skip-permissions; fi"#
         ],
         modelEnvironmentKey: "ANTHROPIC_MODEL"
     )
 }
 
-private func codexAgent(model: String?, environment: [String: String]) -> ShellAgentReviewer {
-    ShellAgentReviewer(
-        providerName: "codex",
+private func codexHarness(model: String?, environment: [String: String]) -> ShellReviewHarness {
+    ShellReviewHarness(
+        harnessName: "codex",
         modelName: model ?? environment["OPENAI_MODEL", default: "default"],
         shellCommand: environment[
             "WENDY_E2E_CODEX_COMMAND",
             default:
-                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_AGENT_PROMPT."; if [[ -n "${OPENAI_MODEL:-}" ]]; then codex exec --model "$OPENAI_MODEL" --sandbox workspace-write --ask-for-approval never "$prompt"; else codex exec --sandbox workspace-write --ask-for-approval never "$prompt"; fi"#
+                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${OPENAI_MODEL:-}" ]]; then codex exec --model "$OPENAI_MODEL" --sandbox workspace-write --ask-for-approval never "$prompt"; else codex exec --sandbox workspace-write --ask-for-approval never "$prompt"; fi"#
         ],
         modelEnvironmentKey: "OPENAI_MODEL"
     )
 }
 
-private func resolveAgentModel(agent: any E2EAgentReviewer) throws -> String {
-    guard agent.isConfigured, agent.providerName == "claude" else {
-        return agent.modelName
+private func piHarness(model: String?, environment: [String: String]) -> ShellReviewHarness {
+    ShellReviewHarness(
+        harnessName: "pi",
+        modelName: model ?? environment["WENDY_E2E_PI_MODEL", default: "default"],
+        shellCommand: environment[
+            "WENDY_E2E_PI_COMMAND",
+            default:
+                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${WENDY_E2E_PI_MODEL:-}" ]]; then pi --model "$WENDY_E2E_PI_MODEL" -p "$prompt"; else pi -p "$prompt"; fi"#
+        ],
+        modelEnvironmentKey: "WENDY_E2E_PI_MODEL"
+    )
+}
+
+private func resolveHarnessModel(harness: any E2EReviewHarness) throws -> String {
+    guard harness.isConfigured, harness.harnessName == "claude-code" else {
+        return harness.modelName
     }
-    guard ProcessInfo.processInfo.environment["WENDY_E2E_CLAUDE_COMMAND", default: ""].isEmpty
+    guard ProcessInfo.processInfo.environment["WENDY_E2E_CLAUDE_CODE_COMMAND", default: ""].isEmpty
     else {
-        return agent.modelName
+        return harness.modelName
     }
-    return try resolveClaudeModelName(requestedModel: agent.modelName)
+    return try resolveClaudeModelName(requestedModel: harness.modelName)
 }
 
 private func resolveClaudeModelName(requestedModel: String) throws -> String {
@@ -538,7 +580,7 @@ private func resolveClaudeModelName(requestedModel: String) throws -> String {
         ],
         "--dangerously-skip-permissions",
     ]
-    if !usesAgentDefaultModel(requestedModel) {
+    if !usesHarnessDefaultModel(requestedModel) {
         arguments.insert(contentsOf: ["--model", requestedModel], at: 2)
     }
 
@@ -596,12 +638,12 @@ private func firstClaudeModelName(in data: Data) -> String? {
     return nil
 }
 
-private func usesAgentDefaultModel(_ modelName: String) -> Bool {
+private func usesHarnessDefaultModel(_ modelName: String) -> Bool {
     let normalized = modelName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     return normalized.isEmpty || normalized == "default" || normalized == "latest"
 }
 
-private func requireExecutable(_ name: String, provider: String) throws {
+private func requireExecutable(_ name: String, harness: String) throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = ["which", name]
@@ -610,7 +652,7 @@ private func requireExecutable(_ name: String, provider: String) throws {
     try process.run()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
-        throw ValidationError("\(provider) requires `\(name)` to be installed on PATH.")
+        throw ValidationError("\(harness) requires `\(name)` to be installed on PATH.")
     }
 }
 
