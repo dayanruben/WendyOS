@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 )
 
 func mustDetectProjectType(t *testing.T, dir string) string {
@@ -694,7 +694,7 @@ func TestGeneratePythonDockerfile_WithRequirements(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, err := generatePythonDockerfile(dir)
+	path, err := generatePythonDockerfile(dir, false)
 	if err != nil {
 		t.Fatalf("generatePythonDockerfile: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestGeneratePythonDockerfile_WithoutRequirements_MainPy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, err := generatePythonDockerfile(dir)
+	path, err := generatePythonDockerfile(dir, false)
 	if err != nil {
 		t.Fatalf("generatePythonDockerfile: %v", err)
 	}
@@ -750,7 +750,7 @@ func TestGeneratePythonDockerfile_FallbackEntrypoint(t *testing.T) {
 	dir := t.TempDir()
 	// No app.py or main.py; should fall back to app.py as default.
 
-	_, err := generatePythonDockerfile(dir)
+	_, err := generatePythonDockerfile(dir, false)
 	if err != nil {
 		t.Fatalf("generatePythonDockerfile: %v", err)
 	}

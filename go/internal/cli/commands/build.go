@@ -11,11 +11,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/providers"
-	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
 )
 
@@ -505,7 +505,7 @@ func buildPythonProject(dir, imageName, platform string) error {
 	generatedDockerfile := false
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
 		cliLogln("No Dockerfile found. Generating one for Python project...")
-		if _, genErr := generatePythonDockerfile(dir); genErr != nil {
+		if _, genErr := generatePythonDockerfile(dir, false); genErr != nil {
 			return fmt.Errorf("generating Dockerfile: %w", genErr)
 		}
 		generatedDockerfile = true

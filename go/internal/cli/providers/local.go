@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // localBuildContext is stored in BuiltApp.Context for local builds.
@@ -24,8 +24,8 @@ var _ DockerfileBuilder = (*LocalProvider)(nil)
 // LocalProvider builds and runs applications on the local machine.
 type LocalProvider struct{}
 
-func (p *LocalProvider) Key() string         { return "local" }
-func (p *LocalProvider) DisplayName() string { return "Local (This Device)" }
+func (p *LocalProvider) Key() string         { return ProviderKeyLocal }
+func (p *LocalProvider) DisplayName() string { return "This Device" }
 
 func (p *LocalProvider) IsAvailable(_ context.Context) bool { return true }
 
