@@ -19,13 +19,17 @@ URL.
 ## Source Layout
 
 The Fumadocs app is reached through `docs/`, which is a repository-root symlink
-to `go/internal/cli/assets/docs`. It reads the existing Markdown files under
-that docs tree at build time, so source Markdown stays in place.
+to `go/internal/cli/assets/docs`. Top-level docs content lives as MDX and
+`meta.json` files in that tree. Existing lower-level Markdown reference files
+are still read from the same tree, but the prep script publishes them under the
+`advanced/` section at build time.
 
 ```
 docs/
   app/          Next.js app router routes, layout, search, and OG images
   components/   MDX components, search dialog, and providers
+  guides/       Top-level guides and tutorials
+  installation/ Top-level setup guides
   lib/          Fumadocs source loader and shared layout config
   scripts/      Content preparation for Fumadocs
   next.config.mjs
