@@ -57,11 +57,12 @@ func newCameraListCmd() *cobra.Command {
 				return nil
 			}
 
-			headers := []string{"ID", "Name", "Path"}
+			headers := []string{"ID", "Type", "Name", "Path"}
 			var rows [][]string
 			for _, d := range devices {
 				rows = append(rows, []string{
 					fmt.Sprintf("%d", d.GetId()),
+					transportLabel(d.GetTransport()),
 					d.GetName(),
 					d.GetPath(),
 				})
@@ -69,6 +70,20 @@ func newCameraListCmd() *cobra.Command {
 			fmt.Print(tui.RenderTable(headers, rows))
 			return nil
 		},
+	}
+}
+
+// transportLabel returns a short label for the camera transport column.
+// Unknown transports render as "-" so the column stays aligned and the user
+// can spot devices the agent could not classify.
+func transportLabel(t agentpb.VideoTransport) string {
+	switch t {
+	case agentpb.VideoTransport_VIDEO_TRANSPORT_USB:
+		return "usb"
+	case agentpb.VideoTransport_VIDEO_TRANSPORT_CSI:
+		return "csi"
+	default:
+		return "-"
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -84,9 +85,11 @@ func (e nativeH264NotSupported) Error() string { return e.msg }
 // VideoService implements agentpb.WendyVideoServiceServer.
 type VideoService struct {
 	agentpb.UnimplementedWendyVideoServiceServer
-	logger         *zap.Logger
-	globDevices    func() ([]string, error)
-	readDeviceName func(base string) (string, error)
+	logger             *zap.Logger
+	globDevices        func() ([]string, error)
+	readDeviceName     func(base string) (string, error)
+	classifyTransport  func(base string) (camera.Transport, string)
+	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 }
 
 // NewVideoService creates a new VideoService.
@@ -100,16 +103,29 @@ func NewVideoService(logger *zap.Logger) *VideoService {
 			b, err := os.ReadFile(fmt.Sprintf("/sys/class/video4linux/%s/name", base))
 			return strings.TrimSpace(string(b)), err
 		},
+		classifyTransport:  camera.Classify,
+		enumerateLibcamera: camera.EnumerateLibcamera,
 	}
 }
 
 // listV4L2Devices enumerates /dev/video* and reads human-readable names from sysfs.
-func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
+// It also classifies each device's transport (CSI vs USB vs unknown) and, when
+// libcamera enumeration unambiguously identifies the CSI camera, attaches the
+// libcamera id so the agent can later pass it as `libcamerasrc camera-name=...`.
+func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDevice, error) {
 	paths, err := s.globDevices()
 	if err != nil {
 		return nil, err
 	}
-	var devices []*agentpb.VideoDevice
+	libcameraIDs, libErr := s.enumerateLibcamera(ctx)
+	if libErr != nil {
+		// Enumeration errors are non-fatal — we just lose the libcamera id enrichment.
+		s.logger.Debug("libcamera enumeration failed", zap.Error(libErr))
+	}
+	var (
+		devices       []*agentpb.VideoDevice
+		csiDeviceIdxs []int
+	)
 	for _, path := range paths {
 		base := filepath.Base(path)
 		numStr := strings.TrimPrefix(base, "video")
@@ -121,41 +137,112 @@ func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
 		if err != nil {
 			name = base
 		}
-		devices = append(devices, &agentpb.VideoDevice{
-			Id:   uint32(id),
-			Name: name,
-			Path: path,
-		})
+		transport, driver := s.classifyTransport(base)
+		dev := &agentpb.VideoDevice{
+			Id:        uint32(id),
+			Name:      name,
+			Path:      path,
+			Transport: transportToProto(transport),
+			Driver:    driver,
+		}
+		if transport == camera.TransportCSI {
+			csiDeviceIdxs = append(csiDeviceIdxs, len(devices))
+		}
+		devices = append(devices, dev)
+	}
+	// Only assign a libcamera_id in the unambiguous single-CSI / single-libcamera
+	// case. With multiple cameras the /dev/videoN ↔ libcamera-name mapping is
+	// fragile across libcamera versions, so we leave the field empty and let
+	// libcamerasrc auto-select at capture time.
+	if len(csiDeviceIdxs) == 1 && len(libcameraIDs) == 1 {
+		for id := range libcameraIDs {
+			devices[csiDeviceIdxs[0]].LibcameraId = id
+		}
 	}
 	return devices, nil
 }
 
 // ListVideoDevices enumerates V4L2 video capture devices.
 func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVideoDevicesRequest) (*agentpb.ListVideoDevicesResponse, error) {
-	devices, err := s.listV4L2Devices()
+	devices, err := s.listV4L2Devices(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to enumerate video devices: %v", err)
 	}
 	return &agentpb.ListVideoDevicesResponse{Devices: devices}, nil
 }
 
+// transportToProto converts the local Transport enum into its proto equivalent.
+func transportToProto(t camera.Transport) agentpb.VideoTransport {
+	switch t {
+	case camera.TransportUSB:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_USB
+	case camera.TransportCSI:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_CSI
+	default:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_UNKNOWN
+	}
+}
+
 // StreamVideo streams H.264 frames from a V4L2 camera.
-// Tries native H.264 capture via V4L2 mmap first; falls back to GStreamer x264enc if
-// the device does not expose H.264 output.
+// For USB cameras it tries native H.264 capture via V4L2 mmap first and falls
+// back to GStreamer if the device does not expose H.264 output. For CSI
+// (ribbon) cameras it skips the native path — CSI sensors emit raw Bayer/RGB,
+// not encoded H.264 — and goes straight to GStreamer (libcamerasrc when
+// available, v4l2src otherwise).
 func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.ServerStreamingServer[agentpb.VideoFrame]) error {
 	ctx := stream.Context()
 	path := fmt.Sprintf("/dev/video%d", req.GetDeviceId())
 
 	if _, err := os.Stat(path); err != nil {
-		return status.Errorf(codes.NotFound, "video device %s not found", path)
+		available, listErr := s.globDevices()
+		switch {
+		case listErr != nil:
+			return status.Errorf(codes.NotFound,
+				"video device %s not found (and listing /dev/video* failed: %v); run 'wendy device camera list' to see available cameras",
+				path, listErr)
+		case len(available) == 0:
+			return status.Errorf(codes.NotFound,
+				"video device %s not found and no /dev/video* nodes exist on the agent host; for CSI ribbon cameras the sensor driver may be missing or its device-tree node may be disabled — check `dmesg | grep -iE 'imx|ov|tegra-capture'` and that the sensor module is installed under /lib/modules",
+				path)
+		default:
+			return status.Errorf(codes.NotFound,
+				"video device %s not found; available: %s — pass --id <N> matching one of those, or run 'wendy device camera list'",
+				path, strings.Join(available, ", "))
+		}
+	}
+
+	transport, _ := s.classifyTransport(filepath.Base(path))
+	libcameraID := s.lookupLibcameraID(ctx, transport)
+
+	if transport == camera.TransportCSI {
+		s.logger.Info("CSI camera detected, using GStreamer with libcamera", zap.String("device", path))
+		return s.streamGStreamer(ctx, stream, path, req, transport, libcameraID)
 	}
 
 	err := s.streamV4L2Native(ctx, stream, path, req)
 	if _, ok := err.(nativeH264NotSupported); ok {
 		s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
-		return s.streamGStreamer(ctx, stream, path, req)
+		return s.streamGStreamer(ctx, stream, path, req, transport, libcameraID)
 	}
 	return err
+}
+
+// lookupLibcameraID enumerates libcamera once and returns the camera-name to
+// use, but only when the mapping is unambiguous (exactly one libcamera entry
+// for a CSI device). Returns "" otherwise; callers should let libcamerasrc
+// auto-select in that case.
+func (s *VideoService) lookupLibcameraID(ctx context.Context, transport camera.Transport) string {
+	if transport != camera.TransportCSI {
+		return ""
+	}
+	ids, err := s.enumerateLibcamera(ctx)
+	if err != nil || len(ids) != 1 {
+		return ""
+	}
+	for id := range ids {
+		return id
+	}
+	return ""
 }
 
 // streamV4L2Native opens the V4L2 device, configures H.264 output via VIDIOC_S_FMT,
@@ -331,7 +418,7 @@ func resolveGSTBinary(name string) (string, error) {
 
 // streamGStreamer spawns gst-launch-1.0 on the device to encode via the best available
 // encoder and pipes the resulting stream back as VideoFrame chunks.
-func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], path string, req *agentpb.StreamVideoRequest) (runErr error) {
+func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string) (runErr error) {
 	gstPath, err := resolveGSTBinary("gst-launch-1.0")
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -341,13 +428,20 @@ func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerSt
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
-	enc, err := findGStreamerEncoder(inspectPath)
+	available, listErr := listGSTElements(inspectPath)
+	if listErr != nil {
+		// findGStreamerEncoder handles a nil/empty set by attempting x264enc.
+		s.logger.Debug("gst-inspect listing failed", zap.Error(listErr))
+		available = nil
+	}
+
+	enc, err := findGStreamerEncoderFromSet(available)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	s.logger.Info("GStreamer encoder selected", zap.String("encoder", enc.element), zap.String("codec", enc.codec.String()))
 
-	args := buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse)
+	args := buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse, transport, libcameraID, available)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
@@ -422,6 +516,16 @@ func findGStreamerEncoder(inspectPath string) (gstEncoderResult, error) {
 	available, err := listGSTElements(inspectPath)
 	if err != nil {
 		// If listing fails, attempt x264enc and let gst-launch fail with a clear message.
+		return gstEncoderResult{element: "x264enc", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
+	}
+	return findGStreamerEncoderFromSet(available)
+}
+
+// findGStreamerEncoderFromSet performs encoder selection against a precomputed
+// element availability map. When available is nil (e.g. gst-inspect listing
+// failed), it falls back to attempting x264enc.
+func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, error) {
+	if available == nil {
 		return gstEncoderResult{element: "x264enc", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 	}
 
@@ -507,9 +611,18 @@ func listGSTElements(inspectPath string) (map[string]bool, error) {
 	return elements, nil
 }
 
-// buildGStreamerArgs constructs the gst-launch-1.0 argument list for V4L2 encode.
-func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
-	src := fmt.Sprintf("v4l2src device=%s", devicePath)
+// buildGStreamerArgs constructs the gst-launch-1.0 argument list. The capture
+// source is selected by transport:
+//
+//   - CSI with libcamerasrc available  → "libcamerasrc [camera-name=<id>]"
+//   - CSI without libcamerasrc        → "v4l2src device=<path>" (degraded; may
+//     produce unusable output if the sensor needs ISP, but the pipeline starts)
+//   - USB / Unknown                    → "v4l2src device=<path>" (unchanged)
+//
+// `available` may be nil; treat nil as "libcamerasrc not known to be present"
+// and degrade to v4l2src for CSI in that case.
+func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, available map[string]bool) []string {
+	src := buildSourceElement(devicePath, transport, libcameraID, available)
 
 	var capsParts []string
 	if req.GetWidth() > 0 {
@@ -532,6 +645,18 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
 	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...)
+}
+
+// buildSourceElement chooses the capture source element for the GStreamer
+// pipeline. See buildGStreamerArgs for the selection rules.
+func buildSourceElement(devicePath string, transport camera.Transport, libcameraID string, available map[string]bool) string {
+	if transport == camera.TransportCSI && available != nil && available["libcamerasrc"] {
+		if libcameraID != "" {
+			return fmt.Sprintf("libcamerasrc camera-name=%s", libcameraID)
+		}
+		return "libcamerasrc"
+	}
+	return fmt.Sprintf("v4l2src device=%s", devicePath)
 }
 
 // h264ByteStream normalizes any encoder's H.264 output to Annex B byte-stream

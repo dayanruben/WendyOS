@@ -8,7 +8,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
@@ -333,7 +337,26 @@ func applyAudio(spec *Spec) {
 	}
 }
 
-// applyCamera adds camera/V4L2 device access.
+// statMajor extracts the device major number from the host node at path.
+// Exposed as a var so tests can inject majors without creating real device
+// nodes (which requires root and mknod).
+var statMajor = func(p string) (int64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(p, &st); err != nil {
+		return 0, err
+	}
+	return int64(unix.Major(uint64(st.Rdev))), nil
+}
+
+// boardDetect is the package-level board probe, behind a var so tests can
+// simulate Jetson/RPi/Generic hosts.
+var boardDetect = board.Detect
+
+// applyCamera adds camera/V4L2 device access, plus the additional kernel
+// device majors that libcamera (and on Jetson, nvargus/nvhost) require. The
+// camera entitlement is intentionally one-size-fits-all: it covers both
+// USB UVC cameras and CSI ribbon cameras, so applications that declare the
+// entitlement do not need to know which transport their device is on.
 func applyCamera(spec *Spec) {
 	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, videoGroupGID)
 
@@ -357,6 +380,77 @@ func applyCamera(spec *Spec) {
 		Type:        "bind",
 		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
 	})
+
+	// libcamera and the V4L2 media subsystem rely on additional character
+	// device nodes whose majors are dynamic across kernels. Discover them at
+	// apply time and add cgroup allow rules so containers can open them.
+	for _, glob := range cameraExtraGlobs {
+		allowMajorsFromGlob(spec, glob)
+	}
+
+	// On Jetson, the nvargus camera stack also needs /dev/nvhost-* and
+	// /dev/nvmap. These nodes are absent on non-Jetson hosts, so the globs are
+	// a no-op there.
+	if boardDetect().IsJetson() {
+		for _, glob := range jetsonExtraGlobs {
+			allowMajorsFromGlob(spec, glob)
+		}
+	}
+}
+
+// cameraExtraGlobs is the list of device-node patterns the camera entitlement
+// scans on every host. Exposed as a var so tests can redirect into a tempdir.
+var cameraExtraGlobs = []string{
+	"/dev/media*",
+	"/dev/v4l-subdev*",
+	"/dev/dma_heap/*",
+}
+
+// jetsonExtraGlobs adds Jetson-only device patterns. Same rationale.
+var jetsonExtraGlobs = []string{
+	"/dev/nvhost-*",
+	"/dev/nvmap",
+}
+
+// allowMajorsFromGlob stats every path matching glob, extracts the device
+// major, and appends a deduplicated cgroup allow rule for that major. Missing
+// paths and stat errors are silently skipped so non-existent globs are
+// no-ops.
+func allowMajorsFromGlob(spec *Spec, glob string) {
+	matches, err := filepath.Glob(glob)
+	if err != nil {
+		return
+	}
+	seen := existingMajors(spec)
+	for _, p := range matches {
+		major, err := statMajor(p)
+		if err != nil {
+			continue
+		}
+		if seen[major] {
+			continue
+		}
+		seen[major] = true
+		m := major
+		spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+			Allow:  true,
+			Type:   "c",
+			Major:  &m,
+			Access: "rwm",
+		})
+	}
+}
+
+// existingMajors returns the set of major numbers already covered by an
+// allow rule on the spec, so callers can avoid emitting duplicates.
+func existingMajors(spec *Spec) map[int64]bool {
+	out := map[int64]bool{}
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil {
+			out[*d.Major] = true
+		}
+	}
+	return out
 }
 
 // applyVideo is a deprecated alias for camera/V4L2 device access.

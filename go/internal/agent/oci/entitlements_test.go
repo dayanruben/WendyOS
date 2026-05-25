@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
@@ -865,5 +867,186 @@ func TestApplyPersist_DotDotInDestination(t *testing.T) {
 	}
 	if hasMountDest(spec, "/data/../etc") {
 		t.Error("raw dot-dot persist destination was mounted unchanged")
+	}
+}
+
+// --- Camera CSI/libcamera extra majors ---
+
+// installFakeCameraGlobs redirects cameraExtraGlobs into a tempdir populated
+// with fake device files. statMajor is overridden to return canned majors
+// keyed off the file basename. boardDetect is overridden to return Generic.
+// Returns the chosen majors so tests can assert on them.
+func installFakeCameraGlobs(t *testing.T, files map[string]int64) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "dma_heap"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	majorsByPath := map[string]int64{}
+	for name, major := range files {
+		var rel string
+		switch {
+		case strings.HasPrefix(name, "media"):
+			rel = name
+		case strings.HasPrefix(name, "v4l-subdev"):
+			rel = name
+		case strings.HasPrefix(name, "dma_heap/"):
+			rel = name
+		case strings.HasPrefix(name, "nvhost-") || name == "nvmap":
+			rel = name
+		default:
+			t.Fatalf("unknown fake device fixture %q", name)
+		}
+		p := filepath.Join(dir, rel)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		majorsByPath[p] = major
+	}
+
+	origCamera := cameraExtraGlobs
+	origJetson := jetsonExtraGlobs
+	origStat := statMajor
+	origBoard := boardDetect
+	t.Cleanup(func() {
+		cameraExtraGlobs = origCamera
+		jetsonExtraGlobs = origJetson
+		statMajor = origStat
+		boardDetect = origBoard
+	})
+
+	cameraExtraGlobs = []string{
+		filepath.Join(dir, "media*"),
+		filepath.Join(dir, "v4l-subdev*"),
+		filepath.Join(dir, "dma_heap", "*"),
+	}
+	jetsonExtraGlobs = []string{
+		filepath.Join(dir, "nvhost-*"),
+		filepath.Join(dir, "nvmap"),
+	}
+	statMajor = func(p string) (int64, error) {
+		if m, ok := majorsByPath[p]; ok {
+			return m, nil
+		}
+		return 0, os.ErrNotExist
+	}
+}
+
+func hasMajorRule(spec *Spec, want int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == want {
+			return true
+		}
+	}
+	return false
+}
+
+func countMajorRule(spec *Spec, want int64) int {
+	n := 0
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == want {
+			n++
+		}
+	}
+	return n
+}
+
+func TestApplyCamera_AddsMediaMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"media0": 234,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 234) {
+		t.Errorf("expected cgroup allow for media major 234")
+	}
+	if countMajorRule(spec, 234) != 1 {
+		t.Errorf("media major rule should be deduplicated, got %d entries", countMajorRule(spec, 234))
+	}
+}
+
+func TestApplyCamera_AddsDmaHeapMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"dma_heap/system":   510,
+		"dma_heap/cma":      510,
+		"dma_heap/reserved": 511,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 510) {
+		t.Errorf("expected cgroup allow for dma_heap major 510")
+	}
+	if !hasMajorRule(spec, 511) {
+		t.Errorf("expected cgroup allow for dma_heap major 511")
+	}
+	if countMajorRule(spec, 510) != 1 {
+		t.Errorf("major 510 must be deduplicated across multiple files")
+	}
+}
+
+func TestApplyCamera_AddsV4l2SubdevMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"v4l-subdev0": 81,
+		"v4l-subdev1": 81,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	// 81 is already added by the legacy v4l2Major rule; the v4l-subdev scan
+	// must not duplicate it.
+	if countMajorRule(spec, 81) != 1 {
+		t.Errorf("major 81 should appear exactly once, got %d", countMajorRule(spec, 81))
+	}
+}
+
+func TestApplyCamera_JetsonAddsNvhostMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"nvhost-ctrl": 230,
+		"nvhost-vi":   230,
+		"nvmap":       242,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 230) {
+		t.Errorf("expected nvhost major 230 to be allowed on Jetson")
+	}
+	if !hasMajorRule(spec, 242) {
+		t.Errorf("expected nvmap major 242 to be allowed on Jetson")
+	}
+}
+
+func TestApplyCamera_NonJetsonOmitsNvhost(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"nvhost-ctrl": 230,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMajorRule(spec, 230) {
+		t.Errorf("nvhost major 230 must not be allowed on non-Jetson hosts")
 	}
 }

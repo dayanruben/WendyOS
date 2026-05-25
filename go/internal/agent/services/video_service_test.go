@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -14,6 +15,8 @@ import (
 )
 
 // newTestVideoService creates a VideoService with injectable filesystem functions.
+// classifyTransport defaults to "Unknown, empty driver" and enumerateLibcamera
+// defaults to (nil, nil) so existing tests do not need to thread those through.
 func newTestVideoService(glob func() ([]string, error), readName func(string) (string, error)) *VideoService {
 	svc := NewVideoService(zap.NewNop())
 	if glob != nil {
@@ -22,6 +25,8 @@ func newTestVideoService(glob func() ([]string, error), readName func(string) (s
 	if readName != nil {
 		svc.readDeviceName = readName
 	}
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportUnknown, "" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
 	return svc
 }
 
@@ -37,7 +42,7 @@ func TestListV4L2Devices_TwoDevices(t *testing.T) {
 		},
 	)
 
-	devices, err := svc.listV4L2Devices()
+	devices, err := svc.listV4L2Devices(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +63,7 @@ func TestListV4L2Devices_NoDevices(t *testing.T) {
 		nil,
 	)
 
-	devices, err := svc.listV4L2Devices()
+	devices, err := svc.listV4L2Devices(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +78,7 @@ func TestListV4L2Devices_SysfsReadFailFallsBackToPath(t *testing.T) {
 		func(base string) (string, error) { return "", fmt.Errorf("no sysfs") },
 	)
 
-	devices, err := svc.listV4L2Devices()
+	devices, err := svc.listV4L2Devices(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +96,7 @@ func TestListV4L2Devices_GlobError(t *testing.T) {
 		nil,
 	)
 
-	_, err := svc.listV4L2Devices()
+	_, err := svc.listV4L2Devices(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -137,7 +142,7 @@ func TestVideoService_ListVideoDevices_GlobError(t *testing.T) {
 
 func TestBuildGStreamerArgs_NoDimensions(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true, camera.TransportUSB, "", nil)
 	if len(args) == 0 || args[0] != "/usr/bin/gst-launch-1.0" {
 		t.Errorf("expected first arg to be gst-launch-1.0 path, got %v", args)
 	}
@@ -164,7 +169,7 @@ func TestBuildGStreamerArgs_NoDimensions(t *testing.T) {
 
 func TestBuildGStreamerArgs_WithoutH264Parse(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", false)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", false, camera.TransportUSB, "", nil)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "h264parse") {
 		t.Errorf("pipeline must not use h264parse when unavailable: %v", args)
@@ -178,7 +183,7 @@ func TestBuildGStreamerArgs_WithoutH264Parse(t *testing.T) {
 
 func TestBuildGStreamerArgs_X264ProfileIsCapsFilter(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true, camera.TransportUSB, "", nil)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "x264enc tune=zerolatency profile=high") {
 		t.Fatalf("profile=high must be an output capsfilter, not an x264enc property: %v", args)
@@ -190,7 +195,7 @@ func TestBuildGStreamerArgs_X264ProfileIsCapsFilter(t *testing.T) {
 
 func TestBuildGStreamerArgs_WithDimensionsAndFramerate(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true, camera.TransportUSB, "", nil)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "width=1280") || !strings.Contains(joined, "height=720") || !strings.Contains(joined, "framerate=30/1") {
 		t.Errorf("expected dimension caps in args: %v", args)
@@ -199,7 +204,7 @@ func TestBuildGStreamerArgs_WithDimensionsAndFramerate(t *testing.T) {
 
 func TestBuildGStreamerArgs_V4L2HardwareEncoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true, camera.TransportUSB, "", nil)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "v4l2h264enc") || !strings.Contains(joined, "video/x-h264") {
 		t.Errorf("expected v4l2h264enc pipeline segment: %v", args)
@@ -208,7 +213,7 @@ func TestBuildGStreamerArgs_V4L2HardwareEncoder(t *testing.T) {
 
 func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true, camera.TransportUSB, "", nil)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "nvv4l2h264enc") {
 		t.Errorf("expected nvv4l2h264enc in pipeline: %v", args)
@@ -220,7 +225,7 @@ func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 
 func TestBuildGStreamerArgs_VP8Encoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false, camera.TransportUSB, "", nil)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "vp8enc") || !strings.Contains(joined, "webmmux") {
 		t.Errorf("expected vp8enc+webmmux pipeline segment: %v", args)
@@ -369,7 +374,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{})
+	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "")
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -379,5 +384,161 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	}
 	if st.Code() != codes.FailedPrecondition {
 		t.Errorf("expected FailedPrecondition, got %v", st.Code())
+	}
+}
+
+// defaultElements approximates a system where x264enc + h264parse + webmmux
+// + libcamerasrc are all installed. CSI tests delete individual entries.
+func defaultElements() map[string]bool {
+	return map[string]bool{
+		"x264enc":      true,
+		"h264parse":    true,
+		"webmmux":      true,
+		"vp8enc":       true,
+		"libcamerasrc": true,
+	}
+}
+
+// --- CSI / transport classification tests ---
+
+func TestListV4L2Devices_UsbAndCsiMix(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0", "/dev/video1"}, nil },
+		func(base string) (string, error) {
+			return map[string]string{"video0": "USB Cam", "video1": "CSI Cam"}[base], nil
+		},
+	)
+	svc.classifyTransport = func(base string) (camera.Transport, string) {
+		switch base {
+		case "video0":
+			return camera.TransportUSB, "uvcvideo"
+		case "video1":
+			return camera.TransportCSI, "tegra-capture-vi"
+		}
+		return camera.TransportUnknown, ""
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("expected 2 devices, got %d", len(devices))
+	}
+	if devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_USB || devices[0].GetDriver() != "uvcvideo" {
+		t.Errorf("device 0 transport/driver wrong: %+v", devices[0])
+	}
+	if devices[1].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_CSI || devices[1].GetDriver() != "tegra-capture-vi" {
+		t.Errorf("device 1 transport/driver wrong: %+v", devices[1])
+	}
+}
+
+func TestListV4L2Devices_CsiPopulatesLibcameraID(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0"}, nil },
+		func(string) (string, error) { return "Ribbon", nil },
+	)
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) {
+		return map[string]string{"/base/soc/i2c/cam@1a": "Sensor"}, nil
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if devices[0].GetLibcameraId() != "/base/soc/i2c/cam@1a" {
+		t.Errorf("expected libcamera id to be set, got %q", devices[0].GetLibcameraId())
+	}
+}
+
+func TestListV4L2Devices_AmbiguousLibcameraLeavesIDEmpty(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0", "/dev/video1"}, nil },
+		func(string) (string, error) { return "Ribbon", nil },
+	)
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) {
+		return map[string]string{"/cam1": "A", "/cam2": "B"}, nil
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, d := range devices {
+		if d.GetLibcameraId() != "" {
+			t.Errorf("expected empty libcamera id for ambiguous case, got %q on %s", d.GetLibcameraId(), d.GetPath())
+		}
+	}
+}
+
+func TestListV4L2Devices_LibcameraUnavailable_NoError(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0"}, nil },
+		func(string) (string, error) { return "Cam", nil },
+	)
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, fmt.Errorf("no cam binary") }
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("listV4L2Devices must not fail when libcamera enumeration errors: %v", err)
+	}
+	if devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_CSI {
+		t.Errorf("transport still must be classified: %+v", devices[0])
+	}
+	if devices[0].GetLibcameraId() != "" {
+		t.Errorf("libcamera id must be empty when enumeration failed, got %q", devices[0].GetLibcameraId())
+	}
+}
+
+func TestBuildGStreamerArgs_USB_UsesV4l2Src(t *testing.T) {
+	args := buildGStreamerArgs("gst", "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportUSB, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "v4l2src device=/dev/video0") {
+		t.Errorf("USB pipeline must use v4l2src: %v", args)
+	}
+	if strings.Contains(joined, "libcamerasrc") {
+		t.Errorf("USB pipeline must not use libcamerasrc: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_UsesLibcamerasrc(t *testing.T) {
+	args := buildGStreamerArgs("gst", "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "libcamerasrc") {
+		t.Errorf("CSI pipeline must use libcamerasrc: %v", args)
+	}
+	if strings.Contains(joined, "v4l2src") {
+		t.Errorf("CSI pipeline must not fall back to v4l2src when libcamerasrc is available: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_WithLibcameraID_AppendsCameraName(t *testing.T) {
+	args := buildGStreamerArgs("gst", "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "/base/cam@1a", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "libcamerasrc camera-name=/base/cam@1a") {
+		t.Errorf("CSI pipeline with id must pass camera-name=...: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_LibcamerasrcMissing_FallsBackToV4l2(t *testing.T) {
+	elems := defaultElements()
+	delete(elems, "libcamerasrc")
+	args := buildGStreamerArgs("gst", "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "/base/cam@1a", elems)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "v4l2src device=/dev/video0") {
+		t.Errorf("CSI pipeline must fall back to v4l2src when libcamerasrc plugin is absent: %v", args)
+	}
+	if strings.Contains(joined, "libcamerasrc") {
+		t.Errorf("CSI pipeline must not use libcamerasrc when plugin absent: %v", args)
+	}
+}
+
+func TestBuildSourceElement_NilAvailableMapTreatedAsLibcamerasrcAbsent(t *testing.T) {
+	src := buildSourceElement("/dev/video0", camera.TransportCSI, "/cam", nil)
+	if src != "v4l2src device=/dev/video0" {
+		t.Errorf("nil availability must degrade CSI to v4l2src, got %q", src)
 	}
 }
