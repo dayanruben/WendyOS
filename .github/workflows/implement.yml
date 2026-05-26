@@ -112,7 +112,7 @@ jobs:
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          token: ${{ github.token }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -143,9 +143,12 @@ jobs:
               """Strip content that could escape <untrusted_input> delimiters."""
               # Case/whitespace-insensitive removal of any untrusted_input tag variant
               text = re.sub(r'<\s*/?\s*untrusted_input\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
-              # Block structured output markers from being injected
-              for marker in ('PR_TITLE:', 'PR_BODY_START', 'PR_BODY_END'):
-                  text = text.replace(marker, f'[{marker}]')
+              # Block structured output markers (case-insensitive, allow surrounding whitespace)
+              text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
+              text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
+              text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
+              # Strip control characters (keep newline and tab)
+              text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
               return text
 
           issue = json.loads(subprocess.check_output(
@@ -153,12 +156,13 @@ jobs:
           comments_raw = json.loads(subprocess.check_output(
               ['gh', 'api', f'repos/{repo}/issues/{issue_number}/comments']))
 
-          title   = sanitize(issue['title'])
-          body    = sanitize(issue.get('body') or '(no body)')
+          # Enforce length limits before sanitizing
+          title   = sanitize(issue['title'][:200])
+          body    = sanitize((issue.get('body') or '(no body)')[:10000])
           # Filter to OWNER/MEMBER only — COLLABORATORs excluded
           trusted = {'OWNER', 'MEMBER'}
           comments = '\n'.join(
-              f'**{c["user"]["login"]}:** {sanitize(c["body"])}'
+              f'**{c["user"]["login"]}:** {sanitize(c["body"][:2000])}'
               for c in comments_raw
               if c.get('author_association') in trusted
           )
@@ -168,7 +172,10 @@ jobs:
           Implement the following GitHub issue by editing the relevant source files.
           Do not run git, commit, or push — the CI handles staging and committing your changes.
 
-          ## Issue #{issue_number}: <untrusted_input>{title}</untrusted_input>
+          ## Issue #{issue_number}
+          <untrusted_input>
+          Title: {title}
+          </untrusted_input>
 
           <untrusted_input>
           {body}
@@ -237,13 +244,28 @@ jobs:
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         run: |
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: implement issue via Claude Code (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          if git diff --cached --quiet; then
+            exit 0
           fi
+          # Block AI from modifying CI/security configuration files
+          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/workflows/|CODEOWNERS|\.gitmodules)' || true)
+          if [ -n "$PROTECTED" ]; then
+            echo "::error::AI modified protected files — aborting commit:"
+            echo "$PROTECTED"
+            git reset HEAD
+            exit 1
+          fi
+          # Log what changed for audit trail
+          echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
+          git diff --cached --stat >> "$GITHUB_STEP_SUMMARY"
+          git commit -m "chore: implement issue via Claude Code (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
 
       - name: Push branch
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         env:
+          # WENDY_TEMPLATE_SYNC_TOKEN requires only 'contents: write' on this
+          # repository. GITHUB_TOKEN cannot be used for push because pushes
+          # made by GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |

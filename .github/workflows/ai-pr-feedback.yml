@@ -288,9 +288,12 @@ jobs:
               """Strip content that could escape <untrusted_input> delimiters."""
               # Case/whitespace-insensitive removal of any untrusted_input tag variant
               text = re.sub(r'<\s*/?\s*untrusted_input\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
-              # Block structured output markers from being injected
-              for marker in ('PR_TITLE:', 'PR_BODY_START', 'PR_BODY_END'):
-                  text = text.replace(marker, f'[{marker}]')
+              # Block structured output markers (case-insensitive, allow surrounding whitespace)
+              text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
+              text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
+              text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
+              # Strip control characters (keep newline and tab)
+              text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
               return text
 
           raw_inline   = json.loads(pathlib.Path(f'{rt}/inline-comments.json').read_text())
@@ -300,7 +303,10 @@ jobs:
           inline   = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_inline]
           reviews  = [{**r, 'body': sanitize(r.get('body') or '')} for r in raw_reviews]
           comments = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_comments]
-          ci_logs  = sanitize(pathlib.Path(f'{rt}/ci-logs.txt').read_text())
+          # Strip ANSI escape codes from CI logs before sanitizing
+          ci_logs_raw = pathlib.Path(f'{rt}/ci-logs.txt').read_text()
+          ci_logs_raw = re.sub(r'\x1b\[[0-9;]*[mK]', '', ci_logs_raw)
+          ci_logs  = sanitize(ci_logs_raw)
           diff     = sanitize(pathlib.Path(f'{rt}/pr.diff').read_text())
 
           sections = []
@@ -368,7 +374,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.pr-info.outputs.head_sha }}
-          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          token: ${{ github.token }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -420,9 +426,21 @@ jobs:
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         run: |
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: address PR feedback [skip ci-loop] (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          if git diff --cached --quiet; then
+            exit 0
           fi
+          # Block AI from modifying CI/security configuration files
+          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/workflows/|CODEOWNERS|\.gitmodules)' || true)
+          if [ -n "$PROTECTED" ]; then
+            echo "::error::AI modified protected files — aborting commit:"
+            echo "$PROTECTED"
+            git reset HEAD
+            exit 1
+          fi
+          # Log what changed for audit trail
+          echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
+          git diff --cached --stat >> "$GITHUB_STEP_SUMMARY"
+          git commit -m "chore: address PR feedback [skip ci-loop] (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
 
       - name: Update PR title and body
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
@@ -447,6 +465,9 @@ jobs:
       - name: Push changes
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         env:
+          # WENDY_TEMPLATE_SYNC_TOKEN requires only 'contents: write' on this
+          # repository. GITHUB_TOKEN cannot be used for push because pushes
+          # made by GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
