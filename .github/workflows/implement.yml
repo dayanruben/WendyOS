@@ -226,7 +226,7 @@ jobs:
 
       - name: Install Claude Code CLI
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
-        run: npm install -g @anthropic-ai/claude-code@2.1.150
+        run: npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.150
 
       - name: Run Claude Code
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
@@ -287,7 +287,7 @@ jobs:
             exit 1
           fi
           # Allowlist: only permit writes to known source directories
-          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/|packaging/|Proto/|plugins/)' || true)
+          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)' || true)
           if [ -n "$OUTSIDE_ALLOWLIST" ]; then
             echo "::error::AI modified files outside allowed directories — aborting commit:"
             echo "$OUTSIDE_ALLOWLIST"
