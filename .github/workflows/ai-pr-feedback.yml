@@ -466,17 +466,25 @@ jobs:
       - name: Install Claude Code CLI
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         run: |
-          # Verify registry integrity against hardcoded known-good hash before installing
-          # Detects supply-chain attacks where package content changes but version stays the same
+          # Download tarball, verify its sha512 against hardcoded hash, then install
+          # from the local file — eliminates any TOCTOU window between check and install.
+          # EXPECTED_INTEGRITY is hardcoded here, NOT fetched from the registry.
           EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
-          ACTUAL_INTEGRITY=$(npm view @anthropic-ai/claude-code@2.1.150 dist.integrity 2>/dev/null || echo "")
-          if [ "$ACTUAL_INTEGRITY" != "$EXPECTED_INTEGRITY" ]; then
-            echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
-            echo "  expected: $EXPECTED_INTEGRITY"
-            echo "    actual: $ACTUAL_INTEGRITY"
+          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
             exit 1
           fi
-          npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.150
+          ACTUAL_HASH="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
+          if [ "$ACTUAL_HASH" != "$EXPECTED_INTEGRITY" ]; then
+            echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
+            echo "  expected: $EXPECTED_INTEGRITY"
+            echo "    actual: $ACTUAL_HASH"
+            rm -f "$TARBALL"
+            exit 1
+          fi
+          npm install -g --ignore-scripts "$TARBALL"
+          rm -f "$TARBALL"
 
       - name: Run Claude Code
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
@@ -616,6 +624,10 @@ jobs:
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
           echo "::add-mask::$TOKEN"
+          # Accepted risk: the PR author controls the branch name (head_branch).
+          # Mitigations: ai/ prefix required (can't push to main/develop), file
+          # allowlist limits what content can be changed, CODEOWNERS requires human
+          # review before any merge, and the PAT is scoped to this repo only.
           # Tightened branch regex: no consecutive slashes/dots, no dot-segments,
           # disallows path-traversal patterns like ai/../main.
           if printf '%s' "$BRANCH" | grep -qE '(\.\.|//|@\{|\\)' || \
