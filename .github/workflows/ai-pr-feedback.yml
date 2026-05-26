@@ -23,6 +23,12 @@ concurrency:
 jobs:
   respond:
     name: Address PR feedback via Claude Code
+    # Prevent workflow_run from fork PRs from receiving write credentials.
+    # The step-level fork check still applies, but this guard blocks job dispatch
+    # (and secret provisioning) for external-repo workflow_run events entirely.
+    if: |
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -299,11 +305,13 @@ jobs:
               # Strip Unicode direction-override and zero-width characters
               text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
               # Remove XML/HTML tags that could be misinterpreted as prompt delimiters
-              text = re.sub(r'<\s*/?(untrusted_input|context|system|assistant|human|prompt|instruction)\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
+              text = re.sub(r'<\s*/?(untrusted_input|context|system|assistant|human|prompt|instruction|rules|config|task|output|response|tool|function)\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
               text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
+              # Strip markdown link injection patterns: [text](url)
+              text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'[\1]', text)
               # Strip model special tokens (e.g. <|endoftext|>, <|im_start|>)
               text = re.sub(r'<\|[^|]{0,50}\|>', '[sanitized-token]', text)
               # Strip control characters (keep newline and tab)
@@ -457,7 +465,7 @@ jobs:
             exit 0
           fi
           # Block AI from modifying CI/security configuration files
-          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/|CODEOWNERS|SECURITY\.md|.*\.(pem|key|p12|pfx))' || true)
+          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))' || true)
           if [ -n "$PROTECTED" ]; then
             echo "::error::AI modified protected files — aborting commit:"
             echo "$PROTECTED"
@@ -473,7 +481,7 @@ jobs:
             exit 1
           fi
           # Allowlist: only permit writes to known source directories
-          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/|packaging/|Proto/|plugins/|security/)' || true)
+          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/|packaging/|Proto/|plugins/)' || true)
           if [ -n "$OUTSIDE_ALLOWLIST" ]; then
             echo "::error::AI modified files outside allowed directories — aborting commit:"
             echo "$OUTSIDE_ALLOWLIST"
