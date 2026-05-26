@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"net"
 	"sort"
 	"time"
 
@@ -19,6 +20,14 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
+
+// normalizeCloudHost ensures host has a port component, defaulting to :443.
+func normalizeCloudHost(host string) string {
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+	return net.JoinHostPort(host, "443")
+}
 
 const (
 	cloudFlusherMaxBackoff = 60 * time.Second
@@ -84,12 +93,11 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		}
 	}
 
-	// NOTE: ProvisioningService holds the private key as a Go string (immutable).
-	// Go strings cannot be zeroed by user code; the key backing bytes persist until
-	// the runtime GCs them. Certs are re-fetched per dial so the keyData []byte copy
-	// is scoped to each connection attempt and zeroed by dial on return, minimising
-	// the key-material window. Crash dumps should be disabled on the device for
-	// defence-in-depth (ulimit -c 0 / RLIMIT_CORE=0).
+	// NOTE: ProvisioningService stores the private key as []byte (zeroed on rotation).
+	// Certs are re-fetched per dial so the keyData []byte copy is scoped to each
+	// connection attempt and zeroed by dial on return, minimising the key-material
+	// window. Crash dumps should be disabled on the device for defence-in-depth
+	// (ulimit -c 0 / RLIMIT_CORE=0).
 
 	attempt := 0
 	for {
@@ -106,7 +114,9 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 			continue
 		}
 
-		err = f.runOnce(ctx, client, orgID, assetID)
+		f.orgID = orgID
+		f.assetID = assetID
+		err = f.runOnce(ctx, client)
 		conn.Close()
 
 		if err != nil {
@@ -141,12 +151,20 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 // dial establishes a TLS 1.3 gRPC connection. keyData is zeroed on return as
 // best-effort protection; crypto/tls may retain additional internal copies.
 func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, cloudpb.RemoteLoggingServiceClient, error) {
+	host = normalizeCloudHost(host)
 	defer func() {
 		for i := range keyData {
 			keyData[i] = 0
 		}
 	}()
-	cert, err := tls.X509KeyPair([]byte(certPEM), keyData)
+	// Build client cert PEM bundle: leaf cert + intermediate chain so that
+	// servers can verify the full chain without trusting the leaf directly.
+	certBundle := []byte(certPEM)
+	if chainPEM != "" {
+		certBundle = append(certBundle, '\n')
+		certBundle = append(certBundle, []byte(chainPEM)...)
+	}
+	cert, err := tls.X509KeyPair(certBundle, keyData)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cloud flusher: parse key pair: %w", err)
 	}
@@ -174,7 +192,10 @@ func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string,
 
 // runOnce performs a single read-convert-upload pass. It does not advance the
 // cursor if WriteLogEntries returns an error (ensuring retry safety).
-func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLoggingServiceClient, orgID, assetID int32) error {
+func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLoggingServiceClient) error {
+	if f.buffer == nil {
+		return nil
+	}
 	cursor := f.buffer.LoadCursor(SignalLogs)
 	msgs, next, err := f.buffer.ReadFromCursor(SignalLogs, cursor, cloudFlusherBatchSize)
 	if err != nil {
@@ -203,8 +224,8 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 	for i, appID := range appIDs {
 		entries := appEntries[appID]
 		req := &cloudpb.WriteLogEntriesRequest{
-			OrganizationId: orgID,
-			AssetId:        assetID,
+			OrganizationId: f.orgID,
+			AssetId:        f.assetID,
 			AppId:          appID,
 			Collector:      &collectorStr,
 			Entries:        entries,

@@ -50,7 +50,9 @@ func TestSegmentFilename(t *testing.T) {
 func TestListSegments(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"logs-000002.bin", "logs-000001.bin", "metrics-000001.bin"} {
-		os.WriteFile(filepath.Join(dir, name), []byte{}, 0644)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte{}, 0644); err != nil {
+			t.Fatalf("create segment file %s: %v", name, err)
+		}
 	}
 	segs, err := listSegments(dir, SignalLogs)
 	if err != nil {

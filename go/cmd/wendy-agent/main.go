@@ -437,7 +437,10 @@ func main() {
 	// Check if already provisioned and start mTLS server and tunnel broker if certificates exist.
 	certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
 	keyPEM := string(keyData)
-	alreadyProvisioned := certPEM != "" && len(keyData) > 0
+	for i := range keyData {
+		keyData[i] = 0
+	}
+	alreadyProvisioned := certPEM != "" && keyPEM != ""
 
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
@@ -496,7 +499,12 @@ func main() {
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
-		keyPEM := string(keyData) // convert for TLS APIs; keyData is zeroed by the caller after return
+		defer func() {
+			for i := range keyData {
+				keyData[i] = 0
+			}
+		}()
+		keyPEM := string(keyData)
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum)
@@ -569,11 +577,13 @@ func main() {
 	}()
 
 	cloudFlusher := services.NewCloudFlusherWithProvisioning(logger, telemetryBuf, provisioningSvc)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		cloudFlusher.Run(ctx)
-	}()
+	if telemetryBuf.DiskEnabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cloudFlusher.Run(ctx)
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

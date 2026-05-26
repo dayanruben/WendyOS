@@ -89,6 +89,9 @@ func NewProvisioningService(logger *zap.Logger, configPath string) *Provisioning
 func (s *ProvisioningService) ProvisioningCerts() (certPEM, chainPEM string, keyData []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.keyPEM) == 0 {
+		return s.certPEM, s.chainPEM, nil
+	}
 	keyData = make([]byte, len(s.keyPEM))
 	copy(keyData, s.keyPEM)
 	return s.certPEM, s.chainPEM, keyData
@@ -127,7 +130,12 @@ func (s *ProvisioningService) IsProvisioned(_ context.Context, _ *agentpb.IsProv
 // StartProvisioning generates a CSR, exchanges with the cloud, and stores certificates.
 func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentpb.StartProvisioningRequest) (*agentpb.StartProvisioningResponse, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.mu.Unlock()
+		}
+	}()
 
 	if s.enrolled {
 		return nil, status.Error(codes.FailedPrecondition, "agent is already provisioned")
@@ -224,13 +232,20 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		zap.Int32("asset_id", s.assetID),
 	)
 
-	// Capture the callback and invoke it without manually unlocking/re-locking
-	// the mutex here, to avoid interfering with any deferred Unlock.
+	// Capture callback data and unlock before invoking to prevent deadlock
+	// (callbacks may call back into ProvisioningService) and to pass a copy
+	// so callers can safely zero the slice without corrupting stored state.
 	cb := s.OnProvisioned
+	var cbKeyPEM []byte
 	if cb != nil {
-		cb(certPEM, chainPEM, keyPEM)
+		cbKeyPEM = make([]byte, len(keyPEM))
+		copy(cbKeyPEM, keyPEM)
 	}
-
+	locked = false
+	s.mu.Unlock()
+	if cb != nil {
+		cb(certPEM, chainPEM, cbKeyPEM)
+	}
 	return &agentpb.StartProvisioningResponse{}, nil
 }
 

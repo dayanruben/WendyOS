@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,6 +33,11 @@ const (
 )
 
 const maxSegmentFrameBytes = 1 * 1024 * 1024 // 1 MB per frame; single OTLP batch upper bound
+
+// ErrCorruptSegment is returned by readFramesFrom when a frame length prefix
+// exceeds maxSegmentFrameBytes, indicating a corrupt or truncated segment.
+// Callers should skip to the next segment rather than retrying the same offset.
+var ErrCorruptSegment = errors.New("telemetry buffer: corrupt segment frame length")
 
 // segmentFilename returns the filename for a segment file, e.g. "logs-000001.bin".
 func segmentFilename(signal SignalType, seqNum int) string {
@@ -106,7 +112,7 @@ func readFramesFrom(path string, startOffset int64, signal SignalType, maxN int)
 		}
 		length := binary.BigEndian.Uint32(hdr[:])
 		if length > maxSegmentFrameBytes {
-			break
+			return msgs, offset, ErrCorruptSegment
 		}
 		data := make([]byte, length)
 		if _, err := io.ReadFull(f, data); err != nil {
@@ -136,14 +142,18 @@ const (
 
 // TelemetryBufferConfig configures TelemetryBuffer storage limits.
 type TelemetryBufferConfig struct {
-	Dir           string // defaults to /var/lib/wendy-agent/telemetry
+	Dir           string // defaults to $WENDY_TELEMETRY_DIR or /var/lib/wendy-agent/telemetry
 	MaxTotalBytes int64  // defaults to 100 MB
 	SegmentBytes  int64  // defaults to 4 MB
 }
 
 func (c *TelemetryBufferConfig) applyDefaults() {
 	if c.Dir == "" {
-		c.Dir = defaultTelemetryDir
+		if dir := os.Getenv("WENDY_TELEMETRY_DIR"); dir != "" {
+			c.Dir = dir
+		} else {
+			c.Dir = defaultTelemetryDir
+		}
 	}
 	if c.MaxTotalBytes == 0 {
 		c.MaxTotalBytes = defaultMaxTotalBytes
@@ -304,6 +314,11 @@ func (b *TelemetryBuffer) evictIfNeeded() {
 			break
 		}
 	}
+	if b.totalSegmentSize() > b.cfg.MaxTotalBytes {
+		b.logger.Warn("telemetry buffer: cannot evict below quota; only active segments remain",
+			zap.Int64("total_bytes", b.totalSegmentSize()),
+			zap.Int64("max_bytes", b.cfg.MaxTotalBytes))
+	}
 }
 
 func (b *TelemetryBuffer) totalSegmentSize() int64 {
@@ -321,7 +336,11 @@ func (b *TelemetryBuffer) totalSegmentSize() int64 {
 }
 
 func (b *TelemetryBuffer) findOldestSegment() string {
-	var candidates []string
+	type candidate struct {
+		name  string
+		mtime int64
+	}
+	var candidates []candidate
 	for _, sig := range []SignalType{SignalLogs, SignalMetrics, SignalTraces} {
 		segs, _ := listSegments(b.cfg.Dir, sig)
 		w := b.writers[sig]
@@ -333,15 +352,21 @@ func (b *TelemetryBuffer) findOldestSegment() string {
 			var seq int
 			fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(s, string(sig)+"-"), ".bin"), "%d", &seq)
 			if seq != activeSeq {
-				candidates = append(candidates, s)
+				var mtime int64
+				if fi, err := os.Stat(filepath.Join(b.cfg.Dir, s)); err == nil {
+					mtime = fi.ModTime().UnixNano()
+				}
+				candidates = append(candidates, candidate{name: s, mtime: mtime})
 			}
 		}
 	}
 	if len(candidates) == 0 {
 		return ""
 	}
-	sort.Strings(candidates)
-	return candidates[0]
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].mtime < candidates[j].mtime
+	})
+	return candidates[0].name
 }
 
 func (b *TelemetryBuffer) writeFrame(sig SignalType, msg proto.Message) {
@@ -375,7 +400,7 @@ func (b *TelemetryBuffer) writeFrame(sig SignalType, msg proto.Message) {
 		}
 	}
 
-	// Write header and payload in one syscall to prevent torn frames on crash.
+	// Write header and payload in one syscall to reduce the chance of torn frames on crash.
 	frame := make([]byte, 4+len(data))
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(data)))
 	copy(frame[4:], data)
@@ -415,13 +440,25 @@ func (b *TelemetryBuffer) PublishTraces(req *otelpb.ExportTraceServiceRequest) {
 	b.broadcaster.PublishTraces(req)
 }
 
+// DiskEnabled reports whether disk segment writes are active.
+// Returns false when the storage directory could not be created or validated.
+func (b *TelemetryBuffer) DiskEnabled() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.writers) > 0
+}
+
 const cursorFile = "cursor.json"
 
 type cursorMap map[SignalType]flushCursor
 
 // cursorState is the on-disk JSON format for cursor.json. It wraps a
-// cursorMap with an HMAC-SHA256 integrity field so that tampering (rewinding
-// or advancing the upload position) is detected on load. The MAC covers the
+// cursorMap with an HMAC-SHA256 integrity field so that write corruption or
+// partial-write is detected on load (the HMAC key is device-local; on-device
+// attackers with filesystem access can bypass this). The MAC covers the
 // JSON-encoded Cursors field; a mismatch causes LoadCursor to reset.
 // The HMAC key is stored separately in cursor.key.
 type cursorState struct {
@@ -627,6 +664,17 @@ func (b *TelemetryBuffer) ReadFromCursor(sig SignalType, cursor flushCursor, max
 		batch, endOffset, readErr := readFramesFrom(path, currentOffset, sig, need)
 
 		if os.IsNotExist(readErr) {
+			currentIdx++
+			if currentIdx < len(segs) {
+				currentFile = segs[currentIdx]
+				currentOffset = 0
+			}
+			continue
+		}
+		if errors.Is(readErr, ErrCorruptSegment) {
+			// Corrupt frame length — can't recover position in this file; skip to next.
+			b.logger.Warn("telemetry buffer: corrupt frame in segment, skipping",
+				zap.String("file", segs[currentIdx]))
 			currentIdx++
 			if currentIdx < len(segs) {
 				currentFile = segs[currentIdx]

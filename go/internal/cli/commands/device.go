@@ -682,6 +682,7 @@ func newDeviceLogsCmd() *cobra.Command {
 			}
 
 			liveSeparatorPrinted := tail == 0
+			seenHistory := false
 
 			for {
 				resp, err := stream.Recv()
@@ -697,8 +698,13 @@ func newDeviceLogsCmd() *cobra.Command {
 					continue
 				}
 
-				// Print separator when transitioning from history to live.
-				if !liveSeparatorPrinted && !resp.IsHistory {
+				// Track whether any history was received.
+				if resp.IsHistory {
+					seenHistory = true
+				}
+
+				// Print separator only when transitioning from actual history to live.
+				if !liveSeparatorPrinted && seenHistory && !resp.IsHistory {
 					liveSeparatorPrinted = true
 					if !jsonOutput {
 						fmt.Println(logMetaStyle.Render("── live ──────────────────────"))
