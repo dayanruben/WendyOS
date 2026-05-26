@@ -324,10 +324,20 @@ jobs:
           raw_inline   = json.loads(pathlib.Path(f'{rt}/inline-comments.json').read_text())
           raw_reviews  = json.loads(pathlib.Path(f'{rt}/reviews.json').read_text())
           raw_comments = json.loads(pathlib.Path(f'{rt}/issue-comments.json').read_text())
-          # Sanitize all untrusted content before embedding in prompt
-          inline   = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_inline]
-          reviews  = [{**r, 'body': sanitize(r.get('body') or '')} for r in raw_reviews]
-          comments = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_comments]
+          # Sanitize all untrusted content before embedding in prompt — including
+          # user.login and path fields, not just body text.
+          GH_USER_RE = re.compile(r'^[A-Za-z0-9\-]{1,39}$')
+          def san_user(u):
+              s = str(u or '')
+              return s if GH_USER_RE.match(s) else '[invalid-user]'
+          inline   = [{'user': san_user(c.get('user')),
+                       'path': sanitize(c.get('path') or ''),
+                       'body': sanitize(c.get('body') or '')} for c in raw_inline]
+          reviews  = [{'user': san_user(r.get('user')),
+                       'state': sanitize(r.get('state') or ''),
+                       'body': sanitize(r.get('body') or '')} for r in raw_reviews]
+          comments = [{'user': san_user(c.get('user')),
+                       'body': sanitize(c.get('body') or '')} for c in raw_comments]
           # Strip ANSI escape codes from CI logs, then filter to diagnostic lines only.
           # This reduces natural-language injection risk from crafted test output —
           # only lines matching error/warning/failure patterns are forwarded to the LLM.
@@ -473,8 +483,14 @@ jobs:
           rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
           # Remove .git credential helpers before Claude runs
           git config --local --unset-all credential.helper 2>/dev/null || true
-          # Use env var for system prompt to keep instructions out of /proc/cmdline
-          ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" claude --print \
+          # Use env -i to limit Claude's visible environment to only what it needs.
+          # This keeps workflow secrets (GITHUB_TOKEN, etc.) out of /proc/self/environ
+          # for the claude process.  ANTHROPIC_SYSTEM_PROMPT is used instead of
+          # --system-prompt to keep instructions out of /proc/cmdline.
+          env -i HOME="$HOME" PATH="$PATH" \
+            ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
+            claude --print \
             --allowedTools "Edit,Write,MultiEdit" \
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \

@@ -33,6 +33,9 @@ jobs:
           AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
+          # Cap comment body to 1000 chars before regex to guard against ReDoS on
+          # pathological input; printf '%s' already prevents shell injection.
+          COMMENT_BODY="${COMMENT_BODY:0:1000}"
           # Require /implement at the start of a line (not buried in prose)
           if ! printf '%s' "$COMMENT_BODY" | grep -qE '(^|\n)\s*/implement(\s|$)'; then
             echo "authorized=false" >> "$GITHUB_OUTPUT"
@@ -256,8 +259,12 @@ jobs:
           rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
           # Remove .git credential helpers before Claude runs
           git config --local --unset-all credential.helper 2>/dev/null || true
-          # Use env var for system prompt to keep instructions out of /proc/cmdline
-          ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" claude --print \
+          # Use env -i to limit Claude's visible environment to only what it needs.
+          # This keeps workflow secrets out of /proc/self/environ for the claude process.
+          env -i HOME="$HOME" PATH="$PATH" \
+            ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
+            claude --print \
             --allowedTools "Edit,Write,MultiEdit" \
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
