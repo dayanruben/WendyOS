@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const docsRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const contentRoot = path.join(docsRoot, 'content', 'docs');
 const publicRoot = path.join(docsRoot, 'public');
+const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '');
 const skipDirs = new Set([
   '.git',
   '.next',
@@ -40,6 +41,7 @@ await mkdir(contentRoot, { recursive: true });
 await mkdir(publicRoot, { recursive: true });
 
 const markdownFiles = [];
+const metaFiles = [];
 const assetFiles = [];
 const routeDirsBySourceDir = new Map();
 
@@ -55,8 +57,10 @@ async function walk(dir) {
 
     if (entry.isDirectory()) {
       await walk(absolutePath);
-    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+    } else if (entry.isFile() && isMarkdownFile(entry.name)) {
       markdownFiles.push({ absolutePath, relativePath });
+    } else if (entry.isFile() && entry.name === 'meta.json') {
+      metaFiles.push({ absolutePath, relativePath });
     } else if (entry.isFile() && shouldPublishAsset(relativePath)) {
       assetFiles.push({ absolutePath, relativePath });
     }
@@ -68,18 +72,28 @@ await walk(docsRoot);
 for (const file of markdownFiles) {
   const targetRelativePath = normalizeMarkdownPath(file.relativePath);
   const targetPath = path.join(contentRoot, targetRelativePath);
-  const raw = normalizeMarkdown(await readFile(file.absolutePath, 'utf8'));
+  const raw = normalizeMarkdown(await readFile(file.absolutePath, 'utf8'), targetRelativePath);
 
   addRouteDirForSource(file.relativePath, targetRelativePath);
   await mkdir(path.dirname(targetPath), { recursive: true });
   await writeFile(targetPath, withFrontmatter(raw, targetRelativePath), 'utf8');
 }
 
-await writeIndexPage();
+for (const file of metaFiles) {
+  const targetPath = path.join(contentRoot, file.relativePath);
+  const raw = await readFile(file.absolutePath, 'utf8');
+
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, raw, 'utf8');
+}
+
+await writeAdvancedIndexPage();
+await writeAdvancedMeta();
 
 for (const file of assetFiles) {
   const raw = await readFile(file.absolutePath);
 
+  await writePublicAsset(path.join(contentRoot, file.relativePath), raw);
   await writePublicAsset(path.join(publicRoot, file.relativePath), raw);
 
   for (const routeDir of routeDirsBySourceDir.get(path.dirname(file.relativePath)) ?? []) {
@@ -88,11 +102,24 @@ for (const file of assetFiles) {
 }
 
 function normalizeMarkdownPath(relativePath) {
+  const extension = path.extname(relativePath).toLowerCase();
+  let targetPath = relativePath;
+
   if (path.basename(relativePath).toLowerCase() === 'readme.md') {
-    return path.join(path.dirname(relativePath), 'index.md');
+    targetPath = path.join(path.dirname(relativePath), 'index.md');
   }
 
-  return relativePath;
+  if (extension === '.md') {
+    return path.join('advanced', targetPath);
+  }
+
+  return targetPath;
+}
+
+function isMarkdownFile(filename) {
+  const extension = path.extname(filename).toLowerCase();
+
+  return extension === '.md' || extension === '.mdx';
 }
 
 function addRouteDirForSource(sourceRelativePath, targetRelativePath) {
@@ -131,8 +158,52 @@ function withFrontmatter(raw, relativePath) {
   return `---\ntitle: ${JSON.stringify(title)}\ndescription: ${JSON.stringify(description)}\n---\n\n${raw}`;
 }
 
-function normalizeMarkdown(raw) {
-  return raw.replace(/^```bitbake\b/gm, '```ini');
+function normalizeMarkdown(raw, targetRelativePath) {
+  return raw
+    .replace(/^```bitbake\b/gm, '```ini')
+    .replace(/\]\(\/docs\/([^)#\s]+)(#[^)]+)?\)/g, (_match, targetPath, hash = '') => {
+      return `](${relativeFromPage(targetRelativePath, targetPath, hash)})`;
+    })
+    .replace(/href="\/docs\/([^"#]+)(#[^"]+)?"/g, (_match, targetPath, hash = '') => {
+      return `href="${relativeFromPage(targetRelativePath, targetPath, hash)}"`;
+    })
+    .replace(/\]\(\/((?:icons|images)\/[^)#\s]+)(#[^)]+)?\)/g, (_match, assetPath, hash = '') => {
+      return `](${relativeAssetImport(targetRelativePath, assetPath, hash)})`;
+    })
+    .replace(/src="\/((?:icons|images)\/[^"]+)"/g, (_match, assetPath) => {
+      return `src="${absoluteAssetPath(assetPath)}"`;
+    });
+}
+
+function relativeFromPage(fromRelativePath, targetPath, hash = '') {
+  const rootPrefix = routeSegments(fromRelativePath).length === 0 ? './' : '../'.repeat(routeSegments(fromRelativePath).length);
+  const normalizedTarget = targetPath.replace(/^\/+/, '').replace(/\/$/, '');
+
+  return `${rootPrefix}${normalizedTarget}${hash}`;
+}
+
+function relativeAssetImport(fromRelativePath, targetPath, hash = '') {
+  const fromDir = path.posix.dirname(fromRelativePath.replaceAll(path.sep, '/'));
+  const normalizedTarget = targetPath.replace(/^\/+/, '').replace(/\/$/, '');
+  const relativePath = path.posix.relative(fromDir, normalizedTarget);
+  const importPath = relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
+
+  return `${importPath}${hash}`;
+}
+
+function absoluteAssetPath(targetPath) {
+  const normalizedTarget = targetPath.replace(/^\/+/, '').replace(/\/$/, '');
+
+  return `${basePath}/${normalizedTarget}`;
+}
+
+function routeSegments(relativePath) {
+  const extension = path.extname(relativePath);
+  const withoutExtension = relativePath.slice(0, -extension.length);
+
+  return withoutExtension
+    .split(path.sep)
+    .filter((segment) => segment && segment !== 'index');
 }
 
 function inferTitle(raw, relativePath) {
@@ -177,9 +248,41 @@ function toTitle(value) {
     .replace(/\bPki\b/g, 'PKI');
 }
 
-async function writeIndexPage() {
-  const targetPath = path.join(contentRoot, 'index.md');
-  const body = `---\ntitle: "WendyOS Docs"\ndescription: "Developer documentation for WendyOS, wendy-agent, Wendy Cloud, and the Wendy CLI."\n---\n\n# WendyOS Docs\n\nWendyOS is the edge-device operating system and runtime platform for building, deploying, and debugging apps on Raspberry Pi, NVIDIA Jetson, x86 SBCs, and more.\n\n## Start Here\n\n- [WendyOS](./wendyos/requirements.md)\n- [wendy-agent](./wendy-agent/architecture.md)\n- [Wendy CLI](./clients/wendy-cli/global-flags.md)\n- [App configuration](./apps/wendy.json.md)\n- [Wendy Cloud](./cloud/requirements.md)\n- [Development](./development/)\n`;
+async function writeAdvancedIndexPage() {
+  const targetPath = path.join(contentRoot, 'advanced', 'index.md');
+  const body = `---\ntitle: "Advanced"\ndescription: "Generated and low-level WendyOS reference documentation."\n---\n\n# Advanced\n\nGenerated command references and lower-level WendyOS documentation live here.\n\n## Reference Areas\n\n- [Wendy CLI](./clients/wendy-cli/global-flags.md)\n- [App configuration](./apps/wendy.json.md)\n- [Wendy Cloud](./cloud/requirements.md)\n- [WendyOS internals](./wendyos/requirements.md)\n- [Development](./development/)\n`;
 
   await writeFile(targetPath, body, 'utf8');
+}
+
+async function writeAdvancedMeta() {
+  const targetPath = path.join(contentRoot, 'advanced', 'meta.json');
+  const body = JSON.stringify(
+    {
+      title: 'Advanced',
+      pages: [
+        'index',
+        'clients',
+        'apps',
+        'cloud',
+        'wendyos',
+        'debugging',
+        'development',
+        'architecture',
+        'pki',
+        'vscode',
+        'wendy-lite',
+        'wendy-os-publisher',
+        'Examples',
+        'RELEASES',
+        'entitlements',
+        'roadmap',
+      ],
+    },
+    null,
+    2,
+  );
+
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, `${body}\n`, 'utf8');
 }
