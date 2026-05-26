@@ -154,16 +154,15 @@ jobs:
               text = unicodedata.normalize('NFKC', text)
               # Strip Unicode direction-override and zero-width characters
               text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
-              # Remove XML/HTML tags that could be misinterpreted as prompt delimiters
-              text = re.sub(r'<\s*/?(untrusted_input|context|system|assistant|human|prompt|instruction|rules|config|task|output|response|tool|function)\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
+              # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
+              # (covers special tokens like <|endoftext|> and any prompt delimiters)
+              text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
               text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
               # Strip markdown link injection patterns: [text](url)
               text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'[\1]', text)
-              # Strip model special tokens (e.g. <|endoftext|>, <|im_start|>)
-              text = re.sub(r'<\|[^|]{0,50}\|>', '[sanitized-token]', text)
               # Strip control characters (keep newline and tab)
               text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
               return text
@@ -277,6 +276,13 @@ jobs:
       - name: Commit any uncommitted changes
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         run: |
+          # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
+          HOOK_FILES=$(find .git/hooks -maxdepth 1 -type f -not -name '*.sample' 2>/dev/null | head -5 || true)
+          if [ -n "$HOOK_FILES" ]; then
+            echo "::error::Unexpected hook files in .git/hooks/ — aborting:"
+            echo "$HOOK_FILES"
+            exit 1
+          fi
           git add -A
           if git diff --cached --quiet; then
             exit 0
