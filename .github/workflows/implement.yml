@@ -36,7 +36,7 @@ jobs:
             exit 0
           fi
           case "$AUTHOR_ASSOC" in
-            OWNER|MEMBER|COLLABORATOR)
+            OWNER|MEMBER)
               echo "authorized=true" >> "$GITHUB_OUTPUT"
               ;;
             *)
@@ -133,31 +133,40 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           python3 << 'PYEOF'
-          import json, os, subprocess, pathlib
+          import json, os, re, subprocess, pathlib
 
           repo = os.environ['REPO']
           issue_number = os.environ['ISSUE_NUMBER']
           runner_temp = os.environ['RUNNER_TEMP']
+
+          def sanitize(text):
+              """Strip content that could escape <untrusted_input> delimiters."""
+              # Case/whitespace-insensitive removal of any untrusted_input tag variant
+              text = re.sub(r'<\s*/?\s*untrusted_input\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
+              # Block structured output markers from being injected
+              for marker in ('PR_TITLE:', 'PR_BODY_START', 'PR_BODY_END'):
+                  text = text.replace(marker, f'[{marker}]')
+              return text
 
           issue = json.loads(subprocess.check_output(
               ['gh', 'api', f'repos/{repo}/issues/{issue_number}']))
           comments_raw = json.loads(subprocess.check_output(
               ['gh', 'api', f'repos/{repo}/issues/{issue_number}/comments']))
 
-          title   = issue['title']
-          body    = issue.get('body') or '(no body)'
-          # Filter to trusted authors only to prevent prompt injection from external contributors
-          trusted = {'OWNER', 'MEMBER', 'COLLABORATOR'}
+          title   = sanitize(issue['title'])
+          body    = sanitize(issue.get('body') or '(no body)')
+          # Filter to OWNER/MEMBER only — COLLABORATORs excluded
+          trusted = {'OWNER', 'MEMBER'}
           comments = '\n'.join(
-              f'**{c["user"]["login"]}:** {c["body"]}'
+              f'**{c["user"]["login"]}:** {sanitize(c["body"])}'
               for c in comments_raw
               if c.get('author_association') in trusted
           )
 
           prompt = f"""You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
 
-          Implement the following GitHub issue by editing the relevant source files and committing your changes.
-          Make clean, minimal commits as you work. Do not push — the CI will do that.
+          Implement the following GitHub issue by editing the relevant source files.
+          Do not run git, commit, or push — the CI handles staging and committing your changes.
 
           ## Issue #{issue_number}: <untrusted_input>{title}</untrusted_input>
 
@@ -202,7 +211,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           claude --print \
-            --allowedTools "Bash,Edit,Write,Read,MultiEdit" \
+            --allowedTools "Edit,Write,Read,MultiEdit" \
             "$(cat "$RUNNER_TEMP/prompt.txt")" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
@@ -238,6 +247,7 @@ jobs:
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
+          echo "::add-mask::$TOKEN"
           git push \
             "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "${BRANCH}"

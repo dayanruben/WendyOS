@@ -123,7 +123,7 @@ jobs:
 
           ALLOWED=false
           case "$ACTOR_ASSOC" in
-            OWNER|MEMBER|COLLABORATOR) ALLOWED=true ;;
+            OWNER|MEMBER) ALLOWED=true ;;  # COLLABORATOR excluded: insufficient authorization boundary
           esac
           # github-actions[bot] only trusted when triggered by CI (workflow_run)
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$ACTOR" = "workflow_run" ]; then
@@ -152,7 +152,7 @@ jobs:
               [ .[]
                 | select(.body | test("(?m)^\\r?/continue(\\s|$)"))
                 | select(.author_association as $a |
-                    ["OWNER","MEMBER","COLLABORATOR"] | contains([$a]))
+                    ["OWNER","MEMBER"] | contains([$a]))
                 | .created_at
               ] | last // "1970-01-01T00:00:00Z"
             ' 2>/dev/null || echo "1970-01-01T00:00:00Z")
@@ -246,14 +246,14 @@ jobs:
         run: |
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments" \
             --jq '[.[] | select(.author_association as $a |
-                   ["OWNER","MEMBER","COLLABORATOR"] | contains([$a])) |
+                   ["OWNER","MEMBER"] | contains([$a])) |
                   {user: .user.login, path: .path, body: .body}]' \
             > "$RUNNER_TEMP/inline-comments.json" 2>/dev/null \
             || echo "[]" > "$RUNNER_TEMP/inline-comments.json"
 
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --jq '[.[] | select(.author_association as $a |
-                   ["OWNER","MEMBER","COLLABORATOR"] | contains([$a])) |
+                   ["OWNER","MEMBER"] | contains([$a])) |
                   {user: .user.login, state: .state, body: .body}]' \
             > "$RUNNER_TEMP/reviews.json" 2>/dev/null \
             || echo "[]" > "$RUNNER_TEMP/reviews.json"
@@ -263,7 +263,7 @@ jobs:
             --jq '[.[] |
                    select(.user.login != "github-actions[bot]") |
                    select(.author_association as $a |
-                     ["OWNER","MEMBER","COLLABORATOR"] | contains([$a])) |
+                     ["OWNER","MEMBER"] | contains([$a])) |
                    {user: .user.login, body: .body}]' \
             > "$RUNNER_TEMP/issue-comments.json" 2>/dev/null \
             || echo "[]" > "$RUNNER_TEMP/issue-comments.json"
@@ -278,18 +278,30 @@ jobs:
           FAILING_CHECKS: ${{ steps.ci.outputs.failing }}
         run: |
           python3 << 'PYEOF'
-          import json, os, pathlib
+          import json, os, re, pathlib
 
           rt = os.environ['RUNNER_TEMP']
           pr = os.environ['PR_NUMBER']
           failing = os.environ.get('FAILING_CHECKS', '')
 
-          inline   = json.loads(pathlib.Path(f'{rt}/inline-comments.json').read_text())
-          reviews  = json.loads(pathlib.Path(f'{rt}/reviews.json').read_text())
-          comments = json.loads(pathlib.Path(f'{rt}/issue-comments.json').read_text())
-          # Sanitize to prevent tag-escape attacks before embedding in prompt
-          ci_logs  = pathlib.Path(f'{rt}/ci-logs.txt').read_text().replace('</untrusted_input>', '[end-untrusted]')
-          diff     = pathlib.Path(f'{rt}/pr.diff').read_text().replace('</untrusted_input>', '[end-untrusted]')
+          def sanitize(text):
+              """Strip content that could escape <untrusted_input> delimiters."""
+              # Case/whitespace-insensitive removal of any untrusted_input tag variant
+              text = re.sub(r'<\s*/?\s*untrusted_input\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
+              # Block structured output markers from being injected
+              for marker in ('PR_TITLE:', 'PR_BODY_START', 'PR_BODY_END'):
+                  text = text.replace(marker, f'[{marker}]')
+              return text
+
+          raw_inline   = json.loads(pathlib.Path(f'{rt}/inline-comments.json').read_text())
+          raw_reviews  = json.loads(pathlib.Path(f'{rt}/reviews.json').read_text())
+          raw_comments = json.loads(pathlib.Path(f'{rt}/issue-comments.json').read_text())
+          # Sanitize all untrusted content before embedding in prompt
+          inline   = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_inline]
+          reviews  = [{**r, 'body': sanitize(r.get('body') or '')} for r in raw_reviews]
+          comments = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_comments]
+          ci_logs  = sanitize(pathlib.Path(f'{rt}/ci-logs.txt').read_text())
+          diff     = sanitize(pathlib.Path(f'{rt}/pr.diff').read_text())
 
           sections = []
 
@@ -318,8 +330,8 @@ jobs:
 
           prompt = f"""You are an engineer working on WendyOS. You are iterating on PR #{pr}.
 
-          Address ALL of the following feedback by editing the relevant files and committing your changes.
-          Do not push — the CI will do that.
+          Address ALL of the following feedback by editing the relevant files.
+          Do not run git, commit, or push — the CI handles staging and committing your changes.
 
           <untrusted_input>
           {feedback}
@@ -382,7 +394,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           claude --print \
-            --allowedTools "Bash,Edit,Write,Read,MultiEdit" \
+            --allowedTools "Edit,Write,Read,MultiEdit" \
             "$(cat "$RUNNER_TEMP/prompt.txt")" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
@@ -438,6 +450,7 @@ jobs:
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
+          echo "::add-mask::$TOKEN"
           git push \
             "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${BRANCH}"
