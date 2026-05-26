@@ -11,10 +11,12 @@ concurrency:
 jobs:
   implement:
     name: Implement issue via Claude Code
-    # Only on issue comments (not PR comments), containing /implement
+    # Only on issue comments (not PR comments), with /implement, by OWNER or MEMBER
     if: |
       github.event.issue.pull_request == null &&
-      contains(github.event.comment.body, '/implement')
+      contains(github.event.comment.body, '/implement') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -139,8 +141,16 @@ jobs:
           issue_number = os.environ['ISSUE_NUMBER']
           runner_temp = os.environ['RUNNER_TEMP']
 
+          import html, unicodedata
+
           def sanitize(text):
               """Strip content that could escape <untrusted_input> delimiters."""
+              # Decode HTML entities (e.g. &lt;untrusted_input&gt;) then normalize
+              text = html.unescape(text)
+              # NFKC normalization collapses Unicode homoglyphs (e.g. fullwidth chars)
+              text = unicodedata.normalize('NFKC', text)
+              # Strip Unicode direction-override and zero-width characters
+              text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
               # Case/whitespace-insensitive removal of any untrusted_input tag variant
               text = re.sub(r'<\s*/?\s*untrusted_input\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
@@ -248,10 +258,18 @@ jobs:
             exit 0
           fi
           # Block AI from modifying CI/security configuration files
-          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/workflows/|CODEOWNERS|\.gitmodules)' || true)
+          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/|CODEOWNERS|SECURITY\.md|.*\.(pem|key|p12|pfx))' || true)
           if [ -n "$PROTECTED" ]; then
             echo "::error::AI modified protected files — aborting commit:"
             echo "$PROTECTED"
+            git reset HEAD
+            exit 1
+          fi
+          # Block any staged symlinks (could escape protected paths via symlink target)
+          SYMLINKS=$(git diff --cached --diff-filter=T --name-only || true)
+          if [ -n "$SYMLINKS" ]; then
+            echo "::error::AI staged symlinks — aborting commit:"
+            echo "$SYMLINKS"
             git reset HEAD
             exit 1
           fi
