@@ -11,12 +11,11 @@ concurrency:
 jobs:
   implement:
     name: Implement issue via Claude Code
-    # Only on issue comments (not PR comments), with /implement, by OWNER or MEMBER.
-    # startsWith is stricter than contains() to avoid false triggers when /implement
-    # appears in prose; the step-level regex is the authoritative gate.
+    # Only on issue comments (not PR comments) by OWNER or MEMBER.
+    # The comment body is NOT evaluated here to avoid untrusted content entering
+    # the expression context; the step-level regex is the authoritative /implement gate.
     if: |
       github.event.issue.pull_request == null &&
-      startsWith(github.event.comment.body, '/implement') &&
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER')
     runs-on: ubuntu-latest

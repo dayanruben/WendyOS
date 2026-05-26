@@ -31,6 +31,10 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Accepted risk: GitHub Actions does not support step-level permissions.
+    # contents:write is required only for commit/push; pull-requests:write for PR edits.
+    # Mitigations: protected-file allowlist, branch pattern guard, circuit breaker,
+    # CODEOWNERS mandatory review, and env -i isolation for the claude step.
     permissions:
       contents: write
       pull-requests: write
@@ -348,7 +352,10 @@ jobs:
               line[:500] for line in ci_logs_raw.split('\n')
               if CI_DIAG_RE.search(line)
           )[:10000]
-          ci_logs  = sanitize(ci_logs_raw)
+          ci_logs_raw = sanitize(ci_logs_raw)
+          # Strip XML closing tags that would escape the <untrusted_input> delimiter
+          ci_logs_raw = re.sub(r'</', '[/', ci_logs_raw)
+          ci_logs  = ci_logs_raw
           diff     = sanitize(pathlib.Path(f'{rt}/pr.diff').read_text())
           failing  = sanitize(failing)
 
@@ -594,10 +601,11 @@ jobs:
       - name: Push changes
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         env:
-          # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to only
-          # 'contents: write' on this repository (no other repos or permissions).
-          # GITHUB_TOKEN cannot be used for push because pushes made by
-          # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
+          # Accepted risk: a long-lived PAT is required because GITHUB_TOKEN pushes
+          # do not trigger downstream workflow runs (GitHub design limitation).
+          # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to ONLY
+          # 'contents: write' on this single repository — no other scopes or repos.
+          # It is isolated via env -i in the claude step and only available here.
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
