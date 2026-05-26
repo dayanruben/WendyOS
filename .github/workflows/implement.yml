@@ -229,10 +229,17 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          # Read prompts into shell vars, then delete the files so Claude's Read
+          # tool cannot access them (or any other sensitive RUNNER_TEMP content)
+          SYSTEM_PROMPT=$(cat "$RUNNER_TEMP/system-prompt.txt")
+          USER_PROMPT=$(cat "$RUNNER_TEMP/prompt.txt")
+          rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
+          # Remove .git credential helpers before Claude runs
+          git config --local --unset-all credential.helper 2>/dev/null || true
           claude --print \
             --allowedTools "Edit,Write,Read,MultiEdit" \
-            --system-prompt "$(cat "$RUNNER_TEMP/system-prompt.txt")" \
-            "$(cat "$RUNNER_TEMP/prompt.txt")" \
+            --system-prompt "$SYSTEM_PROMPT" \
+            "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
           cat "$RUNNER_TEMP/claude-output.txt"
@@ -247,7 +254,6 @@ jobs:
         with:
           name: claude-implement-run-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/prompt.txt
             ${{ runner.temp }}/claude-output.txt
             ${{ runner.temp }}/claude-stderr.txt
           if-no-files-found: ignore
