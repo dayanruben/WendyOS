@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,7 +35,33 @@ const (
 	cloudFlusherBatchSize  = 500
 	cloudFlusherDefaultApp = "device"
 	cloudFlusherCollector  = "wendy-agent"
+
+	// PII / payload size guards applied in convertLogRecord before cloud upload.
+	maxLogBodyBytes = 65536 // 64 KiB — prevents oversized payloads
+	maxLabelKeyLen  = 256
+	maxLabelValLen  = 1024
+	maxLabels       = 64
 )
+
+// sensitiveLabelDenyList contains substrings that, when found in a label key
+// (case-insensitive), indicate the value may contain credentials or PII.
+// Such labels are dropped before upload to prevent accidental exposure.
+var sensitiveLabelDenyList = []string{
+	"password", "passwd", "secret", "token", "authorization",
+	"api_key", "apikey", "private_key", "credential", "auth",
+	"cookie", "session",
+}
+
+// isSensitiveLabelKey reports whether key contains a deny-listed substring.
+func isSensitiveLabelKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, denied := range sensitiveLabelDenyList {
+		if strings.Contains(lower, denied) {
+			return true
+		}
+	}
+	return false
+}
 
 // CloudFlusher reads log segments from TelemetryBuffer via ReadFromCursor,
 // converts OTLP LogRecords to cloud LogEntry values, and calls WriteLogEntries.
@@ -196,6 +223,10 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 	if f.buffer == nil {
 		return nil
 	}
+	// cursor.json is HMAC-SHA256 integrity-protected via a device-local key
+	// stored in cursor.key. Any tampering or corruption is detected by
+	// LoadCursor, which resets the offset to zero rather than trusting a
+	// manipulated value.
 	cursor := f.buffer.LoadCursor(SignalLogs)
 	msgs, next, err := f.buffer.ReadFromCursor(SignalLogs, cursor, cloudFlusherBatchSize)
 	if err != nil {
@@ -308,18 +339,41 @@ func convertLogRecord(lr *otelpb.LogRecord) *cloudpb.LogEntry {
 		entry.SpanId = hex.EncodeToString(spanID)
 	}
 
-	// Body → text payload.
+	// Body → text payload. Truncated to maxLogBodyBytes to prevent oversized
+	// entries from reaching the cloud and to guard against data-exfiltration
+	// via abnormally large log bodies.
 	if body := lr.GetBody(); body != nil {
+		text := otelAnyValueString(body)
+		if len(text) > maxLogBodyBytes {
+			text = text[:maxLogBodyBytes]
+		}
 		entry.Payload = &cloudpb.LogEntry_TextPayload{
-			TextPayload: otelAnyValueString(body),
+			TextPayload: text,
 		}
 	}
 
-	// Copy log-record attributes into labels.
+	// Copy log-record attributes into labels, applying PII / size guards:
+	//   • keys matching the credential/PII deny-list are dropped entirely
+	//   • keys and values are truncated to avoid excessive data transfer
+	//   • total label count is capped at maxLabels
 	if attrs := lr.GetAttributes(); len(attrs) > 0 {
-		labels := make(map[string]string, len(attrs))
+		labels := make(map[string]string, min(len(attrs), maxLabels))
 		for _, kv := range attrs {
-			labels[kv.GetKey()] = otelAnyValueString(kv.GetValue())
+			if len(labels) >= maxLabels {
+				break
+			}
+			k := kv.GetKey()
+			if isSensitiveLabelKey(k) {
+				continue
+			}
+			if len(k) > maxLabelKeyLen {
+				k = k[:maxLabelKeyLen]
+			}
+			v := otelAnyValueString(kv.GetValue())
+			if len(v) > maxLabelValLen {
+				v = v[:maxLabelValLen]
+			}
+			labels[k] = v
 		}
 		entry.Labels = labels
 	}

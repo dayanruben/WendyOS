@@ -24,12 +24,15 @@ import (
 )
 
 // provisioningState is persisted to disk at configPath/provisioning.json.
+// NOTE: KeyPEM is retained only for one-time migration of existing deployments;
+// new writes never populate it — the private key lives exclusively in
+// device-key.pem (mode 0o400) and is never written to provisioning.json.
 type provisioningState struct {
 	Enrolled  bool   `json:"enrolled"`
 	CloudHost string `json:"cloudHost,omitempty"`
 	OrgID     int32  `json:"orgId,omitempty"`
 	AssetID   int32  `json:"assetId,omitempty"`
-	KeyPEM    string `json:"keyPem,omitempty"`
+	KeyPEM    string `json:"keyPem,omitempty"` // read-only: migration only; never written
 	CertPEM   string `json:"certPem,omitempty"`
 	ChainPEM  string `json:"chainPem,omitempty"`
 }
@@ -196,13 +199,13 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	// Build the state struct from the request/cert values WITHOUT first mutating
 	// s.* fields. Only apply the state to s.* after saveState succeeds so that a
 	// disk-write failure does not leave the agent permanently stuck as "already
-	// provisioned".
+	// provisioned". The private key is never written to provisioning.json —
+	// it lives only in device-key.pem (written by loadOrGenerateKey).
 	state := &provisioningState{
 		Enrolled:  true,
 		CloudHost: req.GetCloudHost(),
 		OrgID:     req.GetOrganizationId(),
 		AssetID:   req.GetAssetId(),
-		KeyPEM:    string(keyPEM), // string conversion is unavoidable for JSON marshaling
 		CertPEM:   certPEM,
 		ChainPEM:  chainPEM,
 	}
@@ -254,6 +257,10 @@ func (s *ProvisioningService) statePath() string {
 }
 
 // loadState loads provisioning state from disk.
+// The private key is always read from device-key.pem (mode 0o400). If that
+// file is absent but the legacy provisioning.json contains a KeyPEM entry, the
+// key is migrated to device-key.pem and removed from provisioning.json so that
+// subsequent reads use the dedicated file.
 func (s *ProvisioningService) loadState() {
 	data, err := os.ReadFile(s.statePath())
 	if err != nil {
@@ -270,9 +277,31 @@ func (s *ProvisioningService) loadState() {
 	s.cloudHost = state.CloudHost
 	s.orgID = state.OrgID
 	s.assetID = state.AssetID
-	s.keyPEM = []byte(state.KeyPEM)
 	s.certPEM = state.CertPEM
 	s.chainPEM = state.ChainPEM
+
+	// Load the private key from device-key.pem.  Fall back to the legacy
+	// KeyPEM field in provisioning.json for one-time migration of existing
+	// devices, then immediately rewrite provisioning.json without the key.
+	if s.enrolled {
+		keyPath := filepath.Join(s.configPath, "device-key.pem")
+		if keyData, readErr := os.ReadFile(keyPath); readErr == nil && len(keyData) > 0 {
+			s.keyPEM = keyData
+		} else if state.KeyPEM != "" {
+			s.keyPEM = []byte(state.KeyPEM)
+			if writeErr := os.WriteFile(keyPath, s.keyPEM, 0o400); writeErr == nil {
+				s.logger.Info("Migrated device key from provisioning.json to device-key.pem")
+				// Rewrite provisioning.json without the now-migrated key.
+				toSave := state
+				toSave.KeyPEM = ""
+				if saveData, marshalErr := json.MarshalIndent(toSave, "", "  "); marshalErr == nil {
+					_ = os.WriteFile(s.statePath(), saveData, 0o600)
+				}
+			} else {
+				s.logger.Warn("Failed to migrate device key to device-key.pem", zap.Error(writeErr))
+			}
+		}
+	}
 
 	// Ensure PEM files exist on disk (may have been lost during OTA update).
 	if s.enrolled && len(s.keyPEM) > 0 && s.certPEM != "" {
@@ -310,12 +339,20 @@ func (s *ProvisioningService) writePEMFiles(keyPEM, certPEM, chainPEM string) er
 	return WritePEMFiles(s.configPath, keyPEM, certPEM, chainPEM)
 }
 
+// saveState writes provisioning state to disk.
+// The private key (KeyPEM) is never included in provisioning.json; it lives
+// exclusively in device-key.pem so that the JSON file can be shared or
+// inspected without exposing key material.
 func (s *ProvisioningService) saveState(state *provisioningState) error {
 	if err := os.MkdirAll(s.configPath, 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	// Shallow copy to ensure we never accidentally serialise a key.
+	toSave := *state
+	toSave.KeyPEM = ""
+
+	data, err := json.MarshalIndent(toSave, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
