@@ -101,7 +101,12 @@ jobs:
             | cut -c1-40)
           [ -z "$SLUG" ] && SLUG="untitled"
           SLUG="${SLUG%-}"
-          echo "branch=ai/issue-${ISSUE_NUMBER}-${SLUG}" >> "$GITHUB_OUTPUT"
+          BRANCH="ai/issue-${ISSUE_NUMBER}-${SLUG}"
+          if ! printf '%s' "$BRANCH" | grep -qE '^[a-z0-9/\-]+$'; then
+            echo "Computed branch name contains unexpected characters: $BRANCH"
+            exit 1
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Check out repository
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
@@ -150,12 +155,16 @@ jobs:
           Implement the following GitHub issue by editing the relevant source files and committing your changes.
           Make clean, minimal commits as you work. Do not push — the CI will do that.
 
-          ## Issue #{issue_number}: {title}
+          ## Issue #{issue_number}: <untrusted_input>{title}</untrusted_input>
 
+          <untrusted_input>
           {body}
+          </untrusted_input>
 
           ## Discussion
+          <untrusted_input>
           {comments}
+          </untrusted_input>
 
           When you are done, output — at the very end of your response — this exact block:
 
@@ -181,7 +190,7 @@ jobs:
 
       - name: Install Claude Code CLI
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.150
 
       - name: Run Claude Code
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
@@ -198,12 +207,23 @@ jobs:
             cat "$RUNNER_TEMP/claude-stderr.txt"
           fi
 
+      - name: Upload run artifacts
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-implement-run-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/prompt.txt
+            ${{ runner.temp }}/claude-output.txt
+            ${{ runner.temp }}/claude-stderr.txt
+          if-no-files-found: ignore
+
       - name: Commit any uncommitted changes
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         run: |
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m "chore: implement issue via Claude Code"
+            git commit -m "chore: implement issue via Claude Code (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
           fi
 
       - name: Push branch

@@ -39,6 +39,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           # pull_request_review / pull_request_review_comment
           PR_NUMBER_REVIEW: ${{ github.event.pull_request.number }}
           ACTOR_REVIEW: ${{ github.event.review.user.login }}
@@ -54,6 +55,12 @@ jobs:
 
           case "$EVENT_NAME" in
             workflow_run)
+              # Fork check: only act on runs from our own repository
+              if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "$REPO" ]; then
+                echo "workflow_run triggered from fork ($HEAD_REPO) — skipping"
+                echo "pr_number=" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               PR_NUMBER=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
                 --jq '.[0].number // empty' 2>/dev/null || true)
               ACTOR="workflow_run"
@@ -320,12 +327,16 @@ jobs:
           Address ALL of the following feedback by editing the relevant files and committing your changes.
           Do not push — the CI will do that.
 
+          <untrusted_input>
           {feedback}
+          </untrusted_input>
 
           ## Current PR diff (context)
+          <untrusted_input>
           ```diff
           {diff[:20000]}
           ```
+          </untrusted_input>
 
           When you are done, output — at the very end of your response — this exact block:
 
@@ -369,7 +380,7 @@ jobs:
 
       - name: Install Claude Code CLI
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.150
 
       - name: Run Claude Code
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
@@ -386,12 +397,23 @@ jobs:
             cat "$RUNNER_TEMP/claude-stderr.txt"
           fi
 
+      - name: Upload run artifacts
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-feedback-run-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/prompt.txt
+            ${{ runner.temp }}/claude-output.txt
+            ${{ runner.temp }}/claude-stderr.txt
+          if-no-files-found: ignore
+
       - name: Commit any uncommitted changes
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         run: |
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m "chore: address PR feedback [skip ci-loop]"
+            git commit -m "chore: address PR feedback [skip ci-loop] (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
           fi
 
       - name: Update PR title and body
