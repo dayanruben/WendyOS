@@ -1,0 +1,425 @@
+name: AI PR Feedback Loop
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows:
+      - Build products and release
+      - Go Tests
+      - Swift Tests
+      - Docs Review
+      - Integration Test Review
+    types: [completed]
+
+concurrency:
+  group: ai-pr-feedback-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    name: Address PR feedback via Claude Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: read
+
+    steps:
+      - name: Resolve PR number and actor
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # pull_request_review / pull_request_review_comment
+          PR_NUMBER_REVIEW: ${{ github.event.pull_request.number }}
+          ACTOR_REVIEW: ${{ github.event.review.user.login }}
+          ACTOR_ASSOC_REVIEW: ${{ github.event.review.author_association }}
+          # issue_comment and pull_request_review_comment share .comment.*
+          PR_NUMBER_COMMENT: ${{ github.event.issue.number }}
+          ACTOR_COMMENT: ${{ github.event.comment.user.login }}
+          ACTOR_ASSOC_COMMENT: ${{ github.event.comment.author_association }}
+        run: |
+          PR_NUMBER=""
+          ACTOR=""
+          ACTOR_ASSOC=""
+
+          case "$EVENT_NAME" in
+            workflow_run)
+              PR_NUMBER=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                --jq '.[0].number // empty' 2>/dev/null || true)
+              ACTOR="workflow_run"
+              ACTOR_ASSOC="MEMBER"   # trusted — only our own CI triggers this
+              ;;
+            pull_request_review)
+              PR_NUMBER="$PR_NUMBER_REVIEW"
+              ACTOR="$ACTOR_REVIEW"
+              ACTOR_ASSOC="$ACTOR_ASSOC_REVIEW"
+              ;;
+            pull_request_review_comment)
+              PR_NUMBER="$PR_NUMBER_REVIEW"
+              ACTOR="$ACTOR_COMMENT"
+              ACTOR_ASSOC="$ACTOR_ASSOC_COMMENT"
+              ;;
+            issue_comment)
+              # Only act on PR comments, not plain issue comments
+              IS_PR=$(gh api "repos/$REPO/issues/$PR_NUMBER_COMMENT" \
+                --jq '.pull_request // empty' 2>/dev/null || true)
+              if [ -z "$IS_PR" ]; then
+                echo "Comment is on an issue, not a PR — skipping"
+                echo "pr_number=" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              PR_NUMBER="$PR_NUMBER_COMMENT"
+              ACTOR="$ACTOR_COMMENT"
+              ACTOR_ASSOC="$ACTOR_ASSOC_COMMENT"
+              ;;
+          esac
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR found — skipping"
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "actor=$ACTOR"         >> "$GITHUB_OUTPUT"
+          echo "actor_assoc=$ACTOR_ASSOC" >> "$GITHUB_OUTPUT"
+
+      - name: Guard — ai-generated label and authorized actor
+        if: steps.resolve.outputs.pr_number != ''
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          ACTOR: ${{ steps.resolve.outputs.actor }}
+          ACTOR_ASSOC: ${{ steps.resolve.outputs.actor_assoc }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          HAS_LABEL=$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
+            --jq '[.labels[].name] | contains(["ai-generated"]) | if . then "true" else "false" end' \
+            2>/dev/null || echo "false")
+          if [ "$HAS_LABEL" != "true" ]; then
+            echo "PR does not have ai-generated label — skipping"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ALLOWED=false
+          case "$ACTOR_ASSOC" in
+            OWNER|MEMBER|COLLABORATOR) ALLOWED=true ;;
+          esac
+          # github-actions[bot] only trusted when triggered by CI (workflow_run)
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$ACTOR" = "workflow_run" ]; then
+            ALLOWED=true
+          fi
+          # Copilot reviewer always trusted
+          if [ "$ACTOR" = "github-copilot[bot]" ]; then
+            ALLOWED=true
+          fi
+
+          if [ "$ALLOWED" = "false" ]; then
+            echo "Actor '$ACTOR' (assoc: $ACTOR_ASSOC) is not authorized — skipping"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Circuit-breaker check
+        if: steps.guard.outputs.proceed == 'true'
+        id: circuit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          # Timestamp of the most recent /continue comment by a maintainer (or epoch)
+          CONTINUE_TS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '
+              [ .[]
+                | select(.body | test("(?m)^\\r?/continue(\\s|$)"))
+                | select(.author_association as $a |
+                    ["OWNER","MEMBER","COLLABORATOR"] | contains([$a]))
+                | .created_at
+              ] | last // "1970-01-01T00:00:00Z"
+            ' 2>/dev/null || echo "1970-01-01T00:00:00Z")
+
+          # Count consecutive github-actions[bot] commits since the later of
+          # (last human commit) or (last /continue comment).
+          BOT_STREAK=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" \
+            --jq --arg ts "$CONTINUE_TS" '
+              reverse |
+              [
+                .[] |
+                if (.author.login == "github-actions[bot]" and
+                    .commit.committer.date > $ts)
+                then 1
+                else "break"
+                end
+              ] |
+              index("break") // length
+            ' 2>/dev/null || echo "0")
+
+          echo "bot_streak=$BOT_STREAK" >> "$GITHUB_OUTPUT"
+          if [ "$BOT_STREAK" -ge 5 ]; then
+            echo "tripped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tripped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post circuit-breaker message
+        if: steps.circuit.outputs.tripped == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --method POST \
+            --field body="$(cat <<'MSG'
+          ⚠️ AI loop paused after 5 consecutive iterations without a human commit.
+          Reply `/continue` to allow more iterations.
+
+          @joannis @EBro912
+          MSG
+          )"
+
+      - name: Get PR info
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          PR_DATA=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          echo "head_sha=$(echo "$PR_DATA"    | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
+          echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> "$GITHUB_OUTPUT"
+
+      - name: Collect CI failure logs
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+        run: |
+          FAILING=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+            --jq '[.check_runs[] |
+                   select(.conclusion == "failure" or .conclusion == "timed_out") |
+                   .name] | join(",")' \
+            2>/dev/null || true)
+          echo "failing=$FAILING" >> "$GITHUB_OUTPUT"
+
+          touch "$RUNNER_TEMP/ci-logs.txt"
+          if [ -n "$FAILING" ]; then
+            gh run list --repo "$REPO" \
+              --commit "$HEAD_SHA" \
+              --status failure --limit 5 \
+              --json databaseId -q '.[].databaseId' 2>/dev/null \
+            | while read -r run_id; do
+                printf '=== Run %s ===\n' "$run_id" >> "$RUNNER_TEMP/ci-logs.txt"
+                gh run view "$run_id" --repo "$REPO" --log-failed 2>/dev/null \
+                  | head -300 >> "$RUNNER_TEMP/ci-logs.txt" || true
+              done
+          fi
+
+      - name: Collect review feedback
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.author_association as $a |
+                   ["OWNER","MEMBER","COLLABORATOR"] | contains([$a]) or
+                   .user.login == "github-copilot[bot]") |
+                  {user: .user.login, path: .path, body: .body}]' \
+            > "$RUNNER_TEMP/inline-comments.json" 2>/dev/null \
+            || echo "[]" > "$RUNNER_TEMP/inline-comments.json"
+
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            --jq '[.[] | select(.author_association as $a |
+                   ["OWNER","MEMBER","COLLABORATOR"] | contains([$a]) or
+                   .user.login == "github-copilot[bot]") |
+                  {user: .user.login, state: .state, body: .body}]' \
+            > "$RUNNER_TEMP/reviews.json" 2>/dev/null \
+            || echo "[]" > "$RUNNER_TEMP/reviews.json"
+
+          # Only include trusted authors to prevent prompt injection
+          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '[.[] |
+                   select(.user.login != "github-actions[bot]") |
+                   select(.author_association as $a |
+                     ["OWNER","MEMBER","COLLABORATOR"] | contains([$a]) or
+                     .user.login == "github-copilot[bot]") |
+                   {user: .user.login, body: .body}]' \
+            > "$RUNNER_TEMP/issue-comments.json" 2>/dev/null \
+            || echo "[]" > "$RUNNER_TEMP/issue-comments.json"
+
+          gh pr diff "$PR_NUMBER" --repo "$REPO" \
+            > "$RUNNER_TEMP/pr.diff" 2>/dev/null || touch "$RUNNER_TEMP/pr.diff"
+
+      - name: Build feedback prompt
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          FAILING_CHECKS: ${{ steps.ci.outputs.failing }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, pathlib
+
+          rt = os.environ['RUNNER_TEMP']
+          pr = os.environ['PR_NUMBER']
+          failing = os.environ.get('FAILING_CHECKS', '')
+
+          inline   = json.loads(pathlib.Path(f'{rt}/inline-comments.json').read_text())
+          reviews  = json.loads(pathlib.Path(f'{rt}/reviews.json').read_text())
+          comments = json.loads(pathlib.Path(f'{rt}/issue-comments.json').read_text())
+          ci_logs  = pathlib.Path(f'{rt}/ci-logs.txt').read_text()
+          diff     = pathlib.Path(f'{rt}/pr.diff').read_text()
+
+          sections = []
+
+          if failing:
+              sections.append(
+                  f'## Failing CI checks\n{failing}\n\n'
+                  f'## CI logs\n```\n{ci_logs[:20000]}\n```'
+              )
+          if reviews:
+              body = '\n'.join(
+                  f'**{r["user"]}** ({r["state"]}): {r["body"]}'
+                  for r in reviews if r['body']
+              )
+              if body:
+                  sections.append(f'## PR reviews\n{body}')
+          if inline:
+              body = '\n'.join(
+                  f'**{c["user"]}** on `{c["path"]}`: {c["body"]}' for c in inline
+              )
+              sections.append(f'## Inline review comments\n{body}')
+          if comments:
+              body = '\n'.join(f'**{c["user"]}**: {c["body"]}' for c in comments)
+              sections.append(f'## PR conversation comments\n{body}')
+
+          feedback = '\n\n'.join(sections) or '(No feedback found — checking for drift)'
+
+          prompt = f"""You are an engineer working on WendyOS. You are iterating on PR #{pr}.
+
+          Address ALL of the following feedback by editing the relevant files and committing your changes.
+          Do not push — the CI will do that.
+
+          {feedback}
+
+          ## Current PR diff (context)
+          ```diff
+          {diff[:20000]}
+          ```
+
+          When you are done, output — at the very end of your response — this exact block:
+
+          PR_TITLE: <updated one-line title>
+          PR_BODY_START
+          ## What this PR does
+          <updated description>
+
+          ## How to test
+          <steps>
+
+          ## Changes in this iteration
+          <bullet list of what changed>
+          PR_BODY_END
+          """
+
+          pathlib.Path(f'{rt}/prompt.txt').write_text(prompt)
+          print(f'Prompt written ({len(prompt)} chars)')
+          PYEOF
+
+      - name: Check out PR branch
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head_sha }}
+          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure git
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install Node.js
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run Claude Code
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude --print --dangerously-skip-permissions \
+            "$(cat "$RUNNER_TEMP/prompt.txt")" \
+            > "$RUNNER_TEMP/claude-output.txt" \
+            2> "$RUNNER_TEMP/claude-stderr.txt"
+          cat "$RUNNER_TEMP/claude-output.txt"
+          if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
+            echo "--- stderr ---"
+            cat "$RUNNER_TEMP/claude-stderr.txt"
+          fi
+
+      - name: Commit any uncommitted changes
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: address PR feedback [skip ci-loop]"
+          fi
+
+      - name: Update PR title and body
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          OUTPUT=$(cat "$RUNNER_TEMP/claude-output.txt")
+          PR_TITLE=$(printf '%s' "$OUTPUT" \
+            | grep '^PR_TITLE:' | sed 's/^PR_TITLE: *//' | head -1)
+          PR_BODY=$(printf '%s' "$OUTPUT" \
+            | sed -n '/^PR_BODY_START$/,/^PR_BODY_END$/p' | sed '1d;$d')
+
+          if [ -n "$PR_TITLE" ] && [ -n "$PR_BODY" ]; then
+            gh pr edit "$PR_NUMBER" \
+              --repo "$REPO" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY"
+          fi
+
+      - name: Push changes
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        env:
+          TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          BRANCH: ${{ steps.pr-info.outputs.head_branch }}
+        run: |
+          git push \
+            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:${BRANCH}"

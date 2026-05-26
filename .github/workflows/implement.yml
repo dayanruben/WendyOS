@@ -1,0 +1,266 @@
+name: AI Implement Issue
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ai-implement-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: Implement issue via Claude Code
+    # Only on issue comments (not PR comments), containing /implement
+    if: |
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '/implement')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Check authorization
+        id: auth
+        env:
+          AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Require /implement at the start of a line (not buried in prose)
+          if ! printf '%s' "$COMMENT_BODY" | grep -qE '(^|\n)\s*/implement(\s|$)'; then
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+            echo "/implement not found at start of line — skipping"
+            exit 0
+          fi
+          case "$AUTHOR_ASSOC" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "authorized=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "authorized=false" >> "$GITHUB_OUTPUT"
+              echo "Commenter association '$AUTHOR_ASSOC' is not authorized — skipping"
+              ;;
+          esac
+
+      - name: React to command
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            --method POST --field content=eyes || true
+
+      - name: Check for existing AI PR
+        if: steps.auth.outputs.authorized == 'true'
+        id: check-existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          BRANCH_PREFIX="ai/issue-${ISSUE_NUMBER}-"
+          EXISTING_PR=$(gh api "repos/$REPO/pulls?state=open" \
+            --jq ".[] | select(.head.ref | startswith(\"$BRANCH_PREFIX\")) | .html_url" \
+            2>/dev/null | head -1 || true)
+          if [ -n "$EXISTING_PR" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "pr_url=$EXISTING_PR" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post existing PR link and exit
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ steps.check-existing.outputs.pr_url }}
+        run: |
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --method POST \
+            --field body="An AI-generated PR already exists for this issue: $PR_URL"
+
+      - name: Compute branch name
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        id: branch
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          SLUG=$(echo "$ISSUE_TITLE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9]/-/g' \
+            | sed 's/-\+/-/g' \
+            | sed 's/^-\|-$//g' \
+            | cut -c1-40)
+          [ -z "$SLUG" ] && SLUG="untitled"
+          SLUG="${SLUG%-}"
+          echo "branch=ai/issue-${ISSUE_NUMBER}-${SLUG}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out repository
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create branch
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        env:
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+      - name: Collect issue context
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, subprocess, pathlib
+
+          repo = os.environ['REPO']
+          issue_number = os.environ['ISSUE_NUMBER']
+          runner_temp = os.environ['RUNNER_TEMP']
+
+          issue = json.loads(subprocess.check_output(
+              ['gh', 'api', f'repos/{repo}/issues/{issue_number}']))
+          comments_raw = json.loads(subprocess.check_output(
+              ['gh', 'api', f'repos/{repo}/issues/{issue_number}/comments']))
+
+          title   = issue['title']
+          body    = issue.get('body') or '(no body)'
+          comments = '\n'.join(
+              f'**{c["user"]["login"]}:** {c["body"]}' for c in comments_raw
+          )
+
+          prompt = f"""You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
+
+          Implement the following GitHub issue by editing the relevant source files and committing your changes.
+          Make clean, minimal commits as you work. Do not push — the CI will do that.
+
+          ## Issue #{issue_number}: {title}
+
+          {body}
+
+          ## Discussion
+          {comments}
+
+          When you are done, output — at the very end of your response — this exact block:
+
+          PR_TITLE: <one-line PR title>
+          PR_BODY_START
+          ## What this PR does
+          <description>
+
+          ## How to test
+          <steps>
+          PR_BODY_END
+          """
+
+          pathlib.Path(f'{runner_temp}/prompt.txt').write_text(prompt)
+          print(f'Prompt written ({len(prompt)} chars)')
+          PYEOF
+
+      - name: Install Node.js
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run Claude Code
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude --print --dangerously-skip-permissions \
+            "$(cat "$RUNNER_TEMP/prompt.txt")" \
+            > "$RUNNER_TEMP/claude-output.txt" \
+            2> "$RUNNER_TEMP/claude-stderr.txt"
+          cat "$RUNNER_TEMP/claude-output.txt"
+          if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
+            echo "--- stderr ---"
+            cat "$RUNNER_TEMP/claude-stderr.txt"
+          fi
+
+      - name: Commit any uncommitted changes
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: implement issue via Claude Code"
+          fi
+
+      - name: Push branch
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        env:
+          TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          git push \
+            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${BRANCH}"
+
+      - name: Parse PR metadata
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        id: pr-meta
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          OUTPUT=$(cat "$RUNNER_TEMP/claude-output.txt")
+
+          PR_TITLE=$(printf '%s' "$OUTPUT" \
+            | grep '^PR_TITLE:' | sed 's/^PR_TITLE: *//' | head -1)
+          PR_BODY=$(printf '%s' "$OUTPUT" \
+            | sed -n '/^PR_BODY_START$/,/^PR_BODY_END$/p' | sed '1d;$d')
+
+          [ -z "$PR_TITLE" ] && PR_TITLE="feat: implement issue #${ISSUE_NUMBER}"
+          [ -z "$PR_BODY" ] && PR_BODY="Implements #${ISSUE_NUMBER}."
+
+          printf '%s' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
+          printf '%s' "$PR_BODY"  > "$RUNNER_TEMP/pr-body.txt"
+
+      - name: Create PR
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        id: create-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          PR_URL=$(gh pr create \
+            --repo "$REPO" \
+            --head "$BRANCH" \
+            --base main \
+            --title "$(cat "$RUNNER_TEMP/pr-title.txt")" \
+            --body "$(cat "$RUNNER_TEMP/pr-body.txt")" \
+            --label "ai-generated")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on issue
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ steps.create-pr.outputs.pr_url }}
+        run: |
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --method POST \
+            --field body="I've opened a PR to implement this issue: $PR_URL"
