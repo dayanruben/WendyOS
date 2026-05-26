@@ -343,21 +343,11 @@ jobs:
 
           feedback = '\n\n'.join(sections) or '(No feedback found — checking for drift)'
 
-          prompt = f"""You are an engineer working on WendyOS. You are iterating on PR #{pr}.
+          # Instructions go in the system prompt (trusted, separate from user data)
+          system_prompt = f"""You are an engineer working on WendyOS. You are iterating on PR #{pr}.
 
-          Address ALL of the following feedback by editing the relevant files.
+          Address ALL of the feedback provided in the user message by editing the relevant files.
           Do not run git, commit, or push — the CI handles staging and committing your changes.
-
-          <untrusted_input>
-          {feedback}
-          </untrusted_input>
-
-          ## Current PR diff (context)
-          <untrusted_input>
-          ```diff
-          {diff[:20000]}
-          ```
-          </untrusted_input>
 
           When you are done, output — at the very end of your response — this exact block:
 
@@ -374,8 +364,19 @@ jobs:
           PR_BODY_END
           """
 
-          pathlib.Path(f'{rt}/prompt.txt').write_text(prompt)
-          print(f'Prompt written ({len(prompt)} chars)')
+          # Untrusted feedback and diff are the user message only — kept separate from instructions
+          user_message = f"""Feedback to address:
+          {feedback}
+
+          Current PR diff (context):
+          ```diff
+          {diff[:20000]}
+          ```
+          """
+
+          pathlib.Path(f'{rt}/system-prompt.txt').write_text(system_prompt)
+          pathlib.Path(f'{rt}/prompt.txt').write_text(user_message)
+          print(f'Prompts written (system: {len(system_prompt)} chars, user: {len(user_message)} chars)')
           PYEOF
 
       - name: Check out PR branch
@@ -410,6 +411,7 @@ jobs:
         run: |
           claude --print \
             --allowedTools "Edit,Write,Read,MultiEdit" \
+            --system-prompt "$(cat "$RUNNER_TEMP/system-prompt.txt")" \
             "$(cat "$RUNNER_TEMP/prompt.txt")" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
@@ -446,10 +448,18 @@ jobs:
             exit 1
           fi
           # Block any staged symlinks (could escape protected paths via symlink target)
-          SYMLINKS=$(git diff --cached --diff-filter=T --name-only || true)
+          SYMLINKS=$(git diff --cached --diff-filter=AT --name-only || true)
           if [ -n "$SYMLINKS" ]; then
             echo "::error::AI staged symlinks — aborting commit:"
             echo "$SYMLINKS"
+            git reset HEAD
+            exit 1
+          fi
+          # Allowlist: only permit writes to known source directories
+          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/|packaging/|Proto/|plugins/|security/|\\.github/ci-tests/)' || true)
+          if [ -n "$OUTSIDE_ALLOWLIST" ]; then
+            echo "::error::AI modified files outside allowed directories — aborting commit:"
+            echo "$OUTSIDE_ALLOWLIST"
             git reset HEAD
             exit 1
           fi
@@ -481,13 +491,27 @@ jobs:
       - name: Push changes
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         env:
-          # WENDY_TEMPLATE_SYNC_TOKEN requires only 'contents: write' on this
-          # repository. GITHUB_TOKEN cannot be used for push because pushes
-          # made by GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
+          # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to only
+          # 'contents: write' on this repository (no other repos or permissions).
+          # GITHUB_TOKEN cannot be used for push because pushes made by
+          # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
           echo "::add-mask::$TOKEN"
-          git push \
+          # Restrict push target to ai/ branches only (compensating control for PAT scope)
+          if ! printf '%s' "$BRANCH" | grep -qE '^ai/'; then
+            echo "::error::Push target '$BRANCH' is not an ai/ branch — aborting"
+            exit 1
+          fi
+          # Verify BRANCH is the head of an open PR (not an arbitrary branch)
+          PR_HEAD=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open" \
+            --jq --arg b "$BRANCH" '.[] | select(.head.ref == $b) | .head.ref' \
+            2>/dev/null | head -1 || true)
+          if [ -z "$PR_HEAD" ]; then
+            echo "::error::Branch '$BRANCH' is not the head of any open PR — aborting"
+            exit 1
+          fi
+          git push --no-force \
             "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${BRANCH}"

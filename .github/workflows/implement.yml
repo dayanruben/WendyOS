@@ -177,24 +177,11 @@ jobs:
               if c.get('author_association') in trusted
           )
 
-          prompt = f"""You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
+          # Instructions go in the system prompt (trusted, separate from user data)
+          system_prompt = """You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
 
-          Implement the following GitHub issue by editing the relevant source files.
+          Implement the GitHub issue provided in the user message by editing the relevant source files.
           Do not run git, commit, or push — the CI handles staging and committing your changes.
-
-          ## Issue #{issue_number}
-          <untrusted_input>
-          Title: {title}
-          </untrusted_input>
-
-          <untrusted_input>
-          {body}
-          </untrusted_input>
-
-          ## Discussion
-          <untrusted_input>
-          {comments}
-          </untrusted_input>
 
           When you are done, output — at the very end of your response — this exact block:
 
@@ -208,8 +195,20 @@ jobs:
           PR_BODY_END
           """
 
-          pathlib.Path(f'{runner_temp}/prompt.txt').write_text(prompt)
-          print(f'Prompt written ({len(prompt)} chars)')
+          # Untrusted issue content is the user message only — kept separate from instructions
+          user_message = f"""Issue #{issue_number}
+
+          Title: {title}
+
+          {body}
+
+          Discussion:
+          {comments}
+          """
+
+          pathlib.Path(f'{runner_temp}/system-prompt.txt').write_text(system_prompt)
+          pathlib.Path(f'{runner_temp}/prompt.txt').write_text(user_message)
+          print(f'Prompts written (system: {len(system_prompt)} chars, user: {len(user_message)} chars)')
           PYEOF
 
       - name: Install Node.js
@@ -229,6 +228,7 @@ jobs:
         run: |
           claude --print \
             --allowedTools "Edit,Write,Read,MultiEdit" \
+            --system-prompt "$(cat "$RUNNER_TEMP/system-prompt.txt")" \
             "$(cat "$RUNNER_TEMP/prompt.txt")" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
@@ -266,10 +266,18 @@ jobs:
             exit 1
           fi
           # Block any staged symlinks (could escape protected paths via symlink target)
-          SYMLINKS=$(git diff --cached --diff-filter=T --name-only || true)
+          SYMLINKS=$(git diff --cached --diff-filter=AT --name-only || true)
           if [ -n "$SYMLINKS" ]; then
             echo "::error::AI staged symlinks — aborting commit:"
             echo "$SYMLINKS"
+            git reset HEAD
+            exit 1
+          fi
+          # Allowlist: only permit writes to known source directories
+          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/|packaging/|Proto/|plugins/|security/|\\.github/ci-tests/)' || true)
+          if [ -n "$OUTSIDE_ALLOWLIST" ]; then
+            echo "::error::AI modified files outside allowed directories — aborting commit:"
+            echo "$OUTSIDE_ALLOWLIST"
             git reset HEAD
             exit 1
           fi
@@ -281,14 +289,16 @@ jobs:
       - name: Push branch
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         env:
-          # WENDY_TEMPLATE_SYNC_TOKEN requires only 'contents: write' on this
-          # repository. GITHUB_TOKEN cannot be used for push because pushes
-          # made by GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
+          # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to only
+          # 'contents: write' on this repository (no other repos or permissions).
+          # GITHUB_TOKEN cannot be used for push because pushes made by
+          # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
           echo "::add-mask::$TOKEN"
-          git push \
+          # Branch is already validated as ^[a-z0-9/\-]+$ and ai/issue-* prefix
+          git push --no-force \
             "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "${BRANCH}"
 
