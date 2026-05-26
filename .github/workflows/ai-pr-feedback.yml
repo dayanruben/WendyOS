@@ -324,9 +324,16 @@ jobs:
           inline   = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_inline]
           reviews  = [{**r, 'body': sanitize(r.get('body') or '')} for r in raw_reviews]
           comments = [{**c, 'body': sanitize(c.get('body') or '')} for c in raw_comments]
-          # Strip ANSI escape codes from CI logs before sanitizing
+          # Strip ANSI escape codes from CI logs, then filter to diagnostic lines only.
+          # This reduces natural-language injection risk from crafted test output —
+          # only lines matching error/warning/failure patterns are forwarded to the LLM.
           ci_logs_raw = pathlib.Path(f'{rt}/ci-logs.txt').read_text()
           ci_logs_raw = re.sub(r'\x1b\[[0-9;]*[mK]', '', ci_logs_raw)
+          CI_DIAG_RE = re.compile(r'\b(error|warning|fail|failed|panic|undefined|cannot)\b', re.IGNORECASE)
+          ci_logs_raw = '\n'.join(
+              line[:500] for line in ci_logs_raw.split('\n')
+              if CI_DIAG_RE.search(line)
+          )[:10000]
           ci_logs  = sanitize(ci_logs_raw)
           diff     = sanitize(pathlib.Path(f'{rt}/pr.diff').read_text())
 
