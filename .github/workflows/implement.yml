@@ -335,13 +335,15 @@ jobs:
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
           echo "::add-mask::$TOKEN"
-          # Branch is already validated as ^[a-z0-9/\-]+$ and ai/issue-* prefix
-          # Use GIT_ASKPASS to avoid embedding token in the git URL (prevents reflog leakage)
+          # Branch is already validated as ^[a-z0-9/\-]+$ and ai/issue-* prefix.
+          # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
+          # inherited by unrelated child processes.  Token is never in the URL.
           printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$RUNNER_TEMP/askpass.sh"
           chmod +x "$RUNNER_TEMP/askpass.sh"
-          GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
+          env -i HOME="$HOME" PATH="$PATH" \
+            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
             git push --no-force \
-            "https://x-access-token@github.com/${GITHUB_REPOSITORY}.git" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
             "${BRANCH}"
           rm -f "$RUNNER_TEMP/askpass.sh"
 

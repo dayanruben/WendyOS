@@ -586,9 +586,10 @@ jobs:
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
           echo "::add-mask::$TOKEN"
-          # Restrict push target to ai/ branches only; use strict pattern to prevent
-          # path traversal like ai/../refs/heads/main passing the naive check
-          if ! printf '%s' "$BRANCH" | grep -qE '^ai/[a-z0-9][a-z0-9/_-]{0,99}$'; then
+          # Tightened branch regex: no consecutive slashes/dots, no dot-segments,
+          # disallows path-traversal patterns like ai/../main.
+          if printf '%s' "$BRANCH" | grep -qE '(\.\.|//|@\{|\\)' || \
+             ! printf '%s' "$BRANCH" | grep -qE '^ai/[a-z0-9][a-z0-9_-]{0,38}(/[a-z0-9][a-z0-9_-]{0,38}){0,3}$'; then
             echo "::error::Push target '$BRANCH' does not match allowed ai/ branch pattern — aborting"
             exit 1
           fi
@@ -600,11 +601,14 @@ jobs:
             echo "::error::Branch '$BRANCH' is not the head of any open PR — aborting"
             exit 1
           fi
-          # Use GIT_ASKPASS to avoid embedding token in the git URL (prevents reflog leakage)
+          # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
+          # inherited by unrelated child processes.  The token never appears in
+          # the git remote URL — it is supplied only via GIT_ASKPASS.
           printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$RUNNER_TEMP/askpass.sh"
           chmod +x "$RUNNER_TEMP/askpass.sh"
-          GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
+          env -i HOME="$HOME" PATH="$PATH" \
+            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
             git push --no-force \
-            "https://x-access-token@github.com/${GITHUB_REPOSITORY}.git" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${BRANCH}"
           rm -f "$RUNNER_TEMP/askpass.sh"
