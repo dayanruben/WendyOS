@@ -95,7 +95,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
-          SLUG=$(echo "$ISSUE_TITLE" \
+          SLUG=$(printf '%s' "$ISSUE_TITLE" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9]/-/g' \
             | sed 's/-\+/-/g' \
@@ -144,15 +144,18 @@ jobs:
           import html, unicodedata
 
           def sanitize(text):
-              """Strip content that could escape <untrusted_input> delimiters."""
-              # Decode HTML entities (e.g. &lt;untrusted_input&gt;) then normalize
-              text = html.unescape(text)
+              """Strip content that could escape prompt delimiters or inject instructions."""
+              # Decode HTML entities iteratively until stable (handles double-encoding)
+              prev = None
+              while prev != text:
+                  prev = text
+                  text = html.unescape(text)
               # NFKC normalization collapses Unicode homoglyphs (e.g. fullwidth chars)
               text = unicodedata.normalize('NFKC', text)
               # Strip Unicode direction-override and zero-width characters
               text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
-              # Case/whitespace-insensitive removal of any untrusted_input tag variant
-              text = re.sub(r'<\s*/?\s*untrusted_input\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
+              # Remove XML/HTML tags that could be misinterpreted as prompt delimiters
+              text = re.sub(r'<\s*/?(untrusted_input|context|system|assistant|human|prompt|instruction)\s*>', '[sanitized-tag]', text, flags=re.IGNORECASE)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
@@ -265,8 +268,8 @@ jobs:
             git reset HEAD
             exit 1
           fi
-          # Block any staged symlinks (could escape protected paths via symlink target)
-          SYMLINKS=$(git diff --cached --diff-filter=AT --name-only || true)
+          # Block any staged symlinks (check git index directly; mode 120000 = symlink)
+          SYMLINKS=$(git ls-files -s | awk '$1 ~ /^120/ {print $4}' || true)
           if [ -n "$SYMLINKS" ]; then
             echo "::error::AI staged symlinks — aborting commit:"
             echo "$SYMLINKS"
