@@ -421,7 +421,18 @@ jobs:
 
       - name: Install Claude Code CLI
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
-        run: npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.150
+        run: |
+          # Verify registry integrity against hardcoded known-good hash before installing
+          # Detects supply-chain attacks where package content changes but version stays the same
+          EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
+          ACTUAL_INTEGRITY=$(npm view @anthropic-ai/claude-code@2.1.150 dist.integrity 2>/dev/null || echo "")
+          if [ "$ACTUAL_INTEGRITY" != "$EXPECTED_INTEGRITY" ]; then
+            echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
+            echo "  expected: $EXPECTED_INTEGRITY"
+            echo "    actual: $ACTUAL_INTEGRITY"
+            exit 1
+          fi
+          npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.150
 
       - name: Run Claude Code
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
@@ -466,13 +477,14 @@ jobs:
             exit 0
           fi
           # Block AI from modifying CI/security configuration files
-          PROTECTED=$(git diff --cached --name-only | grep -E '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))' || true)
-          if [ -n "$PROTECTED" ]; then
-            echo "::error::AI modified protected files — aborting commit:"
-            echo "$PROTECTED"
-            git reset HEAD
-            exit 1
-          fi
+          # Use -z (NUL-delimited) to prevent embedded-newline bypass in filenames
+          while IFS= read -r -d '' f; do
+            if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))'; then
+              echo "::error::AI modified protected file: $f"
+              git reset HEAD
+              exit 1
+            fi
+          done < <(git diff --cached -z --name-only)
           # Block any staged symlinks (check git index directly; mode 120000 = symlink)
           SYMLINKS=$(git ls-files -s | awk '$1 ~ /^120/ {print $4}' || true)
           if [ -n "$SYMLINKS" ]; then
@@ -482,16 +494,17 @@ jobs:
             exit 1
           fi
           # Allowlist: only permit writes to known source directories
-          OUTSIDE_ALLOWLIST=$(git diff --cached --name-only | grep -vE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)' || true)
-          if [ -n "$OUTSIDE_ALLOWLIST" ]; then
-            echo "::error::AI modified files outside allowed directories — aborting commit:"
-            echo "$OUTSIDE_ALLOWLIST"
-            git reset HEAD
-            exit 1
-          fi
+          # Use -z (NUL-delimited) to prevent embedded-newline bypass in filenames
+          while IFS= read -r -d '' f; do
+            if ! printf '%s' "$f" | grep -qE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)'; then
+              echo "::error::AI modified file outside allowed directories: $f"
+              git reset HEAD
+              exit 1
+            fi
+          done < <(git diff --cached -z --name-only)
           # Log what changed for audit trail
           echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
-          git diff --cached --stat >> "$GITHUB_STEP_SUMMARY"
+          git diff --cached --stat | head -200 >> "$GITHUB_STEP_SUMMARY"
           git commit -m "chore: address PR feedback [skip ci-loop] (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
 
       - name: Update PR title and body
@@ -541,6 +554,11 @@ jobs:
             echo "::error::Branch '$BRANCH' is not the head of any open PR — aborting"
             exit 1
           fi
-          git push --no-force \
-            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+          # Use GIT_ASKPASS to avoid embedding token in the git URL (prevents reflog leakage)
+          printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$RUNNER_TEMP/askpass.sh"
+          chmod +x "$RUNNER_TEMP/askpass.sh"
+          GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
+            git push --no-force \
+            "https://x-access-token@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${BRANCH}"
+          rm -f "$RUNNER_TEMP/askpass.sh"
