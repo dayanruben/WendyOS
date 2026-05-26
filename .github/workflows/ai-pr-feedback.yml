@@ -289,7 +289,7 @@ jobs:
 
           rt = os.environ['RUNNER_TEMP']
           pr = os.environ['PR_NUMBER']
-          failing = os.environ.get('FAILING_CHECKS', '')
+          failing = os.environ.get('FAILING_CHECKS', '')  # sanitized below after sanitize() is defined
 
           import html, unicodedata
 
@@ -307,6 +307,10 @@ jobs:
               # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
               # (covers special tokens like <|endoftext|> and any prompt delimiters)
               text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
+              # Block common prompt injection trigger phrases
+              text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
+              text = re.sub(r'(?i)new\s+instructions?\s*:', '[filtered]', text)
+              text = re.sub(r'(?mi)^\s*system\s*:\s*', '[filtered] ', text)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
@@ -336,6 +340,7 @@ jobs:
           )[:10000]
           ci_logs  = sanitize(ci_logs_raw)
           diff     = sanitize(pathlib.Path(f'{rt}/pr.diff').read_text())
+          failing  = sanitize(failing)
 
           sections = []
 
@@ -412,6 +417,22 @@ jobs:
           token: ${{ github.token }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify checkout integrity
+        if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
+        env:
+          EXPECTED_SHA: ${{ steps.pr-info.outputs.head_sha }}
+          EXPECTED_BRANCH: ${{ steps.pr-info.outputs.head_branch }}
+        run: |
+          CURRENT_SHA=$(git rev-parse HEAD)
+          if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::HEAD SHA mismatch: expected $EXPECTED_SHA got $CURRENT_SHA"
+            exit 1
+          fi
+          if ! printf '%s' "$EXPECTED_BRANCH" | grep -qE '^ai/[a-z0-9]'; then
+            echo "::error::Expected branch '$EXPECTED_BRANCH' does not match ai/ pattern — aborting"
+            exit 1
+          fi
 
       - name: Configure git
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'

@@ -159,6 +159,10 @@ jobs:
               # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
               # (covers special tokens like <|endoftext|> and any prompt delimiters)
               text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
+              # Block common prompt injection trigger phrases
+              text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
+              text = re.sub(r'(?i)new\s+instructions?\s*:', '[filtered]', text)
+              text = re.sub(r'(?mi)^\s*system\s*:\s*', '[filtered] ', text)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
