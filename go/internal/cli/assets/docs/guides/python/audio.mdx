@@ -153,7 +153,7 @@ async def microphone_stream(websocket: WebSocket):
             # Small yield to let other tasks run
             await asyncio.sleep(0.01)
 
-finally:
+    finally:
         process.terminate()
 ```
 

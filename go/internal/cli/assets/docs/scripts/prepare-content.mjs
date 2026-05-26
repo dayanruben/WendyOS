@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const docsRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const contentRoot = path.join(docsRoot, 'content', 'docs');
 const publicRoot = path.join(docsRoot, 'public');
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '');
 const skipDirs = new Set([
   '.git',
   '.next',
@@ -183,9 +183,9 @@ function relativeFromPage(fromRelativePath, targetPath, hash = '') {
 }
 
 function relativeAssetImport(fromRelativePath, targetPath, hash = '') {
-  const fromDir = path.dirname(fromRelativePath);
+  const fromDir = path.posix.dirname(fromRelativePath.replaceAll(path.sep, '/'));
   const normalizedTarget = targetPath.replace(/^\/+/, '').replace(/\/$/, '');
-  const relativePath = path.relative(fromDir, normalizedTarget);
+  const relativePath = path.posix.relative(fromDir, normalizedTarget);
   const importPath = relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
 
   return `${importPath}${hash}`;

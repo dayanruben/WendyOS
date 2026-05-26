@@ -136,7 +136,7 @@ struct SimpleServer {
 ```
 
 <Callout type="warning">
-  **Important**: It's important that your Hummingbird server is running on `0.0.0.0` and not `localhost` or `127.0.0.1`. This is because your WendyOS device is not on the same network as your development machine. You'll need to access your server from the outside world, and `0.0.0.0` is the same as localhost but it's accessible from the outside world.
+  **Important**: It's important that your Hummingbird server is running on `0.0.0.0` and not `localhost` or `127.0.0.1`. `0.0.0.0` binds to all network interfaces on the device, making your server reachable from the host machine and the local network. Using `localhost` or `127.0.0.1` binds only to the loopback interface, so the server would not be accessible from outside the device.
 </Callout>
 
 ## Running Locally
