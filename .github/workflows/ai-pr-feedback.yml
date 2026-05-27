@@ -335,11 +335,12 @@ jobs:
                   text = html.unescape(text)
               # NFKC normalization collapses Unicode homoglyphs (e.g. fullwidth chars)
               text = unicodedata.normalize('NFKC', text)
-              # Strip Unicode direction-override and zero-width characters
-              text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
-              # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
-              # (covers special tokens like <|endoftext|> and any prompt delimiters)
-              text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
+              # Strip Unicode direction-override, zero-width, and soft-hyphen (U+00AD).
+              # Soft hyphen survives NFKC but can split keywords to bypass phrase filters.
+              text = re.sub(r'[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
+              # Strip ALL XML/HTML tags. Use a high bound (4000 chars) to prevent bypass
+              # via tags with >200 chars of padding before '>'. [^>] stops at '>' anyway.
+              text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
               # Block common prompt injection trigger phrases
               text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
               text = re.sub(r'(?i)new\s+instructions?\s*:', '[filtered]', text)
@@ -378,7 +379,7 @@ jobs:
           ALLOWED_PATH_RE = re.compile(r'^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)')
           raw_files = json.loads(pathlib.Path(f'{rt}/pr-files.json').read_text())
           changed_files = [
-              sanitize(f) for f in raw_files
+              sanitize(f.replace('\n', '').replace('\r', '').replace('\x00', '')) for f in raw_files
               if isinstance(f, str) and ALLOWED_PATH_RE.match(f)
           ]
 
@@ -460,7 +461,9 @@ jobs:
           # circular: a compromised registry could return the attacker's hash for both the tarball
           # and the dist.integrity field. We rely solely on the out-of-band hardcoded hash.
           EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
-          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
+          # --prefer-online forces a fresh fetch, bypassing the npm cache.
+          # Without this, npm pack may hash a previously-downloaded (potentially stale) tarball.
+          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --prefer-online 2>/dev/null | tail -1)
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
             exit 1
@@ -530,7 +533,7 @@ jobs:
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
             claude --print \
-            --allowedTools "Edit,Write,MultiEdit" \
+            --allowedTools "Edit,MultiEdit" \
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
@@ -597,6 +600,15 @@ PYEOF
           if [ -n "$SYMLINKS" ]; then
             echo "::error::AI staged symlinks — aborting commit:"
             echo "$SYMLINKS"
+            git reset HEAD
+            exit 1
+          fi
+          # Reject unexpectedly large changes — a compromised LLM output could attempt
+          # to rewrite the entire codebase. 20 files is a generous upper bound for a
+          # typical review-driven iteration.
+          FILE_COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
+          if [ "$FILE_COUNT" -gt 20 ]; then
+            echo "::error::AI changed $FILE_COUNT files in one run — exceeds safety limit of 20"
             git reset HEAD
             exit 1
           fi

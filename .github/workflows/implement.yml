@@ -130,7 +130,8 @@ jobs:
           # A registry cross-check against the same npm registry that served the tarball would be
           # circular: a compromised registry could return the attacker's hash for both the tarball
           # and the dist.integrity field. We rely solely on the out-of-band hardcoded hash.
-          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
+          # --prefer-online forces a fresh fetch, bypassing the npm cache.
+          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --prefer-online 2>/dev/null | tail -1)
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
             exit 1
