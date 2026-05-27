@@ -24,10 +24,9 @@ jobs:
   respond:
     name: Address PR feedback via Claude Code
     # Prevent unauthorized events from receiving write credentials before job dispatch.
-    # workflow_run guard: blocks fork PRs from receiving write credentials entirely.
-    # issue_comment guard: short-circuits non-OWNER/MEMBER comments before secrets
-    # are provisioned. Uses event payload author_association as a pre-filter only;
-    # the Guard step re-verifies via API for authoritative enforcement.
+    # All three comment/review event types are pre-filtered by author_association to
+    # avoid provisioning secrets for untrusted actors. These are event-payload values
+    # (pre-filter only); the Guard step re-verifies via API for authoritative enforcement.
     if: |
       (github.event_name != 'workflow_run' ||
        github.event.workflow_run.head_repository.full_name == github.repository) &&
@@ -35,6 +34,10 @@ jobs:
        github.event.workflow_run.conclusion == 'failure' ||
        github.event.workflow_run.conclusion == 'timed_out') &&
       (github.event_name != 'issue_comment' ||
+       contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association)) &&
+      (github.event_name != 'pull_request_review' ||
+       contains(fromJSON('["OWNER","MEMBER"]'), github.event.review.author_association)) &&
+      (github.event_name != 'pull_request_review_comment' ||
        contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -396,7 +399,19 @@ jobs:
               failing = ', '.join(allowed)
           # Load and sanitize changed file paths. Filenames are PR-author-controlled and
           # may contain injection content; sanitize AND filter against the commit allowlist.
-          ALLOWED_PATH_RE = re.compile(r'^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)')
+          # Negative lookaheads exclude high-risk subtrees within allowed directories:
+          # go/vendor/ — vendored deps; go/generated/ — generated files; swift/Packages/ — SPM cache;
+          # Tests/Fixtures/ / tests/fixtures/ — test fixtures executed by CI; docs/ Makefile — CI config.
+          ALLOWED_PATH_RE = re.compile(
+              r'^(go/(?!vendor/|generated/)'
+              r'|swift/(?!Packages/)'
+              r'|Sources/'
+              r'|Tests/(?!Fixtures/)'
+              r'|tests/(?!fixtures/)'
+              r'|docs/(?!.*Makefile)'
+              r'|Documentation/'
+              r'|Examples/)'
+          )
           raw_files = json.loads(pathlib.Path(f'{rt}/pr-files.json').read_text())
           changed_files = [
               sanitize(f.replace('\n', '').replace('\r', '').replace('\x00', '')) for f in raw_files
@@ -575,6 +590,7 @@ jobs:
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
             claude --print \
             --allowedTools "Edit,MultiEdit" \
+            --disallowedTools "Bash,Read,Write,WebFetch,WebSearch,computer_use" \
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
