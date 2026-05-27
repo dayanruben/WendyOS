@@ -58,8 +58,10 @@ jobs:
               echo "PR has ai-generated label — handled by ai-pr-feedback.yml, skipping"
               echo "pr_number=" >> "$GITHUB_OUTPUT"
             else
+              # COLLABORATOR excluded — same policy as ai-pr-feedback.yml to maintain
+              # a consistent authorization boundary across all AI automation workflows.
               case "$AUTHOR_ASSOC" in
-                MEMBER|OWNER|COLLABORATOR)
+                MEMBER|OWNER)
                   echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
                   ;;
                 *)

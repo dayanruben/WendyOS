@@ -86,7 +86,7 @@ jobs:
               PR_NUMBER=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
                 --jq '.[0].number // empty' 2>/dev/null || true)
               ACTOR="workflow_run"
-              ACTOR_ASSOC="MEMBER"   # trusted — only our own CI triggers this
+              ACTOR_ASSOC=""  # not applicable: trust established by HEAD_REPO fork check above
               ;;
             pull_request_review)
               # Fork guard: refuse to act on PRs from forks
@@ -164,12 +164,17 @@ jobs:
           fi
 
           ALLOWED=false
-          case "$ACTOR_ASSOC" in
-            OWNER|MEMBER) ALLOWED=true ;;  # COLLABORATOR excluded: insufficient authorization boundary
-          esac
-          # github-actions[bot] only trusted when triggered by CI (workflow_run)
+          # workflow_run trust is established by the HEAD_REPO fork check in the resolve step,
+          # not by actor association. Handle it explicitly here to avoid depending on a synthetic
+          # ACTOR_ASSOC value and to make the trust basis clear for future maintainers.
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$ACTOR" = "workflow_run" ]; then
             ALLOWED=true
+          else
+            case "$ACTOR_ASSOC" in
+              # COLLABORATOR excluded: insufficient authorization boundary — same policy as
+              # agentic-ci-loop.yml to maintain consistency across AI automation workflows.
+              OWNER|MEMBER) ALLOWED=true ;;
+            esac
           fi
 
           if [ "$ALLOWED" = "false" ]; then
@@ -611,32 +616,65 @@ PYEOF
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         run: |
-          OUTPUT=$(cat "$RUNNER_TEMP/claude-output.txt")
-          PR_TITLE=$(printf '%s' "$OUTPUT" \
-            | grep '^PR_TITLE:' | sed 's/^PR_TITLE: *//' | head -1 \
-            | tr -d '\n\r' | cut -c1-200)
-          PR_BODY=$(printf '%s' "$OUTPUT" \
-            | sed -n '/^PR_BODY_START$/,/^PR_BODY_END$/p' | sed '1d;$d')
+          python3 << 'PYEOF'
+          import html, os, pathlib, re, subprocess, unicodedata
 
-          # Strip @mentions, markdown links, and control chars from AI-generated output
-          # before writing back to GitHub to prevent unsolicited notifications/injection.
-          PR_TITLE=$(printf '%s' "$PR_TITLE" \
-            | sed 's/@[A-Za-z0-9_-][A-Za-z0-9_-]*/[user]/g' \
-            | sed 's/\[([^]]*)\]([^)]*)/[\1]/g' \
-            | tr -dc '[:print:]' \
-            | cut -c1-200)
-          PR_BODY=$(printf '%s' "$PR_BODY" \
-            | sed 's/@[A-Za-z0-9_-][A-Za-z0-9_-]*/[user]/g' \
-            | sed 's/\[([^]]*)\]([^)]*)/[\1]/g' \
-            | cut -c1-10000)
+          def sanitize_output(text, max_len):
+              """Apply same sanitization to LLM output as we apply to untrusted input.
+              Prevents @mention spam, HTML injection, and Unicode homoglyph attacks."""
+              prev = None
+              while prev != text:
+                  prev = text
+                  text = html.unescape(text)
+              text = unicodedata.normalize('NFKC', text)
+              text = re.sub(r'[​-‏‪-‮⁦-⁩﻿]', '', text)
+              text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
+              # Strip @mentions and #NNN references to prevent unsolicited notifications
+              text = re.sub(r'@[A-Za-z0-9_-]{1,39}', '[user]', text)
+              text = re.sub(r'#\d+', '[ref]', text)
+              text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)
+              text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
+              return text[:max_len]
 
-          if [ -n "$PR_TITLE" ] && [ -n "$PR_BODY" ]; then
-            printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-update.txt"
-            gh pr edit "$PR_NUMBER" \
-              --repo "$REPO" \
-              --title "$PR_TITLE" \
-              --body-file "$RUNNER_TEMP/pr-body-update.txt"
-          fi
+          rt = os.environ['RUNNER_TEMP']
+          repo = os.environ['REPO']
+          pr = os.environ['PR_NUMBER']
+
+          output = pathlib.Path(f'{rt}/claude-output.txt').read_text()
+
+          title_raw = ''
+          for line in output.splitlines():
+              if line.startswith('PR_TITLE:'):
+                  title_raw = line[len('PR_TITLE:'):].strip()
+                  break
+
+          body_raw = ''
+          in_body = False
+          for line in output.splitlines():
+              if line == 'PR_BODY_START':
+                  in_body = True
+                  continue
+              if line == 'PR_BODY_END':
+                  in_body = False
+                  continue
+              if in_body:
+                  body_raw += line + '\n'
+
+          if not title_raw or not body_raw.strip():
+              print('No PR_TITLE/PR_BODY found in output — skipping update')
+              raise SystemExit(0)
+
+          title = sanitize_output(title_raw, 200)
+          body  = sanitize_output(body_raw, 10000)
+
+          pathlib.Path(f'{rt}/pr-body-update.txt').write_text(body)
+          subprocess.run([
+              'gh', 'pr', 'edit', pr,
+              '--repo', repo,
+              '--title', title,
+              '--body-file', f'{rt}/pr-body-update.txt',
+          ], check=True)
+          PYEOF
 
       - name: Post AI changes to PR
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true' && steps.commit.outputs.changed == 'true'
@@ -707,12 +745,15 @@ PYEOF
           # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
           # inherited by unrelated child processes.  The token never appears in
           # the git remote URL — it is supplied only via GIT_ASKPASS.
-          trap 'rm -f "$RUNNER_TEMP/askpass.sh"' EXIT
-          printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$RUNNER_TEMP/askpass.sh"
-          chmod +x "$RUNNER_TEMP/askpass.sh"
+          # mktemp creates a randomly-named file; chmod 700 before writing prevents
+          # other processes from reading the token even during the push window.
+          ASKPASS_FILE=$(mktemp "$RUNNER_TEMP/askpass-XXXXXX.sh")
+          chmod 700 "$ASKPASS_FILE"
+          trap 'rm -f "$ASKPASS_FILE"' EXIT
+          printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$ASKPASS_FILE"
           env -i HOME="$HOME" PATH="$PATH" \
-            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
+            GIT_ASKPASS="$ASKPASS_FILE" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
             git push --no-force \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${BRANCH}"
-          rm -f "$RUNNER_TEMP/askpass.sh"
+          rm -f "$ASKPASS_FILE"
