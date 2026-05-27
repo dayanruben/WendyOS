@@ -70,7 +70,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           BRANCH_PREFIX="ai/issue-${ISSUE_NUMBER}-"
-          EXISTING_PR=$(gh api "repos/$REPO/pulls?state=open" \
+          EXISTING_PR=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
             --jq ".[] | select(.head.ref | startswith(\"$BRANCH_PREFIX\")) | .html_url" \
             2>/dev/null | head -1 || true)
           if [ -n "$EXISTING_PR" ]; then
@@ -113,6 +113,35 @@ jobs:
             exit 1
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Install Node.js
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        run: |
+          # Download tarball, verify its sha512 against hardcoded hash, then install
+          # from the local file — eliminates any TOCTOU window between check and install.
+          # EXPECTED_INTEGRITY is hardcoded here, NOT fetched from the registry.
+          EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
+          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
+            exit 1
+          fi
+          ACTUAL_HASH="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
+          if [ "$ACTUAL_HASH" != "$EXPECTED_INTEGRITY" ]; then
+            echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
+            echo "  expected: $EXPECTED_INTEGRITY"
+            echo "    actual: $ACTUAL_HASH"
+            rm -f "$TARBALL"
+            exit 1
+          fi
+          npm install -g --ignore-scripts "$TARBALL"
+          rm -f "$TARBALL"
 
       - name: Check out repository
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
@@ -178,7 +207,7 @@ jobs:
           issue = json.loads(subprocess.check_output(
               ['gh', 'api', f'repos/{repo}/issues/{issue_number}']))
           comments_raw = json.loads(subprocess.check_output(
-              ['gh', 'api', f'repos/{repo}/issues/{issue_number}/comments']))
+              ['gh', 'api', f'repos/{repo}/issues/{issue_number}/comments?per_page=100']))
 
           # Enforce length limits before sanitizing
           title   = sanitize(issue['title'][:200])
@@ -225,35 +254,6 @@ jobs:
           print(f'Prompts written (system: {len(system_prompt)} chars, user: {len(user_message)} chars)')
           PYEOF
 
-      - name: Install Node.js
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
-        with:
-          node-version: '20'
-
-      - name: Install Claude Code CLI
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
-        run: |
-          # Download tarball, verify its sha512 against hardcoded hash, then install
-          # from the local file — eliminates any TOCTOU window between check and install.
-          # EXPECTED_INTEGRITY is hardcoded here, NOT fetched from the registry.
-          EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
-          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
-          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
-            echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
-            exit 1
-          fi
-          ACTUAL_HASH="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
-          if [ "$ACTUAL_HASH" != "$EXPECTED_INTEGRITY" ]; then
-            echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
-            echo "  expected: $EXPECTED_INTEGRITY"
-            echo "    actual: $ACTUAL_HASH"
-            rm -f "$TARBALL"
-            exit 1
-          fi
-          npm install -g --ignore-scripts "$TARBALL"
-          rm -f "$TARBALL"
-
       - name: Run Claude Code
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         env:
@@ -297,6 +297,7 @@ jobs:
 
       - name: Commit any uncommitted changes
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        id: commit
         run: |
           # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
           HOOK_FILES=$(find .git/hooks -maxdepth 1 -type f -not -name '*.sample' 2>/dev/null | head -5 || true)
@@ -307,6 +308,7 @@ jobs:
           fi
           git add -A
           if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Block AI from modifying CI/security configuration files
@@ -345,9 +347,10 @@ jobs:
           echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
           git diff --cached --stat | head -200 >> "$GITHUB_STEP_SUMMARY"
           git commit -m "chore: implement issue via Claude Code (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push branch
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
         env:
           # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to only
           # 'contents: write' on this repository (no other repos or permissions).
@@ -370,7 +373,7 @@ jobs:
           rm -f "$RUNNER_TEMP/askpass.sh"
 
       - name: Parse PR metadata
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
         id: pr-meta
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -378,7 +381,8 @@ jobs:
           OUTPUT=$(cat "$RUNNER_TEMP/claude-output.txt")
 
           PR_TITLE=$(printf '%s' "$OUTPUT" \
-            | grep '^PR_TITLE:' | sed 's/^PR_TITLE: *//' | head -1)
+            | grep '^PR_TITLE:' | sed 's/^PR_TITLE: *//' | head -1 \
+            | tr -d '\n\r' | cut -c1-200)
           PR_BODY=$(printf '%s' "$OUTPUT" \
             | sed -n '/^PR_BODY_START$/,/^PR_BODY_END$/p' | sed '1d;$d')
 
@@ -389,7 +393,7 @@ jobs:
           printf '%s' "$PR_BODY"  > "$RUNNER_TEMP/pr-body.txt"
 
       - name: Create PR
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
         id: create-pr
         env:
           GH_TOKEN: ${{ github.token }}
@@ -407,7 +411,7 @@ jobs:
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment on issue
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
