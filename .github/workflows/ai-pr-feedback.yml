@@ -172,11 +172,15 @@ jobs:
           fi
 
           ALLOWED=false
-          # workflow_run trust is established by the HEAD_REPO fork check in the resolve step,
-          # not by actor association. Handle it explicitly here to avoid depending on a synthetic
-          # ACTOR_ASSOC value and to make the trust basis clear for future maintainers.
-          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$ACTOR" = "workflow_run" ]; then
-            ALLOWED=true
+          # For workflow_run: the fork check in the Resolve step only verifies the HEAD repo.
+          # A COLLABORATOR with push access could create an ai/* branch and trigger this loop.
+          # Re-check the PR author via API to apply the same OWNER|MEMBER gate as other events.
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            PR_AUTHOR_ASSOC=$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              --jq '.author_association' 2>/dev/null || echo "NONE")
+            case "$PR_AUTHOR_ASSOC" in
+              OWNER|MEMBER) ALLOWED=true ;;
+            esac
           else
             case "$ACTOR_ASSOC" in
               # COLLABORATOR excluded: insufficient authorization boundary — same policy as
@@ -636,7 +640,18 @@ PYEOF
               git reset HEAD
               exit 1
             fi
-            if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))'; then
+            # Canonicalize path to reject traversal sequences (e.g. go/../../.github/)
+            REAL_F=$(realpath --relative-to=. "$f" 2>/dev/null || echo "$f")
+            if printf '%s' "$REAL_F" | grep -q '^\.\./'; then
+              echo "::error::AI modified file with path traversal: $f"
+              git reset HEAD
+              exit 1
+            fi
+            f="$REAL_F"
+            # Protected files: CI/security config, credentials, vendored deps,
+            # test fixtures (executable by CI), and docs Makefiles (CI config).
+            # Aligned with the Python ALLOWED_PATH_RE negative lookaheads.
+            if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx)|go/vendor/|go/generated/|swift/Packages/|[Tt]ests/[Ff]ixtures/|docs/.*Makefile)'; then
               echo "::error::AI modified protected file: $f"
               git reset HEAD
               exit 1
@@ -656,6 +671,14 @@ PYEOF
           FILE_COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
           if [ "$FILE_COUNT" -gt 20 ]; then
             echo "::error::AI changed $FILE_COUNT files in one run — exceeds safety limit of 20"
+            git reset HEAD
+            exit 1
+          fi
+          # Byte-size guard: a very large diff signals compromised or runaway LLM output.
+          # 50 KB is a generous bound for a typical review-driven iteration.
+          DIFF_BYTES=$(git diff --cached | wc -c | tr -d ' ')
+          if [ "$DIFF_BYTES" -gt 51200 ]; then
+            echo "::error::AI diff is ${DIFF_BYTES} bytes — exceeds 50 KB safety limit"
             git reset HEAD
             exit 1
           fi
