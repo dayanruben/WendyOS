@@ -233,6 +233,11 @@ func feedGStreamer(ctx context.Context, stream videoStream, first *agentpb.Video
 			}
 		}
 		if done {
+			// If our caller cancelled the context (Ctrl+C / shutdown), treat any
+			// resulting stream error as a clean exit.
+			if ctx.Err() != nil {
+				return nil
+			}
 			if err != nil && !errors.Is(err, io.EOF) {
 				return fmt.Errorf("receiving video: %w", err)
 			}
