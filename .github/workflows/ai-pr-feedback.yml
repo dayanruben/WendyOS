@@ -373,8 +373,14 @@ jobs:
                        'body': sanitize(c.get('body') or '')} for c in raw_comments]
           # failing check names are workflow-author-controlled; sanitize defensively
           failing  = sanitize(failing)
-          # Load list of changed file paths (low-risk; no full diff content to inject)
-          changed_files = json.loads(pathlib.Path(f'{rt}/pr-files.json').read_text())
+          # Load and sanitize changed file paths. Filenames are PR-author-controlled and
+          # may contain injection content; sanitize AND filter against the commit allowlist.
+          ALLOWED_PATH_RE = re.compile(r'^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)')
+          raw_files = json.loads(pathlib.Path(f'{rt}/pr-files.json').read_text())
+          changed_files = [
+              sanitize(f) for f in raw_files
+              if isinstance(f, str) and ALLOWED_PATH_RE.match(f)
+          ]
 
           sections = []
 
@@ -685,18 +691,21 @@ PYEOF
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 << 'PYEOF'
-          import json, os, subprocess
+          import os, subprocess
           repo    = os.environ['REPO']
           pr      = os.environ['PR_NUMBER']
           run_url = os.environ['RUN_URL']
-          # Post only the --stat summary (file names and line counts) in the public PR
-          # comment to avoid accidentally broadcasting sensitive file contents.
-          # The full diff is available in the workflow run artifact for authorized reviewers.
-          stat = subprocess.check_output(
-              ['git', 'diff', 'HEAD~1', 'HEAD', '--stat'], text=True)[:3000]
+          # Use --numstat (tab-separated added/deleted counts) rather than --stat to avoid
+          # embedding attacker-controlled filenames in the public PR comment.
+          numstat = subprocess.check_output(
+              ['git', 'diff', 'HEAD~1', 'HEAD', '--numstat'], text=True)
+          rows = [line.split('\t') for line in numstat.strip().splitlines() if line]
+          added   = sum(int(r[0]) for r in rows if r[0].isdigit())
+          removed = sum(int(r[1]) for r in rows if len(r) > 1 and r[1].isdigit())
+          file_count = len(rows)
           body = (
               f'**AI-generated changes ([run]({run_url})):**\n'
-              f'```\n{stat}\n```\n\n'
+              f'{file_count} file(s) changed, +{added}/-{removed} lines\n\n'
               f'Full diff is available in the [workflow run artifact]({run_url}).'
           )
           subprocess.run(
