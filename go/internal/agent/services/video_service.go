@@ -3,11 +3,13 @@ package services
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +38,13 @@ const (
 	vidiocDqbuf     = 0xC0585611
 	vidiocStreamon  = 0x40045612
 	vidiocStreamoff = 0x40045613
+	vidiocSExtCtrls = 0xC0205648 // _IOWR('V', 72, struct v4l2_ext_controls), 32 bytes
+
+	// Encoder control IDs and class. V4L2_CID_CODEC_BASE = V4L2_CTRL_CLASS_CODEC
+	// (0x00990000) | 0x900; the keyframe controls are fixed offsets from it.
+	v4l2CtrlClassCodec = 0x00990000 // V4L2_CTRL_CLASS_CODEC
+	v4l2CIDGOPSize     = 0x009909CB // V4L2_CID_MPEG_VIDEO_GOP_SIZE (base+203)
+	v4l2CIDH264IPeriod = 0x00990A66 // V4L2_CID_MPEG_VIDEO_H264_I_PERIOD (base+358)
 )
 
 // v4l2Format matches struct v4l2_format (208 bytes) for V4L2_BUF_TYPE_VIDEO_CAPTURE.
@@ -75,6 +84,23 @@ func (b *v4l2Buf) setType(t uint32)   { *(*uint32)(unsafe.Pointer(&b[4])) = t }
 func (b *v4l2Buf) bytesUsed() uint32  { return *(*uint32)(unsafe.Pointer(&b[8])) }
 func (b *v4l2Buf) setMemory(m uint32) { *(*uint32)(unsafe.Pointer(&b[60])) = m }
 func (b *v4l2Buf) offset() uint32     { return *(*uint32)(unsafe.Pointer(&b[64])) }
+
+// v4l2ExtControl is a fixed-size array matching the __packed struct
+// v4l2_ext_control (20 bytes): id@0, size@4, reserved2@8, then an 8-byte union
+// whose __s32 value member sits at offset 12.
+type v4l2ExtControl [20]byte
+
+func (c *v4l2ExtControl) setID(id uint32)  { *(*uint32)(unsafe.Pointer(&c[0])) = id }
+func (c *v4l2ExtControl) setValue(v int32) { *(*int32)(unsafe.Pointer(&c[12])) = v }
+
+// v4l2ExtControls is a fixed-size array matching struct v4l2_ext_controls
+// (32 bytes): which@0, count@4, error_idx@8, request_fd@12, reserved@16, and a
+// pointer to the v4l2_ext_control array@24.
+type v4l2ExtControls [32]byte
+
+func (c *v4l2ExtControls) setWhich(w uint32)        { *(*uint32)(unsafe.Pointer(&c[0])) = w }
+func (c *v4l2ExtControls) setCount(n uint32)        { *(*uint32)(unsafe.Pointer(&c[4])) = n }
+func (c *v4l2ExtControls) setControlsPtr(p uintptr) { *(*uintptr)(unsafe.Pointer(&c[24])) = p }
 
 // nativeH264NotSupported is returned when the V4L2 device does not expose H.264 output.
 type nativeH264NotSupported struct{ msg string }
@@ -190,6 +216,10 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 		return nativeH264NotSupported{msg: "device switched pixel format away from H264"}
 	}
 
+	// Best-effort: cap the camera encoder's keyframe interval. Non-fatal — many
+	// UVC cameras reject this and keep their firmware default.
+	s.setV4L2KeyframeInterval(fd, keyframeIntervalFrames(req.GetFramerate()))
+
 	// Two buffers: one dequeued/in-flight, one queued for the camera to fill.
 	// More buffers increase kernel-side lag when the gRPC send lags the camera.
 	const numBuffers = 2
@@ -206,10 +236,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 	}
 
 	// Map and queue each buffer.
-	type mappedBuf struct {
-		data []byte
-	}
-	mapped := make([]mappedBuf, req4.Count)
+	mapped := make([][]byte, req4.Count)
 
 	for i := uint32(0); i < req4.Count; i++ {
 		var qbuf v4l2Buf
@@ -226,15 +253,15 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 		if err != nil {
 			return status.Errorf(codes.Internal, "mmap buffer %d: %v", i, err)
 		}
-		mapped[i].data = data
+		mapped[i] = data
 
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQbuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
 			return status.Errorf(codes.Internal, "VIDIOC_QBUF[%d]: %v", i, errno)
 		}
 	}
 	defer func() {
-		for _, m := range mapped {
-			unix.Munmap(m.data) //nolint:errcheck
+		for _, data := range mapped {
+			unix.Munmap(data) //nolint:errcheck
 		}
 	}()
 
@@ -247,7 +274,59 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 		unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocStreamoff, uintptr(unsafe.Pointer(&bufType))) //nolint:errcheck
 	}()
 
-	var framesSent int
+	// Capture and send run on separate goroutines joined by a single-slot,
+	// drop-oldest hand-off. Capture runs at camera speed; the sender may stall
+	// on gRPC flow control. While the sender stalls, the slot keeps being
+	// overwritten, so the sender always transmits the freshest frame and the
+	// frames captured in between are dropped instead of delivered late.
+	slot := newFrameSlot()
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- s.captureV4L2Frames(runCtx, fd, mapped, slot) }()
+	go func() { errCh <- s.sendV4L2Frames(runCtx, stream, slot) }()
+
+	// Whichever goroutine exits first, cancel the other and collect both errors.
+	first := <-errCh
+	cancel()
+	second := <-errCh
+	return pickV4L2StreamError(first, second, ctx.Err())
+}
+
+// pickV4L2StreamError selects which of the capture/sender goroutine errors
+// streamV4L2Native returns. nativeH264NotSupported wins so StreamVideo can fall
+// back to the GStreamer encoder; otherwise the first non-cancellation error is
+// the root cause, since the other goroutine usually only reports the context
+// cancellation that the first one triggered.
+func pickV4L2StreamError(first, second, ctxErr error) error {
+	for _, err := range []error{first, second} {
+		if _, ok := err.(nativeH264NotSupported); ok {
+			return err
+		}
+	}
+	for _, err := range []error{first, second} {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+	}
+	if ctxErr != nil {
+		return ctxErr
+	}
+	return first
+}
+
+// captureV4L2Frames runs the V4L2 capture loop: dequeue a filled buffer, copy
+// the access unit into a fresh slice, hand it to slot (dropping any frame the
+// sender has not yet taken), and requeue the buffer. It runs as fast as the
+// camera delivers frames, decoupled from the gRPC sender.
+//
+// It returns nativeH264NotSupported if VIDIOC_DQBUF fails before any frame is
+// captured: the device accepted the H.264 format but never delivered a frame, so
+// the caller can fall back to the GStreamer software encoder. Because no frame
+// was captured, none was handed to the sender, so the fallback stream is clean.
+func (s *VideoService) captureV4L2Frames(ctx context.Context, fd int, mapped [][]byte, slot *frameSlot) error {
+	var framesCaptured int
 	for {
 		select {
 		case <-ctx.Done():
@@ -264,38 +343,24 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 				continue
 			}
 			// Device accepted H264 format but failed before delivering any frame —
-			// fall back to the GStreamer software encoder path.
-			if framesSent == 0 {
+			// signal the caller to fall back to the GStreamer software encoder.
+			if framesCaptured == 0 {
 				return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_DQBUF failed before first frame: %v", errno)}
 			}
 			return status.Errorf(codes.Internal, "VIDIOC_DQBUF: %v", errno)
 		}
 
 		idx := dqbuf.index()
-		n := dqbuf.bytesUsed()
-		if n == 0 {
-			// Empty buffer — requeue and skip.
-			var qbuf v4l2Buf
-			qbuf.setIndex(idx)
-			qbuf.setType(v4l2BufTypeVideoCapture)
-			qbuf.setMemory(v4l2MemoryMmap)
-			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQbuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
-				return status.Errorf(codes.Internal, "VIDIOC_QBUF: %v", errno)
-			}
-			continue
+		if n := dqbuf.bytesUsed(); n > 0 {
+			// Copy out of the mmap region before requeuing: the slice handed to
+			// the sender must not alias a buffer the camera may refill.
+			frameData := make([]byte, n)
+			copy(frameData, mapped[idx][:n])
+			slot.put(frameData)
+			framesCaptured++
 		}
-		frameData := make([]byte, n)
-		copy(frameData, mapped[idx].data[:n])
 
-		if err := stream.Send(&agentpb.VideoFrame{
-			Data:        frameData,
-			TimestampNs: uint64(time.Now().UnixNano()),
-		}); err != nil {
-			return err
-		}
-		framesSent++
-
-		// Re-queue the buffer.
+		// Re-queue the buffer (including empty ones) so the camera can refill it.
 		var qbuf v4l2Buf
 		qbuf.setIndex(idx)
 		qbuf.setType(v4l2BufTypeVideoCapture)
@@ -304,6 +369,74 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 			return status.Errorf(codes.Internal, "VIDIOC_QBUF requeue[%d]: %v", idx, errno)
 		}
 	}
+}
+
+// sendV4L2Frames takes the freshest captured frame from slot and sends it over
+// the gRPC stream. While stream.Send blocks on flow control, the capture
+// goroutine keeps overwriting the slot, so every Send transmits the newest frame
+// available — frames captured during the stall are dropped.
+func (s *VideoService) sendV4L2Frames(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], slot *frameSlot) error {
+	for {
+		frame, ok := slot.take(ctx)
+		if !ok {
+			return ctx.Err()
+		}
+		if err := stream.Send(&agentpb.VideoFrame{
+			Data:        frame,
+			TimestampNs: uint64(time.Now().UnixNano()),
+		}); err != nil {
+			return err
+		}
+	}
+}
+
+// setV4L2KeyframeInterval caps the camera encoder's keyframe interval to gop
+// frames so a dropped frame self-heals quickly and a client can resync within
+// ~0.5s. It is best-effort: many UVC cameras do not expose these controls and
+// reject them with EINVAL — that is logged and ignored, leaving the firmware
+// default in place. The H.264-specific I-period control is tried first, then
+// the generic MPEG GOP-size control.
+func (s *VideoService) setV4L2KeyframeInterval(fd, gop int) {
+	for _, ctl := range []struct {
+		name string
+		id   uint32
+	}{
+		{"V4L2_CID_MPEG_VIDEO_H264_I_PERIOD", v4l2CIDH264IPeriod},
+		{"V4L2_CID_MPEG_VIDEO_GOP_SIZE", v4l2CIDGOPSize},
+	} {
+		errno := setV4L2ExtControl(fd, ctl.id, int32(gop))
+		if errno == 0 {
+			s.logger.Info("V4L2 keyframe interval set",
+				zap.String("control", ctl.name), zap.Int("frames", gop))
+			return
+		}
+		s.logger.Debug("V4L2 keyframe control rejected, trying next",
+			zap.String("control", ctl.name), zap.String("errno", errno.Error()))
+	}
+	s.logger.Info("V4L2 keyframe interval not configurable; using camera default",
+		zap.Int("requested_frames", gop))
+}
+
+// setV4L2ExtControl issues VIDIOC_S_EXT_CTRLS to set a single integer control,
+// returning the raw errno (0 on success). The inner v4l2_ext_control is reached
+// only through a uintptr stored inside the outer struct, where the garbage
+// collector cannot see it, so it is pinned for the duration of the syscall.
+func setV4L2ExtControl(fd int, controlID uint32, value int32) unix.Errno {
+	var ctrl v4l2ExtControl
+	ctrl.setID(controlID)
+	ctrl.setValue(value)
+
+	var pinner runtime.Pinner
+	pinner.Pin(&ctrl)
+	defer pinner.Unpin()
+
+	var ctrls v4l2ExtControls
+	ctrls.setWhich(v4l2CtrlClassCodec) // classic API: all controls share this class
+	ctrls.setCount(1)
+	ctrls.setControlsPtr(uintptr(unsafe.Pointer(&ctrl)))
+
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocSExtCtrls, uintptr(unsafe.Pointer(&ctrls)))
+	return errno
 }
 
 // gstFallbackDirs is the list of directories searched for GStreamer binaries
@@ -523,6 +656,16 @@ func keyframeIntervalFrames(fps uint32) int {
 	return gop
 }
 
+// leakyRawQueue is a GStreamer queue placed between the V4L2 source and the
+// encoder. The agent reads a continuous encoded byte stream from the encoder, so
+// arbitrary encoded bytes cannot be dropped; instead this queue drops *raw*
+// frames when capture outruns the encoder/gRPC send. leaky=downstream evicts the
+// oldest buffered frame, so the encoder always works on the freshest raw frame
+// and a capture backlog drains by skipping rather than encoding stale frames.
+// Dropping raw input never desyncs the encoded GOP. max-size-bytes/-time are
+// disabled so only the 2-buffer count bounds the queue.
+const leakyRawQueue = "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream"
+
 // buildGStreamerArgs constructs the gst-launch-1.0 argument list for V4L2 encode.
 func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
 	src := fmt.Sprintf("v4l2src device=%s", devicePath)
@@ -542,9 +685,9 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	var pipeline string
 	if len(capsParts) > 0 {
 		caps := "video/x-raw," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", src, caps, encoderSegment(encoder, hasH264Parse, gop))
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
 	} else {
-		pipeline = fmt.Sprintf("%s ! %s ! fdsink fd=1", src, encoderSegment(encoder, hasH264Parse, gop))
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", src, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
 	}
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
