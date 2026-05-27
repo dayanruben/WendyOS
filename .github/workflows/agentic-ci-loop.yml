@@ -50,12 +50,13 @@ jobs:
           else
             PR_DATA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null || echo '{}')
             AUTHOR_ASSOC=$(printf '%s' "$PR_DATA" | jq -r '.author_association // "NONE"')
-            # ai-generated PRs are handled by ai-pr-feedback.yml — skip here to avoid two
+            # ai/* branch PRs are handled by ai-pr-feedback.yml — skip here to avoid two
             # automation loops racing to commit to the same branch simultaneously.
-            HAS_AI_LABEL=$(printf '%s' "$PR_DATA" \
-              | jq '[.labels[].name] | contains(["ai-generated"]) | if . then "true" else "false" end')
-            if [ "$HAS_AI_LABEL" = "true" ]; then
-              echo "PR has ai-generated label — handled by ai-pr-feedback.yml, skipping"
+            # Use branch pattern (not ai-generated label) as the routing signal:
+            # labels are weak trust signals; branch names require push access.
+            PR_HEAD_BRANCH=$(printf '%s' "$PR_DATA" | jq -r '.head.ref // ""')
+            if printf '%s' "$PR_HEAD_BRANCH" | grep -qE '^ai/'; then
+              echo "PR head is ai/ branch — handled by ai-pr-feedback.yml, skipping"
               echo "pr_number=" >> "$GITHUB_OUTPUT"
             else
               # COLLABORATOR excluded — same policy as ai-pr-feedback.yml to maintain

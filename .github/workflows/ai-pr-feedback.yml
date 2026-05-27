@@ -147,13 +147,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           PR_DATA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null || echo '{}')
-          HAS_LABEL=$(printf '%s' "$PR_DATA" \
-            | jq '[.labels[].name] | contains(["ai-generated"]) | if . then "true" else "false" end')
-          if [ "$HAS_LABEL" != "true" ]; then
-            echo "PR does not have ai-generated label — skipping"
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # Label gate removed: labels can be applied by anyone with triage/write access,
+          # making them a weak trust signal. Trust is established by two forge-resistant
+          # checks instead: branch pattern (^ai/[a-z0-9]) below, and actor association
+          # (OWNER|MEMBER) below. Both require actual repository access to satisfy.
           # Verify the PR's head branch matches the ai/ pattern — this is a stronger
           # trust boundary than the label alone (branch names require push access to create).
           HEAD_BRANCH=$(printf '%s' "$PR_DATA" | jq -r '.head.ref // ""')
@@ -337,7 +334,7 @@ jobs:
               text = unicodedata.normalize('NFKC', text)
               # Strip Unicode direction-override, zero-width, and soft-hyphen (U+00AD).
               # Soft hyphen survives NFKC but can split keywords to bypass phrase filters.
-              text = re.sub(r'[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
+              text = re.sub(r'[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069\ue0000-\ue007f\ufeff]', '', text)
               # Strip ALL XML/HTML tags. Use a high bound (4000 chars) to prevent bypass
               # via tags with >200 chars of padding before '>'. [^>] stops at '>' anyway.
               text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
@@ -652,7 +649,7 @@ PYEOF
                   text = html.unescape(text)
               text = unicodedata.normalize('NFKC', text)
               # Include soft-hyphen (U+00AD) — survives NFKC but can split keywords
-              text = re.sub(r'[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
+              text = re.sub(r'[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069\ue0000-\ue007f\ufeff]', '', text)
               # Use same 4000-char bound as sanitize() to prevent bypass via long tags
               text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
               # Strip backtick code-fence blocks to prevent multi-line instruction smuggling
@@ -670,22 +667,25 @@ PYEOF
 
           output = pathlib.Path(f'{rt}/claude-output.txt').read_text()
 
+          lines = output.splitlines()
+
+          # Use LAST PR_TITLE: and last PR_BODY_START...PR_BODY_END block.
+          # A fake earlier marker (from prompt injection) cannot override the real one
+          # the LLM places at the very end of its response per the system prompt.
           title_raw = ''
-          for line in output.splitlines():
+          for line in lines:
               if line.startswith('PR_TITLE:'):
-                  title_raw = line[len('PR_TITLE:'):].strip()
-                  break
+                  title_raw = line[len('PR_TITLE:'):].strip()  # keep updating for last
 
           body_raw = ''
-          in_body = False
-          for line in output.splitlines():
+          last_start_idx = None
+          for i, line in enumerate(lines):
               if line == 'PR_BODY_START':
-                  in_body = True
-                  continue
-              if line == 'PR_BODY_END':
-                  in_body = False
-                  continue
-              if in_body:
+                  last_start_idx = i
+          if last_start_idx is not None:
+              for line in lines[last_start_idx + 1:]:
+                  if line == 'PR_BODY_END':
+                      break
                   body_raw += line + '\n'
 
           if not title_raw or not body_raw.strip():
