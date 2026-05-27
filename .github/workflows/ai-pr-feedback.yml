@@ -62,6 +62,15 @@ jobs:
     # Mitigations: protected-file allowlist, branch pattern guard (ai/* only), circuit
     # breaker, CODEOWNERS mandatory human review before merge, env -i isolation for
     # the claude step, and branch push scoped to a single fine-grained PAT.
+    #
+    # Push step security summary (see "Push changes" step for full implementation):
+    #   - WENDY_TEMPLATE_SYNC_TOKEN masked with ::add-mask:: before first use
+    #   - Token passed only via GIT_ASKPASS (never embedded in remote URL or env)
+    #   - Push isolated with env -i; token stored in GIT_PUSH_TOKEN, unset after
+    #   - Branch target validated: ^ai/[a-z0-9][a-z0-9_-]{0,38}(/..)? regex +
+    #     reject ../,  //, @{, \ traversal patterns before any git operation
+    #   - Branch verified to be the head of an open PR via gh api before push
+    #   - Push uses explicit HEAD:${BRANCH} refspec with --no-force
     permissions:
       contents: read
       pull-requests: write
@@ -519,6 +528,18 @@ jobs:
           # A registry cross-check against the same npm registry that served the tarball would be
           # circular: a compromised registry could return the attacker's hash for both the tarball
           # and the dist.integrity field. We rely solely on the out-of-band hardcoded hash.
+          #
+          # HASH UPDATE PROCEDURE (run on a clean, trusted machine):
+          #   1. npm pack @anthropic-ai/claude-code@<new-version> --prefer-online --json \
+          #        | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["filename"])'
+          #   2. TARBALL=<filename from step 1>
+          #      node -e "const crypto=require('crypto'),fs=require('fs');
+          #        const h=crypto.createHash('sha512').update(fs.readFileSync('$TARBALL')).digest('base64');
+          #        console.log('sha512-'+h);"
+          #   3. Update EXPECTED_INTEGRITY below and the version string in the npm pack call.
+          #   4. Open a PR — CODEOWNERS requires human review before any hash change merges.
+          #   5. Optionally cross-check against a secondary source (e.g., npm view ... dist.integrity
+          #      on a separate network to detect BGP/DNS hijack at download time).
           EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
           # --prefer-online forces a fresh fetch, bypassing the npm cache.
           # Without this, npm pack may hash a previously-downloaded (potentially stale) tarball.
@@ -608,6 +629,12 @@ jobs:
           # and runner tokens from reaching Claude via /proc/self/environ, on-disk auth
           # caches, or credential helpers.  ANTHROPIC_SYSTEM_PROMPT is used instead of
           # --system-prompt to keep instructions out of /proc/cmdline.
+          # ACCEPTED RISK: ANTHROPIC_SYSTEM_PROMPT is visible in /proc/self/environ of the
+          # claude process to any process running as the same UID. It contains the UUID
+          # sentinel used to delimit structured output. Mitigations: (1) the sentinel is
+          # per-run random, unknown to external attackers; (2) Claude runs with the least
+          # privilege --allowedTools restriction; (3) parent shell vars are zeroed immediately
+          # after the process exits (see unset below).
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
@@ -617,6 +644,12 @@ jobs:
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
+          # Zero out sensitive shell vars immediately after Claude exits so they are
+          # no longer present in the parent shell's /proc/self/environ.
+          ANTHROPIC_API_KEY=""
+          SYSTEM_PROMPT=""
+          USER_PROMPT=""
+          unset ANTHROPIC_API_KEY SYSTEM_PROMPT USER_PROMPT
           cat "$RUNNER_TEMP/claude-output.txt"
           if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
             echo "--- stderr ---"
