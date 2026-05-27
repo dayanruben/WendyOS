@@ -49,8 +49,8 @@ npm run dev
 
 The dev server starts at `http://localhost:3000/`.
 
-When editing source Markdown, rerun the content prep script to refresh generated
-Fumadocs content:
+When editing source Markdown or MDX files, rerun the content prep script to
+refresh generated Fumadocs content:
 
 ```sh
 cd docs
