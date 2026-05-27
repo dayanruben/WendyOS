@@ -23,15 +23,19 @@ concurrency:
 jobs:
   respond:
     name: Address PR feedback via Claude Code
-    # Prevent workflow_run from fork PRs from receiving write credentials.
-    # The step-level fork check still applies, but this guard blocks job dispatch
-    # (and secret provisioning) for external-repo workflow_run events entirely.
+    # Prevent unauthorized events from receiving write credentials before job dispatch.
+    # workflow_run guard: blocks fork PRs from receiving write credentials entirely.
+    # issue_comment guard: short-circuits non-OWNER/MEMBER comments before secrets
+    # are provisioned. Uses event payload author_association as a pre-filter only;
+    # the Guard step re-verifies via API for authoritative enforcement.
     if: |
       (github.event_name != 'workflow_run' ||
        github.event.workflow_run.head_repository.full_name == github.repository) &&
       (github.event_name != 'workflow_run' ||
        github.event.workflow_run.conclusion == 'failure' ||
-       github.event.workflow_run.conclusion == 'timed_out')
+       github.event.workflow_run.conclusion == 'timed_out') &&
+      (github.event_name != 'issue_comment' ||
+       contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Accepted risk: GitHub Actions does not support step-level permissions, so all steps
@@ -69,6 +73,7 @@ jobs:
           PR_NUMBER_COMMENT: ${{ github.event.issue.number }}
           ACTOR_COMMENT: ${{ github.event.comment.user.login }}
           ACTOR_ASSOC_COMMENT: ${{ github.event.comment.author_association }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           PR_NUMBER=""
           ACTOR=""
@@ -121,7 +126,10 @@ jobs:
               fi
               PR_NUMBER="$PR_NUMBER_COMMENT"
               ACTOR="$ACTOR_COMMENT"
-              ACTOR_ASSOC="$ACTOR_ASSOC_COMMENT"
+              # Re-fetch author_association via API — event payload is untrusted input;
+              # the API response is authoritative and cannot be forged by the commenter.
+              ACTOR_ASSOC=$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+                --jq '.author_association' 2>/dev/null || echo "NONE")
               ;;
           esac
 
@@ -493,7 +501,15 @@ jobs:
             exit 1
           fi
           chmod 400 "$TARBALL"
-          ACTUAL_HASH="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
+          # Use Node.js crypto for the SRI-compatible sha512 hash — openssl's base64 line-wrapping
+          # and digest output format diverge from the SRI spec (base64url, single line). Node.js
+          # crypto produces the canonical digest('base64') matching SRI requirements exactly.
+          # TARBALL_PATH is passed via env to avoid shell interpolation in the -e string.
+          ACTUAL_HASH=$(TARBALL_PATH="$TARBALL" node -e "
+            const crypto=require('crypto'),fs=require('fs');
+            const h=crypto.createHash('sha512').update(fs.readFileSync(process.env.TARBALL_PATH)).digest('base64');
+            console.log('sha512-'+h);
+          ")
           if [ "$ACTUAL_HASH" != "$EXPECTED_INTEGRITY" ]; then
             echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
             echo "  expected: $EXPECTED_INTEGRITY"
