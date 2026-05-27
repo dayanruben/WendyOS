@@ -125,8 +125,15 @@ jobs:
         run: |
           # Download tarball, verify its sha512 against hardcoded hash, then install
           # from the local file — eliminates any TOCTOU window between check and install.
-          # EXPECTED_INTEGRITY is hardcoded here, NOT fetched from the registry.
           EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
+          # Cross-reference our hardcoded hash against the npm registry's published integrity.
+          REGISTRY_INTEGRITY=$(npm view @anthropic-ai/claude-code@2.1.150 dist.integrity 2>/dev/null || echo "")
+          if [ -n "$REGISTRY_INTEGRITY" ] && [ "$REGISTRY_INTEGRITY" != "$EXPECTED_INTEGRITY" ]; then
+            echo "::error::Hardcoded integrity does not match npm registry for claude-code@2.1.150"
+            echo "  hardcoded: $EXPECTED_INTEGRITY"
+            echo "  registry:  $REGISTRY_INTEGRITY"
+            exit 1
+          fi
           TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
@@ -361,6 +368,8 @@ jobs:
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
           echo "::add-mask::$TOKEN"
+          PUSH_TOKEN="$TOKEN"
+          unset TOKEN
           # Branch is already validated as ^[a-z0-9/\-]+$ and ai/issue-* prefix.
           # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
           # inherited by unrelated child processes.  Token is never in the URL.
@@ -369,7 +378,7 @@ jobs:
           # If a prior AI run's branch still exists remotely (PR closed/merged but branch
           # not deleted), append a short timestamp to avoid a non-fast-forward push failure.
           if env -i HOME="$HOME" PATH="$PATH" \
-               GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
+               GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
                git ls-remote --exit-code --heads \
                "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH" > /dev/null 2>&1; then
             echo "::warning::Remote branch '$BRANCH' already exists — appending timestamp to avoid conflict"
@@ -377,7 +386,7 @@ jobs:
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           env -i HOME="$HOME" PATH="$PATH" \
-            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
+            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
             git push --no-force \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
             "${BRANCH}"

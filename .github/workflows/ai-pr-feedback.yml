@@ -17,7 +17,7 @@ on:
     types: [completed]
 
 concurrency:
-  group: ai-pr-feedback-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_branch }}
+  group: ai-pr-feedback-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -450,6 +450,15 @@ jobs:
         run: |
           # Install before checkout so a repo-controlled .npmrc cannot affect npm behaviour.
           EXPECTED_INTEGRITY="sha512-nyeOyoc/pmGGRpffyPU16v5campztkynyRFcNKqD7pBvI0aPfljGVi3CizKbu7/dx1MijeE9XiQ0kHk1tmx5Gg=="
+          # Cross-reference our hardcoded hash against the npm registry's published integrity.
+          # This catches PR-author-level compromise where both tarball and hash are updated together.
+          REGISTRY_INTEGRITY=$(npm view @anthropic-ai/claude-code@2.1.150 dist.integrity 2>/dev/null || echo "")
+          if [ -n "$REGISTRY_INTEGRITY" ] && [ "$REGISTRY_INTEGRITY" != "$EXPECTED_INTEGRITY" ]; then
+            echo "::error::Hardcoded integrity does not match npm registry for claude-code@2.1.150"
+            echo "  hardcoded: $EXPECTED_INTEGRITY"
+            echo "  registry:  $REGISTRY_INTEGRITY"
+            exit 1
+          fi
           TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --dry-run=false 2>/dev/null | tail -1)
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
@@ -528,6 +537,16 @@ jobs:
             echo "--- stderr ---"
             cat "$RUNNER_TEMP/claude-stderr.txt"
           fi
+          # Scrub ANTHROPIC_API_KEY from artifacts before upload — ::add-mask:: protects
+          # workflow UI logs but does not redact artifact file contents.
+          python3 - <<PYEOF
+import pathlib, os
+key = os.environ.get('ANTHROPIC_API_KEY', '')
+for fname in ['claude-output.txt', 'claude-stderr.txt']:
+    p = pathlib.Path(os.environ['RUNNER_TEMP']) / fname
+    if p.exists() and key:
+        p.write_text(p.read_text().replace(key, '[REDACTED]'))
+PYEOF
 
       - name: Upload run artifacts
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
@@ -637,6 +656,10 @@ jobs:
           BRANCH: ${{ steps.pr-info.outputs.head_branch }}
         run: |
           echo "::add-mask::$TOKEN"
+          # Move token out of named env var immediately so it is absent from the
+          # shell's /proc/self/environ for the rest of this step's child processes.
+          PUSH_TOKEN="$TOKEN"
+          unset TOKEN
           # Accepted risk: the PR author controls the branch name (head_branch).
           # Mitigations: ai/ prefix required (can't push to main/develop), file
           # allowlist limits what content can be changed, CODEOWNERS requires human
@@ -662,7 +685,7 @@ jobs:
           printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$RUNNER_TEMP/askpass.sh"
           chmod +x "$RUNNER_TEMP/askpass.sh"
           env -i HOME="$HOME" PATH="$PATH" \
-            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$TOKEN" \
+            GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
             git push --no-force \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${BRANCH}"
