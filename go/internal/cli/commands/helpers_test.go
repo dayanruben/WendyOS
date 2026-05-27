@@ -3,7 +3,9 @@ package commands
 import (
 	"context"
 	"errors"
+	"net"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +73,48 @@ func TestLANAgentAddressesPrefersIPAddress(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("lanAgentAddresses() = %v, want %v", got, want)
+	}
+}
+
+func TestProvisionedAgentAdvertisedMTLSMatchesDiscoveredMTLSDevice(t *testing.T) {
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			IPAddress: "127.0.0.1",
+			Port:      defaultAgentPort + agentMTLSPortOffset,
+			IsMTLS:    true,
+		},
+	}, nil)
+
+	if !provisionedAgentAdvertisedMTLS(context.Background(), "127.0.0.1:50051") {
+		t.Fatal("provisionedAgentAdvertisedMTLS() = false, want true")
+	}
+}
+
+func TestProvisionedAgentAdvertisedMTLSIgnoresPlaintextDevices(t *testing.T) {
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			IPAddress: "127.0.0.1",
+			Port:      defaultAgentPort,
+			IsMTLS:    false,
+		},
+	}, nil)
+
+	if provisionedAgentAdvertisedMTLS(context.Background(), "127.0.0.1:50051") {
+		t.Fatal("provisionedAgentAdvertisedMTLS() = true, want false")
+	}
+}
+
+func TestProvisionedAgentAdvertisedMTLSMatchesHostnameCaseInsensitively(t *testing.T) {
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			Hostname: "WENDYOS-OTTER.LOCAL.",
+			Port:     defaultAgentPort + agentMTLSPortOffset,
+			IsMTLS:   true,
+		},
+	}, nil)
+
+	if !provisionedAgentAdvertisedMTLS(context.Background(), "wendyos-otter.local:50051") {
+		t.Fatal("provisionedAgentAdvertisedMTLS() = false, want true")
 	}
 }
 
@@ -425,4 +469,86 @@ func TestConnectResolvedAgent_UsesSpinnerForInteractiveDefaultDevice(t *testing.
 	if gotConn != wantConn {
 		t.Fatal("connectResolvedAgent() did not return spinner result")
 	}
+}
+
+func TestConnectResolvedAgent_NoAuthProvisionedAgentRequiresLogin(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origJSON := jsonOutput
+	defer func() {
+		isInteractiveTerminalFn = origInteractive
+		jsonOutput = origJSON
+	}()
+
+	isInteractiveTerminalFn = func() bool { return false }
+	jsonOutput = false
+	setTempConfig(t, &config.Config{})
+
+	plaintextAddr := startFailingPlaintextAgent(t)
+	host, portStr, err := net.SplitHostPort(plaintextAddr)
+	if err != nil {
+		t.Fatalf("split plaintext address: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse plaintext port: %v", err)
+	}
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			IPAddress: host,
+			Port:      port + agentMTLSPortOffset,
+			IsMTLS:    true,
+		},
+	}, nil)
+	knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(context.Background(), plaintextAddr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	if conn != nil {
+		conn.Close()
+		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
+	}
+	if !errors.Is(err, errProvisionedAgentUnauthorized) {
+		t.Fatalf("connectResolvedAgent() error = %v, want %v", err, errProvisionedAgentUnauthorized)
+	}
+	if err.Error() != provisionedAgentUnauthorizedMessage {
+		t.Fatalf("connectResolvedAgent() message = %q, want %q", err.Error(), provisionedAgentUnauthorizedMessage)
+	}
+}
+
+func startFailingPlaintextAgent(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen plaintext candidate: %v", err)
+	}
+	go closeAcceptedConnections(listener)
+	t.Cleanup(func() {
+		listener.Close()
+	})
+	return listener.Addr().String()
+}
+
+func closeAcceptedConnections(listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}
+}
+
+func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error) {
+	t.Helper()
+
+	orig := discoverLANDevices
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return devices, err
+	}
+	t.Cleanup(func() {
+		discoverLANDevices = orig
+	})
 }

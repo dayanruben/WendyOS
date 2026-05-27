@@ -33,8 +33,15 @@ import (
 )
 
 const defaultAgentPort = 50051
+const agentMTLSPortOffset = 1
 
 const lanAddressProbeTimeout = 1500 * time.Millisecond
+const agentPlaintextProbeTimeout = 3 * time.Second
+const provisionedAgentMetadataDiscoveryTimeout = 500 * time.Millisecond
+
+const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
+
+var errProvisionedAgentUnauthorized = errors.New(provisionedAgentUnauthorizedMessage)
 
 var getAgentVersionAtAddress = func(ctx context.Context, address string) (bool, *agentpb.GetAgentVersionResponse, error) {
 	conn, err := connectWithAutoTLS(ctx, address)
@@ -46,6 +53,8 @@ var getAgentVersionAtAddress = func(ctx context.Context, address string) (bool, 
 	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	return conn.IsMTLS, resp, err
 }
+
+var discoverLANDevices = discovery.DiscoverLAN
 
 var isInteractiveTerminalFn = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
@@ -147,15 +156,16 @@ func resolveHostPreferIPv4(host string) string {
 // hostname resolution is unavailable on the host machine.
 //
 // For provisioned (mTLS) devices the Avahi advertisement carries the mTLS
-// port. connectWithAutoTLS derives the mTLS port as plaintext+1, so we
-// subtract 1 here to keep that convention working correctly.
+// port. connectWithAutoTLS derives the mTLS port as plaintext plus
+// agentMTLSPortOffset, so we subtract that offset here to keep that
+// convention working correctly.
 func lanAgentAddresses(dev models.LANDevice) []string {
 	port := dev.Port
 	if port == 0 {
 		port = defaultAgentPort
 	}
-	if dev.IsMTLS && dev.Port != 0 && port > 1 {
-		port-- // advertised port is mTLS; connectWithAutoTLS will add 1 back
+	if dev.IsMTLS && dev.Port != 0 && port > agentMTLSPortOffset {
+		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
 
 	var addresses []string
@@ -413,19 +423,30 @@ func formatElapsedSeconds(elapsed time.Duration) string {
 	return fmt.Sprintf("%.2f %s", seconds, unit)
 }
 
-func connectAgentAtAddress(ctx context.Context, addr string, probePlaintext bool) (*grpcclient.AgentConnection, error) {
+func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	return connectAgentAtAddressWithProvisionedHint(ctx, addr, false)
+}
+
+func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
 	conn, err := connectWithAutoTLS(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	if probePlaintext && !conn.IsMTLS {
-		// gRPC plaintext connections are lazy — probe to detect unreachable
-		// default devices early so recovery can be offered immediately.
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	if !conn.IsMTLS {
+		// gRPC plaintext connections are lazy. Probe before returning so
+		// command UIs don't surface delayed transport errors, and so provisioned
+		// agents that only expose the mTLS port can report an auth error.
+		probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
 		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
 		if probeErr != nil {
 			conn.Close()
+			// Use only the caller's pre-connection metadata snapshot here.
+			// Running discovery after the failed probe would make the auth
+			// decision depend on a second, unrelated network observation.
+			if knownProvisionedMTLS {
+				return nil, errProvisionedAgentUnauthorized
+			}
 			return nil, probeErr
 		}
 	}
@@ -433,12 +454,16 @@ func connectAgentAtAddress(ctx context.Context, addr string, probePlaintext bool
 }
 
 func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault bool) (*grpcclient.AgentConnection, error) {
+	return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, false)
+}
+
+func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
 		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
-			return connectAgentAtAddress(spinCtx, addr, true)
+			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, knownProvisionedMTLS)
 		})
 	}
-	return connectAgentAtAddress(ctx, addr, isDefault)
+	return connectAgentAtAddressWithProvisionedHint(ctx, addr, knownProvisionedMTLS)
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
@@ -470,9 +495,13 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
 			hostname = host
 		}
-		conn, connErr := connectResolvedAgent(ctx, hostname, addr, isDefault)
+		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
+		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, knownProvisionedMTLS)
 		if connErr != nil {
 			if errors.Is(connErr, ErrUserCancelled) {
+				return nil, connErr
+			}
+			if errors.Is(connErr, errProvisionedAgentUnauthorized) {
 				return nil, connErr
 			}
 			// Default device is unreachable — offer interactive recovery.
@@ -548,7 +577,7 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 	if len(allCerts) > 0 {
 		host, portStr, _ := net.SplitHostPort(plaintextAddr)
 		if port, err := strconv.Atoi(portStr); err == nil {
-			mtlsAddr := hostPort(host, port+1)
+			mtlsAddr := hostPort(host, port+agentMTLSPortOffset)
 			for i := range allCerts {
 				conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
 				if tlsErr != nil {
@@ -574,6 +603,48 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 		}
 	}
 	return grpcclient.Connect(ctx, plaintextAddr)
+}
+
+// provisionedAgentAdvertisedMTLS takes a short pre-connection LAN discovery
+// snapshot and checks whether the target address was already advertised as an
+// mTLS-only agent. Callers pass this result into the dial path; it is not
+// refreshed after a failed connection attempt.
+func provisionedAgentAdvertisedMTLS(ctx context.Context, plaintextAddr string) bool {
+	devices, err := discoverLANDevices(ctx, provisionedAgentMetadataDiscoveryTimeout)
+	if err != nil {
+		return false
+	}
+	return provisionedAgentAdvertisedMTLSInSnapshot(plaintextAddr, devices)
+}
+
+func provisionedAgentAdvertisedMTLSInSnapshot(plaintextAddr string, devices []models.LANDevice) bool {
+	for _, dev := range devices {
+		if !dev.IsMTLS {
+			continue
+		}
+		for _, candidate := range lanAgentAddresses(dev) {
+			if sameAgentAddress(plaintextAddr, candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameAgentAddress(a, b string) bool {
+	aHost, aPort, aErr := net.SplitHostPort(a)
+	bHost, bPort, bErr := net.SplitHostPort(b)
+	if aErr != nil || bErr != nil {
+		return a == b
+	}
+	return aPort == bPort && normalizeAgentHost(aHost) == normalizeAgentHost(bHost)
+}
+
+func normalizeAgentHost(host string) string {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.Unmap().String()
+	}
+	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
 // suggestProvisioning prints a hint when the connection is not using mTLS,
@@ -888,9 +959,13 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 	if device != "" {
 		addr := hostPort(device, defaultAgentPort)
 		startedAt := time.Now()
-		conn, err := connectResolvedAgent(ctx, device, addr, isDefault)
+		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
+		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
 		if err != nil {
 			if errors.Is(err, ErrUserCancelled) {
+				return nil, err
+			}
+			if errors.Is(err, errProvisionedAgentUnauthorized) {
 				return nil, err
 			}
 			// Default device is unreachable — offer interactive recovery.
@@ -1329,7 +1404,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				}
 				return nil, fmt.Errorf("selected LAN device has no usable address")
 			}
-			conn, err := connectWithAutoTLS(ctx, addr)
+			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, d.LAN.IsMTLS)
 			if err == nil {
 				if !suppressUpdateCheck {
 					var updateErr error
