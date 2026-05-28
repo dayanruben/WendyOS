@@ -579,6 +579,18 @@ jobs:
           # Load PR file list early so we can validate inline comment path fields.
           _raw_files_early = json.loads(pathlib.Path(f'{rt}/pr-files.json').read_text())
           _pr_file_set = set(f for f in _raw_files_early if isinstance(f, str))
+          # Source-directory allowlist — defined here so san_path() can reference it.
+          # Negative lookaheads exclude high-risk subtrees (vendor, fixtures, etc.).
+          ALLOWED_PATH_RE = re.compile(
+              r'^(go/(?!vendor/|generated/)'
+              r'|swift/(?!Packages/)'
+              r'|Sources/'
+              r'|Tests/(?!Fixtures/)'
+              r'|tests/(?!fixtures/)'
+              r'|docs/(?!.*Makefile)'
+              r'|Documentation/'
+              r'|Examples/)'
+          )
           # Sanitize all untrusted content before embedding in prompt — including
           # user.login and path fields, not just body text.
           GH_USER_RE = re.compile(r'^[A-Za-z0-9\-]{1,39}$')
@@ -587,11 +599,18 @@ jobs:
               return s if GH_USER_RE.match(s) else '[invalid-user]'
           def san_path(p):
               # Normalize newlines (prevent markdown heading injection via path field),
-              # then validate against the known PR file set — if the path is not a real
-              # file in this PR, replace with '[unknown-path]' to prevent directory
-              # traversal or fabricated file references reaching the LLM prompt.
+              # then validate against the known PR file set AND the source-directory
+              # allowlist. A path must be both in this PR's file list AND match the
+              # allowlist — neither condition alone is sufficient.
               p = re.sub(r'[\r\n]', ' ', p or '').strip()
-              return p if p in _pr_file_set else '[unknown-path]'
+              # Normalize to catch traversal: reject anything with ../ or absolute paths
+              if not p or '..' in p or p.startswith('/'):
+                  return '[unknown-path]'
+              if p not in _pr_file_set:
+                  return '[unknown-path]'
+              if not ALLOWED_PATH_RE.match(p):
+                  return '[unknown-path]'
+              return p
           inline   = [{'user': san_user(c.get('user')),
                        'path': san_path(c.get('path') or ''),
                        'body': sanitize(c.get('body') or '')} for c in raw_inline]
@@ -615,21 +634,8 @@ jobs:
           if failing:
               allowed = [n.strip() for n in failing.split(',') if n.strip() and ALLOWED_CHECKS_RE.match(n.strip())]
               failing = ', '.join(allowed)
-          # Load and sanitize changed file paths. Filenames are PR-author-controlled and
-          # may contain injection content; sanitize AND filter against the commit allowlist.
-          # Negative lookaheads exclude high-risk subtrees within allowed directories:
-          # go/vendor/ — vendored deps; go/generated/ — generated files; swift/Packages/ — SPM cache;
-          # Tests/Fixtures/ / tests/fixtures/ — test fixtures executed by CI; docs/ Makefile — CI config.
-          ALLOWED_PATH_RE = re.compile(
-              r'^(go/(?!vendor/|generated/)'
-              r'|swift/(?!Packages/)'
-              r'|Sources/'
-              r'|Tests/(?!Fixtures/)'
-              r'|tests/(?!fixtures/)'
-              r'|docs/(?!.*Makefile)'
-              r'|Documentation/'
-              r'|Examples/)'
-          )
+          # Load and sanitize changed file paths using the ALLOWED_PATH_RE already
+          # defined above (shared with san_path() for consistent enforcement).
           raw_files = json.loads(pathlib.Path(f'{rt}/pr-files.json').read_text())
           changed_files = [
               sanitize(f.replace('\n', '').replace('\r', '').replace('\x00', '')) for f in raw_files

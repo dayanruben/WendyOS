@@ -81,7 +81,7 @@ jobs:
           try:
               message = client.messages.create(
                   model='claude-sonnet-4-6',
-                  max_tokens=8096,
+                  max_tokens=16000,
                   system=[
                       {
                           'type': 'text',
@@ -150,7 +150,7 @@ jobs:
                           '<untrusted_pr_content>\n'
                           f'PR #{pr_number}: {pr_title}\n\n'
                           f'{pr_body}\n\n'
-                          f'## Diff\n```diff\n{diff[:40000]}\n```\n'
+                          f'## Diff\n```diff\n{diff[:80000]}\n```\n'
                           '</untrusted_pr_content>'
                       ),
                   }],
