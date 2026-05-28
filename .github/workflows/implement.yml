@@ -386,6 +386,15 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
+          # Post-run verification: --allowedTools "Edit,MultiEdit" blocks Write, so Claude
+          # cannot create new files. Verify this invariant holds. Abort if any new files exist.
+          NEW_FILES=$(git ls-files --others --exclude-standard | head -5 || true)
+          if [ -n "$NEW_FILES" ]; then
+            echo "::error::Claude created new files despite Write not being in --allowedTools — aborting:"
+            echo "$NEW_FILES"
+            git checkout -- .
+            exit 1
+          fi
           # Scrub API key from artifact files before upload (mirrors ai-pr-feedback.yml).
           # ::add-mask:: protects runner logs; this scrubs the files themselves.
           _KEY_FOR_SCRUB="$ANTHROPIC_API_KEY"

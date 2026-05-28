@@ -16,17 +16,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          # Update PAT_LAST_ROTATED (YYYY-MM-DD) whenever WENDY_TEMPLATE_SYNC_TOKEN is rotated.
-          # This file is CODEOWNERS-gated so date changes require CODEOWNERS review.
-          PAT_LAST_ROTATED: "2026-01-28"
+          # PAT_LAST_ROTATED is a repository variable (Settings > Variables > Actions).
+          # Set it to the ISO date (YYYY-MM-DD) when WENDY_TEMPLATE_SYNC_TOKEN was last rotated.
+          # Using a repository variable (not hardcoded) decouples rotation tracking from code,
+          # so the date can be updated without a PR/CODEOWNERS review when the PAT is rotated.
+          # If the variable is unset, this workflow treats the PAT as overdue and fires a reminder.
+          PAT_LAST_ROTATED: ${{ vars.PAT_LAST_ROTATED }}
           PAT_ROTATION_DAYS: "90"
         run: |
           python3 << 'PYEOF'
           import datetime, os, subprocess, sys
 
-          last = datetime.date.fromisoformat(os.environ['PAT_LAST_ROTATED'])
           rotation_days = int(os.environ['PAT_ROTATION_DAYS'])
           today = datetime.date.today()
+          last_str = os.environ.get('PAT_LAST_ROTATED', '').strip()
+
+          if not last_str:
+              # Variable not set: treat PAT as overdue to ensure reminder fires.
+              print('WARNING: PAT_LAST_ROTATED repository variable is not set. Treating PAT as overdue.')
+              last = today - datetime.timedelta(days=rotation_days)
+          else:
+              try:
+                  last = datetime.date.fromisoformat(last_str)
+              except ValueError:
+                  print(f'ERROR: PAT_LAST_ROTATED value "{last_str}" is not a valid ISO date.', file=sys.stderr)
+                  last = today - datetime.timedelta(days=rotation_days)
 
           # Guard against a future-dated PAT_LAST_ROTATED (manipulation detection).
           # A future date would suppress rotation reminders without rotating the actual secret.
@@ -49,8 +63,7 @@ jobs:
                   '## Rotation steps\n'
                   '1. Generate a new fine-grained PAT scoped to contents:write on this repo only, expiring in 90 days.\n'
                   '2. Update the WENDY_TEMPLATE_SYNC_TOKEN secret in repository Settings > Secrets.\n'
-                  '3. Update PAT_LAST_ROTATED in .github/workflows/pat-rotation-reminder.yml to today date.\n'
-                  '4. Commit and merge via PR (CODEOWNERS review required).\n\n'
+                  '3. Set the PAT_LAST_ROTATED repository variable (Settings > Variables > Actions) to today\'s date.\n\n'
                   'This issue was opened automatically by the PAT rotation reminder workflow.'
               )
               result = subprocess.run(
