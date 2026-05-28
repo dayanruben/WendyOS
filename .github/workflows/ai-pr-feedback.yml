@@ -27,6 +27,13 @@ name: AI PR Feedback Loop
 # AUTHORIZATION: live API re-check in gate job (early-actor-verification)
 #   + re-verify-authorization as first data step of respond job + push
 #   step re-verifies SHA+state immediately before --force-with-lease push.
+#
+# SUPPLY CHAIN: @anthropic-ai/claude-code@2.1.150 installed from npm with
+#   sha512 integrity check against hardcoded EXPECTED_INTEGRITY (Node.js
+#   crypto, SRI-compatible). --prefer-online forces fresh fetch each time;
+#   --ignore-scripts prevents postinstall execution. CODEOWNERS review is
+#   required before any hash change merges. Full procedure documented in
+#   the "Install Claude Code CLI" step below.
 # =============================================================================
 
 on:
@@ -316,7 +323,11 @@ jobs:
         # Mask WENDY_TEMPLATE_SYNC_TOKEN immediately — before any other step can
         # accidentally log it. This is the first step so masking takes effect for
         # all subsequent steps in this job.
-        run: echo "::add-mask::${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}"
+        # Secret accessed via env: (not interpolated directly in run:) so the
+        # literal value is never embedded in the step definition's shell script.
+        env:
+          WENDY_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+        run: echo "::add-mask::$WENDY_PAT"
 
       - name: Re-verify authorization before any writes
         # Re-authorization at the START of the execute job — before secrets are used,
@@ -537,11 +548,13 @@ jobs:
               # Strip ALL XML/HTML tags. Use a high bound (4000 chars) to prevent bypass
               # via tags with >200 chars of padding before '>'. [^>] stops at '>' anyway.
               text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
-              # Strip backtick and tilde code-fence blocks (3+ chars) to prevent
-              # instruction smuggling. Using {3,} instead of {3} so that ````…````
-              # (4 backticks) does not bypass the pattern.
-              text = re.sub(r'`{3,}.*?`{3,}', '[code]', text, flags=re.DOTALL)
-              text = re.sub(r'~{3,}.*?~{3,}', '[code]', text, flags=re.DOTALL)
+              # Strip code-fence delimiters destructively (replace each run of 3+
+              # backticks or tildes with [fence]) rather than matching open/close
+              # pairs. Pair-matching is bypassable via mixed delimiters
+              # (e.g. ```inject~~~ opening with mismatched closing).
+              # Destructive stripping eliminates the bypass without needing pairs.
+              text = re.sub(r'`{3,}', '[fence]', text)
+              text = re.sub(r'~{3,}', '[fence]', text)
               # Block common prompt injection trigger phrases (extend beyond "ignore previous")
               text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
               text = re.sub(r'(?i)(disregard|forget|override)\s+(all\s+)?(previous\s+)?instructions?', '[filtered]', text)
