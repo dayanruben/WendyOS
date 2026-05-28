@@ -766,6 +766,12 @@ jobs:
           # chmod 400 immediately after download closes the race window before the hash check.
           TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --prefer-online --json 2>/dev/null \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["filename"])')
+          # Validate filename format before use — prevents path injection if npm returns unexpected output.
+          if ! printf '%s' "$TARBALL" | grep -qE '^anthropic-ai-claude-code-[0-9]+\.[0-9]+\.[0-9]+\.tgz$'; then
+            echo "::error::Unexpected tarball filename format: '$TARBALL'"
+            rm -f "$TARBALL" 2>/dev/null || true
+            exit 1
+          fi
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
             exit 1

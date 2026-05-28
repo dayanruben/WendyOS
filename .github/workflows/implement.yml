@@ -355,6 +355,17 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           Implement the GitHub issue provided in the user message by editing the relevant source files.
           Do not run git, commit, or push — the CI handles staging and committing your changes.
 
+          IMPORTANT: Only create or modify files inside these directories:
+            go/        (Go source code)
+            swift/     (Swift source code)
+            Sources/   (Swift package sources)
+            Tests/     (test files)
+            tests/     (test files)
+            docs/      (documentation)
+            Documentation/
+            Examples/
+          Do not touch .github/, CODEOWNERS, SECURITY.md, or any file ending in .pem, .key, .p12, .pfx.
+
           When you are done, output — at the very end of your response — this exact block:
 
           PR_TITLE: <one-line PR title>
@@ -403,10 +414,10 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
           # Use env -i to limit Claude's visible environment to only what it needs.
           # This keeps workflow secrets out of /proc/self/environ for the claude process.
-          # --allowedTools is an EXCLUSIVE allowlist — Claude Code blocks all tools not listed.
-          # Write is intentionally excluded: Claude can only edit existing files, preventing
-          # arbitrary file creation at attacker-influenced paths.
-          # --disallowedTools provides belt-and-suspenders explicit denial for defense-in-depth.
+          # --allowedTools "Edit,MultiEdit" is an EXCLUSIVE allowlist — ALL other tools are
+          # blocked by the Claude Code CLI, including Write (new-file creation).
+          # --disallowedTools explicitly lists Write and other dangerous tools as belt-and-
+          # suspenders; Write is blocked at both layers to prevent any new-file creation.
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
@@ -421,7 +432,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # the invariant is violated (e.g., due to SDK bug or unexpected tool).
           NEW_FILES=$(git ls-files --others --exclude-standard | head -5 || true)
           if [ -n "$NEW_FILES" ]; then
-            echo "::error::Claude created new files despite Write not being in --allowedTools — aborting:"
+            echo "::error::Claude created new files despite Write being blocked in --allowedTools AND --disallowedTools — aborting:"
             echo "$NEW_FILES"
             git checkout -- .
             exit 1
