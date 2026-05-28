@@ -9,8 +9,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  implement:
-    name: Implement issue via Claude Code
+  gate:
+    name: Authorize and prepare
     # Only on issue comments (not PR comments) by OWNER or MEMBER.
     # The comment body is NOT evaluated here to avoid untrusted content entering
     # the expression context; the step-level regex is the authoritative /implement gate.
@@ -19,20 +19,18 @@ jobs:
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+      exists:     ${{ steps.check-existing.outputs.exists }}
+      pr_url:     ${{ steps.check-existing.outputs.pr_url }}
+      branch:     ${{ steps.branch.outputs.branch }}
 
     steps:
-      - name: Mask long-lived PAT secret
-        # Mask at job start so the value never appears in any subsequent log line,
-        # even if a future step inadvertently echoes an env var.
-        env:
-          WENDY_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
-        run: echo "::add-mask::$WENDY_PAT"
-
       - name: Check authorization
         id: auth
         env:
@@ -58,16 +56,6 @@ jobs:
               ;;
           esac
 
-      - name: React to command
-        if: steps.auth.outputs.authorized == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-        run: |
-          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
-            --method POST --field content=eyes || true
-
       - name: Check for existing AI PR
         if: steps.auth.outputs.authorized == 'true'
         id: check-existing
@@ -86,18 +74,6 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Post existing PR link and exit
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          PR_URL: ${{ steps.check-existing.outputs.pr_url }}
-        run: |
-          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-            --method POST \
-            --field body="An AI-generated PR already exists for this issue: $PR_URL"
 
       - name: Compute branch name
         if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
@@ -121,14 +97,70 @@ jobs:
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
+  notify-existing:
+    name: Notify — existing PR found
+    needs: gate
+    if: needs.gate.outputs.authorized == 'true' && needs.gate.outputs.exists == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: React to command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            --method POST --field content=eyes || true
+
+      - name: Post existing PR link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ needs.gate.outputs.pr_url }}
+        run: |
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --method POST \
+            --field body="An AI-generated PR already exists for this issue: $PR_URL"
+
+  implement:
+    name: Implement issue via Claude Code
+    # Gate job verified authorization and confirmed no existing PR exists.
+    # Write-capable GITHUB_TOKEN is only provisioned after the read-only gate passes.
+    needs: gate
+    if: needs.gate.outputs.authorized == 'true' && needs.gate.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Mask long-lived PAT secret
+        # Mask at job start so the value never appears in any subsequent log line.
+        env:
+          WENDY_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+        run: echo "::add-mask::$WENDY_PAT"
+
+      - name: React to command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            --method POST --field content=eyes || true
+
       - name: Install Node.js
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '20'
 
       - name: Install Claude Code CLI
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         run: |
           # Download tarball, verify its sha512 against hardcoded hash, then install
           # from the local file — eliminates any TOCTOU window between check and install.
@@ -138,7 +170,13 @@ jobs:
           # circular: a compromised registry could return the attacker's hash for both the tarball
           # and the dist.integrity field. We rely solely on the out-of-band hardcoded hash.
           # --prefer-online forces a fresh fetch, bypassing the npm cache.
-          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --prefer-online 2>/dev/null | tail -1)
+          TARBALL=$(npm pack @anthropic-ai/claude-code@2.1.150 --prefer-online 2>/dev/null | tail -1 | tr -d '\r\n')
+          # Validate filename matches expected pattern — prevents path injection via malicious npm output.
+          if ! printf '%s' "$TARBALL" | grep -qE '^anthropic-ai-claude-code-[0-9]+\.[0-9]+\.[0-9]+\.tgz$'; then
+            echo "::error::Unexpected tarball filename format: '$TARBALL'"
+            rm -f "$TARBALL" 2>/dev/null || true
+            exit 1
+          fi
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
             exit 1
@@ -160,7 +198,6 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           rm -f "$TARBALL"
 
       - name: Check out repository
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           token: ${{ github.token }}
@@ -168,16 +205,14 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           persist-credentials: false
 
       - name: Create branch
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         env:
-          BRANCH: ${{ steps.branch.outputs.branch }}
+          BRANCH: ${{ needs.gate.outputs.branch }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
 
       - name: Collect issue context
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -202,7 +237,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
               # NFKC normalization collapses Unicode homoglyphs (e.g. fullwidth chars)
               text = unicodedata.normalize('NFKC', text)
               # Strip Unicode direction-override and zero-width characters
-              text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]', '', text)
+              text = re.sub(r'[​-‏‪-‮⁦-⁩﻿]', '', text)
               # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
               # (covers special tokens like <|endoftext|> and any prompt delimiters)
               text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
@@ -271,7 +306,6 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           PYEOF
 
       - name: Run Claude Code
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
@@ -284,6 +318,10 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           git config --local --unset-all credential.helper 2>/dev/null || true
           # Mask API key in workflow logs so it won't appear in log output or summaries
           echo "::add-mask::$ANTHROPIC_API_KEY"
+          # Pre-create output files with restricted permissions so no window exists
+          # between Claude writing and the scrubber running with world-readable files.
+          install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
+          install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
           # Use env -i to limit Claude's visible environment to only what it needs.
           # This keeps workflow secrets out of /proc/self/environ for the claude process.
           env -i HOME="$HOME" PATH="$PATH" \
@@ -301,7 +339,6 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           fi
 
       - name: Upload run artifacts
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: claude-implement-run-${{ github.run_id }}
@@ -312,7 +349,6 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           retention-days: 1
 
       - name: Commit any uncommitted changes
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
         id: commit
         run: |
           # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
@@ -366,7 +402,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push branch
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true'
         id: push
         env:
           # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to only
@@ -374,7 +410,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # GITHUB_TOKEN cannot be used for push because pushes made by
           # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
-          BRANCH: ${{ steps.branch.outputs.branch }}
+          BRANCH: ${{ needs.gate.outputs.branch }}
         run: |
           echo "::add-mask::$TOKEN"
           PUSH_TOKEN="$TOKEN"
@@ -406,7 +442,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           rm -f "$ASKPASS_FILE"
 
       - name: Parse PR metadata
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true'
         id: pr-meta
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -426,7 +462,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           printf '%s' "$PR_BODY"  > "$RUNNER_TEMP/pr-body.txt"
 
       - name: Create PR
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true'
         id: create-pr
         env:
           GH_TOKEN: ${{ github.token }}
@@ -444,7 +480,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment on issue
-        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false' && steps.commit.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
