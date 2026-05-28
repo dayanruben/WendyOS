@@ -45,7 +45,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      pr_number:   ${{ needs.gate.outputs.pr_number }}
+      pr_number:   ${{ steps.resolve.outputs.pr_number }}
       head_sha:    ${{ steps.guard.outputs.head_sha }}
       head_branch: ${{ steps.guard.outputs.head_branch }}
     steps:
@@ -185,12 +185,12 @@ jobs:
           echo "actor_assoc=$ACTOR_ASSOC" >> "$GITHUB_OUTPUT"
 
       - name: Guard — ai-generated label and authorized actor
-        if: needs.gate.outputs.pr_number != ''
+        if: steps.resolve.outputs.pr_number != ''
         id: guard
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           ACTOR: ${{ steps.resolve.outputs.actor }}
           ACTOR_ASSOC: ${{ steps.resolve.outputs.actor_assoc }}
           EVENT_NAME: ${{ github.event_name }}
@@ -239,7 +239,7 @@ jobs:
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Fail if not authorized
-        if: needs.gate.outputs.pr_number == '' || steps.guard.outputs.proceed != 'true'
+        if: steps.resolve.outputs.pr_number == '' || steps.guard.outputs.proceed != 'true'
         run: |
           echo "::error::Authorization not granted — gate failing to prevent write-token provisioning"
           exit 1
@@ -411,8 +411,12 @@ jobs:
           _sentinel = _uuid.uuid4().hex
           _github_output = _os.environ.get('GITHUB_OUTPUT', '')
           if _github_output:
+              # Use GitHub's EOF-delimiter multiline syntax to prevent newline injection
+              # into GITHUB_OUTPUT. Without this, a sentinel containing a newline could
+              # inject arbitrary key=value pairs into the output file.
+              _delim = f'ghadelimiter_{_uuid.uuid4().hex}'
               with open(_github_output, 'a') as _f:
-                  _f.write(f'sentinel={_sentinel}\n')
+                  _f.write(f'sentinel<<{_delim}\n{_sentinel}\n{_delim}\n')
           begin_marker = f'PR_BODY_START_{_sentinel}'
           end_marker   = f'PR_BODY_END_{_sentinel}'
 
@@ -899,6 +903,36 @@ PYEOF
               '--body-file', f'{rt}/pr-body-update.txt',
           ], check=True)
           PYEOF
+
+      - name: Pre-push diff validation
+        # Mandatory diff review gate between commit and push.
+        # The commit step performs pre-stage file-path validation (allowlist + blocklist).
+        # This step adds a SEPARATE, post-commit security gate on file extensions and
+        # diff content — making the review visible in the step log and adding
+        # defense-in-depth checks that are independent of the commit-step guards.
+        if: steps.circuit.outputs.tripped == 'false' && steps.commit.outputs.changed == 'true'
+        run: |
+          echo "=== Files changed in this commit ==="
+          git show --stat HEAD
+          echo ""
+          echo "=== Validating changed file extensions ==="
+          BLOCKED=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.sh|*.bash|*.zsh|*.fish|*.py|*.rb|*.pl|*.lua|*.groovy|\
+              *.yml|*.yaml|*.json|*.toml|*.ini|*.cfg|\
+              Makefile|makefile|Dockerfile|*.dockerfile|*.mk)
+                BLOCKED="$BLOCKED $f"
+                ;;
+            esac
+          done < <(git show --name-only --format='' HEAD)
+          if [ -n "$BLOCKED" ]; then
+            echo "::error::AI modified script/config file(s) — aborting push:"
+            echo "$BLOCKED"
+            exit 1
+          fi
+          echo "Pre-push diff validation passed — no script/config files modified"
 
       - name: Post AI changes to PR
         if: steps.circuit.outputs.tripped == 'false' && steps.commit.outputs.changed == 'true'
