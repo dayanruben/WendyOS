@@ -930,6 +930,27 @@ jobs:
             git checkout -- .
             exit 1
           fi
+          # Extension blocklist — runs BEFORE staging to prevent commits of script/config files.
+          # Mirrors the Pre-push diff validation step; running pre-commit closes the gap where
+          # a file like docs/mkdocs.yml would pass the path allowlist but fail the extension
+          # check (which previously only ran post-commit).
+          BLOCKED_EXT=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.sh|*.bash|*.zsh|*.fish|*.py|*.rb|*.pl|*.lua|*.groovy|\
+              *.yml|*.yaml|*.json|*.toml|*.ini|*.cfg|\
+              Makefile|makefile|Dockerfile|*.dockerfile|*.mk)
+                BLOCKED_EXT="$BLOCKED_EXT $f"
+                ;;
+            esac
+          done < <(git diff --name-only)
+          if [ -n "$BLOCKED_EXT" ]; then
+            echo "::error::Claude modified script/config file(s) — reverting and aborting:"
+            echo "$BLOCKED_EXT"
+            git checkout -- .
+            exit 1
+          fi
           # PR-scope check: Claude should only edit files that are part of this PR.
           # Editing unrelated files is a signal of prompt injection or misbehaviour.
           if [ -f "$RUNNER_TEMP/pr-files.json" ]; then
@@ -937,7 +958,9 @@ jobs:
             while IFS= read -r f; do
               [ -z "$f" ] && continue
               if ! printf '%s\n' "$PR_FILES" | grep -qxF "$f"; then
-                echo "::warning::Claude modified $f which is not in this PR's changed-file list"
+                echo "::error::Claude modified $f which is not in this PR's changed-file list — aborting"
+                git checkout -- .
+                exit 1
               fi
             done < <(git diff --name-only)
           fi
@@ -1244,10 +1267,10 @@ jobs:
           # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
           # inherited by unrelated child processes.  The token never appears in
           # the git remote URL — it is supplied only via GIT_ASKPASS.
-          # mktemp creates a randomly-named file; chmod 700 before writing prevents
-          # other processes from reading the token even during the push window.
-          ASKPASS_FILE=$(mktemp "$RUNNER_TEMP/askpass-XXXXXX.sh")
-          chmod 700 "$ASKPASS_FILE"
+          # install -m 700 atomically creates with correct permissions (no race window
+          # between mktemp + chmod 700 where an empty file exists world-readable).
+          ASKPASS_FILE=$(mktemp -u "$RUNNER_TEMP/askpass-XXXXXX.sh")
+          install -m 700 /dev/null "$ASKPASS_FILE"
           trap 'rm -f "$ASKPASS_FILE"' EXIT
           printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$ASKPASS_FILE"
           # --force-with-lease atomically aborts if the remote ref has diverged

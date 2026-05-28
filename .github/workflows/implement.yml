@@ -191,6 +191,18 @@ raise SystemExit(1)
               exit 1
               ;;
           esac
+          # Re-verify that the comment still contains /implement (comments are editable).
+          LIVE_BODY=$(printf '%s' "$COMMENT_DATA" | jq -r '.body // ""')
+          if ! printf '%s' "$LIVE_BODY" | python3 -c "
+import sys, re
+body = sys.stdin.read()
+if re.search(r'(?m)^\s*/implement(?:\s|\$)', body):
+    raise SystemExit(0)
+raise SystemExit(1)
+"; then
+            echo "::error::Comment no longer contains /implement — aborting"
+            exit 1
+          fi
           ISSUE_DATA=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" 2>/dev/null || echo '{}')
           ISSUE_STATE=$(printf '%s' "$ISSUE_DATA" | jq -r '.state // "unknown"')
           if [ "$ISSUE_STATE" != "open" ]; then
@@ -414,10 +426,11 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
           # Use env -i to limit Claude's visible environment to only what it needs.
           # This keeps workflow secrets out of /proc/self/environ for the claude process.
-          # --allowedTools "Edit,MultiEdit" is an EXCLUSIVE allowlist — ALL other tools are
-          # blocked by the Claude Code CLI, including Write (new-file creation).
-          # --disallowedTools explicitly lists Write and other dangerous tools as belt-and-
-          # suspenders; Write is blocked at both layers to prevent any new-file creation.
+          # --allowedTools "Edit,MultiEdit" is an EXCLUSIVE allowlist — all other tools are
+          # blocked by the Claude Code CLI. NOTE: Edit can create new files at non-existent
+          # paths in some CLI versions. Write is also in --disallowedTools as belt-and-
+          # suspenders, but the primary enforcement is the invariant check below that aborts
+          # and removes any new files if they appear.
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
@@ -434,7 +447,8 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           if [ -n "$NEW_FILES" ]; then
             echo "::error::Claude created new files despite Write being blocked in --allowedTools AND --disallowedTools — aborting:"
             echo "$NEW_FILES"
-            git checkout -- .
+            git clean -fd 2>/dev/null || true
+            git checkout -- . 2>/dev/null || true
             exit 1
           fi
           # Scrub API key from artifact files before upload (mirrors ai-pr-feedback.yml).
@@ -600,10 +614,10 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           fi
           # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
           # inherited by unrelated child processes.  Token is never in the URL.
-          # mktemp creates a randomly-named file; chmod 700 before writing prevents
-          # other processes from reading the token even during the push window.
-          ASKPASS_FILE=$(mktemp "$RUNNER_TEMP/askpass-XXXXXX.sh")
-          chmod 700 "$ASKPASS_FILE"
+          # install -m 700 atomically creates with correct permissions (no race window
+          # between mktemp + chmod 700 where an empty file exists world-readable).
+          ASKPASS_FILE=$(mktemp -u "$RUNNER_TEMP/askpass-XXXXXX.sh")
+          install -m 700 /dev/null "$ASKPASS_FILE"
           trap 'rm -f "$ASKPASS_FILE"' EXIT
           printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$ASKPASS_FILE"
           # If a prior AI run's branch still exists remotely (PR closed/merged but branch
@@ -614,6 +628,11 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
                "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH" > /dev/null 2>&1; then
             echo "::warning::Remote branch '$BRANCH' already exists — appending timestamp to avoid conflict"
             BRANCH="${BRANCH}-$(date +%Y%m%d%H%M%S)"
+            # Re-validate after timestamp append to ensure pattern still holds.
+            if ! printf '%s' "$BRANCH" | grep -qE '^ai/issue-[0-9]+(-[a-z0-9-]+)?(-[0-9]{14})?$'; then
+              echo "::error::Timestamp-suffixed BRANCH '$BRANCH' violates naming pattern — aborting"
+              exit 1
+            fi
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           env -i HOME="$HOME" PATH="$PATH" \
