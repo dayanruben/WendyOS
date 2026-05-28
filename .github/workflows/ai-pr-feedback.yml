@@ -86,6 +86,54 @@ jobs:
     #   their respective steps immediately after use.
 
     steps:
+      - name: Early actor verification
+        # Live API re-check before any write operations or secrets are used.
+        # Addresses stale-association risk: the job-level if: uses webhook payload
+        # author_association which may reflect a role the actor no longer holds.
+        # This step aborts the job immediately for unauthorized actors, ensuring
+        # no write operations (PR comments, pushes) occur for untrusted events.
+        # workflow_run events have no comment actor — the PR author is verified in Guard.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          PR_NUMBER_REVIEW: ${{ github.event.pull_request.number }}
+        run: |
+          ASSOC="NONE"
+          case "$EVENT_NAME" in
+            issue_comment)
+              if [ -n "$COMMENT_ID" ]; then
+                ASSOC=$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+                  --jq '.author_association' 2>/dev/null || echo "NONE")
+              fi
+              ;;
+            pull_request_review)
+              if [ -n "$REVIEW_ID" ] && [ -n "$PR_NUMBER_REVIEW" ]; then
+                ASSOC=$(gh api "repos/$REPO/pulls/$PR_NUMBER_REVIEW/reviews/$REVIEW_ID" \
+                  --jq '.author_association' 2>/dev/null || echo "NONE")
+              fi
+              ;;
+            pull_request_review_comment)
+              if [ -n "$COMMENT_ID" ]; then
+                ASSOC=$(gh api "repos/$REPO/pulls/comments/$COMMENT_ID" \
+                  --jq '.author_association' 2>/dev/null || echo "NONE")
+              fi
+              ;;
+            workflow_run)
+              # No comment actor for workflow_run; PR author verified in Guard step.
+              ASSOC="WORKFLOW_RUN"
+              ;;
+          esac
+          case "$ASSOC" in
+            OWNER|MEMBER|WORKFLOW_RUN) ;;
+            *)
+              echo "::error::Live API check: actor does not have OWNER or MEMBER association (got: $ASSOC)"
+              exit 1
+              ;;
+          esac
+
       - name: Resolve PR number and actor
         id: resolve
         env:
@@ -232,6 +280,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         run: |
+          # Fail-safe: if either gh api call fails, abort rather than defaulting to
+          # epoch (which could incorrectly reset the circuit breaker to zero streak).
           # Timestamp of the most recent /continue comment by a maintainer (or epoch)
           CONTINUE_TS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq '
@@ -241,7 +291,7 @@ jobs:
                     ["OWNER","MEMBER"] | contains([$a]))
                 | .created_at
               ] | last // "1970-01-01T00:00:00Z"
-            ' 2>/dev/null || echo "1970-01-01T00:00:00Z")
+            ' 2>&1) || { echo "::error::Circuit-breaker API call failed — aborting as fail-safe"; exit 1; }
 
           # Count consecutive github-actions[bot] commits since the later of
           # (last human commit) or (last /continue comment).
@@ -256,7 +306,7 @@ jobs:
                 end
               ] |
               index("break") // length
-            ' 2>/dev/null || echo "0")
+            ' 2>&1) || { echo "::error::Circuit-breaker commit-count API call failed — aborting as fail-safe"; exit 1; }
 
           echo "bot_streak=$BOT_STREAK" >> "$GITHUB_OUTPUT"
           if [ "$BOT_STREAK" -ge 3 ]; then
@@ -351,6 +401,7 @@ jobs:
             || echo "[]" > "$RUNNER_TEMP/pr-files.json"
 
       - name: Build feedback prompt
+        id: build-prompt
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
@@ -364,6 +415,21 @@ jobs:
           failing = os.environ.get('FAILING_CHECKS', '')  # sanitized below after sanitize() is defined
 
           import html, unicodedata
+
+          # Per-run UUID sentinel — makes structured output delimiters unpredictable so an
+          # attacker injecting review comments cannot forge PR_BODY_START/END markers even
+          # if the system prompt is exposed via /proc/self/environ.
+          # Stored only in GITHUB_OUTPUT (Actions-managed, never a custom disk file)
+          # and in ANTHROPIC_SYSTEM_PROMPT. sanitize() also strips all PR_BODY_START/END
+          # patterns from untrusted inputs as defense-in-depth.
+          import uuid as _uuid, os as _os
+          _sentinel = _uuid.uuid4().hex
+          _github_output = _os.environ.get('GITHUB_OUTPUT', '')
+          if _github_output:
+              with open(_github_output, 'a') as _f:
+                  _f.write(f'sentinel={_sentinel}\n')
+          begin_marker = f'PR_BODY_START_{_sentinel}'
+          end_marker   = f'PR_BODY_END_{_sentinel}'
 
           def sanitize(text):
               """Strip content that could escape prompt delimiters or inject instructions."""
@@ -479,12 +545,6 @@ jobs:
 
           feedback = '\n\n'.join(sections) or '(No feedback found — checking for drift)'
 
-          # Use static output markers (PR_BODY_START / PR_BODY_END) rather than
-          # per-run UUID sentinels. Static markers are safe because sanitize() strips
-          # them from ALL untrusted inputs before they reach the LLM, so user-controlled
-          # content (review comments, PR body) can never forge these boundaries.
-          # This avoids placing a secret value in ANTHROPIC_SYSTEM_PROMPT, which is
-          # visible in /proc/self/environ of the claude process.
           system_prompt = f"""You are an engineer working on WendyOS. You are iterating on PR #{pr}.
 
           Address ALL of the feedback provided in the user message by editing the relevant files.
@@ -493,7 +553,7 @@ jobs:
           When you are done, output — at the very end of your response — this exact block:
 
           PR_TITLE: <updated one-line title>
-          PR_BODY_START
+          {begin_marker}
           ## What this PR does
           <updated description>
 
@@ -502,7 +562,7 @@ jobs:
 
           ## Changes in this iteration
           <bullet list of what changed>
-          PR_BODY_END
+          {end_marker}
           """
 
           # File list is low-risk (just paths, no content); kept in user message for context.
@@ -770,6 +830,7 @@ PYEOF
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          SENTINEL: ${{ steps.build-prompt.outputs.sentinel }}
         run: |
           python3 << 'PYEOF'
           import html, os, pathlib, re, subprocess, unicodedata
@@ -799,11 +860,14 @@ PYEOF
           repo = os.environ['REPO']
           pr = os.environ['PR_NUMBER']
 
-          # Static structured output markers. Injection is prevented because sanitize()
-          # strips PR_BODY_START/END from ALL untrusted inputs (review comments, PR body)
-          # before they reach the LLM, so only Claude's own output can contain these markers.
-          begin_marker = 'PR_BODY_START'
-          end_marker   = 'PR_BODY_END'
+          # Read per-run sentinel from step output env var (never written to disk).
+          # If the build-prompt step didn't run (e.g. guard failed), SENTINEL will be ''.
+          sentinel = os.environ.get('SENTINEL', '').strip()
+          if not sentinel:
+              print('Sentinel not set — skipping PR update')
+              raise SystemExit(0)
+          begin_marker = f'PR_BODY_START_{sentinel}'
+          end_marker   = f'PR_BODY_END_{sentinel}'
 
           output = pathlib.Path(f'{rt}/claude-output.txt').read_text()
 
