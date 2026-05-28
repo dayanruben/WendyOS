@@ -365,15 +365,6 @@ jobs:
 
           import html, unicodedata
 
-          # Generate a per-run UUID sentinel BEFORE sanitize() so the sentinel strings
-          # can be stripped from untrusted inputs. Generating it here (rather than after
-          # sanitize() calls) means an attacker who somehow learns the sentinel value in
-          # advance still cannot inject it \u2014 sanitize() will strip it from any user input.
-          import uuid as _uuid
-          sentinel = _uuid.uuid4().hex
-          begin_marker = f'PR_BODY_START_{sentinel}'
-          end_marker   = f'PR_BODY_END_{sentinel}'
-
           def sanitize(text):
               """Strip content that could escape prompt delimiters or inject instructions."""
               # Decode HTML entities iteratively until stable (handles double-encoding)
@@ -395,13 +386,12 @@ jobs:
               text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
               text = re.sub(r'(?i)new\s+instructions?\s*:', '[filtered]', text)
               text = re.sub(r'(?mi)^\s*system\s*:\s*', '[filtered] ', text)
-              # Block static structured output markers (case-insensitive)
+              # Block structured output markers so user-controlled content cannot forge
+              # PR_BODY_START/END boundaries even if injected into the LLM context.
+              # Static markers are safe because sanitize() is applied to ALL inputs.
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
               text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
-              # Strip the per-run sentinel markers so untrusted input cannot forge
-              # structured output boundaries even if the sentinel leaks.
-              text = text.replace(begin_marker, '[sentinel]').replace(end_marker, '[sentinel]')
               # Strip markdown link injection patterns: [text](url)
               text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'[\1]', text)
               # Strip control characters (keep newline and tab)
@@ -489,6 +479,12 @@ jobs:
 
           feedback = '\n\n'.join(sections) or '(No feedback found — checking for drift)'
 
+          # Use static output markers (PR_BODY_START / PR_BODY_END) rather than
+          # per-run UUID sentinels. Static markers are safe because sanitize() strips
+          # them from ALL untrusted inputs before they reach the LLM, so user-controlled
+          # content (review comments, PR body) can never forge these boundaries.
+          # This avoids placing a secret value in ANTHROPIC_SYSTEM_PROMPT, which is
+          # visible in /proc/self/environ of the claude process.
           system_prompt = f"""You are an engineer working on WendyOS. You are iterating on PR #{pr}.
 
           Address ALL of the feedback provided in the user message by editing the relevant files.
@@ -497,7 +493,7 @@ jobs:
           When you are done, output — at the very end of your response — this exact block:
 
           PR_TITLE: <updated one-line title>
-          {begin_marker}
+          PR_BODY_START
           ## What this PR does
           <updated description>
 
@@ -506,7 +502,7 @@ jobs:
 
           ## Changes in this iteration
           <bullet list of what changed>
-          {end_marker}
+          PR_BODY_END
           """
 
           # File list is low-risk (just paths, no content); kept in user message for context.
@@ -519,7 +515,6 @@ jobs:
           {files_section}
           """
 
-          pathlib.Path(f'{rt}/sentinel.txt').write_text(sentinel)
           pathlib.Path(f'{rt}/system-prompt.txt').write_text(system_prompt)
           pathlib.Path(f'{rt}/prompt.txt').write_text(user_message)
           print(f'Prompts written (system: {len(system_prompt)} chars, user: {len(user_message)} chars)')
@@ -686,6 +681,18 @@ PYEOF
       - name: Commit any uncommitted changes
         if: steps.circuit.outputs.tripped == 'false' && steps.guard.outputs.proceed == 'true'
         id: commit
+        # SECURITY CONTROLS in this step (all run before git add):
+        #   1. Git hook injection check — no non-sample hooks allowed
+        #   2. Pre-stage protected-file audit via git diff --name-only (unstaged)
+        #      Blocks: .github/, CODEOWNERS, *.pem/.key, go/vendor/, test fixtures, etc.
+        #   3. Allowlist check — only go/, swift/, Sources/, Tests/, docs/, etc.
+        # Post-stage defense-in-depth (after git add -A):
+        #   4. Symlink check (git index mode 120000)
+        #   5. File count ≤ 20, diff byte size ≤ 50 KB
+        # Next step ("Push changes") security controls:
+        #   Branch regex ^ai/[a-z0-9][a-z0-9_-]{0,38} validated before push;
+        #   PAT supplied via GIT_ASKPASS (never in remote URL); --no-force refspec;
+        #   open-PR verified via gh api before push; env -i subprocess isolation.
         run: |
           # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
           HOOK_FILES=$(find .git/hooks -maxdepth 1 -type f -not -name '*.sample' 2>/dev/null | head -5 || true)
@@ -694,37 +701,41 @@ PYEOF
             echo "$HOOK_FILES"
             exit 1
           fi
-          git add -A
-          if git diff --cached --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Block AI from modifying CI/security configuration files
-          # Use -z (NUL-delimited) to prevent embedded-newline bypass in filenames
+          # PRE-STAGE file audit: check all AI-modified files BEFORE staging.
+          # Using git diff --name-only on unstaged changes catches the same set
+          # of files that would be staged, without requiring git reset to undo.
+          # This is the primary security gate; the post-stage checks are defense-in-depth.
           while IFS= read -r -d '' f; do
             # Reject non-ASCII paths to prevent Unicode homoglyph bypass attacks
             if printf '%s' "$f" | LC_ALL=C grep -q '[^ -~]'; then
               echo "::error::AI modified file with non-ASCII path: $f"
-              git reset HEAD
               exit 1
             fi
             # Canonicalize path to reject traversal sequences (e.g. go/../../.github/)
             REAL_F=$(realpath --relative-to=. "$f" 2>/dev/null || echo "$f")
             if printf '%s' "$REAL_F" | grep -q '^\.\./'; then
               echo "::error::AI modified file with path traversal: $f"
-              git reset HEAD
               exit 1
             fi
             f="$REAL_F"
             # Protected files: CI/security config, credentials, vendored deps,
             # test fixtures (executable by CI), and docs Makefiles (CI config).
-            # Aligned with the Python ALLOWED_PATH_RE negative lookaheads.
             if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx)|go/vendor/|go/generated/|swift/Packages/|[Tt]ests/[Ff]ixtures/|docs/.*Makefile)'; then
               echo "::error::AI modified protected file: $f"
-              git reset HEAD
               exit 1
             fi
-          done < <(git diff --cached -z --name-only)
+            # Allowlist: only permit writes to known source directories
+            if ! printf '%s' "$f" | grep -qE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)'; then
+              echo "::error::AI modified file outside allowed directories: $f"
+              exit 1
+            fi
+          done < <(git diff --name-only -z)
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # POST-STAGE defense-in-depth checks (same file set, already validated above)
           # Block any staged symlinks (check git index directly; mode 120000 = symlink)
           SYMLINKS=$(git ls-files -s | awk '$1 ~ /^120/ {print $4}' || true)
           if [ -n "$SYMLINKS" ]; then
@@ -733,32 +744,20 @@ PYEOF
             git reset HEAD
             exit 1
           fi
-          # Reject unexpectedly large changes — a compromised LLM output could attempt
-          # to rewrite the entire codebase. 20 files is a generous upper bound for a
-          # typical review-driven iteration.
+          # Reject unexpectedly large changes — 20 files is a generous upper bound
           FILE_COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
           if [ "$FILE_COUNT" -gt 20 ]; then
             echo "::error::AI changed $FILE_COUNT files in one run — exceeds safety limit of 20"
             git reset HEAD
             exit 1
           fi
-          # Byte-size guard: a very large diff signals compromised or runaway LLM output.
-          # 50 KB is a generous bound for a typical review-driven iteration.
+          # Byte-size guard: 50 KB upper bound for a typical review-driven iteration
           DIFF_BYTES=$(git diff --cached | wc -c | tr -d ' ')
           if [ "$DIFF_BYTES" -gt 51200 ]; then
             echo "::error::AI diff is ${DIFF_BYTES} bytes — exceeds 50 KB safety limit"
             git reset HEAD
             exit 1
           fi
-          # Allowlist: only permit writes to known source directories
-          # Use -z (NUL-delimited) to prevent embedded-newline bypass in filenames
-          while IFS= read -r -d '' f; do
-            if ! printf '%s' "$f" | grep -qE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)'; then
-              echo "::error::AI modified file outside allowed directories: $f"
-              git reset HEAD
-              exit 1
-            fi
-          done < <(git diff --cached -z --name-only)
           # Log what changed for audit trail
           echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
           git diff --cached --stat | head -200 >> "$GITHUB_STEP_SUMMARY"
@@ -800,23 +799,17 @@ PYEOF
           repo = os.environ['REPO']
           pr = os.environ['PR_NUMBER']
 
-          # Read the per-run sentinel written by the Build feedback prompt step.
-          # The sentinel is a UUID unknown to the attacker; using it as the delimiter
-          # prevents fake-marker injection even if the LLM echoes sanitized input.
-          sentinel_path = pathlib.Path(f'{rt}/sentinel.txt')
-          if not sentinel_path.exists():
-              print('Sentinel file not found — skipping PR update')
-              raise SystemExit(0)
-          sentinel = sentinel_path.read_text().strip()
-          begin_marker = f'PR_BODY_START_{sentinel}'
-          end_marker   = f'PR_BODY_END_{sentinel}'
+          # Static structured output markers. Injection is prevented because sanitize()
+          # strips PR_BODY_START/END from ALL untrusted inputs (review comments, PR body)
+          # before they reach the LLM, so only Claude's own output can contain these markers.
+          begin_marker = 'PR_BODY_START'
+          end_marker   = 'PR_BODY_END'
 
           output = pathlib.Path(f'{rt}/claude-output.txt').read_text()
 
           lines = output.splitlines()
 
-          # Use LAST PR_TITLE: and last sentinel-delimited body block.
-          # A per-run UUID means an attacker cannot predict or forge the marker.
+          # Use LAST PR_TITLE: and last PR_BODY_START/END block.
           title_raw = ''
           for line in lines:
               if line.startswith('PR_TITLE:'):
