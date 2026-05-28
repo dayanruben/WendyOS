@@ -307,8 +307,20 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
               if c.get('author_association') in trusted
           )
 
+          # Per-run UUID sentinel: makes structured output delimiters unpredictable so
+          # an attacker who controls issue content cannot forge PR_BODY_START/END markers
+          # even if they achieve partial prompt injection. sanitize() strips the static
+          # forms of these markers from all untrusted input.
+          import uuid as _uuid
+          sentinel = _uuid.uuid4().hex
+          begin_marker = f'PR_BODY_START_{sentinel}'
+          end_marker   = f'PR_BODY_END_{sentinel}'
+
+          # Write sentinel to a file for the Parse PR metadata step to read
+          pathlib.Path(f'{runner_temp}/sentinel.txt').write_text(sentinel)
+
           # Instructions go in the system prompt (trusted, separate from user data)
-          system_prompt = """You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
+          system_prompt = f"""You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
 
           Implement the GitHub issue provided in the user message by editing the relevant source files.
           Do not run git, commit, or push — the CI handles staging and committing your changes.
@@ -316,13 +328,13 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           When you are done, output — at the very end of your response — this exact block:
 
           PR_TITLE: <one-line PR title>
-          PR_BODY_START
+          {begin_marker}
           ## What this PR does
           <description>
 
           ## How to test
           <steps>
-          PR_BODY_END
+          {end_marker}
           """
 
           # Untrusted issue content is the user message only — kept separate from instructions
@@ -346,7 +358,8 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           # Read prompts into shell vars, then delete the files so Claude's Read
-          # tool cannot access them (or any other sensitive RUNNER_TEMP content)
+          # tool cannot access them (or any other sensitive RUNNER_TEMP content).
+          # sentinel.txt is kept for the Parse PR metadata step to read.
           SYSTEM_PROMPT=$(cat "$RUNNER_TEMP/system-prompt.txt")
           USER_PROMPT=$(cat "$RUNNER_TEMP/prompt.txt")
           rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
@@ -361,16 +374,29 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # Use env -i to limit Claude's visible environment to only what it needs.
           # This keeps workflow secrets out of /proc/self/environ for the claude process.
           # --allowedTools is an EXCLUSIVE allowlist — Claude Code blocks all tools not listed.
+          # Write is intentionally excluded: Claude can only edit existing files, preventing
+          # arbitrary file creation at attacker-influenced paths.
           # --disallowedTools provides belt-and-suspenders explicit denial for defense-in-depth.
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
             claude --print \
-            --allowedTools "Edit,Write,MultiEdit" \
-            --disallowedTools "Bash,Read,WebFetch,WebSearch,computer_use,LS,Glob,ListFiles,SearchFiles,ReadFile,TodoWrite,TodoRead,Agent,AskFollowupQuestion,mcp__*" \
+            --allowedTools "Edit,MultiEdit" \
+            --disallowedTools "Bash,Read,Write,WebFetch,WebSearch,computer_use,LS,Glob,ListFiles,SearchFiles,ReadFile,TodoWrite,TodoRead,Agent,AskFollowupQuestion,mcp__*" \
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
+          # Scrub API key from artifact files before upload (mirrors ai-pr-feedback.yml).
+          # ::add-mask:: protects runner logs; this scrubs the files themselves.
+          _KEY_FOR_SCRUB="$ANTHROPIC_API_KEY"
+          for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
+            [ -f "$_sf" ] && [ -n "$_KEY_FOR_SCRUB" ] && \
+              printf '%s' "$_KEY_FOR_SCRUB" | python3 -c \
+              "import sys,pathlib; k=sys.stdin.read(); p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace(k,'[REDACTED]')) if k else None" \
+              "$_sf"
+          done
+          _KEY_FOR_SCRUB=""
+          unset _KEY_FOR_SCRUB
           cat "$RUNNER_TEMP/claude-output.txt"
           if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
             echo "--- stderr ---"
@@ -482,7 +508,11 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           echo "::add-mask::$TOKEN"
           PUSH_TOKEN="$TOKEN"
           unset TOKEN
-          # Branch is already validated as ^[a-z0-9/\-]+$ and ai/issue-* prefix.
+          # Re-validate branch name at push time (belt-and-suspenders; gate also validates).
+          if ! printf '%s' "$BRANCH" | grep -qE '^ai/issue-[0-9]+(-[a-z0-9-]+)?(-[0-9]{14})?$'; then
+            echo "::error::BRANCH '$BRANCH' does not match expected ai/issue-* pattern — aborting push"
+            exit 1
+          fi
           # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
           # inherited by unrelated child processes.  Token is never in the URL.
           # mktemp creates a randomly-named file; chmod 700 before writing prevents
@@ -541,13 +571,28 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           with open(f'{runner_temp}/claude-output.txt') as f:
               output = f.read()
 
+          # Read the per-run sentinel to use the unpredictable delimiters that were
+          # embedded in the system prompt. Static PR_BODY_START/END are sanitized
+          # out of issue content, but using a UUID sentinel provides defense-in-depth.
+          sentinel_path = f'{runner_temp}/sentinel.txt'
+          sentinel = open(sentinel_path).read().strip() if os.path.exists(sentinel_path) else ''
+          if sentinel:
+              begin_marker = f'PR_BODY_START_{sentinel}'
+              end_marker   = f'PR_BODY_END_{sentinel}'
+          else:
+              begin_marker = 'PR_BODY_START'
+              end_marker   = 'PR_BODY_END'
+
           # Extract PR_TITLE line
           title_match = re.search(r'^PR_TITLE:\s*(.+)$', output, re.MULTILINE)
           pr_title = title_match.group(1).strip() if title_match else ''
           pr_title = sanitize_output(pr_title)[:72]  # GitHub title limit
 
-          # Extract PR_BODY between markers
-          body_match = re.search(r'^PR_BODY_START\s*\n(.*?)\n?PR_BODY_END', output, re.MULTILINE | re.DOTALL)
+          # Extract PR_BODY between per-run sentinel markers
+          body_match = re.search(
+              rf'^{re.escape(begin_marker)}\s*\n(.*?)\n?{re.escape(end_marker)}',
+              output, re.MULTILINE | re.DOTALL
+          )
           pr_body = body_match.group(1).strip() if body_match else ''
           pr_body = sanitize_output(pr_body)[:10000]
 
