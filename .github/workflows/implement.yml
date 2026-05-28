@@ -154,7 +154,7 @@ raise SystemExit(1)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
 
@@ -267,15 +267,20 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
                   text = html.unescape(text)
               # NFKC normalization collapses Unicode homoglyphs (e.g. fullwidth chars)
               text = unicodedata.normalize('NFKC', text)
-              # Strip Unicode direction-override and zero-width characters
-              text = re.sub(r'[​-‏‪-‮⁦-⁩﻿]', '', text)
+              # Strip Unicode direction-override, zero-width, soft-hyphen (U+00AD),
+              # CGJ (U+034F), ZWJ (U+200D), Hangul filler (U+3164), tag block, BOM
+              text = re.sub(r'[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\ue0000-\ue007f\ufeff]', '', text)
+              # Destructive fence stripping — prevents nested code-block injection
+              text = re.sub(r'`{3,}', '[fence]', text)
+              text = re.sub(r'~{3,}', '[fence]', text)
               # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
-              # (covers special tokens like <|endoftext|> and any prompt delimiters)
-              text = re.sub(r'<[^>]{0,200}>', '[tag]', text)
+              text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
               # Block common prompt injection trigger phrases
               text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
               text = re.sub(r'(?i)new\s+instructions?\s*:', '[filtered]', text)
               text = re.sub(r'(?mi)^\s*system\s*:\s*', '[filtered] ', text)
+              text = re.sub(r'(?i)(disregard|forget|override)\s+(all\s+)?(previous\s+)?instructions?', '[filtered]', text)
+              text = re.sub(r'(?i)(you\s+are\s+now|act\s+as|pretend\s+(to\s+be|you\s+are))', '[filtered]', text)
               # Block structured output markers (case-insensitive, allow surrounding whitespace)
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
@@ -345,21 +350,24 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           SYSTEM_PROMPT=$(cat "$RUNNER_TEMP/system-prompt.txt")
           USER_PROMPT=$(cat "$RUNNER_TEMP/prompt.txt")
           rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
+          # Mask API key before any action that could echo it (must be first)
+          echo "::add-mask::$ANTHROPIC_API_KEY"
           # Remove .git credential helpers before Claude runs
           git config --local --unset-all credential.helper 2>/dev/null || true
-          # Mask API key in workflow logs so it won't appear in log output or summaries
-          echo "::add-mask::$ANTHROPIC_API_KEY"
           # Pre-create output files with restricted permissions so no window exists
           # between Claude writing and the scrubber running with world-readable files.
           install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
           # Use env -i to limit Claude's visible environment to only what it needs.
           # This keeps workflow secrets out of /proc/self/environ for the claude process.
+          # --allowedTools is an EXCLUSIVE allowlist — Claude Code blocks all tools not listed.
+          # --disallowedTools provides belt-and-suspenders explicit denial for defense-in-depth.
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
             claude --print \
             --allowedTools "Edit,Write,MultiEdit" \
+            --disallowedTools "Bash,Read,WebFetch,WebSearch,computer_use,LS,Glob,ListFiles,SearchFiles,ReadFile,TodoWrite,TodoRead,Agent,AskFollowupQuestion,mcp__*" \
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
@@ -389,6 +397,23 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             echo "$HOOK_FILES"
             exit 1
           fi
+          # PRE-STAGE path validation: check both modified and untracked files BEFORE git add.
+          # This mirrors ai-pr-feedback.yml's pre-stage check and ensures Write-created files
+          # are validated before they enter the git index.
+          while IFS= read -r -d '' f; do
+            if printf '%s' "$f" | LC_ALL=C grep -q '[^ -~]'; then
+              echo "::error::AI created/modified file with non-ASCII path: $f"
+              exit 1
+            fi
+            if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))'; then
+              echo "::error::AI created/modified protected file: $f"
+              exit 1
+            fi
+            if ! printf '%s' "$f" | grep -qE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)'; then
+              echo "::error::AI created/modified file outside allowed directories: $f"
+              exit 1
+            fi
+          done < <({ git diff -z --name-only; git ls-files -z --others --exclude-standard; } 2>/dev/null)
           git add -A
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -429,6 +454,17 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # Log what changed for audit trail
           echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
           git diff --cached --stat | head -200 >> "$GITHUB_STEP_SUMMARY"
+          # Exec-pattern scan: block AI-introduced subprocess/exec calls in source files.
+          # Scans staged diff (pre-commit) to mirror the pre-push validation in ai-pr-feedback.yml.
+          EXEC_PATTERNS=$(git diff --cached -- '*.go' '*.swift' 2>/dev/null \
+            | grep -E '^\+.*(exec\.(Command|Cmd|LookPath)|syscall\.Exec|os\.StartProcess)' \
+            | head -5 || true)
+          if [ -n "$EXEC_PATTERNS" ]; then
+            echo "::error::AI-modified source files introduce exec/subprocess calls — aborting:"
+            echo "$EXEC_PATTERNS"
+            git reset HEAD
+            exit 1
+          fi
           git commit -m "chore: implement issue via Claude Code (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
@@ -478,19 +514,55 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          OUTPUT=$(cat "$RUNNER_TEMP/claude-output.txt")
+          python3 << 'PYEOF'
+          import html, os, re, unicodedata
 
-          PR_TITLE=$(printf '%s' "$OUTPUT" \
-            | grep '^PR_TITLE:' | sed 's/^PR_TITLE: *//' | head -1 \
-            | tr -d '\n\r' | cut -c1-200)
-          PR_BODY=$(printf '%s' "$OUTPUT" \
-            | sed -n '/^PR_BODY_START$/,/^PR_BODY_END$/p' | sed '1d;$d')
+          def sanitize_output(text):
+              """Sanitize LLM output before using it in shell or API calls."""
+              # HTML-unescape iteratively (handles double-encoding)
+              prev = None
+              while prev != text:
+                  prev = text
+                  text = html.unescape(text)
+              text = unicodedata.normalize('NFKC', text)
+              text = re.sub(r'[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\ue0000-\ue007f\ufeff]', '', text)
+              text = re.sub(r'`{3,}', '[fence]', text)
+              text = re.sub(r'~{3,}', '[fence]', text)
+              text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
+              # Strip @mention injection (could cause unwanted GitHub notifications)
+              text = re.sub(r'@([A-Za-z0-9_-]+)', r'[\1]', text)
+              # Strip control characters (keep newline and tab)
+              text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
+              return text
 
-          [ -z "$PR_TITLE" ] && PR_TITLE="feat: implement issue #${ISSUE_NUMBER}"
-          [ -z "$PR_BODY" ] && PR_BODY="Implements #${ISSUE_NUMBER}."
+          issue_number = os.environ['ISSUE_NUMBER']
+          runner_temp = os.environ['RUNNER_TEMP']
 
-          printf '%s' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
-          printf '%s' "$PR_BODY"  > "$RUNNER_TEMP/pr-body.txt"
+          with open(f'{runner_temp}/claude-output.txt') as f:
+              output = f.read()
+
+          # Extract PR_TITLE line
+          title_match = re.search(r'^PR_TITLE:\s*(.+)$', output, re.MULTILINE)
+          pr_title = title_match.group(1).strip() if title_match else ''
+          pr_title = sanitize_output(pr_title)[:72]  # GitHub title limit
+
+          # Extract PR_BODY between markers
+          body_match = re.search(r'^PR_BODY_START\s*\n(.*?)\n?PR_BODY_END', output, re.MULTILINE | re.DOTALL)
+          pr_body = body_match.group(1).strip() if body_match else ''
+          pr_body = sanitize_output(pr_body)[:10000]
+
+          if not pr_title:
+              pr_title = f'feat: implement issue #{issue_number}'
+          if not pr_body:
+              pr_body = f'Implements #{issue_number}.'
+
+          with open(f'{runner_temp}/pr-title.txt', 'w') as f:
+              f.write(pr_title)
+          with open(f'{runner_temp}/pr-body.txt', 'w') as f:
+              f.write(pr_body)
+
+          print(f'PR title ({len(pr_title)} chars): {pr_title[:80]}')
+          PYEOF
 
       - name: Create PR
         if: steps.commit.outputs.changed == 'true'

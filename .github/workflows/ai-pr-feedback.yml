@@ -70,6 +70,13 @@ on:
     branches:
       - 'ai/**'
 
+# CONCURRENCY: cancel-in-progress: false serializes runs per PR rather than
+# cancelling the in-flight run. A new review comment trigger queues rather than
+# cancels, so the current edit cycle completes before the next begins.
+# DoS bound: each run is capped at timeout-minutes: 30 (respond job) and the
+# circuit breaker (BOT_STREAK >= 3) prevents unbounded AI commit chains.
+# Accepted risk: a maintainer posting many comments quickly can queue multiple
+# runs; the 30-min timeout and Anthropic rate limits constrain the blast radius.
 concurrency:
   group: ai-pr-feedback-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
