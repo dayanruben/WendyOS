@@ -320,14 +320,17 @@ jobs:
     #   - Push uses explicit HEAD:${BRANCH} refspec with --no-force
     steps:
       - name: Mask long-lived PAT secret
-        # Mask WENDY_TEMPLATE_SYNC_TOKEN immediately — before any other step can
-        # accidentally log it. This is the first step so masking takes effect for
-        # all subsequent steps in this job.
-        # Secret accessed via env: (not interpolated directly in run:) so the
-        # literal value is never embedded in the step definition's shell script.
+        # Mask secrets immediately as the very first step — before any other step can
+        # accidentally log them. Both the long-lived PAT and GITHUB_TOKEN are registered
+        # here so masking takes effect for all subsequent steps in this job.
+        # Secrets accessed via env: (not interpolated in run:) so their values are
+        # never embedded in the step definition's shell script text.
         env:
           WENDY_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
-        run: echo "::add-mask::$WENDY_PAT"
+          GH_TOKEN_VAL: ${{ github.token }}
+        run: |
+          echo "::add-mask::$WENDY_PAT"
+          echo "::add-mask::$GH_TOKEN_VAL"
 
       - name: Re-verify authorization before any writes
         # Re-authorization at the START of the execute job — before secrets are used,
@@ -1114,6 +1117,15 @@ jobs:
             exit 1
           fi
           echo "Pre-push diff validation passed — no script/config files modified"
+          # Secondary scan: warn if AI-added lines in Go/Swift files contain exec or subprocess
+          # patterns.  These require human review during the normal PR code-review process.
+          # Warning only — does not block push, as exec calls are valid in source code.
+          EXEC_PATTERNS=$(git show HEAD -- '*.go' '*.swift' 2>/dev/null \
+            | grep -E '^\+.*(exec\.(Command|Cmd|LookPath)|syscall\.Exec|os\.StartProcess|subprocess\.Run)' \
+            | head -5 || true)
+          if [ -n "$EXEC_PATTERNS" ]; then
+            echo "::warning::AI-modified source files contain exec/subprocess additions — human review required before merge"
+          fi
 
       - name: Post AI changes to PR
         if: steps.circuit.outputs.tripped == 'false' && steps.commit.outputs.changed == 'true'
