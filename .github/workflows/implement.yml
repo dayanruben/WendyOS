@@ -40,10 +40,18 @@ jobs:
           # Cap comment body to 1000 chars before regex to guard against ReDoS on
           # pathological input; printf '%s' already prevents shell injection.
           COMMENT_BODY="${COMMENT_BODY:0:1000}"
-          # Strip CRLF line endings so ^ anchor works correctly regardless of payload encoding.
+          # Strip CRLF and NUL bytes from input before regex matching.
           COMMENT_BODY="${COMMENT_BODY//$'\r'/}"
-          # Require /implement at the start of a line (not buried in prose)
-          if ! printf '%s' "$COMMENT_BODY" | grep -qE '(^|\n)\s*/implement(\s|$)'; then
+          COMMENT_BODY="${COMMENT_BODY//$'\0'/}"
+          # Require /implement at the start of a line.  Python's (?m) mode anchors ^ to
+          # each line boundary reliably, regardless of how the shell expanded the env var.
+          if ! printf '%s' "$COMMENT_BODY" | python3 -c "
+import sys, re, os
+body = sys.stdin.read()
+if re.search(r'(?m)^\s*/implement(?:\s|\$)', body):
+    raise SystemExit(0)
+raise SystemExit(1)
+"; then
             echo "authorized=false" >> "$GITHUB_OUTPUT"
             echo "/implement not found at start of line — skipping"
             exit 0
@@ -97,7 +105,9 @@ jobs:
             echo "Computed branch name contains unexpected characters: $BRANCH"
             exit 1
           fi
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          # Use EOF delimiter to prevent any CRLF injection in GITHUB_OUTPUT
+          _delim="ghadelimiter_$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          printf 'branch<<%s\n%s\n%s\n' "$_delim" "$BRANCH" "$_delim" >> "$GITHUB_OUTPUT"
 
   notify-existing:
     name: Notify — existing PR found

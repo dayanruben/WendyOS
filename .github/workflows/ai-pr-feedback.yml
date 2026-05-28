@@ -1117,14 +1117,17 @@ jobs:
             exit 1
           fi
           echo "Pre-push diff validation passed — no script/config files modified"
-          # Secondary scan: warn if AI-added lines in Go/Swift files contain exec or subprocess
-          # patterns.  These require human review during the normal PR code-review process.
-          # Warning only — does not block push, as exec calls are valid in source code.
+          # Compiled-source exec guard: block push if AI-added lines introduce new exec/
+          # subprocess calls in Go or Swift files. Directly-executable scripts are blocked
+          # by the extension list above; this gate covers compiled source that invokes shell.
           EXEC_PATTERNS=$(git show HEAD -- '*.go' '*.swift' 2>/dev/null \
-            | grep -E '^\+.*(exec\.(Command|Cmd|LookPath)|syscall\.Exec|os\.StartProcess|subprocess\.Run)' \
+            | grep -E '^\+.*(exec\.(Command|Cmd|LookPath)|syscall\.Exec|os\.StartProcess)' \
             | head -5 || true)
           if [ -n "$EXEC_PATTERNS" ]; then
-            echo "::warning::AI-modified source files contain exec/subprocess additions — human review required before merge"
+            echo "::error::AI-modified source files introduce exec/subprocess calls — aborting push:"
+            echo "$EXEC_PATTERNS"
+            git checkout -- .
+            exit 1
           fi
 
       - name: Post AI changes to PR
