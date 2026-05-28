@@ -26,6 +26,13 @@ jobs:
       issues: write
 
     steps:
+      - name: Mask long-lived PAT secret
+        # Mask at job start so the value never appears in any subsequent log line,
+        # even if a future step inadvertently echoes an env var.
+        env:
+          WENDY_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+        run: echo "::add-mask::$WENDY_PAT"
+
       - name: Check authorization
         id: auth
         env:
@@ -136,7 +143,12 @@ jobs:
             echo "::error::Failed to download @anthropic-ai/claude-code@2.1.150"
             exit 1
           fi
-          ACTUAL_HASH="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
+          # Restrict read access before hashing; node crypto produces canonical SRI base64.
+          chmod 400 "$TARBALL"
+          ACTUAL_HASH=$(node -e "
+const c=require('crypto'),f=require('fs');
+process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(process.argv[1])).digest('base64'));
+" "$TARBALL")
           if [ "$ACTUAL_HASH" != "$EXPECTED_INTEGRITY" ]; then
             echo "::error::claude-code@2.1.150 integrity mismatch — possible supply-chain compromise"
             echo "  expected: $EXPECTED_INTEGRITY"
