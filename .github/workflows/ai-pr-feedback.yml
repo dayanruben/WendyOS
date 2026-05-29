@@ -943,10 +943,9 @@ Feedback to address:
             git checkout -- .
             exit 1
           fi
-          # Extension blocklist — runs BEFORE staging to prevent commits of script/config files.
-          # Mirrors the Pre-push diff validation step; running pre-commit closes the gap where
-          # a file like docs/mkdocs.yml would pass the path allowlist but fail the extension
-          # check (which previously only ran post-commit).
+          # Extension blocklist — runs BEFORE staging (pre-commit) to prevent script/config
+          # files from being committed. Runs here (not post-commit) so docs/mkdocs.yml
+          # fails before git add, not after commit.
           BLOCKED_EXT=""
           while IFS= read -r f; do
             [ -z "$f" ] && continue
@@ -1151,38 +1150,16 @@ Feedback to address:
           ], check=True)
           PYEOF
 
-      - name: Pre-push diff validation
-        # Mandatory diff review gate between commit and push.
-        # The commit step performs pre-stage file-path validation (allowlist + blocklist).
-        # This step adds a SEPARATE, post-commit security gate on file extensions and
-        # diff content — making the review visible in the step log and adding
-        # defense-in-depth checks that are independent of the commit-step guards.
+      - name: Post-commit exec-pattern scan
+        # Post-commit exec guard: block push if AI-added lines introduce exec/subprocess
+        # calls in compiled source (Go/Swift). Extension blocklist and path validation
+        # already ran pre-commit in "Verify Claude did not touch protected paths".
+        # This step shows the commit stat for audit and checks compiled-source exec calls.
         if: steps.circuit.outputs.tripped == 'false' && steps.commit.outputs.changed == 'true'
         run: |
           echo "=== Files changed in this commit ==="
           git show --stat HEAD
           echo ""
-          echo "=== Validating changed file extensions ==="
-          BLOCKED=""
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            case "$f" in
-              *.sh|*.bash|*.zsh|*.fish|*.py|*.rb|*.pl|*.lua|*.groovy|\
-              *.yml|*.yaml|*.json|*.toml|*.ini|*.cfg|\
-              Makefile|makefile|Dockerfile|*.dockerfile|*.mk)
-                BLOCKED="$BLOCKED $f"
-                ;;
-            esac
-          done < <(git show --name-only --format='' HEAD)
-          if [ -n "$BLOCKED" ]; then
-            echo "::error::AI modified script/config file(s) — aborting push:"
-            echo "$BLOCKED"
-            exit 1
-          fi
-          echo "Pre-push diff validation passed — no script/config files modified"
-          # Compiled-source exec guard: block push if AI-added lines introduce new exec/
-          # subprocess calls in Go or Swift files. Directly-executable scripts are blocked
-          # by the extension list above; this gate covers compiled source that invokes shell.
           EXEC_PATTERNS=$(git show HEAD -- '*.go' '*.swift' 2>/dev/null \
             | grep -E '^\+.*(exec\.(Command|Cmd|LookPath)|syscall\.Exec|os\.StartProcess)' \
             | head -5 || true)
@@ -1192,6 +1169,7 @@ Feedback to address:
             git checkout -- .
             exit 1
           fi
+          echo "Post-commit exec-pattern scan passed"
 
       - name: Post AI changes to PR
         if: steps.circuit.outputs.tripped == 'false' && steps.commit.outputs.changed == 'true'
