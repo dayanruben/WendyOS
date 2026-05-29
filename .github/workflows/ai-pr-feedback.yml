@@ -879,13 +879,19 @@ jobs:
 
       - name: Write API key to temp file
         if: steps.circuit.outputs.tripped == 'false'
-        # Dedicated step: the ONLY place the API key value appears in script text.
-        # The Run Claude Code step has no key in env: or script text — it reads
-        # from the pre-written 600-mode file only.
+        # Dedicated step: the ONLY place the API key value is handled.
+        # The key arrives via env: — NOT inline ${{ secrets.* }} in script text — so it
+        # is never baked into the shell script literal. GitHub Actions masks all env: secret
+        # values in logs unconditionally; ::add-mask:: is also emitted as the first command
+        # so the value is registered for subsequent steps (defense-in-depth for any derived
+        # values). The "Run Claude Code" step has no key in env: or script text.
+        env:
+          _API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          echo "::add-mask::${{ secrets.ANTHROPIC_API_KEY }}"
+          echo "::add-mask::$_API_KEY"
           install -m 600 /dev/null "$RUNNER_TEMP/anthropic-key.txt"
-          printf '%s' "${{ secrets.ANTHROPIC_API_KEY }}" > "$RUNNER_TEMP/anthropic-key.txt"
+          printf '%s' "$_API_KEY" > "$RUNNER_TEMP/anthropic-key.txt"
+          unset _API_KEY
 
       - name: Run Claude Code
         if: steps.circuit.outputs.tripped == 'false'
