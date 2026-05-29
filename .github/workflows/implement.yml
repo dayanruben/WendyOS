@@ -457,7 +457,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             2> "$RUNNER_TEMP/claude-stderr.txt"
           # Abort if Claude modified .gitignore — a tampered .gitignore could affect
           # path/extension checks in subsequent steps or hide files from git tooling.
-          if git diff --name-only | grep -qF '.gitignore'; then
+          if git diff -z --name-only | tr '\0' '\n' | grep -qF '.gitignore'; then
             echo "::error::Claude modified .gitignore — aborting"
             git clean -fd 2>/dev/null || true
             git checkout -- . 2>/dev/null || true
@@ -511,7 +511,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # Extension blocklist runs PRE-STAGE (before git add) to block script/config files.
           # Running pre-commit ensures docs/evil.yml fails before staging, not post-commit.
           BLOCKED_EXT=""
-          while IFS= read -r f; do
+          while IFS= read -r -d '' f; do
             [ -z "$f" ] && continue
             case "$f" in
               *.sh|*.bash|*.zsh|*.fish|*.py|*.rb|*.pl|*.lua|*.groovy|\
@@ -520,7 +520,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
                 BLOCKED_EXT="$BLOCKED_EXT $f"
                 ;;
             esac
-          done < <({ git diff --name-only; git ls-files --others; } 2>/dev/null)
+          done < <({ git diff -z --name-only; git ls-files -z --others; } 2>/dev/null)
           if [ -n "$BLOCKED_EXT" ]; then
             echo "::error::AI modified script/config file(s) — aborting:"
             echo "$BLOCKED_EXT"
@@ -675,13 +675,14 @@ sys.exit(0)
             REMOTE_SHA=""
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          # Use explicit lease: --force-with-lease=<ref>:<expect> where expect is the
-          # remote SHA captured above (empty = expect ref to not exist for new branch).
-          # This closes the TOCTOU window between ls-remote and push, consistent with
-          # ai-pr-feedback.yml's use of the explicit SHA form.
+          # Use explicit lease with null SHA for new branches to ensure git interprets
+          # an empty REMOTE_SHA as "ref must not exist" unambiguously across git versions.
+          # The null SHA (40 zeros) is the git protocol's canonical "no ref" value.
+          NULL_SHA="0000000000000000000000000000000000000000"
+          LEASE_SHA="${REMOTE_SHA:-$NULL_SHA}"
           env -i HOME="$HOME" PATH="$PATH" \
             GIT_ASKPASS="$ASKPASS_FILE" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
-            git push "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_SHA}" \
+            git push "--force-with-lease=refs/heads/${BRANCH}:${LEASE_SHA}" \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
             "${BRANCH}"
           rm -f "$ASKPASS_FILE"

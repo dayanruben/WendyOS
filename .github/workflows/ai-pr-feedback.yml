@@ -962,7 +962,7 @@ Feedback to address:
           # files from being committed. Runs here (not post-commit) so docs/mkdocs.yml
           # fails before git add, not after commit.
           BLOCKED_EXT=""
-          while IFS= read -r f; do
+          while IFS= read -r -d '' f; do
             [ -z "$f" ] && continue
             case "$f" in
               *.sh|*.bash|*.zsh|*.fish|*.py|*.rb|*.pl|*.lua|*.groovy|\
@@ -971,7 +971,7 @@ Feedback to address:
                 BLOCKED_EXT="$BLOCKED_EXT $f"
                 ;;
             esac
-          done < <(git diff --name-only)
+          done < <({ git diff -z --name-only; git ls-files -z --others; } 2>/dev/null)
           if [ -n "$BLOCKED_EXT" ]; then
             echo "::error::Claude modified script/config file(s) — reverting and aborting:"
             echo "$BLOCKED_EXT"
@@ -982,14 +982,14 @@ Feedback to address:
           # Editing unrelated files is a signal of prompt injection or misbehaviour.
           if [ -f "$RUNNER_TEMP/pr-files.json" ]; then
             PR_FILES=$(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))))" "$RUNNER_TEMP/pr-files.json" 2>/dev/null || true)
-            while IFS= read -r f; do
+            while IFS= read -r -d '' f; do
               [ -z "$f" ] && continue
               if ! printf '%s\n' "$PR_FILES" | grep -qxF "$f"; then
                 echo "::error::Claude modified $f which is not in this PR's changed-file list — aborting"
                 git checkout -- .
                 exit 1
               fi
-            done < <(git diff --name-only)
+            done < <(git diff -z --name-only)
           fi
 
       - name: Commit any uncommitted changes
