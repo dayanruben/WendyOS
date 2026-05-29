@@ -16,6 +16,10 @@ on:
       - Integration Test Review
     types: [completed]
 
+concurrency:
+  group: agentic-ci-loop-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
 jobs:
   iterate:
     name: Fix failing CI and resolve bot review comments
@@ -44,17 +48,29 @@ jobs:
             echo "No PR found — skipping"
             echo "pr_number=" >> "$GITHUB_OUTPUT"
           else
-            AUTHOR_ASSOC=$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              --jq '.author_association' 2>/dev/null || echo "NONE")
-            case "$AUTHOR_ASSOC" in
-              MEMBER|OWNER|COLLABORATOR)
-                echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-                ;;
-              *)
-                echo "PR author is not a wendylabsinc member (association: $AUTHOR_ASSOC) — skipping"
-                echo "pr_number=" >> "$GITHUB_OUTPUT"
-                ;;
-            esac
+            PR_DATA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null || echo '{}')
+            AUTHOR_ASSOC=$(printf '%s' "$PR_DATA" | jq -r '.author_association // "NONE"')
+            # ai/* branch PRs are handled by ai-pr-feedback.yml — skip here to avoid two
+            # automation loops racing to commit to the same branch simultaneously.
+            # Use branch pattern (not ai-generated label) as the routing signal:
+            # labels are weak trust signals; branch names require push access.
+            PR_HEAD_BRANCH=$(printf '%s' "$PR_DATA" | jq -r '.head.ref // ""')
+            if printf '%s' "$PR_HEAD_BRANCH" | grep -qE '^ai/'; then
+              echo "PR head is ai/ branch — handled by ai-pr-feedback.yml, skipping"
+              echo "pr_number=" >> "$GITHUB_OUTPUT"
+            else
+              # COLLABORATOR excluded — same policy as ai-pr-feedback.yml to maintain
+              # a consistent authorization boundary across all AI automation workflows.
+              case "$AUTHOR_ASSOC" in
+                MEMBER|OWNER)
+                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  ;;
+                *)
+                  echo "PR author is not a wendylabsinc member (association: $AUTHOR_ASSOC) — skipping"
+                  echo "pr_number=" >> "$GITHUB_OUTPUT"
+                  ;;
+              esac
+            fi
           fi
 
       - name: Check CI status and bot comments

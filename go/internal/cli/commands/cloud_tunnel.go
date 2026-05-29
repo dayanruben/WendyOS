@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -287,6 +288,9 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
+				if tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""; tlsDebug {
+					fmt.Fprintf(os.Stderr, "[tunnel-debug] broker stream closed: %v\n", err)
+				}
 				break
 			}
 			if len(msg.Payload) > 0 {

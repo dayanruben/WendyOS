@@ -83,9 +83,10 @@ jobs:
               for fname, content in t['files'].items():
                   tests_context += f'#### {fname}\n```\n{content}\n```\n'
 
-          message = client.messages.create(
-              model='claude-sonnet-4-6',
-              max_tokens=8000,
+          try:
+              message = client.messages.create(
+                  model='claude-sonnet-4-6',
+                  max_tokens=8000,
               system=[
                   {
                       'type': 'text',
@@ -128,7 +129,12 @@ jobs:
                       f'## .github/workflows/integration-tests.yml\n```yaml\n{integration_yml[:8000]}\n```'
                   ),
               }],
-          )
+              )
+          except anthropic.BadRequestError as e:
+              if 'credit balance' in str(e).lower() or 'too low' in str(e).lower():
+                  print('WARNING: Cannot run integration test review — API credit balance too low')
+                  raise SystemExit(0)
+              raise
 
           response_text = message.content[0].text.strip()
           if not response_text or response_text == 'NO_CHANGES_NEEDED':

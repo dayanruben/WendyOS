@@ -47,3 +47,4 @@ vendor/
 # Superpowers planning docs (local dev tooling)
 docs/superpowers/
 .claude
+go/go/bin
