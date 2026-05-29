@@ -273,9 +273,14 @@ raise SystemExit(1)
 
       - name: Mask long-lived PAT secret
         # Mask at job start so the value never appears in any subsequent log line.
+        # Both the dedicated and fallback PAT are masked so whichever is selected
+        # in the Push step, its value is already registered with the log masker.
         env:
-          WENDY_PAT: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN || secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
-        run: echo "::add-mask::$WENDY_PAT"
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+        run: |
+          [ -n "$_DEDICATED_PAT" ] && echo "::add-mask::$_DEDICATED_PAT"
+          [ -n "$_FALLBACK_PAT" ] && echo "::add-mask::$_FALLBACK_PAT"
 
       - name: React to command
         env:
@@ -484,12 +489,13 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           PYEOF
 
       - name: Run Claude Code
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # ANTHROPIC_API_KEY is NOT in env: — key is delivered via inline ${{ }}
+        # expressions in the run block so it never appears in /proc/<pid>/environ.
         run: |
-          # Mask API key as the absolute first action — before any command that
-          # could echo environment variables or fail with key in the error output.
-          echo "::add-mask::$ANTHROPIC_API_KEY"
+          # Mask the API key immediately. ${{ secrets.ANTHROPIC_API_KEY }} is
+          # substituted server-side into the script text — never assigned as an
+          # exported environment variable, so it never appears in /proc/<pid>/environ.
+          echo "::add-mask::${{ secrets.ANTHROPIC_API_KEY }}"
           # Read prompts into shell vars, then delete the files so Claude's Read
           # tool cannot access them (or any other sensitive RUNNER_TEMP content).
           # sentinel.txt is kept for the Parse PR metadata step to read.
@@ -510,13 +516,12 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # between Claude writing and the scrubber running with world-readable files.
           install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
-          # Deliver ANTHROPIC_API_KEY to claude via a 600-mode temp file, not as a
-          # cmdline argument. _ANTHROPIC_KEY is kept shell-local (unexported) solely
-          # for the post-run scrubber below.
-          _ANTHROPIC_KEY="${ANTHROPIC_API_KEY}"
-          unset ANTHROPIC_API_KEY
+          # ANTHROPIC_API_KEY is written to a 600-mode temp file via inline ${{ }}
+          # expression — never an exported env var, never visible in /proc/<pid>/environ.
+          # _ANTHROPIC_KEY is shell-local (unexported) solely for the post-run scrubber.
           install -m 600 /dev/null "$RUNNER_TEMP/anthropic-key.txt"
-          printf '%s' "${_ANTHROPIC_KEY}" > "$RUNNER_TEMP/anthropic-key.txt"
+          printf '%s' "${{ secrets.ANTHROPIC_API_KEY }}" > "$RUNNER_TEMP/anthropic-key.txt"
+          _ANTHROPIC_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
           install -m 600 /dev/null "$RUNNER_TEMP/user-prompt.txt"
           printf '%s' "$USER_PROMPT" > "$RUNNER_TEMP/user-prompt.txt"
           # Use env -i to limit Claude's visible environment to only what it needs.
@@ -717,15 +722,28 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
         if: steps.commit.outputs.changed == 'true'
         id: push
         env:
-          # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to only
-          # 'contents: write' on this repository (no other repos or permissions).
+          # WENDY_AI_IMPLEMENT_TOKEN is the dedicated per-workflow PAT. If absent,
+          # WENDY_TEMPLATE_SYNC_TOKEN is used as a fallback with an explicit ::warning::.
+          # A fine-grained PAT scoped to only 'contents: write' on this repository.
           # GITHUB_TOKEN cannot be used for push because pushes made by
           # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
-          TOKEN: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN || secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Select the PAT to use; warn loudly when falling back to the shared token.
+          if [ -n "$_DEDICATED_PAT" ]; then
+            TOKEN="$_DEDICATED_PAT"
+          elif [ -n "$_FALLBACK_PAT" ]; then
+            echo "::warning::WENDY_AI_IMPLEMENT_TOKEN is not configured — falling back to WENDY_TEMPLATE_SYNC_TOKEN. Per-workflow revocation is degraded. Configure WENDY_AI_IMPLEMENT_TOKEN to restore full isolation."
+            TOKEN="$_FALLBACK_PAT"
+          else
+            echo "::error::Neither WENDY_AI_IMPLEMENT_TOKEN nor WENDY_TEMPLATE_SYNC_TOKEN is configured — cannot push"
+            exit 1
+          fi
           echo "::add-mask::$TOKEN"
+          unset _DEDICATED_PAT _FALLBACK_PAT
           PUSH_TOKEN="$TOKEN"
           unset TOKEN
           # Runtime verification: confirm main branch is protected before pushing with

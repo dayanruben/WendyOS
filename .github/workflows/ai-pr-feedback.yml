@@ -359,13 +359,15 @@ jobs:
         # Mask secrets immediately as the very first step — before any other step can
         # accidentally log them. Both the long-lived PAT and GITHUB_TOKEN are registered
         # here so masking takes effect for all subsequent steps in this job.
-        # Secrets accessed via env: (not interpolated in run:) so their values are
-        # never embedded in the step definition's shell script text.
+        # Both the dedicated and fallback PAT are masked so whichever is selected
+        # in the Push step, its value is already registered with the log masker.
         env:
-          WENDY_PAT: ${{ secrets.WENDY_AI_FEEDBACK_TOKEN || secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_FEEDBACK_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           GH_TOKEN_VAL: ${{ github.token }}
         run: |
-          echo "::add-mask::$WENDY_PAT"
+          [ -n "$_DEDICATED_PAT" ] && echo "::add-mask::$_DEDICATED_PAT"
+          [ -n "$_FALLBACK_PAT" ] && echo "::add-mask::$_FALLBACK_PAT"
           echo "::add-mask::$GH_TOKEN_VAL"
 
       - name: Re-verify authorization before any writes
@@ -871,12 +873,13 @@ Feedback to address:
 
       - name: Run Claude Code
         if: steps.circuit.outputs.tripped == 'false'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # ANTHROPIC_API_KEY is NOT in env: — key is delivered via inline ${{ }}
+        # expressions in the run block so it never appears in /proc/<pid>/environ.
         run: |
-          # Mask secrets immediately — before any other command — to minimise the
-          # window in which they could appear unredacted in runner logs.
-          echo "::add-mask::$ANTHROPIC_API_KEY"
+          # Mask the API key immediately. ${{ secrets.ANTHROPIC_API_KEY }} is
+          # substituted server-side into the script text — never assigned as an
+          # exported environment variable, so it never appears in /proc/<pid>/environ.
+          echo "::add-mask::${{ secrets.ANTHROPIC_API_KEY }}"
           echo "::add-mask::$GITHUB_TOKEN"
           # Read prompts into shell vars, then delete the files so Claude's Read
           # tool cannot access them (or any other sensitive RUNNER_TEMP content)
@@ -899,13 +902,12 @@ Feedback to address:
           # and runner tokens from reaching Claude via /proc/self/environ, on-disk auth
           # caches, or credential helpers.  ANTHROPIC_SYSTEM_PROMPT is used instead of
           # --system-prompt to keep instructions out of /proc/cmdline.
-          # Deliver ANTHROPIC_API_KEY to claude via a 600-mode temp file, not as a
-          # cmdline argument. _ANTHROPIC_KEY is kept shell-local (unexported) solely
-          # for the post-run scrubber below.
-          _ANTHROPIC_KEY="${ANTHROPIC_API_KEY}"
-          unset ANTHROPIC_API_KEY
+          # ANTHROPIC_API_KEY is written to a 600-mode temp file via inline ${{ }}
+          # expression — never an exported env var, never visible in /proc/<pid>/environ.
+          # _ANTHROPIC_KEY is shell-local (unexported) solely for the post-run scrubber.
           install -m 600 /dev/null "$RUNNER_TEMP/anthropic-key.txt"
-          printf '%s' "${_ANTHROPIC_KEY}" > "$RUNNER_TEMP/anthropic-key.txt"
+          printf '%s' "${{ secrets.ANTHROPIC_API_KEY }}" > "$RUNNER_TEMP/anthropic-key.txt"
+          _ANTHROPIC_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
           install -m 600 /dev/null "$RUNNER_TEMP/user-prompt.txt"
           printf '%s' "$USER_PROMPT" > "$RUNNER_TEMP/user-prompt.txt"
           # Pre-create output files with restricted permissions — eliminates the race
@@ -1261,12 +1263,9 @@ for f in json.load(open(sys.argv[1])):
         env:
           # Accepted risk: a long-lived PAT is required because GITHUB_TOKEN pushes
           # do not trigger downstream workflow runs (GitHub design limitation).
-          # WENDY_TEMPLATE_SYNC_TOKEN is a fine-grained PAT scoped to ONLY
-          # 'contents: write' on this single repository — no other scopes or repos.
-          # Even with contents:write, blast radius is limited to this one repo.
-          # The git push below uses an explicit HEAD:${BRANCH} refspec where BRANCH
-          # is validated against ^ai/[a-z0-9] — the push targets only the specific
-          # ai/* branch under automation, never main or other protected branches.
+          # WENDY_AI_FEEDBACK_TOKEN is the dedicated per-workflow PAT. If absent,
+          # WENDY_TEMPLATE_SYNC_TOKEN is used as a fallback with an explicit ::warning::.
+          # A fine-grained PAT scoped to ONLY 'contents: write' on this single repository.
           # REQUIRED: configure branch protection rules to restrict this PAT's pushes
           # to refs/heads/ai/* only (repo Settings > Branches > Add rule > ai/**).
           # This is a mandatory security control — without it, a compromised PAT or
@@ -1274,13 +1273,24 @@ for f in json.load(open(sys.argv[1])):
           # insufficient server-side enforcement.
           # Rotate on a 90-day schedule; if compromised, revoke immediately at
           # https://github.com/settings/tokens and update this repo secret.
-          # The token is isolated via env -i in the claude step and only available here.
-          TOKEN: ${{ secrets.WENDY_AI_FEEDBACK_TOKEN || secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_FEEDBACK_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ needs.gate.outputs.head_branch }}
           EXPECTED_SHA: ${{ needs.gate.outputs.head_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Select the PAT to use; warn loudly when falling back to the shared token.
+          if [ -n "$_DEDICATED_PAT" ]; then
+            TOKEN="$_DEDICATED_PAT"
+          elif [ -n "$_FALLBACK_PAT" ]; then
+            echo "::warning::WENDY_AI_FEEDBACK_TOKEN is not configured — falling back to WENDY_TEMPLATE_SYNC_TOKEN. Per-workflow revocation is degraded. Configure WENDY_AI_FEEDBACK_TOKEN to restore full isolation."
+            TOKEN="$_FALLBACK_PAT"
+          else
+            echo "::error::Neither WENDY_AI_FEEDBACK_TOKEN nor WENDY_TEMPLATE_SYNC_TOKEN is configured — cannot push"
+            exit 1
+          fi
           echo "::add-mask::$TOKEN"
+          unset _DEDICATED_PAT _FALLBACK_PAT
           # Runtime verification: confirm main branch is protected before pushing with
           # long-lived PAT. Fail closed: any error or non-true response aborts the push.
           # Uses branches/{branch} endpoint (requires only contents:read).
