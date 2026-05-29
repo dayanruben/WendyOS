@@ -125,6 +125,25 @@ raise SystemExit(1)
     permissions:
       issues: write
     steps:
+      - name: Re-verify authorization before posting
+        # Live API re-check before any write action — mirrors the check in the implement job.
+        # Prevents a stale gate output from triggering a notification if the commenter's
+        # association changed between gate and this job running.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          COMMENT_DATA=$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" 2>/dev/null || echo '{}')
+          LIVE_ASSOC=$(printf '%s' "$COMMENT_DATA" | jq -r '.author_association // "NONE"')
+          case "$LIVE_ASSOC" in
+            OWNER|MEMBER) ;;
+            *)
+              echo "::error::Comment author association changed since gate (now: $LIVE_ASSOC) — aborting"
+              exit 1
+              ;;
+          esac
+
       - name: React to command
         env:
           GH_TOKEN: ${{ github.token }}
@@ -435,8 +454,16 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           SYSTEM_PROMPT=$(cat "$RUNNER_TEMP/system-prompt.txt")
           USER_PROMPT=$(cat "$RUNNER_TEMP/prompt.txt")
           rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
-          # Remove .git credential helpers before Claude runs
+          # Clear all runner credential stores before Claude runs — mirrors ai-pr-feedback.yml.
+          # env -i strips the child environment, but the parent shell retains these vars
+          # and they may be accessible via /proc/*/environ or credential helper files.
+          unset ACTIONS_RUNTIME_TOKEN ACTIONS_RESULTS_URL ACTIONS_CACHE_URL RUNNER_TOKEN
+          # Unset GITHUB_TOKEN / GH_TOKEN so Claude cannot exfiltrate them via
+          # /proc/<parent-pid>/environ (env -i only isolates the child process).
+          unset GITHUB_TOKEN GH_TOKEN
+          rm -f "$HOME/.config/gh/hosts.yml"
           git config --local --unset-all credential.helper 2>/dev/null || true
+          git config --global --unset-all credential.helper 2>/dev/null || true
           # Pre-create output files with restricted permissions so no window exists
           # between Claude writing and the scrubber running with world-readable files.
           install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
