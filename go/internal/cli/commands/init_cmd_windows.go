@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/sys/windows"
 )
 
 // launchAssistantWithPrompt writes the full prompt to a temp file and asks the
@@ -53,4 +57,24 @@ func writePromptForAssistant(prompt string) (string, func(), error) {
 	}
 
 	return path, func() { os.Remove(path) }, nil
+}
+
+func windowsRootDir() string {
+	root, err := windows.GetWindowsDirectory()
+	if err != nil || strings.TrimSpace(root) == "" || !filepath.IsAbs(root) {
+		return `C:\Windows`
+	}
+	return filepath.Clean(root)
+}
+
+func isRootOwned(path string, _ os.FileInfo) bool {
+	descriptor, err := windows.GetNamedSecurityInfo(filepath.Clean(path), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil || descriptor == nil || !descriptor.IsValid() {
+		return false
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil || !owner.IsValid() {
+		return false
+	}
+	return owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid)
 }
