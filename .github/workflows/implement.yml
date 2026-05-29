@@ -506,13 +506,13 @@ jobs:
               shred -u "$USER_PROMPT_FILE" 2>/dev/null || rm -f "$USER_PROMPT_FILE"
               unset USER_PROMPT_FILE
               exec claude --print \
-                --allowedTools "Edit,MultiEdit" \
-                --disallowedTools "Bash,Read,Write,WebFetch,WebSearch,computer_use,LS,Glob,ListFiles,SearchFiles,ReadFile,TodoWrite,TodoRead,Agent,AskFollowupQuestion,mcp__*" \
+                --allowedTools "Edit,MultiEdit,Read,Bash" \
+                --disallowedTools "Write,WebFetch,WebSearch,computer_use,TodoWrite,TodoRead,Agent,AskFollowupQuestion,mcp__*" \
                 "$_user_prompt"
             ' \
             > "$RUNNER_TEMP/claude-output.txt" \
-            2> "$RUNNER_TEMP/claude-stderr.txt"
-          # Scrub API key from artifact files. ::add-mask:: protects runner logs; this scrubs files.
+            2> "$RUNNER_TEMP/claude-stderr.txt" || CLAUDE_EXIT=$?
+          # Always show output so failures are diagnosable.
           for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
             [ -f "$_sf" ] && [ -n "$_ANTHROPIC_KEY" ] && \
               printf '%s' "$_ANTHROPIC_KEY" | python3 -c \
@@ -526,6 +526,7 @@ jobs:
             echo "--- stderr ---"
             cat "$RUNNER_TEMP/claude-stderr.txt"
           fi
+          [ "${CLAUDE_EXIT:-0}" -eq 0 ] || exit "$CLAUDE_EXIT"
 
       - name: Verify Claude did not touch protected paths
         # Post-Claude enforcement gate — primary path-restriction control.
