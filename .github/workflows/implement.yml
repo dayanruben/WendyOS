@@ -860,12 +860,16 @@ sys.exit(0)
           BRANCH: ${{ steps.push.outputs.branch }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
+          # Read title into a shell variable (simple assignment avoids nested-quote injection).
+          # Use --body-file to pass the body path directly to gh — eliminates shell expansion
+          # of LLM-generated content into command arguments entirely.
+          PR_TITLE=$(cat "$RUNNER_TEMP/pr-title.txt")
           PR_URL=$(gh pr create \
             --repo "$REPO" \
             --head "$BRANCH" \
             --base main \
-            --title "$(cat "$RUNNER_TEMP/pr-title.txt")" \
-            --body "$(cat "$RUNNER_TEMP/pr-body.txt")" \
+            --title "$PR_TITLE" \
+            --body-file "$RUNNER_TEMP/pr-body.txt" \
             --label "ai-generated")
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 

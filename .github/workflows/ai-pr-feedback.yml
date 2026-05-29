@@ -1158,6 +1158,8 @@ Feedback to address:
           title = sanitize_output(title_raw, 72)
           body  = sanitize_output(body_raw, 10000)
 
+          # Pre-create with restricted permissions before writing LLM content.
+          subprocess.run(['install', '-m', '600', '/dev/null', f'{rt}/pr-body-update.txt'], check=True)
           pathlib.Path(f'{rt}/pr-body-update.txt').write_text(body)
           subprocess.run([
               'gh', 'pr', 'edit', pr,
