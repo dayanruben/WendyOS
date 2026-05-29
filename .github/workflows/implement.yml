@@ -1,4 +1,36 @@
 name: AI Implement Issue
+# =============================================================================
+# SECURITY CONTROLS SUMMARY
+# =============================================================================
+# ARCHITECTURE: gate job (read-only) → implement job (write, after gate passes).
+#   Write-capable GITHUB_TOKEN only provisioned after gate completes successfully.
+#   notify-existing job includes live re-authorization before any write action.
+#
+# PAT (WENDY_TEMPLATE_SYNC_TOKEN): fine-grained PAT scoped to ONLY
+#   'contents:write' on this single repository. No other scopes or repos.
+#   Rotation: 90 days (automated reminder via pat-rotation-reminder.yml).
+#   MITIGATION: Server-side branch ruleset restricts PAT to refs/heads/ai/**
+#   branches only — PAT cannot push to main, develop, or any other branch.
+#   Runtime check verifies this ruleset is active before every push attempt.
+#   The PAT is used because GITHUB_TOKEN pushes do not trigger downstream CI.
+#   ACCEPTED RISK: A workflow compromise before the branch-protection check
+#   could exfiltrate the PAT. Mitigations: supply-chain integrity pinning,
+#   OWNER/MEMBER-only gate, no actions from untrusted contributors in scope.
+#
+# CLAUDE CODE INVOCATION:
+#   --allowedTools "Edit,MultiEdit"  EXCLUSIVE allowlist — all other tools
+#   (Bash, Read, Write, WebFetch, WebSearch, etc.) are blocked by the CLI.
+#   --disallowedTools belt-and-suspenders explicit denial for defence-in-depth.
+#   env -i isolates child environment (no runner tokens, no GITHUB_TOKEN).
+#   Parent shell credentials cleared before invocation (GITHUB_TOKEN, GH_TOKEN,
+#   ACTIONS_RUNTIME_TOKEN, credential helpers, ~/.config/gh/hosts.yml).
+#   Post-run "Verify Claude did not touch protected paths" step enforces:
+#     (1) protected-file blocklist  (2) source-directory allowlist
+#     (3) edit-only invariant (no new files)  (4) extension blocklist
+#
+# PROMPT INJECTION: issue title and body sanitized before LLM use.
+#
+# AUTHORIZATION: gate job + live API re-check at start of implement job.
 
 on:
   issue_comment:
@@ -481,8 +513,9 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # --allowedTools "Edit,MultiEdit" is an EXCLUSIVE allowlist — all other tools are
           # blocked by the Claude Code CLI. The Edit tool CAN create files at non-existent
           # paths in some CLI versions; the invariant check below enforces the edit-only model.
-          # Snapshot all untracked files BEFORE Claude runs to detect any new-file creation.
-          PRE_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
+          # Snapshot untracked files BEFORE Claude runs; saved so the dedicated
+          # "Verify Claude did not touch protected paths" step can compare after.
+          git ls-files --others --exclude-standard | sort > "$RUNNER_TEMP/pre-run-untracked.txt"
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_API_KEY="${_ANTHROPIC_KEY}" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
@@ -492,29 +525,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             "$USER_PROMPT" \
             > "$RUNNER_TEMP/claude-output.txt" \
             2> "$RUNNER_TEMP/claude-stderr.txt"
-          # Abort if Claude modified .gitignore — a tampered .gitignore could affect
-          # path/extension checks in subsequent steps or hide files from git tooling.
-          if git diff -z --name-only | tr '\0' '\n' | grep -qF '.gitignore'; then
-            echo "::error::Claude modified .gitignore — aborting"
-            git clean -fd 2>/dev/null || true
-            git checkout -- . 2>/dev/null || true
-            exit 1
-          fi
-          # Enforce edit-only model: system prompt instructs Claude not to create new files;
-          # this invariant check enforces it at the workflow level. Any new untracked file
-          # is a violation — abort and clean up.
-          POST_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
-          NEW_FILES=$(diff <(echo "$PRE_RUN_UNTRACKED") <(echo "$POST_RUN_UNTRACKED") \
-            | grep '^>' | sed 's/^> //' | head -5 || true)
-          if [ -n "$NEW_FILES" ]; then
-            echo "::error::Claude created new files (edit-only model violated) — aborting:"
-            echo "$NEW_FILES"
-            git clean -fd 2>/dev/null || true
-            git checkout -- . 2>/dev/null || true
-            exit 1
-          fi
-          # Scrub API key from artifact files before upload (mirrors ai-pr-feedback.yml).
-          # ::add-mask:: protects runner logs; this scrubs the files themselves.
+          # Scrub API key from artifact files. ::add-mask:: protects runner logs; this scrubs files.
           for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
             [ -f "$_sf" ] && [ -n "$_ANTHROPIC_KEY" ] && \
               printf '%s' "$_ANTHROPIC_KEY" | python3 -c \
@@ -529,36 +540,53 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             cat "$RUNNER_TEMP/claude-stderr.txt"
           fi
 
-
-      - name: Commit any uncommitted changes
-        id: commit
+      - name: Verify Claude did not touch protected paths
+        # Post-Claude enforcement gate — primary path-restriction control.
+        # Mirrors the equivalent step in ai-pr-feedback.yml. Runs before staging.
+        # Four-layer check (all abort with revert on violation):
+        #   1. .gitignore guard — tampered .gitignore could hide files from checks below
+        #   2. Edit-only invariant — system prompt says no new files; enforce at workflow level
+        #   3. Protected-file blocklist + source-directory allowlist
+        #   4. Extension blocklist (script/config files blocked even inside docs/)
         run: |
-          # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
-          HOOK_FILES=$(find .git/hooks -maxdepth 1 -type f -not -name '*.sample' 2>/dev/null | head -5 || true)
-          if [ -n "$HOOK_FILES" ]; then
-            echo "::error::Unexpected hook files in .git/hooks/ — aborting:"
-            echo "$HOOK_FILES"
+          # 1. .gitignore guard
+          if git diff -z --name-only | tr '\0' '\n' | grep -qF '.gitignore'; then
+            echo "::error::Claude modified .gitignore — reverting and aborting"
+            git clean -fd 2>/dev/null || true
+            git checkout -- . 2>/dev/null || true
             exit 1
           fi
-          # PRE-STAGE path validation: check both modified and untracked files BEFORE git add.
-          # This mirrors ai-pr-feedback.yml's pre-stage check and ensures Write-created files
-          # are validated before they enter the git index.
-          while IFS= read -r -d '' f; do
-            if printf '%s' "$f" | LC_ALL=C grep -q '[^ -~]'; then
-              echo "::error::AI created/modified file with non-ASCII path: $f"
-              exit 1
-            fi
-            if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))'; then
-              echo "::error::AI created/modified protected file: $f"
-              exit 1
-            fi
-            if ! printf '%s' "$f" | grep -qE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)'; then
-              echo "::error::AI created/modified file outside allowed directories: $f"
-              exit 1
-            fi
-          done < <({ git diff -z --name-only; git ls-files -z --others --exclude-standard; } 2>/dev/null)
-          # Extension blocklist runs PRE-STAGE (before git add) to block script/config files.
-          # Running pre-commit ensures docs/evil.yml fails before staging, not post-commit.
+          # 2. Edit-only invariant: no new untracked files may appear after Claude runs
+          POST_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
+          NEW_FILES=$(diff <(cat "$RUNNER_TEMP/pre-run-untracked.txt" 2>/dev/null || echo '') \
+            <(echo "$POST_RUN_UNTRACKED") | grep '^>' | sed 's/^> //' | head -5 || true)
+          if [ -n "$NEW_FILES" ]; then
+            echo "::error::Claude created new files (edit-only model violated) — reverting and aborting:"
+            echo "$NEW_FILES"
+            git clean -fd 2>/dev/null || true
+            git checkout -- . 2>/dev/null || true
+            exit 1
+          fi
+          # 3. Protected-file blocklist and source-directory allowlist
+          PROTECTED=$(git diff --name-only | grep -E \
+            '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx)|go/vendor/|go/generated/|swift/Packages/|go\.sum$|Package\.resolved$|package-lock\.json$|yarn\.lock$|Cargo\.lock$)' \
+            || true)
+          if [ -n "$PROTECTED" ]; then
+            echo "::error::Claude modified protected path(s) — reverting and aborting:"
+            echo "$PROTECTED"
+            git checkout -- .
+            exit 1
+          fi
+          DISALLOWED=$(git diff --name-only | grep -vE \
+            '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)' \
+            || true)
+          if [ -n "$DISALLOWED" ]; then
+            echo "::error::Claude modified file(s) outside allowed source directories — reverting:"
+            echo "$DISALLOWED"
+            git checkout -- .
+            exit 1
+          fi
+          # 4. Extension blocklist — runs pre-stage so docs/evil.yml fails before git add
           BLOCKED_EXT=""
           while IFS= read -r -d '' f; do
             [ -z "$f" ] && continue
@@ -571,8 +599,20 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             esac
           done < <({ git diff -z --name-only; git ls-files -z --others --exclude-standard; } 2>/dev/null)
           if [ -n "$BLOCKED_EXT" ]; then
-            echo "::error::AI modified script/config file(s) — aborting:"
+            echo "::error::Claude modified script/config file(s) — reverting and aborting:"
             echo "$BLOCKED_EXT"
+            git checkout -- .
+            exit 1
+          fi
+
+      - name: Commit any uncommitted changes
+        id: commit
+        run: |
+          # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
+          HOOK_FILES=$(find .git/hooks -maxdepth 1 -type f -not -name '*.sample' 2>/dev/null | head -5 || true)
+          if [ -n "$HOOK_FILES" ]; then
+            echo "::error::Unexpected hook files in .git/hooks/ — aborting:"
+            echo "$HOOK_FILES"
             exit 1
           fi
           git add -A
