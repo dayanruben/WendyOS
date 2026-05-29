@@ -424,9 +424,10 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # between Claude writing and the scrubber running with world-readable files.
           install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
-          # Snapshot untracked files BEFORE Claude runs so we can diff after.
-          # This detects new files even if they are later removed by Claude.
-          PRE_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
+          # Snapshot ALL untracked files (including gitignored) BEFORE Claude runs.
+          # Omitting --exclude-standard ensures Claude cannot hide a new file by
+          # also writing a matching .gitignore pattern — all files are captured.
+          PRE_RUN_UNTRACKED=$(git ls-files --others | sort)
           # Use env -i to limit Claude's visible environment to only what it needs.
           # This keeps workflow secrets out of /proc/self/environ for the claude process.
           # --allowedTools "Edit,MultiEdit" is an EXCLUSIVE allowlist — all other tools are
@@ -447,15 +448,16 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # Detects any files Claude created (Edit on non-existent path, CLI bug, etc.).
           # Running the check here (immediately after Claude exits, before any git add)
           # ensures no new files can be staged or committed.
-          # Abort if Claude modified .gitignore — a modified .gitignore could hide
-          # newly created files from the --exclude-standard scan below.
+          # Abort if Claude modified .gitignore (belt-and-suspenders — the scan
+          # below already omits --exclude-standard, but a tampered .gitignore
+          # could affect other git tooling in subsequent steps).
           if git diff --name-only | grep -qF '.gitignore'; then
             echo "::error::Claude modified .gitignore — aborting (could hide new files from detection)"
             git clean -fd 2>/dev/null || true
             git checkout -- . 2>/dev/null || true
             exit 1
           fi
-          POST_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
+          POST_RUN_UNTRACKED=$(git ls-files --others | sort)
           NEW_FILES=$(diff <(echo "$PRE_RUN_UNTRACKED") <(echo "$POST_RUN_UNTRACKED") \
             | grep '^>' | sed 's/^> //' | head -5 || true)
           if [ -n "$NEW_FILES" ]; then
@@ -518,7 +520,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
               echo "::error::AI created/modified file outside allowed directories: $f"
               exit 1
             fi
-          done < <({ git diff -z --name-only; git ls-files -z --others --exclude-standard; } 2>/dev/null)
+          done < <({ git diff -z --name-only; git ls-files -z --others; } 2>/dev/null)
           # Extension blocklist runs PRE-STAGE (before git add) to block script/config files.
           # Running pre-commit ensures docs/evil.yml fails before staging, not post-commit.
           BLOCKED_EXT=""
@@ -531,7 +533,7 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
                 BLOCKED_EXT="$BLOCKED_EXT $f"
                 ;;
             esac
-          done < <({ git diff --name-only; git ls-files --others --exclude-standard; } 2>/dev/null)
+          done < <({ git diff --name-only; git ls-files --others; } 2>/dev/null)
           if [ -n "$BLOCKED_EXT" ]; then
             echo "::error::AI modified script/config file(s) — aborting:"
             echo "$BLOCKED_EXT"
@@ -624,16 +626,16 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           echo "::add-mask::$TOKEN"
           PUSH_TOKEN="$TOKEN"
           unset TOKEN
-          # Runtime verification: confirm main branch protection is configured before
-          # pushing with long-lived PAT. Aborts if protection is explicitly absent;
-          # proceeds if read access is denied (403) since we cannot verify.
-          PROT_STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" \
-            --jq '.message // "ok"' 2>/dev/null || echo 'ACCESS_DENIED')
-          if [ "$PROT_STATUS" = "Branch not protected" ]; then
-            echo "::error::main branch protection is not configured — aborting PAT push (required server-side control)"
+          # Runtime verification: confirm main branch is protected before pushing with
+          # long-lived PAT. Fail closed: any error or non-true response aborts the push.
+          # Uses branches/{branch} endpoint (requires only contents:read).
+          IS_PROTECTED=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" \
+            --jq '.protected' 2>/dev/null || echo 'false')
+          if [ "$IS_PROTECTED" != "true" ]; then
+            echo "::error::main branch protection is not enabled (got: $IS_PROTECTED) — aborting PAT push (required server-side control)"
             exit 1
           fi
-          echo "Branch protection check: $PROT_STATUS"
+          echo "Branch protection confirmed: main is protected"
           # Re-validate branch name at push time (belt-and-suspenders; gate also validates).
           if ! printf '%s' "$BRANCH" | grep -qE '^ai/issue-[0-9]+(-[a-z0-9-]+)?(-[0-9]{14})?$'; then
             echo "::error::BRANCH '$BRANCH' does not match expected ai/issue-* pattern — aborting push"

@@ -1227,16 +1227,16 @@ Feedback to address:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "::add-mask::$TOKEN"
-          # Runtime verification: confirm main branch protection is configured before
-          # pushing with long-lived PAT. Aborts if protection is explicitly absent;
-          # proceeds if read access is denied (403) since we cannot verify.
-          PROT_STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" \
-            --jq '.message // "ok"' 2>/dev/null || echo 'ACCESS_DENIED')
-          if [ "$PROT_STATUS" = "Branch not protected" ]; then
-            echo "::error::main branch protection is not configured — aborting PAT push (required server-side control)"
+          # Runtime verification: confirm main branch is protected before pushing with
+          # long-lived PAT. Fail closed: any error or non-true response aborts the push.
+          # Uses branches/{branch} endpoint (requires only contents:read).
+          IS_PROTECTED=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" \
+            --jq '.protected' 2>/dev/null || echo 'false')
+          if [ "$IS_PROTECTED" != "true" ]; then
+            echo "::error::main branch protection is not enabled (got: $IS_PROTECTED) — aborting PAT push (required server-side control)"
             exit 1
           fi
-          echo "Branch protection check: $PROT_STATUS"
+          echo "Branch protection confirmed: main is protected"
           # Move token out of named env var immediately so it is absent from the
           # shell's /proc/self/environ for the rest of this step's child processes.
           PUSH_TOKEN="$TOKEN"
