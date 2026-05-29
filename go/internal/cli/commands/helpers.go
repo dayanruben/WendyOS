@@ -295,6 +295,10 @@ func resolveDeviceAddress() (addr string, isDefault bool, err error) {
 	if hostname == "" {
 		return "", false, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
+	// If the hostname already contains a port, use it as-is.
+	if _, _, splitErr := net.SplitHostPort(hostname); splitErr == nil {
+		return hostname, isDefault, nil
+	}
 	return hostPort(hostname, defaultAgentPort), isDefault, nil
 }
 
@@ -577,28 +581,33 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 	if len(allCerts) > 0 {
 		host, portStr, _ := net.SplitHostPort(plaintextAddr)
 		if port, err := strconv.Atoi(portStr); err == nil {
-			mtlsAddr := hostPort(host, port+agentMTLSPortOffset)
-			for i := range allCerts {
-				conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
-				if tlsErr != nil {
-					if tlsDebug {
-						fmt.Fprintf(os.Stderr, "[tls-debug] ConnectWithTLS(%s) error: %v\n", mtlsAddr, tlsErr)
+			// Try the given port first (covers explicit tunnel ports that already
+			// point at the mTLS port), then fall back to port+1 (the normal case
+			// where discovery returns the plaintext port and mTLS is port+1).
+			mtlsAddrs := []string{plaintextAddr, hostPort(host, port+1)}
+			for _, mtlsAddr := range mtlsAddrs {
+				for i := range allCerts {
+					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
+					if tlsErr != nil {
+						if tlsDebug {
+							fmt.Fprintf(os.Stderr, "[tls-debug] ConnectWithTLS(%s) error: %v\n", mtlsAddr, tlsErr)
+						}
+						continue
 					}
-					continue
+					// grpc.NewClient is lazy — verify the connection actually
+					// works with a fast probe before committing to mTLS.
+					// 8s allows time for mDNS (.local) resolution + TCP + TLS handshake.
+					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+					cancel()
+					if probeErr == nil {
+						return conn, nil
+					}
+					if tlsDebug {
+						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
+					}
+					conn.Close()
 				}
-				// grpc.NewClient is lazy — verify the connection actually
-				// works with a fast probe before committing to mTLS.
-				// 8s allows time for mDNS (.local) resolution + TCP + TLS handshake.
-				probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
-				cancel()
-				if probeErr == nil {
-					return conn, nil
-				}
-				if tlsDebug {
-					fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
-				}
-				conn.Close()
 			}
 		}
 	}
@@ -957,7 +966,10 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 
 	// If a device hostname was given, connect via gRPC (with mTLS if authenticated).
 	if device != "" {
-		addr := hostPort(device, defaultAgentPort)
+		addr := device
+		if _, _, splitErr := net.SplitHostPort(device); splitErr != nil {
+			addr = hostPort(device, defaultAgentPort)
+		}
 		startedAt := time.Now()
 		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
 		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)

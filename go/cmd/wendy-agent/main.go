@@ -159,7 +159,7 @@ func main() {
 	// Start container monitor only when containerd is available.
 	var monitor *container.ContainerMonitor
 	if containerdClient != nil {
-		monitor = container.NewContainerMonitor(logger, containerdClient, 15*time.Second)
+		monitor = container.NewContainerMonitor(logger, containerdClient, logManager, 15*time.Second)
 	}
 
 	containerSvcOpts := []services.ContainerServiceOption{
@@ -276,6 +276,13 @@ func main() {
 		agentPort = p
 	}
 
+	// mtlsPortNum is agentPort+1; computed here so startTunnelBroker can capture it.
+	agentPortNum, err := strconv.Atoi(agentPort)
+	if err != nil {
+		logger.Fatal("Invalid agent port", zap.String("port", agentPort), zap.Error(err))
+	}
+	mtlsPortNum := agentPortNum + 1
+
 	// startTunnelBroker launches the tunnel broker presence loop in the background.
 	// ProvisioningInfo() is called inside the goroutine to avoid re-entering the
 	// provisioning mutex when called from the OnProvisioned callback.
@@ -296,7 +303,7 @@ func main() {
 				logger.Warn("CA chain PEM unavailable; cannot start tunnel broker (re-provision if this persists)")
 				return
 			}
-			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, chainPEM)
+			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, chainPEM, mtlsPortNum)
 			client.Run(ctx)
 		}()
 	}
@@ -371,13 +378,6 @@ func main() {
 			}
 		}()
 	}
-
-	// mtlsPortNum is agentPort+1; used for the mTLS server and Avahi advertisement.
-	agentPortNum, err := strconv.Atoi(agentPort)
-	if err != nil {
-		logger.Fatal("Invalid agent port", zap.String("port", agentPort), zap.Error(err))
-	}
-	mtlsPortNum := agentPortNum + 1
 
 	// startBLEPeripheral starts BLE advertising and the mTLS-protected L2CAP server.
 	// Only called after the device is provisioned so the cert is available.
