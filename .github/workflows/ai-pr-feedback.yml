@@ -22,10 +22,13 @@ name: AI PR Feedback Loop
 #     AskFollowupQuestion,mcp__*"  Belt-and-suspenders: explicit denial in
 #     addition to the allowlist, for defense-in-depth.
 #   env -i isolates environment (no GITHUB_TOKEN, no runner tokens)
-#   ACCEPTED RISK: ANTHROPIC_API_KEY and ANTHROPIC_SYSTEM_PROMPT (which contains
-#     the UUID sentinel) are both visible in /proc/<pid>/environ of the Claude
-#     process to same-UID processes for the duration of the invocation. The
-#     sentinel's confidentiality cannot be guaranteed via env var delivery.
+#   ACCEPTED RISK: ANTHROPIC_API_KEY is present in the parent shell's exported
+#     environment at step start (injected by the step env: block). We immediately
+#     unset it and move it to a shell-local var before the Claude invocation, so
+#     it is absent from the parent's /proc/<pid>/environ during the long-running
+#     call. ANTHROPIC_SYSTEM_PROMPT (containing the UUID sentinel) is visible in
+#     /proc/<claude-pid>/environ of the claude process to same-UID processes.
+#     The sentinel's confidentiality cannot be guaranteed via env var delivery.
 #     On GitHub-hosted runners, no other same-UID process is spawned after the
 #     step starts; the runner agent itself does not inspect subprocess environ.
 #     Mitigation: Claude CLI does not support file-descriptor or named-pipe key/
@@ -885,18 +888,23 @@ Feedback to address:
           # and runner tokens from reaching Claude via /proc/self/environ, on-disk auth
           # caches, or credential helpers.  ANTHROPIC_SYSTEM_PROMPT is used instead of
           # --system-prompt to keep instructions out of /proc/cmdline.
-          # ACCEPTED RISK: ANTHROPIC_SYSTEM_PROMPT is visible in /proc/self/environ of the
-          # claude process to any process running as the same UID. It contains the UUID
-          # sentinel used to delimit structured output. Mitigations: (1) the sentinel is
-          # per-run random, unknown to external attackers; (2) Claude runs with the least
-          # privilege --allowedTools restriction; (3) parent shell vars are zeroed immediately
-          # after the process exits (see unset below).
+          # Move ANTHROPIC_API_KEY to a shell-local (unexported) variable, then unset the
+          # exported env var. After this point ANTHROPIC_API_KEY no longer appears in the
+          # parent shell's /proc/<parent-pid>/environ for the duration of the Claude call.
+          # ACCEPTED RISK: _ANTHROPIC_KEY (below) is a shell-local var — not exported, so
+          # absent from /proc/environ. It IS briefly visible in /proc/<env-pid>/cmdline
+          # when the env -i assignment expands. ANTHROPIC_SYSTEM_PROMPT remains visible in
+          # /proc/self/environ of the claude process; sentinel is per-run random. Primary
+          # security controls (allowlisted tools, path checks, extension blocklist) do not
+          # depend on secrecy of these values — they are independent defence-in-depth layers.
+          _ANTHROPIC_KEY="${ANTHROPIC_API_KEY}"
+          unset ANTHROPIC_API_KEY
           # Pre-create output files with restricted permissions — eliminates the race
-          # window where unscubbed content exists in world-readable files.
+          # window where unscrubbed content exists in world-readable files.
           install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
           env -i HOME="$HOME" PATH="$PATH" \
-            ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            ANTHROPIC_API_KEY="${_ANTHROPIC_KEY}" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
             claude --print \
             --allowedTools "Edit,MultiEdit" \
@@ -907,21 +915,15 @@ Feedback to address:
           # Scrub ANTHROPIC_API_KEY from artifact files BEFORE zeroing env vars.
           # Key is passed via stdin (not argv or env) so it does not appear in
           # /proc/cmdline. ::add-mask:: protects the runner log; this scrubs files.
-          _KEY_FOR_SCRUB="$ANTHROPIC_API_KEY"
           for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
-            [ -f "$_sf" ] && [ -n "$_KEY_FOR_SCRUB" ] && \
-              printf '%s' "$_KEY_FOR_SCRUB" | python3 -c \
+            [ -f "$_sf" ] && [ -n "$_ANTHROPIC_KEY" ] && \
+              printf '%s' "$_ANTHROPIC_KEY" | python3 -c \
               "import sys,pathlib; k=sys.stdin.read(); p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace(k,'[REDACTED]')) if k else None" \
               "$_sf"
           done
-          _KEY_FOR_SCRUB=""
-          unset _KEY_FOR_SCRUB
-          # Zero out sensitive shell vars AFTER scrubber — they are no longer
-          # needed and should not persist in the parent shell's environment.
-          ANTHROPIC_API_KEY=""
-          SYSTEM_PROMPT=""
-          USER_PROMPT=""
-          unset ANTHROPIC_API_KEY SYSTEM_PROMPT USER_PROMPT
+          # Zero out sensitive shell-local vars after use.
+          _ANTHROPIC_KEY=""
+          unset _ANTHROPIC_KEY SYSTEM_PROMPT USER_PROMPT
           cat "$RUNNER_TEMP/claude-output.txt"
           if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
             echo "--- stderr ---"
@@ -1252,14 +1254,19 @@ Feedback to address:
             exit 1
           fi
           echo "Branch protection confirmed: main is protected"
-          # Secondary check: verify at least one repository ruleset exists.
-          # Fail closed: no rulesets means no server-side push restrictions configured.
-          RULESETS=$(gh api "repos/${GITHUB_REPOSITORY}/rulesets" --jq 'length' 2>/dev/null || echo '0')
-          if [ "$RULESETS" = "0" ]; then
-            echo "::error::No repository rulesets found — server-side push restrictions not configured (required control)"
+          # Secondary check: verify an active ruleset covers the ai/** branch pattern.
+          # Fail closed: any error or no matching ruleset aborts the push.
+          # Checks for rulesets whose include patterns contain ~ALL (all branches),
+          # refs/heads/ai/ prefix, refs/heads/**, or refs/heads/* to ensure server-side
+          # push restrictions are actually in scope for the branch we will push to.
+          MATCHING_RULESETS=$(gh api "repos/${GITHUB_REPOSITORY}/rulesets" \
+            --jq '[.[] | select(.enforcement == "active") | select(any((.conditions.ref_name.include // [])[]?; . == "~ALL" or startswith("refs/heads/ai/") or . == "refs/heads/**" or . == "refs/heads/*"))] | length' \
+            2>/dev/null || echo '0')
+          if [ "$MATCHING_RULESETS" = "0" ]; then
+            echo "::error::No active ruleset covers ai/** branches — server-side push restrictions not configured"
             exit 1
           fi
-          echo "Repository rulesets: $RULESETS found"
+          echo "Matching active rulesets for ai/**: $MATCHING_RULESETS found"
           # Move token out of named env var immediately so it is absent from the
           # shell's /proc/self/environ for the rest of this step's child processes.
           PUSH_TOKEN="$TOKEN"

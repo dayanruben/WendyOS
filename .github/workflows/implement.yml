@@ -441,15 +441,23 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # between Claude writing and the scrubber running with world-readable files.
           install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
           install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
+          # Move ANTHROPIC_API_KEY to a shell-local (unexported) variable, then unset the
+          # exported env var so it no longer appears in parent shell's /proc/<pid>/environ
+          # for the duration of the Claude invocation.
+          # ACCEPTED RISK: _ANTHROPIC_KEY is a shell-local var — not exported, absent from
+          # /proc/environ. It IS briefly visible in /proc/<env-pid>/cmdline when the env -i
+          # assignment expands. Primary security controls (allowlisted tools, path checks,
+          # extension blocklist) are independent and do not rely on key secrecy.
+          _ANTHROPIC_KEY="${ANTHROPIC_API_KEY}"
+          unset ANTHROPIC_API_KEY
           # Use env -i to limit Claude's visible environment to only what it needs.
-          # This keeps workflow secrets out of /proc/self/environ for the claude process.
           # --allowedTools "Edit,MultiEdit" is an EXCLUSIVE allowlist — all other tools are
           # blocked by the Claude Code CLI. The Edit tool CAN create files at non-existent
           # paths in some CLI versions; the invariant check below enforces the edit-only model.
-          # Snapshot all untracked files (including gitignored) BEFORE Claude runs.
+          # Snapshot all untracked files BEFORE Claude runs to detect any new-file creation.
           PRE_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
           env -i HOME="$HOME" PATH="$PATH" \
-            ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            ANTHROPIC_API_KEY="${_ANTHROPIC_KEY}" \
             ANTHROPIC_SYSTEM_PROMPT="$SYSTEM_PROMPT" \
             claude --print \
             --allowedTools "Edit,MultiEdit" \
@@ -480,15 +488,14 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           fi
           # Scrub API key from artifact files before upload (mirrors ai-pr-feedback.yml).
           # ::add-mask:: protects runner logs; this scrubs the files themselves.
-          _KEY_FOR_SCRUB="$ANTHROPIC_API_KEY"
           for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
-            [ -f "$_sf" ] && [ -n "$_KEY_FOR_SCRUB" ] && \
-              printf '%s' "$_KEY_FOR_SCRUB" | python3 -c \
+            [ -f "$_sf" ] && [ -n "$_ANTHROPIC_KEY" ] && \
+              printf '%s' "$_ANTHROPIC_KEY" | python3 -c \
               "import sys,pathlib; k=sys.stdin.read(); p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace(k,'[REDACTED]')) if k else None" \
               "$_sf"
           done
-          _KEY_FOR_SCRUB=""
-          unset _KEY_FOR_SCRUB
+          _ANTHROPIC_KEY=""
+          unset _ANTHROPIC_KEY
           cat "$RUNNER_TEMP/claude-output.txt"
           if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
             echo "--- stderr ---"
@@ -638,14 +645,16 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
             exit 1
           fi
           echo "Branch protection confirmed: main is protected"
-          # Secondary check: verify at least one repository ruleset exists.
-          # Fail closed: no rulesets means no server-side push restrictions configured.
-          RULESETS=$(gh api "repos/${GITHUB_REPOSITORY}/rulesets" --jq 'length' 2>/dev/null || echo '0')
-          if [ "$RULESETS" = "0" ]; then
-            echo "::error::No repository rulesets found — server-side push restrictions not configured (required control)"
+          # Secondary check: verify an active ruleset covers the ai/** branch pattern.
+          # Fail closed: any error or no matching ruleset aborts the push.
+          MATCHING_RULESETS=$(gh api "repos/${GITHUB_REPOSITORY}/rulesets" \
+            --jq '[.[] | select(.enforcement == "active") | select(any((.conditions.ref_name.include // [])[]?; . == "~ALL" or startswith("refs/heads/ai/") or . == "refs/heads/**" or . == "refs/heads/*"))] | length' \
+            2>/dev/null || echo '0')
+          if [ "$MATCHING_RULESETS" = "0" ]; then
+            echo "::error::No active ruleset covers ai/** branches — server-side push restrictions not configured"
             exit 1
           fi
-          echo "Repository rulesets: $RULESETS found"
+          echo "Matching active rulesets for ai/**: $MATCHING_RULESETS found"
           # Re-validate branch name at push time (belt-and-suspenders; gate also validates).
           # Also explicitly reject git ref injection chars (^~:?*[]{}\ null).
           if printf '%s' "$BRANCH" | python3 -c "
@@ -690,9 +699,11 @@ sys.exit(0)
             REMOTE_SHA=""
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          # Use explicit lease with null SHA for new branches to ensure git interprets
-          # an empty REMOTE_SHA as "ref must not exist" unambiguously across git versions.
-          # The null SHA (40 zeros) is the git protocol's canonical "no ref" value.
+          # Use explicit lease with null SHA for new branches.  NULL_SHA (40 zeros) is
+          # the git protocol's canonical "no ref" sentinel: git REJECTS the push if the
+          # remote branch already exists, making the push fail-closed rather than silently
+          # overwriting concurrent commits.  This eliminates the TOCTOU window between the
+          # ls-remote call and the push — a race causes a controlled failure, not overwrite.
           NULL_SHA="0000000000000000000000000000000000000000"
           LEASE_SHA="${REMOTE_SHA:-$NULL_SHA}"
           env -i HOME="$HOME" PATH="$PATH" \
