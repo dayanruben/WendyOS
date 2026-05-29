@@ -447,6 +447,14 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # Detects any files Claude created (Edit on non-existent path, CLI bug, etc.).
           # Running the check here (immediately after Claude exits, before any git add)
           # ensures no new files can be staged or committed.
+          # Abort if Claude modified .gitignore — a modified .gitignore could hide
+          # newly created files from the --exclude-standard scan below.
+          if git diff --name-only | grep -qF '.gitignore'; then
+            echo "::error::Claude modified .gitignore — aborting (could hide new files from detection)"
+            git clean -fd 2>/dev/null || true
+            git checkout -- . 2>/dev/null || true
+            exit 1
+          fi
           POST_RUN_UNTRACKED=$(git ls-files --others --exclude-standard | sort)
           NEW_FILES=$(diff <(echo "$PRE_RUN_UNTRACKED") <(echo "$POST_RUN_UNTRACKED") \
             | grep '^>' | sed 's/^> //' | head -5 || true)
@@ -611,10 +619,21 @@ process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync(proc
           # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ needs.gate.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "::add-mask::$TOKEN"
           PUSH_TOKEN="$TOKEN"
           unset TOKEN
+          # Runtime verification: confirm main branch protection is configured before
+          # pushing with long-lived PAT. Aborts if protection is explicitly absent;
+          # proceeds if read access is denied (403) since we cannot verify.
+          PROT_STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" \
+            --jq '.message // "ok"' 2>/dev/null || echo 'ACCESS_DENIED')
+          if [ "$PROT_STATUS" = "Branch not protected" ]; then
+            echo "::error::main branch protection is not configured — aborting PAT push (required server-side control)"
+            exit 1
+          fi
+          echo "Branch protection check: $PROT_STATUS"
           # Re-validate branch name at push time (belt-and-suspenders; gate also validates).
           if ! printf '%s' "$BRANCH" | grep -qE '^ai/issue-[0-9]+(-[a-z0-9-]+)?(-[0-9]{14})?$'; then
             echo "::error::BRANCH '$BRANCH' does not match expected ai/issue-* pattern — aborting push"

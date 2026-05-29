@@ -1224,8 +1224,19 @@ Feedback to address:
           TOKEN: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
           BRANCH: ${{ needs.gate.outputs.head_branch }}
           EXPECTED_SHA: ${{ needs.gate.outputs.head_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "::add-mask::$TOKEN"
+          # Runtime verification: confirm main branch protection is configured before
+          # pushing with long-lived PAT. Aborts if protection is explicitly absent;
+          # proceeds if read access is denied (403) since we cannot verify.
+          PROT_STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" \
+            --jq '.message // "ok"' 2>/dev/null || echo 'ACCESS_DENIED')
+          if [ "$PROT_STATUS" = "Branch not protected" ]; then
+            echo "::error::main branch protection is not configured — aborting PAT push (required server-side control)"
+            exit 1
+          fi
+          echo "Branch protection check: $PROT_STATUS"
           # Move token out of named env var immediately so it is absent from the
           # shell's /proc/self/environ for the rest of this step's child processes.
           PUSH_TOKEN="$TOKEN"
