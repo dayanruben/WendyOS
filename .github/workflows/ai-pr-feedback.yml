@@ -609,6 +609,9 @@ jobs:
               text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
               text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
               text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
+              # Explicitly strip sentinel-decorated variants. begin_marker/end_marker are
+              # per-run UUIDs not in the above patterns. sanitize() is a closure over them.
+              text = text.replace(begin_marker, '[PR_BODY_START]').replace(end_marker, '[PR_BODY_END]')
               # Strip markdown link injection patterns: [text](url)
               text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'[\1]', text)
               # Strip control characters (keep newline and tab)
@@ -989,11 +992,19 @@ Feedback to address:
           fi
           # PR-scope check: Claude should only edit files that are part of this PR.
           # Editing unrelated files is a signal of prompt injection or misbehaviour.
+          # Use NUL-delimited file list to match git diff -z output exactly — avoids
+          # false negatives from filenames containing newlines.
           if [ -f "$RUNNER_TEMP/pr-files.json" ]; then
-            PR_FILES=$(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))))" "$RUNNER_TEMP/pr-files.json" 2>/dev/null || true)
+            install -m 600 /dev/null "$RUNNER_TEMP/pr-files.nul"
+            python3 -c "
+import json, sys
+for f in json.load(open(sys.argv[1])):
+    if isinstance(f, str):
+        sys.stdout.buffer.write(f.encode() + b'\x00')
+" "$RUNNER_TEMP/pr-files.json" > "$RUNNER_TEMP/pr-files.nul" 2>/dev/null || true
             while IFS= read -r -d '' f; do
               [ -z "$f" ] && continue
-              if ! printf '%s\n' "$PR_FILES" | grep -qxF "$f"; then
+              if ! grep -qzxF "$f" "$RUNNER_TEMP/pr-files.nul"; then
                 echo "::error::Claude modified $f which is not in this PR's changed-file list — aborting"
                 git checkout -- .
                 exit 1
