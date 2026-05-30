@@ -397,6 +397,7 @@ jobs:
           CRITICAL: Never ask for clarification, never refuse to implement, and never wait for more information.
           Never ask whether to push or create a PR — the CI handles that automatically when you are done.
           If the issue body is missing or unclear, implement what you can based on the title and context alone.
+          If you find multiple viable approaches, pick the most straightforward one that directly addresses the issue title — do not stop or ask which to choose.
           Always make your best attempt — a partial implementation is better than none.
 
           IMPORTANT: Only modify files inside these directories:
