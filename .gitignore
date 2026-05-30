@@ -48,3 +48,4 @@ vendor/
 docs/superpowers/
 .claude
 go/go/bin
+/wendy-agent
