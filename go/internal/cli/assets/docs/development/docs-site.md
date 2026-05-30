@@ -80,13 +80,18 @@ The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
 | Pull request to `main` from this repository | Builds and deploys a branch preview |
 | Published stable release | Deploys `release-<version>/` and updates `latest/` |
 | Published prerelease/nightly | Deploys `release-nightly-<version>/` and updates `latest-nightly/` |
-| Manual dispatch | Builds a branch-style preview artifact without deploying |
+| Manual dispatch (no inputs) | Builds a branch-style preview artifact without deploying |
+| Manual dispatch with `release_tag` input | Deploys a release, identical to a published-release trigger. The `release_prerelease` input selects the target: `false` (default) deploys `release-<version>/` and updates `latest/`; `true` deploys `release-nightly-<version>/` and updates `latest-nightly/`. The dispatch ref must match `release_tag` (dispatch with `--ref "<release_tag>"`), otherwise the deploy fails fast so docs built from one ref are never published under a different release path. |
 
 The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`. Static exports include
 SHA-256 manifests that are verified before each deploy path is synced.
-Release deploys also ensure bucket object versioning is enabled before updating
-`latest/` or `latest-nightly/`, so alias overwrites remain recoverable.
+Release deploys attempt to enable bucket object versioning before updating
+`latest/` or `latest-nightly/` so alias overwrites remain recoverable. If the
+deploy identity lacks bucket-update permission, the deploy verifies the current
+state instead: it aborts only when versioning is confirmed disabled (an
+overwrite would be unrecoverable), and continues with a warning when versioning
+is already enabled out-of-band or cannot be read.
 
 Required GitHub environment variables:
 
