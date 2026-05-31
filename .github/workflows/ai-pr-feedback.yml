@@ -330,10 +330,22 @@ jobs:
           # Checked here (gate, no AI, no write tokens) rather than in respond to limit
           # the blast radius to the minimal gate job (contents:read is sufficient for
           # the rulesets API; administration:read is not a valid GITHUB_TOKEN scope).
-          MATCHING_RULESETS=$(gh api --paginate "repos/$REPO/rulesets" \
-            2>/dev/null \
-            | jq --slurp '(add // []) | [.[] | select(.enforcement == "active") | select(any((.conditions.ref_name.include // [])[]?; . == "~ALL" or startswith("refs/heads/ai/") or . == "refs/heads/**" or . == "refs/heads/*"))] | length' \
-            || echo '0')
+          # The list endpoint omits conditions, so each ruleset's details must be fetched
+          # individually to evaluate ref_name.include patterns.
+          MATCHING_RULESETS=$(
+            gh api --paginate "repos/$REPO/rulesets" 2>/dev/null \
+              | jq -r '[.[] | select(.enforcement == "active") | .id] | .[]' \
+              | while IFS= read -r id; do
+                  gh api "repos/$REPO/rulesets/$id" 2>/dev/null || true
+                done \
+              | jq --slurp '
+                  [.[] | select(type == "object") |
+                   select(.enforcement == "active") |
+                   select(any((.conditions.ref_name.include // [])[]?;
+                     . == "~ALL" or startswith("refs/heads/ai/") or
+                     . == "refs/heads/**" or . == "refs/heads/*"))] | length
+                ' 2>/dev/null \
+              || echo '0')
           if [ "$MATCHING_RULESETS" = "0" ]; then
             echo "::error::No active ruleset covers ai/** branches — server-side push restrictions not configured"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
@@ -362,6 +374,7 @@ jobs:
       checks: read
       actions: read
       issues: write
+      administration: read
     # SECURITY NOTE — step-level secrets:
     #   ANTHROPIC_API_KEY is injected only in the "Run Claude Code" step env.
     #   WENDY_TEMPLATE_SYNC_TOKEN (PAT for git push) is scoped to the "Push changes" step.
@@ -1282,7 +1295,7 @@ jobs:
             exit 1
           fi
           echo "Branch protection confirmed: main is protected"
-          # Ruleset check was moved to the gate job's guard step (no AI, no write tokens).
+          # Ruleset check is in the gate job's guard step (no AI, no write tokens).
           # Move token out of named env var immediately so it is absent from the
           # shell's /proc/self/environ for the rest of this step's child processes.
           PUSH_TOKEN="$TOKEN"
@@ -1311,8 +1324,8 @@ jobs:
           # This check is re-done here because up to 30 min can elapse between
           # gate and push, and the concurrency group does not cancel queued runs.
           CURRENT_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open" \
-            --jq --arg b "$BRANCH" '.[] | select(.head.ref == $b) | .head.sha' \
-            2>/dev/null | head -1 || true)
+            2>/dev/null | jq -r --arg b "$BRANCH" '.[] | select(.head.ref == $b) | .head.sha' \
+            | head -1 || true)
           if [ -z "$CURRENT_SHA" ]; then
             echo "::error::Branch '$BRANCH' is not the head of any open PR — aborting"
             exit 1
