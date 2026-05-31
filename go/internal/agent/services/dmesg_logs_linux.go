@@ -205,16 +205,22 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 
 	// Verify device major/minor numbers match /dev/kmsg (major=1, minor=11) to
 	// prevent a bind-mount substituting another char device (e.g. /dev/urandom).
+	// Fail closed: if Fstat itself fails, skip collection rather than proceed
+	// without device-number verification (bind-mount hardening must not be skipped).
 	var kst unix.Stat_t
-	if err := unix.Fstat(int(f.Fd()), &kst); err == nil {
-		if maj, min := unix.Major(kst.Rdev), unix.Minor(kst.Rdev); maj != 1 || min != 11 {
-			logger.Warn("dmesg: /dev/kmsg has unexpected device numbers; skipping",
-				zap.Uint32("major", maj),
-				zap.Uint32("minor", min),
-			)
-			_ = f.Close()
-			return
-		}
+	if err := unix.Fstat(int(f.Fd()), &kst); err != nil {
+		logger.Warn("dmesg: cannot verify /dev/kmsg device numbers; skipping collection",
+			zap.Error(err),
+		)
+		_ = f.Close()
+		return
+	} else if maj, min := unix.Major(kst.Rdev), unix.Minor(kst.Rdev); maj != 1 || min != 11 {
+		logger.Warn("dmesg: /dev/kmsg has unexpected device numbers; skipping",
+			zap.Uint32("major", maj),
+			zap.Uint32("minor", min),
+		)
+		_ = f.Close()
+		return
 	}
 
 	if atomic.LoadInt32(&redactAtomic) != 0 {
@@ -300,7 +306,11 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 		}
 	}()
 
-	resource := dmesgResource(atomic.LoadInt32(&redactAtomic) != 0, hostname)
+	// Pre-compute both resource variants; pick per-publish based on current atomic
+	// redactAtomic so the resource attributes always reflect the effective state
+	// even if redaction is re-enabled at runtime (PII allow-file removed).
+	redactOnResource := dmesgResource(true, hostname)
+	redactOffResource := dmesgResource(false, hostname)
 	bootEpoch := kmsgBootEpochNanoseconds()
 
 	// Sliding-window rate limiter for non-critical messages only.
@@ -414,6 +424,10 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 
 		timeNano := kmsgTimestampToWall(tsUS, bootEpoch)
 		severity, severityText := kernelLevelToOTEL(level)
+		resource := redactOnResource
+		if atomic.LoadInt32(&redactAtomic) == 0 {
+			resource = redactOffResource
+		}
 		broadcaster.PublishLogs(&otelpb.ExportLogsServiceRequest{
 			ResourceLogs: []*otelpb.ResourceLogs{
 				{
@@ -490,7 +504,10 @@ func kmsgTimestampToWall(tsUS int64, bootEpoch int64) uint64 {
 	now := time.Now().UnixNano()
 	// maxReasonableTsUS guard prevents integer overflow in tsUS*1000 for
 	// malformed or attacker-supplied timestamps (100-year uptime upper bound).
-	if bootEpoch > 0 && tsUS > 0 && tsUS <= maxReasonableTsUS {
+	// tsUS >= 0 (not > 0): the very first kernel message has timestamp 0 (boot
+	// instant) and should map to the boot epoch, not fall back to time.Now().
+	// parseKmsgLine already rejects parse failures before tsUS reaches here.
+	if bootEpoch > 0 && tsUS >= 0 && tsUS <= maxReasonableTsUS {
 		computed := bootEpoch + tsUS*1000
 		if computed >= minValidTimestampNs && computed <= now+maxFutureSkewNs {
 			return uint64(computed)
@@ -550,11 +567,11 @@ func parseKmsgLine(line string) (level int, message string, timestampUS int64, o
 		return 0, "", 0, false
 	}
 
-	ts, _ := strconv.ParseInt(parts[2], 10, 64)
-	// Reject negative timestamps for consistency with the priority bounds check
-	// above; kmsgTimestampToWall guards against this too, but explicit rejection
-	// here prevents surprises if the caller is ever extended.
-	if ts < 0 {
+	ts, err := strconv.ParseInt(parts[2], 10, 64)
+	// Reject parse failures and negative timestamps. A failed parse leaves ts=0,
+	// which is a valid boot-epoch timestamp, so we must distinguish the two cases
+	// explicitly rather than relying on kmsgTimestampToWall's range guard.
+	if err != nil || ts < 0 {
 		return 0, "", 0, false
 	}
 	return priority & 7, message, ts, true
@@ -570,13 +587,13 @@ func kernelLevelToOTEL(level int) (otelpb.SeverityNumber, string) {
 	case 7: // KERN_DEBUG
 		return otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE"
 	case 6: // KERN_INFO
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE4, "TRACE"
+		return otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE4, "TRACE4"
 	case 5: // KERN_NOTICE
 		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG"
 	case 4: // KERN_WARNING
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG2, "DEBUG"
+		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG2, "DEBUG2"
 	case 3: // KERN_ERR
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG3, "DEBUG"
+		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG3, "DEBUG3"
 	case 2: // KERN_CRIT
 		return otelpb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN"
 	case 1: // KERN_ALERT

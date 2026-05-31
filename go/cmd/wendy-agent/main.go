@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -275,7 +276,13 @@ func main() {
 	// because kernel messages may contain PII (MAC addresses, serial numbers,
 	// process names, filesystem paths) that operators must consciously opt into
 	// forwarding to their telemetry backend.
-	collectDmesg, _ := strconv.ParseBool(os.Getenv("WENDY_COLLECT_DMESG"))
+	collectDmesgEnv := os.Getenv("WENDY_COLLECT_DMESG")
+	collectDmesg, collectDmesgErr := strconv.ParseBool(collectDmesgEnv)
+	if collectDmesgEnv != "" && collectDmesgErr != nil {
+		logger.Warn("WENDY_COLLECT_DMESG has unrecognised value; dmesg collection disabled",
+			zap.String("value", collectDmesgEnv),
+		)
+	}
 	if collectDmesg {
 		// Dual-control gate: env-var (WENDY_COLLECT_DMESG) is the first domain;
 		// the DPIA confirmation file is the second, filesystem domain. A process
@@ -283,8 +290,15 @@ func main() {
 		// CollectDmesgLogs enforces this independently, but the pre-check here
 		// makes both controls visible at the callsite and avoids starting a
 		// goroutine that would immediately return on DPIA failure.
-		if _, statErr := os.Stat(services.DmesgDPIAConfirmFile); statErr != nil {
-			logger.Info("kernel dmesg collection skipped: DPIA confirmation file absent",
+		// Check both existence and non-empty content to mirror CollectDmesgLogs.
+		dpiaContent, dpiaErr := os.ReadFile(services.DmesgDPIAConfirmFile)
+		dpiaValid := dpiaErr == nil && len(strings.TrimSpace(string(dpiaContent))) > 0
+		for i := range dpiaContent {
+			dpiaContent[i] = 0
+		}
+		dpiaContent = nil
+		if !dpiaValid {
+			logger.Info("kernel dmesg collection skipped: DPIA confirmation file absent or empty",
 				zap.String("file", services.DmesgDPIAConfirmFile),
 				zap.String("reason", "filesystem-domain gate not satisfied; WENDY_COLLECT_DMESG alone is insufficient"),
 			)
