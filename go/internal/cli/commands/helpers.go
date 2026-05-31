@@ -584,7 +584,7 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 			// point at the mTLS port), then fall back to port+1 (the normal case
 			// where discovery returns the plaintext port and mTLS is port+1).
 			mtlsAddrs := []string{plaintextAddr, hostPort(host, port+1)}
-			var lastTLSHandshakeErr error // non-nil when a handshake (not transport) error was seen
+			var tlsProbeFailures, nonTLSProbeFailures int
 			for _, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
 					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
@@ -608,14 +608,17 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 					}
 					conn.Close()
 					if isTLSHandshakeError(probeErr) {
-						lastTLSHandshakeErr = probeErr
+						tlsProbeFailures++
+					} else {
+						nonTLSProbeFailures++
 					}
 				}
 			}
-			// A TLS handshake failure means the device rejected the cert — likely
-			// clock skew. Return a clear error instead of falling back to plaintext
-			// where "connection refused" would obscure the real cause.
-			if lastTLSHandshakeErr != nil {
+			// Only skip the plaintext fallback when every probe that reached a TLS
+			// handshake was rejected — i.e. no non-TLS failures (connection refused,
+			// timeout, etc.) that would indicate the mTLS port is simply unreachable.
+			// If any probe failed for a non-TLS reason, fall through to plaintext.
+			if tlsProbeFailures > 0 && nonTLSProbeFailures == 0 {
 				return nil, fmt.Errorf("TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1")
 			}
 		}

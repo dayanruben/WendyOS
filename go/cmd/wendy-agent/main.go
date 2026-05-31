@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -546,7 +547,16 @@ func warnClockSkewIfNeeded(logger *zap.Logger, certPEM string) {
 	if block == nil {
 		return
 	}
+	// ML-DSA certs from pki-core have trailing ASN.1 bytes that cause
+	// x509.ParseCertificate to fail. Strip them with the same fallback
+	// used elsewhere in this repo (e.g. internal/agent/mtls/mldsa_verify.go).
 	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		var raw asn1.RawValue
+		if _, asn1Err := asn1.Unmarshal(block.Bytes, &raw); asn1Err == nil {
+			cert, err = x509.ParseCertificate(raw.FullBytes)
+		}
+	}
 	if err != nil {
 		return
 	}

@@ -188,9 +188,15 @@ func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error) {
 		zap.Error(err),
 	}
 	msg := "mTLS client certificate rejected"
-	if strings.Contains(err.Error(), "not yet valid") ||
-		strings.Contains(err.Error(), "certificate has expired or is not yet valid") ||
-		(strings.Contains(err.Error(), "not valid at current time") && time.Now().Before(leaf.NotBefore)) {
+	// "not yet valid" comes from Go's x509 verifier (ECDSA path);
+	// "not valid at current time" comes from verifyMLDSAClientCert (ML-DSA path).
+	// Also check NotBefore directly so future error-message changes don't miss it.
+	errMsg := err.Error()
+	clockSkew := strings.Contains(errMsg, "not yet valid") ||
+		strings.Contains(errMsg, "not valid at current time") ||
+		strings.Contains(errMsg, "certificate has expired or is not yet valid") ||
+		time.Now().Before(leaf.NotBefore)
+	if clockSkew {
 		msg += ": certificate not yet valid — device clock may be skewed; check NTP sync with: timedatectl status"
 	}
 	logger.Warn(msg, fields...)
