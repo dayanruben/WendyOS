@@ -584,8 +584,13 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 			// point at the mTLS port), then fall back to port+1 (the normal case
 			// where discovery returns the plaintext port and mTLS is port+1).
 			mtlsAddrs := []string{plaintextAddr, hostPort(host, port+1)}
-			var tlsProbeFailures, nonTLSProbeFailures int
-			for _, mtlsAddr := range mtlsAddrs {
+			// Track TLS/non-TLS failures from index 1+ only (the dedicated mTLS port).
+			// Index 0 is plaintextAddr, which is probed speculatively; probing a plaintext
+			// port with TLS predictably gives a TLS-looking error ("error reading server
+			// preface: tls: ...") and a closed plaintext port gives connection refused.
+			// Neither is a reliable signal about whether the mTLS port rejected the cert.
+			var mtlsPortTLSFails, mtlsPortNonTLSFails int
+			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
 					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
 					if tlsErr != nil {
@@ -607,18 +612,19 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
 					}
 					conn.Close()
-					if isTLSHandshakeError(probeErr) {
-						tlsProbeFailures++
-					} else {
-						nonTLSProbeFailures++
+					if addrIdx > 0 {
+						if isTLSHandshakeError(probeErr) {
+							mtlsPortTLSFails++
+						} else {
+							mtlsPortNonTLSFails++
+						}
 					}
 				}
 			}
-			// Only skip the plaintext fallback when every probe that reached a TLS
-			// handshake was rejected — i.e. no non-TLS failures (connection refused,
-			// timeout, etc.) that would indicate the mTLS port is simply unreachable.
-			// If any probe failed for a non-TLS reason, fall through to plaintext.
-			if tlsProbeFailures > 0 && nonTLSProbeFailures == 0 {
+			// Surface a TLS diagnostic only when every probe against the dedicated mTLS
+			// port (port+1) failed with a handshake error — no non-TLS failures that
+			// would indicate the port is simply unreachable.
+			if mtlsPortTLSFails > 0 && mtlsPortNonTLSFails == 0 {
 				return nil, fmt.Errorf("TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1")
 			}
 		}
