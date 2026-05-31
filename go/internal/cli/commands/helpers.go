@@ -569,6 +569,11 @@ func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpc
 // falling back to plaintext if no certs are available or all mTLS attempts fail.
 // It tries each stored certificate in order so that both production and local
 // pki-core certs are attempted.
+//
+// If every mTLS probe fails with a TLS handshake error, the plaintext fallback
+// is skipped and the TLS error is returned with a diagnostic hint. This prevents
+// the misleading "connection refused" from the plaintext port masking the real
+// cause (e.g. clock skew causing "certificate not yet valid").
 func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error) {
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	allCerts := loadAllCLICerts()
@@ -579,6 +584,7 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 			// point at the mTLS port), then fall back to port+1 (the normal case
 			// where discovery returns the plaintext port and mTLS is port+1).
 			mtlsAddrs := []string{plaintextAddr, hostPort(host, port+1)}
+			var lastTLSHandshakeErr error // non-nil when a handshake (not transport) error was seen
 			for _, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
 					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
@@ -601,11 +607,33 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
 					}
 					conn.Close()
+					if isTLSHandshakeError(probeErr) {
+						lastTLSHandshakeErr = probeErr
+					}
 				}
+			}
+			// A TLS handshake failure means the device rejected the cert — likely
+			// clock skew. Return a clear error instead of falling back to plaintext
+			// where "connection refused" would obscure the real cause.
+			if lastTLSHandshakeErr != nil {
+				return nil, fmt.Errorf("TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1")
 			}
 		}
 	}
 	return grpcclient.Connect(ctx, plaintextAddr)
+}
+
+// isTLSHandshakeError reports whether a gRPC probe error originates from a TLS
+// handshake failure rather than a plain TCP connectivity problem.
+func isTLSHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "tls:") ||
+		strings.Contains(msg, "bad certificate") ||
+		strings.Contains(msg, "authentication handshake failed") ||
+		strings.Contains(msg, "certificate required")
 }
 
 // provisionedAgentAdvertisedMTLS takes a short pre-connection LAN discovery

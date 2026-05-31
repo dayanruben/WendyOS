@@ -6,11 +6,13 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"time"
 
 	circlSign "github.com/cloudflare/circl/sign"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
+	"go.uber.org/zap"
 )
 
 var (
@@ -120,7 +122,10 @@ func verifyMLDSASignature(issuer, cert *x509.Certificate) error {
 	return nil
 }
 
-func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate) func([][]byte, [][]*x509.Certificate) error {
+// buildVerifyPeerCertificate returns a VerifyPeerCertificate callback that
+// handles both standard (RSA/ECDSA) and ML-DSA-signed certificate chains.
+// logger may be nil, in which case no logging is performed.
+func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return fmt.Errorf("no client certificate presented")
@@ -154,14 +159,39 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// signature algorithm; for all other failures return the standard error.
 		sigOID, oidErr := certSigAlgOID(leaf)
 		if oidErr != nil {
+			logCertRejection(logger, leaf, stdErr)
 			return stdErr
 		}
 		if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
+			logCertRejection(logger, leaf, stdErr)
 			return stdErr
 		}
 
-		return verifyMLDSAClientCert(leaf, caCerts)
+		mldsaErr := verifyMLDSAClientCert(leaf, caCerts)
+		if mldsaErr != nil {
+			logCertRejection(logger, leaf, mldsaErr)
+		}
+		return mldsaErr
 	}
+}
+
+// logCertRejection logs a WARN when a client cert is rejected, with a clock
+// skew hint when the error indicates the cert is not yet valid.
+func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error) {
+	if logger == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("subject", leaf.Subject.CommonName),
+		zap.Time("notBefore", leaf.NotBefore),
+		zap.Time("notAfter", leaf.NotAfter),
+		zap.Error(err),
+	}
+	msg := "mTLS client certificate rejected"
+	if strings.Contains(err.Error(), "not yet valid") || strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
+		msg += ": certificate not yet valid — device clock may be skewed; check NTP sync with: timedatectl status"
+	}
+	logger.Warn(msg, fields...)
 }
 
 // verifyMLDSAClientCert verifies a client leaf cert against the trusted CA certs
