@@ -77,11 +77,9 @@ on:
       - Docs Review
       - Integration Test Review
     types: [completed]
-    # Scope to ai/* branches only: narrows the confused-deputy surface by ensuring
-    # this workflow only fires when CI ran on an AI-managed branch, not on arbitrary
-    # branches that happen to trigger the listed workflows.
-    branches:
-      - 'ai/**'
+    # branches filter removed: it only works for push-triggered upstream workflows,
+    # not pull_request-triggered ones, so it silently prevented the loop from firing.
+    # The guard step's head-branch check (^ai/[a-z0-9]) provides the same scoping.
 
 # CONCURRENCY: cancel-in-progress: true ensures at most one run is active per PR
 # at any time. When multiple CI workflows fail on the same commit (e.g. Build,
