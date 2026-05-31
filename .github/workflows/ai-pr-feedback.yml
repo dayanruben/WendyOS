@@ -879,7 +879,7 @@ jobs:
         # (SYSTEM_PROMPT_FILE) read inside the bash subshell — not as an env var
         # value in the env -i invocation, so absent from /proc/<parent-pid>/environ.
         run: |
-          echo "::add-mask::$GITHUB_TOKEN"
+          [ -n "$GITHUB_TOKEN" ] && echo "::add-mask::$GITHUB_TOKEN" || true
           # Read prompts into shell vars, then delete the files so Claude's Read
           # tool cannot access them (or any other sensitive RUNNER_TEMP content)
           SYSTEM_PROMPT=$(cat "$RUNNER_TEMP/system-prompt.txt")
