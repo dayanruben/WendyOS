@@ -469,6 +469,19 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 	}
 }
 
+// certCommonName extracts the Subject CN from a PEM-encoded certificate.
+func certCommonName(pemCertificate string) (string, error) {
+	block, _ := pem.Decode([]byte(pemCertificate))
+	if block == nil {
+		return "", fmt.Errorf("decoding certificate PEM")
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parsing certificate: %w", err)
+	}
+	return parsed.Subject.CommonName, nil
+}
+
 // refreshCertsForAuth generates a new CSR and refreshes certificates for a single auth entry.
 func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	if len(auth.Certificates) == 0 {
@@ -477,13 +490,18 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 
 	existingCert := auth.Certificates[0]
 
+	cn, err := certCommonName(existingCert.PemCertificate)
+	if err != nil {
+		return fmt.Errorf("reading existing cert CN: %w", err)
+	}
+
 	// Generate new key pair.
 	newKeyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	csrPEM, err := certs.GenerateCSR(newKeyPEM, "wendy-cli-user")
+	csrPEM, err := certs.GenerateCSR(newKeyPEM, cn)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
