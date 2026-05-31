@@ -70,6 +70,14 @@ jobs:
             esac
             PR_NUMBER="$ISSUE_NUMBER"
             PR_DATA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null || echo '{}')
+            # Fork guard: refuse to check out or push code from a forked repository.
+            # A maintainer commenting on a fork PR must not trigger a privileged checkout.
+            HEAD_REPO=$(printf '%s' "$PR_DATA" | jq -r '.head.repo.full_name // ""')
+            if [ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+              echo "PR head is from a fork ($HEAD_REPO) — skipping"
+              echo "pr_number=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             PR_HEAD_BRANCH=$(printf '%s' "$PR_DATA" | jq -r '.head.ref // ""')
             if printf '%s' "$PR_HEAD_BRANCH" | grep -qE '^ai/'; then
               echo "PR head is ai/ branch — handled by ai-pr-feedback.yml, skipping"
