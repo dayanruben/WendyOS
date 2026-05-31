@@ -83,16 +83,18 @@ on:
     branches:
       - 'ai/**'
 
-# CONCURRENCY: cancel-in-progress: false serializes runs per PR rather than
-# cancelling the in-flight run. A new review comment trigger queues rather than
-# cancels, so the current edit cycle completes before the next begins.
+# CONCURRENCY: cancel-in-progress: true ensures at most one run is active per PR
+# at any time. When multiple CI workflows fail on the same commit (e.g. Build,
+# Go Tests, Swift Tests all fail at once), they each trigger this workflow and
+# land in the same concurrency group — cancel-in-progress: true discards all but
+# the most recent arrival, keeping the loop count bounded to one per PR.
+# For interactive triggers (review comments), the latest run always sees the full
+# accumulated feedback anyway, so cancelling a stale in-flight run is safe.
 # DoS bound: each run is capped at timeout-minutes: 30 (respond job) and the
 # circuit breaker (BOT_STREAK >= 3) prevents unbounded AI commit chains.
-# Accepted risk: a maintainer posting many comments quickly can queue multiple
-# runs; the 30-min timeout and Anthropic rate limits constrain the blast radius.
 concurrency:
   group: ai-pr-feedback-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   # Gate job: minimal permissions, no write tokens. Performs all authorization
@@ -339,6 +341,7 @@ jobs:
       checks: read
       actions: read
       issues: write
+      administration: read
     # SECURITY NOTE — step-level secrets:
     #   ANTHROPIC_API_KEY is injected only in the "Run Claude Code" step env.
     #   WENDY_TEMPLATE_SYNC_TOKEN (PAT for git push) is scoped to the "Push changes" step.
@@ -416,9 +419,12 @@ jobs:
         run: |
           # Fail-safe: if either gh api call fails, abort rather than defaulting to
           # epoch (which could incorrectly reset the circuit breaker to zero streak).
-          # Timestamp of the most recent /continue comment by a maintainer (or epoch)
+          # Timestamp of the most recent /continue comment by a maintainer (or epoch).
+          # Use piped jq with --slurp so all paginated pages are merged before filtering;
+          # gh api --jq runs per-page and would emit multiple timestamps with --paginate.
           CONTINUE_TS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '
+            | jq --slurp '
+              add |
               [ .[]
                 | select(.body | test("(?m)^\\r?/continue(\\s|$)"))
                 | select(.author_association as $a |
@@ -434,7 +440,8 @@ jobs:
           # commit, giving a wrong count if humans/bots interleave earlier in history.
           # Reversing the array ensures we count unbroken bot commits at HEAD.
           BOT_STREAK=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" \
-            --jq --arg ts "$CONTINUE_TS" '
+            | jq --arg ts "$CONTINUE_TS" --slurp '
+              add |
               [
                 reverse[] |
                 if ((.author?.login // "") == "github-actions[bot]" and
