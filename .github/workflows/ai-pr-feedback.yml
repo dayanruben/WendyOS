@@ -77,9 +77,6 @@ on:
       - Docs Review
       - Integration Test Review
     types: [completed]
-    # branches filter removed: it only works for push-triggered upstream workflows,
-    # not pull_request-triggered ones, so it silently prevented the loop from firing.
-    # The guard step's head-branch check (^ai/[a-z0-9]) provides the same scoping.
 
 # CONCURRENCY: cancel-in-progress: true ensures at most one run is active per PR
 # at any time. When multiple CI workflows fail on the same commit (e.g. Build,
