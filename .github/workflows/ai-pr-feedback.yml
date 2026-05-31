@@ -913,6 +913,7 @@ jobs:
           # Only file PATHS are passed via env -i — no secret values in cmdline or
           # parent-process environ. The bash subshell reads each value from its file,
           # shreds the file, then exec-replaces itself with claude.
+          CLAUDE_EXIT=0
           env -i HOME="$HOME" PATH="$PATH" \
             ANTHROPIC_KEY_FILE="$RUNNER_TEMP/anthropic-key.txt" \
             SYSTEM_PROMPT_FILE="$RUNNER_TEMP/system-prompt-exec.txt" \
@@ -933,7 +934,7 @@ jobs:
                 "$_user_prompt"
             ' \
             > "$RUNNER_TEMP/claude-output.txt" \
-            2> "$RUNNER_TEMP/claude-stderr.txt"
+            2> "$RUNNER_TEMP/claude-stderr.txt" || CLAUDE_EXIT=$?
           # Scrub ANTHROPIC_API_KEY from artifact files. ::add-mask:: protects runner
           # logs; this scrubs temp files that persist after the step.
           for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
@@ -950,6 +951,7 @@ jobs:
             echo "--- stderr ---"
             cat "$RUNNER_TEMP/claude-stderr.txt"
           fi
+          exit "$CLAUDE_EXIT"
 
 
       - name: Verify Claude did not touch protected paths
