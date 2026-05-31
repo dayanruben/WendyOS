@@ -7,10 +7,17 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 )
+
+// appIDPattern restricts appId to characters that are safe to embed in
+// container env vars, OTEL_RESOURCE_ATTRIBUTES (key=value,… format), container
+// labels, and the OTel service.name resource attribute. A stray comma, '=',
+// space, or newline in appId would otherwise corrupt those downstream uses.
+var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
 // EntitlementType enumerates the supported entitlement types.
 const (
@@ -163,14 +170,15 @@ type PortMapping struct {
 
 // Entitlement represents a single entitlement entry in wendy.json.
 type Entitlement struct {
-	Type   string        `json:"type"`
-	Mode   string        `json:"mode,omitempty"`   // Network, Bluetooth, Video
-	Name   string        `json:"name,omitempty"`   // Persist
-	Path   string        `json:"path,omitempty"`   // Persist
-	Device string        `json:"device,omitempty"` // I2C
-	Pins   []int         `json:"pins,omitempty"`   // GPIO
-	Ports  []PortMapping `json:"ports,omitempty"`  // Network
-	Port   int           `json:"port,omitempty"`   // MCP
+	Type      string        `json:"type"`
+	Mode      string        `json:"mode,omitempty"`      // Network, Bluetooth, Video
+	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video
+	Name      string        `json:"name,omitempty"`      // Persist
+	Path      string        `json:"path,omitempty"`      // Persist
+	Device    string        `json:"device,omitempty"`    // I2C
+	Pins      []int         `json:"pins,omitempty"`      // GPIO
+	Ports     []PortMapping `json:"ports,omitempty"`     // Network
+	Port      int           `json:"port,omitempty"`      // MCP
 }
 
 // DeprecatedEntitlementReplacement reports the preferred replacement for a deprecated entitlement type.
@@ -269,10 +277,24 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	return nil
 }
 
+// ValidateAppID reports whether id is a well-formed appId. It is the appId
+// portion of Validate, exported so the agent can reject unsafe ids on the RPC
+// path before they are used to build container env vars (WENDY_APP_ID,
+// OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) and labels.
+func ValidateAppID(id string) error {
+	if id == "" {
+		return fmt.Errorf("appId is required")
+	}
+	if !appIDPattern.MatchString(id) {
+		return fmt.Errorf("appId %q is invalid: only letters, digits, '.', '_', and '-' are allowed (max 253 chars)", id)
+	}
+	return nil
+}
+
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
-	if c.AppID == "" {
-		return fmt.Errorf("appId is required")
+	if err := ValidateAppID(c.AppID); err != nil {
+		return err
 	}
 
 	if err := validateEntitlements(c.Entitlements, "entitlement"); err != nil {

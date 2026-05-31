@@ -2,12 +2,13 @@ package services
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -180,11 +181,82 @@ func TestBuildGStreamerArgs_X264ProfileIsCapsFilter(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
 	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "x264enc tune=zerolatency profile=high") {
-		t.Fatalf("profile=high must be an output capsfilter, not an x264enc property: %v", args)
-	}
-	if !strings.Contains(joined, "x264enc tune=zerolatency ! video/x-h264,profile=high") {
+	// profile=high must be an output capsfilter (,profile=high), not an x264enc
+	// element property ( profile=high) — as a property x264enc may select a
+	// 4:4:4 High profile that hardware decoders reject. The capsfilter only
+	// constrains the negotiated output.
+	if !strings.Contains(joined, "! video/x-h264,profile=high") {
 		t.Fatalf("expected x264enc output capsfilter for high profile: %v", args)
+	}
+	if strings.Contains(joined, " profile=high") {
+		t.Fatalf("profile=high must be a capsfilter, not an x264enc property: %v", args)
+	}
+}
+
+func TestKeyframeIntervalFrames(t *testing.T) {
+	cases := []struct {
+		fps  uint32
+		want int
+	}{
+		{0, 15},  // device default is treated as 30fps
+		{30, 15}, // ~0.5s GOP
+		{60, 30},
+		{1, 1}, // never below 1
+	}
+	for _, c := range cases {
+		if got := keyframeIntervalFrames(c.fps); got != c.want {
+			t.Errorf("keyframeIntervalFrames(%d) = %d, want %d", c.fps, got, c.want)
+		}
+	}
+}
+
+func TestBuildGStreamerArgs_X264SetsShortKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	joined := strings.Join(args, " ")
+	// fps 0 -> default 30 -> a keyframe every ~0.5s -> 15 frames. A short GOP
+	// lets a client resync within ~0.5s after a dropped or skipped frame.
+	if !strings.Contains(joined, "key-int-max=15") {
+		t.Errorf("x264enc pipeline must cap the GOP via key-int-max: %v", args)
+	}
+	if !strings.Contains(joined, "bframes=0") {
+		t.Errorf("x264enc pipeline must disable B-frames so decoder reorder depth is 0: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_KeyframeIntervalScalesWithFramerate(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{Framerate: 60}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "key-int-max=30") {
+		t.Errorf("at 60fps the GOP should be 30 frames (~0.5s): %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_VP8SetsShortKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "keyframe-max-dist=15") {
+		t.Errorf("vp8enc pipeline must cap the GOP via keyframe-max-dist: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_NVV4L2SetsKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "iframeinterval=15") {
+		t.Errorf("nvv4l2h264enc pipeline must set iframeinterval: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_V4L2SetsKeyframeInterval(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "h264_i_frame_period=15") {
+		t.Errorf("v4l2h264enc pipeline must set the I-frame period via extra-controls: %v", args)
 	}
 }
 
@@ -227,6 +299,41 @@ func TestBuildGStreamerArgs_VP8Encoder(t *testing.T) {
 	}
 	if strings.Contains(joined, "h264") {
 		t.Errorf("VP8 pipeline should not mention h264: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_LeakyRawQueueBeforeEncoder(t *testing.T) {
+	// No caps requested: the leaky raw queue must sit directly after v4l2src so
+	// the encoder always works on the freshest raw frame and a capture backlog
+	// drains by dropping raw frames rather than encoding stale ones.
+	req := &agentpb.StreamVideoRequest{}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream") {
+		t.Fatalf("pipeline must insert a leaky raw queue before the encoder: %v", args)
+	}
+	srcIdx := strings.Index(joined, "v4l2src")
+	queueIdx := strings.Index(joined, "queue ")
+	encIdx := strings.Index(joined, "x264enc")
+	if !(srcIdx < queueIdx && queueIdx < encIdx) {
+		t.Errorf("leaky queue must sit between v4l2src and the encoder: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_LeakyRawQueueWithCaps(t *testing.T) {
+	// With raw caps requested, the leaky queue must come after the caps filter
+	// and before the encoder segment.
+	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
+	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream") {
+		t.Fatalf("pipeline must insert a leaky raw queue before the encoder: %v", args)
+	}
+	capsIdx := strings.Index(joined, "video/x-raw,width=1280")
+	queueIdx := strings.Index(joined, "queue ")
+	encIdx := strings.Index(joined, "x264enc")
+	if !(capsIdx < queueIdx && queueIdx < encIdx) {
+		t.Errorf("leaky queue must sit between the raw caps and the encoder: %v", args)
 	}
 }
 
@@ -358,6 +465,86 @@ func TestFindGStreamerEncoder_FallsBackToVP8WhenNoH264Encoder(t *testing.T) {
 	}
 	if result.codec != agentpb.VideoCodec_VIDEO_CODEC_VP8 {
 		t.Errorf("expected VP8 codec, got %v", result.codec)
+	}
+}
+
+func TestPickV4L2StreamError(t *testing.T) {
+	notSupported := nativeH264NotSupported{msg: "no h264"}
+	captureErr := status.Errorf(codes.Internal, "VIDIOC_DQBUF: boom")
+	sendErr := status.Errorf(codes.Unavailable, "client gone")
+
+	cases := []struct {
+		name          string
+		first, second error
+		ctxErr        error
+		want          error
+	}{
+		// nativeH264NotSupported must win regardless of position so StreamVideo
+		// falls back to GStreamer.
+		{"notSupported in first", notSupported, context.Canceled, nil, notSupported},
+		{"notSupported in second", context.Canceled, notSupported, nil, notSupported},
+		// The goroutine that failed first is the root cause; the other usually
+		// just reports the context cancellation it triggered.
+		{"real capture error over cancelled sender", captureErr, context.Canceled, nil, captureErr},
+		{"real send error over cancelled capture", context.Canceled, sendErr, context.Canceled, sendErr},
+		// Both goroutines stopped only because the parent context was cancelled.
+		{"both cancelled returns ctx error", context.Canceled, context.Canceled, context.Canceled, context.Canceled},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := pickV4L2StreamError(c.first, c.second, c.ctxErr); got != c.want {
+				t.Errorf("pickV4L2StreamError(%v, %v, %v) = %v, want %v", c.first, c.second, c.ctxErr, got, c.want)
+			}
+		})
+	}
+}
+
+func TestV4L2KeyframeControlIDs(t *testing.T) {
+	// V4L2_CID_CODEC_BASE = V4L2_CTRL_CLASS_CODEC | 0x900. The keyframe control
+	// IDs are fixed offsets from that base in the kernel uapi headers; pin them
+	// here so a transcription slip cannot silently turn the ioctl into a no-op.
+	const codecBase = 0x00990000 | 0x900
+	if v4l2CIDGOPSize != codecBase+203 {
+		t.Errorf("v4l2CIDGOPSize = %#x, want V4L2_CID_CODEC_BASE+203 = %#x", v4l2CIDGOPSize, codecBase+203)
+	}
+	if v4l2CIDH264IPeriod != codecBase+358 {
+		t.Errorf("v4l2CIDH264IPeriod = %#x, want V4L2_CID_CODEC_BASE+358 = %#x", v4l2CIDH264IPeriod, codecBase+358)
+	}
+}
+
+func TestV4L2ExtControlLayout(t *testing.T) {
+	// struct v4l2_ext_control is __packed: id@0, value (union __s32)@12, 20 bytes.
+	var ctrl v4l2ExtControl
+	if len(ctrl) != 20 {
+		t.Fatalf("v4l2_ext_control must be 20 bytes packed, got %d", len(ctrl))
+	}
+	ctrl.setID(0xAABBCCDD)
+	ctrl.setValue(0x11223344)
+	if got := binary.LittleEndian.Uint32(ctrl[0:4]); got != 0xAABBCCDD {
+		t.Errorf("id must be at offset 0, got %#x", got)
+	}
+	if got := binary.LittleEndian.Uint32(ctrl[12:16]); got != 0x11223344 {
+		t.Errorf("value must be at offset 12, got %#x", got)
+	}
+}
+
+func TestV4L2ExtControlsLayout(t *testing.T) {
+	// struct v4l2_ext_controls: which@0, count@4, controls pointer@24, 32 bytes.
+	var ctrls v4l2ExtControls
+	if len(ctrls) != 32 {
+		t.Fatalf("v4l2_ext_controls must be 32 bytes, got %d", len(ctrls))
+	}
+	ctrls.setWhich(0x00990000)
+	ctrls.setCount(1)
+	ctrls.setControlsPtr(0xDEADBEEF)
+	if got := binary.LittleEndian.Uint32(ctrls[0:4]); got != 0x00990000 {
+		t.Errorf("which must be at offset 0, got %#x", got)
+	}
+	if got := binary.LittleEndian.Uint32(ctrls[4:8]); got != 1 {
+		t.Errorf("count must be at offset 4, got %#x", got)
+	}
+	if got := binary.LittleEndian.Uint64(ctrls[24:32]); got != 0xDEADBEEF {
+		t.Errorf("controls pointer must be at offset 24, got %#x", got)
 	}
 }
 
