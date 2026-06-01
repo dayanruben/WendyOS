@@ -5,6 +5,7 @@ package commands
 import (
 	"os"
 	"os/exec"
+	"syscall"
 )
 
 // launchAssistantWithPrompt invokes the AI assistant with the prompt passed
@@ -15,4 +16,13 @@ func launchAssistantWithPrompt(choice, prompt string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func windowsRootDir() string {
+	panic("windowsRootDir called on non-Windows")
+}
+
+func isRootOwned(_ string, info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == 0
 }

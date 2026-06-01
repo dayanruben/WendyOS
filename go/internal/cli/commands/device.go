@@ -20,14 +20,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	"github.com/wendylabsinc/wendy/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -504,9 +504,6 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 }
 
-// runEnrollDevice creates an enrollment token via the stored auth session and
-// calls StartProvisioning on the connected device agent. name is optional; the
-// user is prompted interactively when it is empty.
 func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
@@ -579,10 +576,6 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	return nil
 }
 
-// pickAuthEntry returns the auth config entry to use for enrollment.
-// If cloudGRPC is specified it must match an existing entry. When no cloudGRPC
-// is given and multiple sessions exist, an error is returned requiring the user
-// to specify --cloud-grpc explicitly.
 func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -1472,9 +1465,6 @@ func newDeviceUpdateCmd() *cobra.Command {
 	return cmd
 }
 
-// checkELFArchitecture reads the ELF e_machine field from data and returns an
-// error if it does not match the device's reported GOARCH (e.g. "amd64", "arm64").
-// Non-ELF binaries (e.g. scripts) are accepted without complaint.
 func checkELFArchitecture(data []byte, deviceArch string) error {
 	// Only amd64 and arm64 are supported targets.
 	switch deviceArch {

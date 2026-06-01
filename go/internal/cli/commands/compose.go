@@ -17,10 +17,10 @@ import (
 	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // normalizeImageRef canonicalises a Docker short reference (e.g.
@@ -102,6 +102,12 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 		}
 		df := "Dockerfile"
 		if bc.Dockerfile != "" {
+			if err := validateComposeDockerfileName(bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
+			if _, err := confinedDockerfilePath(ctxDir, bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
 			df = bc.Dockerfile
 		}
 		return ctxDir, df, bc.Args, nil
@@ -535,7 +541,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return fmt.Errorf("service %s: custom Dockerfile path %q is not yet supported; rename it to 'Dockerfile'", name, dockerfile)
 		}
 
-		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
+		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, "", allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
 		cliLogln("Service %s image built and pushed.", name)

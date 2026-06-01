@@ -5,8 +5,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // NetworkManager abstracts WiFi management operations (typically backed by nmcli).
@@ -87,14 +87,12 @@ type ContainerMonitorRegistrar interface {
 	ClearExplicitStop(appName string)
 }
 
-// ContainerOutput represents a chunk of output from a running container.
 type ContainerOutput struct {
 	Stdout []byte
 	Stderr []byte
 	Done   bool
 }
 
-// ContainerMetrics holds a point-in-time CPU and memory snapshot for a container.
 type ContainerMetrics struct {
 	UserCPUNanos int64 // cumulative user-mode CPU time in nanoseconds
 	SysCPUNanos  int64 // cumulative kernel-mode CPU time in nanoseconds
