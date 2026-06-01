@@ -109,6 +109,7 @@ runs:
       working-directory: swift
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
@@ -126,6 +127,7 @@ runs:
       working-directory: swift
       shell: pwsh
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
