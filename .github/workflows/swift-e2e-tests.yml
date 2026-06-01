@@ -274,7 +274,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t attempt_dirs < <(find "${RUNNER_TEMP}/wendy-raw/${{ github.run_id }}" -mindepth 1 -maxdepth 1 -type d | sort)
+          attempt_dirs=()
+          while IFS= read -r attempt_dir; do
+            attempt_dirs+=("$attempt_dir")
+          done < <(find "${RUNNER_TEMP}/wendy-raw/${{ github.run_id }}" -mindepth 1 -maxdepth 1 -type d | sort)
           if [[ ${#attempt_dirs[@]} -eq 0 ]]; then
             echo "ERROR: no Swift E2E attempt artifacts downloaded." >&2
             exit 1
