@@ -482,11 +482,11 @@ private func claudeHarness(authSummary: String, apiKeyOnly: Bool) -> ShellReview
         harnessName: "claude",
         modelName: ReviewHarnessModel.claude,
         shellCommand: apiKeyOnly
-            ? #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --bare --model "\#(ReviewHarnessModel.claude)" --effort high --print "$prompt""#
-            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --model "\#(ReviewHarnessModel.claude)" --effort high --print "$prompt""#,
+            ? #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --bare --model "\#(ReviewHarnessModel.claude)" --effort high --tools "Read,Grep,Glob,LS" --print "$prompt""#
+            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --model "\#(ReviewHarnessModel.claude)" --effort high --tools "Read,Grep,Glob,LS" --print "$prompt""#,
         commandSource: "Claude Code CLI",
         invocationSummary:
-            "claude\(bareFlag) --model \(ReviewHarnessModel.claude) --effort high --print <generated prompt>",
+            "claude\(bareFlag) --model \(ReviewHarnessModel.claude) --effort high --tools Read,Grep,Glob,LS --print <generated prompt>",
         authSummary: authSummary,
         modelSource: "hardcoded"
     )
