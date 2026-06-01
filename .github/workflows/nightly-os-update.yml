@@ -12,9 +12,6 @@ on:
 # under the logged-in user session, which does have that permission.
 # See integration-tests.yml for the same pattern with more context.
 
-permissions:
-  contents: read
-
 jobs:
   discover:
     name: Discover devices
@@ -38,21 +35,10 @@ jobs:
 
       - name: Clear cache and scan for WendyOS devices
         id: scan
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          set +x
-          SECRET_FILE=$(mktemp -t wendy-github-token.XXXXXX)
-          chmod 600 "$SECRET_FILE"
-          trap 'rm -f "$SECRET_FILE"' EXIT
-          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            printf 'export GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN" > "$SECRET_FILE"
-          else
-            : > "$SECRET_FILE"
-          fi
-          SSH_ENV=". '$SECRET_FILE'; export PATH='$PATH'"
+          SSH_ENV="export PATH='$PATH'"
 
           $SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy os cache clear"
 
@@ -99,21 +85,10 @@ jobs:
 
       - name: Current version
         id: version
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          set +x
-          SECRET_FILE=$(mktemp -t wendy-github-token.XXXXXX)
-          chmod 600 "$SECRET_FILE"
-          trap 'rm -f "$SECRET_FILE"' EXIT
-          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            printf 'export GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN" > "$SECRET_FILE"
-          else
-            : > "$SECRET_FILE"
-          fi
-          SSH_ENV=". '$SECRET_FILE'; export PATH='$PATH'"
+          SSH_ENV="export PATH='$PATH'"
 
           INFO=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy device info --json --device '$DEVICE_HOSTNAME'" || true)
           echo "$INFO" | jq '{osVersion, agentVersion: .version, deviceType}' || true
@@ -125,21 +100,10 @@ jobs:
 
       - name: Flash OS update, confirm online, and run template tests
         if: steps.version.outputs.device_type != ''
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          set +x
-          SECRET_FILE=$(mktemp -t wendy-github-token.XXXXXX)
-          chmod 600 "$SECRET_FILE"
-          trap 'rm -f "$SECRET_FILE"' EXIT
-          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            printf 'export GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN" > "$SECRET_FILE"
-          else
-            : > "$SECRET_FILE"
-          fi
-          SSH_ENV=". '$SECRET_FILE'; export PATH='$PATH'"
+          SSH_ENV="export PATH='$PATH'"
 
           # wendy os update blocks until the device reboots and comes back
           # online, with a 5-minute internal timeout.
