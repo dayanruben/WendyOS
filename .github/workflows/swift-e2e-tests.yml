@@ -22,8 +22,6 @@ on:
     secrets:
       OPENAI_API_KEY:
         required: false
-      ANTHROPIC_API_KEY:
-        required: false
 
 concurrency:
   group: swift-e2e-tests-${{ github.ref }}
@@ -234,7 +232,7 @@ jobs:
       - e2e-windows-mac-mini
       - e2e-macos-mac-mini
       - e2e-ubuntu-mac-mini
-    runs-on: [AI]
+    runs-on: [self-hosted, AI]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -305,7 +303,6 @@ jobs:
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \
