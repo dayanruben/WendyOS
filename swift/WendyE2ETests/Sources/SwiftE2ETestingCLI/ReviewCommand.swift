@@ -23,6 +23,9 @@ struct ReviewCommand: AsyncParsableCommand {
     )
     var runDir: String
 
+    @Option(name: .long, help: "AI review harness: auto, claude, or codex.")
+    var harness: ReviewHarnessPreference?
+
     @Option(name: .long, help: "Suite review prompt path.")
     var suiteReviewPrompt: String?
 
@@ -86,7 +89,7 @@ extension ReviewCommand {
         ).standardizedFileURL
         let suitePrompt = try String(contentsOf: suitePromptURL, encoding: .utf8)
         let reportPrompt = try String(contentsOf: reportPromptURL, encoding: .utf8)
-        let reviewHarness = try makeReviewHarness()
+        let reviewHarness = try makeReviewHarness(preference: harness)
         let resolvedModel = reviewHarness.modelName
         let reviewer = e2eReviewReviewer(model: resolvedModel)
         let reviewDirectoryName = e2eReviewDirectoryName(reviewer: reviewer)
@@ -382,34 +385,81 @@ private struct ShellReviewHarness: Sendable {
     }
 }
 
+enum ReviewHarnessPreference: String, ExpressibleByArgument {
+    case auto
+    case claude
+    case codex
+
+    init?(argument: String) {
+        self.init(rawValue: argument.lowercased())
+    }
+}
+
 private enum ReviewHarnessModel {
     static let codex = "gpt-5.5"
     static let claude = "opus-4.8"
 }
 
-private func makeReviewHarness() throws -> ShellReviewHarness {
+private func makeReviewHarness(
+    preference explicitPreference: ReviewHarnessPreference?
+) throws -> ShellReviewHarness {
     let environment = ProcessInfo.processInfo.environment
     let hasCodex = hasExecutable("codex")
     let hasClaude = hasExecutable("claude")
     let hasOpenAIAPIKey = !environment["OPENAI_API_KEY", default: ""].isEmpty
     let hasAnthropicAPIKey = !environment["ANTHROPIC_API_KEY", default: ""].isEmpty
+    let preference = explicitPreference ?? reviewHarnessPreference(environment: environment)
 
-    if hasClaude && claudeCodeSubscriptionConfigured() {
-        return claudeHarness(authSummary: "Claude Code subscription", apiKeyOnly: false)
-    }
-    if hasCodex && codexSubscriptionConfigured() {
-        return codexHarness(authSummary: "Codex subscription")
-    }
-    if hasClaude && hasAnthropicAPIKey {
-        return claudeHarness(authSummary: "ANTHROPIC_API_KEY", apiKeyOnly: true)
-    }
-    if hasCodex && hasOpenAIAPIKey {
-        return codexHarness(authSummary: "OPENAI_API_KEY")
+    switch preference {
+    case .auto:
+        if hasClaude && claudeCodeSubscriptionConfigured() {
+            return claudeHarness(authSummary: "Claude Code subscription", apiKeyOnly: false)
+        }
+        if hasCodex && codexSubscriptionConfigured() {
+            return codexHarness(authSummary: "Codex subscription")
+        }
+        if hasClaude && hasAnthropicAPIKey {
+            return claudeHarness(authSummary: "ANTHROPIC_API_KEY", apiKeyOnly: true)
+        }
+        if hasCodex && hasOpenAIAPIKey {
+            return codexHarness(authSummary: "OPENAI_API_KEY")
+        }
+    case .claude:
+        if hasClaude && claudeCodeSubscriptionConfigured() {
+            return claudeHarness(authSummary: "Claude Code subscription", apiKeyOnly: false)
+        }
+        if hasClaude && hasAnthropicAPIKey {
+            return claudeHarness(authSummary: "ANTHROPIC_API_KEY", apiKeyOnly: true)
+        }
+    case .codex:
+        if hasCodex && codexSubscriptionConfigured() {
+            return codexHarness(authSummary: "Codex subscription")
+        }
+        if hasCodex && hasOpenAIAPIKey {
+            return codexHarness(authSummary: "OPENAI_API_KEY")
+        }
     }
 
-    throw ValidationError(
-        "Swift E2E review requires Codex or Claude Code. Configure Codex subscription auth, Claude Code subscription auth, ANTHROPIC_API_KEY with Claude Code, or OPENAI_API_KEY with Codex."
-    )
+    throw ValidationError(reviewHarnessErrorMessage(preference: preference))
+}
+
+private func reviewHarnessPreference(environment: [String: String]) -> ReviewHarnessPreference {
+    let value = environment["WENDY_E2E_REVIEW_HARNESS", default: ""]
+    return ReviewHarnessPreference(argument: value) ?? .auto
+}
+
+private func reviewHarnessErrorMessage(preference: ReviewHarnessPreference) -> String {
+    switch preference {
+    case .auto:
+        return
+            "Swift E2E review requires Codex or Claude Code. Configure Codex subscription auth, Claude Code subscription auth, ANTHROPIC_API_KEY with Claude Code, or OPENAI_API_KEY with Codex."
+    case .claude:
+        return
+            "Swift E2E review was forced to Claude Code, but Claude Code is not usable. Configure Claude Code subscription auth or ANTHROPIC_API_KEY."
+    case .codex:
+        return
+            "Swift E2E review was forced to Codex, but Codex is not usable. Configure Codex subscription auth or OPENAI_API_KEY."
+    }
 }
 
 private func codexHarness(authSummary: String) -> ShellReviewHarness {

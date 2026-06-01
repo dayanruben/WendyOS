@@ -8,6 +8,7 @@ DEFAULT_PACKAGE_DIR="$SWIFT_DIR/WendyE2ETests"
 RUN_DIR=""
 PACKAGE_DIR="$DEFAULT_PACKAGE_DIR"
 DIFF=""
+HARNESS="${WENDY_E2E_REVIEW_HARNESS:-}"
 OVERWRITE="false"
 EXTRA_ARGS=()
 
@@ -23,6 +24,7 @@ Options:
                      defaults to $DEFAULT_PACKAGE_DIR.
   --diff RANGE       Git diff range for diff-scoped review, for example
                      origin/main...HEAD.
+  --harness NAME     AI review harness: auto, claude, or codex.
   --overwrite        Overwrite existing run review files.
   --help             Show this help message.
 
@@ -64,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       DIFF="$2"
       shift 2
       ;;
+    --harness)
+      HARNESS="$2"
+      shift 2
+      ;;
     --overwrite)
       OVERWRITE="true"
       shift
@@ -98,6 +104,9 @@ review_single_run() {
   if [[ -n "$DIFF" ]]; then
     command_args+=("--diff" "$DIFF")
   fi
+  if [[ -n "$HARNESS" ]]; then
+    command_args+=("--harness" "$HARNESS")
+  fi
   if [[ "$OVERWRITE" == "true" ]]; then
     command_args+=("--overwrite")
   fi
@@ -108,6 +117,9 @@ review_single_run() {
   echo "    Run dir:  $run_dir"
   if [[ -n "$DIFF" ]]; then
     echo "    Diff:     $DIFF"
+  fi
+  if [[ -n "$HARNESS" ]]; then
+    echo "    Harness:  $HARNESS"
   fi
 
   (
