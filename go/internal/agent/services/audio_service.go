@@ -442,10 +442,12 @@ func extractPactlPropertyValue(line string) string {
 }
 
 // SetDefaultAudioDevice sets the default audio device using PipeWire or PulseAudio.
-// The device ID in the request is an ALSA-encoded ID as returned by ListAudioDevices
-// (encoded as ((card << 8) | device) + 1). This function decodes the ID and resolves
-// it to the appropriate PipeWire node ID or PulseAudio sink/source name before
-// invoking wpctl/pactl.
+// The SetDefaultAudioDeviceRequest.device_id value is the ALSA-encoded device ID
+// returned by ListAudioDevices, encoded as ((card << 8) | device) + 1. It is not
+// a PipeWire/WirePlumber node ID and must not be passed through to wpctl directly.
+// This function decodes the ALSA card/device pair from device_id, resolves that
+// pair to the appropriate PipeWire node ID or PulseAudio sink/source name, and
+// then invokes wpctl/pactl.
 func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.SetDefaultAudioDeviceRequest) (*agentpb.SetDefaultAudioDeviceResponse, error) {
 	if req.GetDeviceId() == 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "device ID 0 is not a valid audio device")
