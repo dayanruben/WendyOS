@@ -301,7 +301,7 @@ jobs:
             exit 1
           fi
 
-      - name: Review Swift E2E run
+      - name: Perform Swift E2E AI Review
         working-directory: swift
         shell: bash
         env:
@@ -312,7 +312,7 @@ jobs:
             --run-dir "${{ steps.e2e-run.outputs.run_dir }}" \
             --diff "origin/main...HEAD"
 
-      - name: Render Swift E2E run index
+      - name: Render Swift E2E Report
         if: always()
         working-directory: swift
         shell: bash
@@ -321,7 +321,7 @@ jobs:
           bash ./Scripts/E2EReport.sh \
             --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
 
-      - name: Post Swift E2E review PR comment
+      - name: Post Swift E2E PR Review
         if: always()
         uses: actions/github-script@v9
         env:
@@ -398,7 +398,7 @@ jobs:
               });
             }
 
-      - name: Upload Swift E2E run report
+      - name: Upload Swift E2E Report
         if: always()
         uses: actions/upload-artifact@v5
         with:
