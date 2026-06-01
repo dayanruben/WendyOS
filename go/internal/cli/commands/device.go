@@ -1231,7 +1231,12 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	if !nightly {
-		resp, err := client.Get(githubReleasesURL)
+		req, err := newGitHubAPIGetRequest(githubReleasesURL)
+		if err != nil {
+			return nil, fmt.Errorf("creating GitHub API request: %w", err)
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetching latest release: %w", err)
 		}
@@ -1249,7 +1254,12 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	}
 
 	// For nightly, list releases and find the latest prerelease.
-	resp, err := client.Get("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	req, err := newGitHubAPIGetRequest("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub API request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching releases: %w", err)
 	}

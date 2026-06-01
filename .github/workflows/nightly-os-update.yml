@@ -12,6 +12,9 @@ on:
 # under the logged-in user session, which does have that permission.
 # See integration-tests.yml for the same pattern with more context.
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   discover:
     name: Discover devices
@@ -38,7 +41,8 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          GITHUB_TOKEN_Q=$(printf '%q' "${GITHUB_TOKEN:-}")
+          SSH_ENV="export PATH='$PATH' GITHUB_TOKEN=$GITHUB_TOKEN_Q"
 
           $SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy os cache clear"
 
@@ -88,7 +92,8 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          GITHUB_TOKEN_Q=$(printf '%q' "${GITHUB_TOKEN:-}")
+          SSH_ENV="export PATH='$PATH' GITHUB_TOKEN=$GITHUB_TOKEN_Q"
 
           INFO=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy device info --json --device '$DEVICE_HOSTNAME'" || true)
           echo "$INFO" | jq '{osVersion, agentVersion: .version, deviceType}' || true
@@ -103,7 +108,8 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          GITHUB_TOKEN_Q=$(printf '%q' "${GITHUB_TOKEN:-}")
+          SSH_ENV="export PATH='$PATH' GITHUB_TOKEN=$GITHUB_TOKEN_Q"
 
           # wendy os update blocks until the device reboots and comes back
           # online, with a 5-minute internal timeout.

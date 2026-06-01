@@ -38,6 +38,9 @@ on:
         required: false
         default: 'all'
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   discover:
     name: Discover (${{ matrix.runner.name }})
@@ -164,7 +167,8 @@ jobs:
           # session to localhost runs under the logged-in user, which has that
           # permission. See nightly-os-update.yml for the same pattern.
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}'"
+          GITHUB_TOKEN_Q=$(printf '%q' "${GITHUB_TOKEN:-}")
+          SSH_ENV="export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' GITHUB_TOKEN=$GITHUB_TOKEN_Q"
           SSH="ssh -o StrictHostKeyChecking=no localhost"
 
           TEST_ARGS="-w $WORKDIR/go/bin/wendy"
@@ -213,7 +217,7 @@ jobs:
             BUILDER="wendy-$i"
             echo "==> Starting tests on $device (builder: $BUILDER)"
             (
-              $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && go/scripts/test-ci.sh $TEST_ARGS -h '$device'"
+              $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' GITHUB_TOKEN=$GITHUB_TOKEN_Q WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && go/scripts/test-ci.sh $TEST_ARGS -h '$device'"
               rc=$?
               docker buildx rm "$BUILDER" --force 2>/dev/null || true
               exit $rc
