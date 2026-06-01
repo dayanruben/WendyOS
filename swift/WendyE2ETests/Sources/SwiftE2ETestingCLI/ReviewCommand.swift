@@ -373,6 +373,7 @@ private struct ShellReviewHarness: Sendable {
         process.arguments = ["-lc", shellCommand]
         process.currentDirectoryURL = repoURL
         process.environment = environment
+        process.standardInput = FileHandle.nullDevice
 
         try process.run()
         process.waitUntilExit()
@@ -396,8 +397,13 @@ enum ReviewHarnessPreference: String, ExpressibleByArgument {
 }
 
 private enum ReviewHarnessModel {
-    static let codex = "gpt-5.5"
-    static let claude = "opus-4.8"
+    static let defaultCodex = "gpt-5.5"
+    static let defaultClaude = "claude-opus-4-7"
+}
+
+private struct ResolvedReviewHarnessModel {
+    var name: String
+    var source: String
 }
 
 private func makeReviewHarness(
@@ -409,34 +415,60 @@ private func makeReviewHarness(
     let hasOpenAIAPIKey = !environment["OPENAI_API_KEY", default: ""].isEmpty
     let hasAnthropicAPIKey = !environment["ANTHROPIC_API_KEY", default: ""].isEmpty
     let preference = explicitPreference ?? reviewHarnessPreference(environment: environment)
+    let codexModel = reviewHarnessModel(
+        defaultName: ReviewHarnessModel.defaultCodex,
+        environmentName: "WENDY_E2E_REVIEW_CODEX_MODEL",
+        environment: environment
+    )
+    let claudeModel = reviewHarnessModel(
+        defaultName: ReviewHarnessModel.defaultClaude,
+        environmentName: "WENDY_E2E_REVIEW_CLAUDE_MODEL",
+        environment: environment
+    )
 
     switch preference {
     case .auto:
         if hasClaude && claudeCodeSubscriptionConfigured() {
-            return claudeHarness(authSummary: "Claude Code subscription", apiKeyOnly: false)
+            return claudeHarness(
+                model: claudeModel,
+                authSummary: "Claude Code subscription",
+                apiKeyOnly: false
+            )
         }
         if hasCodex && codexSubscriptionConfigured() {
-            return codexHarness(authSummary: "Codex subscription")
+            return codexHarness(model: codexModel, authSummary: "Codex subscription")
         }
         if hasClaude && hasAnthropicAPIKey {
-            return claudeHarness(authSummary: "ANTHROPIC_API_KEY", apiKeyOnly: true)
+            return claudeHarness(
+                model: claudeModel,
+                authSummary: "ANTHROPIC_API_KEY",
+                apiKeyOnly: true
+            )
         }
         if hasCodex && hasOpenAIAPIKey {
-            return codexHarness(authSummary: "OPENAI_API_KEY")
+            return codexHarness(model: codexModel, authSummary: "OPENAI_API_KEY")
         }
     case .claude:
         if hasClaude && claudeCodeSubscriptionConfigured() {
-            return claudeHarness(authSummary: "Claude Code subscription", apiKeyOnly: false)
+            return claudeHarness(
+                model: claudeModel,
+                authSummary: "Claude Code subscription",
+                apiKeyOnly: false
+            )
         }
         if hasClaude && hasAnthropicAPIKey {
-            return claudeHarness(authSummary: "ANTHROPIC_API_KEY", apiKeyOnly: true)
+            return claudeHarness(
+                model: claudeModel,
+                authSummary: "ANTHROPIC_API_KEY",
+                apiKeyOnly: true
+            )
         }
     case .codex:
         if hasCodex && codexSubscriptionConfigured() {
-            return codexHarness(authSummary: "Codex subscription")
+            return codexHarness(model: codexModel, authSummary: "Codex subscription")
         }
         if hasCodex && hasOpenAIAPIKey {
-            return codexHarness(authSummary: "OPENAI_API_KEY")
+            return codexHarness(model: codexModel, authSummary: "OPENAI_API_KEY")
         }
     }
 
@@ -446,6 +478,19 @@ private func makeReviewHarness(
 private func reviewHarnessPreference(environment: [String: String]) -> ReviewHarnessPreference {
     let value = environment["WENDY_E2E_REVIEW_HARNESS", default: ""]
     return ReviewHarnessPreference(argument: value) ?? .auto
+}
+
+private func reviewHarnessModel(
+    defaultName: String,
+    environmentName: String,
+    environment: [String: String]
+) -> ResolvedReviewHarnessModel {
+    let value = environment[environmentName, default: ""]
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else {
+        return ResolvedReviewHarnessModel(name: defaultName, source: "default")
+    }
+    return ResolvedReviewHarnessModel(name: value, source: environmentName)
 }
 
 private func reviewHarnessErrorMessage(preference: ReviewHarnessPreference) -> String {
@@ -462,34 +507,45 @@ private func reviewHarnessErrorMessage(preference: ReviewHarnessPreference) -> S
     }
 }
 
-private func codexHarness(authSummary: String) -> ShellReviewHarness {
+private func codexHarness(
+    model: ResolvedReviewHarnessModel,
+    authSummary: String
+) -> ShellReviewHarness {
     ShellReviewHarness(
         harnessName: "codex",
-        modelName: ReviewHarnessModel.codex,
+        modelName: model.name,
         shellCommand:
-            #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; codex exec --color never --sandbox read-only --model "\#(ReviewHarnessModel.codex)" -c model_reasoning_effort="high" "$prompt""#,
+            #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; codex exec --color never --sandbox read-only --model \#(shellQuoted(model.name)) -c model_reasoning_effort="high" "$prompt""#,
         commandSource: "codex CLI",
         invocationSummary:
-            "codex exec --color never --sandbox read-only --model \(ReviewHarnessModel.codex) -c model_reasoning_effort=high <generated prompt>",
+            "codex exec --color never --sandbox read-only --model \(model.name) -c model_reasoning_effort=high <generated prompt>",
         authSummary: authSummary,
-        modelSource: "hardcoded"
+        modelSource: model.source
     )
 }
 
-private func claudeHarness(authSummary: String, apiKeyOnly: Bool) -> ShellReviewHarness {
+private func claudeHarness(
+    model: ResolvedReviewHarnessModel,
+    authSummary: String,
+    apiKeyOnly: Bool
+) -> ShellReviewHarness {
     let bareFlag = apiKeyOnly ? " --bare" : ""
     return ShellReviewHarness(
         harnessName: "claude",
-        modelName: ReviewHarnessModel.claude,
+        modelName: model.name,
         shellCommand: apiKeyOnly
-            ? #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --bare --model "\#(ReviewHarnessModel.claude)" --effort high --tools "Read,Grep,Glob,LS" --print "$prompt""#
-            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --model "\#(ReviewHarnessModel.claude)" --effort high --tools "Read,Grep,Glob,LS" --print "$prompt""#,
+            ? #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --bare --model \#(shellQuoted(model.name)) --effort high --tools "Read,Grep,Glob,LS" --print "$prompt""#
+            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --model \#(shellQuoted(model.name)) --effort high --tools "Read,Grep,Glob,LS" --print "$prompt""#,
         commandSource: "Claude Code CLI",
         invocationSummary:
-            "claude\(bareFlag) --model \(ReviewHarnessModel.claude) --effort high --tools Read,Grep,Glob,LS --print <generated prompt>",
+            "claude\(bareFlag) --model \(model.name) --effort high --tools Read,Grep,Glob,LS --print <generated prompt>",
         authSummary: authSummary,
-        modelSource: "hardcoded"
+        modelSource: model.source
     )
+}
+
+private func shellQuoted(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 private func hasExecutable(_ name: String) -> Bool {
@@ -519,6 +575,7 @@ private func commandOutput(_ arguments: [String]) -> CommandOutput? {
     process.arguments = arguments
     process.standardOutput = pipe
     process.standardError = pipe
+    process.standardInput = FileHandle.nullDevice
     do {
         try process.run()
         process.waitUntilExit()
@@ -540,6 +597,10 @@ private func codexSubscriptionConfigured() -> Bool {
 }
 
 private func claudeCodeSubscriptionConfigured() -> Bool {
+    if claudeCredentialsContainSubscriptionAuth() {
+        return true
+    }
+
     if let output = commandOutput(["claude", "auth", "status"]),
         output.status == 0,
         let data = output.text.data(using: .utf8),
@@ -553,6 +614,10 @@ private func claudeCodeSubscriptionConfigured() -> Bool {
         return true
     }
 
+    return false
+}
+
+private func claudeCredentialsContainSubscriptionAuth() -> Bool {
     let credentialsPath = "\(NSHomeDirectory())/.claude/.credentials.json"
     guard let data = FileManager.default.contents(atPath: credentialsPath),
         let object = try? JSONSerialization.jsonObject(with: data),
