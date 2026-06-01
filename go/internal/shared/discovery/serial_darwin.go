@@ -103,7 +103,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // SerialDevice holds a serial port path and its USB connection time.
