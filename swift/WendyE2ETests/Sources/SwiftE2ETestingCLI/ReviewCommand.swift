@@ -348,6 +348,9 @@ private struct ReviewResultKey: Hashable {
 private struct ShellReviewHarness {
     var modelName: String
     var shellCommand: String
+    var commandSource: String
+    var invocationSummary: String
+    var authSummary: String
     var modelEnvironmentKey: String?
 
     func review(prompt: String, repoURL: URL, runURL: URL) throws {
@@ -369,6 +372,14 @@ private struct ShellReviewHarness {
             }
         }
 
+        print("==> Invoking Swift E2E review harness")
+        print("    Command source: \(commandSource)")
+        print("    Invocation:     \(invocationSummary)")
+        print("    Model:          \(modelName)")
+        print("    Auth:           \(authSummary)")
+        print("    Prompt:         \(promptURL.path)")
+        print("    Repo:           \(repoURL.path)")
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["-lc", shellCommand]
@@ -388,17 +399,91 @@ private struct ShellReviewHarness {
 
 private func makePiHarness(model: String?) throws -> ShellReviewHarness {
     let environment = ProcessInfo.processInfo.environment
-    if environment["WENDY_E2E_PI_COMMAND", default: ""].isEmpty {
+    let customCommand = environment["WENDY_E2E_PI_COMMAND", default: ""]
+    let usesCustomCommand = !customCommand.isEmpty
+    if !usesCustomCommand {
         try requireExecutable("pi", harness: "pi")
     }
+    let authSummary = try piAuthSummary(
+        environment: environment,
+        usesCustomCommand: usesCustomCommand
+    )
     return ShellReviewHarness(
         modelName: model ?? environment["WENDY_E2E_PI_MODEL", default: "default"],
-        shellCommand: environment[
-            "WENDY_E2E_PI_COMMAND",
-            default:
-                #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${WENDY_E2E_PI_MODEL:-}" ]]; then pi --model "$WENDY_E2E_PI_MODEL" -p "$prompt"; else pi -p "$prompt"; fi"#
-        ],
+        shellCommand: usesCustomCommand
+            ? customCommand
+            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; if [[ -n "${WENDY_E2E_PI_MODEL:-}" ]]; then pi --model "$WENDY_E2E_PI_MODEL" -p "$prompt"; else pi -p "$prompt"; fi"#,
+        commandSource: usesCustomCommand ? "WENDY_E2E_PI_COMMAND" : "pi CLI",
+        invocationSummary: piInvocationSummary(
+            modelName: model ?? environment["WENDY_E2E_PI_MODEL", default: "default"],
+            usesCustomCommand: usesCustomCommand
+        ),
+        authSummary: authSummary,
         modelEnvironmentKey: "WENDY_E2E_PI_MODEL"
+    )
+}
+
+private func piInvocationSummary(modelName: String, usesCustomCommand: Bool) -> String {
+    if usesCustomCommand {
+        return "custom shell command (not printed; may contain secrets)"
+    }
+    if usesHarnessDefaultModel(modelName) {
+        return "pi -p <generated prompt>"
+    }
+    return "pi --model \(modelName) -p <generated prompt>"
+}
+
+private func piAuthSummary(environment: [String: String], usesCustomCommand: Bool) throws -> String
+{
+    if usesCustomCommand {
+        return "custom command; auth handled by WENDY_E2E_PI_COMMAND"
+    }
+
+    let authPath =
+        environment["PI_CODING_AGENT_DIR"].map { "\($0)/auth.json" }
+        ?? "\(NSHomeDirectory())/.pi/agent/auth.json"
+    let auth = piAuthTypes(at: authPath)
+    var parts: [String] = []
+    if auth.openAICodexOAuth {
+        parts.append("OpenAI Codex subscription")
+    }
+    if auth.anthropicOAuth {
+        parts.append("Anthropic subscription")
+    }
+    if !environment["OPENAI_API_KEY", default: ""].isEmpty {
+        parts.append("OPENAI_API_KEY")
+    }
+    if !environment["ANTHROPIC_API_KEY", default: ""].isEmpty {
+        parts.append("ANTHROPIC_API_KEY")
+    }
+    if parts.isEmpty {
+        throw ValidationError(
+            "Pi review requires recognized auth. Configure OpenAI Codex or Anthropic subscription auth in \(authPath), set OPENAI_API_KEY or ANTHROPIC_API_KEY, or set WENDY_E2E_PI_COMMAND."
+        )
+    }
+    return parts.joined(separator: ", ")
+}
+
+private func piAuthTypes(at path: String) -> (openAICodexOAuth: Bool, anthropicOAuth: Bool) {
+    guard let data = FileManager.default.contents(atPath: path),
+        let object = try? JSONSerialization.jsonObject(with: data),
+        let auth = object as? [String: Any]
+    else {
+        return (false, false)
+    }
+
+    func hasOAuthProvider(_ key: String) -> Bool {
+        guard let provider = auth[key] as? [String: Any],
+            let type = provider["type"] as? String
+        else {
+            return false
+        }
+        return type == "oauth"
+    }
+
+    return (
+        openAICodexOAuth: hasOAuthProvider("openai-codex"),
+        anthropicOAuth: hasOAuthProvider("anthropic")
     )
 }
 
