@@ -634,7 +634,7 @@ jobs:
               # U+200D (ZERO WIDTH JOINER) and U+034F (COMBINING GRAPHEME JOINER) are also
               # stripped \u2014 both survive NFKC and can split marker strings to bypass filters.
               # U+3164 (HANGUL FILLER) survives NFKC and acts as invisible padding.
-              text = re.sub(r'[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\ue0000-\ue007f\ufeff]', '', text)
+              text = re.sub('[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\U000e0000-\U000e007f\ufeff]', '', text)
               # Strip ALL XML/HTML tags. Use a high bound (4000 chars) to prevent bypass
               # via tags with >200 chars of padding before '>'. [^>] stops at '>' anyway.
               text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
@@ -1136,7 +1136,7 @@ jobs:
               # Strip same set as sanitize(): soft-hyphen (U+00AD), combining grapheme
               # joiner (U+034F), ZWJ (U+200D), Hangul filler (U+3164), zero-width/
               # direction/tag-block chars, BOM — matches sanitize() coverage exactly.
-              text = re.sub(r'[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\ue0000-\ue007f\ufeff]', '', text)
+              text = re.sub('[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\U000e0000-\U000e007f\ufeff]', '', text)
               # Use same 4000-char bound as sanitize() to prevent bypass via long tags
               text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
               # Destructive fence stripping prevents mixed-delimiter bypass (``` inject ~~~)
