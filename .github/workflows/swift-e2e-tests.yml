@@ -285,15 +285,20 @@ jobs:
             --output-dir "${RUNNER_TEMP}/wendy" \
             "${attempt_dirs[@]}"
 
-      - name: Verify Pi coding agent
+      - name: Verify AI review harness
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v pi >/dev/null 2>&1; then
-            echo "::error::pi must be preinstalled on the self-hosted AI runner"
+          if command -v codex >/dev/null 2>&1; then
+            codex --version
+          fi
+          if command -v claude >/dev/null 2>&1; then
+            claude --version
+          fi
+          if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
+            echo "::error::Codex or Claude Code must be preinstalled on the AI runner"
             exit 1
           fi
-          pi --version
 
       - name: Review Swift E2E run
         working-directory: swift
@@ -301,7 +306,6 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
-          WENDY_E2E_PI_MODEL: ${{ vars.WENDY_E2E_PI_MODEL || '' }}
         run: |
           set -euo pipefail
           bash ./Scripts/E2EReview.sh \

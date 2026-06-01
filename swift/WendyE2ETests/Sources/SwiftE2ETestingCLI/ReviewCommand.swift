@@ -8,7 +8,7 @@ import Foundation
 struct ReviewCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "review",
-        abstract: "Review a Swift E2E run with Pi."
+        abstract: "Review a Swift E2E run with an AI review harness."
     )
 
     @Option(name: .long, help: "Swift package directory.")
@@ -22,9 +22,6 @@ struct ReviewCommand: AsyncParsableCommand {
         help: "E2E run directory. Reads run results and writes AI review files."
     )
     var runDir: String
-
-    @Option(name: .long, help: "Pi model name. Passed through as WENDY_E2E_PI_MODEL.")
-    var model: String?
 
     @Option(name: .long, help: "Suite review prompt path.")
     var suiteReviewPrompt: String?
@@ -89,8 +86,8 @@ extension ReviewCommand {
         ).standardizedFileURL
         let suitePrompt = try String(contentsOf: suitePromptURL, encoding: .utf8)
         let reportPrompt = try String(contentsOf: reportPromptURL, encoding: .utf8)
-        let piHarness = try makePiHarness(model: model)
-        let resolvedModel = piHarness.modelName
+        let reviewHarness = try makeReviewHarness()
+        let resolvedModel = reviewHarness.modelName
         let reviewer = e2eReviewReviewer(model: resolvedModel)
         let reviewDirectoryName = e2eReviewDirectoryName(reviewer: reviewer)
         let suites = try loadRunReviewSuites(
@@ -99,12 +96,12 @@ extension ReviewCommand {
             reviewer: reviewer
         )
         print("==> Running Swift E2E run AI review")
-        print("    Harness:        pi")
-        print("    Command source: \(piHarness.commandSource)")
-        print("    Invocation:     \(piHarness.invocationSummary)")
+        print("    Harness:        \(reviewHarness.harnessName)")
+        print("    Command source: \(reviewHarness.commandSource)")
+        print("    Invocation:     \(reviewHarness.invocationSummary)")
         print("    Model:          \(resolvedModel)")
-        print("    Model source:   \(piHarness.modelSource)")
-        print("    Auth:           \(piHarness.authSummary)")
+        print("    Model source:   \(reviewHarness.modelSource)")
+        print("    Auth:           \(reviewHarness.authSummary)")
         print("    Repo:           \(repoURL.path)")
         print("    Run:            \(runURL.path)")
         print("    Mode:           \(reviewMode.name)")
@@ -132,7 +129,6 @@ extension ReviewCommand {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for suite in suites {
                     group.addTask {
-                        let reviewHarness = try makePiHarness(model: resolvedModel)
                         let prompt = runSuitePrompt(
                             basePrompt: suitePrompt,
                             suite: suite,
@@ -174,8 +170,7 @@ extension ReviewCommand {
                 reviewDirectoryName: reviewDirectoryName,
                 overwrite: overwrite
             )
-            let reportHarness = try makePiHarness(model: resolvedModel)
-            try reportHarness.review(
+            try reviewHarness.review(
                 prompt: prompt,
                 repoURL: repoURL,
                 runURL: runURL
@@ -349,14 +344,14 @@ private struct ReviewResultKey: Hashable {
     var name: String
 }
 
-private struct ShellReviewHarness {
+private struct ShellReviewHarness: Sendable {
+    var harnessName: String
     var modelName: String
     var shellCommand: String
     var commandSource: String
     var invocationSummary: String
     var authSummary: String
     var modelSource: String
-    var modelEnvironmentKey: String?
 
     func review(prompt: String, repoURL: URL, runURL: URL) throws {
         let promptURL = runURL.appendingPathComponent(
@@ -369,13 +364,6 @@ private struct ShellReviewHarness {
         environment["WENDY_E2E_REVIEW_PROMPT"] = promptURL.path
         environment["WENDY_E2E_REVIEW_RUN_DIR"] = runURL.path
         environment["WENDY_E2E_REVIEW_REPO_DIR"] = repoURL.path
-        if let modelEnvironmentKey {
-            if usesHarnessDefaultModel(modelName) {
-                environment.removeValue(forKey: modelEnvironmentKey)
-            } else {
-                environment[modelEnvironmentKey] = modelName
-            }
-        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -388,196 +376,141 @@ private struct ShellReviewHarness {
 
         guard process.terminationStatus == 0 else {
             throw ValidationError(
-                "Pi review failed with exit status \(process.terminationStatus)."
+                "Review harness \(harnessName) failed with exit status \(process.terminationStatus)."
             )
         }
     }
 }
 
-private func makePiHarness(model: String?) throws -> ShellReviewHarness {
+private enum ReviewHarnessModel {
+    static let codex = "gpt-5.5"
+    static let claude = "opus-4.8"
+}
+
+private func makeReviewHarness() throws -> ShellReviewHarness {
     let environment = ProcessInfo.processInfo.environment
-    let customCommand = environment["WENDY_E2E_PI_COMMAND", default: ""]
-    let usesCustomCommand = !customCommand.isEmpty
-    if !usesCustomCommand {
-        try requireExecutable("pi", harness: "pi")
+    let hasCodex = hasExecutable("codex")
+    let hasClaude = hasExecutable("claude")
+    let hasOpenAIAPIKey = !environment["OPENAI_API_KEY", default: ""].isEmpty
+    let hasAnthropicAPIKey = !environment["ANTHROPIC_API_KEY", default: ""].isEmpty
+
+    if hasCodex && codexSubscriptionConfigured() {
+        return codexHarness(authSummary: "Codex subscription")
     }
-    let auth = try piAuth(
-        environment: environment,
-        usesCustomCommand: usesCustomCommand
+    if hasClaude && claudeCodeSubscriptionConfigured() {
+        return claudeHarness(authSummary: "Claude Code subscription", apiKeyOnly: false)
+    }
+    if hasClaude && hasAnthropicAPIKey {
+        return claudeHarness(authSummary: "ANTHROPIC_API_KEY", apiKeyOnly: true)
+    }
+    if hasCodex && hasOpenAIAPIKey {
+        return codexHarness(authSummary: "OPENAI_API_KEY")
+    }
+
+    throw ValidationError(
+        "Swift E2E review requires Codex or Claude Code. Configure Codex subscription auth, Claude Code subscription auth, ANTHROPIC_API_KEY with Claude Code, or OPENAI_API_KEY with Codex."
     )
-    let modelSelection = piModelSelection(
-        explicitModel: model,
-        environment: environment,
-        auth: auth,
-        usesCustomCommand: usesCustomCommand
+}
+
+private func codexHarness(authSummary: String) -> ShellReviewHarness {
+    ShellReviewHarness(
+        harnessName: "codex",
+        modelName: ReviewHarnessModel.codex,
+        shellCommand:
+            #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; codex exec --color never --sandbox read-only --model "\#(ReviewHarnessModel.codex)" -c model_reasoning_effort="high" "$prompt""#,
+        commandSource: "codex CLI",
+        invocationSummary:
+            "codex exec --color never --sandbox read-only --model \(ReviewHarnessModel.codex) -c model_reasoning_effort=high <generated prompt>",
+        authSummary: authSummary,
+        modelSource: "hardcoded"
     )
+}
+
+private func claudeHarness(authSummary: String, apiKeyOnly: Bool) -> ShellReviewHarness {
+    let bareFlag = apiKeyOnly ? " --bare" : ""
     return ShellReviewHarness(
-        modelName: modelSelection.name,
-        shellCommand: usesCustomCommand
-            ? customCommand
-            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; pi --model "$WENDY_E2E_PI_MODEL" -p "$prompt""#,
-        commandSource: usesCustomCommand ? "WENDY_E2E_PI_COMMAND" : "pi CLI",
-        invocationSummary: piInvocationSummary(
-            modelName: modelSelection.name,
-            usesCustomCommand: usesCustomCommand
-        ),
-        authSummary: auth.summary,
-        modelSource: modelSelection.source,
-        modelEnvironmentKey: "WENDY_E2E_PI_MODEL"
+        harnessName: "claude",
+        modelName: ReviewHarnessModel.claude,
+        shellCommand: apiKeyOnly
+            ? #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --bare --model "\#(ReviewHarnessModel.claude)" --effort high --print "$prompt""#
+            : #"prompt="Read and follow the E2E review instructions in $WENDY_E2E_REVIEW_PROMPT."; claude --model "\#(ReviewHarnessModel.claude)" --effort high --print "$prompt""#,
+        commandSource: "Claude Code CLI",
+        invocationSummary:
+            "claude\(bareFlag) --model \(ReviewHarnessModel.claude) --effort high --print <generated prompt>",
+        authSummary: authSummary,
+        modelSource: "hardcoded"
     )
 }
 
-private func piInvocationSummary(modelName: String, usesCustomCommand: Bool) -> String {
-    if usesCustomCommand {
-        return "custom shell command (not printed; may contain secrets)"
-    }
-    return "pi --model \(modelName) -p <generated prompt>"
-}
-
-private struct PiAuth {
-    var openAICodexOAuth: Bool
-    var anthropicOAuth: Bool
-    var openAIAPIKey: Bool
-    var anthropicAPIKey: Bool
-    var summary: String
-}
-
-private struct PiModelSelection {
-    var name: String
-    var source: String
-}
-
-private func piAuth(environment: [String: String], usesCustomCommand: Bool) throws -> PiAuth {
-    if usesCustomCommand {
-        return PiAuth(
-            openAICodexOAuth: false,
-            anthropicOAuth: false,
-            openAIAPIKey: false,
-            anthropicAPIKey: false,
-            summary: "custom command; auth handled by WENDY_E2E_PI_COMMAND"
-        )
-    }
-
-    let authPath =
-        environment["PI_CODING_AGENT_DIR"].map { "\($0)/auth.json" }
-        ?? "\(NSHomeDirectory())/.pi/agent/auth.json"
-    let subscriptions = piAuthTypes(at: authPath)
-    let auth = PiAuth(
-        openAICodexOAuth: subscriptions.openAICodexOAuth,
-        anthropicOAuth: subscriptions.anthropicOAuth,
-        openAIAPIKey: !environment["OPENAI_API_KEY", default: ""].isEmpty,
-        anthropicAPIKey: !environment["ANTHROPIC_API_KEY", default: ""].isEmpty,
-        summary: piAuthSummary(
-            openAICodexOAuth: subscriptions.openAICodexOAuth,
-            anthropicOAuth: subscriptions.anthropicOAuth,
-            openAIAPIKey: !environment["OPENAI_API_KEY", default: ""].isEmpty,
-            anthropicAPIKey: !environment["ANTHROPIC_API_KEY", default: ""].isEmpty
-        )
-    )
-
-    if auth.summary.isEmpty {
-        throw ValidationError(
-            "Pi review requires recognized auth. Configure OpenAI Codex or Anthropic subscription auth in \(authPath), set OPENAI_API_KEY or ANTHROPIC_API_KEY, or set WENDY_E2E_PI_COMMAND."
-        )
-    }
-    return auth
-}
-
-private func piAuthSummary(
-    openAICodexOAuth: Bool,
-    anthropicOAuth: Bool,
-    openAIAPIKey: Bool,
-    anthropicAPIKey: Bool
-) -> String {
-    var parts: [String] = []
-    if openAICodexOAuth {
-        parts.append("OpenAI Codex subscription")
-    }
-    if anthropicOAuth {
-        parts.append("Anthropic subscription")
-    }
-    if openAIAPIKey {
-        parts.append("OPENAI_API_KEY")
-    }
-    if anthropicAPIKey {
-        parts.append("ANTHROPIC_API_KEY")
-    }
-    return parts.joined(separator: ", ")
-}
-
-private func piModelSelection(
-    explicitModel: String?,
-    environment: [String: String],
-    auth: PiAuth,
-    usesCustomCommand: Bool
-) -> PiModelSelection {
-    if let explicitModel, !usesHarnessDefaultModel(explicitModel) {
-        return PiModelSelection(name: explicitModel, source: "--model")
-    }
-    let environmentModel = environment["WENDY_E2E_PI_MODEL", default: ""]
-    if !usesHarnessDefaultModel(environmentModel) {
-        return PiModelSelection(name: environmentModel, source: "WENDY_E2E_PI_MODEL")
-    }
-    if usesCustomCommand {
-        return PiModelSelection(name: "default", source: "WENDY_E2E_PI_COMMAND")
-    }
-    if auth.openAICodexOAuth {
-        return PiModelSelection(name: "openai-codex/gpt:high", source: "OpenAI Codex subscription")
-    }
-    if auth.anthropicOAuth {
-        return PiModelSelection(
-            name: "anthropic/claude-opus:high",
-            source: "Anthropic subscription"
-        )
-    }
-    if auth.openAIAPIKey {
-        return PiModelSelection(name: "openai/gpt:high", source: "OPENAI_API_KEY")
-    }
-    if auth.anthropicAPIKey {
-        return PiModelSelection(name: "anthropic/claude-opus:high", source: "ANTHROPIC_API_KEY")
-    }
-    return PiModelSelection(name: "default", source: "unresolved")
-}
-
-private func piAuthTypes(at path: String) -> (openAICodexOAuth: Bool, anthropicOAuth: Bool) {
-    guard let data = FileManager.default.contents(atPath: path),
-        let object = try? JSONSerialization.jsonObject(with: data),
-        let auth = object as? [String: Any]
-    else {
-        return (false, false)
-    }
-
-    func hasOAuthProvider(_ key: String) -> Bool {
-        guard let provider = auth[key] as? [String: Any],
-            let type = provider["type"] as? String
-        else {
-            return false
-        }
-        return type == "oauth"
-    }
-
-    return (
-        openAICodexOAuth: hasOAuthProvider("openai-codex"),
-        anthropicOAuth: hasOAuthProvider("anthropic")
-    )
-}
-
-private func usesHarnessDefaultModel(_ modelName: String) -> Bool {
-    let normalized = modelName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return normalized.isEmpty || normalized == "default" || normalized == "latest"
-}
-
-private func requireExecutable(_ name: String, harness: String) throws {
+private func hasExecutable(_ name: String) -> Bool {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = ["which", name]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        throw ValidationError("\(harness) requires `\(name)` to be installed on PATH.")
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
     }
+}
+
+private struct CommandOutput {
+    var status: Int32
+    var text: String
+}
+
+private func commandOutput(_ arguments: [String]) -> CommandOutput? {
+    let pipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = arguments
+    process.standardOutput = pipe
+    process.standardError = pipe
+    do {
+        try process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return CommandOutput(
+            status: process.terminationStatus,
+            text: String(data: data, encoding: .utf8) ?? ""
+        )
+    } catch {
+        return nil
+    }
+}
+
+private func codexSubscriptionConfigured() -> Bool {
+    guard let output = commandOutput(["codex", "login", "status"]) else {
+        return false
+    }
+    return output.status == 0 && !output.text.localizedCaseInsensitiveContains("not logged in")
+}
+
+private func claudeCodeSubscriptionConfigured() -> Bool {
+    if let output = commandOutput(["claude", "auth", "status"]),
+        output.status == 0,
+        let data = output.text.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data),
+        let status = object as? [String: Any],
+        let loggedIn = status["loggedIn"] as? Bool,
+        loggedIn,
+        let authMethod = status["authMethod"] as? String,
+        authMethod == "claude.ai"
+    {
+        return true
+    }
+
+    let credentialsPath = "\(NSHomeDirectory())/.claude/.credentials.json"
+    guard let data = FileManager.default.contents(atPath: credentialsPath),
+        let object = try? JSONSerialization.jsonObject(with: data),
+        let credentials = object as? [String: Any]
+    else {
+        return false
+    }
+    return credentials["claudeAiOauth"] is [String: Any]
 }
 
 private func isReviewRunDirectory(_ runURL: URL) throws -> Bool {

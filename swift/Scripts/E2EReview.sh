@@ -7,7 +7,6 @@ DEFAULT_PACKAGE_DIR="$SWIFT_DIR/WendyE2ETests"
 
 RUN_DIR=""
 PACKAGE_DIR="$DEFAULT_PACKAGE_DIR"
-MODEL="${WENDY_E2E_PI_MODEL:-}"
 DIFF=""
 OVERWRITE="false"
 EXTRA_ARGS=()
@@ -16,23 +15,17 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") --run-dir RUN_DIR [OPTIONS]
 
-Review WendyAgent Swift E2E run artifacts with Pi.
+Review WendyAgent Swift E2E run artifacts with an AI review harness.
 
 Options:
   --run-dir DIR      Required E2E run directory produced by E2EAggregate.sh.
   --package-dir DIR  Swift package directory containing swift-e2e-testing;
                      defaults to $DEFAULT_PACKAGE_DIR.
-  --model NAME       Pi model override. Use latest/default to let Pi choose
-                     its default model.
   --diff RANGE       Git diff range for diff-scoped review, for example
                      origin/main...HEAD.
   --overwrite        Overwrite existing run review files.
   --help             Show this help message.
 
-Environment:
-  WENDY_E2E_PI_MODEL    Default Pi model override.
-  WENDY_E2E_PI_COMMAND  Optional shell command for Pi. Reads the prompt from
-                         WENDY_E2E_REVIEW_PROMPT.
 EOF
 }
 
@@ -65,10 +58,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --package-dir)
       PACKAGE_DIR="$2"
-      shift 2
-      ;;
-    --model)
-      MODEL="$2"
       shift 2
       ;;
     --diff)
@@ -106,9 +95,6 @@ review_single_run() {
     "--run-dir" "$run_dir"
   )
 
-  if [[ -n "$MODEL" ]]; then
-    command_args+=("--model" "$MODEL")
-  fi
   if [[ -n "$DIFF" ]]; then
     command_args+=("--diff" "$DIFF")
   fi
@@ -120,9 +106,6 @@ review_single_run() {
   echo "==> Reviewing Swift E2E run results"
   echo "    Package:  $PACKAGE_DIR"
   echo "    Run dir:  $run_dir"
-  if [[ -n "$MODEL" ]]; then
-    echo "    Model:    $MODEL"
-  fi
   if [[ -n "$DIFF" ]]; then
     echo "    Diff:     $DIFF"
   fi

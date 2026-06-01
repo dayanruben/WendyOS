@@ -36,7 +36,7 @@ WINDOWS_E2E_OUTPUT_DIR := $(E2E_OUTPUT_DIR)
 UNIX_E2E_OUTPUT_DIR := $(E2E_OUTPUT_DIR)
 RUN_E2E_TEST_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2ETest.ps1 --default-run-id "$(1)" $(2)
 RUN_E2E_ANALYZE_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows E2E targets require PowerShell.' }; ./Scripts/E2EAnalyze.ps1 --output-dir $(WINDOWS_E2E_OUTPUT_DIR) --stage $(1)
-REQUIRE_E2E_PI_WINDOWS = @if (-not $$env:WENDY_E2E_PI_COMMAND -and -not (Get-Command pi -ErrorAction SilentlyContinue)) { throw 'ERROR: e2e-review requires pi on PATH or WENDY_E2E_PI_COMMAND.' }
+REQUIRE_E2E_REVIEW_WINDOWS = @if (-not (Get-Command codex -ErrorAction SilentlyContinue) -and -not (Get-Command claude -ErrorAction SilentlyContinue)) { throw 'ERROR: e2e-review requires codex or claude.' }
 
 OPEN_E2E_REPORT_UNIX = report_path="$(1)"; if [ -f "$$report_path" ]; then if [ "$$(uname -s)" = "Darwin" ]; then open "$$report_path" || echo "HTML report: $$report_path"; else echo "HTML report: $$report_path"; fi; else echo "HTML report not found: $$report_path"; fi
 RUN_E2E_REPORT_WINDOWS = @if (-not $$PSVersionTable) { throw 'Windows report target requires PowerShell.' }; $$reportDir = '$(RUN_DIR)'; if (-not $$reportDir) { $$outputDir = $(WINDOWS_E2E_OUTPUT_DIR); if (Test-Path -LiteralPath $$outputDir) { $$reportDir = Get-ChildItem -LiteralPath $$outputDir -Directory -Filter 'swift-e2e-tests.*' | Where-Object { -not (Test-Path -LiteralPath (Join-Path $$_.FullName 'attempt.json') -PathType Leaf) } | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName } }; if (-not $$reportDir) { throw 'ERROR: RUN_DIR is required, or no run report directory was found.' }; ./Scripts/E2EReport.ps1 --run-dir $$reportDir; $$reportPath = Join-Path $$reportDir 'index.html'; if (Test-Path -LiteralPath $$reportPath) { Start-Process $$reportPath } else { Write-Output "HTML report not found: $$reportPath" }
@@ -62,7 +62,7 @@ RUN_E2E_TEST_UNIX = @output_dir=$(UNIX_E2E_OUTPUT_DIR); \
 	run_id="$${WENDY_E2E_RUN_ID:-$$(next_e2e_run_id "$$output_dir" "$$run_name")}"; \
 	WENDY_E2E_RUN_ID="$$run_id" WENDY_E2E_RUN_NAME="$$run_name" bash ./Scripts/E2ETest.sh $(2)
 RUN_E2E_ANALYZE_UNIX = @bash ./Scripts/E2EAnalyze.sh --output-dir $(UNIX_E2E_OUTPUT_DIR) --stage $(1)
-REQUIRE_E2E_PI_UNIX = @if [ -z "$${WENDY_E2E_PI_COMMAND:-}" ] && ! command -v pi >/dev/null 2>&1; then echo "ERROR: e2e-review requires pi on PATH or WENDY_E2E_PI_COMMAND." >&2; exit 64; fi
+REQUIRE_E2E_REVIEW_UNIX = @if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then echo "ERROR: e2e-review requires codex or claude." >&2; exit 64; fi
 
 .PHONY: help
 help: help-$(HOST_ENV) ## Show this help message
@@ -139,12 +139,12 @@ e2e-review: e2e-review-$(HOST_ENV) ## Review Swift E2E run results
 
 .PHONY: e2e-review-windows
 e2e-review-windows:
-	$(REQUIRE_E2E_PI_WINDOWS)
+	$(REQUIRE_E2E_REVIEW_WINDOWS)
 	$(call RUN_E2E_ANALYZE_WINDOWS,review)
 
 .PHONY: e2e-review-unix
 e2e-review-unix:
-	$(REQUIRE_E2E_PI_UNIX)
+	$(REQUIRE_E2E_REVIEW_UNIX)
 	$(call RUN_E2E_ANALYZE_UNIX,review)
 
 .PHONY: e2e-report

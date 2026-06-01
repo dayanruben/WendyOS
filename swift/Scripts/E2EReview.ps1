@@ -14,7 +14,6 @@ function Resolve-E2EPath([string]$Path, [switch]$Existing) {
 
 $RunDir = $null
 $PackageDir = $DefaultPackageDir
-$Model = $env:WENDY_E2E_PI_MODEL
 $Diff = $null
 $Overwrite = $false
 $ExtraArgs = @()
@@ -24,7 +23,6 @@ while ($i -lt $args.Count) {
     switch ($args[$i]) {
         '--run-dir' { $RunDir = $args[$i + 1]; $i += 2; continue }
         '--package-dir' { $PackageDir = $args[$i + 1]; $i += 2; continue }
-        '--model' { $Model = $args[$i + 1]; $i += 2; continue }
         '--diff' { $Diff = $args[$i + 1]; $i += 2; continue }
         '--overwrite' { $Overwrite = $true; $i += 1; continue }
         '--help' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [OPTIONS]'; exit 0 }
@@ -39,7 +37,6 @@ $RunDir = Resolve-E2EPath $RunDir -Existing
 $PackageDir = Resolve-E2EPath $PackageDir -Existing
 
 $commandArgs = @('run', 'swift-e2e-testing', 'review', '--run-dir', $RunDir)
-if ($Model) { $commandArgs += @('--model', $Model) }
 if ($Diff) { $commandArgs += @('--diff', $Diff) }
 if ($Overwrite) { $commandArgs += '--overwrite' }
 $commandArgs += $ExtraArgs
@@ -47,7 +44,6 @@ $commandArgs += $ExtraArgs
 Write-Output '==> Reviewing Swift E2E run results'
 Write-Output "    Package:  $PackageDir"
 Write-Output "    Run dir:  $RunDir"
-if ($Model) { Write-Output "    Model:    $Model" }
 if ($Diff) { Write-Output "    Diff:     $Diff" }
 
 & (Join-Path $ScriptDir 'E2ESanitizeXUnit.ps1') --run-dir $RunDir
