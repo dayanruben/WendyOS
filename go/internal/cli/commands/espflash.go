@@ -478,10 +478,24 @@ func (f *espFlasher) chipDetect() error {
 	return nil
 }
 
+// waitSPICmd polls regSPICmd until the SPI_USR bit (bit 18) is cleared,
+// indicating the hardware has finished executing the command.
+func (f *espFlasher) waitSPICmd() error {
+	for {
+		val, err := f.readReg(regSPICmd)
+		if err != nil {
+			return err
+		}
+		if val&0x00040000 == 0 {
+			return nil
+		}
+	}
+}
+
 // initFlashChip performs the SPI flash controller register sequence
 // observed in the esptool trace after SPI_ATTACH.
-// It retrives the JEDEC ID and resets the flash chip, in order to start
-// without depeding on previous usages.
+// It retrieves the JEDEC ID and resets the flash chip, in order to start
+// without depending on previous uses.
 func (f *espFlasher) initFlashChip() (JedecID, error) {
 	user0, err := f.readReg(regSPIUser)
 	if err != nil {
@@ -508,7 +522,7 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(regSPICmd, 0x00040000, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if _, err := f.readReg(regSPICmd); err != nil { // poll until done
+	if err := f.waitSPICmd(); err != nil {
 		return JedecID{}, err
 	}
 	// W0 layout: bits 7:0 = Manufacturer, bits 15:8 = MemoryType, bits 23:16 = Capacity.
@@ -548,7 +562,7 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(regSPICmd, 0x00040000, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if _, err := f.readReg(regSPICmd); err != nil {
+	if err := f.waitSPICmd(); err != nil {
 		return JedecID{}, err
 	}
 	if _, err := f.readReg(regSPIW0); err != nil {
@@ -581,7 +595,7 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(regSPICmd, 0x00040000, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if _, err := f.readReg(regSPICmd); err != nil {
+	if err := f.waitSPICmd(); err != nil {
 		return JedecID{}, err
 	}
 	if _, err := f.readReg(regSPIW0); err != nil {
@@ -764,8 +778,8 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 	}
 
 	// Step 6: Set SPI params.
-	flashSize := flashSize(jedecId)
-	if err := f.spiSetParams(flashSize); err != nil {
+	detectedFlashSize := flashSize(jedecId)
+	if err := f.spiSetParams(detectedFlashSize); err != nil {
 		return fmt.Errorf("SPI set params: %w", err)
 	}
 
@@ -807,7 +821,7 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 
 	// Step 6: Reboot.
 	// Please note that we never succeeded in using flashEnd() here.
-	espResetViaUsbJtag(port, false)
+	espResetViaUsbJtag(f.port, false)
 
 	return nil
 }
