@@ -830,7 +830,7 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 		}
 	}
 
-	// Step 6: Reboot.
+	// Step 9: Reboot.
 	// Please note that we never succeeded in using flashEnd() here.
 	espResetViaUsbJtag(f.port, false)
 
