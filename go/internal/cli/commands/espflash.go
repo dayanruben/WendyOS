@@ -4,6 +4,7 @@ package commands
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -72,6 +73,11 @@ type JedecID struct {
 // espFlasher handles serial communication with the ESP32 bootloader.
 type espFlasher struct {
 	port serial.Port
+}
+
+func isPermissionDenied(err error) bool {
+	var portErr *serial.PortError
+	return errors.As(err, &portErr) && portErr.Code() == serial.PermissionDenied
 }
 
 func espLoaderErrorMessage(code byte) string {
@@ -729,7 +735,12 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 
 	port, err := serial.Open(portPath, mode)
 	if err != nil {
-		return fmt.Errorf("opening serial port %s: %w", portPath, err)
+		if isPermissionDenied(err) {
+			if group := serialPortGroup(portPath); group != "" {
+				return fmt.Errorf("Permission denied to access USB device %s. To have access, you need to be part of the user group '%s'.", portPath, group)
+			}
+		}
+		return fmt.Errorf("opening USB device %s: %w", portPath, err)
 	}
 
 	f := &espFlasher{port: port}
