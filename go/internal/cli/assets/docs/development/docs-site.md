@@ -19,13 +19,17 @@ URL.
 ## Source Layout
 
 The Fumadocs app is reached through `docs/`, which is a repository-root symlink
-to `go/internal/cli/assets/docs`. It reads the existing Markdown files under
-that docs tree at build time, so source Markdown stays in place.
+to `go/internal/cli/assets/docs`. Top-level docs content lives as MDX and
+`meta.json` files in that tree. Existing lower-level Markdown reference files
+are still read from the same tree, but the prep script publishes them under the
+`advanced/` section at build time.
 
 ```
 docs/
-  app/          Next.js app router routes, layout, search, and OG images
+  app/          Next.js app router routes, layout, and search
   components/   MDX components, search dialog, and providers
+  guides/       Top-level guides and tutorials
+  installation/ Top-level setup guides
   lib/          Fumadocs source loader and shared layout config
   scripts/      Content preparation for Fumadocs
   next.config.mjs
@@ -45,8 +49,8 @@ npm run dev
 
 The dev server starts at `http://localhost:3000/`.
 
-When editing source Markdown, rerun the content prep script to refresh generated
-Fumadocs content:
+When editing source Markdown or MDX files, rerun the content prep script to
+refresh generated Fumadocs content:
 
 ```sh
 cd docs
@@ -76,13 +80,18 @@ The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
 | Pull request to `main` from this repository | Builds and deploys a branch preview |
 | Published stable release | Deploys `release-<version>/` and updates `latest/` |
 | Published prerelease/nightly | Deploys `release-nightly-<version>/` and updates `latest-nightly/` |
-| Manual dispatch | Builds a branch-style preview artifact without deploying |
+| Manual dispatch (no inputs) | Builds a branch-style preview artifact without deploying |
+| Manual dispatch with `release_tag` input | Deploys a release, identical to a published-release trigger. The `release_prerelease` input selects the target: `false` (default) deploys `release-<version>/` and updates `latest/`; `true` deploys `release-nightly-<version>/` and updates `latest-nightly/`. The dispatch ref must match `release_tag` (dispatch with `--ref "<release_tag>"`), otherwise the deploy fails fast so docs built from one ref are never published under a different release path. |
 
 The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`. Static exports include
 SHA-256 manifests that are verified before each deploy path is synced.
-Release deploys also ensure bucket object versioning is enabled before updating
-`latest/` or `latest-nightly/`, so alias overwrites remain recoverable.
+Release deploys attempt to enable bucket object versioning before updating
+`latest/` or `latest-nightly/` so alias overwrites remain recoverable. If the
+deploy identity lacks bucket-update permission, the deploy verifies the current
+state instead: it aborts only when versioning is confirmed disabled (an
+overwrite would be unrecoverable), and continues with a warning when versioning
+is already enabled out-of-band or cannot be read.
 
 Required GitHub environment variables:
 

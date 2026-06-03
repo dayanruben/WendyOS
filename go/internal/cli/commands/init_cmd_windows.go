@@ -6,16 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/sys/windows"
 )
 
-// launchAssistantWithPrompt writes the full prompt to a temp file and asks the
-// assistant to read it. On Windows the assistant binaries (claude, codex) are
-// shipped as `.cmd` shims whose `%*` forwarding re-parses arguments through
-// cmd.exe, which mangles multi-line prompts containing embedded quotes, `%`,
-// or newlines. The short instruction interpolates the temp path with `%s` so
-// the argument contains no embedded quotes and no Go-escaped backslashes —
-// just plain text plus the raw filesystem path — which survives `.cmd` re-
-// parsing intact regardless of prompt content.
 func launchAssistantWithPrompt(choice, prompt string) error {
 	tmpPath, cleanup, err := writePromptForAssistant(prompt)
 	if err != nil {
@@ -32,9 +28,6 @@ func launchAssistantWithPrompt(choice, prompt string) error {
 	return cmd.Run()
 }
 
-// writePromptForAssistant writes prompt to a temp .md file and returns its path
-// plus a cleanup func. Split out so the temp-file lifecycle is unit-testable
-// without invoking the real assistant binary.
 func writePromptForAssistant(prompt string) (string, func(), error) {
 	f, err := os.CreateTemp("", "wendy-init-prompt-*.md")
 	if err != nil {
@@ -53,4 +46,24 @@ func writePromptForAssistant(prompt string) (string, func(), error) {
 	}
 
 	return path, func() { os.Remove(path) }, nil
+}
+
+func windowsRootDir() string {
+	root, err := windows.GetWindowsDirectory()
+	if err != nil || strings.TrimSpace(root) == "" || !filepath.IsAbs(root) {
+		return `C:\Windows`
+	}
+	return filepath.Clean(root)
+}
+
+func isRootOwned(path string, _ os.FileInfo) bool {
+	descriptor, err := windows.GetNamedSecurityInfo(filepath.Clean(path), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil || descriptor == nil || !descriptor.IsValid() {
+		return false
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil || !owner.IsValid() {
+		return false
+	}
+	return owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid)
 }

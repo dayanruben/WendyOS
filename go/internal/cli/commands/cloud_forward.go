@@ -88,7 +88,7 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 	}
 	defer ln.Close()
 
-	cliSuccess("Forwarding %s → %s (cloud) → localhost:%d", listenAddr, asset.GetName(), remotePort)
+	cliSuccess("Forwarding %s → %s:%d (via cloud)", listenAddr, asset.GetName(), remotePort)
 	cliLogln("Press Ctrl+C to stop.")
 
 	go func() {

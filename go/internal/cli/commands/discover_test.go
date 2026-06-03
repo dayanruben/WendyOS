@@ -11,7 +11,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -169,6 +171,112 @@ func TestDiscoverModel_TableNavigation(t *testing.T) {
 	}
 }
 
+func TestDiscoverModel_WindowWidthCropsViewLines(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts())
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	m = updated.(discoverModel)
+	updated, _ = m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName:  "Ardent Cashew",
+		Hostname:     "wendyos-ardent-cashew.local",
+		Port:         defaultAgentPort,
+		AgentVersion: "2026.05.30-161141",
+		OSVersion:    "WendyOS-0.13.2",
+	}}})
+	m = updated.(discoverModel)
+
+	if !m.canScrollTable() {
+		t.Fatalf("expected table width %d to exceed viewport %d", tui.PickerTableWidth(m.table.Columns()), m.tableViewportWidth())
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "←/→ scroll") {
+		t.Fatalf("expected scroll hint in cropped view, got %q", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if got := ansi.StringWidth(line); got > 60 {
+			t.Fatalf("view line width = %d, want <= 60: %q", got, line)
+		}
+	}
+}
+
+func TestDiscoverModel_LeftRightScrollsWithoutBreakingVerticalNavigation(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts())
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
+	m = updated.(discoverModel)
+	updated, _ = m.Update(lanScanMsg{devices: []models.LANDevice{
+		{
+			DisplayName:  "alpha",
+			Hostname:     "wendyos-alpha.local",
+			Port:         defaultAgentPort,
+			AgentVersion: "2026.05.30-161141",
+			OSVersion:    "WendyOS-0.13.2",
+		},
+		{
+			DisplayName:  "beta",
+			Hostname:     "wendyos-beta.local",
+			Port:         defaultAgentPort,
+			AgentVersion: "2026.05.30-161141",
+			OSVersion:    "WendyOS-0.13.2",
+		},
+	}})
+	m = updated.(discoverModel)
+
+	before := m.tableView()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(discoverModel)
+
+	if m.table.ScrollOffset() == 0 {
+		t.Fatal("expected right arrow to advance horizontal offset")
+	}
+	if after := m.tableView(); after == before {
+		t.Fatal("expected scrolled table view to change")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(discoverModel)
+
+	if m.table.Cursor() != 1 {
+		t.Fatalf("expected down arrow to move cursor, got %d", m.table.Cursor())
+	}
+	if m.table.ScrollOffset() == 0 {
+		t.Fatal("expected vertical navigation to preserve horizontal offset")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(discoverModel)
+
+	if m.table.ScrollOffset() != 0 {
+		t.Fatalf("expected left arrow to return to zero offset, got %d", m.table.ScrollOffset())
+	}
+}
+
+func TestDiscoverModel_DKeySetsDefaultAndMarksSelectedDevice(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	m := newDiscoverModel(context.Background(), defaultOpts())
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName: "ubuntu",
+		Hostname:    "ubuntu.local",
+		Port:        defaultAgentPort,
+	}}})
+	m = updated.(discoverModel)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um := updated.(discoverModel)
+
+	if um.flashMessage != "Default device set to: ubuntu.local" {
+		t.Fatalf("flash message = %q, want default device confirmation", um.flashMessage)
+	}
+	if cmd == nil {
+		t.Fatal("expected clearFlashAfter cmd")
+	}
+	if !strings.Contains(um.table.View(), "★") {
+		t.Fatalf("expected selected default device to show marker, got %q", um.table.View())
+	}
+}
+
 func TestRenderDeviceTable(t *testing.T) {
 	collection := &models.DevicesCollection{
 		LANDevices: []models.LANDevice{{
@@ -176,14 +284,18 @@ func TestRenderDeviceTable(t *testing.T) {
 			IPAddress:    "192.168.1.10",
 			Port:         8443,
 			AgentVersion: "1.2.3",
+			OSVersion:    "WendyOS-0.10.4",
 		}},
 	}
 
 	output := renderDeviceTable(collection)
-	for _, want := range []string{"Name", "Type", "Address", "wendy-alpha v1.2.3", "LAN", "192.168.1.10:8443"} {
+	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10:8443"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
+	}
+	if strings.Contains(output, "wendy-alpha v1.2.3") {
+		t.Fatalf("expected version in dedicated column, got suffixed name in %q", output)
 	}
 }
 
@@ -216,7 +328,7 @@ func TestDiscoverTableItemsPrioritizesUSBDevices(t *testing.T) {
 		t.Fatalf("non-USB item USB detail = %q, want empty", items[1].picker.USB)
 	}
 
-	_, rows := tui.PickerTableData(discoverPickerItems(items), "", true)
+	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
 	if rows[0][2] != "USB, LAN" {
 		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
 	}
@@ -248,7 +360,7 @@ func TestDiscoverTableItemsAnnotatesLANUSBFromEthernetInterface(t *testing.T) {
 		t.Fatalf("USB detail = %q, want %q", items[0].picker.USB, wantUSB)
 	}
 
-	_, rows := tui.PickerTableData(discoverPickerItems(items), "", true)
+	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
 	if rows[0][2] != "USB, LAN" {
 		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
 	}

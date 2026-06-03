@@ -40,8 +40,6 @@ var execCommandContext = exec.CommandContext
 
 const linuxContainersOnMacsUnsupportedMessage = "Linux containers aren't supported on Macs yet. Support is planned for a future release. For now, deploy a native macOS app (platform: darwin) or target a Linux/WendyOS device."
 
-// dimWriter writes each line rendered through cliStyle (dim/background).
-// Incomplete lines are buffered until a newline or Flush is called.
 type dimWriter struct {
 	buf strings.Builder
 }
@@ -177,6 +175,58 @@ func unpackProgressTitle(progress *agentpb.CreateContainerProgress) string {
 	return title + ")"
 }
 
+func unpackProgressDetail(progress *agentpb.CreateContainerProgress) string {
+	total := progress.GetTotalLayers()
+	if total <= 0 {
+		return ""
+	}
+
+	switch progress.GetPhase() {
+	case agentpb.CreateContainerProgress_UNPACKING:
+		if progress.GetLayerSize() > 0 {
+			return fmt.Sprintf("Layer %d/%d applying%s", unpackLayerNumber(progress, total), total, unpackLayerSizeSuffix(progress))
+		}
+		return fmt.Sprintf("Unpack plan: %d %s", total, pluralize(total, "layer", "layers"))
+	case agentpb.CreateContainerProgress_APPLYING_LAYER:
+		status := "unpacked"
+		if progress.GetReusedSnapshot() {
+			status = "reused snapshot"
+		}
+		return fmt.Sprintf("Layer %d/%d %s%s", unpackLayerNumber(progress, total), total, status, unpackLayerSizeSuffix(progress))
+	default:
+		return ""
+	}
+}
+
+func unpackLayerNumber(progress *agentpb.CreateContainerProgress, total int32) int32 {
+	if total <= 0 {
+		return 0
+	}
+	index := progress.GetLayerIndex()
+	if index < 0 {
+		index = 0
+	}
+	if index >= total {
+		index = total - 1
+	}
+	return index + 1
+}
+
+func unpackLayerSizeSuffix(progress *agentpb.CreateContainerProgress) string {
+	size := progress.GetLayerSize()
+	if size <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%s)", tui.FormatBytes(size))
+}
+
+func pluralize(n int32, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
 func unpackProgressPercent(progress *agentpb.CreateContainerProgress) float64 {
 	total := progress.GetTotalLayers()
 	if total <= 0 {
@@ -211,10 +261,12 @@ func createContainerWithProgressPlain(stream agentpb.WendyContainerService_Creat
 		switch r := resp.GetResponseType().(type) {
 		case *agentpb.CreateContainerProgressResponse_Progress:
 			switch r.Progress.GetPhase() {
-			case agentpb.CreateContainerProgress_UNPACKING:
-				cliLogln("%s", unpackProgressTitle(r.Progress))
-			case agentpb.CreateContainerProgress_APPLYING_LAYER:
-				cliLogln("%s", unpackProgressTitle(r.Progress))
+			case agentpb.CreateContainerProgress_UNPACKING, agentpb.CreateContainerProgress_APPLYING_LAYER:
+				if detail := unpackProgressDetail(r.Progress); detail != "" {
+					cliLogln("%s", detail)
+				} else {
+					cliLogln("%s", unpackProgressTitle(r.Progress))
+				}
 			case agentpb.CreateContainerProgress_CREATING_CONTAINER:
 				cliLogln("Creating container...")
 			}
@@ -298,6 +350,7 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 					prog.Send(tui.ProgressUpdateMsg{
 						Percent: unpackProgressPercent(r.Progress),
 						Title:   unpackProgressTitle(r.Progress),
+						Detail:  unpackProgressDetail(r.Progress),
 					})
 				case agentpb.CreateContainerProgress_CREATING_CONTAINER:
 					if !progressDone {
@@ -388,7 +441,6 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 	return nil
 }
 
-// runOptions holds the parsed flags for the run command.
 type runOptions struct {
 	buildType            string
 	dockerfile           string
@@ -982,6 +1034,9 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if err != nil {
 		return err
 	}
+	if err := ensureProviderSupportsProjectType(p, projectType, projectPath); err != nil {
+		return err
+	}
 
 	// Resolve Swift product name from Package.swift.
 	if projectType == "swift" {
@@ -1417,11 +1472,6 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 	}
 }
 
-// shellCommand returns the shell binary and the argument prefix for running a
-// command string. On Windows it returns cmd.exe with /S /C: /S makes quote
-// stripping predictable when the command contains nested quotes (under the
-// default /C rules cmd.exe behavior depends on the count of `"` characters).
-// On Unix it returns sh -c.
 func shellCommand() (string, []string) {
 	if runtime.GOOS == "windows" {
 		return "cmd.exe", []string{"/S", "/C"}

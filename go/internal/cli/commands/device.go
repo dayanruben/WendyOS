@@ -504,9 +504,6 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 }
 
-// runEnrollDevice creates an enrollment token via the stored auth session and
-// calls StartProvisioning on the connected device agent. name is optional; the
-// user is prompted interactively when it is empty.
 func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
@@ -579,10 +576,6 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	return nil
 }
 
-// pickAuthEntry returns the auth config entry to use for enrollment.
-// If cloudGRPC is specified it must match an existing entry. When no cloudGRPC
-// is given and multiple sessions exist, an error is returned requiring the user
-// to specify --cloud-grpc explicitly.
 func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -1235,10 +1228,15 @@ type githubReleaseFull struct {
 }
 
 func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newGitHubAPIClient(30 * time.Second)
 
 	if !nightly {
-		resp, err := client.Get(githubReleasesURL)
+		req, err := newGitHubAPIGetRequest(githubReleasesURL)
+		if err != nil {
+			return nil, fmt.Errorf("creating GitHub API request: %w", err)
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetching latest release: %w", err)
 		}
@@ -1256,7 +1254,12 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	}
 
 	// For nightly, list releases and find the latest prerelease.
-	resp, err := client.Get("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	req, err := newGitHubAPIGetRequest("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub API request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching releases: %w", err)
 	}
@@ -1472,9 +1475,6 @@ func newDeviceUpdateCmd() *cobra.Command {
 	return cmd
 }
 
-// checkELFArchitecture reads the ELF e_machine field from data and returns an
-// error if it does not match the device's reported GOARCH (e.g. "amd64", "arm64").
-// Non-ELF binaries (e.g. scripts) are accepted without complaint.
 func checkELFArchitecture(data []byte, deviceArch string) error {
 	// Only amd64 and arm64 are supported targets.
 	switch deviceArch {

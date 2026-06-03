@@ -18,6 +18,16 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional release tag to deploy docs for"
+        required: false
+        type: string
+      release_prerelease:
+        description: "Deploy as nightly prerelease docs"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -37,13 +47,14 @@ jobs:
     outputs:
       deploy_path: ${{ steps.path.outputs.deploy_path }}
       deploy_paths: ${{ steps.path.outputs.deploy_paths }}
+      is_release_deploy: ${{ steps.path.outputs.is_release_deploy }}
       url: ${{ steps.path.outputs.url }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
           cache: npm
@@ -91,6 +102,9 @@ jobs:
         id: path
         env:
           DOCS_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DISPATCH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_RELEASE_PRERELEASE: ${{ inputs.release_prerelease || 'false' }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease || 'false' }}
           RELEASE_TAG_NAME: ${{ github.event.release.tag_name || '' }}
         shell: bash
@@ -110,9 +124,23 @@ jobs:
           }
 
           DEPLOY_PATHS=()
+          IS_RELEASE_DEPLOY="false"
 
-          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "release" || ( "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${DISPATCH_RELEASE_TAG}" ) ]]; then
+            IS_RELEASE_DEPLOY="true"
             RAW_VERSION="${RELEASE_TAG_NAME}"
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              # The docs are built from the checked-out ref, but deployed under
+              # release-<release_tag>/. Require the dispatch ref to match the
+              # release_tag so we never publish docs built from a different ref
+              # (e.g. main) under a release path.
+              if [[ "${DISPATCH_REF_NAME}" != "${DISPATCH_RELEASE_TAG}" ]]; then
+                echo "::error::workflow_dispatch ref '${DISPATCH_REF_NAME}' does not match release_tag '${DISPATCH_RELEASE_TAG}'; dispatch with --ref \"${DISPATCH_RELEASE_TAG}\" so the built docs match the release"
+                exit 1
+              fi
+              RAW_VERSION="${DISPATCH_RELEASE_TAG}"
+              RELEASE_PRERELEASE="${DISPATCH_RELEASE_PRERELEASE}"
+            fi
             if [[ -z "${RAW_VERSION}" ]]; then
               echo "::error::Missing release tag in GitHub event context"
               exit 1
@@ -158,12 +186,17 @@ jobs:
             printf '%s\n' "${DEPLOY_PATHS[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "is_release_deploy=${IS_RELEASE_DEPLOY}" >> "$GITHUB_OUTPUT"
           echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/" >> "$GITHUB_OUTPUT"
 
       - name: Build static site exports
         env:
           DEPLOY_PATHS: ${{ steps.path.outputs.deploy_paths }}
           NEXT_PUBLIC_SITE_URL: https://docs.wendy.dev
+          # GA4 / Firebase Analytics — same measurement ID as the marketing site
+          # (wendy.dev). Public by design (it ships in client JS). Baked in at
+          # build time because the docs are a static export.
+          NEXT_PUBLIC_GA_MEASUREMENT_ID: G-7SMVRRYVW6
         run: |
           set -euo pipefail
 
@@ -194,7 +227,7 @@ jobs:
           done <<< "${DEPLOY_PATHS}"
 
       - name: Upload static site artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fumadocs-static-site
           path: docs/export
@@ -206,6 +239,7 @@ jobs:
     needs: build
     if: >-
       github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
     permissions:
@@ -216,32 +250,54 @@ jobs:
       url: ${{ needs.build.outputs.url }}
     steps:
       - name: Download static site artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: fumadocs-static-site
           path: out
 
       - name: Authenticate to GCP
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v3
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Ensure release alias rollback support
-        if: github.event_name == 'release'
+        if: needs.build.outputs.is_release_deploy == 'true'
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           DOCS_BUCKET: wendy-docs-public
         run: |
           set -euo pipefail
 
-          gcloud storage buckets update "gs://${DOCS_BUCKET}" \
+          # Prefer to enable object versioning so latest/ alias overwrites stay
+          # recoverable. If the deploy identity lacks bucket-update IAM, fall
+          # back to verifying the current state: abort only when we can
+          # positively confirm versioning is OFF (the one case where an
+          # overwrite would be unrecoverable). If we can neither set nor read
+          # the bucket config, continue best-effort with a warning rather than
+          # blocking the deploy on a missing bucket-level permission.
+          if gcloud storage buckets update "gs://${DOCS_BUCKET}" \
             --versioning \
             --quiet \
-            --project="${GCP_PROJECT_ID}"
+            --project="${GCP_PROJECT_ID}"; then
+            echo "Bucket object versioning is enabled."
+          else
+            echo "::warning::Unable to enable bucket versioning; verifying current state"
+            if VERSIONING="$(gcloud storage buckets describe "gs://${DOCS_BUCKET}" \
+              --format='value(versioning.enabled)' \
+              --project="${GCP_PROJECT_ID}" 2>/dev/null)"; then
+              if [[ "${VERSIONING}" != "True" ]]; then
+                echo "::error::Bucket object versioning is disabled and could not be enabled; aborting release alias update to keep latest/ overwrites recoverable"
+                exit 1
+              fi
+              echo "Bucket object versioning already enabled (managed out-of-band)."
+            else
+              echo "::warning::Unable to verify bucket versioning state; continuing with docs deployment"
+            fi
+          fi
 
       - name: Upload to Cloud Storage
         env:
