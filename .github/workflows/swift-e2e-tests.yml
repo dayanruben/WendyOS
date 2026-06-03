@@ -59,6 +59,7 @@ jobs:
             agent_os: wendyOS
             transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: Ubuntu 24 → Raspberry Pi 5
           #   target_id: ubuntu-raspberry-pi-5
           #   runner_id: ubuntu-24-04
@@ -69,6 +70,7 @@ jobs:
           #   agent_os: wendyOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: Windows 11 → Mac mini
           #   target_id: windows-mac-mini
           #   runner_id: windows-11
@@ -79,6 +81,7 @@ jobs:
           #   agent_os: macOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: Ubuntu 24 → Jetson Orin Nano
           #   target_id: ubuntu-jetson-orin-nano
           #   runner_id: ubuntu-24-04
@@ -89,6 +92,7 @@ jobs:
           #   agent_os: wendyOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: Windows 11 → Raspberry Pi 5
           #   target_id: windows-raspberry-pi-5
           #   runner_id: windows-11
@@ -99,6 +103,7 @@ jobs:
           #   agent_os: wendyOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: macOS 26 → Mac mini
           #   target_id: macos-mac-mini
           #   runner_id: macos-26
@@ -109,6 +114,7 @@ jobs:
           #   agent_os: macOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: Windows 11 → Jetson Orin Nano
           #   target_id: windows-jetson-orin-nano
           #   runner_id: windows-11
@@ -119,6 +125,7 @@ jobs:
           #   agent_os: wendyOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: macOS 26 → Raspberry Pi 5
           #   target_id: macos-raspberry-pi-5
           #   runner_id: macos-26
@@ -129,6 +136,7 @@ jobs:
           #   agent_os: wendyOS
           #   transport: lan
 
+          # // DISABLED: no CI hardware set up yet for this job.
           # - name: Ubuntu 24 → Mac mini
           #   target_id: ubuntu-mac-mini
           #   runner_id: ubuntu-24-04
