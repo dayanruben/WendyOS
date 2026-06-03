@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -25,9 +24,13 @@ func addOSCacheCmd(parent *cobra.Command) {
 
 func newOSCacheListCmd() *cobra.Command {
 	type osCacheEntry struct {
-		Name      string  `json:"name"`
-		SizeBytes int64   `json:"sizeBytes"`
-		SizeMB    float64 `json:"sizeMB"`
+		Name      string `json:"name"`
+		SizeBytes int64  `json:"sizeBytes"`
+		Size      string `json:"size"`
+
+		// Keep the existing human-readable output in MiB while exposing the
+		// same JSON shape as `wendy cache list --json`.
+		sizeMB float64
 	}
 
 	printJSON := func(items []osCacheEntry) error {
@@ -47,6 +50,8 @@ func newOSCacheListCmd() *cobra.Command {
 		Short: "List cached OS images",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// jsonOutput is auto-enabled for non-interactive commands; os cache list
+			// keeps plain text there unless --json was explicitly requested.
 			explicitJSON := jsonOutput && cmd.Root().PersistentFlags().Changed("json")
 			dir, err := osCacheDir()
 			if err != nil {
@@ -67,22 +72,19 @@ func newOSCacheListCmd() *cobra.Command {
 
 			var items []osCacheEntry
 			for _, entry := range entries {
-				path := filepath.Join(dir, entry.Name())
 				if entry.IsDir() {
-					if _, err := entrySize(path); err != nil {
-						return fmt.Errorf("determining OS cache entry size for %s: %w", entry.Name(), err)
-					}
 					continue
 				}
 				info, err := entry.Info()
 				if err != nil {
 					return fmt.Errorf("reading OS cache entry info for %s: %w", entry.Name(), err)
 				}
-				sizeMB := float64(info.Size()) / (1024 * 1024)
+				size := info.Size()
 				items = append(items, osCacheEntry{
 					Name:      entry.Name(),
-					SizeBytes: info.Size(),
-					SizeMB:    sizeMB,
+					SizeBytes: size,
+					Size:      formatSize(size),
+					sizeMB:    float64(size) / (1024 * 1024),
 				})
 			}
 
@@ -94,7 +96,7 @@ func newOSCacheListCmd() *cobra.Command {
 				fmt.Println("No cached OS images.")
 			} else {
 				for _, item := range items {
-					fmt.Printf("  %s  (%.1f MB)\n", item.Name, item.SizeMB)
+					fmt.Printf("  %s  (%.1f MB)\n", item.Name, item.sizeMB)
 				}
 				fmt.Printf("\nCache directory: %s\n", dir)
 			}
