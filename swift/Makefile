@@ -71,11 +71,11 @@ help: help-$(HOST_ENV) ## Show this help message
 
 .PHONY: help-windows
 help-windows:
-	@if (-not $$PSVersionTable) { throw 'Windows make recipes require PowerShell.' }; Write-Output 'Usage:'; Write-Output '  make <target>'; Write-Output ''; Write-Output 'Targets:'; Select-String -Path '$(firstword $(MAKEFILE_LIST))' -Pattern '^[a-zA-Z0-9_-]+:.*?\#\# ' | ForEach-Object { $$parts = $$_.Line -split ':.*?\#\# ', 2; '  {0,-40} {1}' -f $$parts[0], $$parts[1] }; Write-Output ''; Write-Output 'Device shortcut targets:'; '  {0,-40} {1}' -f 'e2e-test-wendy-<name>', 'Run WendyOS E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-linux-<name>', 'Run Linux E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-macos-<name>', 'Run macOS E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-mac-mini', 'Run Swift E2E tests against mac-mini.local'; '  {0,-40} {1}' -f 'e2e-test-jetson-orin-nano', 'Run Swift E2E tests against wendyos-jetson-orin-nano.local'; '  {0,-40} {1}' -f 'e2e-test-raspberry-pi-5', 'Run Swift E2E tests against wendyos-raspberry-pi-5.local'
+	@if (-not $$PSVersionTable) { throw 'Windows make recipes require PowerShell.' }; Write-Output 'Usage:'; Write-Output '  make <target>'; Write-Output ''; Write-Output 'Targets:'; Select-String -Path '$(firstword $(MAKEFILE_LIST))' -Pattern '^[a-zA-Z0-9_-]+:.*?\#\# ' | Where-Object { -not ($$_.Line -match '^e2e-') } | ForEach-Object { $$parts = $$_.Line -split ':.*?\#\# ', 2; '  {0,-40} {1}' -f $$parts[0], $$parts[1] }; Write-Output ''; Write-Output 'Swift E2E targets:'; '  {0,-40} {1}' -f 'e2e-test', 'Run Swift E2E tests locally and write attempt artifacts'; '  {0,-40} {1}' -f 'e2e-test-linux', 'Run Swift E2E tests against a Linux device; requires DEVICE'; '  {0,-40} {1}' -f 'e2e-test-macos', 'Run Swift E2E tests against a macOS device; requires DEVICE'; '  {0,-40} {1}' -f 'e2e-test-wendy', 'Run Swift E2E tests against a WendyOS device; requires DEVICE'; '  {0,-40} {1}' -f 'e2e-aggregate', 'Aggregate all Swift E2E attempts'; '  {0,-40} {1}' -f 'e2e-review', 'Review Swift E2E run results with AI'; '  {0,-40} {1}' -f 'e2e-report', 'Render Swift E2E run report and open the latest'; '  {0,-40} {1}' -f 'e2e-analyze', 'Run e2e-aggregate, e2e-review, and e2e-report'; Write-Output ''; Write-Output 'Device shortcut targets:'; '  {0,-40} {1}' -f 'e2e-test-wendy-<name>', 'Run WendyOS E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-linux-<name>', 'Run Linux E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-macos-<name>', 'Run macOS E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-mac-mini', 'Run Swift E2E tests against mac-mini.local'; '  {0,-40} {1}' -f 'e2e-test-jetson-orin-nano', 'Run Swift E2E tests against wendyos-jetson-orin-nano.local'; '  {0,-40} {1}' -f 'e2e-test-raspberry-pi-5', 'Run Swift E2E tests against wendyos-raspberry-pi-5.local'
 
 .PHONY: help-unix
 help-unix:
-	@echo 'Usage:'; echo '  make <target>'; echo ''; echo 'Targets:'; grep -E '^[a-zA-Z0-9_-]+:.*?\#\# .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?\#\# "}; {printf "  %-40s %s\n", $$1, $$2}'; echo ''; echo 'Device shortcut targets:'; printf "  %-40s %s\n" 'e2e-test-wendy-<name>' 'Run WendyOS E2E tests against <name>.local' 'e2e-test-linux-<name>' 'Run Linux E2E tests against <name>.local' 'e2e-test-macos-<name>' 'Run macOS E2E tests against <name>.local' 'e2e-test-mac-mini' 'Run Swift E2E tests against mac-mini.local' 'e2e-test-jetson-orin-nano' 'Run Swift E2E tests against wendyos-jetson-orin-nano.local' 'e2e-test-raspberry-pi-5' 'Run Swift E2E tests against wendyos-raspberry-pi-5.local'
+	@echo 'Usage:'; echo '  make <target>'; echo ''; echo 'Targets:'; grep -E '^[a-zA-Z0-9_-]+:.*?\#\# .*$$' $(MAKEFILE_LIST) | grep -v -E '^e2e-' | sort | awk 'BEGIN {FS = ":.*?\#\# "}; {printf "  %-40s %s\n", $$1, $$2}'; echo ''; echo 'Swift E2E targets:'; printf "  %-40s %s\n" 'e2e-test' 'Run Swift E2E tests locally and write attempt artifacts' 'e2e-test-linux' 'Run Swift E2E tests against a Linux device; requires DEVICE' 'e2e-test-macos' 'Run Swift E2E tests against a macOS device; requires DEVICE' 'e2e-test-wendy' 'Run Swift E2E tests against a WendyOS device; requires DEVICE' 'e2e-aggregate' 'Aggregate all Swift E2E attempts' 'e2e-review' 'Review Swift E2E run results with AI' 'e2e-report' 'Render Swift E2E run report and open the latest' 'e2e-analyze' 'Run e2e-aggregate, e2e-review, and e2e-report'; echo ''; echo 'Device shortcut targets:'; printf "  %-40s %s\n" 'e2e-test-wendy-<name>' 'Run WendyOS E2E tests against <name>.local' 'e2e-test-linux-<name>' 'Run Linux E2E tests against <name>.local' 'e2e-test-macos-<name>' 'Run macOS E2E tests against <name>.local' 'e2e-test-mac-mini' 'Run Swift E2E tests against mac-mini.local' 'e2e-test-jetson-orin-nano' 'Run Swift E2E tests against wendyos-jetson-orin-nano.local' 'e2e-test-raspberry-pi-5' 'Run Swift E2E tests against wendyos-raspberry-pi-5.local'
 
 .PHONY: FORCE
 FORCE:
@@ -126,7 +126,7 @@ e2e-test-unix:
 	$(call RUN_E2E_TEST_UNIX,local,--output-dir $(UNIX_E2E_OUTPUT_DIR) --cli-root-dir $(UNIX_E2E_OUTPUT_DIR) --agent-root-dir $(UNIX_E2E_OUTPUT_DIR) --parallel)
 
 .PHONY: e2e-analyze
-e2e-analyze: e2e-aggregate e2e-review e2e-report ## Aggregate, review, and report all Swift E2E attempts
+e2e-analyze: e2e-aggregate e2e-review e2e-report ## Run e2e-aggregate, e2e-review, and e2e-report
 
 .PHONY: e2e-aggregate
 e2e-aggregate: e2e-aggregate-$(HOST_ENV) ## Aggregate all Swift E2E attempts
@@ -140,7 +140,7 @@ e2e-aggregate-unix:
 	$(call RUN_E2E_ANALYZE_UNIX,aggregate)
 
 .PHONY: e2e-review
-e2e-review: e2e-review-$(HOST_ENV) ## Review Swift E2E run results
+e2e-review: e2e-review-$(HOST_ENV) ## Review Swift E2E run results with AI
 
 .PHONY: e2e-review-windows
 e2e-review-windows:
@@ -153,7 +153,7 @@ e2e-review-unix:
 	$(call RUN_E2E_ANALYZE_UNIX,review)
 
 .PHONY: e2e-report
-e2e-report: e2e-report-$(HOST_ENV) ## Render Swift E2E run reports and open the latest
+e2e-report: e2e-report-$(HOST_ENV) ## Render Swift E2E run report and open the latest
 
 .PHONY: e2e-report-windows
 e2e-report-windows:
