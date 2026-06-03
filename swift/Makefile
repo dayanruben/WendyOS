@@ -71,11 +71,14 @@ help: help-$(HOST_ENV) ## Show this help message
 
 .PHONY: help-windows
 help-windows:
-	@if (-not $$PSVersionTable) { throw 'Windows make recipes require PowerShell.' }; Write-Output 'Usage:'; Write-Output '  make <target>'; Write-Output ''; Write-Output 'Targets:'; Select-String -Path '$(firstword $(MAKEFILE_LIST))' -Pattern '^[a-zA-Z0-9_-]+:.*?\#\# ' | ForEach-Object { $$parts = $$_.Line -split ':.*?\#\# ', 2; '  {0,-24} {1}' -f $$parts[0], $$parts[1] }
+	@if (-not $$PSVersionTable) { throw 'Windows make recipes require PowerShell.' }; Write-Output 'Usage:'; Write-Output '  make <target>'; Write-Output ''; Write-Output 'Targets:'; Select-String -Path '$(firstword $(MAKEFILE_LIST))' -Pattern '^[a-zA-Z0-9_-]+:.*?\#\# ' | ForEach-Object { $$parts = $$_.Line -split ':.*?\#\# ', 2; '  {0,-40} {1}' -f $$parts[0], $$parts[1] }; Write-Output ''; Write-Output 'Device shortcut targets:'; '  {0,-40} {1}' -f 'e2e-test-wendy-<name>', 'Run WendyOS E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-linux-<name>', 'Run Linux E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-macos-<name>', 'Run macOS E2E tests against <name>.local'; '  {0,-40} {1}' -f 'e2e-test-mac-mini', 'Run Swift E2E tests against mac-mini.local'; '  {0,-40} {1}' -f 'e2e-test-jetson-orin-nano', 'Run Swift E2E tests against wendyos-jetson-orin-nano.local'; '  {0,-40} {1}' -f 'e2e-test-raspberry-pi-5', 'Run Swift E2E tests against wendyos-raspberry-pi-5.local'
 
 .PHONY: help-unix
 help-unix:
-	@echo 'Usage:'; echo '  make <target>'; echo ''; echo 'Targets:'; grep -E '^[a-zA-Z0-9_-]+:.*?\#\# .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?\#\# "}; {printf "  %-24s %s\n", $$1, $$2}'
+	@echo 'Usage:'; echo '  make <target>'; echo ''; echo 'Targets:'; grep -E '^[a-zA-Z0-9_-]+:.*?\#\# .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?\#\# "}; {printf "  %-40s %s\n", $$1, $$2}'; echo ''; echo 'Device shortcut targets:'; printf "  %-40s %s\n" 'e2e-test-wendy-<name>' 'Run WendyOS E2E tests against <name>.local' 'e2e-test-linux-<name>' 'Run Linux E2E tests against <name>.local' 'e2e-test-macos-<name>' 'Run macOS E2E tests against <name>.local' 'e2e-test-mac-mini' 'Run Swift E2E tests against mac-mini.local' 'e2e-test-jetson-orin-nano' 'Run Swift E2E tests against wendyos-jetson-orin-nano.local' 'e2e-test-raspberry-pi-5' 'Run Swift E2E tests against wendyos-raspberry-pi-5.local'
+
+.PHONY: FORCE
+FORCE:
 
 .PHONY: format
 format: format-$(HOST_ENV) ## Format Swift code using swift-format
@@ -199,41 +202,50 @@ e2e-test-macos-unix:
 	$(call REQUIRE_E2E_DEVICE_UNIX,e2e-test-macos)
 	$(call RUN_E2E_TEST_UNIX,macos,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macos --agent-address "$(DEVICE)")
 
-e2e-test-wendyos-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
-.PHONY: e2e-test-wendyos-jetson-orin-nano
-e2e-test-wendyos-jetson-orin-nano: e2e-test-wendyos-jetson-orin-nano-$(HOST_ENV) ## Run Swift E2E tests against Jetson Orin Nano and write attempt artifacts
+e2e-test-wendy-%: FORCE
+	$(MAKE) e2e-test-wendy DEVICE="$*.local"
 
-.PHONY: e2e-test-wendyos-jetson-orin-nano-windows
-e2e-test-wendyos-jetson-orin-nano-windows:
-	$(call RUN_E2E_TEST_WINDOWS,wendyos-jetson-orin-nano,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
+e2e-test-linux-%: FORCE
+	$(MAKE) e2e-test-linux DEVICE="$*.local"
 
-.PHONY: e2e-test-wendyos-jetson-orin-nano-unix
-e2e-test-wendyos-jetson-orin-nano-unix:
-	$(call RUN_E2E_TEST_UNIX,wendyos-jetson-orin-nano,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
+e2e-test-macos-%: FORCE
+	$(MAKE) e2e-test-macos DEVICE="$*.local"
 
-e2e-test-wendyos-raspberry-pi-5: DEVICE ?= wendyos-raspberry-pi-5.local
-.PHONY: e2e-test-wendyos-raspberry-pi-5
-e2e-test-wendyos-raspberry-pi-5: e2e-test-wendyos-raspberry-pi-5-$(HOST_ENV) ## Run Swift E2E tests against Raspberry Pi 5 and write attempt artifacts
+e2e-test-jetson-orin-nano: DEVICE ?= wendyos-jetson-orin-nano.local
+.PHONY: e2e-test-jetson-orin-nano
+e2e-test-jetson-orin-nano: e2e-test-jetson-orin-nano-$(HOST_ENV)
 
-.PHONY: e2e-test-wendyos-raspberry-pi-5-windows
-e2e-test-wendyos-raspberry-pi-5-windows:
-	$(call RUN_E2E_TEST_WINDOWS,wendyos-raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
+.PHONY: e2e-test-jetson-orin-nano-windows
+e2e-test-jetson-orin-nano-windows:
+	$(call RUN_E2E_TEST_WINDOWS,jetson-orin-nano,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
-.PHONY: e2e-test-wendyos-raspberry-pi-5-unix
-e2e-test-wendyos-raspberry-pi-5-unix:
-	$(call RUN_E2E_TEST_UNIX,wendyos-raspberry-pi-5,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
+.PHONY: e2e-test-jetson-orin-nano-unix
+e2e-test-jetson-orin-nano-unix:
+	$(call RUN_E2E_TEST_UNIX,jetson-orin-nano,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
-e2e-test-macos-mac-mini: DEVICE ?= mac-mini.local
-.PHONY: e2e-test-macos-mac-mini
-e2e-test-macos-mac-mini: e2e-test-macos-mac-mini-$(HOST_ENV) ## Run Swift E2E tests against Mac mini and write attempt artifacts
+e2e-test-raspberry-pi-5: DEVICE ?= wendyos-raspberry-pi-5.local
+.PHONY: e2e-test-raspberry-pi-5
+e2e-test-raspberry-pi-5: e2e-test-raspberry-pi-5-$(HOST_ENV)
 
-.PHONY: e2e-test-macos-mac-mini-windows
-e2e-test-macos-mac-mini-windows:
-	$(call RUN_E2E_TEST_WINDOWS,macos-mac-mini,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
+.PHONY: e2e-test-raspberry-pi-5-windows
+e2e-test-raspberry-pi-5-windows:
+	$(call RUN_E2E_TEST_WINDOWS,raspberry-pi-5,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
 
-.PHONY: e2e-test-macos-mac-mini-unix
-e2e-test-macos-mac-mini-unix:
-	$(call RUN_E2E_TEST_UNIX,macos-mac-mini,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
+.PHONY: e2e-test-raspberry-pi-5-unix
+e2e-test-raspberry-pi-5-unix:
+	$(call RUN_E2E_TEST_UNIX,raspberry-pi-5,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os wendyOS --agent-address "$(DEVICE)")
+
+e2e-test-mac-mini: DEVICE ?= mac-mini.local
+.PHONY: e2e-test-mac-mini
+e2e-test-mac-mini: e2e-test-mac-mini-$(HOST_ENV)
+
+.PHONY: e2e-test-mac-mini-windows
+e2e-test-mac-mini-windows:
+	$(call RUN_E2E_TEST_WINDOWS,mac-mini,--output-dir $(WINDOWS_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
+
+.PHONY: e2e-test-mac-mini-unix
+e2e-test-mac-mini-unix:
+	$(call RUN_E2E_TEST_UNIX,mac-mini,--output-dir $(UNIX_E2E_OUTPUT_DIR) --agent-os macOS --agent-address "$(DEVICE)")
 
 .PHONY: report
 report: report-$(HOST_ENV) ## Render the latest Swift E2E run report and open it

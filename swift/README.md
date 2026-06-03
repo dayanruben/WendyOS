@@ -99,10 +99,12 @@ The Makefile includes helpers for the common cases:
   device.
 - `make e2e-test-linux DEVICE=<host>` runs an attempt against a Linux device.
 - `make e2e-test-macos DEVICE=<host>` runs an attempt against a macOS device.
-- `make e2e-test-macos-mac-mini` runs an attempt against `mac-mini.local`.
-- `make e2e-test-wendyos-jetson-orin-nano` runs an attempt against
+- `make e2e-test-wendy-<name>`, `make e2e-test-linux-<name>`, and
+  `make e2e-test-macos-<name>` run against `<name>.local`.
+- `make e2e-test-mac-mini` runs an attempt against `mac-mini.local`.
+- `make e2e-test-jetson-orin-nano` runs an attempt against
   `wendyos-jetson-orin-nano.local`.
-- `make e2e-test-wendyos-raspberry-pi-5` runs an attempt against
+- `make e2e-test-raspberry-pi-5` runs an attempt against
   `wendyos-raspberry-pi-5.local`.
 - `make e2e-aggregate` integrates attempts for the current run ID, updating run
   directories in place.
@@ -117,7 +119,8 @@ Generic device-targeted helpers require `DEVICE`; named device helpers accept a
 
 ```bash
 make e2e-test-macos DEVICE=my-mac.local
-make e2e-test-macos-mac-mini DEVICE=my-mac.local
+make e2e-test-macos-my-mac
+make e2e-test-mac-mini DEVICE=my-mac.local
 make e2e-analyze
 ```
 
