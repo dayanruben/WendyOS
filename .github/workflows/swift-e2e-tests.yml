@@ -249,6 +249,22 @@ jobs:
             --output-dir "${RUNNER_TEMP}/wendy" \
             "${attempt_dirs[@]}"
 
+      - name: Configure self-hosted tool PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in \
+            /opt/homebrew/bin \
+            /usr/local/bin \
+            "$HOME/.local/bin" \
+            "$HOME/bin" \
+            "$HOME/.npm-global/bin"
+          do
+            if [[ -d "$dir" ]]; then
+              echo "$dir" >> "$GITHUB_PATH"
+            fi
+          done
+
       - name: Verify AI review harness
         shell: bash
         run: |
