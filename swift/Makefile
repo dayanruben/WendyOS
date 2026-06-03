@@ -320,6 +320,17 @@ build-cli-windows:
 build-cli-unix:
 	$(MAKE) -C ../go build-cli HOST_ENV=unix
 
+.PHONY: discover
+discover: build-cli discover-$(HOST_ENV) ## Build the Go CLI and discover Wendy devices
+
+.PHONY: discover-windows
+discover-windows:
+	../go/bin/wendy.exe discover
+
+.PHONY: discover-unix
+discover-unix:
+	../go/bin/wendy discover
+
 .PHONY: agent-build
 agent-build: agent-build-$(HOST_OS) ## Build and package a dev-signed macOS app without notarization
 
