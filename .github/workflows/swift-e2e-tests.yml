@@ -7,6 +7,9 @@ on:
       - 'Proto/**'
       - '.github/actions/swift-e2e-run/**'
       - '.github/workflows/swift-e2e-tests.yml'
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tests:
@@ -21,6 +24,8 @@ on:
         default: ''
     secrets:
       OPENAI_API_KEY:
+        required: false
+      WENDY_E2E_SLACK_WEBHOOK_URL:
         required: false
 
 concurrency:
@@ -319,9 +324,11 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
         run: |
           set -euo pipefail
-          bash ./Scripts/E2EReview.sh \
-            --run-dir "${{ steps.e2e-run.outputs.run_dir }}" \
-            --diff "origin/main...HEAD"
+          review_args=(--run-dir "${{ steps.e2e-run.outputs.run_dir }}")
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            review_args+=(--diff "origin/main...HEAD")
+          fi
+          bash ./Scripts/E2EReview.sh "${review_args[@]}"
 
       - name: Render Swift E2E Report
         if: always()
@@ -343,7 +350,7 @@ jobs:
           retention-days: 14
 
       - name: Post Swift E2E PR Review
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v9
         env:
           REPO: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
@@ -426,3 +433,51 @@ jobs:
                 body,
               });
             }
+
+      - name: Post Swift E2E Slack Review
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.WENDY_E2E_SLACK_WEBHOOK_URL || '' }}
+          COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
+          REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
+            echo "WENDY_E2E_SLACK_WEBHOOK_URL is not configured; skipping Slack notification."
+            exit 0
+          fi
+          if [[ ! -f "${COMMENT_PATH}" ]]; then
+            echo "No Swift E2E review aggregate found at ${COMMENT_PATH}; skipping Slack notification."
+            exit 0
+          fi
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          artifact_url="${REPORT_ARTIFACT_URL:-}"
+          artifact_name="${REPORT_ARTIFACT_NAME:-Swift E2E report}"
+          review_text="$(cat "${COMMENT_PATH}")"
+          if [[ -n "${artifact_url}" ]]; then
+            review_text="${review_text}
+
+---
+
+Report artifact: <${artifact_url}|${artifact_name}>"
+          fi
+
+          max_review_length=28000
+          if (( ${#review_text} > max_review_length )); then
+            review_text="${review_text:0:max_review_length}
+
+… truncated. Full report: <${run_url}|GitHub Actions run>"
+          fi
+
+          jq -n \
+            --arg text "Swift E2E review for main: ${run_url}\n\n${review_text}" \
+            '{text: $text}' \
+            > slack-payload.json
+          curl --fail --silent --show-error \
+            -X POST \
+            -H 'Content-type: application/json' \
+            --data @slack-payload.json \
+            "${SLACK_WEBHOOK_URL}"
