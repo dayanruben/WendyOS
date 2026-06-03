@@ -1,36 +1,9 @@
 ifeq ($(OS),Windows_NT)
-DETECTED_HOST_OS := windows
-DETECTED_HOST_ENV := windows
+HOST_ENV ?= windows
+UNAME_S :=
 else
+HOST_ENV ?= unix
 UNAME_S := $(shell uname -s 2>/dev/null)
-ifeq ($(UNAME_S),Darwin)
-DETECTED_HOST_OS := macos
-DETECTED_HOST_ENV := unix
-else ifeq ($(UNAME_S),Linux)
-DETECTED_HOST_OS := linux
-DETECTED_HOST_ENV := unix
-else
-DETECTED_HOST_OS := unknown
-DETECTED_HOST_ENV := unix
-endif
-endif
-
-HOST_OS ?= $(DETECTED_HOST_OS)
-HOST_ENV ?= $(DETECTED_HOST_ENV)
-
-VALID_HOST_OSES := macos linux windows unknown
-VALID_HOST_ENVS := unix windows
-
-ifeq ($(findstring |$(HOST_OS)|,$(foreach host_os,$(VALID_HOST_OSES),|$(host_os)|)),)
-$(error HOST_OS must be one of: $(VALID_HOST_OSES). Received an invalid value.)
-endif
-ifeq ($(findstring |$(HOST_ENV)|,$(foreach host_env,$(VALID_HOST_ENVS),|$(host_env)|)),)
-$(error HOST_ENV must be one of: $(VALID_HOST_ENVS). Received an invalid value.)
-endif
-
-ifeq ($(HOST_ENV),windows)
-SHELL := powershell.exe
-.SHELLFLAGS := -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
 endif
 
 .PHONY: build build-cli build-agent test vet proto clean fmt lint install \
@@ -46,7 +19,7 @@ endif
 VERSION ?= dev
 MSI_VERSION ?= 0.0.1
 LDFLAGS := -s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=$(VERSION)
-ifeq ($(HOST_OS),macos)
+ifeq ($(UNAME_S),Darwin)
 # Go/cgo adds -lobjc for each Objective-C package. The native CLI links
 # multiple CoreBluetooth-backed packages, and recent Apple linkers warn about
 # the duplicate even though it is harmless.
@@ -54,278 +27,108 @@ CGO_LDFLAGS += -Wl,-no_warn_duplicate_libraries
 export CGO_LDFLAGS
 endif
 
-WXS := installer/windows/wendy.wxs
-
-VALID_CROSS_GOOS := linux darwin windows
-VALID_CROSS_GOARCHS := amd64 arm64
-VALID_CROSS_OUTPUTS := \
-       bin/wendy-agent-linux-amd64 bin/wendy-agent-linux-arm64 \
-       bin/wendy-linux-amd64 bin/wendy-linux-arm64 \
-       bin/wendy-darwin-amd64 bin/wendy-darwin-arm64 \
-       bin/wendy-windows-amd64.exe bin/wendy-windows-arm64.exe
-VALID_CROSS_PACKAGES := ./cmd/wendy ./cmd/wendy-agent
-ASSERT_GO_BUILD_CROSS_ARGS = $(if $(filter $(1),$(VALID_CROSS_GOOS)),,$(error GOOS must be one of: $(VALID_CROSS_GOOS)))$(if $(filter $(2),$(VALID_CROSS_GOARCHS)),,$(error GOARCH must be one of: $(VALID_CROSS_GOARCHS)))$(if $(filter $(3),$(VALID_CROSS_OUTPUTS)),,$(error output path is not an allowed cross-build artifact))$(if $(filter $(4),$(VALID_CROSS_PACKAGES)),,$(error package path is not an allowed cross-build package))
-
-GO_BUILD_CROSS_UNIX = $(call ASSERT_GO_BUILD_CROSS_ARGS,$(1),$(2),$(3),$(4))set -e; CGO_ENABLED=0 GOOS=$(1) GOARCH=$(2) go build -ldflags "$(LDFLAGS)" -o $(3) $(4)
-GO_BUILD_CROSS_WINDOWS = $(call ASSERT_GO_BUILD_CROSS_ARGS,$(1),$(2),$(3),$(4))@if (-not $$PSVersionTable) { throw 'Windows make recipes require PowerShell.' }; $$env:CGO_ENABLED = '0'; $$env:GOOS = '$(1)'; $$env:GOARCH = '$(2)'; go build -ldflags "$$env:WENDY_GO_LDFLAGS" -o '$(3)' '$(4)'; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }
-
 # Build both CLI and agent (native)
-.PHONY: build
-build: build-$(HOST_ENV)
-
-.PHONY: build-unix
-build-unix: build-cli-unix build-agent-unix
-
-.PHONY: build-windows
-build-windows: build-cli-windows build-agent-windows
+build: build-cli build-agent
 
 # Build the wendy CLI
-.PHONY: build-cli
-build-cli: build-cli-$(HOST_ENV)
-
-.PHONY: build-cli-unix
-build-cli-unix:
+build-cli:
+ifeq ($(HOST_ENV),windows)
+	powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path bin | Out-Null; go build -o bin/wendy.exe ./cmd/wendy; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }"
+else
 	mkdir -p bin
 	go build -o bin/wendy ./cmd/wendy
-
-.PHONY: build-cli-windows
-build-cli-windows:
-	@if (-not $$PSVersionTable) { throw 'Windows build-cli requires PowerShell.' }; New-Item -ItemType Directory -Force -Path bin | Out-Null; go build -o bin/wendy.exe ./cmd/wendy; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }
+endif
 
 # Build the wendy-agent
-.PHONY: build-agent
-build-agent: build-agent-$(HOST_ENV)
-
-.PHONY: build-agent-unix
-build-agent-unix:
+build-agent:
 	mkdir -p bin
 	go build -o bin/wendy-agent ./cmd/wendy-agent
 
-.PHONY: build-agent-windows
-build-agent-windows:
-	@throw 'build-agent is not supported on Windows yet.'
-
 # Cross-compile all targets
-.PHONY: build-all
-build-all: build-all-$(HOST_ENV)
+build-all: build-agent-linux-amd64 build-agent-linux-arm64 \
+           build-cli-linux-amd64 build-cli-linux-arm64 \
+           build-cli-darwin-amd64 build-cli-darwin-arm64 \
+           build-cli-windows-amd64 build-cli-windows-arm64
 
-.PHONY: build-all-unix
-build-all-unix: build-agent-linux-amd64-unix build-agent-linux-arm64-unix \
-           build-cli-linux-amd64-unix build-cli-linux-arm64-unix \
-           build-cli-darwin-amd64-unix build-cli-darwin-arm64-unix \
-           build-cli-windows-amd64-unix build-cli-windows-arm64-unix
+build-agent-linux-amd64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-agent-linux-amd64 ./cmd/wendy-agent
 
-.PHONY: build-all-windows
-build-all-windows: build-agent-linux-amd64-windows build-agent-linux-arm64-windows \
-           build-cli-linux-amd64-windows build-cli-linux-arm64-windows \
-           build-cli-darwin-amd64-windows build-cli-darwin-arm64-windows \
-           build-cli-windows-amd64-windows build-cli-windows-arm64-windows
+build-agent-linux-arm64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-agent-linux-arm64 ./cmd/wendy-agent
 
-build-agent-linux-amd64-windows build-agent-linux-arm64-windows \
-        build-cli-linux-amd64-windows build-cli-linux-arm64-windows \
-        build-cli-darwin-amd64-windows build-cli-darwin-arm64-windows \
-        build-cli-windows-amd64-windows build-cli-windows-arm64-windows: export WENDY_GO_LDFLAGS := $(LDFLAGS)
+build-cli-linux-amd64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-linux-amd64 ./cmd/wendy
 
-.PHONY: build-agent-linux-amd64
-build-agent-linux-amd64: build-agent-linux-amd64-$(HOST_ENV)
-.PHONY: build-agent-linux-amd64-unix
-build-agent-linux-amd64-unix:
-	$(call GO_BUILD_CROSS_UNIX,linux,amd64,bin/wendy-agent-linux-amd64,./cmd/wendy-agent)
-.PHONY: build-agent-linux-amd64-windows
-build-agent-linux-amd64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,linux,amd64,bin/wendy-agent-linux-amd64,./cmd/wendy-agent)
+build-cli-linux-arm64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-linux-arm64 ./cmd/wendy
 
-.PHONY: build-agent-linux-arm64
-build-agent-linux-arm64: build-agent-linux-arm64-$(HOST_ENV)
-.PHONY: build-agent-linux-arm64-unix
-build-agent-linux-arm64-unix:
-	$(call GO_BUILD_CROSS_UNIX,linux,arm64,bin/wendy-agent-linux-arm64,./cmd/wendy-agent)
-.PHONY: build-agent-linux-arm64-windows
-build-agent-linux-arm64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,linux,arm64,bin/wendy-agent-linux-arm64,./cmd/wendy-agent)
+build-cli-darwin-amd64:
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-darwin-amd64 ./cmd/wendy
 
-.PHONY: build-cli-linux-amd64
-build-cli-linux-amd64: build-cli-linux-amd64-$(HOST_ENV)
-.PHONY: build-cli-linux-amd64-unix
-build-cli-linux-amd64-unix:
-	$(call GO_BUILD_CROSS_UNIX,linux,amd64,bin/wendy-linux-amd64,./cmd/wendy)
-.PHONY: build-cli-linux-amd64-windows
-build-cli-linux-amd64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,linux,amd64,bin/wendy-linux-amd64,./cmd/wendy)
+build-cli-darwin-arm64:
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-darwin-arm64 ./cmd/wendy
 
-.PHONY: build-cli-linux-arm64
-build-cli-linux-arm64: build-cli-linux-arm64-$(HOST_ENV)
-.PHONY: build-cli-linux-arm64-unix
-build-cli-linux-arm64-unix:
-	$(call GO_BUILD_CROSS_UNIX,linux,arm64,bin/wendy-linux-arm64,./cmd/wendy)
-.PHONY: build-cli-linux-arm64-windows
-build-cli-linux-arm64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,linux,arm64,bin/wendy-linux-arm64,./cmd/wendy)
+build-cli-windows-amd64:
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-windows-amd64.exe ./cmd/wendy
 
-.PHONY: build-cli-darwin-amd64
-build-cli-darwin-amd64: build-cli-darwin-amd64-$(HOST_ENV)
-.PHONY: build-cli-darwin-amd64-unix
-build-cli-darwin-amd64-unix:
-	$(call GO_BUILD_CROSS_UNIX,darwin,amd64,bin/wendy-darwin-amd64,./cmd/wendy)
-.PHONY: build-cli-darwin-amd64-windows
-build-cli-darwin-amd64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,darwin,amd64,bin/wendy-darwin-amd64,./cmd/wendy)
-
-.PHONY: build-cli-darwin-arm64
-build-cli-darwin-arm64: build-cli-darwin-arm64-$(HOST_ENV)
-.PHONY: build-cli-darwin-arm64-unix
-build-cli-darwin-arm64-unix:
-	$(call GO_BUILD_CROSS_UNIX,darwin,arm64,bin/wendy-darwin-arm64,./cmd/wendy)
-.PHONY: build-cli-darwin-arm64-windows
-build-cli-darwin-arm64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,darwin,arm64,bin/wendy-darwin-arm64,./cmd/wendy)
-
-.PHONY: build-cli-windows-amd64
-build-cli-windows-amd64: build-cli-windows-amd64-$(HOST_ENV)
-.PHONY: build-cli-windows-amd64-unix
-build-cli-windows-amd64-unix:
-	$(call GO_BUILD_CROSS_UNIX,windows,amd64,bin/wendy-windows-amd64.exe,./cmd/wendy)
-.PHONY: build-cli-windows-amd64-windows
-build-cli-windows-amd64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,windows,amd64,bin/wendy-windows-amd64.exe,./cmd/wendy)
-
-.PHONY: build-cli-windows-arm64
-build-cli-windows-arm64: build-cli-windows-arm64-$(HOST_ENV)
-.PHONY: build-cli-windows-arm64-unix
-build-cli-windows-arm64-unix:
-	$(call GO_BUILD_CROSS_UNIX,windows,arm64,bin/wendy-windows-arm64.exe,./cmd/wendy)
-.PHONY: build-cli-windows-arm64-windows
-build-cli-windows-arm64-windows:
-	$(call GO_BUILD_CROSS_WINDOWS,windows,arm64,bin/wendy-windows-arm64.exe,./cmd/wendy)
+build-cli-windows-arm64:
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-windows-arm64.exe ./cmd/wendy
 
 # Build Windows MSI installers (requires WiX v4+: dotnet tool install --global wix)
-.PHONY: msi-windows-amd64
-msi-windows-amd64: msi-windows-amd64-$(HOST_ENV)
-.PHONY: msi-windows-amd64-unix
-msi-windows-amd64-unix: build-cli-windows-amd64-unix
+WXS := installer/windows/wendy.wxs
+
+msi-windows-amd64: build-cli-windows-amd64
 	wix build -d Version=$(MSI_VERSION) -d ExePath=bin/wendy-windows-amd64.exe \
 	     -arch x64 -o bin/wendy-windows-amd64.msi $(WXS)
-.PHONY: msi-windows-amd64-windows
-msi-windows-amd64-windows: build-cli-windows-amd64-windows
-	wix build -d Version=$(MSI_VERSION) -d ExePath=bin/wendy-windows-amd64.exe -arch x64 -o bin/wendy-windows-amd64.msi $(WXS)
 
-.PHONY: msi-windows-arm64
-msi-windows-arm64: msi-windows-arm64-$(HOST_ENV)
-.PHONY: msi-windows-arm64-unix
-msi-windows-arm64-unix: build-cli-windows-arm64-unix
+msi-windows-arm64: build-cli-windows-arm64
 	wix build -d Version=$(MSI_VERSION) -d ExePath=bin/wendy-windows-arm64.exe \
 	     -arch arm64 -o bin/wendy-windows-arm64.msi $(WXS)
-.PHONY: msi-windows-arm64-windows
-msi-windows-arm64-windows: build-cli-windows-arm64-windows
-	wix build -d Version=$(MSI_VERSION) -d ExePath=bin/wendy-windows-arm64.exe -arch arm64 -o bin/wendy-windows-arm64.msi $(WXS)
 
 # Run all tests
-.PHONY: test
-test: test-$(HOST_ENV)
-.PHONY: test-unix
-test-unix:
-	go test ./... -v -count=1 -timeout 120s
-.PHONY: test-windows
-test-windows:
+test:
 	go test ./... -v -count=1 -timeout 120s
 
 # Run tests with race detector
-.PHONY: test-race
-test-race: test-race-$(HOST_ENV)
-.PHONY: test-race-unix
-test-race-unix:
-	go test ./... -v -count=1 -race -timeout 120s
-.PHONY: test-race-windows
-test-race-windows:
+test-race:
 	go test ./... -v -count=1 -race -timeout 120s
 
 # Run go vet
-.PHONY: vet
-vet: vet-$(HOST_ENV)
-.PHONY: vet-unix
-vet-unix:
-	go vet ./...
-.PHONY: vet-windows
-vet-windows:
+vet:
 	go vet ./...
 
 # Generate protobuf code
-.PHONY: proto
-proto: proto-$(HOST_ENV)
-.PHONY: proto-unix
-proto-unix:
+proto:
 	bash scripts/generate-proto.sh
-.PHONY: proto-windows
-proto-windows:
-	@throw 'proto is not supported on Windows yet; use a unix host for scripts/generate-proto.sh.'
 
 # Clean build artifacts
-.PHONY: clean
-clean: clean-$(HOST_ENV)
-.PHONY: clean-unix
-clean-unix:
+clean:
 	rm -rf bin/
-.PHONY: clean-windows
-clean-windows:
-	Remove-Item -LiteralPath bin -Recurse -Force -ErrorAction SilentlyContinue
 
 # Install both binaries
-.PHONY: install
-install: install-$(HOST_ENV)
-.PHONY: install-unix
-install-unix:
+install:
 	go install ./cmd/wendy
 	go install ./cmd/wendy-agent
-.PHONY: install-windows
-install-windows:
-	@throw 'install is not supported on Windows yet because wendy-agent is not available there.'
 
 # Format code
-.PHONY: fmt
-fmt: fmt-$(HOST_ENV)
-.PHONY: fmt-unix
-fmt-unix:
-	gofmt -w -s .
-.PHONY: fmt-windows
-fmt-windows:
+fmt:
 	gofmt -w -s .
 
 # Lint (requires golangci-lint)
-.PHONY: lint
-lint: lint-$(HOST_ENV)
-.PHONY: lint-unix
-lint-unix:
-	golangci-lint run ./...
-.PHONY: lint-windows
-lint-windows:
+lint:
 	golangci-lint run ./...
 
 # Check that dependency licenses match the committed baseline (licenses.csv)
-.PHONY: licenses
-licenses: licenses-$(HOST_ENV)
-.PHONY: licenses-unix
-licenses-unix:
+licenses:
 	bash scripts/check-licenses.sh
-.PHONY: licenses-windows
-licenses-windows:
-	@throw 'licenses is not supported on Windows yet; use a unix host for scripts/check-licenses.sh.'
 
 # Regenerate licenses.csv from current dependencies
-.PHONY: licenses-update
-licenses-update: licenses-update-$(HOST_ENV)
-.PHONY: licenses-update-unix
-licenses-update-unix:
+licenses-update:
 	bash scripts/check-licenses.sh --update
-.PHONY: licenses-update-windows
-licenses-update-windows:
-	@throw 'licenses-update is not supported on Windows yet; use a unix host for scripts/check-licenses.sh.'
 
 # Sync embedded docs and skills from sibling repos (requires them checked out at ../../docs and ../claude-skills)
 # Note: go/ is a subdirectory; DOCS_SRC is two levels up, ASSETS is relative to go/
-.PHONY: sync-assets
-sync-assets: sync-assets-$(HOST_ENV)
-.PHONY: sync-assets-unix
-sync-assets-unix:
+sync-assets:
 	@DOCS_SRC=../../docs SKILLS_SRC=../claude-skills ASSETS=internal/cli/assets; \
 	if [ ! -d "$$DOCS_SRC" ]; then echo "Docs repo not found at $$DOCS_SRC — skipping"; else \
 	  rm -rf "$$ASSETS/docs" && mkdir -p "$$ASSETS/docs" && \
@@ -342,6 +145,3 @@ sync-assets-unix:
 	    [ -d "$$SKILLS_SRC/$$skill" ] && rsync -a --exclude='.DS_Store' "$$SKILLS_SRC/$$skill/" "$$ASSETS/skills/$$skill/"; \
 	  done && \
 	  echo "Synced $$(find $$ASSETS/skills -type f | wc -l) skill files"; fi
-.PHONY: sync-assets-windows
-sync-assets-windows:
-	@throw 'sync-assets is not supported on Windows yet; use a unix host to sync embedded docs and skills.'
