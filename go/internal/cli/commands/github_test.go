@@ -26,6 +26,12 @@ func TestNewGitHubAPIGetRequestWithoutToken(t *testing.T) {
 	if got := req.Header.Get("User-Agent"); got == "" {
 		t.Fatal("User-Agent should be set")
 	}
+	if got, want := req.Header.Get("Accept"), "application/vnd.github+json"; got != want {
+		t.Fatalf("Accept = %q; want %q", got, want)
+	}
+	if got, want := req.Header.Get("X-GitHub-Api-Version"), "2022-11-28"; got != want {
+		t.Fatalf("X-GitHub-Api-Version = %q; want %q", got, want)
+	}
 }
 
 func TestNewGitHubAPIGetRequestWithToken(t *testing.T) {

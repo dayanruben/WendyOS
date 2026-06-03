@@ -42,6 +42,8 @@ func newGitHubAPIGetRequest(rawURL string) (*http.Request, error) {
 		return nil, err
 	}
 
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", githubAPIUserAgent())
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
