@@ -52,7 +52,7 @@ jobs:
           - name: macOS 26 → Jetson Orin Nano
             target_id: macos-jetson-orin-nano
             runner_id: macos-26
-            runner_label: macOS
+            runner_label: macos-26
             cli_os: macOS
             device_id: jetson-orin-nano
             device_address: wendyos-strong-dunlin.local
@@ -62,7 +62,7 @@ jobs:
           # - name: Ubuntu 24 → Raspberry Pi 5
           #   target_id: ubuntu-raspberry-pi-5
           #   runner_id: ubuntu-24-04
-          #   runner_label: Linux
+          #   runner_label: ubuntu-24
           #   cli_os: linux
           #   device_id: raspberry-pi-5
           #   device_address: wendyos-raspberry-pi-5.local
@@ -72,7 +72,7 @@ jobs:
           # - name: Windows 11 → Mac mini
           #   target_id: windows-mac-mini
           #   runner_id: windows-11
-          #   runner_label: Windows
+          #   runner_label: windows-11
           #   cli_os: windows
           #   device_id: mac-mini
           #   device_address: mac-mini.local
@@ -82,7 +82,7 @@ jobs:
           # - name: Ubuntu 24 → Jetson Orin Nano
           #   target_id: ubuntu-jetson-orin-nano
           #   runner_id: ubuntu-24-04
-          #   runner_label: Linux
+          #   runner_label: ubuntu-24
           #   cli_os: linux
           #   device_id: jetson-orin-nano
           #   device_address: wendyos-jetson-orin-nano.local
@@ -92,7 +92,7 @@ jobs:
           # - name: Windows 11 → Raspberry Pi 5
           #   target_id: windows-raspberry-pi-5
           #   runner_id: windows-11
-          #   runner_label: Windows
+          #   runner_label: windows-11
           #   cli_os: windows
           #   device_id: raspberry-pi-5
           #   device_address: wendyos-raspberry-pi-5.local
@@ -102,7 +102,7 @@ jobs:
           # - name: macOS 26 → Mac mini
           #   target_id: macos-mac-mini
           #   runner_id: macos-26
-          #   runner_label: macOS
+          #   runner_label: macos-26
           #   cli_os: macOS
           #   device_id: mac-mini
           #   device_address: mac-mini.local
@@ -112,7 +112,7 @@ jobs:
           # - name: Windows 11 → Jetson Orin Nano
           #   target_id: windows-jetson-orin-nano
           #   runner_id: windows-11
-          #   runner_label: Windows
+          #   runner_label: windows-11
           #   cli_os: windows
           #   device_id: jetson-orin-nano
           #   device_address: wendyos-jetson-orin-nano.local
@@ -122,7 +122,7 @@ jobs:
           # - name: macOS 26 → Raspberry Pi 5
           #   target_id: macos-raspberry-pi-5
           #   runner_id: macos-26
-          #   runner_label: macOS
+          #   runner_label: macos-26
           #   cli_os: macOS
           #   device_id: raspberry-pi-5
           #   device_address: wendyos-raspberry-pi-5.local
@@ -132,7 +132,7 @@ jobs:
           # - name: Ubuntu 24 → Mac mini
           #   target_id: ubuntu-mac-mini
           #   runner_id: ubuntu-24-04
-          #   runner_label: Linux
+          #   runner_label: ubuntu-24
           #   cli_os: linux
           #   device_id: mac-mini
           #   device_address: mac-mini.local
