@@ -54,6 +54,8 @@ func newCacheListCmd() *cobra.Command {
 		Short: "List cached items",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// jsonOutput is auto-enabled for non-interactive commands; cache list
+			// keeps plain text there unless --json was explicitly requested.
 			explicitJSON := jsonOutput && cmd.Root().PersistentFlags().Changed("json")
 
 			cacheDir, err := config.CacheDir()

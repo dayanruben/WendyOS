@@ -17,7 +17,7 @@ func newGitHubAPIClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if req.URL == nil || req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Host, githubAPIHost) {
+			if !isCanonicalGitHubAPIURL(req.URL) {
 				req.Header.Del("Authorization")
 			}
 			return nil
@@ -33,8 +33,8 @@ func newGitHubAPIGetRequest(rawURL string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	if parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, githubAPIHost) {
-		return nil, fmt.Errorf("unsupported GitHub API URL: %s", rawURL)
+	if !isCanonicalGitHubAPIURL(parsed) {
+		return nil, fmt.Errorf("unsupported GitHub API URL: scheme=%q host=%q", parsed.Scheme, parsed.Host)
 	}
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
@@ -42,7 +42,11 @@ func newGitHubAPIGetRequest(rawURL string) (*http.Request, error) {
 		return nil, err
 	}
 
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", githubAPIUserAgent())
+	// net/http header values are strings, so Go cannot zero this secret after use;
+	// keep it scoped to this request and avoid logging the returned request.
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -50,15 +54,33 @@ func newGitHubAPIGetRequest(rawURL string) (*http.Request, error) {
 	return req, nil
 }
 
+func isCanonicalGitHubAPIURL(u *url.URL) bool {
+	return u != nil && u.Scheme == "https" && strings.EqualFold(u.Host, githubAPIHost)
+}
+
 func githubAPIUserAgent() string {
-	v := strings.Map(func(r rune) rune {
-		if r == '\r' || r == '\n' || r == '\x00' {
-			return -1
-		}
-		return r
-	}, version.Version)
-	if v == "" {
+	if !isHTTPToken(version.Version) {
 		return "wendy"
 	}
-	return "wendy/" + v
+	return "wendy/" + version.Version
+}
+
+func isHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r > 0x7e {
+			return false
+		}
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
