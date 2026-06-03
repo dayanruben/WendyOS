@@ -300,6 +300,16 @@ jobs:
           bash ./Scripts/E2EReport.sh \
             --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
 
+      - name: Upload Swift E2E Report
+        id: upload_e2e_report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          path: ${{ steps.e2e-run.outputs.run_dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Post Swift E2E PR Review
         if: always()
         uses: actions/github-script@v9
@@ -309,6 +319,8 @@ jobs:
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
           HEAD_LABEL: ${{ github.event.pull_request.head.label || github.head_ref || github.ref_name }}
           COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
+          REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -350,7 +362,13 @@ jobs:
               return;
             }
 
-            const body = fs.readFileSync(commentPath, 'utf8');
+            let body = fs.readFileSync(commentPath, 'utf8');
+            const artifactURL = process.env.REPORT_ARTIFACT_URL;
+            if (artifactURL) {
+              const artifactName = process.env.REPORT_ARTIFACT_NAME || 'Swift E2E report';
+              body = `${body.trimEnd()}\n\n---\n\nReport artifact: [${artifactName}](${artifactURL})\n`;
+            }
+
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
@@ -376,12 +394,3 @@ jobs:
                 body,
               });
             }
-
-      - name: Upload Swift E2E Report
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: ${{ steps.e2e-run.outputs.run_artifact_id }}
-          path: ${{ steps.e2e-run.outputs.run_dir }}/**
-          if-no-files-found: warn
-          retention-days: 14
