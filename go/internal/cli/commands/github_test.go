@@ -62,20 +62,48 @@ func TestNewGitHubAPIGetRequestRejectsNonGitHubAPIURL(t *testing.T) {
 	}
 }
 
-func TestGitHubAPIClientStripsAuthorizationOnExternalRedirect(t *testing.T) {
-	client := newGitHubAPIClient(0)
-	redirectURL, err := url.Parse("https://example.com/redirect")
-	if err != nil {
-		t.Fatalf("url.Parse: %v", err)
+func TestGitHubAPIClientRedirectAuthorizationHandling(t *testing.T) {
+	tests := []struct {
+		name              string
+		redirectURL       string
+		wantAuthorization string
+	}{
+		{
+			name:        "external host strips authorization",
+			redirectURL: "https://example.com/redirect",
+		},
+		{
+			name:        "http downgrade strips authorization",
+			redirectURL: "http://api.github.com/redirect",
+		},
+		{
+			name:        "non-default port strips authorization",
+			redirectURL: "https://api.github.com:8443/redirect",
+		},
+		{
+			name:              "canonical GitHub API keeps authorization",
+			redirectURL:       "https://api.github.com/redirect",
+			wantAuthorization: "Bearer secret-token",
+		},
 	}
-	req := &http.Request{URL: redirectURL, Header: make(http.Header)}
-	req.Header.Set("Authorization", "Bearer secret-token")
 
-	if err := client.CheckRedirect(req, nil); err != nil {
-		t.Fatalf("CheckRedirect: %v", err)
-	}
-	if got := req.Header.Get("Authorization"); got != "" {
-		t.Fatalf("Authorization after redirect = %q; want empty", got)
+	client := newGitHubAPIClient(0)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			redirectURL, err := url.Parse(tt.redirectURL)
+			if err != nil {
+				t.Fatalf("url.Parse: %v", err)
+			}
+			req := &http.Request{URL: redirectURL, Header: make(http.Header)}
+			req.Header.Set("Authorization", "Bearer secret-token")
+
+			if err := client.CheckRedirect(req, nil); err != nil {
+				t.Fatalf("CheckRedirect: %v", err)
+			}
+			if got := req.Header.Get("Authorization"); got != tt.wantAuthorization {
+				t.Fatalf("Authorization after redirect = %q; want %q", got, tt.wantAuthorization)
+			}
+		})
 	}
 }
 
