@@ -55,14 +55,28 @@ func newGitHubAPIGetRequest(rawURL string) (*http.Request, error) {
 }
 
 func githubAPIUserAgent() string {
-	v := strings.Map(func(r rune) rune {
-		if r == '\r' || r == '\n' || r == '\x00' {
-			return -1
-		}
-		return r
-	}, version.Version)
-	if v == "" {
+	if !isHTTPToken(version.Version) {
 		return "wendy"
 	}
-	return "wendy/" + v
+	return "wendy/" + version.Version
+}
+
+func isHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r > 0x7e {
+			return false
+		}
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
 }

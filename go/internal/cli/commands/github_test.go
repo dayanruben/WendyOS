@@ -79,12 +79,26 @@ func TestGitHubAPIClientStripsAuthorizationOnExternalRedirect(t *testing.T) {
 	}
 }
 
-func TestGitHubAPIUserAgentSanitizesVersion(t *testing.T) {
+func TestGitHubAPIUserAgentRejectsUnsafeVersion(t *testing.T) {
 	oldVersion := version.Version
 	version.Version = "1.2.3\r\nInjected: true\x00"
 	t.Cleanup(func() { version.Version = oldVersion })
 
-	if got, want := githubAPIUserAgent(), "wendy/1.2.3Injected: true"; got != want {
+	got := githubAPIUserAgent()
+	if got != "wendy" {
+		t.Fatalf("githubAPIUserAgent = %q; want %q", got, "wendy")
+	}
+	if strings.Contains(got, "Injected") {
+		t.Fatalf("githubAPIUserAgent contains injected header content: %q", got)
+	}
+}
+
+func TestGitHubAPIUserAgentAllowsHTTPTokenVersion(t *testing.T) {
+	oldVersion := version.Version
+	version.Version = "1.2.3-dev+build_5"
+	t.Cleanup(func() { version.Version = oldVersion })
+
+	if got, want := githubAPIUserAgent(), "wendy/1.2.3-dev+build_5"; got != want {
 		t.Fatalf("githubAPIUserAgent = %q; want %q", got, want)
 	}
 }
