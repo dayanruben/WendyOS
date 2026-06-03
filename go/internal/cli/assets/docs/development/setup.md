@@ -80,8 +80,10 @@ make build
 ### Build just the CLI
 
 ```sh
-make build-cli   # bin/wendy
+make build-cli   # bin/wendy on Unix, bin/wendy.exe on Windows
 ```
+
+On Windows, `make build-cli` invokes PowerShell for the native Windows CLI build.
 
 ### Build just the agent
 
@@ -150,6 +152,8 @@ cd go
 make install
 # installs both binaries to $(go env GOPATH)/bin
 ```
+
+> **Note:** `make install` is not supported on Windows because `wendy-agent` does not have a Windows build yet. Run this target on macOS, Linux, or WSL.
 
 ## Regenerating Protobuf Code
 
