@@ -394,12 +394,13 @@ struct `'wendy device info'` {
     func `'--check-updates' reports update-source failure`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
+            let noProxy = Self.noProxyValue(for: agentAddress)
 
             try await cli.sh(
                 posix:
-                    "NO_PROXY=\(agentAddress) HTTPS_PROXY=http://127.0.0.1:1 wendy --json --device \(agentAddress) device info --check-updates",
+                    "NO_PROXY=\(noProxy) HTTPS_PROXY=http://127.0.0.1:1 wendy --json --device \(agentAddress) device info --check-updates",
                 power: """
-                    $env:NO_PROXY = '\(agentAddress)'
+                    $env:NO_PROXY = '\(noProxy)'
                     $env:HTTPS_PROXY = 'http://127.0.0.1:1'
                     wendy --json --device \(agentAddress) device info --check-updates
                     """
@@ -461,6 +462,20 @@ struct `'wendy device info'` {
         let data = try! JSONSerialization.data(withJSONObject: [value])
         let arrayLiteral = String(decoding: data, as: UTF8.self)
         return String(arrayLiteral.dropFirst().dropLast())
+    }
+
+    private static func noProxyValue(for agentAddress: String) -> String {
+        guard let parsed = URLComponents(string: "wendy://\(agentAddress)"),
+            let host = parsed.host
+        else {
+            return agentAddress
+        }
+
+        var entries = [host, agentAddress]
+        if let port = parsed.port {
+            entries.append("\(host):\(port + 1)")
+        }
+        return entries.joined(separator: ",")
     }
 }
 
