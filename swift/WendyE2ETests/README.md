@@ -57,14 +57,6 @@ make e2e-test-linux DEVICE=my-linux-box.local
 make e2e-test-macos DEVICE=mac-mini.local
 ```
 
-Shortcut targets are also available:
-
-```bash
-make e2e-test-raspberry-pi-5
-make e2e-test-jetson-orin-nano
-make e2e-test-mac-mini
-```
-
 ## Test environment
 
 `Scripts/E2ETest.sh` is the preferred runner. It:
