@@ -459,25 +459,24 @@ jobs:
               issue_number: Number(prNumber),
               per_page: 100,
             });
-            const existing = comments.find((comment) =>
+            const existing = comments.filter((comment) =>
               comment.body?.startsWith('# Swift E2E Review')
             );
 
-            if (existing) {
-              await github.rest.issues.updateComment({
+            for (const comment of existing) {
+              await github.rest.issues.deleteComment({
                 owner,
                 repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: Number(prNumber),
-                body,
+                comment_id: comment.id,
               });
             }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: Number(prNumber),
+              body,
+            });
 
       - name: Post Swift E2E Slack Review
         if: ${{ always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
