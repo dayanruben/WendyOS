@@ -65,14 +65,6 @@ make e2e-test-jetson-orin-nano
 make e2e-test-mac-mini
 ```
 
-### Render a report manually
-
-From this package:
-
-```bash
-swift run swift-e2e-testing report --run-dir ../../Build/e2e/<workflow-name>.<run-id>
-```
-
 ## Test environment
 
 `Scripts/E2ETest.sh` is the preferred runner. It:
