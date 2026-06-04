@@ -11,13 +11,15 @@ From `swift/`:
 ```bash
 make e2e-test
 make e2e-analyze
+make e2e-reference
 ```
 
 `make e2e-test` builds the managed CLI into `go/bin`, runs the Swift E2E tests
 locally, and writes attempt artifacts under `Build/e2e`. It expects a Wendy
 agent to already be running on the local machine. `make e2e-analyze` aggregates
 attempts, runs the AI review step, renders the HTML report, and opens it locally
-when supported.
+when supported. `make e2e-reference` renders reference documentation from the
+E2E test source and opens it locally when supported.
 
 You can also run only the individual analysis stages:
 
@@ -171,6 +173,20 @@ captured `sh()` calls in order for manual debugging.
 AI review files are Markdown. Top-level `review.md` is the compact aggregate
 that can be posted as a CI comment. Attempt and AI review JSON schemas live in
 `Support/Schemas/`.
+
+### Reference directory
+
+`make e2e-reference` renders static reference documentation from the suite and
+test documentation comments, independent of any test run:
+
+```text
+Build/Reference/
+├── index.html
+└── <suite>.html
+```
+
+Use this artifact to review the behavioral reference generated from the current
+E2E source files.
 
 ## Writing tests
 
