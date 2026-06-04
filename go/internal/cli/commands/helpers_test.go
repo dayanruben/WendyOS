@@ -223,6 +223,22 @@ func TestLANAgentAddressesFallsBackToDefaultPort(t *testing.T) {
 	}
 }
 
+func TestIsCertRejectionErrorIgnoresPlaintextTLSProbe(t *testing.T) {
+	err := errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: tls: first record does not look like a TLS handshake"`)
+
+	if isCertRejectionError(err) {
+		t.Fatal("isCertRejectionError() = true, want false for plaintext TLS probe")
+	}
+}
+
+func TestIsCertRejectionErrorDetectsTLSAlert(t *testing.T) {
+	err := errors.New("rpc error: code = Unavailable desc = remote error: tls: bad certificate")
+
+	if !isCertRejectionError(err) {
+		t.Fatal("isCertRejectionError() = false, want true for TLS alert")
+	}
+}
+
 func TestResolveLANAgentVersionFallsBackAcrossAddresses(t *testing.T) {
 	orig := getAgentVersionAtAddress
 	defer func() { getAgentVersionAtAddress = orig }()

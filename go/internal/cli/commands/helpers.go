@@ -652,6 +652,9 @@ func isCertRejectionError(err error) bool {
 		return false
 	}
 	msg := err.Error()
+	if strings.Contains(msg, "tls: first record does not look like a TLS handshake") {
+		return false
+	}
 	return strings.Contains(msg, "remote error: tls:") ||
 		strings.Contains(msg, "authentication handshake failed") ||
 		strings.Contains(msg, "certificate required")
