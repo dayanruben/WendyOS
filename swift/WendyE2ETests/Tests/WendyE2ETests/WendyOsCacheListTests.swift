@@ -82,11 +82,11 @@ struct `'wendy os cache list'` {
     }
 
     /**
-     Unreadable or malformed cache metadata produces a diagnostic that
-     identifies the affected entry while preserving the rest of the cache.
+     Directories in the OS image cache root are ignored. Cache listing only
+     reports cached image files managed by Wendy cache commands.
      */
     @Test
-    func `reports unreadable cache metadata clearly`() async throws {
+    func `ignores non-image directories in the OS cache root`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh(
                 posix: """
@@ -94,59 +94,20 @@ struct `'wendy os cache list'` {
                       Darwin) cache_root="$HOME/Library/Caches/wendy/os-images" ;;
                       *) cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/wendy/os-images" ;;
                     esac
-                    mkdir -p "$cache_root/unreadable"
-                    chmod 000 "$cache_root/unreadable"
-                    trap 'chmod 700 "$cache_root/unreadable" 2>/dev/null || true' EXIT
+                    mkdir -p "$cache_root/not-an-image"
                     wendy os cache list
                     """,
                 power: """
-                    $source = @'
-                    using System;
-                    using System.Runtime.InteropServices;
-                    using Microsoft.Win32.SafeHandles;
-                    public static class WendyE2EDirectoryLock {
-                        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-                        public static extern SafeFileHandle CreateFile(
-                            string name,
-                            uint access,
-                            uint share,
-                            IntPtr security,
-                            uint creation,
-                            uint flags,
-                            IntPtr templateFile);
-                    }
-                    '@
-                    Add-Type -TypeDefinition $source
-
                     $cacheDirectory = Join-Path $env:LOCALAPPDATA 'wendy'
                     $osCacheDirectory = Join-Path $cacheDirectory 'os-images'
-                    $entry = Join-Path $osCacheDirectory 'unreadable'
-                    New-Item -ItemType Directory -Force -Path $entry | Out-Null
-                    $handle = [WendyE2EDirectoryLock]::CreateFile(
-                        $entry,
-                        [uint32]1,
-                        [uint32]0,
-                        [IntPtr]::Zero,
-                        [uint32]3,
-                        [uint32]0x02000000,
-                        [IntPtr]::Zero)
-                    if ($handle.IsInvalid) {
-                        throw "locking OS cache entry failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-                    }
-                    try {
-                        wendy os cache list
-                        $status = $LASTEXITCODE
-                    } finally {
-                        $handle.Dispose()
-                    }
-                    exit $status
+                    New-Item -ItemType Directory -Force -Path (Join-Path $osCacheDirectory 'not-an-image') | Out-Null
+                    wendy os cache list
                     """
             ) { result in
 
-                #expect(!result.status.isSuccess)
-                #expect(result.stdout == "")
-                #expect(result.stderr.contains("determining OS cache entry size"))
-                #expect(result.stderr.contains("unreadable"))
+                #expect(result.status.isSuccess)
+                #expect(result.stdout == "No cached OS images.\n")
+                #expect(result.stderr == "")
             }
         }
     }
