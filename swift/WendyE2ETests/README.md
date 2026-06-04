@@ -1,32 +1,25 @@
 # WendyE2ETests
 
-Swift E2E test package for the Wendy CLI and local Wendy agent. The long-term goal is to use this package as a behavioral specification suite, not just a collection of smoke tests.
+Swift end-to-end tests for the Wendy CLI and Wendy agent. This package runs the
+real `wendy` binary, records every shell command, and writes artifacts for local
+debugging, CI, and AI review.
 
-## Running tests
+## Quick start
 
-From this package:
-
-```bash
-swift test --filter WendyE2ETests
-```
-
-From `swift/`, the helper script writes runner output under an explicit
-output directory, builds the managed CLI into `go/bin` (or
-`WENDY_E2E_CLI_BIN_DIR`), writes isolated CLI and agent sandboxes, and captures
-Swift Testing results and command recordings:
-
-```bash
-bash Scripts/E2ETest.sh --output-dir ../Build/e2e
-```
-
-For the common local workflow, run test attempts first and then analyze attempts matching the current run ID:
+From `swift/`:
 
 ```bash
 make e2e-test
 make e2e-analyze
 ```
 
-The analysis step is also available as individual stages:
+`make e2e-test` builds the managed CLI into `go/bin`, runs the Swift E2E tests
+locally, and writes attempt artifacts under `Build/e2e`. It expects a Wendy
+agent to already be running on the local machine. `make e2e-analyze` aggregates
+attempts, runs the AI review step, renders the HTML report, and opens it locally
+when supported.
+
+You can also run only the individual analysis stages:
 
 ```bash
 make e2e-aggregate
@@ -34,236 +27,269 @@ make e2e-review
 make e2e-report
 ```
 
-## Artifact metadata
-
-The E2E artifacts intentionally keep JSON sparse. Long-form content stays in
-plain artifact files: command recordings, replay scripts, xUnit output, review
-Markdown, rendered HTML, and Git diff command output.
-
-Current machine-readable metadata is limited to attempt manifests and review
-front matter:
-
-```text
-<attempt>/attempt.json
-<attempt>/<suite>/<test>/recording.md
-<run>/<suite>/<test>/<target>/<attempt>/attempt.json
-```
-
-Review artifacts are Markdown files in predictable locations:
-
-```text
-<run>/review.md
-<run>/review.<model>/<slugged-title>.md
-<run>/<suite>/review.<model>/<slugged-title>.md
-<run>/<suite>/<test>/review.<model>/<slugged-title>.md
-```
-
-The report stage writes top-level `review.md` and `review.html` as compact
-aggregates of all review issues; `review.md` is safe to post as a CI review
-comment. Scoped review Markdown files live under
-`review.<model>/` directories and start with a JSON front matter
-block, followed by a single `# Title`, a GitHub-comment-sized summary, and
-`## Details` for the full analysis/evidence. Review issue severity is stored as
-`severity: info | concern | fail` in the front matter. The file name must be the
-slugged review title, and the front matter `reviewer` must match the directory
-suffix. Reviewer IDs are model names, such as `review.openai-gpt-4o`;
-unresolved defaults use `review.default`.
-
-JSON schemas live under `Support/Schemas/`:
-
-```text
-Support/Schemas/wendy-e2e-attempt.schema.json
-Support/Schemas/wendy-e2e-review.schema.json
-```
-
-The run layout itself is the index for suites, tests, targets, and attempts. Do
-not add JSON files that merely duplicate directory names or list files already
-visible in the tree. If a future stage needs structured data that cannot be
-inferred from the artifact layout, add a narrowly named file for that producer,
-such as `aggregate.json`, `review.json`, or `report.json`, and keep prose/logs
-as separate files referenced by path.
-
-For reproducible command recordings when invoking SwiftPM directly:
+From this package, run the test target directly when you do not need the full wrapper:
 
 ```bash
-RUN_ID="current"
-RUN_DIR="$PWD/.build/e2e/$RUN_ID"
-CLI_RUN_DIR="$HOME/.wendy/e2e/$RUN_ID/cli"
-CLI_BIN_DIR="$PWD/../../go/bin"
-AGENT_RUN_DIR="$HOME/.wendy/e2e/$RUN_ID/agent"
-rm -rf "$RUN_DIR" "$CLI_RUN_DIR" "$AGENT_RUN_DIR"
-mkdir -p "$CLI_BIN_DIR"
-(cd ../../go && go build -o "$CLI_BIN_DIR/wendy" ./cmd/wendy)
-WENDY_E2E_RUN_ID="$RUN_ID" \
-WENDY_E2E_RUN_DIR="$RUN_DIR" \
-WENDY_E2E_CLI_RUN_DIR="$CLI_RUN_DIR" \
-WENDY_E2E_CLI_BIN_DIR="$CLI_BIN_DIR" \
-WENDY_E2E_AGENT_RUN_DIR="$AGENT_RUN_DIR" \
-WENDY_E2E_ISOLATION=per-run \
 swift test --filter WendyE2ETests
 ```
 
-Each implemented test writes recordings under
-`<run-dir>/<suite-file-stem-dasherized>/<test-name-dasherized>/`, where the
-suite file stem is the test file name with the `Tests` suffix removed. For
-example, `WendyDeviceInfoTests.swift` records under
-`wendy-device-info/<test-name>/`. This keeps attempt and aggregate layouts
-aligned while each test retains its own recording directory. The
-`recording.sh.txt` file replays the captured `sh()` invocations in order for
-manual debugging while remaining browser-viewable from the HTML report.
+## Common workflows
 
-Sandbox isolation is controlled by `--isolation` or `WENDY_E2E_ISOLATION`:
+### Run a single test or suite
 
-- `per-test` (default): one sandbox per role under each test recording directory. This is required for `--parallel`.
-- `per-run`: one stable `home/`, `tmp/`, and `home/work` sandbox per role. In non-parallel runs, the role sandbox is reset before each test's first command.
-- `none`: no synthetic `HOME`, `TMPDIR`, or working directory is configured, and existing machine state is left untouched.
+From `swift/`:
 
-To render the HTML report from this package:
+```bash
+bash Scripts/E2ETest.sh \
+  --output-dir ../Build/e2e \
+  --filter "wendy device info"
+```
+
+Repeat `--filter` to pass multiple test filters.
+
+### Test against a remote device
+
+From `swift/`:
+
+```bash
+make e2e-test-wendy DEVICE=wendyos-raspberry-pi-5.local
+make e2e-test-linux DEVICE=my-linux-box.local
+make e2e-test-macos DEVICE=mac-mini.local
+```
+
+Shortcut targets are also available:
+
+```bash
+make e2e-test-raspberry-pi-5
+make e2e-test-jetson-orin-nano
+make e2e-test-mac-mini
+```
+
+### Render a report manually
+
+From this package:
 
 ```bash
 swift run swift-e2e-testing report --run-dir ../../Build/e2e/<workflow-name>.<run-id>
 ```
 
-## Behavioral spec workflow
+## Test environment
 
-Use this workflow when expanding E2E coverage for a command area.
+`Scripts/E2ETest.sh` is the preferred runner. It:
 
-1. Pick one bounded command area.
-2. Write disabled Swift Testing stubs only.
-3. Review the stubs as the product/API behavior spec.
-4. Once agreed, implement the specs one by one.
+- builds the Go CLI into `go/bin` or `WENDY_E2E_CLI_BIN_DIR`
+- creates isolated CLI and agent run directories
+- puts the managed `wendy` binary first on `PATH`
+- passes machine metadata into the Swift tests
+- writes xUnit output, command recordings, replay scripts, AI review Markdown,
+  and HTML reports
 
-The disabled stubs are the durable specification. They should describe externally observable behavior, not current implementation details.
+The most useful environment variables are:
 
-Good first command areas are local and deterministic:
+| Variable | Purpose |
+| --- | --- |
+| `WENDY_E2E_RUN_ID` | Explicit run/attempt identifier. |
+| `WENDY_E2E_OUTPUT_DIR` | Root directory consumed by `Scripts/E2ETest.sh`. |
+| `WENDY_E2E_RUN_DIR` | Run directory consumed by the Swift test harness. |
+| `WENDY_E2E_TEST_FILTERS` | Comma-separated test filters. |
+| `WENDY_E2E_CLI_RUN_DIR` / `WENDY_E2E_AGENT_RUN_DIR` | Role run directories consumed by scenarios. |
+| `WENDY_E2E_CLI_BIN_DIR` | Directory containing the managed `wendy` binary. |
+| `WENDY_E2E_CLI_AUTH_CONFIG_PATH` | Wendy CLI auth config fixture for authenticated tests. |
+| `WENDY_E2E_CLI_ADDRESS` | Optional SSH host for the CLI machine. |
+| `WENDY_E2E_AGENT_ADDRESS` | Optional SSH host for the agent/device machine. |
+| `WENDY_E2E_CLI_OS` / `WENDY_E2E_AGENT_OS` | Override machine OS metadata. |
+| `WENDY_E2E_ISOLATION` | Sandbox mode: `per-test`, `per-run`, or `none`. |
+| `WENDY_E2E_PARALLEL` | Enables parallel test execution when supported by the runner. |
+| `WENDY_E2E_VERBOSE` | Print every machine command before it runs. |
 
-- `wendy json validate`
-- `wendy project entitlements`
-- `wendy cache`
-- `wendy analytics`
+Sandbox isolation modes:
 
-When intentionally covering CLI-to-agent behavior, start with the smallest read-only interaction, such as `wendy device version`, before moving to commands that require browsers, hardware, streaming, cloud auth, deployment, or network discovery.
+- `per-test` (default): each test gets separate CLI and agent sandboxes. Use
+  this for parallel-safe runs.
+- `per-run`: tests share stable role sandboxes for the run. In serial runs, each
+  role sandbox is reset before a test's first command.
+- `none`: the harness does not override `HOME`, `TMPDIR`, or working directory.
+  Existing machine state is used directly.
 
-## Test organization and naming
+Authenticated scenarios copy `WENDY_E2E_CLI_AUTH_CONFIG_PATH` into the test
+sandbox. If it is not set, the runner uses the current CLI user's
+`~/.wendy/config.json` where possible.
 
-Use one flattened suite per E2E test file. The suite name is the full command phrase being specified; do not use nested suites. Test names complete the sentence.
+## Artifacts
 
-Derive the file name from the suite name using PascalCase. For example, this suite maps to the command stem `WendyDeviceInfo` and, with the package's SwiftPM test-file suffix, lives in `WendyDeviceInfoTests.swift`:
+The E2E workflow uses two artifact layouts: attempt directories from individual
+test runs, and aggregate run directories that collect attempts by suite, test,
+target, and attempt number.
+
+### Attempt directory
+
+`Scripts/E2ETest.sh` writes one attempt directory under the output directory.
+Suite directories use the test file stem without the `Tests` suffix, dasherized;
+test directories use the dasherized test name.
+
+```text
+<output-dir>/<attempt-id>/
+├── attempt.json
+├── test-results.xml
+├── test-results.raw.xml          # only when XML sanitization changed the file
+└── <suite>/<test>/
+    ├── recording.md
+    └── recording.sh.txt
+```
+
+The attempt ID has the shape:
+
+```text
+<workflow-name>.<run-id>.<target-name>.<attempt-number>
+```
+
+For example:
+
+```text
+swift-e2e-tests.local0000.macos-15-to-wendyos-raspberry-pi-5.0001
+```
+
+### Aggregate run directory
+
+`make e2e-aggregate` or `Scripts/E2EAggregate.sh` maps one or more attempt
+directories into a run directory:
+
+```text
+<output-dir>/<workflow-name>.<run-id>/
+└── <suite>/<test>/<target-name>/<attempt-number>/
+    ├── attempt.json
+    ├── test-results.xml
+    ├── test-results.raw.xml      # only when present in the source attempt
+    ├── recording.md
+    └── recording.sh.txt
+```
+
+`make e2e-review` writes scoped AI review issue files into the aggregate run
+directory:
+
+```text
+<run>/review.<reviewer>/<slug>.md
+<run>/<suite>/review.<reviewer>/<slug>.md
+<run>/<suite>/<test>/review.<reviewer>/<slug>.md
+```
+
+`make e2e-report` writes the rendered report files at the aggregate run root:
+
+```text
+<run>/index.html
+<run>/review.md
+<run>/review.html
+```
+
+`recording.md` is the human-readable command log. `recording.sh.txt` replays the
+captured `sh()` calls in order for manual debugging.
+
+AI review files are Markdown. Top-level `review.md` is the compact aggregate
+that can be posted as a CI comment. Attempt and AI review JSON schemas live in
+`Support/Schemas/`.
+
+## Writing tests
+
+### Organization and naming
+
+Use one flattened suite per command area. The suite name is the command phrase;
+the test name completes the behavior sentence.
 
 ```swift
-@Suite(.serialized)
+@Suite
 struct `'wendy device info'` {
     @Test
     func `prints JSON device information`() async throws {
-        // TODO: implement.
+        // Test body.
     }
 }
 ```
 
-The rendered behavior reads as:
+This renders as:
 
 ```text
 wendy device info prints JSON device information
 ```
 
-For command variants, keep the flag in the test name when it is a mode of the same command:
+Name test files exactly as the suite inside them using PascalCase plus
+`Tests.swift`:
+
+```text
+WendyDeviceInfoTests.swift
+WendyAnalyticsStatusTests.swift
+WendyJsonValidateTests.swift
+```
+
+Keep command-mode flags in the test name when they belong to the same command:
 
 ```swift
-@Suite(.serialized)
+@Suite
 struct `'wendy info'` {
     @Test
-    func `prints CLI and system details`() async throws {
-        // TODO: implement.
-    }
+    func `prints CLI and system details`() async throws {}
 
     @Test
-    func `'--json' prints CLI and system details as JSON`() async throws {
-        // TODO: implement.
-    }
+    func `'--json' prints CLI and system details as JSON`() async throws {}
 }
 ```
 
-Use a separate file and suite only when the variant reads better as its own command phrase, for example `'wendy --version'`.
+Use a separate suite only when the variant reads better as its own command, such
+as `wendy --version`.
 
-Name files after command areas, not after our internal spec process. Prefer names like `WendyHelpTests.swift`, `WendyInfoTests.swift`, and `WendyAnalyticsTests.swift`; do not use `BehaviorSpec` in file names.
+### Scenarios
 
-## Scenarios and test lifecycle
-
-Do not put E2E setup or teardown in suite `init` or `deinit`. Start sessions from an `@Test` body, or from a helper that forwards `filePath`, `function`, and `line` defaults from the test call site.
-
-Use scenarios for setup and teardown instead. A scenario is the lifecycle boundary for a test: it can perform async setup before yielding sessions, run the test body, and perform async teardown afterward. That matters because suite initialization is not a reliable test-body call site for the E2E harness, and because `deinit` is always infallible and non-async. The harness needs the actual `@Test` call site to derive the per-test sandbox and recording paths.
-
-Scenarios also centralize the test harness "magic": they attach the recorder, select the managed `wendy` binary through `PATH`, assign isolated `HOME`, `TMPDIR`, and working directories, and keep command recordings tied to the test that produced them. Starting sessions from suite initialization bypasses that identity and can create shared sandboxes or misleading records.
+Use scenarios for setup and teardown. Do not start E2E sessions in suite `init`
+or `deinit`; the harness needs the `@Test` call site to choose the right sandbox
+and recording paths.
 
 ```swift
-@Suite(.serialized)
+@Suite
 struct `'wendy device info'` {
-    private let scenario = CLIAndAgentScenario()
+    let scenario = CLIAndAgentScenario()
 
     @Test
     func `prints JSON device information`() async throws {
         try await self.scenario.run { cli, agent in
-            // Test commands go here.
+            let agentAddress = agent.machine.address
+
+            try await cli.sh("wendy --json --device \(agentAddress) device info") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stderr.isEmpty)
+            }
         }
     }
 }
 ```
 
-## Inline specification prose
+`CLIAndAgentScenario` creates CLI and agent sessions, attaches the recorder,
+installs the managed CLI on `PATH`, configures isolated `HOME` and `TMPDIR`, and
+copies the auth fixture for authenticated tests.
 
-Add a Markdown-capable `/** ... */` documentation block immediately before each `@Test`. The suite and test name form the heading; the block comment provides the prose context that a terse heading cannot capture.
+### Specification prose
 
-Write this prose as present-tense product documentation, not as requirement language. Avoid words like "should", "must", "expect", or "will". The prose describes the desired end-state as if it is already true. Normative details belong in executable assertions, not in prose.
+Add a Markdown-capable `/** ... */` block immediately before each `@Test`. Write
+it as concise product documentation for the behavior under test.
 
 ```swift
-@Suite(.serialized)
-struct `'wendy help'` {
-    /**
-     Prints the top-level help shown to users who ask for command discovery.
+/**
+ Prints the top-level help shown to users who ask for command discovery.
 
-     This is the primary entry point for understanding the CLI. The output explains what Wendy is, groups related commands, shows global flags, and emits no stderr diagnostics because help is a successful informational command.
-
-     Command group names and global flag names are part of the user-facing contract. Line wrapping is not part of the contract.
-     */
-    @Test
-    func `prints top-level help`() async throws {
-        try await self.cli.sh("./bin/wendy help") { result in
-            #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Project Commands:"))
-            #expect(result.stdout.contains("--json"))
-            #expect(result.stderr.isEmpty)
-        }
-    }
+ The output explains what Wendy is, groups related commands, shows global flags,
+ and emits no stderr diagnostics because help is a successful informational
+ command.
+ */
+@Test
+func `prints top-level help`() async throws {
+    // Assertions go here.
 }
 ```
 
-The generated document should render this as:
+Use the test body for precise requirements: exit status, stdout/stderr, JSON
+shape, filesystem changes, config mutations, and failure behavior.
 
-```md
-## wendy help prints top-level help
+### Assertions
 
-Prints the top-level help shown to users who ask for command discovery.
-
-This is the primary entry point for understanding the CLI...
-```
-
-Prefer `/** ... */` over `///` for spec prose because it is easier to read, easier to parse as one block, and better suited to multi-paragraph Markdown. Reserve `///` for short API comments on helpers and support types.
-
-## Executable requirements
-
-The test body is the requirements layer. Assertions express the precise contract:
-
-- exit status
-- stdout and stderr behavior
-- JSON shape and values
-- filesystem/config side effects
-- non-mutation on failure
-- platform-specific behavior
-- command recordings/evidence
-
-As repeated patterns emerge, evolve the E2E DSL so requirements read naturally in code. The goal is not a decorative DSL; the goal is test bodies that read like executable requirements and fail with useful diagnostics.
-
-Raw assertions are fine while a pattern is new:
+Prefer direct, useful assertions while a pattern is new:
 
 ```swift
 #expect(result.status.isSuccess)
@@ -271,19 +297,12 @@ Raw assertions are fine while a pattern is new:
 #expect(result.stdout.contains("Project Commands:"))
 ```
 
-When a pattern repeats, prefer named helpers or DSL concepts:
+When a pattern repeats, move it into a named helper so test bodies read like
+executable requirements.
 
-```swift
-try result.requiresSuccess()
-try result.stdout.requiresContains("Project Commands:")
-try result.stderr.requiresEmpty()
-```
+### Disabled specs
 
-Future DSL directions include command success/failure helpers, stdout/stderr contracts, JSON shape assertions, file/config mutation assertions, help-section assertions, and platform gates.
-
-## Spec stub style
-
-Use disabled tests so unimplemented specs do not falsely pass:
+Use disabled tests for agreed behavior that has not been implemented yet:
 
 ```swift
 /**
@@ -298,133 +317,62 @@ func `creates a minimal Swift WendyOS project non-interactively`() async throws 
 }
 ```
 
-A good spec stub:
+A good disabled spec names one user-visible behavior and captures the important
+setup, action, output, and side effects.
 
-- reads like product documentation
-- names one user-visible behavior
-- states setup, action, and expected outcomes
-- identifies filesystem/config mutations and non-mutations
-- avoids asserting incidental current wording unless the wording is itself the contract
+## Session API reference
 
-## What to specify
-
-For each command area, build a behavioral matrix before implementing test bodies:
-
-- happy paths
-- invalid input
-- missing state
-- existing state
-- idempotency
-- cancellation and prompts
-- non-interactive behavior
-- human output vs JSON output
-- stdout/stderr contract
-- exit status
-- filesystem side effects
-- config mutation and non-mutation
-- analytics/environment isolation
-
-For human-readable output, prefer semantic anchors. For JSON and config files, prefer exact structure and meaningful fields.
-
-## Definition of a good implemented spec
-
-An implemented E2E spec should be deterministic and hermetic where possible:
-
-- use temporary project directories
-- use temporary `HOME`/config directories
-- avoid real browser, cloud, hardware, live device, network, and clock dependencies unless explicitly under test
-- assert exit status
-- assert stdout/stderr behavior
-- assert relevant file/config side effects
-- assert no partial mutation on failure
-
-Avoid broad assertions like:
+`WendyE2EMachine` describes a command target: `id`, `name`, `os`, tags,
+`isLocal`, optional SSH user, and resolved address. Known machines are:
 
 ```swift
-#error contains domain-specific text || error contains "Could not connect"
-```
-
-Those are acceptable only for rough smoke coverage, not for a behavioral spec.
-
-## Current recommended starting point
-
-Start with `wendy device version`.
-
-Phase: spec stubs only; do not implement test bodies yet.
-
-Goal: enumerate the externally observable behavior of the smallest Wendy CLI to Wendy agent interaction:
-
-- local macOS app-backed agent lifecycle requirements and gates
-- explicit `--device` connection behavior
-- human-readable version output
-- `--json` output shape and prompt-free behavior
-- `device info` alias behavior
-- missing device selection in non-interactive contexts
-- unreachable device diagnostics
-- stdout/stderr contract
-- exit status
-
-After the stubs read like a complete product/API spec, implement them incrementally.
-
-## Cross-session handoff prompt
-
-In a future session, use:
-
-> Read `swift/WendyE2ETests/README.md` and continue the behavioral spec workflow from the current recommended starting point. Do not implement test bodies until the disabled spec stubs are agreed.
-
-## Machine and session overview
-
-`WendyE2EMachine` is static metadata: identity, OS, tags, optional SSH user/address, and working directory. It does not run commands.
-
-```swift
-@Test(.enabled(if: WendyE2EMachine.cli.os == .linux))
-func `uses linux behavior`() async throws {
-    let cli = try await WendyE2ESession.begin(for: .cli)
-    try await cli.sh("./bin/wendy --version")
-    try await cli.end()
-}
-```
-
-Known machines are declared as static properties:
-
-```swift
-WendyE2EMachine.current  // the test runner, tagged `.runner`
+WendyE2EMachine.current
 WendyE2EMachine.cli
 WendyE2EMachine.agent
 ```
 
-Predefined machine OS values are `.macOS`, `.linux`, `.windows`, and `.wendyOS`.
-Use `WENDY_E2E_CLI_OS` or `WENDY_E2E_AGENT_OS` to override a known
-machine's declared OS for a run.
+`WENDY_E2E_CLI_OS` and `WENDY_E2E_AGENT_OS` override the known machines' OS
+metadata. Supported values are macOS, Linux, Windows, and WendyOS.
 
-`WendyE2ESession` is the runtime command executor for a machine:
+`WendyE2ESession` runs commands on a machine:
 
 ```swift
-let cli = try await WendyE2ESession.begin(for: .cli)
-try await cli.sh("./bin/wendy --version")
+let cli = try await WendyE2ESession.begin(for: WendyE2EMachine.cli)
+try await cli.sh("wendy --version")
+try await cli.end()
 ```
 
-Use `WendyE2ESession.with` when a spec needs cleanup-safe session lifetimes:
+Use `WendyE2ESession.with` for cleanup-safe lifetimes:
 
 ```swift
-try await WendyE2ESession.with(.cli, .agent) { cli, agent in
-    try await cli.sh("./bin/wendy --version")
-    try await agent.sh("make agent-build")
+try await WendyE2ESession.with(
+    WendyE2EMachine.cli,
+    WendyE2EMachine.agent
+) { cli, agent in
+    try await cli.sh("wendy --version")
+    try await agent.sh("nc -z 127.0.0.1 50051")
 }
 ```
 
-Use `sh(...)` for shell commands. The no-callback form requires the command to succeed; the callback form receives the full shell result for assertions:
+The no-callback forms of `sh` and `pty` require the command to succeed. Use the
+callback form when a command may fail or needs assertions:
 
 ```swift
-try await agent.sh("nc -z 127.0.0.1 50051")
-
-try await agent.sh("nc -z 127.0.0.1 50051") { result in
+try await cli.sh("wendy --json device info") { result in
     #expect(result.status.isSuccess)
     #expect(result.stderr.isEmpty)
 }
 ```
 
-When a command needs shell-specific syntax, pass both variants and `sh` selects the one matching the machine OS:
+Use `pty` for commands whose behavior depends on having an interactive terminal:
+
+```swift
+try await cli.pty("wendy device info") { result in
+    #expect(result.status.isSuccess)
+}
+```
+
+For OS-specific shell syntax, provide both variants:
 
 ```swift
 try await agent.sh(
@@ -433,4 +381,39 @@ try await agent.sh(
 )
 ```
 
-Sessions run locally when `address` is omitted. If `address` is provided, commands run over SSH; `user` is included in the SSH target when provided. Local sessions still execute commands through a shell and honor configured working directories and environment. `WendyE2ESession.begin(for:verbose:)` enables command echoing for that session; `WENDY_E2E_VERBOSE=1` enables it globally.
+`WendyE2ESession.wendyCacheDirectory` returns the Wendy cache path for the
+session's machine OS and environment.
+
+Sessions run locally when the machine is local. If a machine is created or
+configured with an address, commands run over SSH and include the configured
+user when present.
+
+## Direct test invocation
+
+When bypassing `Scripts/E2ETest.sh`, set the same environment the wrapper would
+normally provide:
+
+```bash
+RUN_ID="current"
+RUN_DIR="$PWD/.build/e2e/$RUN_ID"
+CLI_RUN_DIR="$HOME/.wendy/e2e/$RUN_ID/cli"
+CLI_BIN_DIR="$PWD/../../go/bin"
+CLI_AUTH_CONFIG_PATH="$HOME/.wendy/config.json"
+AGENT_RUN_DIR="$HOME/.wendy/e2e/$RUN_ID/agent"
+
+rm -rf "$RUN_DIR" "$CLI_RUN_DIR" "$AGENT_RUN_DIR"
+mkdir -p "$CLI_BIN_DIR"
+(cd ../../go && go build -o "$CLI_BIN_DIR/wendy" ./cmd/wendy)
+
+WENDY_E2E_RUN_ID="$RUN_ID" \
+WENDY_E2E_RUN_DIR="$RUN_DIR" \
+WENDY_E2E_CLI_RUN_DIR="$CLI_RUN_DIR" \
+WENDY_E2E_CLI_BIN_DIR="$CLI_BIN_DIR" \
+WENDY_E2E_CLI_AUTH_CONFIG_PATH="$CLI_AUTH_CONFIG_PATH" \
+WENDY_E2E_AGENT_RUN_DIR="$AGENT_RUN_DIR" \
+WENDY_E2E_ISOLATION=per-run \
+swift test --filter WendyE2ETests
+```
+
+Prefer the wrapper for normal development; use this only when debugging the
+harness itself.
