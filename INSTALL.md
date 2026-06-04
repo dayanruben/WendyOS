@@ -7,15 +7,15 @@ For most users, the recommended installation method is the install script docume
 ### macOS (Homebrew)
 
 ```sh
-brew tap wendylabsinc/tap
-brew install wendy
+brew trust --formula wendylabsinc/tap/wendy
+brew install wendylabsinc/tap/wendy
 ```
 
 For the nightly (prerelease) version:
 
 ```sh
-brew tap wendylabsinc/tap
-brew install wendy-nightly
+brew trust --formula wendylabsinc/tap/wendy-nightly
+brew install wendylabsinc/tap/wendy-nightly
 ```
 
 To update:
