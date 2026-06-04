@@ -1,10 +1,10 @@
 # Testing
 
-WendyOS uses unit tests and app integration tests to validate the CLI and agent behaviour.
+WendyOS uses both unit tests and integration tests to validate the CLI and agent behaviour.
 
-## App Integration Tests
+## Integration Tests
 
-App integration tests verify that specific features work end-to-end on a real (or simulated) Wendy device. They live under `.github/ci-tests/` in the repository.
+Integration tests verify that specific features work end-to-end on a real (or simulated) Wendy device. They live under `.github/ci-tests/` in the repository.
 
 ### Directory structure
 
@@ -57,7 +57,7 @@ Depending on the language, a test directory contains:
 - Negative/blocking tests (verifying a capability is absent) should exit `1` if the blocked capability accidentally succeeds.
 - Each test is single-purpose: it proves exactly one feature works.
 
-### Running app integration tests locally
+### Running integration tests locally
 
 Tests are driven by `go/scripts/test-ci.sh`. The script contains an `ALL_TESTS` array listing every registered test name.
 
@@ -69,13 +69,13 @@ Refer to the `usage()` block in that script for a full list of available test na
 
 ### CI execution
 
-App integration tests run in `.github/workflows/integration-tests.yml` on both macOS and Linux runners.
+Integration tests run in `.github/workflows/integration-tests.yml` on both macOS and Linux runners.
 
 > **Note:** Swift tests (`swift-*`) run only on the macOS job. The Linux job omits them.
 
 #### Stable release gate
 
-When a release build is triggered with `publish=true`, the full macOS app integration test suite runs as a required gate before the `release` and `publish-linux-repos` jobs proceed. If app integration tests fail, neither job runs. Nightly builds (triggered by a `push` event or `publish=false`) skip the integration-test gate and proceed directly to release.
+When a release build is triggered with `publish=true`, the full macOS integration test suite runs as a required gate before the `release` and `publish-linux-repos` jobs proceed. If integration tests fail, neither job runs. Nightly builds (triggered by a `push` event or `publish=false`) skip the integration-test gate and proceed directly to release.
 
 #### PR gate for CI config changes
 
@@ -83,9 +83,9 @@ Pull requests from within the repository that modify files under `.github/` auto
 
 ---
 
-## Automated App Integration Test Coverage (CI)
+## Automated Integration Test Coverage (CI)
 
-When a PR is merged into `main`, the workflow `.github/workflows/integration-test-coverage.yml` automatically checks whether the merged changes introduced new CLI features, device capabilities, entitlements, or deployment modes that are not yet covered by an app integration test.
+When a PR is merged into `main`, the workflow `.github/workflows/integration-test-coverage.yml` automatically checks whether the merged changes introduced new CLI features, device capabilities, entitlements, or deployment modes that are not yet covered by an integration test.
 
 ### How it works
 
