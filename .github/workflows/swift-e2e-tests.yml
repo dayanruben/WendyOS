@@ -489,7 +489,6 @@ jobs:
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
           TESTS: ${{ inputs.tests || '' }}
           E2E_RESULT: ${{ needs.swift-e2e-tests.result }}
-          REVIEW_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
         run: |
           set -euo pipefail
           if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
@@ -510,55 +509,35 @@ jobs:
 
           case "${E2E_RESULT:-unknown}" in
             success)
-              status_label="passed"
+              status_title="Passed"
               status_emoji="✅"
               status_color="#22c55e"
               ;;
             failure)
-              status_label="failed"
+              status_title="Failed"
               status_emoji="❌"
               status_color="#ef4444"
               ;;
             cancelled)
-              status_label="cancelled"
+              status_title="Cancelled"
               status_emoji="⏹️"
               status_color="#f59e0b"
               ;;
             skipped)
-              status_label="skipped"
+              status_title="Skipped"
               status_emoji="⏭️"
               status_color="#94a3b8"
               ;;
             *)
-              status_label="unknown"
+              status_title="Unknown"
               status_emoji="❔"
               status_color="#64748b"
               ;;
           esac
 
-          review_excerpt=""
-          if [[ -f "${REVIEW_PATH}" ]]; then
-            review_excerpt="$(python3 - <<'PY' || true
-          import os
-          import pathlib
-          import re
-
-          path = pathlib.Path(os.environ["REVIEW_PATH"])
-          text = path.read_text(encoding="utf-8", errors="replace").strip()
-          text = re.sub(r"^#\s*Swift E2E Review\s*", "", text).strip()
-          text = re.sub(r"\s+", " ", text)
-          limit = 900
-          if len(text) > limit:
-              text = text[: limit - 1].rstrip() + "…"
-          print(text)
-          PY
-          )"
-          fi
-
           jq -n \
             --arg color "${status_color}" \
-            --arg fallback "${status_emoji} Swift E2E Tests ${status_label}" \
-            --arg title "${status_emoji} Swift E2E Tests ${status_label}" \
+            --arg title "${status_emoji} ${status_title}" \
             --arg mode "${review_mode}" \
             --arg ref "${tested_ref}" \
             --arg sha "${short_sha}" \
@@ -569,9 +548,7 @@ jobs:
             --arg run_url "${run_url}" \
             --arg artifact_url "${artifact_url}" \
             --arg artifact_name "${artifact_name}" \
-            --arg review_excerpt "${review_excerpt}" \
             '{
-              text: $fallback,
               attachments: [
                 {
                   color: $color,
@@ -634,20 +611,6 @@ jobs:
                         )
                       }
                     ]
-                    + (
-                      if $review_excerpt != "" then
-                        [
-                          { type: "divider" },
-                          {
-                            type: "section",
-                            text: {
-                              type: "mrkdwn",
-                              text: "*AI review*\n\($review_excerpt)"
-                            }
-                          }
-                        ]
-                      else [] end
-                    )
                     + (
                       if $artifact_url != "" then
                         [
