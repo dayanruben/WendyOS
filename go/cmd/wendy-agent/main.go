@@ -193,7 +193,7 @@ func main() {
 
 	// Returns nil if the PEM data is invalid, which causes the registry to stay HTTP.
 	registryTLSConfig := func(certPEM, chainPEM, keyPEM string) *tls.Config {
-		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, nil)
+		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, nil, certNotBeforeFloor(certPEM))
 		if err != nil {
 			logger.Error("Failed to build registry TLS config", zap.Error(err))
 			return nil
@@ -324,12 +324,18 @@ func main() {
 			return
 		}
 
-		// Warn if the device clock appears to predate the provisioning cert.
-		// This almost always means an unsynchronized RTC, which causes every
-		// client cert to appear "not yet valid" from the device's perspective.
-		warnClockSkewIfNeeded(logger, certPEM)
+		floor := certNotBeforeFloor(certPEM)
+		if floor.IsZero() && certPEM != "" {
+			logger.Warn("Could not extract NotBefore from provisioning cert — NTP clock skew protection is disabled")
+		} else if now := time.Now(); !floor.IsZero() && now.Before(floor) {
+			logger.Warn("Device clock predates provisioning cert — using cert NotBefore as mTLS time floor; clock will sync when network is available",
+				zap.Time("deviceClock", now),
+				zap.Time("floor", floor),
+				zap.Duration("clockBehindBy", floor.Sub(now)),
+			)
+		}
 
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger,
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor,
 			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
 		)
@@ -369,7 +375,7 @@ func main() {
 
 	// Only called after provisioning so the cert is available.
 	startBLEPeripheral := func(certPEM, chainPEM, keyPEM string) {
-		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, logger)
+		tlsConfig, err := mtls.NewTLSConfig(certPEM, chainPEM, keyPEM, logger, certNotBeforeFloor(certPEM))
 		if err != nil {
 			logger.Error("Failed to build BLE TLS config", zap.Error(err))
 			return
@@ -535,17 +541,18 @@ func main() {
 	logger.Info("wendy-agent stopped")
 }
 
-// warnClockSkewIfNeeded parses the device's own provisioning cert and logs a
-// warning if the system clock predates the cert's NotBefore. A clock that is
-// behind the cert's issuance time will reject every legitimate client cert
-// ("not yet valid"), making the mTLS port effectively unusable — but silently.
-func warnClockSkewIfNeeded(logger *zap.Logger, certPEM string) {
+// certNotBeforeFloor parses the device's own provisioning cert and returns its
+// NotBefore time to use as a lower bound on time.Now() during mTLS cert
+// verification. This lets the device accept legitimate client certs even when
+// the system clock has not yet been synchronised via NTP (e.g. after a power
+// cycle without WiFi). Returns a zero time.Time if the cert cannot be parsed.
+func certNotBeforeFloor(certPEM string) time.Time {
 	if certPEM == "" {
-		return
+		return time.Time{}
 	}
 	block, _ := pem.Decode([]byte(certPEM))
 	if block == nil {
-		return
+		return time.Time{}
 	}
 	// ML-DSA certs from pki-core have trailing ASN.1 bytes that cause
 	// x509.ParseCertificate to fail. Strip them with the same fallback
@@ -558,16 +565,9 @@ func warnClockSkewIfNeeded(logger *zap.Logger, certPEM string) {
 		}
 	}
 	if err != nil {
-		return
+		return time.Time{}
 	}
-	now := time.Now()
-	if now.Before(cert.NotBefore) {
-		logger.Warn("Device clock appears to predate the provisioning certificate — mTLS client cert verification will fail until NTP synchronizes the clock",
-			zap.Time("deviceClock", now),
-			zap.Time("certNotBefore", cert.NotBefore),
-			zap.Duration("clockBehindBy", cert.NotBefore.Sub(now)),
-		)
-	}
+	return cert.NotBefore
 }
 
 func brokerURLForCloudHost(cloudHost string) string {
