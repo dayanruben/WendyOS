@@ -1251,11 +1251,23 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 			nets, err := scanLocalWifiNetworks()
 			p.Send(tui.SpinnerDoneMsg{Result: nets, Err: err})
 		}()
-		if finalModel, runErr := p.Run(); runErr == nil {
-			result, err := finalModel.(tui.SpinnerModel).Result()
-			networks, _ = result.([]localWifiNetwork)
-			scanErr = err
+		finalModel, runErr := p.Run()
+		if runErr != nil {
+			return c, false, fmt.Errorf("scanning WiFi networks: %w", runErr)
 		}
+		sm, ok := finalModel.(tui.SpinnerModel)
+		if !ok {
+			return c, false, fmt.Errorf("scanning WiFi networks: unexpected spinner model %T", finalModel)
+		}
+		// A spinner that quit before receiving SpinnerDoneMsg means the user
+		// pressed Ctrl+C/q during the scan; treat that as a cancellation rather
+		// than silently falling through to the manual SSID prompt.
+		if !sm.Done() {
+			return c, false, ErrUserCancelled
+		}
+		result, err := sm.Result()
+		networks, _ = result.([]localWifiNetwork)
+		scanErr = err
 	}
 	if scanErr == nil && len(networks) > 0 {
 		var items []tui.PickerItem

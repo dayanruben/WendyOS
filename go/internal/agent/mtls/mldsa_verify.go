@@ -159,7 +159,10 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// TOCTOU window between the clock snapshot and the verification call.
 		if realNow.After(leaf.NotAfter) {
 			expiredErr := fmt.Errorf("certificate expired (notAfter=%v)", leaf.NotAfter)
-			logCertRejection(logger, leaf, expiredErr, effectiveNow)
+			// The floor is irrelevant once the cert is expired against the real
+			// clock: pass realNow so the rejection log reflects the actual clock
+			// and never mistakes an expired cert for a clock-skew case.
+			logCertRejection(logger, leaf, expiredErr, realNow)
 			return expiredErr
 		}
 
