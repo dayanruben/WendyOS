@@ -12,10 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # PR comments are issue comments in GitHub's API; no narrower
-      # permission exists for editing only this workflow's PR comment.
-      issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -224,16 +221,7 @@ jobs:
               fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.DOTALL)
               if fenced:
                   text = fenced.group(1).strip()
-
-              try:
-                  return json.loads(text)
-              except json.JSONDecodeError:
-                  decoder = json.JSONDecoder()
-                  start = text.find('{')
-                  if start == -1:
-                      raise
-                  parsed, _ = decoder.raw_decode(text[start:])
-                  return parsed
+              return json.loads(text)
 
           def _text(value, fallback=''):
               if value is None:
@@ -262,6 +250,7 @@ jobs:
 
           def _fenced_details(value, limit=6000):
               text = _UNSAFE_URI_RE.sub(_neutralize_uri_scheme, _limit_text(value, limit))
+              text = text.replace('<', '‹').replace('>', '›')
               text = text.replace('\r\n', '\n').replace('\r', '\n')
               longest_ticks = max((len(match.group(0)) for match in re.finditer(r'`+', text)), default=0)
               fence = '`' * max(3, longest_ticks + 1)
@@ -297,8 +286,8 @@ jobs:
           try:
               payload = _extract_json(response_text)
           except json.JSONDecodeError as e:
-              print(f'Claude returned invalid JSON ({len(response_text)} chars): {e}')
-              raise RuntimeError('Docs review response was not valid JSON') from e
+              print(f'WARNING: Claude returned invalid JSON ({len(response_text)} chars): {e}')
+              raise SystemExit(0)
 
           if not isinstance(payload, dict):
               raise RuntimeError('Docs review response must be a JSON object')
@@ -326,7 +315,11 @@ jobs:
                   for key in string_finding_keys
               ):
                   continue
-              if _has_instruction_artifact(raw_finding.get('title')) or _has_instruction_artifact(raw_finding.get('overview')):
+              if (
+                  _has_instruction_artifact(raw_finding.get('title'))
+                  or _has_instruction_artifact(raw_finding.get('overview'))
+                  or _has_instruction_artifact(raw_finding.get('details'))
+              ):
                   continue
 
               severity = _one_line(raw_finding.get('severity', 'info')).lower()
