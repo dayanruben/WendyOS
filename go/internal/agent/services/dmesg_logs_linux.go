@@ -4,6 +4,7 @@ package services
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -97,13 +98,17 @@ var piiPatterns = regexp.MustCompile(
 		`)`,
 )
 
-// piiIPv6Pattern matches IPv6-style addresses (≥2 colon-terminated hex groups of
-// 1–4 chars). Requires non-empty groups ({1,4}) to avoid over-matching version
-// strings, kernel load addresses, and other colon-separated hex values.
-// Abbreviated forms with leading :: (e.g. ::1, fe80::1) are not matched by this
-// pattern; full-form addresses (2001:db8:...) are covered.
+// piiIPv6Pattern matches IPv6 addresses in both full and compressed notation.
+// Full form: 2001:db8:85a3::8a2e:370:7334 (≥2 colon-terminated hex groups).
+// Compressed form: ::1, fe80::1, 2001:db8:: (zero or more groups + ::).
 // Kept separate from piiPatterns and gated behind strings.ContainsRune(':').
-var piiIPv6Pattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}`)
+var piiIPv6Pattern = regexp.MustCompile(
+	`(?i)` +
+		// Full-form: at least 2 hex groups followed by colon, then trailing group
+		`(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}` +
+		// Compressed form with :: (covers ::1, fe80::1, 2001:db8::, etc.)
+		`|(?:[0-9a-f]{1,4}:)*::(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4}`,
+)
 
 // piiKernelPtrPattern matches kernel pointer addresses (e.g. "0xffffffff81234567").
 // Kept separate and gated behind strings.Contains("0x") to avoid scanning messages
@@ -138,19 +143,22 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 	//   - Produces a filesystem access log entry (audit trail)
 	// Non-empty content is required so an empty placeholder file doesn't pass.
 	dpiaContent, readErr := os.ReadFile(DmesgDPIAConfirmFile)
-	if readErr != nil || len(strings.TrimSpace(string(dpiaContent))) == 0 {
+	if readErr != nil || len(bytes.TrimSpace(dpiaContent)) == 0 {
 		logger.Error("kernel dmesg collection requires "+DmesgDPIAConfirmFile+" with non-empty content",
 			zap.String("reason", "GDPR Art.35 requires a documented DPIA before forwarding kernel messages to an external backend"),
 		)
 		return
 	}
-	// Zero the content immediately; the variable must not be accessible after this
-	// point — the file may contain operator names, DPO contacts, or ticket IDs.
+	// Zero the content before releasing; dpiaContent may contain PII (operator
+	// names, DPO contacts, ticket IDs). Avoid string() conversion which would
+	// create an immutable copy that cannot be zeroed.
+	for i := range dpiaContent {
+		dpiaContent[i] = 0
+	}
 	dpiaContent = nil
 	logger.Info("dmesg DPIA confirmation found",
 		zap.String("file", DmesgDPIAConfirmFile),
 		zap.Bool("confirmation_present", true),
-		zap.Bool("pii_redact_enabled", true),
 	)
 
 	// redactAtomic: 1 = redact enabled (safe default), 0 = redact disabled.
