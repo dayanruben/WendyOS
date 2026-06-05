@@ -125,6 +125,21 @@ jobs:
         run: |
           set -euo pipefail
           hostname="$INPUT_HOSTNAME"
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+          if ! validate_device_hostname "$hostname"; then
+            echo "ERROR: invalid device hostname: $hostname" >&2
+            exit 1
+          fi
           # Match the deploy scripts for bare mDNS hostnames while leaving IPs
           # and fully-qualified hostnames unchanged.
           if [[ "$hostname" != *.local && "$hostname" != *.* && "$hostname" != *:* ]]; then
@@ -149,7 +164,7 @@ jobs:
         working-directory: go
         run: make build-cli
 
-      - name: Discover WendyOS devices
+      - name: Discover deploy device
         id: scan
         if: inputs.hostname == ''
         run: |
@@ -167,15 +182,31 @@ jobs:
           fi
           echo "$RESULT" | jq .
 
-          MATRIX=$(echo "$RESULT" | jq -c '[(.lanDevices // [])[] | select(.isWendyDevice and .hostname) | .hostname]')
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
 
-          COUNT=$(echo "$MATRIX" | jq 'length')
-          echo "Discovered $COUNT WendyOS device(s) for template deploy."
-          if [[ "$COUNT" -eq 0 ]]; then
-            echo "ERROR: No WendyOS devices found via wendy discover"
+          HOSTNAME=$(echo "$RESULT" | jq -r '(.lanDevices // [])[0].hostname // empty')
+          if [[ -z "$HOSTNAME" ]]; then
+            echo "ERROR: No LAN devices found via wendy discover"
             exit 1
           fi
+          if ! validate_device_hostname "$HOSTNAME"; then
+            echo "ERROR: invalid discovered device hostname: $HOSTNAME" >&2
+            exit 1
+          fi
+
+          MATRIX=$(jq -cn --arg h "$HOSTNAME" '[$h]')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Discovered deploy device: $HOSTNAME"
 
   deploy-to-device:
     name: Deploy (${{ matrix.runner.name }} → ${{ matrix.hostname }})

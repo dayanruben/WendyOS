@@ -65,6 +65,21 @@ jobs:
         run: |
           set -euo pipefail
           hostname="$INPUT_HOSTNAME"
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+          if ! validate_device_hostname "$hostname"; then
+            echo "ERROR: invalid device hostname: $hostname" >&2
+            exit 1
+          fi
           # Match test-ci.sh normalization for bare mDNS hostnames.
           if [[ "$hostname" != *.local && "$hostname" != *.* && "$hostname" != *:* ]]; then
             hostname="${hostname}.local"
@@ -127,10 +142,32 @@ jobs:
             echo "WARNING: Some expected devices were not found. They may be offline."
           fi
 
-          MATRIX=$(echo "$RESULT" | jq -c '[(.lanDevices // [])[].hostname // empty]')
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+
+          HOSTS=()
+          while IFS= read -r host; do
+            [[ -z "$host" ]] && continue
+            if ! validate_device_hostname "$host"; then
+              echo "ERROR: invalid discovered device hostname: $host" >&2
+              exit 1
+            fi
+            HOSTS+=("$host")
+          done < <(echo "$RESULT" | jq -r '(.lanDevices // [])[].hostname // empty')
+
+          MATRIX=$(jq -cn --args '${ARGS.positional}' "${HOSTS[@]}")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-          COUNT=$(echo "$MATRIX" | jq 'length')
+          COUNT=${#HOSTS[@]}
           echo "Discovered $COUNT LAN device(s)."
           if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$COUNT" -eq 0 ]]; then
             echo "ERROR: No LAN devices found via wendy discover"
@@ -217,6 +254,10 @@ jobs:
             IFS=',' read -ra TEST_ARRAY <<< "$INPUT_TESTS"
             for t in "${TEST_ARRAY[@]}"; do
               t="$(echo "$t" | xargs)"
+              if [[ ! "$t" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+                echo "ERROR: invalid test name: $t" >&2
+                exit 1
+              fi
               TEST_ARGS="$TEST_ARGS -t $t"
               HAS_TESTS=true
             done
@@ -236,9 +277,15 @@ jobs:
           docker buildx rm "$BUILDER" --force 2>/dev/null || true
           trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
 
+          remote_path="$(printf '%q' "$PATH")"
+          remote_docker_host="$(printf '%q' "${DOCKER_HOST:-}")"
+          remote_builder="$(printf '%q' "$BUILDER")"
+          remote_workdir="$(printf '%q' "$WORKDIR")"
+          remote_hostname="$(printf '%q' "$INPUT_HOSTNAME")"
+
           echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
           set +e
-          $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && go/scripts/test-ci.sh $TEST_ARGS -h '$INPUT_HOSTNAME'"
+          $SSH "export PATH=$remote_path DOCKER_HOST=$remote_docker_host WENDY_BUILDX_BUILDER=$remote_builder && cd $remote_workdir && go/scripts/test-ci.sh $TEST_ARGS -h $remote_hostname"
           rc=$?
           set -e
           exit $rc
@@ -306,6 +353,10 @@ jobs:
             IFS=',' read -ra TEST_ARRAY <<< "$INPUT_TESTS"
             for t in "${TEST_ARRAY[@]}"; do
               t="$(echo "$t" | xargs)"
+              if [[ ! "$t" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+                echo "ERROR: invalid test name: $t" >&2
+                exit 1
+              fi
               # Skip swift-* tests on Linux.
               if [[ "$t" == swift-* ]]; then
                 echo "Skipping Swift test $t on Linux"
