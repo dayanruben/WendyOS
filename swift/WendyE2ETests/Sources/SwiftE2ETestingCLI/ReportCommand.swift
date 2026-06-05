@@ -610,9 +610,20 @@ private func runObservationStatus(
     }
 
     let results = try parseXUnitResults(at: resultURL)
-    return results.first { key, _ in
+    if let status = results.first(where: { key, _ in
         slug(key.suite) == suiteKey && slug(key.name) == testKey
-    }?.value ?? .unknown
+    })?.value {
+        return status
+    }
+
+    let matchingTestNames = results.filter { key, _ in
+        slug(key.name) == testKey
+    }
+    if matchingTestNames.count == 1, let status = matchingTestNames.first?.value {
+        return status
+    }
+
+    return .unknown
 }
 
 private func observationSort(_ lhs: ReportTestObservation, _ rhs: ReportTestObservation) -> Bool {
