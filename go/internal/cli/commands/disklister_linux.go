@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -252,16 +253,20 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 		return fmt.Errorf("starting dd: %w", err)
 	}
 
+	var stderrBuf bytes.Buffer
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
-		scanDDProgress(stderr, progressFn)
+		scanDDProgress(io.TeeReader(stderr, &stderrBuf), progressFn)
 	}()
 
 	waitErr := cmd.Wait()
 	<-scannerDone
 
 	if waitErr != nil {
+		if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+			return fmt.Errorf("writing image: %w\n%s", waitErr, msg)
+		}
 		return fmt.Errorf("writing image: %w", waitErr)
 	}
 
