@@ -323,9 +323,9 @@ jobs:
               lines.append(f'#### {display} {finding["title"]}')
               lines.append('')
               if finding['path']:
-                  lines.append(f'`{finding["path"]}`')
-                  lines.append('')
-              lines.append(finding['overview'])
+                  lines.append(f'`{finding["path"]}`: {finding["overview"]}')
+              else:
+                  lines.append(finding['overview'])
               lines.append('')
               lines.append('<details>')
               lines.append('<summary>Details</summary>')
