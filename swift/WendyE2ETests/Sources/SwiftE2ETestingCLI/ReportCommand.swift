@@ -1445,17 +1445,13 @@ private func renderTargetOverview(_ rows: [ReportTargetOverviewRow]) -> String {
     }.joined(separator: "\n")
 
     return """
-        <section class="target-overview" aria-labelledby="target-overview-heading">
-          <div class="target-overview-header">
-            <h2 id="target-overview-heading">CLI → Agent run overview</h2>
-            <p>Target outcome is aggregated across all attempts for each CLI/agent combination. Individual test badges below keep their per-test semantics.</p>
-          </div>
+        <section class="target-overview" aria-label="CLI to Agent run overview">
           <div class="target-overview-table-wrapper">
             <table class="target-overview-table">
               <thead>
                 <tr>
-                  <th scope="col">CLI → Agent</th>
-                  <th scope="col">Outcome</th>
+                  <th scope="col" aria-label="CLI to Agent"></th>
+                  <th scope="col" aria-label="Outcome"></th>
                   <th class="numeric" scope="col">Attempts</th>
                   <th class="numeric" scope="col">Tests</th>
                   <th class="numeric" scope="col">Passed</th>
