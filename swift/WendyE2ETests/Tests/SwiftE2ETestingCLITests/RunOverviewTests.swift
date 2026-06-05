@@ -65,6 +65,84 @@ struct `run overview` {
         #expect(flake.attempts.first?.durationSeconds == 1.25)
     }
 
+    @Test
+    func `aggregates failed outcomes with AI review summaries`() throws {
+        let rootURL = e2eTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let suiteURL = runURL.appendingPathComponent(
+            "wendy-device-info",
+            isDirectory: true
+        )
+        let testURL = suiteURL.appendingPathComponent(
+            "prints-json-device-information",
+            isDirectory: true
+        )
+        let targetURL = testURL.appendingPathComponent("macos-to-rpi", isDirectory: true)
+        let attemptURL = targetURL.appendingPathComponent("0001", isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: attemptURL,
+            withIntermediateDirectories: true
+        )
+        try writeXUnitResult(
+            to: attemptURL,
+            status: .failed("Unauthorized"),
+            duration: 2.0
+        )
+        try "# Recording\n".write(
+            to: attemptURL.appendingPathComponent("recording.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try writeTestReview(in: testURL)
+
+        _ = try writeRunOverview(in: runURL)
+        try writeE2EReviewAggregate(in: runURL)
+
+        let markdown = try String(
+            contentsOf: runURL.appendingPathComponent("review.md"),
+            encoding: .utf8
+        )
+
+        #expect(markdown.contains("## Failed and flaked tests"))
+        #expect(markdown.contains("### ❤️ `wendy-device-info/prints-json-device-information`"))
+        #expect(markdown.contains("AI review: **Agent rejected CLI auth**"))
+        #expect(markdown.contains("### ❤️ Agent rejected CLI auth"))
+        #expect(!markdown.contains("Fail: Agent rejected CLI auth"))
+    }
+}
+
+private func writeTestReview(in testURL: URL) throws {
+    let reviewURL = testURL.appendingPathComponent("review.default", isDirectory: true)
+    try FileManager.default.createDirectory(at: reviewURL, withIntermediateDirectories: true)
+    let reviewMarkdown = [
+        "---",
+        "{",
+        "  \"schema\": \"wendy.e2e.review.v1\",",
+        "  \"title\": \"Agent rejected CLI auth\",",
+        "  \"scope\": \"test\",",
+        "  \"reviewer\": \"default\",",
+        "  \"severity\": \"fail\",",
+        "  \"confidence\": \"high\"",
+        "}",
+        "---",
+        "# Agent rejected CLI auth",
+        "",
+        "The target rejected an otherwise valid authenticated request.",
+        "Recheck the agent auth state before rerunning this route.",
+        "",
+        "## Details",
+        "",
+        "The failing attempt returned `Unauthorized` while using the same fixture.",
+        "",
+    ].joined(separator: "\n")
+    try reviewMarkdown.write(
+        to: reviewURL.appendingPathComponent("agent-rejected-cli-auth.md"),
+        atomically: true,
+        encoding: .utf8
+    )
 }
 
 private func e2eTemporaryDirectory() -> URL {

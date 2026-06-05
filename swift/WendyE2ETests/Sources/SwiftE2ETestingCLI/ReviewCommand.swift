@@ -955,7 +955,7 @@ private func runReportPrompt(
         overwrite: overwrite
     )
     lines.append(
-        "For report-level reviews, only create findings that are run-level or cross-suite. Do not repeat suite/test reviews already covered at lower scopes."
+        "For report-level reviews, create run-level or cross-suite findings. If the overview records failed or flaked target outcomes, include a top-level synthesis that covers each one and cites the lower-scope review or artifact evidence."
     )
     lines.append("")
     appendRunOverviewReportFocus(overview, to: &lines)

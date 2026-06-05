@@ -23,8 +23,11 @@ Guidelines:
 - Put evidence, reasoning, and longer analysis under the review file's
   `## Details` heading.
 - Treat the generated `overview.json` failure/flake section as the source of
-  truth for run outcomes. Prioritize deterministic `FAILED` target outcomes,
-  then `FLAKED` target outcomes, then unresolved `UNKNOWN` outcomes.
+  truth for run outcomes. Every deterministic `FAILED` target outcome must get
+  an AI review explaining the likely root cause and what to do next. Every
+  `FLAKED` target outcome must get an AI review explaining why it may have
+  flaked and how to investigate or stabilize it. Then consider unresolved
+  `UNKNOWN` outcomes.
 - Cite concrete evidence in details: source paths, target/attempt names, result
   details, recording paths, shell script paths, and `overview.json` outcome data.
 - Use JSON `locations` only when the review is attributable to source lines.
