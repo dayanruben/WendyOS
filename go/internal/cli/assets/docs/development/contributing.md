@@ -33,10 +33,11 @@ The docs-review workflow runs on every pull request targeting `main` and posts a
 - **Severity sorting:** Findings are sorted blockers-first, then concerns, then info, with ❤️, 💛, and 💙 labels in the comment.
 - **Inline path summaries:** Each visible finding paragraph starts with the affected docs path, followed by a colon and the overview prose.
 - **Collapsible details:** Longer rationale and suggested diffs are placed behind a workflow-owned `<details>` disclosure block.
-- **Output safety:** LLM-provided text is length-limited, raw HTML is escaped, unsafe URI schemes are neutralised, and docs paths are accepted only when they match the strict `docs/...` allowlist.
+- **Output safety:** LLM-provided text is length-limited, inline angle brackets are rendered as safe Unicode characters, detail text is placed in fenced code blocks, unsafe URI schemes are neutralised, and docs paths are accepted only when they match the strict existing `docs/.../*.md` allowlist.
 - **Edit-in-place comment:** Existing docs-review comments are identified by the `<!-- ai-docs-review:v1 -->` marker and edited instead of posting duplicates. Duplicate marker comments are deleted.
 - **Stale comment cleanup:** When no findings are produced, any existing docs-review comment is deleted.
 - **Body truncation:** The prepared comment is capped at 65,000 characters, with space reserved so the identifying marker remains present after truncation.
+- **GitHub API retries:** Comment list, create, update, and delete requests retry transient `429` and `5xx` responses before failing the step.
 
 ### Security Review Workflow (`.github/workflows/security-review.yml`)
 
