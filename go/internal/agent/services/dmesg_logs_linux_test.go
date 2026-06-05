@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 func TestParseKmsgLine(t *testing.T) {
