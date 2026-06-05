@@ -273,10 +273,17 @@
     .target-overview-table th,
     .target-overview-table td {
       padding: 9px 10px;
-      border-top: 1px solid var(--line);
       text-align: left;
       vertical-align: middle;
       white-space: nowrap;
+    }
+
+    .target-overview-table tbody td {
+      border-top: 1px solid var(--line);
+    }
+
+    .target-overview-table tbody tr:first-child td {
+      border-top: 0;
     }
 
     .target-overview-table th {
