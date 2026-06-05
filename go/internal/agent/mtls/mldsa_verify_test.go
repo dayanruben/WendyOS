@@ -438,7 +438,7 @@ func TestVerifyMLDSAClientCert_MultipleCAsSameSubject_SecondCASucceeds(t *testin
 	// Trusted pool has CA1 first, CA2 second.
 	trustedCAs := []*x509.Certificate{ca1, ca2}
 
-	err := verifyMLDSAClientCert(leaf, trustedCAs)
+	err := verifyMLDSAClientCert(leaf, trustedCAs, time.Now())
 	if err != nil {
 		t.Errorf("verifyMLDSAClientCert() = %v; want nil (second CA should succeed)", err)
 	}
@@ -477,7 +477,7 @@ func TestVerifyMLDSAClientCert_MultipleCAsSameSubject_AllFail(t *testing.T) {
 
 	trustedCAs := []*x509.Certificate{ca1, ca2}
 
-	err := verifyMLDSAClientCert(leaf, trustedCAs)
+	err := verifyMLDSAClientCert(leaf, trustedCAs, time.Now())
 	if err == nil {
 		t.Fatal("verifyMLDSAClientCert() = nil; want an error when all CAs fail")
 	}
@@ -500,6 +500,30 @@ func TestVerifyMLDSAClientCert_MultipleCAsSameSubject_AllFail(t *testing.T) {
 	}
 }
 
+// TestVerifyMLDSAClientCert_NotBeforeFloor verifies that a cert whose NotBefore
+// is in the future relative to a stale device clock is accepted when the caller
+// passes effectiveNow = cert.NotBefore (the floor). This simulates a provisioned
+// device that reboots without WiFi and cannot sync NTP.
+func TestVerifyMLDSAClientCert_NotBeforeFloor(t *testing.T) {
+	subject := sameSubjectName()
+	ca, caPriv := buildMLDSACACert(t, subject, true)
+	leaf := buildMLDSALeafCert(t, ca, caPriv)
+
+	// Simulate device clock stuck far in the past — leaf is "not yet valid".
+	staleNow := leaf.NotBefore.Add(-24 * time.Hour)
+	trustedCAs := []*x509.Certificate{ca}
+
+	if err := verifyMLDSAClientCert(leaf, trustedCAs, staleNow); err == nil {
+		t.Fatal("expected error with stale clock, got nil")
+	}
+
+	// With floor = leaf.NotBefore, the same call must succeed.
+	floor := leaf.NotBefore
+	if err := verifyMLDSAClientCert(leaf, trustedCAs, floor); err != nil {
+		t.Errorf("verifyMLDSAClientCert() with floor = %v; error = %v", floor, err)
+	}
+}
+
 // TestVerifyMLDSAClientCert_IssuerNotFound verifies that when no CA in the
 // trusted pool has a matching subject DN, the "issuer not found" error is returned.
 func TestVerifyMLDSAClientCert_IssuerNotFound(t *testing.T) {
@@ -517,7 +541,7 @@ func TestVerifyMLDSAClientCert_IssuerNotFound(t *testing.T) {
 	fakeCA, _ := buildMLDSACACert(t, differentSubject, true)
 	trustedCAs := []*x509.Certificate{fakeCA}
 
-	err := verifyMLDSAClientCert(leaf, trustedCAs)
+	err := verifyMLDSAClientCert(leaf, trustedCAs, time.Now())
 	if err == nil {
 		t.Fatal("verifyMLDSAClientCert() = nil; want an error when issuer is not found")
 	}

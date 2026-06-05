@@ -121,10 +121,24 @@ func verifyMLDSASignature(issuer, cert *x509.Certificate) error {
 	return nil
 }
 
+// maxTime returns the later of two times. Used to apply a NotBefore floor when
+// the device clock has not yet been synchronised via NTP.
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
 // buildVerifyPeerCertificate returns a VerifyPeerCertificate callback that
 // handles both standard (RSA/ECDSA) and ML-DSA-signed certificate chains.
 // logger may be nil, in which case no logging is performed.
-func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger) func([][]byte, [][]*x509.Certificate) error {
+// notBeforeFloor is used as a lower bound on the current time for NotBefore
+// checks: if the device clock is behind the floor (e.g. RTC reset to epoch
+// before NTP sync), effectiveNow = max(time.Now(), notBeforeFloor) is used
+// so that certs issued at provisioning time are still accepted. Pass a zero
+// time.Time to disable the floor.
+func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger, notBeforeFloor time.Time) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return fmt.Errorf("no client certificate presented")
@@ -134,6 +148,8 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		if err != nil {
 			return fmt.Errorf("parsing client certificate: %w", err)
 		}
+
+		effectiveNow := maxTime(time.Now(), notBeforeFloor)
 
 		// Build an intermediates pool from the rest of the chain presented by the client.
 		intermediates := x509.NewCertPool()
@@ -148,6 +164,7 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			Roots:         caPool,
 			Intermediates: intermediates,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			CurrentTime:   effectiveNow,
 		}
 		stdErr := func() error { _, e := leaf.Verify(opts); return e }()
 		if stdErr == nil {
@@ -158,17 +175,17 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// signature algorithm; for all other failures return the standard error.
 		sigOID, oidErr := certSigAlgOID(leaf)
 		if oidErr != nil {
-			logCertRejection(logger, leaf, stdErr)
+			logCertRejection(logger, leaf, stdErr, effectiveNow)
 			return stdErr
 		}
 		if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
-			logCertRejection(logger, leaf, stdErr)
+			logCertRejection(logger, leaf, stdErr, effectiveNow)
 			return stdErr
 		}
 
-		mldsaErr := verifyMLDSAClientCert(leaf, caCerts)
+		mldsaErr := verifyMLDSAClientCert(leaf, caCerts, effectiveNow)
 		if mldsaErr != nil {
-			logCertRejection(logger, leaf, mldsaErr)
+			logCertRejection(logger, leaf, mldsaErr, effectiveNow)
 		}
 		return mldsaErr
 	}
@@ -176,7 +193,7 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 
 // logCertRejection logs a WARN when a client cert is rejected, with a clock
 // skew hint when the error indicates the cert is not yet valid.
-func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error) {
+func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, effectiveNow time.Time) {
 	if logger == nil {
 		return
 	}
@@ -190,7 +207,7 @@ func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error) {
 	// Only hint at clock skew when the device clock is behind the cert's NotBefore.
 	// String-matching on the error text would also fire for expired certs, pointing
 	// operators at the wrong remediation (NTP sync won't help an expired cert).
-	if time.Now().Before(leaf.NotBefore) {
+	if effectiveNow.Before(leaf.NotBefore) {
 		msg += ": certificate not yet valid — device clock may be skewed; check NTP sync with: timedatectl status"
 	}
 	logger.Warn(msg, fields...)
@@ -198,9 +215,10 @@ func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error) {
 
 // verifyMLDSAClientCert verifies a client leaf cert against the trusted CA certs
 // using ML-DSA signature verification. It checks validity and that the leaf was
-// signed by a trusted CA.
-func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificate) error {
-	now := time.Now()
+// signed by a trusted CA. now is the effective current time to use for
+// NotBefore/NotAfter checks; callers pass max(time.Now(), notBeforeFloor) to
+// tolerate an unsynchronised device clock.
+func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificate, now time.Time) error {
 	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
 		return fmt.Errorf("certificate not valid at current time (NotBefore=%v NotAfter=%v)", leaf.NotBefore, leaf.NotAfter)
 	}

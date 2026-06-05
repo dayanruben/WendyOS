@@ -83,7 +83,7 @@ func testCACertificate(t *testing.T, commonName string) (certPEM, keyPEM string)
 func TestNewTLSConfigEmptyChainReturnsError(t *testing.T) {
 	certPEM, keyPEM := testLeafCertificate(t, "leaf")
 
-	_, err := NewTLSConfig(certPEM, "", keyPEM, nil)
+	_, err := NewTLSConfig(certPEM, "", keyPEM, nil, time.Time{})
 	if err == nil {
 		t.Fatal("NewTLSConfig() expected error for empty chainPEM, got nil")
 	}
@@ -93,7 +93,7 @@ func TestNewTLSConfigServesOnlyLeafCertificate(t *testing.T) {
 	leafPEM, keyPEM := testLeafCertificate(t, "leaf")
 	chainPEM, _ := testCACertificate(t, "chain")
 
-	tlsConfig, err := NewTLSConfig(leafPEM+"\n"+chainPEM, chainPEM, keyPEM, nil)
+	tlsConfig, err := NewTLSConfig(leafPEM+"\n"+chainPEM, chainPEM, keyPEM, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("NewTLSConfig() error = %v", err)
 	}
