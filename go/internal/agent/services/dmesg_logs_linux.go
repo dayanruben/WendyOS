@@ -95,17 +95,24 @@ var piiPatterns = regexp.MustCompile(
 		`|key=\S+` +
 		// Kernel audit COMM field in quoted uppercase form (e.g. COMM="bash")
 		`|COMM="[^"]*"` +
+		// Kernel audit path/context fields (e.g. name="/home/alice/.ssh", cwd="/root",
+		// subj=system_u:system_r:kernel_t:s0, proctitle=<hex-or-text>, tty=pts0)
+		`|(?:subj|name|cwd|path|proctitle|tty)=(?:"[^"]*"|\S+)` +
+		// Kernel audit session/message header (e.g. ses=42, msg=audit(1234567890.123:456))
+		`|ses=\d+` +
+		`|msg=audit\([^)]+\)` +
 		`)`,
 )
 
 // piiIPv6Pattern matches IPv6 addresses in both full and compressed notation.
-// Full form: 2001:db8:85a3::8a2e:370:7334 (≥2 colon-terminated hex groups).
+// Full form requires ≥3 colon-terminated hex groups to avoid false-positive
+// matches on 2-group sequences like "dead:beef" that are not IP addresses.
 // Compressed form: ::1, fe80::1, 2001:db8:: (zero or more groups + ::).
 // Kept separate from piiPatterns and gated behind strings.ContainsRune(':').
 var piiIPv6Pattern = regexp.MustCompile(
 	`(?i)` +
-		// Full-form: at least 2 hex groups followed by colon, then trailing group
-		`(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}` +
+		// Full-form: at least 3 hex groups followed by colon, then trailing group
+		`(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{0,4}` +
 		// Compressed form with :: (covers ::1, fe80::1, 2001:db8::, etc.)
 		`|(?:[0-9a-f]{1,4}:)*::(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4}`,
 )
@@ -236,12 +243,15 @@ func CollectDmesgLogs(ctx context.Context, logger *zap.Logger, broadcaster *Tele
 			zap.String("source", "/dev/kmsg"),
 			zap.String("redact", "partial"),
 			zap.Strings("redact_covered", []string{
-				"MAC-address", "IPv4-address", "IPv6-address", "USB-SerialNumber", "ID_SERIAL",
+				"MAC-address", "IPv4-address", "IPv6-address-full-and-compressed",
+				"USB-SerialNumber", "ID_SERIAL",
 				"Bluetooth-bdaddr", "OOM-process-name+PID", "filesystem-home-paths",
 				"comm=", "COMM=quoted", "process-argv", "kernel-audit-uid-gid-pid",
 				"audit-exe", "audit-key", "wifi-ssid",
 				"kernel-pointer-addresses", "network-interface-names",
 				"block-device-paths", "hostname",
+				"audit-subj=", "audit-name=", "audit-cwd=", "audit-path=",
+				"audit-proctitle=", "audit-tty=", "audit-ses=", "audit-msg-header",
 			}),
 			zap.Strings("redact_not_covered", []string{
 				"NFS-paths", "unlabelled-kernel-fields",
