@@ -74,16 +74,20 @@ func ContainerName(appID, serviceName string) string {
 }
 
 // SnapshotKey returns the containerd snapshot key for the given appID and
-// optional serviceName.  Snapshot keys must be filesystem-safe, so "/" is
-// replaced with "-".
+// optional serviceName.
 //
 //   - Single-container apps (serviceName == ""): "wendy-{appID}" (unchanged).
-//   - Multi-service apps (serviceName != ""): "wendy-{appID}-{serviceName}".
+//   - Multi-service apps (serviceName != ""): "wendy-{appID}@{serviceName}".
+//
+// "@" is the separator because it cannot appear in a valid appID
+// ([a-zA-Z0-9._-]) or a valid serviceName ([a-z0-9-]), making the key
+// unambiguous and free of collisions that a "-" separator would cause
+// (e.g. SnapshotKey("foo-bar","baz") vs SnapshotKey("foo","bar-baz")).
 func SnapshotKey(appID, serviceName string) string {
 	if serviceName == "" {
 		return "wendy-" + appID
 	}
-	return "wendy-" + appID + "-" + serviceName
+	return "wendy-" + appID + "@" + serviceName
 }
 
 // computeChainID computes the chain ID for a layer given its parent chain ID

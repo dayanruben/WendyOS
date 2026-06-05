@@ -37,7 +37,7 @@ func TestSnapshotKey_SingleContainer(t *testing.T) {
 
 func TestSnapshotKey_MultiService(t *testing.T) {
 	got := SnapshotKey("com.example.app", "api")
-	want := "wendy-com.example.app-api"
+	want := "wendy-com.example.app@api"
 	if got != want {
 		t.Errorf("SnapshotKey(%q, %q) = %q; want %q", "com.example.app", "api", got, want)
 	}
@@ -48,6 +48,17 @@ func TestSnapshotKey_NoSlash(t *testing.T) {
 	key := SnapshotKey("com.example.app", "worker")
 	if strings.Contains(key, "/") {
 		t.Errorf("SnapshotKey must not contain '/'; got %q", key)
+	}
+}
+
+func TestSnapshotKey_NoCollision(t *testing.T) {
+	// "wendy-foo-bar@baz" must differ from "wendy-foo@bar-baz": without "@
+	// separation a "-" separator would make both produce "wendy-foo-bar-baz".
+	a := SnapshotKey("foo-bar", "baz")
+	b := SnapshotKey("foo", "bar-baz")
+	if a == b {
+		t.Errorf("SnapshotKey collision: SnapshotKey(%q,%q) == SnapshotKey(%q,%q) == %q",
+			"foo-bar", "baz", "foo", "bar-baz", a)
 	}
 }
 
