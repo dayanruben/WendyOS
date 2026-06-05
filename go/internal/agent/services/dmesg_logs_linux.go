@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 const (
