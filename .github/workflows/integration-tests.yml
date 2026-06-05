@@ -164,10 +164,16 @@ jobs:
             HOSTS+=("$host")
           done < <(echo "$RESULT" | jq -r '(.lanDevices // [])[].hostname // empty')
 
-          MATRIX=$(jq -cn --args '${ARGS.positional}' "${HOSTS[@]}")
+          COUNT=${#HOSTS[@]}
+          if [[ "$COUNT" -gt 10 ]]; then
+            echo "ERROR: refusing to create integration matrix for $COUNT discovered devices (max 10)" >&2
+            exit 1
+          fi
+
+          MATRIX=$(jq -cn --args '$ARGS.positional' "${HOSTS[@]}")
+          [[ -n "$MATRIX" && "$MATRIX" != "null" ]] || { echo "ERROR: failed to build device matrix" >&2; exit 1; }
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-          COUNT=${#HOSTS[@]}
           echo "Discovered $COUNT LAN device(s)."
           if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$COUNT" -eq 0 ]]; then
             echo "ERROR: No LAN devices found via wendy discover"
@@ -245,9 +251,9 @@ jobs:
           # session to localhost runs under the logged-in user, which has that
           # permission. See nightly-os-update.yml for the same pattern.
           WORKDIR="$(pwd)"
-          SSH="ssh -o StrictHostKeyChecking=no localhost"
+          SSH=(ssh -o StrictHostKeyChecking=no localhost)
 
-          TEST_ARGS="-w $WORKDIR/go/bin/wendy"
+          TEST_ARGS=(-w "$WORKDIR/go/bin/wendy")
 
           if [[ -n "$INPUT_TESTS" ]]; then
             HAS_TESTS=false
@@ -258,7 +264,7 @@ jobs:
                 echo "ERROR: invalid test name: $t" >&2
                 exit 1
               fi
-              TEST_ARGS="$TEST_ARGS -t $t"
+              TEST_ARGS+=(-t "$t")
               HAS_TESTS=true
             done
             if [[ "$HAS_TESTS" == false ]]; then
@@ -267,7 +273,7 @@ jobs:
             fi
           else
             for t in swift-hello swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice otel-localhost-only; do
-              TEST_ARGS="$TEST_ARGS -t $t"
+              TEST_ARGS+=(-t "$t")
             done
           fi
 
@@ -277,18 +283,24 @@ jobs:
           docker buildx rm "$BUILDER" --force 2>/dev/null || true
           trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
 
-          remote_path="$(printf '%q' "$PATH")"
-          remote_docker_host="$(printf '%q' "${DOCKER_HOST:-}")"
-          remote_builder="$(printf '%q' "$BUILDER")"
-          remote_workdir="$(printf '%q' "$WORKDIR")"
-          remote_hostname="$(printf '%q' "$INPUT_HOSTNAME")"
-
           echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
-          set +e
-          $SSH "export PATH=$remote_path DOCKER_HOST=$remote_docker_host WENDY_BUILDX_BUILDER=$remote_builder && cd $remote_workdir && go/scripts/test-ci.sh $TEST_ARGS -h $remote_hostname"
-          rc=$?
-          set -e
-          exit $rc
+          if "${SSH[@]}" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
+          set -euo pipefail
+          WORKDIR="$1"; shift
+          BUILDER="$1"; shift
+          DOCKER_HOST_VALUE="$1"; shift
+          HOSTNAME="$1"; shift
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          export DOCKER_HOST="$DOCKER_HOST_VALUE"
+          export WENDY_BUILDX_BUILDER="$BUILDER"
+          cd "$WORKDIR"
+          exec go/scripts/test-ci.sh "$@" -h "$HOSTNAME"
+          REMOTE
+          then
+            exit 0
+          else
+            exit $?
+          fi
 
   integration-test-linux:
     name: Integration (Linux → ${{ matrix.hostname }})
@@ -346,7 +358,7 @@ jobs:
         run: |
           WORKDIR="$(pwd)"
 
-          TEST_ARGS="-w $WORKDIR/go/bin/wendy"
+          TEST_ARGS=(-w "$WORKDIR/go/bin/wendy")
 
           if [[ -n "$INPUT_TESTS" ]]; then
             HAS_TESTS=false
@@ -362,7 +374,7 @@ jobs:
                 echo "Skipping Swift test $t on Linux"
                 continue
               fi
-              TEST_ARGS="$TEST_ARGS -t $t"
+              TEST_ARGS+=(-t "$t")
               HAS_TESTS=true
             done
             if [[ "$HAS_TESTS" == false ]]; then
@@ -371,7 +383,7 @@ jobs:
             fi
           else
             for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice otel-localhost-only; do
-              TEST_ARGS="$TEST_ARGS -t $t"
+              TEST_ARGS+=(-t "$t")
             done
           fi
 
@@ -382,5 +394,4 @@ jobs:
           trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
 
           echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
-          # shellcheck disable=SC2086 # TEST_ARGS is intentionally expanded into test-ci flags.
-          WENDY_BUILDX_BUILDER="$BUILDER" go/scripts/test-ci.sh $TEST_ARGS -h "$INPUT_HOSTNAME"
+          WENDY_BUILDX_BUILDER="$BUILDER" go/scripts/test-ci.sh "${TEST_ARGS[@]}" -h "$INPUT_HOSTNAME"

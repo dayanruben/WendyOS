@@ -24,7 +24,7 @@ on:
         type: boolean
         default: true
       hostname:
-        description: 'Device hostname for deploy phase (empty = auto-discover)'
+        description: 'Device hostname for deploy phase (empty = first auto-discovered LAN device)'
         required: false
         default: ''
 
@@ -169,12 +169,18 @@ jobs:
         if: inputs.hostname == ''
         run: |
           set -euo pipefail
-          SSH="ssh -o StrictHostKeyChecking=no localhost"
+          SSH=(ssh -o StrictHostKeyChecking=no localhost)
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
 
           DISCOVER_STDERR=$(mktemp)
-          RESULT=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy discover --json --type lan --timeout 10s" 2>"$DISCOVER_STDERR" || true)
+          RESULT=$("${SSH[@]}" bash -s -- "$WORKDIR" <<'REMOTE' 2>"$DISCOVER_STDERR" || true
+          set -euo pipefail
+          WORKDIR="$1"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          cd "$WORKDIR"
+          ./go/bin/wendy discover --json --type lan --timeout 10s
+          REMOTE
+          )
           cat "$DISCOVER_STDERR" >&2 || true
           rm -f "$DISCOVER_STDERR"
           if [[ -z "$RESULT" ]]; then
