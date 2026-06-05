@@ -524,6 +524,26 @@ func TestVerifyMLDSAClientCert_NotBeforeFloor(t *testing.T) {
 	}
 }
 
+// TestVerifyMLDSAClientCert_NotAfterUsesRealClock verifies that expiry is
+// checked against time.Now(), not effectiveNow. When the floor advances past a
+// cert's NotAfter (e.g. a short-lived cert and a large floor gap), the cert
+// must still be accepted as long as the real clock has not passed NotAfter.
+func TestVerifyMLDSAClientCert_NotAfterUsesRealClock(t *testing.T) {
+	subject := sameSubjectName()
+	ca, caPriv := buildMLDSACACert(t, subject, true)
+	leaf := buildMLDSALeafCert(t, ca, caPriv) // NotAfter ≈ time.Now() + 24h
+
+	trustedCAs := []*x509.Certificate{ca}
+
+	// effectiveNow is set two days in the future — past the leaf's NotAfter.
+	// With the old code (effectiveNow.After(NotAfter)) this would have rejected
+	// an otherwise valid cert. With the fix (time.Now().After(NotAfter)) it passes.
+	futureFloor := time.Now().Add(48 * time.Hour)
+	if err := verifyMLDSAClientCert(leaf, trustedCAs, futureFloor); err != nil {
+		t.Errorf("verifyMLDSAClientCert() with futureFloor=%v: %v; want nil (expiry must use real clock)", futureFloor, err)
+	}
+}
+
 // TestVerifyMLDSAClientCert_IssuerNotFound verifies that when no CA in the
 // trusted pool has a matching subject DN, the "issuer not found" error is returned.
 func TestVerifyMLDSAClientCert_IssuerNotFound(t *testing.T) {

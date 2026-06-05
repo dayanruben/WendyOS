@@ -168,6 +168,14 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		}
 		stdErr := func() error { _, e := leaf.Verify(opts); return e }()
 		if stdErr == nil {
+			// CurrentTime was set to effectiveNow (= max(time.Now(), notBeforeFloor))
+			// to tolerate a stale device clock. Enforce real-time expiry separately so
+			// the floor cannot mask a cert that has already expired by the real clock.
+			if time.Now().After(leaf.NotAfter) {
+				expiredErr := fmt.Errorf("certificate expired (notAfter=%v)", leaf.NotAfter)
+				logCertRejection(logger, leaf, expiredErr, effectiveNow)
+				return expiredErr
+			}
 			return nil
 		}
 
@@ -215,11 +223,12 @@ func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, eff
 
 // verifyMLDSAClientCert verifies a client leaf cert against the trusted CA certs
 // using ML-DSA signature verification. It checks validity and that the leaf was
-// signed by a trusted CA. now is the effective current time to use for
-// NotBefore/NotAfter checks; callers pass max(time.Now(), notBeforeFloor) to
-// tolerate an unsynchronised device clock.
-func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificate, now time.Time) error {
-	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+// signed by a trusted CA. effectiveNow is max(time.Now(), notBeforeFloor) and is
+// used only for the NotBefore check so that certs issued at provisioning are
+// accepted when the device clock has not yet synced via NTP. Expiry is always
+// enforced against the real clock so the floor cannot mask expired certificates.
+func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificate, effectiveNow time.Time) error {
+	if effectiveNow.Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
 		return fmt.Errorf("certificate not valid at current time (NotBefore=%v NotAfter=%v)", leaf.NotBefore, leaf.NotAfter)
 	}
 
@@ -245,7 +254,7 @@ func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificat
 			continue
 		}
 		foundSubject = true
-		if now.Before(ca.NotBefore) || now.After(ca.NotAfter) {
+		if effectiveNow.Before(ca.NotBefore) || time.Now().After(ca.NotAfter) {
 			lastErr = fmt.Errorf("CA certificate %q not valid at current time", ca.Subject.CommonName)
 			continue
 		}
