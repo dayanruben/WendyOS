@@ -66,6 +66,12 @@ const labelKeyServiceName = "sh.wendy/service"
 //     preserving backward-compatibility with all existing tooling.
 //   - Multi-service apps (serviceName != ""): returns "{appID}/{serviceName}".
 //     Containerd allows "/" in container names, so no escaping is needed.
+//
+// Precondition: callers must have validated appID with appconfig.ValidateAppID
+// and serviceName with appconfig.ValidateServiceName. An appID containing "/"
+// would produce a multi-component container name; a serviceName containing "@"
+// would collide with SnapshotKey's separator. Neither is possible if the values
+// passed ValidateAppID/ValidateServiceName, which reject those characters.
 func ContainerName(appID, serviceName string) string {
 	if serviceName == "" {
 		return appID
@@ -85,6 +91,8 @@ func ContainerName(appID, serviceName string) string {
 // vs SnapshotKey("foo","bar-baz") produce distinct keys).
 // Note: the key is not path-sanitised; "@" is safe for overlayfs snapshot
 // stores (the containerd default), but callers must not treat it as a filename.
+//
+// Precondition: same as ContainerName — inputs must have passed validation.
 func SnapshotKey(appID, serviceName string) string {
 	if serviceName == "" {
 		return "wendy-" + appID
@@ -94,16 +102,17 @@ func SnapshotKey(appID, serviceName string) string {
 
 // ParseContainerName is the inverse of ContainerName. It splits a container
 // name of the form "{appID}" or "{appID}/{serviceName}" back into its
-// components. Returns an error when the name is empty, the appID portion is
-// empty, or the serviceName portion (if present) fails ValidateServiceName.
+// components. Returns an error when the name is malformed, the appID portion
+// fails ValidateAppID, or the serviceName portion (if present) fails
+// ValidateServiceName.
 //
 // Using this helper in recreateContainer keeps the parsing logic in one place
 // and ensures the same validation invariants as the creation path.
 func ParseContainerName(name string) (appID, serviceName string, err error) {
 	parts := strings.SplitN(name, "/", 2)
 	appID = parts[0]
-	if appID == "" {
-		return "", "", fmt.Errorf("invalid container name %q: appID is empty", name)
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", "", fmt.Errorf("invalid container name %q: %w", name, err)
 	}
 	if len(parts) == 2 {
 		serviceName = parts[1]

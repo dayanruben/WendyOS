@@ -200,7 +200,7 @@ func hostNetworkCfg() *appconfig.AppConfig {
 func TestInjectOTELEnvDefaultPort(t *testing.T) {
 	t.Setenv("WENDY_OTEL_PORT", "")
 
-	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg())
+	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg(), "")
 
 	want := "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317"
 	for _, kv := range env {
@@ -214,7 +214,7 @@ func TestInjectOTELEnvDefaultPort(t *testing.T) {
 func TestInjectOTELEnvCustomPort(t *testing.T) {
 	t.Setenv("WENDY_OTEL_PORT", "9999")
 
-	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg())
+	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg(), "")
 
 	want := "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9999"
 	for _, kv := range env {
@@ -226,7 +226,7 @@ func TestInjectOTELEnvCustomPort(t *testing.T) {
 }
 
 func TestInjectOTELEnvSetsGRPCProtocol(t *testing.T) {
-	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg())
+	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg(), "")
 
 	const want = "OTEL_EXPORTER_OTLP_PROTOCOL=grpc"
 	for _, kv := range env {
@@ -240,7 +240,7 @@ func TestInjectOTELEnvSetsGRPCProtocol(t *testing.T) {
 func TestInjectOTELEnvSkipsWithoutHostNetworking(t *testing.T) {
 	cfg := &appconfig.AppConfig{} // no network entitlement
 
-	env := injectOTELEnvIfNeeded(nil, cfg)
+	env := injectOTELEnvIfNeeded(nil, cfg, "")
 
 	for _, kv := range env {
 		if len(kv) > len("OTEL_EXPORTER_OTLP_ENDPOINT=") &&
@@ -253,7 +253,7 @@ func TestInjectOTELEnvSkipsWithoutHostNetworking(t *testing.T) {
 func TestInjectOTELEnvSkipsWhenEndpointAlreadySet(t *testing.T) {
 	existing := []string{"OTEL_EXPORTER_OTLP_ENDPOINT=http://custom-collector:4317"}
 
-	env := injectOTELEnvIfNeeded(existing, hostNetworkCfg())
+	env := injectOTELEnvIfNeeded(existing, hostNetworkCfg(), "")
 
 	count := 0
 	for _, kv := range env {
@@ -270,7 +270,7 @@ func TestInjectOTELEnvSkipsWhenEndpointAlreadySet(t *testing.T) {
 func TestInjectOTELEnvDoesNotOverrideExistingProtocol(t *testing.T) {
 	existing := []string{"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf"}
 
-	env := injectOTELEnvIfNeeded(existing, hostNetworkCfg())
+	env := injectOTELEnvIfNeeded(existing, hostNetworkCfg(), "")
 
 	count := 0
 	for _, kv := range env {
@@ -292,7 +292,7 @@ func TestInjectOTELEnvDoesNotOverrideExistingProtocol(t *testing.T) {
 func TestInjectOTELEnvInvalidPortFallsBackToDefault(t *testing.T) {
 	t.Setenv("WENDY_OTEL_PORT", "notaport")
 
-	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg())
+	env := injectOTELEnvIfNeeded(nil, hostNetworkCfg(), "")
 
 	const want = "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317"
 	for _, kv := range env {
@@ -310,7 +310,7 @@ func hostNetworkCfgWithID(appID string) *appconfig.AppConfig {
 }
 
 func TestInjectOTELEnvSetsServiceNameAndResourceAttrs(t *testing.T) {
-	env := injectOTELEnvIfNeeded(nil, hostNetworkCfgWithID("my-app"))
+	env := injectOTELEnvIfNeeded(nil, hostNetworkCfgWithID("my-app"), "my-app")
 
 	wantService := false
 	wantAttrs := false
@@ -335,7 +335,7 @@ func TestInjectOTELEnvSetsIdentityWhenEndpointPreset(t *testing.T) {
 	// its direct OTLP logs remain filterable by `wendy device logs --app <id>`.
 	existing := []string{"OTEL_EXPORTER_OTLP_ENDPOINT=http://custom-collector:4317"}
 
-	env := injectOTELEnvIfNeeded(existing, hostNetworkCfgWithID("my-app"))
+	env := injectOTELEnvIfNeeded(existing, hostNetworkCfgWithID("my-app"), "my-app")
 
 	endpointCount, wantService, wantAttrs := 0, false, false
 	for _, kv := range env {
@@ -357,7 +357,7 @@ func TestInjectOTELEnvSetsIdentityWhenEndpointPreset(t *testing.T) {
 }
 
 func TestInjectOTELEnvOmitsServiceNameWhenAppIDEmpty(t *testing.T) {
-	env := injectOTELEnvIfNeeded(nil, hostNetworkCfgWithID(""))
+	env := injectOTELEnvIfNeeded(nil, hostNetworkCfgWithID(""), "")
 
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "OTEL_SERVICE_NAME=") ||
@@ -373,7 +373,7 @@ func TestInjectOTELEnvDoesNotOverrideExistingServiceName(t *testing.T) {
 		"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=prod",
 	}
 
-	env := injectOTELEnvIfNeeded(existing, hostNetworkCfgWithID("my-app"))
+	env := injectOTELEnvIfNeeded(existing, hostNetworkCfgWithID("my-app"), "my-app")
 
 	serviceCount, attrCount := 0, 0
 	for _, kv := range env {

@@ -38,6 +38,7 @@ import (
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -357,16 +358,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	ctx = c.withNamespace(ctx)
 
-	// Normalise the app identity so all downstream uses (container name,
-	// snapshot key, WENDY_APP_ID env var, OTEL injection) are consistent.
-	// appCfg.AppID is the authoritative source; req.GetAppName() is the
-	// fallback for raw RPC calls that arrive without a parsed AppConfig.
-	// Mutating appCfg.AppID here means injectOTELEnvIfNeeded and
-	// buildContainerBaseEnv see the same value without extra plumbing.
-	if appCfg.AppID == "" {
-		appCfg.AppID = req.GetAppName()
-	}
+	// Derive the app identity. appCfg.AppID is the authoritative source; fall
+	// back to req.GetAppName() for raw RPC calls that arrive without a parsed
+	// AppConfig. We use a local variable (not a struct mutation) so the caller's
+	// AppConfig is unchanged and concurrent/retry uses see a stable value.
 	appID := appCfg.AppID
+	if appID == "" {
+		appID = req.GetAppName()
+	}
 	serviceName := appCfg.ServiceName
 	containerName := ContainerName(appID, serviceName)
 
@@ -509,7 +508,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if specErr == nil {
 		env = append(imageSpec.Config.Env, env...)
 	}
-	env = injectOTELEnvIfNeeded(env, appCfg)
+	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
 	spec := localoci.DefaultSpec("rootfs", args)
@@ -518,18 +517,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if spec.Linux == nil {
 		spec.Linux = &localoci.Linux{}
 	}
-	// Build the cgroup path from appID and serviceName explicitly so that each
-	// service in a multi-service app gets its own cgroup subtree, preventing
-	// resource-accounting collisions.
-	//   - Single-container: "system.slice:wendy-agent:{appID}"
-	//   - Multi-service:    "system.slice:wendy-agent:{appID}-{serviceName}"
-	// "-" is used as the separator (not "/") because "/" is not valid inside a
-	// cgroup path component.
-	cgroupSuffix := appID
-	if serviceName != "" {
-		cgroupSuffix = appID + "-" + serviceName
-	}
-	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:wendy-agent:%s", cgroupSuffix)
 
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
@@ -543,6 +530,20 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if err := localoci.ApplyEntitlements(spec, appCfg, opts); err != nil {
 		return fmt.Errorf("applying entitlements: %w", err)
 	}
+
+	// Set the cgroup path AFTER ApplyEntitlements so this value always wins
+	// over the one SetDeviceCapabilities may have written for audio/camera
+	// entitlements. Both paths now agree on the systemd service name
+	// (WENDY_SYSTEMD_SERVICE_NAME, defaulting to "edge-agent") and the
+	// {appID}-{serviceName} separator, eliminating the divergence that
+	// existed when client.go used the hard-coded "wendy-agent" string.
+	//   - Single-container: "system.slice:{systemdSvc}:{appID}"
+	//   - Multi-service:    "system.slice:{systemdSvc}:{appID}-{serviceName}"
+	cgroupSuffix := appID
+	if serviceName != "" {
+		cgroupSuffix = appID + "-" + serviceName
+	}
+	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", sharedenv.SystemdServiceName(), cgroupSuffix)
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
@@ -816,7 +817,11 @@ func buildContainerBaseEnv(appID, serviceName string) []string {
 // exported by the app matches `wendy device logs --app <id>`, which filters on
 // those resource attributes. It must be called after the image env has been
 // merged so that image-set values take precedence.
-func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
+//
+// appID is passed explicitly (rather than read from appCfg.AppID) so the
+// caller's AppConfig struct is never mutated, which would affect concurrent or
+// retry uses of the same pointer.
+func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID string) []string {
 	if !hasHostNetworkEntitlement(appCfg) {
 		return env
 	}
@@ -852,12 +857,12 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
 	// Identity: set regardless of where the exporter points, so `wendy device
 	// logs --app <id>` can match even when the image preset its own endpoint.
 	// Image-set values still take precedence.
-	if appCfg.AppID != "" {
+	if appID != "" {
 		if !hasServiceName {
-			env = append(env, "OTEL_SERVICE_NAME="+appCfg.AppID)
+			env = append(env, "OTEL_SERVICE_NAME="+appID)
 		}
 		if !hasResourceAttrs {
-			env = append(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name="+appCfg.AppID)
+			env = append(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name="+appID)
 		}
 	}
 	return env

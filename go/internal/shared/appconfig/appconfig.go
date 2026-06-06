@@ -309,7 +309,7 @@ func ValidateAppID(id string) error {
 // a lowercase letter followed by lowercase letters, digits, or hyphens.
 func ValidateServiceName(name string) error {
 	if !serviceNamePattern.MatchString(name) {
-		return fmt.Errorf("serviceName %q is invalid: must match ^[a-z][a-z0-9-]*$ (lowercase letter, then lowercase letters, digits, or hyphens)", name)
+		return fmt.Errorf("serviceName %q is invalid: must match ^[a-z][a-z0-9-]{0,56}$ (lowercase letter then up to 56 lowercase letters, digits, or hyphens; max 57 chars total)", name)
 	}
 	return nil
 }
