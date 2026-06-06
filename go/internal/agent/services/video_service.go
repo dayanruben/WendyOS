@@ -301,8 +301,8 @@ const maxHubRetries = 10
 func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *agentpb.StreamVideoRequest) (h *deviceHub, id int, ch chan videoFrame, err error) {
 	for retries := 0; ; retries++ {
 		if retries >= maxHubRetries {
-			return nil, 0, nil, status.Errorf(codes.Unavailable,
-				"device %s hub unavailable after %d retries: subscriber churn too high", path, retries)
+			s.logger.Warn("hub retry limit exceeded", zap.String("device", path), zap.Int("retries", retries))
+			return nil, 0, nil, status.Errorf(codes.Unavailable, "video device temporarily unavailable, please retry")
 		}
 		s.mu.Lock()
 		h, exists := s.hubs[path]
@@ -312,9 +312,10 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 		if h.ctx.Err() == nil {
 			if h.req.GetWidth() != req.GetWidth() || h.req.GetHeight() != req.GetHeight() || h.req.GetFramerate() != req.GetFramerate() {
 				s.mu.Unlock()
-				return nil, 0, nil, status.Errorf(codes.InvalidArgument,
-					"device %s already streaming at %dx%d@%dfps; disconnect other clients first or match their parameters",
-					path, h.req.GetWidth(), h.req.GetHeight(), h.req.GetFramerate())
+				s.logger.Debug("stream parameter mismatch", zap.String("device", path),
+					zap.Uint32("existing_w", h.req.GetWidth()), zap.Uint32("existing_h", h.req.GetHeight()),
+					zap.Uint32("existing_fps", h.req.GetFramerate()))
+				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
 			}
 			id, ch = h.subscribe()
 			s.mu.Unlock()
@@ -432,6 +433,9 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 
 	if _, err := os.Stat(path); err != nil {
 		return status.Errorf(codes.NotFound, "video device not found")
+	}
+	if !s.hasVideoCapture(path) {
+		return status.Errorf(codes.NotFound, "video device not found or not a capture device")
 	}
 
 	h, id, ch, err := s.getOrCreateHub(ctx, path, req)
