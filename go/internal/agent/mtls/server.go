@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
@@ -18,7 +19,11 @@ import (
 // Client certificates are required and verified against the chain as a CA pool.
 // ML-DSA (post-quantum) signed certificates are handled via a custom VerifyPeerCertificate
 // callback because Go's crypto/x509 does not natively support ML-DSA signature verification.
-func NewTLSConfig(certPEM, chainPEM, keyPEM string) (*tls.Config, error) {
+// logger may be nil; when provided, rejected client certificates are logged at WARN level.
+// notBeforeFloor is used as a lower bound on the current time for NotBefore checks so that
+// certs remain valid when the device clock has not yet been synchronised via NTP. Pass a
+// zero time.Time to disable the floor.
+func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time) (*tls.Config, error) {
 	if chainPEM == "" {
 		return nil, fmt.Errorf("CA chain PEM is required to verify client certificates; device may need to be re-provisioned")
 	}
@@ -61,14 +66,16 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string) (*tls.Config, error) {
 		// performs the actual ML-DSA-aware chain verification instead.
 		ClientCAs:             nil,
 		MinVersion:            tls.VersionTLS12,
-		VerifyPeerCertificate: buildVerifyPeerCertificate(caPool, caCerts),
+		VerifyPeerCertificate: buildVerifyPeerCertificate(caPool, caCerts, logger, notBeforeFloor),
 	}, nil
 }
 
 // NewServer creates a gRPC server with mTLS credentials.
 // Additional gRPC server options can be passed and will be applied alongside the TLS credentials.
-func NewServer(certPEM, chainPEM, keyPEM string, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
-	tlsConfig, err := NewTLSConfig(certPEM, chainPEM, keyPEM)
+// logger may be nil; when provided, rejected client certificates are logged at WARN level.
+// notBeforeFloor is forwarded to NewTLSConfig; see its documentation for details.
+func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
+	tlsConfig, err := NewTLSConfig(certPEM, chainPEM, keyPEM, logger, notBeforeFloor)
 	if err != nil {
 		return nil, fmt.Errorf("creating TLS config: %w", err)
 	}
@@ -76,13 +83,15 @@ func NewServer(certPEM, chainPEM, keyPEM string, extraOpts ...grpc.ServerOption)
 	creds := credentials.NewTLS(tlsConfig)
 	opts := []grpc.ServerOption{
 		grpc.Creds(creds),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
+		grpc.InitialWindowSize(8 * 1024 * 1024),
+		grpc.InitialConnWindowSize(16 * 1024 * 1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    30 * time.Second,
 			Timeout: 10 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
 		}),
 	}
 	opts = append(opts, extraOpts...)

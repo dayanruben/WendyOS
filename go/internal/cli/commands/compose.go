@@ -13,12 +13,14 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/distribution/reference"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // normalizeImageRef canonicalises a Docker short reference (e.g.
@@ -100,6 +102,12 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 		}
 		df := "Dockerfile"
 		if bc.Dockerfile != "" {
+			if err := validateComposeDockerfileName(bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
+			if _, err := confinedDockerfilePath(ctxDir, bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
 			df = bc.Dockerfile
 		}
 		return ctxDir, df, bc.Args, nil
@@ -533,7 +541,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return fmt.Errorf("service %s: custom Dockerfile path %q is not yet supported; rename it to 'Dockerfile'", name, dockerfile)
 		}
 
-		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
+		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, "", allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
 		cliLogln("Service %s image built and pushed.", name)
@@ -655,8 +663,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			cliLogln("Service %s started.", name)
 		}
 		cliLogln("All services running in detached mode.")
-		projectID := strings.ToLower(filepath.Base(projectDir))
-		cliLogln("Run 'wendy logs %s' to stream logs.", projectID)
+		cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
 		return nil
 	}
 
@@ -681,47 +688,44 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			defer outW.Flush()
 			defer errW.Flush()
 
-			stream, streamErr := conn.ContainerService.AttachContainer(runCtx)
-			if streamErr == nil {
-				streamErr = stream.Send(&agentpb.AttachContainerRequest{
-					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appID},
-				})
-				if streamErr != nil {
-					_ = stream.CloseSend()
-				}
-			}
-			if streamErr != nil {
-				// Fall back to the server-streaming StartContainer when AttachContainer is unavailable.
+			// openStart falls back to the server-streaming StartContainer RPC,
+			// used when the agent is too old to support AttachContainer.
+			openStart := func() (containerOutputStream, error) {
 				startStream, startErr := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
 					AppName: appID,
 				})
 				if startErr != nil {
-					errCh <- fmt.Errorf("starting service %s: %w", serviceName, startErr)
-					return
+					return nil, fmt.Errorf("starting service %s: %w", serviceName, startErr)
 				}
-				for {
-					resp, recvErr := startStream.Recv()
-					if recvErr == io.EOF {
-						return
-					}
-					if recvErr != nil {
-						if runCtx.Err() != nil {
-							return
-						}
-						errCh <- fmt.Errorf("service %s: %w", serviceName, recvErr)
-						return
-					}
-					if out := resp.GetStdoutOutput(); out != nil {
-						outW.Write(out.GetData())
-					}
-					if out := resp.GetStderrOutput(); out != nil {
-						errW.Write(out.GetData())
-					}
-				}
+				return startStream, nil
 			}
 
+			var outStream containerOutputStream
+			attached := false
+			attachStream, streamErr := conn.ContainerService.AttachContainer(runCtx)
+			if streamErr == nil {
+				streamErr = attachStream.Send(&agentpb.AttachContainerRequest{
+					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appID},
+				})
+				// Compose never forwards stdin; half-close the send side so the
+				// container sees stdin EOF instead of hanging on a read.
+				_ = attachStream.CloseSend()
+			}
+			if streamErr != nil {
+				s, err := openStart()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				outStream = s
+			} else {
+				outStream = attachStream
+				attached = true
+			}
+
+			gotFirstResponse := false
 			for {
-				resp, recvErr := stream.Recv()
+				resp, recvErr := outStream.Recv()
 				if recvErr == io.EOF {
 					return
 				}
@@ -729,9 +733,23 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					if runCtx.Err() != nil {
 						return
 					}
+					// Older agents reject AttachContainer with Unimplemented on
+					// the first Recv rather than at open/send time; fall back
+					// silently to StartContainer.
+					if attached && !gotFirstResponse && status.Code(recvErr) == codes.Unimplemented {
+						s, err := openStart()
+						if err != nil {
+							errCh <- err
+							return
+						}
+						outStream = s
+						attached = false
+						continue
+					}
 					errCh <- fmt.Errorf("service %s: %w", serviceName, recvErr)
 					return
 				}
+				gotFirstResponse = true
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
 				}

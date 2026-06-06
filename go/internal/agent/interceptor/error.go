@@ -46,7 +46,6 @@ func UnaryErrorInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 	}
 }
 
-// wrappedStream wraps a grpc.ServerStream to intercept RecvMsg/SendMsg for panic recovery.
 type wrappedStream struct {
 	grpc.ServerStream
 	logger *zap.Logger
@@ -61,8 +60,6 @@ func (w *wrappedStream) SendMsg(m interface{}) error {
 	return w.ServerStream.SendMsg(m)
 }
 
-// StreamErrorInterceptor returns a gRPC stream server interceptor that recovers
-// from panics and logs handler errors.
 func StreamErrorInterceptor(logger *zap.Logger) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		defer func() {

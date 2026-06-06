@@ -7,11 +7,9 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
-// logSubscriber wraps a delivery channel with a mutex that guards the closed
-// state so that Publish and Unsubscribe cannot race on close vs send.
 type logSubscriber struct {
 	mu     sync.Mutex
 	ch     chan ContainerOutput
@@ -45,19 +43,17 @@ func (s *logSubscriber) close() {
 	}
 }
 
-// ContainerLogManager manages multi-subscriber fan-out for container output
-// and bridges container stdout/stderr to the TelemetryBroadcaster as OTEL log records.
 type ContainerLogManager struct {
 	logger      *zap.Logger
-	broadcaster *TelemetryBroadcaster
-	mu          sync.Mutex
+	broadcaster TelemetryPublisher
+	mu          sync.RWMutex
 	subscribers map[string]map[string]*logSubscriber // appName -> subID -> subscriber
 	nextID      uint64
 	resources   map[string]*otelpb.Resource // appName -> pre-built OTel resource (protected by mu)
 }
 
 // NewContainerLogManager creates a new ContainerLogManager.
-func NewContainerLogManager(logger *zap.Logger, broadcaster *TelemetryBroadcaster) *ContainerLogManager {
+func NewContainerLogManager(logger *zap.Logger, broadcaster TelemetryPublisher) *ContainerLogManager {
 	return &ContainerLogManager{
 		logger:      logger,
 		broadcaster: broadcaster,
@@ -75,8 +71,6 @@ func (m *ContainerLogManager) RegisterApp(appName, version string) {
 	m.mu.Unlock()
 }
 
-// Subscribe creates a new subscription for a container's output.
-// Returns the subscription ID and a read-only channel of ContainerOutput.
 func (m *ContainerLogManager) Subscribe(appName string) (string, <-chan ContainerOutput) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -99,7 +93,6 @@ func (m *ContainerLogManager) Subscribe(appName string) (string, <-chan Containe
 	return subID, sub.ch
 }
 
-// Unsubscribe removes a subscription and closes its channel.
 func (m *ContainerLogManager) Unsubscribe(appName string, subID string) {
 	m.mu.Lock()
 
@@ -131,24 +124,16 @@ func (m *ContainerLogManager) Unsubscribe(appName string, subID string) {
 	)
 }
 
-// Publish sends output to all subscribers for a container and to the telemetry broadcaster.
 func (m *ContainerLogManager) Publish(appName string, output ContainerOutput) {
-	// Bridge to OTEL telemetry broadcaster.
 	m.publishToTelemetry(appName, output)
 
 	// Fan out to all subscribers.
-	m.mu.Lock()
+	m.mu.RLock()
 	appSubs := m.subscribers[appName]
-	// Copy subscriber pointers under lock to avoid holding it while sending.
-	subs := make([]*logSubscriber, 0, len(appSubs))
 	for _, sub := range appSubs {
-		subs = append(subs, sub)
-	}
-	m.mu.Unlock()
-
-	for _, sub := range subs {
 		sub.send(output)
 	}
+	m.mu.RUnlock()
 }
 
 // publishToTelemetry converts container output into OTEL log records and
@@ -209,9 +194,9 @@ func (m *ContainerLogManager) publishToTelemetry(appName string, output Containe
 		return
 	}
 
-	m.mu.Lock()
+	m.mu.RLock()
 	resource := m.resources[appName]
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	if resource == nil {
 		resource = containerResource(appName, "")
 	}

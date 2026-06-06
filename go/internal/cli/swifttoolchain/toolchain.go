@@ -7,11 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"golang.org/x/term"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 const (
@@ -27,8 +31,28 @@ var wendySDKChecksums = map[string]string{
 
 var ErrUserCancelled = errors.New("cancelled")
 
+// macOSBrewPaths lists the canonical Homebrew installation locations on macOS,
+// checked in order (Apple Silicon first, then Intel). Bypasses $PATH resolution
+// to avoid executing an unexpected binary in a compromised environment.
+// Security note: these paths are expected to be root-owned on a standard macOS
+// installation. A TOCTOU race between stat and exec is theoretically possible
+// in unusual environments (e.g. containers with world-writable /opt), but is
+// considered an acceptable risk for a developer-facing CLI running as the user.
+var macOSBrewPaths = []string{
+	"/opt/homebrew/bin/brew", // Apple Silicon (M-series)
+	"/usr/local/bin/brew",    // Intel
+}
+
 var execCommandContext = exec.CommandContext
 var execCommand = exec.Command
+var statFile = os.Stat
+var currentOS = runtime.GOOS
+var isTerminal = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
+var confirmFunc = func(question string) (bool, error) {
+	return tui.ConfirmDefaultYes(question)
+}
 
 func flushWriter(writer io.Writer) {
 	if flusher, ok := writer.(interface{ Flush() }); ok {
@@ -46,14 +70,25 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 	checkCmd.Stderr = io.Discard
 	if err := checkCmd.Run(); err == nil {
 		return nil
-	} else {
-		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	} else if errors.Is(err, exec.ErrNotFound) {
+		if err := tryBrewInstallSwiftly(ctx, stdout, stderr); err != nil {
 			return err
 		}
+		checkCmd2 := execCommandContext(ctx, "swiftly", "which", DefaultVersion)
+		checkCmd2.Stdout = io.Discard
+		checkCmd2.Stderr = io.Discard
+		if err := checkCmd2.Run(); err == nil {
+			return nil
+		} else if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("swiftly was installed via Homebrew but is not yet available; " +
+				`run: eval "$(brew shellenv)" or open a new terminal to reload your PATH`)
+		}
+		// swiftly binary is now available but this version is not installed — fall through to install
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
+	// any other non-nil error (e.g. swiftly which exits non-zero) falls through to swiftly install,
+	// matching the original pre-brew-support behaviour
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -74,12 +109,67 @@ func EnsureSwiftVersion(ctx context.Context, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// brewFormula is the tap-qualified Homebrew formula name for swiftly, pinning
+// it to the official tap to reduce dependency-confusion risk.
+const brewFormula = "swiftlang/swiftly/swiftly"
+
+func tryBrewInstallSwiftly(ctx context.Context, stdout, stderr io.Writer) error {
+	if currentOS != "darwin" {
+		return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
+	}
+	brewPath := ""
+	for _, p := range macOSBrewPaths {
+		info, err := statFile(p)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&0002 != 0 {
+			continue // skip world-writable paths — likely not the legitimate brew binary
+		}
+		brewPath = p
+		break
+	}
+	if brewPath == "" {
+		return fmt.Errorf("swiftly is required but not installed; see https://swiftlang.github.io/swiftly for installation instructions")
+	}
+	if !isTerminal() {
+		return fmt.Errorf("swiftly is required but not installed; run: brew install %s", brewFormula)
+	}
+	confirmed, err := confirmFunc("swiftly is not installed. Install it now via Homebrew? (brew install " + brewFormula + ")")
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return ErrUserCancelled
+		}
+		return fmt.Errorf("swiftly is required but not installed (prompt failed: %w); see https://swiftlang.github.io/swiftly for installation instructions", err)
+	}
+	if !confirmed {
+		return fmt.Errorf("swiftly is required but not installed; run: brew install %s", brewFormula)
+	}
+	fmt.Fprintf(stdout, "Installing swiftly via Homebrew (brew install %s)...\n", brewFormula)
+	flushWriter(stdout)
+	cmd := execCommandContext(ctx, brewPath, "install", brewFormula)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		flushWriter(stdout)
+		flushWriter(stderr)
+		return fmt.Errorf("brew install %s: %w", brewFormula, err)
+	}
+	flushWriter(stdout)
+	flushWriter(stderr)
+	return nil
+}
+
 func SwiftCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 	return execCommandContext(ctx, "swiftly", append([]string{"run", "+" + DefaultVersion, "swift"}, args...)...)
 }
 
 func SwiftCommand(args ...string) *exec.Cmd {
 	return execCommand("swiftly", append([]string{"run", "+" + DefaultVersion, "swift"}, args...)...)
+}
+
+func ActiveSwiftCommand(args ...string) *exec.Cmd {
+	return execCommand("swift", args...)
 }
 
 func FindSwiftSDK(ctx context.Context, architecture string, stdout, stderr io.Writer) (string, error) {
@@ -254,12 +344,25 @@ func FindSwiftProduct(dir string) (string, error) {
 }
 
 func FindSwiftProductWithOptions(dir, productOverride string, interactive bool) (string, error) {
+	return findSwiftProductWithOptions(dir, productOverride, interactive, SwiftCommand)
+}
+
+func FindSwiftProductWithActiveSwiftOptions(dir, productOverride string, interactive bool) (string, error) {
+	return findSwiftProductWithOptions(dir, productOverride, interactive, ActiveSwiftCommand)
+}
+
+func findSwiftProductWithOptions(
+	dir string,
+	productOverride string,
+	interactive bool,
+	command func(args ...string) *exec.Cmd,
+) (string, error) {
 	var stderr bytes.Buffer
 	if productOverride != "" {
 		return productOverride, nil
 	}
 
-	cmd := SwiftCommand("package", "dump-package")
+	cmd := command("package", "dump-package")
 	cmd.Dir = dir
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
