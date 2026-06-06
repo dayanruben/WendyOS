@@ -794,6 +794,10 @@ var deviceHostnameWithSuffix = func() string {
 
 // buildContainerBaseEnv builds the base environment variables for a container.
 //
+// Precondition: appID must pass ValidateAppID and serviceName (when non-empty)
+// must pass ValidateServiceName. CreateContainerWithProgress enforces this at
+// its entry point; callers that bypass it are responsible for their own check.
+//
 // For single-container apps (serviceName == ""):
 //   - WENDY_HOSTNAME is set to the device hostname (e.g. "device.local").
 //
