@@ -369,13 +369,20 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	serviceName := appCfg.ServiceName
 
 	// Validate app identity at the RPC entry point so downstream helpers can
-	// assume inputs are well-formed (defence-in-depth).
+	// assume inputs are well-formed (defence-in-depth). Log rejections so
+	// invalid requests are visible in operational logs (SOC2-CC7, ISO27001-A.12).
 	if err := appconfig.ValidateAppID(appID); err != nil {
-		return fmt.Errorf("invalid app ID: %w", err)
+		c.logger.Warn("CreateContainer rejected: invalid app ID",
+			zap.String("app_id", appID), zap.Error(err))
+		return fmt.Errorf("invalid app ID %q: %w", appID, err)
 	}
 	if serviceName != "" {
 		if err := appconfig.ValidateServiceName(serviceName); err != nil {
-			return fmt.Errorf("invalid service name: %w", err)
+			c.logger.Warn("CreateContainer rejected: invalid service name",
+				zap.String("app_id", appID),
+				zap.String("service_name", serviceName[:min(len(serviceName), 64)]),
+				zap.Error(err))
+			return fmt.Errorf("invalid service name %q: %w", serviceName, err)
 		}
 	}
 
@@ -1013,15 +1020,21 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 		return fmt.Errorf("deleting container: %w", err)
 	}
 
-	// Recreate with the same configuration.
-	// Parse the container name to recover appID and serviceName using the same
-	// logic and validation as the creation path (ParseContainerName is the
-	// inverse of ContainerName and validates the serviceName portion).
-	appID, svcName, err := ParseContainerName(appName)
-	if err != nil {
-		return fmt.Errorf("recreateContainer: %w", err)
+	// Recover appID and serviceName from labels written at creation time.
+	// These were validated before they were stored, so we trust them over the
+	// container name read back from the containerd store (which could theoretically
+	// be manipulated if someone has direct store access — defence-in-depth).
+	//
+	// For single-container apps labelKeyAppGroup is absent; appName equals appID.
+	// For multi-service apps labelKeyAppGroup holds the appID and labelKeyServiceName
+	// holds the serviceName — both exactly as written at creation.
+	svcName := info.Labels[labelKeyServiceName]
+	recoverAppID := info.Labels[labelKeyAppGroup]
+	if recoverAppID == "" {
+		// Single-container: appName IS the appID; no parsing needed.
+		recoverAppID = appName
 	}
-	snapshotKey := SnapshotKey(appID, svcName)
+	snapshotKey := SnapshotKey(recoverAppID, svcName)
 	_, err = c.client.NewContainer(ctx, appName,
 		containerd.WithImage(image),
 		containerd.WithNewSnapshot(snapshotKey, image),

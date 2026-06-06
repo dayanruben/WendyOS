@@ -306,9 +306,14 @@ func ValidateAppID(id string) error {
 // ValidateServiceName reports whether name is a well-formed serviceName.
 // serviceName is used to build container IDs, snapshot keys, cgroup paths,
 // container labels, and env vars (e.g. WENDY_HOSTNAME={serviceName}.local), so
-// it must match the same pattern as the service map keys in wendy.json:
-// a lowercase letter followed by lowercase letters, digits, or hyphens.
+// it must be a safe DNS label: lowercase letter, then lowercase letters/digits/hyphens,
+// ending with a letter or digit.
 func ValidateServiceName(name string) error {
+	// Fast-fail on characters that would break env var or container name invariants
+	// regardless of the regex, providing defence-in-depth against regex edge cases.
+	if strings.ContainsAny(name, "\x00\n\r=\t") {
+		return fmt.Errorf("serviceName contains invalid control character")
+	}
 	if !serviceNamePattern.MatchString(name) {
 		return fmt.Errorf("serviceName %q is invalid: must start with a lowercase letter, contain only lowercase letters, digits, or hyphens, end with a letter or digit, and be at most 57 chars (RFC 1123)", name)
 	}
