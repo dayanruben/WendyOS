@@ -488,9 +488,6 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	}
 	path := fmt.Sprintf("/dev/video%d", devID)
 
-	if _, err := os.Stat(path); err != nil {
-		return status.Errorf(codes.NotFound, "video device not found")
-	}
 	if !s.hasVideoCapture(path) {
 		return status.Errorf(codes.NotFound, "video device not found or not a capture device")
 	}
