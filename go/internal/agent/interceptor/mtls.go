@@ -25,10 +25,14 @@ func peerAddr(ctx context.Context) string {
 // explicit per-handler auth enforcement in addition to the server-level interceptor.
 //
 // Certificate revocation is handled at the TLS layer by the VerifyPeerCertificate
-// hook in mtls.NewTLSConfig: it checks CRL distribution points when present and
-// enforces a maximum certificate lifetime (25 h) as a compensating control when
-// none are available. By the time this function runs the handshake has already
-// applied that policy, so no duplicate revocation check is needed here.
+// hook in mtls.NewTLSConfig: it enforces a maximum certificate lifetime (25 h) as
+// a compensating control, ensuring compromised credentials expire within one day.
+// By the time this function runs the handshake has already applied that policy,
+// so no duplicate revocation check is needed here.
+//
+// Audit logging: the certificate serial number (not PII) is logged at Debug level.
+// Subject CN is intentionally omitted from per-call logs to satisfy data-minimisation
+// requirements — it may contain a username or device identifier.
 func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 	p, ok := peer.FromContext(ctx)
 	if !ok || p.AuthInfo == nil {
@@ -47,13 +51,14 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "client certificate not verified")
 	}
-	// Log the authenticated peer's identity for access-control auditing.
-	// Both the IP address and the certificate identity (subject CN + serial)
-	// are recorded so that access events are attributable to a specific credential.
+	// Log the serial number (not PII) at Debug level for per-call audit correlation.
+	// Subject CN is omitted: it may contain a username or device identifier, logging
+	// it on every call creates a high-volume PII stream that conflicts with
+	// data-minimisation requirements. The serial number alone is sufficient to
+	// correlate access events with a specific credential in the CA's issuance log.
 	leaf := tlsInfo.State.VerifiedChains[0][0]
-	logger.Info("mTLS peer authenticated",
+	logger.Debug("mTLS peer authenticated",
 		zap.String("remote", peerAddr(ctx)),
-		zap.String("subject", leaf.Subject.CommonName),
 		zap.String("serial", leaf.SerialNumber.String()),
 	)
 	return nil

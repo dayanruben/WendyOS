@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -681,6 +682,9 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocStreamoff, uintptr(unsafe.Pointer(&bufType))) //nolint:errcheck
 	}()
 
+	if fd > math.MaxInt32 {
+		return status.Errorf(codes.Internal, "file descriptor value out of range for poll")
+	}
 	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	var framesSent int
 	for {
