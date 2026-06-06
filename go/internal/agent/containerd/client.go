@@ -371,16 +371,29 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Validate app identity at the RPC entry point so downstream helpers can
 	// assume inputs are well-formed (defence-in-depth). Log rejections so
 	// invalid requests are visible in operational logs (SOC2-CC7, ISO27001-A.12).
+	// sanitizeForLog strips control characters from a string before it is written
+	// to a log field, preventing log injection when the value has not yet passed
+	// validation (zap JSON mode is safe, but text/syslog backends are not).
+	sanitizeForLog := func(s string, maxLen int) string {
+		s = s[:min(len(s), maxLen)]
+		return strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return '?'
+			}
+			return r
+		}, s)
+	}
+
 	if err := appconfig.ValidateAppID(appID); err != nil {
 		c.logger.Warn("CreateContainer rejected: invalid app ID",
-			zap.String("app_id", appID), zap.Error(err))
+			zap.String("app_id", sanitizeForLog(appID, 253)), zap.Error(err))
 		return fmt.Errorf("invalid app ID %q: %w", appID, err)
 	}
 	if serviceName != "" {
 		if err := appconfig.ValidateServiceName(serviceName); err != nil {
 			c.logger.Warn("CreateContainer rejected: invalid service name",
-				zap.String("app_id", appID),
-				zap.String("service_name", serviceName[:min(len(serviceName), 64)]),
+				zap.String("app_id", sanitizeForLog(appID, 253)),
+				zap.String("service_name", sanitizeForLog(serviceName, 57)),
 				zap.Error(err))
 			return fmt.Errorf("invalid service name %q: %w", serviceName, err)
 		}
@@ -556,11 +569,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Set the cgroup path here — client.go is the sole authority so there is
 	// no risk of divergence with entitlements.go. SetDeviceCapabilities only
 	// adds the cgroup namespace and mount; it no longer sets CgroupsPath.
+	// "@" is used as separator because it cannot appear in a valid appID
+	// ([a-zA-Z0-9._-]) or serviceName ([a-z][a-z0-9-]*), eliminating the
+	// collision risk that a hyphen separator would have introduced.
 	//   - Single-container: "system.slice:{systemdSvc}:{appID}"
-	//   - Multi-service:    "system.slice:{systemdSvc}:{appID}-{serviceName}"
+	//   - Multi-service:    "system.slice:{systemdSvc}:{appID}@{serviceName}"
 	cgroupSuffix := appID
 	if serviceName != "" {
-		cgroupSuffix = appID + "-" + serviceName
+		cgroupSuffix = appID + "@" + serviceName
 	}
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", sharedenv.SystemdServiceName(), cgroupSuffix)
 
@@ -1021,9 +1037,8 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	}
 
 	// Recover appID and serviceName from labels written at creation time.
-	// These were validated before they were stored, so we trust them over the
-	// container name read back from the containerd store (which could theoretically
-	// be manipulated if someone has direct store access — defence-in-depth).
+	// Labels were validated before storage, but we re-validate here because an
+	// actor with direct containerd store access could tamper with them.
 	//
 	// For single-container apps labelKeyAppGroup is absent; appName equals appID.
 	// For multi-service apps labelKeyAppGroup holds the appID and labelKeyServiceName
@@ -1033,6 +1048,14 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	if recoverAppID == "" {
 		// Single-container: appName IS the appID; no parsing needed.
 		recoverAppID = appName
+	}
+	if err := appconfig.ValidateAppID(recoverAppID); err != nil {
+		return fmt.Errorf("corrupt container label %q: %w", labelKeyAppGroup, err)
+	}
+	if svcName != "" {
+		if err := appconfig.ValidateServiceName(svcName); err != nil {
+			return fmt.Errorf("corrupt container label %q: %w", labelKeyServiceName, err)
+		}
 	}
 	snapshotKey := SnapshotKey(recoverAppID, svcName)
 	_, err = c.client.NewContainer(ctx, appName,
