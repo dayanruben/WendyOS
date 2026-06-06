@@ -190,13 +190,15 @@ type TelemetryBuffer struct {
 	mu          sync.Mutex
 	cursorMu    sync.Mutex // protects cursor.json read-modify-write
 	writers     map[SignalType]*segWriter
-	hmacKey     []byte // 32-byte HMAC key from cursor.key; nil disables cursor persistence
+	hmacKey     []byte                     // 32-byte HMAC key from cursor.key; nil disables disk cursor
+	memCursor   map[SignalType]flushCursor // in-memory cursor fallback when hmacKey is nil
 }
 
 // NewTelemetryBuffer creates a TelemetryBuffer, creating the storage directory
-// if needed. Falls back gracefully if the directory cannot be created.
+// if needed. Falls back gracefully to in-memory-only mode if the directory
+// cannot be created; check DiskEnabled() to distinguish the two modes.
 // A nil *TelemetryBuffer is a no-op for all methods.
-func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadcaster, logger *zap.Logger) (*TelemetryBuffer, error) {
+func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadcaster, logger *zap.Logger) *TelemetryBuffer {
 	cfg.applyDefaults()
 
 	b := &TelemetryBuffer{
@@ -204,6 +206,7 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		broadcaster: broadcaster,
 		logger:      logger,
 		writers:     make(map[SignalType]*segWriter),
+		memCursor:   make(map[SignalType]flushCursor),
 	}
 
 	// For production paths, resolve symlinks on the PARENT directory before
@@ -215,7 +218,7 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		if err != nil || !strings.HasPrefix(resolvedParent+"/", "/var/lib/wendy-agent/") {
 			logger.Warn("telemetry buffer: dir parent resolves outside allowed prefix, disk writes disabled",
 				zap.String("dir", cfg.Dir))
-			return b, nil
+			return b
 		}
 		cfg.Dir = filepath.Join(resolvedParent, filepath.Base(cfg.Dir))
 		b.cfg.Dir = cfg.Dir
@@ -223,7 +226,7 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 
 	if err := os.MkdirAll(cfg.Dir, 0700); err != nil {
 		logger.Warn("telemetry buffer: cannot create dir, disk writes disabled", zap.Error(err))
-		return b, nil
+		return b
 	}
 	// Enforce permissions on pre-existing directories: MkdirAll does not fix
 	// the mode if the directory already exists.
@@ -235,7 +238,7 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		if err != nil || !strings.HasPrefix(resolved+"/", "/var/lib/wendy-agent/") {
 			logger.Warn("telemetry buffer: dir resolves outside allowed prefix, disk writes disabled",
 				zap.String("dir", cfg.Dir))
-			return b, nil
+			return b
 		}
 		b.cfg.Dir = resolved
 	}
@@ -251,7 +254,7 @@ func NewTelemetryBuffer(cfg TelemetryBufferConfig, broadcaster *TelemetryBroadca
 		}
 	}
 
-	return b, nil
+	return b
 }
 
 func (b *TelemetryBuffer) openLatestWriter(sig SignalType) error {
@@ -440,15 +443,21 @@ func (b *TelemetryBuffer) PublishTraces(req *otelpb.ExportTraceServiceRequest) {
 	b.broadcaster.PublishTraces(req)
 }
 
-// DiskEnabled reports whether disk segment writes are active.
-// Returns false when the storage directory could not be created or validated.
+// DiskEnabled reports whether at least one signal has an active disk writer.
+// Returns false when the storage directory could not be created or validated,
+// or when all writers failed during a segment rotation.
 func (b *TelemetryBuffer) DiskEnabled() bool {
 	if b == nil {
 		return false
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.writers) > 0
+	for _, w := range b.writers {
+		if w != nil {
+			return true
+		}
+	}
+	return false
 }
 
 const cursorFile = "cursor.json"
@@ -497,12 +506,16 @@ func loadOrGenerateCursorKey(dir string, logger *zap.Logger) []byte {
 }
 
 // LoadCursor returns the persisted flush cursor for sig, or a zero cursor.
+// When the HMAC key is unavailable, returns the in-memory cursor so that
+// CloudFlusher makes forward progress within a single process lifetime.
 func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 	if b == nil {
 		return flushCursor{}
 	}
 	if b.hmacKey == nil {
-		return flushCursor{}
+		b.cursorMu.Lock()
+		defer b.cursorMu.Unlock()
+		return b.memCursor[sig]
 	}
 	b.cursorMu.Lock()
 	defer b.cursorMu.Unlock()
@@ -524,11 +537,16 @@ func (b *TelemetryBuffer) LoadCursor(sig SignalType) flushCursor {
 }
 
 // SaveCursor persists cursor for sig to cursor.json atomically.
+// When the HMAC key is unavailable, falls back to the in-memory cursor so
+// that CloudFlusher makes forward progress within a single process lifetime.
 func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 	if b == nil {
 		return nil
 	}
 	if b.hmacKey == nil {
+		b.cursorMu.Lock()
+		b.memCursor[sig] = cursor
+		b.cursorMu.Unlock()
 		return nil
 	}
 	b.cursorMu.Lock()

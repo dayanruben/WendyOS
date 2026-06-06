@@ -103,9 +103,9 @@ func main() {
 	// Create the telemetry broadcaster early so we can tee agent logs into it.
 	broadcaster := services.NewTelemetryBroadcaster()
 
-	telemetryBuf, err := services.NewTelemetryBuffer(services.TelemetryBufferConfig{}, broadcaster, logger)
-	if err != nil {
-		logger.Warn("telemetry disk buffer unavailable, falling back to in-memory only", zap.Error(err))
+	telemetryBuf := services.NewTelemetryBuffer(services.TelemetryBufferConfig{}, broadcaster, logger)
+	if !telemetryBuf.DiskEnabled() {
+		logger.Warn("telemetry disk buffer unavailable, falling back to in-memory only")
 	}
 
 	// Wrap the logger so agent internal logs are published to the telemetry stream.

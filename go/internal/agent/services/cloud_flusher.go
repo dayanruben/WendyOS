@@ -31,10 +31,11 @@ func normalizeCloudHost(host string) string {
 }
 
 const (
-	cloudFlusherMaxBackoff = 60 * time.Second
-	cloudFlusherBatchSize  = 500
-	cloudFlusherDefaultApp = "device"
-	cloudFlusherCollector  = "wendy-agent"
+	cloudFlusherMaxBackoff       = 60 * time.Second
+	cloudFlusherBatchSize        = 500
+	cloudFlusherDefaultApp       = "device"
+	cloudFlusherCollector        = "wendy-agent"
+	cloudFlusherMaxEntriesPerApp = 5000 // per-RPC cap to stay under gRPC message size limits
 
 	// PII / payload size guards applied in convertLogRecord before cloud upload.
 	maxLogBodyBytes = 65536 // 64 KiB — prevents oversized payloads
@@ -139,9 +140,7 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 			continue
 		}
 
-		f.orgID = orgID
-		f.assetID = assetID
-		err = f.runOnce(ctx, client)
+		err = f.runOnce(ctx, client, orgID, assetID)
 		conn.Close()
 
 		if err != nil {
@@ -217,7 +216,7 @@ func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string,
 
 // runOnce performs a single read-convert-upload pass. It does not advance the
 // cursor if WriteLogEntries returns an error (ensuring retry safety).
-func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLoggingServiceClient) error {
+func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLoggingServiceClient, orgID, assetID int32) error {
 	if f.buffer == nil {
 		return nil
 	}
@@ -245,30 +244,38 @@ func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLogging
 	}
 	sort.Strings(appIDs)
 
-	// Each app's entries are sent in a separate RPC. On partial failure (some apps
-	// succeed, then one fails), the cursor is NOT advanced and the entire batch is
-	// retried — entries from already-uploaded apps will be re-sent. This is
-	// intentional at-least-once delivery; the cloud accepts duplicates.
+	// Each app's entries are sent in one or more RPCs, chunked to at most
+	// cloudFlusherMaxEntriesPerApp entries to stay within gRPC message size limits.
+	// On any failure, the cursor is NOT advanced and the entire batch is retried —
+	// already-uploaded entries will be re-sent. This is intentional at-least-once
+	// delivery; the cloud accepts duplicates.
 	collectorStr := cloudFlusherCollector
-	for i, appID := range appIDs {
-		entries := appEntries[appID]
-		req := &cloudpb.WriteLogEntriesRequest{
-			OrganizationId: f.orgID,
-			AssetId:        f.assetID,
-			AppId:          appID,
-			Collector:      &collectorStr,
-			Entries:        entries,
-		}
-		if _, err := client.WriteLogEntries(ctx, req); err != nil {
-			if i > 0 {
-				// Warn operators that already-uploaded entries will be re-sent on retry.
-				f.logger.Warn("cloud flusher: partial batch failure; prior apps will be re-sent on retry",
-					zap.Int("apps_already_sent", i),
-					zap.String("failed_app", appID),
-				)
+	var sentAny bool
+	for _, appID := range appIDs {
+		allEntries := appEntries[appID]
+		for start := 0; start < len(allEntries); start += cloudFlusherMaxEntriesPerApp {
+			end := start + cloudFlusherMaxEntriesPerApp
+			if end > len(allEntries) {
+				end = len(allEntries)
 			}
-			// Do NOT advance cursor; caller will retry.
-			return fmt.Errorf("cloud flusher: WriteLogEntries (app=%s): %w", appID, err)
+			req := &cloudpb.WriteLogEntriesRequest{
+				OrganizationId: orgID,
+				AssetId:        assetID,
+				AppId:          appID,
+				Collector:      &collectorStr,
+				Entries:        allEntries[start:end],
+			}
+			if _, err := client.WriteLogEntries(ctx, req); err != nil {
+				if sentAny {
+					// Warn operators that already-uploaded entries will be re-sent on retry.
+					f.logger.Warn("cloud flusher: partial batch failure; prior entries will be re-sent on retry",
+						zap.String("failed_app", appID),
+					)
+				}
+				// Do NOT advance cursor; caller will retry.
+				return fmt.Errorf("cloud flusher: WriteLogEntries (app=%s): %w", appID, err)
+			}
+			sentAny = true
 		}
 	}
 

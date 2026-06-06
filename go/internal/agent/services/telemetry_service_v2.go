@@ -30,7 +30,7 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	// deliveries from both the disk history and the in-memory ring buffer.
 	var subID string
 	var ch <-chan *otelpb.ExportLogsServiceRequest
-	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		subID, ch = s.broadcaster.SubscribeLogsNoPrefill()
 	} else {
 		subID, ch = s.broadcaster.SubscribeLogs()
@@ -38,7 +38,7 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	defer s.broadcaster.UnsubscribeLogs(subID)
 
 	// Replay history after subscribing.
-	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastN(SignalLogs, int(*req.LastN))
 		for _, e := range entries {
 			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
@@ -85,7 +85,7 @@ func (s *TelemetryServiceV2) StreamMetrics(req *agentpbv2.StreamMetricsRequest, 
 	// when replaying history to avoid duplicate metric deliveries.
 	var subID string
 	var ch <-chan *otelpb.ExportMetricsServiceRequest
-	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		subID, ch = s.broadcaster.SubscribeMetricsNoPrefill()
 	} else {
 		subID, ch = s.broadcaster.SubscribeMetrics()
@@ -93,7 +93,7 @@ func (s *TelemetryServiceV2) StreamMetrics(req *agentpbv2.StreamMetricsRequest, 
 	defer s.broadcaster.UnsubscribeMetrics(subID)
 
 	// Replay history after subscribing.
-	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastN(SignalMetrics, int(*req.LastN))
 		for _, e := range entries {
 			metrics, ok := e.(*otelpb.ExportMetricsServiceRequest)
@@ -140,7 +140,7 @@ func (s *TelemetryServiceV2) StreamTraces(req *agentpbv2.StreamTracesRequest, st
 	defer s.broadcaster.UnsubscribeTraces(subID)
 
 	// Replay history after subscribing.
-	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil {
+	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastN(SignalTraces, int(*req.LastN))
 		for _, e := range entries {
 			traces, ok := e.(*otelpb.ExportTraceServiceRequest)

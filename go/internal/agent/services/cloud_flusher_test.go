@@ -85,7 +85,7 @@ func TestCloudFlusher_FlushesEntries(t *testing.T) {
 	ctx := context.Background()
 
 	// First pass: should read all 5 entries and upload them.
-	if err := flusher.runOnce(ctx, fake); err != nil {
+	if err := flusher.runOnce(ctx, fake, 0, 0); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
 	if got := fake.totalEntries(); got != 5 {
@@ -94,7 +94,7 @@ func TestCloudFlusher_FlushesEntries(t *testing.T) {
 
 	// Cursor should have advanced: second pass should upload nothing.
 	prevCalls := len(fake.calls)
-	if err := flusher.runOnce(ctx, fake); err != nil {
+	if err := flusher.runOnce(ctx, fake, 0, 0); err != nil {
 		t.Fatalf("runOnce second: %v", err)
 	}
 	if len(fake.calls) != prevCalls {
@@ -112,7 +112,7 @@ func TestCloudFlusher_RetryOnError(t *testing.T) {
 	ctx := context.Background()
 
 	// First pass: should fail, cursor must NOT advance.
-	if err := flusher.runOnce(ctx, fake); err == nil {
+	if err := flusher.runOnce(ctx, fake, 0, 0); err == nil {
 		t.Fatal("expected error on first pass, got nil")
 	}
 
@@ -122,7 +122,7 @@ func TestCloudFlusher_RetryOnError(t *testing.T) {
 	}
 
 	// Second pass: error cleared, should succeed and upload the entry.
-	if err := flusher.runOnce(ctx, fake); err != nil {
+	if err := flusher.runOnce(ctx, fake, 0, 0); err != nil {
 		t.Fatalf("second runOnce: %v", err)
 	}
 	if got := fake.totalEntries(); got != 1 {
@@ -136,7 +136,7 @@ func TestCloudFlusher_EmptyBuffer(t *testing.T) {
 	flusher := NewCloudFlusher(zap.NewNop(), buf, 1, 2)
 
 	// runOnce on an empty buffer should return nil and make no RPC calls.
-	if err := flusher.runOnce(context.Background(), fake); err != nil {
+	if err := flusher.runOnce(context.Background(), fake, 0, 0); err != nil {
 		t.Fatalf("expected nil on empty buffer, got %v", err)
 	}
 	if len(fake.calls) != 0 {
@@ -156,7 +156,7 @@ func TestCloudFlusher_GroupsByApp(t *testing.T) {
 	fake := &fakeRemoteLogging{}
 	flusher := NewCloudFlusher(zap.NewNop(), buf, 1, 2)
 
-	if err := flusher.runOnce(context.Background(), fake); err != nil {
+	if err := flusher.runOnce(context.Background(), fake, 0, 0); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
 

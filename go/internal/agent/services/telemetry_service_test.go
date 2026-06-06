@@ -503,14 +503,11 @@ func TestBroadcaster_ConcurrentPublish(t *testing.T) {
 func TestStreamLogs_LastN(t *testing.T) {
 	dir := t.TempDir()
 	broadcaster := NewTelemetryBroadcaster()
-	buf, err := NewTelemetryBuffer(TelemetryBufferConfig{
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
 		Dir:           dir,
 		MaxTotalBytes: 10 * 1024 * 1024,
 		SegmentBytes:  1 * 1024 * 1024,
 	}, broadcaster, zap.NewNop())
-	if err != nil {
-		t.Fatalf("NewTelemetryBuffer: %v", err)
-	}
 
 	// Write 5 log entries to disk before any client connects.
 	for i := 0; i < 5; i++ {
@@ -584,14 +581,11 @@ func makeTraceReq(name string) *otelpb.ExportTraceServiceRequest {
 func TestStreamMetrics_LastN(t *testing.T) {
 	dir := t.TempDir()
 	broadcaster := NewTelemetryBroadcaster()
-	buf, err := NewTelemetryBuffer(TelemetryBufferConfig{
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
 		Dir:           dir,
 		MaxTotalBytes: 10 * 1024 * 1024,
 		SegmentBytes:  1 * 1024 * 1024,
 	}, broadcaster, zap.NewNop())
-	if err != nil {
-		t.Fatalf("NewTelemetryBuffer: %v", err)
-	}
 
 	for i := 0; i < 5; i++ {
 		buf.PublishMetrics(makeMetricReq(fmt.Sprintf("metric-%d", i)))
@@ -644,14 +638,11 @@ func TestStreamMetrics_LastN(t *testing.T) {
 func TestStreamTraces_LastN(t *testing.T) {
 	dir := t.TempDir()
 	broadcaster := NewTelemetryBroadcaster()
-	buf, err := NewTelemetryBuffer(TelemetryBufferConfig{
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
 		Dir:           dir,
 		MaxTotalBytes: 10 * 1024 * 1024,
 		SegmentBytes:  1 * 1024 * 1024,
 	}, broadcaster, zap.NewNop())
-	if err != nil {
-		t.Fatalf("NewTelemetryBuffer: %v", err)
-	}
 
 	for i := 0; i < 5; i++ {
 		buf.PublishTraces(makeTraceReq(fmt.Sprintf("span-%d", i)))

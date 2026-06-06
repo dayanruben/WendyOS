@@ -141,10 +141,7 @@ func makeTestBuffer(t *testing.T, maxTotal, segmentSize int64) (*TelemetryBuffer
 		MaxTotalBytes: maxTotal,
 		SegmentBytes:  segmentSize,
 	}
-	buf, err := NewTelemetryBuffer(cfg, broadcaster, nopLogger())
-	if err != nil {
-		t.Fatalf("NewTelemetryBuffer: %v", err)
-	}
+	buf := NewTelemetryBuffer(cfg, broadcaster, nopLogger())
 	return buf, dir
 }
 
