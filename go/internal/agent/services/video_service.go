@@ -191,8 +191,10 @@ func (h *deviceHub) broadcast(frame videoFrame) bool {
 		return false
 	}
 	for _, ch := range h.subs {
+		// Copy data per subscriber so concurrent gRPC sends can't race on the slice.
+		f := videoFrame{data: append([]byte(nil), frame.data...), tsNs: frame.tsNs, codec: frame.codec}
 		select {
-		case ch <- frame:
+		case ch <- f:
 		default:
 		}
 	}
@@ -328,6 +330,14 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 				case <-ctx.Done():
 					return nil, 0, nil, ctx.Err()
 				}
+				// Defensively evict the stale hub if runProducer hasn't
+				// already done so — prevents the next iteration from seeing
+				// the same dying hub if it lost its s.mu window.
+				s.mu.Lock()
+				if s.hubs[path] == h {
+					delete(s.hubs, path)
+				}
+				s.mu.Unlock()
 				continue
 			}
 			return h, id, ch, nil
