@@ -371,23 +371,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Validate app identity at the RPC entry point so downstream helpers can
 	// assume inputs are well-formed (defence-in-depth). Log rejections so
 	// invalid requests are visible in operational logs (SOC2-CC7, ISO27001-A.12).
-	// sanitizeForLog strips control characters from a string before it is written
-	// to a log field, preventing log injection when the value has not yet passed
-	// validation (zap JSON mode is safe, but text/syslog backends are not).
-	sanitizeForLog := func(s string, maxLen int) string {
-		s = s[:min(len(s), maxLen)]
-		return strings.Map(func(r rune) rune {
-			if r < 0x20 || r == 0x7f {
-				return '?'
-			}
-			return r
-		}, s)
-	}
-
 	if err := appconfig.ValidateAppID(appID); err != nil {
 		c.logger.Warn("CreateContainer rejected: invalid app ID",
 			zap.String("app_id", sanitizeForLog(appID, 253)), zap.Error(err))
-		return fmt.Errorf("invalid app ID %q: %w", appID, err)
+		return fmt.Errorf("invalid app ID: %w", err)
 	}
 	if serviceName != "" {
 		if err := appconfig.ValidateServiceName(serviceName); err != nil {
@@ -395,7 +382,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 				zap.String("app_id", sanitizeForLog(appID, 253)),
 				zap.String("service_name", sanitizeForLog(serviceName, 57)),
 				zap.Error(err))
-			return fmt.Errorf("invalid service name %q: %w", serviceName, err)
+			return fmt.Errorf("invalid service name: %w", err)
 		}
 	}
 
@@ -1036,29 +1023,16 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 		return fmt.Errorf("deleting container: %w", err)
 	}
 
-	// Recover appID and serviceName from labels written at creation time.
-	// Labels were validated before storage, but we re-validate here because an
-	// actor with direct containerd store access could tamper with them.
-	//
-	// For single-container apps labelKeyAppGroup is absent; appName equals appID.
-	// For multi-service apps labelKeyAppGroup holds the appID and labelKeyServiceName
-	// holds the serviceName — both exactly as written at creation.
-	svcName := info.Labels[labelKeyServiceName]
-	recoverAppID := info.Labels[labelKeyAppGroup]
-	if recoverAppID == "" {
-		// Single-container: appName IS the appID; no parsing needed.
-		recoverAppID = appName
+	// ParseContainerName validates the container ID from the containerd store
+	// and splits it into appID + serviceName. This ensures the reconstructed
+	// container name and snapshot key are always consistent and well-formed,
+	// even if the store was tampered with between creation and recreation.
+	parsedAppID, parsedSvcName, err := ParseContainerName(appName)
+	if err != nil {
+		return fmt.Errorf("refusing to recreate container with malformed name: %w", err)
 	}
-	if err := appconfig.ValidateAppID(recoverAppID); err != nil {
-		return fmt.Errorf("corrupt container label %q: %w", labelKeyAppGroup, err)
-	}
-	if svcName != "" {
-		if err := appconfig.ValidateServiceName(svcName); err != nil {
-			return fmt.Errorf("corrupt container label %q: %w", labelKeyServiceName, err)
-		}
-	}
-	snapshotKey := SnapshotKey(recoverAppID, svcName)
-	_, err = c.client.NewContainer(ctx, appName,
+	snapshotKey := SnapshotKey(parsedAppID, parsedSvcName)
+	_, err = c.client.NewContainer(ctx, ContainerName(parsedAppID, parsedSvcName),
 		containerd.WithImage(image),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),

@@ -168,6 +168,20 @@ func gcTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// sanitizeForLog strips control characters from s (replacing each with '?')
+// and truncates to maxLen bytes before the result is used as a structured log
+// field. This prevents log injection when s has not yet passed validation;
+// zap's JSON encoder is safe, but text/syslog transports are not.
+func sanitizeForLog(s string, maxLen int) string {
+	s = s[:min(len(s), maxLen)]
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
 // wendyLabels builds the standard set of containerd labels for a Wendy-managed
 // container. These labels are used to identify, filter, and manage containers.
 //
