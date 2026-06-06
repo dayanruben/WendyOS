@@ -19,9 +19,12 @@ import (
 // promptly revoked: Go's crypto/tls does not fetch CRL distribution points
 // during the TLS handshake, and doing so from server code introduces SSRF
 // vectors, cache-poisoning risk, and availability dependencies. Short-lived
-// credentials (≤24 h) are the compensating control, as recommended by
-// NIST SP 800-63B §5.1.1 and PKIX operational guidance (RFC 5280 §6.3).
-// Issue certs from an internal CA with a NotAfter–NotBefore window of ≤24 h.
+// credentials are the compensating control, as recommended by NIST SP 800-63B
+// §5.1.1 and PKIX operational guidance (RFC 5280 §6.3).
+//
+// The value is 24 h + 1 h clock-skew tolerance (RFC 5280 §6.1.3): a device
+// whose RTC drifts by up to one hour will still accept a cert issued at the
+// edge of the 24-hour window. Issue certs with NotAfter–NotBefore ≤ 24 h.
 const maxCertLifetime = 25 * time.Hour
 
 // checkRevocation enforces that leaf was issued with a validity window short
@@ -34,7 +37,7 @@ const maxCertLifetime = 25 * time.Hour
 // availability dependency on the CRL server, and open a MITM window on the
 // CRL itself. Short-lived certificate enforcement provides an equivalent
 // security bound without those attack surfaces.
-func checkRevocation(leaf *x509.Certificate, _ []*x509.Certificate) error {
+func checkRevocation(leaf *x509.Certificate) error {
 	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
 	if lifetime > maxCertLifetime {
 		return fmt.Errorf("certificate lifetime %v exceeds maximum %v; reissue with a shorter validity window", lifetime, maxCertLifetime)
@@ -211,33 +214,31 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 			CurrentTime:   effectiveNow,
 		}
+		// Try standard Go verification first (handles RSA/ECDSA chains).
 		stdErr := func() error { _, e := leaf.Verify(opts); return e }()
-		if stdErr == nil {
-			if revErr := checkRevocation(leaf, caCerts); revErr != nil {
-				logCertRejection(logger, leaf, revErr, effectiveNow)
-				return revErr
+		if stdErr != nil {
+			// Only fall back to ML-DSA verification when the leaf cert uses an ML-DSA
+			// signature algorithm; for all other failures return the standard error.
+			sigOID, oidErr := certSigAlgOID(leaf)
+			if oidErr != nil {
+				logCertRejection(logger, leaf, stdErr, effectiveNow)
+				return stdErr
 			}
-			return nil
+			if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
+				logCertRejection(logger, leaf, stdErr, effectiveNow)
+				return stdErr
+			}
+			mldsaErr := verifyMLDSAClientCert(leaf, caCerts, realNow, effectiveNow)
+			if mldsaErr != nil {
+				logCertRejection(logger, leaf, mldsaErr, effectiveNow)
+				return mldsaErr
+			}
 		}
 
-		// Only fall back to ML-DSA verification when the leaf cert uses an ML-DSA
-		// signature algorithm; for all other failures return the standard error.
-		sigOID, oidErr := certSigAlgOID(leaf)
-		if oidErr != nil {
-			logCertRejection(logger, leaf, stdErr, effectiveNow)
-			return stdErr
-		}
-		if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
-			logCertRejection(logger, leaf, stdErr, effectiveNow)
-			return stdErr
-		}
-
-		mldsaErr := verifyMLDSAClientCert(leaf, caCerts, realNow, effectiveNow)
-		if mldsaErr != nil {
-			logCertRejection(logger, leaf, mldsaErr, effectiveNow)
-			return mldsaErr
-		}
-		if revErr := checkRevocation(leaf, caCerts); revErr != nil {
+		// Single revocation check after successful verification by either path.
+		// checkRevocation only inspects the leaf's validity window, so it needs no
+		// CA list and cannot be bypassed by either the standard or ML-DSA branch.
+		if revErr := checkRevocation(leaf); revErr != nil {
 			logCertRejection(logger, leaf, revErr, effectiveNow)
 			return revErr
 		}

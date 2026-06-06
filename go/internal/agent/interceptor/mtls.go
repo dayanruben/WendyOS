@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"context"
+	"crypto/x509"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -51,12 +52,31 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "client certificate not verified")
 	}
+	leaf := tlsInfo.State.VerifiedChains[0][0]
+	// Defence-in-depth EKU check: verify the leaf asserts clientAuth (or carries no
+	// EKU restriction, which permits all uses). The VerifyPeerCertificate hook in
+	// mtls.NewTLSConfig already enforces this during the handshake, but re-checking
+	// here ensures the constraint holds even if that hook is absent or the TLS config
+	// is replaced without updating the server options.
+	if len(leaf.ExtKeyUsage) > 0 {
+		hasClientAuth := false
+		for _, eku := range leaf.ExtKeyUsage {
+			if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
+				hasClientAuth = true
+				break
+			}
+		}
+		if !hasClientAuth {
+			logger.Warn("rejected cert without clientAuth EKU",
+				zap.String("remote", peerAddr(ctx)),
+				zap.String("serial", leaf.SerialNumber.String()))
+			return status.Errorf(codes.Unauthenticated, "certificate is not valid for client authentication")
+		}
+	}
 	// Log the serial number (not PII) at Debug level for per-call audit correlation.
 	// Subject CN is omitted: it may contain a username or device identifier, logging
 	// it on every call creates a high-volume PII stream that conflicts with
-	// data-minimisation requirements. The serial number alone is sufficient to
-	// correlate access events with a specific credential in the CA's issuance log.
-	leaf := tlsInfo.State.VerifiedChains[0][0]
+	// data-minimisation requirements.
 	logger.Debug("mTLS peer authenticated",
 		zap.String("remote", peerAddr(ctx)),
 		zap.String("serial", leaf.SerialNumber.String()),
