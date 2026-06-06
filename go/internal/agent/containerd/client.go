@@ -361,7 +361,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// When appCfg.ServiceName is set this is a multi-service app and we use the
 	// {appId}/{serviceName} convention; otherwise we fall back to the legacy flat
 	// name so single-container apps are unchanged.
-	appID := req.GetAppName()
+	//
+	// Prefer appCfg.AppID (the authoritative identity from the parsed AppConfig)
+	// over req.GetAppName() so that single-container behaviour is preserved when
+	// appCfg.AppID is set. Fall back to req.GetAppName() only when appCfg.AppID
+	// is empty (e.g. a raw RPC call without a parsed config).
+	appID := appCfg.AppID
+	if appID == "" {
+		appID = req.GetAppName()
+	}
 	serviceName := appCfg.ServiceName
 	containerName := ContainerName(appID, serviceName)
 
@@ -511,10 +519,18 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if spec.Linux == nil {
 		spec.Linux = &localoci.Linux{}
 	}
-	// Use the flat container name (appID or appID/serviceName) for the cgroup
-	// path, replacing "/" with "-" so it is safe as a cgroup slice component.
-	cgroupID := strings.ReplaceAll(containerName, "/", "-")
-	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:wendy-agent:%s", cgroupID)
+	// Build the cgroup path from appID and serviceName explicitly so that each
+	// service in a multi-service app gets its own cgroup subtree, preventing
+	// resource-accounting collisions.
+	//   - Single-container: "system.slice:wendy-agent:{appID}"
+	//   - Multi-service:    "system.slice:wendy-agent:{appID}-{serviceName}"
+	// "-" is used as the separator (not "/") because "/" is not valid inside a
+	// cgroup path component.
+	cgroupSuffix := appID
+	if serviceName != "" {
+		cgroupSuffix = appID + "-" + serviceName
+	}
+	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:wendy-agent:%s", cgroupSuffix)
 
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).

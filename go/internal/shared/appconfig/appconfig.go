@@ -19,6 +19,12 @@ import (
 // space, or newline in appId would otherwise corrupt those downstream uses.
 var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
+// serviceNamePattern restricts serviceName to the same character set used for
+// service map keys in wendy.json. The pattern requires a lowercase letter as
+// the first character to avoid ambiguity with numeric identifiers, followed by
+// lowercase letters, digits, or hyphens.
+var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
 // EntitlementType enumerates the supported entitlement types.
 const (
 	EntitlementNetwork   = "network"
@@ -295,10 +301,28 @@ func ValidateAppID(id string) error {
 	return nil
 }
 
+// ValidateServiceName reports whether name is a well-formed serviceName.
+// serviceName is used to build container IDs, snapshot keys, cgroup paths,
+// container labels, and env vars (e.g. WENDY_HOSTNAME={serviceName}.local), so
+// it must match the same pattern as the service map keys in wendy.json:
+// a lowercase letter followed by lowercase letters, digits, or hyphens.
+func ValidateServiceName(name string) error {
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("serviceName %q is invalid: must match ^[a-z][a-z0-9-]*$ (lowercase letter, then lowercase letters, digits, or hyphens)", name)
+	}
+	return nil
+}
+
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
 	if err := ValidateAppID(c.AppID); err != nil {
 		return err
+	}
+
+	if c.ServiceName != "" {
+		if err := ValidateServiceName(c.ServiceName); err != nil {
+			return err
+		}
 	}
 
 	if err := validateEntitlements(c.Entitlements, "entitlement"); err != nil {
