@@ -196,6 +196,7 @@ func main() {
 	defer cancel()
 
 	videoSvc := services.NewVideoService(ctx, logger)
+	defer videoSvc.Shutdown()
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 

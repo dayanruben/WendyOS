@@ -406,14 +406,22 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	close(h.done)
 }
 
+// maxVideoDeviceID is the upper bound for accepted device IDs.
+// Linux supports at most 64 video devices (video0–video63) in practice.
+const maxVideoDeviceID = 63
+
 // StreamVideo streams H.264 frames from a V4L2 camera.
 // Multiple concurrent callers for the same device share one producer via a deviceHub.
 func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.ServerStreamingServer[agentpb.VideoFrame]) error {
 	ctx := stream.Context()
-	path := fmt.Sprintf("/dev/video%d", req.GetDeviceId())
+	devID := req.GetDeviceId()
+	if devID > maxVideoDeviceID {
+		return status.Errorf(codes.InvalidArgument, "device ID %d out of range [0, %d]", devID, maxVideoDeviceID)
+	}
+	path := fmt.Sprintf("/dev/video%d", devID)
 
 	if _, err := os.Stat(path); err != nil {
-		return status.Errorf(codes.NotFound, "video device %s not found", path)
+		return status.Errorf(codes.NotFound, "video device not found")
 	}
 
 	h, id, ch, err := s.getOrCreateHub(ctx, path, req)
