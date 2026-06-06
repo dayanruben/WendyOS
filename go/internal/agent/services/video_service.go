@@ -148,6 +148,9 @@ type deviceHub struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{} // closed by runProducer after the device fd is released
+	// err is set by runProducer to the terminal error before closing subscriber
+	// channels. Nil on graceful shutdown (context cancelled). Protected by h.mu.
+	err error
 	// req is the StreamVideoRequest that started this hub's producer.
 	// Subsequent callers whose request differs are rejected with InvalidArgument.
 	req *agentpb.StreamVideoRequest
@@ -165,18 +168,22 @@ func (h *deviceHub) subscribe() (int, chan videoFrame) {
 }
 
 // unsubscribe removes a subscriber. When the last subscriber leaves it cancels the producer.
+// cancel() is called while h.mu is still held to close the race window where a concurrent
+// getOrCreateHub could observe h.ctx.Err()==nil between the delete and the cancel call.
 func (h *deviceHub) unsubscribe(id int) {
 	h.mu.Lock()
 	delete(h.subs, id)
-	empty := len(h.subs) == 0
-	h.mu.Unlock()
-	if empty {
+	if len(h.subs) == 0 {
 		h.cancel()
 	}
+	h.mu.Unlock()
 }
 
 // broadcast delivers a frame to all subscribers, dropping for slow consumers.
 // Returns false when there are no subscribers left (producer should stop).
+// Late-joining subscribers receive whatever frame the producer sends next;
+// they will not see an IDR/keyframe until the next one arrives naturally (at most
+// one GOP interval away for GStreamer pipelines with key-int-max set).
 func (h *deviceHub) broadcast(frame videoFrame) bool {
 	h.mu.Lock()
 	if len(h.subs) == 0 {
@@ -285,6 +292,20 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 			}
 			id, ch = h.subscribe()
 			s.mu.Unlock()
+			// Guard against the race where the last subscriber called unsubscribe
+			// (emptying h.subs) between our Err() check above and subscribe()
+			// acquiring h.mu. If cancel() already fired, back off and retry so
+			// we create a fresh hub rather than returning one whose producer is
+			// about to stop.
+			if h.ctx.Err() != nil {
+				h.unsubscribe(id)
+				select {
+				case <-h.done:
+				case <-ctx.Done():
+					return nil, 0, nil, ctx.Err()
+				}
+				continue
+			}
 			return h, id, ch, nil
 		}
 		// Hub is cancelling. Evict it and wait for the producer to release
@@ -341,8 +362,14 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	}
 	s.mu.Unlock()
 
-	// Close all subscriber channels so their loops unblock.
+	// Store the terminal error (if any) and close all subscriber channels so
+	// their loops unblock. The error is written before closing so subscribers
+	// can read h.err safely after their channel receive returns (the channel
+	// close provides the happens-before edge).
 	h.mu.Lock()
+	if err != nil && ctx.Err() == nil {
+		h.err = err
+	}
 	for _, ch := range h.subs {
 		close(ch)
 	}
@@ -375,7 +402,11 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 			return ctx.Err()
 		case frame, ok := <-ch:
 			if !ok {
-				// Producer exited.
+				// Producer exited. Return the original error if one was recorded,
+				// otherwise fall back to a generic internal error.
+				if h.err != nil {
+					return h.err
+				}
 				return status.Errorf(codes.Internal, "video producer for %s stopped", path)
 			}
 			if err := stream.Send(&agentpb.VideoFrame{

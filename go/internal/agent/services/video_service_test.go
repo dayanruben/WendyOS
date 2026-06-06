@@ -1,12 +1,14 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
@@ -537,5 +539,141 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	}
 	if st.Code() != codes.FailedPrecondition {
 		t.Errorf("expected FailedPrecondition, got %v", st.Code())
+	}
+}
+
+func newTestHub(t *testing.T) (*deviceHub, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &deviceHub{
+		subs:   make(map[int]chan videoFrame),
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	return h, cancel
+}
+
+func TestDeviceHub_TwoSubscribersReceiveSameFrame(t *testing.T) {
+	h, cancel := newTestHub(t)
+	defer cancel()
+
+	id1, ch1 := h.subscribe()
+	id2, ch2 := h.subscribe()
+	defer h.unsubscribe(id1)
+	defer h.unsubscribe(id2)
+
+	frame := videoFrame{data: []byte{0xAB, 0xCD}, tsNs: 12345}
+	if !h.broadcast(frame) {
+		t.Fatal("broadcast returned false with two active subscribers")
+	}
+
+	for _, ch := range []chan videoFrame{ch1, ch2} {
+		select {
+		case f := <-ch:
+			if !bytes.Equal(f.data, frame.data) || f.tsNs != frame.tsNs {
+				t.Errorf("subscriber received wrong frame: got data=%x tsNs=%d, want data=%x tsNs=%d",
+					f.data, f.tsNs, frame.data, frame.tsNs)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Error("subscriber did not receive frame within timeout")
+		}
+	}
+}
+
+func TestDeviceHub_LastUnsubscribeCancelsProducer(t *testing.T) {
+	h, _ := newTestHub(t)
+
+	id1, _ := h.subscribe()
+	id2, _ := h.subscribe()
+
+	h.unsubscribe(id1)
+	if h.ctx.Err() != nil {
+		t.Error("context cancelled after first of two subscribers unsubscribed")
+	}
+
+	h.unsubscribe(id2)
+	if h.ctx.Err() == nil {
+		t.Error("context not cancelled after last subscriber unsubscribed")
+	}
+}
+
+func TestDeviceHub_SlowSubscriberDropsFrames(t *testing.T) {
+	h, cancel := newTestHub(t)
+	defer cancel()
+
+	_, ch := h.subscribe()
+
+	// Send more frames than the channel buffer (capacity 4).
+	for i := 0; i < 10; i++ {
+		h.broadcast(videoFrame{data: []byte{byte(i)}})
+	}
+
+	if len(ch) > cap(ch) {
+		t.Errorf("channel overfull: len=%d cap=%d", len(ch), cap(ch))
+	}
+	// Drain without blocking.
+	for len(ch) > 0 {
+		<-ch
+	}
+}
+
+func TestDeviceHub_BroadcastReturnsFalseWithNoSubscribers(t *testing.T) {
+	h, cancel := newTestHub(t)
+	defer cancel()
+
+	id, _ := h.subscribe()
+	h.unsubscribe(id)
+
+	if h.broadcast(videoFrame{data: []byte{1}}) {
+		t.Error("broadcast should return false when there are no subscribers")
+	}
+}
+
+func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
+	h, _ := newTestHub(t)
+
+	_, ch := h.subscribe()
+
+	// Simulate producer recording an error and closing the channel.
+	wantErr := status.Errorf(codes.Internal, "camera read failed: test error")
+	h.mu.Lock()
+	h.err = wantErr
+	for _, c := range h.subs {
+		close(c)
+	}
+	h.mu.Unlock()
+
+	// Drain the closed channel.
+	for range ch {
+	}
+
+	if h.err != wantErr {
+		t.Errorf("expected stored error %v, got %v", wantErr, h.err)
+	}
+}
+
+func TestDeviceHub_GetOrCreateHub_RejectsParamMismatch(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req1 := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
+	req2 := &agentpb.StreamVideoRequest{Width: 640, Height: 480, Framerate: 30}
+
+	h, id, _, err := svc.getOrCreateHub(ctx, "/dev/video0", req1)
+	if err != nil {
+		t.Fatalf("first getOrCreateHub failed: %v", err)
+	}
+	defer h.unsubscribe(id)
+
+	_, _, _, err = svc.getOrCreateHub(ctx, "/dev/video0", req2)
+	if err == nil {
+		t.Fatal("expected error for mismatched params, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		t.Errorf("expected InvalidArgument, got %v", err)
 	}
 }
