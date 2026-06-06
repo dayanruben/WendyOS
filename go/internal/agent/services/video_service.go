@@ -440,22 +440,62 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 // Linux supports at most 64 video devices (video0–video63) in practice.
 const maxVideoDeviceID = 63
 
+func peerStr(p *peer.Peer) string {
+	if p == nil || p.Addr == nil {
+		return "unknown"
+	}
+	return p.Addr.String()
+}
+
+// validateStreamParams checks width, height, and framerate against known-safe values
+// before constructing GStreamer pipeline arguments. Zero means "device default" and is
+// always accepted. This prevents unexpected pipeline behaviour from extreme values.
+func validateStreamParams(req *agentpb.StreamVideoRequest) error {
+	w, h := req.GetWidth(), req.GetHeight()
+	if w != 0 || h != 0 {
+		switch [2]uint32{w, h} {
+		case [2]uint32{320, 240},
+			[2]uint32{640, 480},
+			[2]uint32{1280, 720},
+			[2]uint32{1920, 1080},
+			[2]uint32{3840, 2160}:
+		default:
+			return status.Errorf(codes.InvalidArgument, "unsupported resolution")
+		}
+	}
+	fps := req.GetFramerate()
+	if fps != 0 {
+		switch fps {
+		case 15, 24, 25, 30, 60, 90, 120:
+		default:
+			return status.Errorf(codes.InvalidArgument, "unsupported framerate")
+		}
+	}
+	return nil
+}
+
 // StreamVideo streams H.264 frames from a V4L2 camera.
 // Multiple concurrent callers for the same device share one producer via a deviceHub.
 func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.ServerStreamingServer[agentpb.VideoFrame]) error {
 	ctx := stream.Context()
-	// Defense-in-depth: verify the caller arrived over an mTLS connection.
-	// The server transport enforces RequireAnyClientCert, so this check
-	// should never fail in production — it guards against future transport
-	// misconfigurations or test harness misconfiguration.
-	if p, ok := peer.FromContext(ctx); !ok || p.AuthInfo == nil {
+	// Enforce mTLS: the server-level StreamMTLSInterceptor checks this for all
+	// RPCs, but we verify again here so that the camera streaming path is
+	// explicitly protected even if a future refactor bypasses the interceptor.
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		s.logger.Warn("StreamVideo: rejected unauthenticated caller", zap.String("remote", peerStr(p)))
 		return status.Errorf(codes.Unauthenticated, "missing peer credentials")
-	} else if _, ok := p.AuthInfo.(credentials.TLSInfo); !ok {
+	}
+	if _, ok := p.AuthInfo.(credentials.TLSInfo); !ok {
+		s.logger.Warn("StreamVideo: rejected non-mTLS caller", zap.String("remote", peerStr(p)))
 		return status.Errorf(codes.Unauthenticated, "mTLS authentication required")
 	}
 	devID := req.GetDeviceId()
 	if devID > maxVideoDeviceID {
 		return status.Errorf(codes.InvalidArgument, "device ID %d out of range [0, %d]", devID, maxVideoDeviceID)
+	}
+	if err := validateStreamParams(req); err != nil {
+		return err
 	}
 	path := fmt.Sprintf("/dev/video%d", devID)
 
@@ -486,7 +526,7 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 				if err := h.ctx.Err(); err != nil {
 					return status.FromContextError(err).Err()
 				}
-				return status.Errorf(codes.Internal, "video producer for %s stopped", path)
+				return status.Errorf(codes.Internal, "video producer stopped unexpectedly")
 			}
 			if err := stream.Send(&agentpb.VideoFrame{
 				Data:        frame.data,
@@ -507,7 +547,8 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) error {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return status.Errorf(codes.Internal, "open %s: %v", path, err)
+		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(err))
+		return status.Errorf(codes.Internal, "failed to open video device")
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
@@ -527,7 +568,8 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		if errno == unix.EINVAL {
 			return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_S_FMT H264 rejected: %v", errno)}
 		}
-		return status.Errorf(codes.Internal, "VIDIOC_S_FMT failed for %s: %v", path, errno)
+		s.logger.Error("VIDIOC_S_FMT failed", zap.String("device", path), zap.Error(errno))
+		return status.Errorf(codes.Internal, "failed to configure video device")
 	}
 	if vfmt.PixelFormat != v4l2PixFmtH264 {
 		return nativeH264NotSupported{msg: "device switched pixel format away from H264"}
@@ -609,7 +651,8 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			continue // timeout or signal — re-check ctx.Done
 		}
 		if err != nil {
-			return status.Errorf(codes.Internal, "poll %s: %v", path, err)
+			s.logger.Error("poll failed on video device", zap.String("device", path), zap.Error(err))
+			return status.Errorf(codes.Internal, "video device poll error")
 		}
 
 		var dqbuf v4l2Buf
