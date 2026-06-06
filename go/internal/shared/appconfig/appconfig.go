@@ -309,8 +309,13 @@ func ValidateAppID(id string) error {
 // it must be a safe DNS label: lowercase letter, then lowercase letters/digits/hyphens,
 // ending with a letter or digit.
 func ValidateServiceName(name string) error {
-	// Fast-fail on characters that would break env var or container name invariants
-	// regardless of the regex, providing defence-in-depth against regex edge cases.
+	// Cheap length guard before the regex — makes the 57-char cap explicit and
+	// avoids running the regex on pathologically long inputs.
+	if len(name) > 57 {
+		return fmt.Errorf("serviceName too long: %d chars (max 57)", len(name))
+	}
+	// Fast-fail on characters that break env var or container name invariants,
+	// providing defence-in-depth against potential regex edge cases.
 	if strings.ContainsAny(name, "\x00\n\r=\t") {
 		return fmt.Errorf("serviceName contains invalid control character")
 	}
