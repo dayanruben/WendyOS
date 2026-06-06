@@ -19,12 +19,11 @@ import (
 // space, or newline in appId would otherwise corrupt those downstream uses.
 var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
-// serviceNamePattern restricts serviceName to the same character set used for
-// service map keys in wendy.json. The pattern requires a lowercase letter as
-// the first character, allows lowercase letters, digits, or hyphens in the
-// middle, and requires a letter or digit as the last character (RFC 1123 DNS
-// label — no trailing hyphens). Max 57 chars so the derived
-// WENDY_HOSTNAME="{serviceName}.local" stays within the RFC 1123 63-char label limit.
+// serviceNamePattern validates serviceName: a lowercase letter as the first
+// character, lowercase letters, digits, or hyphens in the middle, and a letter
+// or digit as the last character (RFC 1123 DNS label — no trailing hyphens).
+// Max 57 chars so the derived WENDY_HOSTNAME="{serviceName}.local" keeps
+// {serviceName} within the RFC 1123 63-char DNS label limit.
 var serviceNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$`)
 
 // EntitlementType enumerates the supported entitlement types.

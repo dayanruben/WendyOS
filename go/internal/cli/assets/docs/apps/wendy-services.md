@@ -69,7 +69,8 @@ example, with `appId: "com.example.myapp"` and service `"api"`, the containerd
 container ID is `com.example.myapp/api`. The corresponding snapshot key uses
 `@` as the separator (`wendy-com.example.myapp@api`) to remain unambiguous when
 either component contains a hyphen. The cgroup path component uses `-` as the
-separator: `system.slice:wendy-agent:com.example.myapp-api`.
+separator: `system.slice:edge-agent:com.example.myapp-api` (the systemd service segment
+reflects the `WENDY_SYSTEMD_SERVICE_NAME` env var, which defaults to `edge-agent`).
 
 > **Note:** Single-container apps (no `serviceName` in the top-level
 > `wendy.json`) are unaffected — their container ID remains the bare `appId`.
