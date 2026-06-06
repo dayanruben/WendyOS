@@ -157,15 +157,25 @@ type deviceHub struct {
 	width, height, framerate uint32
 }
 
+// maxSubscribersPerHub caps the number of concurrent gRPC streams sharing one
+// camera producer. Exceeding this returns ResourceExhausted to the caller.
+// The cap bounds per-device channel memory and broadcast work proportionally.
+const maxSubscribersPerHub = 16
+
 // subscribe adds a new subscriber and returns its channel and integer ID.
-func (h *deviceHub) subscribe() (int, chan videoFrame) {
+// Returns an error if the hub already has maxSubscribersPerHub active subscribers.
+func (h *deviceHub) subscribe() (int, chan videoFrame, error) {
 	ch := make(chan videoFrame, 4)
 	h.mu.Lock()
+	if len(h.subs) >= maxSubscribersPerHub {
+		h.mu.Unlock()
+		return 0, nil, status.Errorf(codes.ResourceExhausted, "too many concurrent streams for this device (max %d)", maxSubscribersPerHub)
+	}
 	id := h.nextID
 	h.nextID++
 	h.subs[id] = ch
 	h.mu.Unlock()
-	return id, ch
+	return id, ch, nil
 }
 
 // unsubscribe removes a subscriber. When the last subscriber leaves it cancels the producer.
@@ -180,30 +190,47 @@ func (h *deviceHub) unsubscribe(id int) {
 	h.mu.Unlock()
 }
 
+// maxFrameBytes is the maximum accepted size of a single encoded video frame.
+// Frames larger than this are dropped before distribution to prevent a
+// malfunctioning or compromised device from triggering memory exhaustion.
+const maxFrameBytes = 2 * 1024 * 1024 // 2 MiB
+
 // broadcast delivers a frame to all subscribers, dropping for slow consumers.
 // Returns false when there are no subscribers left (producer should stop).
 // Late-joining subscribers receive whatever frame the producer sends next;
 // they will not see an IDR/keyframe until the next one arrives naturally (at most
 // one GOP interval away for GStreamer pipelines with key-int-max set).
+//
+// All subscribers share a single copy of frame.data. The slice is read-only after
+// broadcast returns: subscribers only pass it to stream.Send() which does not
+// modify the underlying array. This reduces allocations from O(subscribers) to
+// O(1) per frame regardless of fan-out.
 func (h *deviceHub) broadcast(frame videoFrame) bool {
+	if len(frame.data) > maxFrameBytes {
+		return true // oversized frame: drop silently, keep the hub alive
+	}
 	h.mu.Lock()
 	if len(h.subs) == 0 {
 		h.mu.Unlock()
 		return false
 	}
 	// Snapshot the subscriber map under the lock so we hold h.mu only for the
-	// map read, not for the per-subscriber allocations and channel sends.
+	// map read, not for the channel sends.
 	snapshot := make([]chan videoFrame, 0, len(h.subs))
 	for _, ch := range h.subs {
 		snapshot = append(snapshot, ch)
 	}
 	h.mu.Unlock()
-	// Copy data per subscriber outside the lock so large I-frames don't stall
-	// unsubscribe() calls while h.mu is held.
+	// Make ONE copy of frame data and share it across all subscribers.
+	// Subscribers only read the slice (via stream.Send), never write to it.
+	shared := videoFrame{
+		data:  append([]byte(nil), frame.data...),
+		tsNs:  frame.tsNs,
+		codec: frame.codec,
+	}
 	for _, ch := range snapshot {
-		f := videoFrame{data: append([]byte(nil), frame.data...), tsNs: frame.tsNs, codec: frame.codec}
 		select {
-		case ch <- f:
+		case ch <- shared:
 		default:
 		}
 	}
@@ -330,8 +357,11 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 					zap.Uint32("existing_fps", h.framerate))
 				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
 			}
-			id, ch = h.subscribe()
+			id, ch, err = h.subscribe()
 			s.mu.Unlock()
+			if err != nil {
+				return nil, 0, nil, err
+			}
 			// Guard against the race where the last subscriber called unsubscribe
 			// (emptying h.subs) between our Err() check above and subscribe()
 			// acquiring h.mu. If cancel() already fired, back off and retry so
@@ -392,7 +422,8 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 		height:    req.GetHeight(),
 		framerate: req.GetFramerate(),
 	}
-	id, ch = h.subscribe()
+	// New hub: the first subscriber is always within the cap.
+	id, ch, _ = h.subscribe()
 	s.hubs[path] = h
 	s.mu.Unlock()
 

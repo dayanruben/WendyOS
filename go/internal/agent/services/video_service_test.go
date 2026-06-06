@@ -558,8 +558,8 @@ func TestDeviceHub_TwoSubscribersReceiveSameFrame(t *testing.T) {
 	h, cancel := newTestHub(t)
 	defer cancel()
 
-	id1, ch1 := h.subscribe()
-	id2, ch2 := h.subscribe()
+	id1, ch1, _ := h.subscribe()
+	id2, ch2, _ := h.subscribe()
 	defer h.unsubscribe(id1)
 	defer h.unsubscribe(id2)
 
@@ -584,8 +584,8 @@ func TestDeviceHub_TwoSubscribersReceiveSameFrame(t *testing.T) {
 func TestDeviceHub_LastUnsubscribeCancelsProducer(t *testing.T) {
 	h, _ := newTestHub(t)
 
-	id1, _ := h.subscribe()
-	id2, _ := h.subscribe()
+	id1, _, _ := h.subscribe()
+	id2, _, _ := h.subscribe()
 
 	h.unsubscribe(id1)
 	if h.ctx.Err() != nil {
@@ -602,7 +602,7 @@ func TestDeviceHub_SlowSubscriberDropsFrames(t *testing.T) {
 	h, cancel := newTestHub(t)
 	defer cancel()
 
-	_, ch := h.subscribe()
+	_, ch, _ := h.subscribe()
 
 	// Send more frames than the channel buffer (capacity 4).
 	for i := 0; i < 10; i++ {
@@ -622,7 +622,7 @@ func TestDeviceHub_BroadcastReturnsFalseWithNoSubscribers(t *testing.T) {
 	h, cancel := newTestHub(t)
 	defer cancel()
 
-	id, _ := h.subscribe()
+	id, _, _ := h.subscribe()
 	h.unsubscribe(id)
 
 	if h.broadcast(videoFrame{data: []byte{1}}) {
@@ -633,7 +633,7 @@ func TestDeviceHub_BroadcastReturnsFalseWithNoSubscribers(t *testing.T) {
 func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
 	h, _ := newTestHub(t)
 
-	_, ch := h.subscribe()
+	_, ch, _ := h.subscribe()
 
 	// Simulate producer recording an error and closing the channel.
 	wantErr := status.Errorf(codes.Internal, "camera read failed: test error")
