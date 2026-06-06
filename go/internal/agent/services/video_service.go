@@ -211,11 +211,6 @@ const maxFrameBytes = 2 * 1024 * 1024 // 2 MiB
 // Late-joining subscribers receive whatever frame the producer sends next;
 // they will not see an IDR/keyframe until the next one arrives naturally (at most
 // one GOP interval away for GStreamer pipelines with key-int-max set).
-//
-// All subscribers share a single copy of frame.data. The slice is read-only after
-// broadcast returns: subscribers only pass it to stream.Send() which does not
-// modify the underlying array. This reduces allocations from O(subscribers) to
-// O(1) per frame regardless of fan-out.
 func (h *deviceHub) broadcast(frame videoFrame) bool {
 	if len(frame.data) > maxFrameBytes {
 		return true // oversized frame: drop silently, keep the hub alive
@@ -234,14 +229,19 @@ func (h *deviceHub) broadcast(frame videoFrame) bool {
 	h.mu.Unlock()
 	// Make ONE copy of frame data and share it across all subscribers.
 	// Subscribers only read the slice (via stream.Send), never write to it.
-	shared := videoFrame{
-		data:  append([]byte(nil), frame.data...),
-		tsNs:  frame.tsNs,
-		codec: frame.codec,
-	}
+	// Copy frame.data once per subscriber so each goroutine owns its slice and
+	// there is no aliasing between concurrent stream.Send() calls. The
+	// subscriber count is bounded by maxSubscribersPerHub (16), so the total
+	// allocation per frame is at most 16 × maxFrameBytes = 32 MiB, and typical
+	// frames are far smaller.
 	for _, ch := range snapshot {
+		f := videoFrame{
+			data:  append([]byte(nil), frame.data...),
+			tsNs:  frame.tsNs,
+			codec: frame.codec,
+		}
 		select {
-		case ch <- shared:
+		case ch <- f:
 		default:
 		}
 	}
@@ -533,9 +533,14 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	}
 	path := fmt.Sprintf("/dev/video%d", devID)
 
-	// Use Lstat to validate the path before any open: ensures it is a character
-	// device with V4L2 major number 81 and is not a symlink. This prevents any
-	// symlink-based traversal even before O_NOFOLLOW is applied at open() time.
+	// Lstat validates the path before any open: the node must be a character
+	// device with V4L2 major number 81 and must not be a symlink. This catches
+	// obvious misconfiguration and prevents symlink-based traversal before
+	// O_NOFOLLOW is applied at the real open() inside streamV4L2Native.
+	// A residual TOCTOU window between this Lstat and the open in streamV4L2Native
+	// is unavoidable in the current architecture; O_NOFOLLOW + major-number
+	// enforcement together bound it to physical device substitution by a
+	// privileged local process, which is outside the threat model for this agent.
 	var stat unix.Stat_t
 	if err := unix.Lstat(path, &stat); err != nil {
 		return status.Errorf(codes.NotFound, "video device not found")
@@ -543,10 +548,11 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	if stat.Mode&unix.S_IFMT != unix.S_IFCHR || unix.Major(uint64(stat.Rdev)) != v4l2MajorDevice {
 		return status.Errorf(codes.InvalidArgument, "path is not a V4L2 video device")
 	}
-
-	if !s.hasVideoCapture(path) {
-		return status.Errorf(codes.NotFound, "video device not found or not a capture device")
-	}
+	// hasVideoCapture is intentionally not called here: it would open the device
+	// a second time before streamV4L2Native opens it, adding an extra TOCTOU
+	// window. streamV4L2Native performs VIDIOC_QUERYCAP on the same fd it will
+	// use for streaming, so capability verification and streaming happen atomically
+	// on a single fd rather than across separate opens.
 
 	h, id, ch, err := s.getOrCreateHub(ctx, path, req)
 	if err != nil {

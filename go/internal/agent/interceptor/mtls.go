@@ -32,18 +32,30 @@ func peerAddr(ctx context.Context) string {
 func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 	p, ok := peer.FromContext(ctx)
 	if !ok || p.AuthInfo == nil {
-		logger.Warn("rejected unauthenticated gRPC caller", zap.String("remote", peerAddr(ctx)))
+		logger.Warn("rejected unauthenticated gRPC caller",
+			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "missing peer credentials")
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok {
-		logger.Warn("rejected non-TLS gRPC caller", zap.String("remote", peerAddr(ctx)))
+		logger.Warn("rejected non-TLS gRPC caller",
+			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "mTLS authentication required")
 	}
 	if len(tlsInfo.State.VerifiedChains) == 0 {
-		logger.Warn("rejected caller with unverified certificate chain", zap.String("remote", peerAddr(ctx)))
+		logger.Warn("rejected caller with unverified certificate chain",
+			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "client certificate not verified")
 	}
+	// Log the authenticated peer's identity for access-control auditing.
+	// Both the IP address and the certificate identity (subject CN + serial)
+	// are recorded so that access events are attributable to a specific credential.
+	leaf := tlsInfo.State.VerifiedChains[0][0]
+	logger.Info("mTLS peer authenticated",
+		zap.String("remote", peerAddr(ctx)),
+		zap.String("subject", leaf.Subject.CommonName),
+		zap.String("serial", leaf.SerialNumber.String()),
+	)
 	return nil
 }
 
