@@ -438,7 +438,6 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 				}
 				return status.Errorf(codes.Internal, "video producer for %s stopped", path)
 			}
-			}
 			if err := stream.Send(&agentpb.VideoFrame{
 				Data:        frame.data,
 				TimestampNs: frame.tsNs,
