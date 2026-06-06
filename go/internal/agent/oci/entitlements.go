@@ -39,6 +39,13 @@ type ApplyOptions struct {
 func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) error {
 	didSetDeviceCapabilities := false
 
+	// For multi-service containers the cgroup path must include the serviceName
+	// so each service gets its own slice (same logic as CreateContainer in client.go).
+	containerName := cfg.AppID
+	if cfg.ServiceName != "" {
+		containerName = cfg.AppID + "/" + cfg.ServiceName
+	}
+
 	for _, ent := range cfg.Entitlements {
 		switch ent.Type {
 		case appconfig.EntitlementGPU:
@@ -49,13 +56,13 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applyAudio(spec)
 			if !didSetDeviceCapabilities {
 				didSetDeviceCapabilities = true
-				SetDeviceCapabilities(spec, cfg.AppID)
+				SetDeviceCapabilities(spec, containerName)
 			}
 		case appconfig.EntitlementVideo, appconfig.EntitlementCamera:
 			applyCamera(spec)
 			if !didSetDeviceCapabilities {
 				didSetDeviceCapabilities = true
-				SetDeviceCapabilities(spec, cfg.AppID)
+				SetDeviceCapabilities(spec, containerName)
 			}
 		case appconfig.EntitlementPersist:
 			applyPersist(spec, ent, cfg.AppID)
@@ -121,10 +128,12 @@ func SetDeviceCapabilities(spec *Spec, appName string) {
 	}
 
 	// Configure cgroupsPath: use WENDY_SYSTEMD_SERVICE_NAME env var or default to "edge-agent".
-	// Replace "/" with "-" so multi-service container names (appId/serviceName)
-	// are safe as cgroup slice components (WDY-878).
+	// Replace "/" with "-" so multi-service container names (appId/serviceName) are
+	// safe as cgroup slice components (WDY-878). Hyphens in appID/serviceName are
+	// preserved — replacing them with "_" would produce a different path than
+	// CreateContainer and could cause cgroup collisions (e.g. "my-app/svc" and
+	// "my_app-svc" would both map to "my_app_svc").
 	cgroupID := strings.ReplaceAll(appName, "/", "-")
-	cgroupID = strings.ReplaceAll(cgroupID, "-", "_")
 	systemdSvc := env.SystemdServiceName()
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", systemdSvc, cgroupID)
 

@@ -80,14 +80,38 @@ func ContainerName(appID, serviceName string) string {
 //   - Multi-service apps (serviceName != ""): "wendy-{appID}@{serviceName}".
 //
 // "@" is used as the separator because it cannot appear in a valid appID
-// ([a-zA-Z0-9._-]) or a valid serviceName ([a-z][a-z0-9-]*), making the key
-// unambiguous and free of collisions (e.g. SnapshotKey("foo-bar","baz") vs
-// SnapshotKey("foo","bar-baz") produce distinct keys).
+// ([a-zA-Z0-9._-]) or a valid serviceName ([a-z][a-z0-9-]{0,56}), making
+// the key unambiguous and free of collisions (e.g. SnapshotKey("foo-bar","baz")
+// vs SnapshotKey("foo","bar-baz") produce distinct keys).
+// Note: the key is not path-sanitised; "@" is safe for overlayfs snapshot
+// stores (the containerd default), but callers must not treat it as a filename.
 func SnapshotKey(appID, serviceName string) string {
 	if serviceName == "" {
 		return "wendy-" + appID
 	}
 	return "wendy-" + appID + "@" + serviceName
+}
+
+// ParseContainerName is the inverse of ContainerName. It splits a container
+// name of the form "{appID}" or "{appID}/{serviceName}" back into its
+// components. Returns an error when the name is empty, the appID portion is
+// empty, or the serviceName portion (if present) fails ValidateServiceName.
+//
+// Using this helper in recreateContainer keeps the parsing logic in one place
+// and ensures the same validation invariants as the creation path.
+func ParseContainerName(name string) (appID, serviceName string, err error) {
+	parts := strings.SplitN(name, "/", 2)
+	appID = parts[0]
+	if appID == "" {
+		return "", "", fmt.Errorf("invalid container name %q: appID is empty", name)
+	}
+	if len(parts) == 2 {
+		serviceName = parts[1]
+		if err := appconfig.ValidateServiceName(serviceName); err != nil {
+			return "", "", fmt.Errorf("invalid container name %q: %w", name, err)
+		}
+	}
+	return appID, serviceName, nil
 }
 
 // computeChainID computes the chain ID for a layer given its parent chain ID

@@ -386,6 +386,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	c.logger.Info("Creating container",
 		zap.String("container_name", containerName),
+		zap.String("app_id", appID),
+		zap.String("service_name", serviceName),
 		zap.String("image", imageName),
 	)
 
@@ -576,6 +578,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	c.logger.Info("Container created",
 		zap.String("container_name", containerName),
+		zap.String("app_id", appID),
+		zap.String("service_name", serviceName),
 		zap.String("image", imageName),
 		zap.String("version", version),
 	)
@@ -989,14 +993,12 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	}
 
 	// Recreate with the same configuration.
-	// Derive the snapshot key from the container name: for multi-service
-	// containers (appId/serviceName) convert "/" to "-" to get a filesystem-safe
-	// key; for single-container apps the name is already flat.
-	appID := appName
-	svcName := ""
-	if idx := strings.Index(appName, "/"); idx >= 0 {
-		appID = appName[:idx]
-		svcName = appName[idx+1:]
+	// Parse the container name to recover appID and serviceName using the same
+	// logic and validation as the creation path (ParseContainerName is the
+	// inverse of ContainerName and validates the serviceName portion).
+	appID, svcName, err := ParseContainerName(appName)
+	if err != nil {
+		return fmt.Errorf("recreateContainer: %w", err)
 	}
 	snapshotKey := SnapshotKey(appID, svcName)
 	_, err = c.client.NewContainer(ctx, appName,
