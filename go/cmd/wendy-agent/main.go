@@ -173,7 +173,6 @@ func main() {
 		containerSvcOpts...,
 	)
 	audioSvc := services.NewAudioService(logger)
-	videoSvc := services.NewVideoService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
@@ -195,6 +194,8 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	videoSvc := services.NewVideoService(ctx, logger)
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 

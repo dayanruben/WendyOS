@@ -208,13 +208,22 @@ type VideoService struct {
 	readDeviceName  func(base string) (string, error)
 	hasVideoCapture func(path string) bool
 
+	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
+	cancel context.CancelFunc // cancels ctx
+	wg     sync.WaitGroup     // tracks active runProducer goroutines
+
 	mu   sync.Mutex
 	hubs map[string]*deviceHub
 }
 
-func NewVideoService(logger *zap.Logger) *VideoService {
+// NewVideoService creates a VideoService whose producer goroutines are tied to ctx.
+// Call Shutdown to cancel all active producers and wait for them to exit.
+func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
+	svcCtx, cancel := context.WithCancel(ctx)
 	return &VideoService{
 		logger: logger,
+		ctx:    svcCtx,
+		cancel: cancel,
 		hubs:   make(map[string]*deviceHub),
 		globDevices: func() ([]string, error) {
 			return filepath.Glob("/dev/video*")
@@ -234,6 +243,12 @@ func NewVideoService(logger *zap.Logger) *VideoService {
 			return errno == 0 && cap.hasVideoCapture()
 		},
 	}
+}
+
+// Shutdown cancels all active producer goroutines and waits for them to exit.
+func (s *VideoService) Shutdown() {
+	s.cancel()
+	s.wg.Wait()
 }
 
 func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
@@ -273,11 +288,20 @@ func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVide
 	return &agentpb.ListVideoDevicesResponse{Devices: devices}, nil
 }
 
+// maxHubRetries is the maximum number of times getOrCreateHub will retry after
+// observing a race between subscribe() and the last subscriber's cancel() call.
+// Exceeding this indicates pathological churn and we return Unavailable.
+const maxHubRetries = 10
+
 // getOrCreateHub returns the existing hub for path, or starts a new producer and hub.
 // The caller receives a hub with at least one subscriber already registered (the returned id/ch).
 // Returns an error if a hub already exists with different stream parameters.
 func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *agentpb.StreamVideoRequest) (h *deviceHub, id int, ch chan videoFrame, err error) {
-	for {
+	for retries := 0; ; retries++ {
+		if retries >= maxHubRetries {
+			return nil, 0, nil, status.Errorf(codes.Unavailable,
+				"device %s hub unavailable after %d retries: subscriber churn too high", path, retries)
+		}
 		s.mu.Lock()
 		h, exists := s.hubs[path]
 		if !exists {
@@ -322,7 +346,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	}
 	// s.mu is held here (broke out of loop with no hub in map).
 
-	hctx, cancel := context.WithCancel(context.Background())
+	hctx, cancel := context.WithCancel(s.ctx)
 	h = &deviceHub{
 		subs:   make(map[int]chan videoFrame),
 		ctx:    hctx,
@@ -334,6 +358,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	s.hubs[path] = h
 	s.mu.Unlock()
 
+	s.wg.Add(1)
 	go s.runProducer(hctx, h, path, req)
 	return h, id, ch, nil
 }
@@ -342,6 +367,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 // It tries native V4L2 H.264 first, falling back to GStreamer when unsupported.
 // When the hub loses its last subscriber the context is cancelled and this goroutine exits.
 func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path string, req *agentpb.StreamVideoRequest) {
+	defer s.wg.Done()
 	broadcast := func(data []byte, tsNs uint64, codec agentpb.VideoCodec) bool {
 		return h.broadcast(videoFrame{data: data, tsNs: tsNs, codec: codec})
 	}

@@ -19,7 +19,7 @@ import (
 // newTestVideoService creates a VideoService with injectable filesystem functions.
 // hasVideoCapture defaults to always returning true so tests are not gated on real V4L2 devices.
 func newTestVideoService(glob func() ([]string, error), readName func(string) (string, error)) *VideoService {
-	svc := NewVideoService(zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop())
 	if glob != nil {
 		svc.globDevices = glob
 	}
@@ -528,7 +528,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	prev := gstFallbackDirs
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
-	svc := NewVideoService(zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop())
 	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
