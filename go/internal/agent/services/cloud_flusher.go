@@ -70,17 +70,15 @@ type CloudFlusher struct {
 	logger          *zap.Logger
 	buffer          *TelemetryBuffer
 	provisioningSvc *ProvisioningService // nil in tests
-	orgID           int32
-	assetID         int32
 }
 
-// NewCloudFlusher creates a CloudFlusher with explicit org/asset IDs. For tests.
+// NewCloudFlusher creates a CloudFlusher for tests. The explicit org/asset ID
+// parameters are preserved for compatibility with existing callers, but the
+// flusher does not store them on the struct.
 func NewCloudFlusher(logger *zap.Logger, buffer *TelemetryBuffer, orgID, assetID int32) *CloudFlusher {
 	return &CloudFlusher{
-		logger:  logger,
-		buffer:  buffer,
-		orgID:   orgID,
-		assetID: assetID,
+		logger: logger,
+		buffer: buffer,
 	}
 }
 
