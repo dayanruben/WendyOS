@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
 
 const (
@@ -37,15 +36,16 @@ type ApplyOptions struct {
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
 func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) error {
-	didSetDeviceCapabilities := false
-
-	// For multi-service containers the cgroup path must include the serviceName
-	// so each service gets its own slice (same logic as CreateContainer in client.go).
-	containerName := cfg.AppID
+	if err := appconfig.ValidateAppID(cfg.AppID); err != nil {
+		return fmt.Errorf("invalid app ID: %w", err)
+	}
 	if cfg.ServiceName != "" {
-		containerName = cfg.AppID + "/" + cfg.ServiceName
+		if err := appconfig.ValidateServiceName(cfg.ServiceName); err != nil {
+			return fmt.Errorf("invalid service name: %w", err)
+		}
 	}
 
+	didSetDeviceCapabilities := false
 	for _, ent := range cfg.Entitlements {
 		switch ent.Type {
 		case appconfig.EntitlementGPU:
@@ -56,13 +56,13 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applyAudio(spec)
 			if !didSetDeviceCapabilities {
 				didSetDeviceCapabilities = true
-				SetDeviceCapabilities(spec, containerName)
+				SetDeviceCapabilities(spec)
 			}
 		case appconfig.EntitlementVideo, appconfig.EntitlementCamera:
 			applyCamera(spec)
 			if !didSetDeviceCapabilities {
 				didSetDeviceCapabilities = true
-				SetDeviceCapabilities(spec, containerName)
+				SetDeviceCapabilities(spec)
 			}
 		case appconfig.EntitlementPersist:
 			applyPersist(spec, ent, cfg.AppID)
@@ -84,11 +84,13 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 }
 
 // SetDeviceCapabilities adds standard device capabilities plus the cgroup
-// mount/namespace wiring needed for device-aware workloads. Callers are still
-// responsible for adding explicit device cgroup allow rules for each
+// mount/namespace wiring needed for device-aware workloads. The caller is
+// responsible for setting CgroupsPath after this call (client.go sets it
+// explicitly so it is the sole authority on the cgroup path). Callers are
+// also responsible for adding explicit device cgroup allow rules for each
 // entitlement they enable; this helper intentionally does not add a generic
 // allow-all devices rule.
-func SetDeviceCapabilities(spec *Spec, appName string) {
+func SetDeviceCapabilities(spec *Spec) {
 	caps := []string{
 		"CAP_CHOWN",
 		"CAP_DAC_OVERRIDE",
@@ -126,16 +128,6 @@ func SetDeviceCapabilities(spec *Spec, appName string) {
 	if spec.Linux.Resources == nil {
 		spec.Linux.Resources = &LinuxResources{}
 	}
-
-	// Configure cgroupsPath: use WENDY_SYSTEMD_SERVICE_NAME env var or default to "edge-agent".
-	// Replace "/" with "-" so multi-service container names (appId/serviceName) are
-	// safe as cgroup slice components (WDY-878). Hyphens in appID/serviceName are
-	// preserved — replacing them with "_" would produce a different path than
-	// CreateContainer and could cause cgroup collisions (e.g. "my-app/svc" and
-	// "my_app-svc" would both map to "my_app_svc").
-	cgroupID := strings.ReplaceAll(appName, "/", "-")
-	systemdSvc := env.SystemdServiceName()
-	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", systemdSvc, cgroupID)
 
 	// Add cgroup namespace.
 	spec.Linux.Namespaces = append(spec.Linux.Namespaces, LinuxNamespace{Type: "cgroup"})

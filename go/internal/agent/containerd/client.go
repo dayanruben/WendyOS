@@ -367,6 +367,18 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		appID = req.GetAppName()
 	}
 	serviceName := appCfg.ServiceName
+
+	// Validate app identity at the RPC entry point so downstream helpers can
+	// assume inputs are well-formed (defence-in-depth).
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return fmt.Errorf("invalid app ID: %w", err)
+	}
+	if serviceName != "" {
+		if err := appconfig.ValidateServiceName(serviceName); err != nil {
+			return fmt.Errorf("invalid service name: %w", err)
+		}
+	}
+
 	containerName := ContainerName(appID, serviceName)
 
 	// Canonicalise the image reference so older CLIs sending Docker short
@@ -380,12 +392,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	c.logger.Info("Creating container",
+	logFields := []zap.Field{
 		zap.String("container_name", containerName),
 		zap.String("app_id", appID),
-		zap.String("service_name", serviceName),
 		zap.String("image", imageName),
-	)
+	}
+	if serviceName != "" {
+		logFields = append(logFields, zap.String("service_name", serviceName))
+	}
+	c.logger.Info("Creating container", logFields...)
 
 	// Determine version from the app config or default.
 	version := appCfg.Version
@@ -531,12 +546,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("applying entitlements: %w", err)
 	}
 
-	// Set the cgroup path AFTER ApplyEntitlements so this value always wins
-	// over the one SetDeviceCapabilities may have written for audio/camera
-	// entitlements. Both paths now agree on the systemd service name
-	// (WENDY_SYSTEMD_SERVICE_NAME, defaulting to "edge-agent") and the
-	// {appID}-{serviceName} separator, eliminating the divergence that
-	// existed when client.go used the hard-coded "wendy-agent" string.
+	// Set the cgroup path here — client.go is the sole authority so there is
+	// no risk of divergence with entitlements.go. SetDeviceCapabilities only
+	// adds the cgroup namespace and mount; it no longer sets CgroupsPath.
 	//   - Single-container: "system.slice:{systemdSvc}:{appID}"
 	//   - Multi-service:    "system.slice:{systemdSvc}:{appID}-{serviceName}"
 	cgroupSuffix := appID
@@ -574,13 +586,16 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
-	c.logger.Info("Container created",
+	createdFields := []zap.Field{
 		zap.String("container_name", containerName),
 		zap.String("app_id", appID),
-		zap.String("service_name", serviceName),
 		zap.String("image", imageName),
 		zap.String("version", version),
-	)
+	}
+	if serviceName != "" {
+		createdFields = append(createdFields, zap.String("service_name", serviceName))
+	}
+	c.logger.Info("Container created", createdFields...)
 
 	return nil
 }

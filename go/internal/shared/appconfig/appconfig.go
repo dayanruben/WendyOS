@@ -21,10 +21,11 @@ var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
 // serviceNamePattern restricts serviceName to the same character set used for
 // service map keys in wendy.json. The pattern requires a lowercase letter as
-// the first character to avoid ambiguity with numeric identifiers, followed by
-// lowercase letters, digits, or hyphens. Max 57 chars so the derived
+// the first character, allows lowercase letters, digits, or hyphens in the
+// middle, and requires a letter or digit as the last character (RFC 1123 DNS
+// label — no trailing hyphens). Max 57 chars so the derived
 // WENDY_HOSTNAME="{serviceName}.local" stays within the RFC 1123 63-char label limit.
-var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,56}$`)
+var serviceNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$`)
 
 // EntitlementType enumerates the supported entitlement types.
 const (
@@ -309,7 +310,7 @@ func ValidateAppID(id string) error {
 // a lowercase letter followed by lowercase letters, digits, or hyphens.
 func ValidateServiceName(name string) error {
 	if !serviceNamePattern.MatchString(name) {
-		return fmt.Errorf("serviceName %q is invalid: must match ^[a-z][a-z0-9-]{0,56}$ (lowercase letter then up to 56 lowercase letters, digits, or hyphens; max 57 chars total)", name)
+		return fmt.Errorf("serviceName %q is invalid: must start with a lowercase letter, contain only lowercase letters, digits, or hyphens, end with a letter or digit, and be at most 57 chars (RFC 1123)", name)
 	}
 	return nil
 }
