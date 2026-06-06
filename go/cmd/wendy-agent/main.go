@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -257,6 +258,50 @@ func main() {
 		services.CollectAgentMetrics(ctx, broadcaster)
 	}()
 
+	// Collect kernel messages from /dev/kmsg as OTel debug/trace logs.
+	// Opt-in: set WENDY_COLLECT_DMESG=true to enable. Disabled by default
+	// because kernel messages may contain PII (MAC addresses, serial numbers,
+	// process names, filesystem paths) that operators must consciously opt into
+	// forwarding to their telemetry backend.
+	collectDmesgEnv := os.Getenv("WENDY_COLLECT_DMESG")
+	collectDmesg, collectDmesgErr := strconv.ParseBool(collectDmesgEnv)
+	if collectDmesgEnv != "" && collectDmesgErr != nil {
+		logger.Warn("WENDY_COLLECT_DMESG has unrecognised value; dmesg collection disabled",
+			zap.String("value", collectDmesgEnv),
+		)
+	}
+	if collectDmesg {
+		// Dual-control gate: env-var (WENDY_COLLECT_DMESG) is the first domain;
+		// the DPIA confirmation file is the second, filesystem domain. A process
+		// with only env-var write access cannot enable collection on its own.
+		// CollectDmesgLogs enforces this independently, but the pre-check here
+		// makes both controls visible at the callsite and avoids starting a
+		// goroutine that would immediately return on DPIA failure.
+		// Check both existence and non-empty content to mirror CollectDmesgLogs.
+		dpiaContent, dpiaErr := os.ReadFile(services.DmesgDPIAConfirmFile)
+		dpiaValid := dpiaErr == nil && len(bytes.TrimSpace(dpiaContent)) > 0
+		for i := range dpiaContent {
+			dpiaContent[i] = 0
+		}
+		dpiaContent = nil
+		if !dpiaValid {
+			logger.Info("kernel dmesg collection skipped: DPIA confirmation file absent or empty",
+				zap.String("file", services.DmesgDPIAConfirmFile),
+				zap.String("reason", "filesystem-domain gate not satisfied; WENDY_COLLECT_DMESG alone is insufficient"),
+			)
+		} else {
+			logger.Info("kernel dmesg collection enabled", zap.String("source", "/dev/kmsg"))
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				services.CollectDmesgLogs(ctx, logger, broadcaster)
+			}()
+		}
+	} else {
+		logger.Info("kernel dmesg collection disabled (set WENDY_COLLECT_DMESG=true to enable)")
+	}
+
+	// Main agent gRPC server port.
 	agentPort := defaultAgentPort
 	if p := os.Getenv("WENDY_AGENT_PORT"); p != "" {
 		agentPort = p
