@@ -270,7 +270,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 	agentSvc := services.NewAgentService(logger, nm, hd, bm, &services.AgentInstaller{})
 	containerSvc := services.NewContainerService(logger, cc)
 	broadcaster := services.NewTelemetryBroadcaster()
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 	otelLogs := services.NewOTELLogsReceiver(broadcaster)
 
 	// Register all services on a single gRPC server.
@@ -734,7 +734,7 @@ func TestStreamMetrics(t *testing.T) {
 	lis := bufconn.Listen(integrationBufSize)
 
 	broadcaster := services.NewTelemetryBroadcaster()
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 	otelMetrics := services.NewOTELMetricsReceiver(broadcaster)
 
 	srv := grpc.NewServer()
@@ -802,7 +802,7 @@ func TestStreamTraces(t *testing.T) {
 	lis := bufconn.Listen(integrationBufSize)
 
 	broadcaster := services.NewTelemetryBroadcaster()
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 	otelTraces := services.NewOTELTraceReceiver(broadcaster)
 
 	srv := grpc.NewServer()

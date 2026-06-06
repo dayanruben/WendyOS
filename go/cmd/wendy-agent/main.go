@@ -103,8 +103,13 @@ func main() {
 	// Create the telemetry broadcaster early so we can tee agent logs into it.
 	broadcaster := services.NewTelemetryBroadcaster()
 
+	telemetryBuf := services.NewTelemetryBuffer(services.TelemetryBufferConfig{}, broadcaster, logger)
+	if !telemetryBuf.DiskEnabled() {
+		logger.Warn("telemetry disk buffer unavailable, falling back to in-memory only")
+	}
+
 	// Wrap the logger so agent internal logs are published to the telemetry stream.
-	telemetryCore := services.NewTelemetryCore(broadcaster, zapcore.DebugLevel)
+	telemetryCore := services.NewTelemetryCore(telemetryBuf, zapcore.DebugLevel)
 	logger = zap.New(zapcore.NewTee(logger.Core(), telemetryCore))
 
 	logger.Info("Starting wendy-agent", zap.String("version", version.Version))
@@ -148,7 +153,7 @@ func main() {
 		defer ctrdClient.Close()
 	}
 
-	logManager := services.NewContainerLogManager(logger, broadcaster)
+	logManager := services.NewContainerLogManager(logger, telemetryBuf)
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
@@ -171,7 +176,7 @@ func main() {
 	videoSvc := services.NewVideoService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
@@ -181,11 +186,12 @@ func main() {
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
-	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster)
+	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
 
-	otelLogReceiver := services.NewOTELLogsReceiver(broadcaster)
-	otelMetricReceiver := services.NewOTELMetricsReceiver(broadcaster)
-	otelTraceReceiver := services.NewOTELTraceReceiver(broadcaster)
+	// OTEL receivers.
+	otelLogReceiver := services.NewOTELLogsReceiver(telemetryBuf)
+	otelMetricReceiver := services.NewOTELMetricsReceiver(telemetryBuf)
+	otelTraceReceiver := services.NewOTELTraceReceiver(telemetryBuf)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -248,14 +254,14 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			services.CollectContainerMetrics(ctx, containerdClient, broadcaster, logManager)
+			services.CollectContainerMetrics(ctx, containerdClient, telemetryBuf, logManager)
 		}()
 	}
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		services.CollectAgentMetrics(ctx, broadcaster)
+		services.CollectAgentMetrics(ctx, telemetryBuf)
 	}()
 
 	// Collect kernel messages from /dev/kmsg as OTel debug/trace logs.
@@ -428,7 +434,12 @@ func main() {
 		bluetooth.StartBLEPeripheral(ctx, logger, bleDispatcher, tlsConfig)
 	}
 
-	certPEM, chainPEM, keyPEM := provisioningSvc.ProvisioningCerts()
+	// Check if already provisioned and start mTLS server and tunnel broker if certificates exist.
+	certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
+	keyPEM := string(keyData)
+	for i := range keyData {
+		keyData[i] = 0
+	}
 	alreadyProvisioned := certPEM != "" && keyPEM != ""
 
 	if alreadyProvisioned {
@@ -485,7 +496,15 @@ func main() {
 		}()
 	}
 
-	provisioningSvc.OnProvisioned = func(certPEM, chainPEM, keyPEM string) {
+	// Set up the provisioning callback to start the mTLS server, shut down
+	// the plaintext server, and switch the registry to HTTPS.
+	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
+		defer func() {
+			for i := range keyData {
+				keyData[i] = 0
+			}
+		}()
+		keyPEM := string(keyData)
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum)
@@ -542,7 +561,7 @@ func main() {
 		otelHTTPPort = p
 	}
 
-	otelHTTPReceiver := services.NewOTELHTTPReceiver(logger, broadcaster)
+	otelHTTPReceiver := services.NewOTELHTTPReceiver(logger, telemetryBuf)
 	otelHTTPLis, err := listenDualStackLoopback(otelHTTPPort)
 	if err != nil {
 		logger.Fatal("Failed to listen on OTEL HTTP port", zap.String("port", otelHTTPPort), zap.Error(err))
@@ -556,6 +575,15 @@ func main() {
 			logger.Error("OTEL HTTP server error", zap.Error(err))
 		}
 	}()
+
+	cloudFlusher := services.NewCloudFlusherWithProvisioning(logger, telemetryBuf, provisioningSvc)
+	if telemetryBuf.DiskEnabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cloudFlusher.Run(ctx)
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

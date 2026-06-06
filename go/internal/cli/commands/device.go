@@ -636,6 +636,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	var serviceName string
 	var minSeverity int32
 	var level string
+	var tail int32
 
 	cmd := &cobra.Command{
 		Use:   "logs",
@@ -672,10 +673,16 @@ func newDeviceLogsCmd() *cobra.Command {
 			} else if minSeverity > 0 {
 				req.MinSeverity = &minSeverity
 			}
+			if tail > 0 {
+				req.LastN = &tail
+			}
 			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
 			if err != nil {
 				return fmt.Errorf("starting log stream: %w", err)
 			}
+
+			liveSeparatorPrinted := tail == 0
+			seenHistory := false
 
 			for {
 				resp, err := stream.Recv()
@@ -689,6 +696,19 @@ func newDeviceLogsCmd() *cobra.Command {
 				logs := resp.GetLogs()
 				if logs == nil {
 					continue
+				}
+
+				// Track whether any history was received.
+				if resp.IsHistory {
+					seenHistory = true
+				}
+
+				// Print separator only when transitioning from actual history to live.
+				if !liveSeparatorPrinted && seenHistory && !resp.IsHistory {
+					liveSeparatorPrinted = true
+					if !jsonOutput {
+						fmt.Println(logMetaStyle.Render("── live ──────────────────────"))
+					}
 				}
 
 				for _, rl := range logs.GetResourceLogs() {
@@ -713,6 +733,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
 
 	return cmd
 }
