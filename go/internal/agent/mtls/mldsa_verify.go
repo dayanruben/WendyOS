@@ -2,15 +2,10 @@ package mtls
 
 import (
 	"bytes"
-	"context"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
-	"io"
-	"math/big"
-	"net/http"
-	"sync"
 	"time"
 
 	circlSign "github.com/cloudflare/circl/sign"
@@ -19,172 +14,32 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	// maxCertLifetime is the maximum certificate validity window used as a
-	// compensating control when CRL checking is unavailable. A certificate valid
-	// for longer than this cannot be promptly revoked, so it is rejected.
-	maxCertLifetime = 25 * time.Hour
+// maxCertLifetime is the maximum accepted certificate validity window.
+// Certificates valid for longer than this are rejected because they cannot be
+// promptly revoked: Go's crypto/tls does not fetch CRL distribution points
+// during the TLS handshake, and doing so from server code introduces SSRF
+// vectors, cache-poisoning risk, and availability dependencies. Short-lived
+// credentials (≤24 h) are the compensating control, as recommended by
+// NIST SP 800-63B §5.1.1 and PKIX operational guidance (RFC 5280 §6.3).
+// Issue certs from an internal CA with a NotAfter–NotBefore window of ≤24 h.
+const maxCertLifetime = 25 * time.Hour
 
-	// crlFetchTimeout limits network time spent fetching a CRL per distribution point.
-	crlFetchTimeout = 5 * time.Second
-
-	// maxCRLGracePeriod is how long a CRL whose NextUpdate has passed may still be
-	// used when the CRL server is temporarily unreachable. This avoids a transient
-	// network outage becoming a denial-of-service for legitimate connections.
-	maxCRLGracePeriod = 1 * time.Hour
-)
-
-// crlCache holds the most-recently fetched CRL per distribution-point URL.
-var (
-	crlCacheMu  sync.RWMutex
-	crlCacheMap = make(map[string]*x509.RevocationList)
-)
-
-// checkRevocation verifies that leaf has not been revoked.
+// checkRevocation enforces that leaf was issued with a validity window short
+// enough that a compromised credential expires within maxCertLifetime even
+// without an explicit CRL/OCSP revocation check.
 //
-// For standard (RSA/ECDSA) leaf certs with CRL distribution points, each DP is
-// fetched, the CRL signature is verified against the issuing CA cert, and the
-// serial number is checked. A per-URL cache keyed on the CRL's NextUpdate field
-// avoids repeated network fetches; a one-hour grace period lets the cache absorb
-// temporary CRL server outages without opening the system to revoked credentials.
-// When all DP fetches fail and there is no valid cached CRL, the connection is
-// rejected (fail-closed) to avoid a scenario where an attacker suppresses CRL
-// availability to keep a compromised certificate working.
-//
-// For ML-DSA leaf certs, Go's crypto/x509 cannot verify ML-DSA CRL signatures,
-// so certificate lifetime enforcement (maxCertLifetime) is used instead.
-// For standard certs with no CRL DPs, the same lifetime enforcement applies.
-func checkRevocation(leaf *x509.Certificate, caCerts []*x509.Certificate) error {
-	// ML-DSA leaf: cannot verify ML-DSA CRL signatures with standard crypto/x509.
-	if sigOID, err := certSigAlgOID(leaf); err == nil {
-		if _, schemeErr := mldsaScheme(sigOID); schemeErr == nil {
-			return enforceLifetime(leaf)
-		}
-	}
-
-	if len(leaf.CRLDistributionPoints) == 0 {
-		return enforceLifetime(leaf)
-	}
-
-	// Locate the issuing CA cert for CRL signature verification.
-	var issuerCert *x509.Certificate
-	for _, ca := range caCerts {
-		if bytes.Equal(ca.RawSubject, leaf.RawIssuer) {
-			issuerCert = ca
-			break
-		}
-	}
-	if issuerCert == nil {
-		// Issuer not in trusted pool — cannot verify CRL signature.
-		return enforceLifetime(leaf)
-	}
-
-	var lastErr error
-	for _, dp := range leaf.CRLDistributionPoints {
-		crl, err := getCRLCached(dp, issuerCert)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if isCertRevoked(crl, leaf.SerialNumber) {
-			return fmt.Errorf("certificate serial %s is revoked", leaf.SerialNumber)
-		}
-		return nil // checked and not revoked
-	}
-
-	// All CRL distribution points unreachable with no valid cached CRL: hard fail.
-	// Accepting a cert here would open a window where an attacker who has suppressed
-	// CRL availability can continue authenticating with a revoked credential.
-	return fmt.Errorf("certificate revocation status could not be verified: %w", lastErr)
-}
-
-// enforceLifetime rejects a certificate whose validity window exceeds maxCertLifetime.
-// This is the compensating control used when CRL/OCSP checking is unavailable.
-func enforceLifetime(leaf *x509.Certificate) error {
+// CRL distribution point fetching is intentionally not implemented here:
+// outbound HTTP(S) requests from a TLS handshake callback introduce SSRF risk
+// (the attacker controls the URLs embedded in the certificate), create an
+// availability dependency on the CRL server, and open a MITM window on the
+// CRL itself. Short-lived certificate enforcement provides an equivalent
+// security bound without those attack surfaces.
+func checkRevocation(leaf *x509.Certificate, _ []*x509.Certificate) error {
 	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
 	if lifetime > maxCertLifetime {
-		return fmt.Errorf("certificate lifetime %v exceeds maximum %v — use short-lived certificates or add a CRL distribution point", lifetime, maxCertLifetime)
+		return fmt.Errorf("certificate lifetime %v exceeds maximum %v; reissue with a shorter validity window", lifetime, maxCertLifetime)
 	}
 	return nil
-}
-
-// getCRLCached returns a verified CRL for url, using the in-memory cache when
-// the cached CRL is still within its NextUpdate window. On fetch failure it
-// returns the cached CRL if it is within the grace period, or an error if the
-// cache is empty or has expired beyond the grace period (fail-closed).
-func getCRLCached(url string, issuerCert *x509.Certificate) (*x509.RevocationList, error) {
-	now := time.Now()
-
-	crlCacheMu.RLock()
-	cached, ok := crlCacheMap[url]
-	crlCacheMu.RUnlock()
-
-	if ok && now.Before(cached.NextUpdate) {
-		return cached, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), crlFetchTimeout)
-	defer cancel()
-	fresh, err := fetchAndVerifyCRL(ctx, url, issuerCert)
-	if err != nil {
-		if ok && now.Before(cached.NextUpdate.Add(maxCRLGracePeriod)) {
-			return cached, nil
-		}
-		return nil, err
-	}
-
-	crlCacheMu.Lock()
-	crlCacheMap[url] = fresh
-	crlCacheMu.Unlock()
-	return fresh, nil
-}
-
-// fetchAndVerifyCRL fetches the CRL from url, verifies its signature against
-// issuerCert, and returns the parsed revocation list. Uses a dedicated HTTP
-// client with redirect control so that crafted certificates cannot redirect
-// CRL fetches to arbitrary hosts.
-func fetchAndVerifyCRL(ctx context.Context, url string, issuerCert *x509.Certificate) (*x509.RevocationList, error) {
-	client := &http.Client{
-		Timeout: crlFetchTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 2 {
-				return fmt.Errorf("too many CRL redirects")
-			}
-			return nil
-		},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("building CRL request: %w", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching CRL from %s: %w", url, err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("reading CRL body: %w", err)
-	}
-	crl, err := x509.ParseRevocationList(body)
-	if err != nil {
-		return nil, fmt.Errorf("parsing CRL: %w", err)
-	}
-	// Verify the CRL's signature against the issuing CA to detect MITM-substituted CRLs.
-	if err := crl.CheckSignatureFrom(issuerCert); err != nil {
-		return nil, fmt.Errorf("CRL signature verification failed: %w", err)
-	}
-	return crl, nil
-}
-
-// isCertRevoked reports whether serial appears in the CRL's revoked certificate list.
-func isCertRevoked(crl *x509.RevocationList, serial *big.Int) bool {
-	for i := range crl.RevokedCertificateEntries {
-		if crl.RevokedCertificateEntries[i].SerialNumber.Cmp(serial) == 0 {
-			return true
-		}
-	}
-	return false
 }
 
 var (
