@@ -22,8 +22,9 @@ var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 // serviceNamePattern validates serviceName: a lowercase letter as the first
 // character, lowercase letters, digits, or hyphens in the middle, and a letter
 // or digit as the last character (RFC 1123 DNS label — no trailing hyphens).
-// Max 57 chars so the derived WENDY_HOSTNAME="{serviceName}.local" keeps
-// {serviceName} within the RFC 1123 63-char DNS label limit.
+// Capped at 57 chars so the derived mDNS hostname "{serviceName}.local" stays
+// within 63 chars total (applying the RFC 1123 label limit conservatively to
+// the full hostname rather than just the serviceName component).
 var serviceNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$`)
 
 // EntitlementType enumerates the supported entitlement types.
