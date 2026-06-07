@@ -531,11 +531,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Build environment variables.
-	// Order: image built-in env → user-provided env (from request) → Wendy system env.
+	// Order: image built-in env → user-provided env (from request) → Wendy system env → OTEL injection.
 	// Wendy vars appear last so they always win in OCI semantics (last KEY wins).
 	wendyEnv, err := buildContainerBaseEnv(appID, serviceName)
 	if err != nil {
 		return fmt.Errorf("building container env: %w", err)
+	}
+	if err := validateUserEnv(req.GetEnv()); err != nil {
+		return fmt.Errorf("invalid env var in request (SOC2-CC6, NIST-SI-10): %w", err)
 	}
 	var env []string
 	if specErr == nil {
@@ -947,6 +950,21 @@ func buildContainerBaseEnv(appID, serviceName string) ([]string, error) {
 		env = append(env, "WENDY_APP_ID="+appID)
 	}
 	return env, nil
+}
+
+// validateUserEnv rejects caller-supplied env entries that contain characters
+// which could break the OCI env format or enable injection attacks.
+// Mirrors the defence-in-depth checks in buildContainerBaseEnv (SOC2-CC6, NIST-SI-10).
+func validateUserEnv(entries []string) error {
+	for _, kv := range entries {
+		if strings.ContainsAny(kv, "\x00\n\r") {
+			return fmt.Errorf("env entry contains forbidden control character: %q", sanitizeForLog(kv, 80))
+		}
+		if !strings.Contains(kv, "=") {
+			return fmt.Errorf("env entry missing '=' separator: %q", sanitizeForLog(kv, 80))
+		}
+	}
+	return nil
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
