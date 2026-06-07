@@ -55,6 +55,10 @@ type Client struct {
 	namespace    string
 	mu           sync.Mutex
 	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+
+	// appServices caches the services map for multi-service apps, keyed by appID.
+	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
+	appServices map[string]map[string]*appconfig.ServiceConfig
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -635,6 +639,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		createdFields = append(createdFields, zap.String("service_name", serviceName))
 	}
 	c.logger.Info("Container created", createdFields...)
+
+	// Cache services map for stop-order resolution.
+	if len(appCfg.Services) > 0 {
+		if c.appServices == nil {
+			c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
+		}
+		c.appServices[appID] = appCfg.Services
+	}
 
 	return nil
 }
@@ -1398,16 +1410,72 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 			zap.String("app_id", sanitizeForLog(appID, 253)))
 		return nil
 	}
+
+	stopOrder := c.resolveStopOrder(ctx, appID, ctrs)
 	var errs []error
-	for _, ctr := range ctrs {
-		if err := c.stopOne(ctx, ctr.ID()); err != nil {
+	for _, ctrID := range stopOrder {
+		if err := c.stopOne(ctx, ctrID); err != nil {
 			c.logger.Error("Failed to stop service container",
-				zap.String("container_id", ctr.ID()),
+				zap.String("container_id", ctrID),
 				zap.Error(err))
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// resolveStopOrder returns container IDs in reverse dependency order (dependents first).
+// Falls back to arbitrary order for single-container apps or unknown graphs.
+// Caller must hold c.mu.
+func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []containerd.Container) []string {
+	if len(ctrs) <= 1 {
+		ids := make([]string, len(ctrs))
+		for i, ctr := range ctrs {
+			ids[i] = ctr.ID()
+		}
+		return ids
+	}
+
+	services := c.appServices[appID]
+	if len(services) == 0 {
+		ids := make([]string, len(ctrs))
+		for i, ctr := range ctrs {
+			ids[i] = ctr.ID()
+		}
+		return ids
+	}
+
+	// Build serviceName→containerID map from containerd labels.
+	svcToID := make(map[string]string, len(ctrs))
+	for _, ctr := range ctrs {
+		labels, err := ctr.Labels(ctx)
+		if err != nil {
+			continue
+		}
+		if svcName := labels[labelKeyServiceName]; svcName != "" {
+			svcToID[svcName] = ctr.ID()
+		}
+	}
+
+	ordered, err := appconfig.ServiceTopoOrder(services)
+	if err != nil {
+		c.logger.Warn("resolveStopOrder: topo sort failed, using arbitrary order",
+			zap.String("app_id", appID), zap.Error(err))
+		ids := make([]string, len(ctrs))
+		for i, ctr := range ctrs {
+			ids[i] = ctr.ID()
+		}
+		return ids
+	}
+
+	// Reverse for stop order: dependents first, then dependencies.
+	result := make([]string, 0, len(ctrs))
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if id, ok := svcToID[ordered[i]]; ok {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 // deleteOne kills any running task, deletes a single container and its

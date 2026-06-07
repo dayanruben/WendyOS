@@ -662,3 +662,21 @@ func TestLayerMediaType_GzipDefault_GzipFalse(t *testing.T) {
 		t.Errorf("layerMediaType(GZIP, false) = %q; want %q", got, want)
 	}
 }
+
+func TestResolveStopOrder_ReversesTopoOrder(t *testing.T) {
+	services := map[string]*appconfig.ServiceConfig{
+		"db":  {},
+		"api": {DependsOn: []string{"db"}},
+	}
+	order, err := appconfig.ServiceTopoOrder(services)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Reverse for stop order: dependents first, then dependencies.
+	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
+		order[i], order[j] = order[j], order[i]
+	}
+	if len(order) != 2 || order[0] != "api" || order[1] != "db" {
+		t.Errorf("expected [api db], got %v", order)
+	}
+}
