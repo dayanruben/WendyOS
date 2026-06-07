@@ -905,17 +905,31 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		io.Copy(io.Discard, stdout) // drain so Wait's internal goroutine can exit
 		waitErr := cmd.Wait()
 		if runErr == nil {
+			// Log stderr internally — do NOT embed in the gRPC response. GStreamer
+			// stderr routinely includes device paths, kernel module names, library
+			// versions, and pipeline topology. Returning it verbatim lets an
+			// authenticated client enumerate the system via deliberate failures.
 			msg := strings.TrimSpace(stderrBuf.buf.String())
 			if msg != "" {
-				runErr = status.Errorf(codes.Internal, "gstreamer exited with error: %s", msg)
+				s.logger.Error("GStreamer pipeline failed", zap.String("device", path), zap.String("stderr", msg))
+				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
 			} else if waitErr != nil {
-				runErr = status.Errorf(codes.Internal, "gstreamer exited with error: %v", waitErr)
+				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
 			}
 		}
 	}()
 
 	const chunkSize = 256 * 1024
 	buf := make([]byte, chunkSize)
+
+	// gstMaxFrameRate is the maximum number of frame allocations per second from
+	// the GStreamer read loop. A misbehaving or adversarially replaced gst-launch
+	// binary could write at arbitrarily high rate; bounding the allocation rate
+	// prevents it from forcing excessive GC pressure. Chunks arriving faster than
+	// this are discarded — H.264/VP8 byte streams self-synchronise at I-frames.
+	const gstMaxFrameRate = 240
+	minFrameInterval := time.Second / gstMaxFrameRate
+	var lastFrameTime time.Time
 
 	for {
 		select {
@@ -926,14 +940,17 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
-			if n > maxFrameBytes {
-				s.logger.Warn("GStreamer frame exceeds maxFrameBytes, truncating", zap.Int("size", n))
-				n = maxFrameBytes
-			}
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			if !broadcast(data, uint64(time.Now().UnixNano()), enc.codec) {
-				return nil
+			now := time.Now()
+			if lastFrameTime.IsZero() || now.Sub(lastFrameTime) >= minFrameInterval {
+				lastFrameTime = now
+				if n > maxFrameBytes {
+					n = maxFrameBytes
+				}
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				if !broadcast(data, uint64(now.UnixNano()), enc.codec) {
+					return nil
+				}
 			}
 		}
 		if readErr != nil {
