@@ -3,6 +3,7 @@ package containerd
 import (
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -20,9 +21,29 @@ func TestContainerName_SingleContainer(t *testing.T) {
 
 func TestContainerName_MultiService(t *testing.T) {
 	got := ContainerName("com.example.app", "api")
-	want := "com.example.app/api"
+	want := "com.example.app_api"
 	if got != want {
 		t.Errorf("ContainerName(%q, %q) = %q; want %q", "com.example.app", "api", got, want)
+	}
+}
+
+func TestContainerName_ValidContainerdID(t *testing.T) {
+	// Containerd identifiers must match ^[A-Za-z0-9]+(?:[._-](?:[A-Za-z0-9]+))*$
+	// (max 76 chars). Verify multi-service names pass this constraint.
+	containerdRe := regexp.MustCompile(`^[A-Za-z0-9]+(?:[._-](?:[A-Za-z0-9]+))*$`)
+	cases := []struct{ appID, svc string }{
+		{"sh.wendy.examples.hellocompose", "api"},
+		{"com.example.myapp", "camera"},
+		{"sh.wendy.robot", "slam"},
+	}
+	for _, tc := range cases {
+		name := ContainerName(tc.appID, tc.svc)
+		if !containerdRe.MatchString(name) {
+			t.Errorf("ContainerName(%q, %q) = %q does not match containerd identifier regex", tc.appID, tc.svc, name)
+		}
+		if len(name) > 76 {
+			t.Errorf("ContainerName(%q, %q) = %q exceeds containerd max length 76", tc.appID, tc.svc, name)
+		}
 	}
 }
 

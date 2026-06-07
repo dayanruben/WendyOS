@@ -22,14 +22,22 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 def gpu_info() -> str:
     """Return a one-line GPU description, or a helpful note when none is found."""
-    for cmd in (["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],):
-        try:
-            out = subprocess.check_output(cmd, timeout=3, stderr=subprocess.DEVNULL)
-            name = out.decode().strip().splitlines()[0]
-            if name:
-                return name
-        except Exception:
-            pass
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            timeout=3, stderr=subprocess.DEVNULL,
+        )
+        name = out.decode().strip().splitlines()[0]
+        if name:
+            return name
+    except Exception:
+        pass
+    # nvidia-smi may not be installed in the container image; fall back to
+    # checking whether the GPU device node was injected by the GPU entitlement.
+    import glob
+    nodes = glob.glob("/dev/nvidia[0-9]*")
+    if nodes:
+        return f"NVIDIA GPU (device nodes: {', '.join(sorted(nodes))})"
     return "none detected (run on a GPU device for hardware access)"
 
 

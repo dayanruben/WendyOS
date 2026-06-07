@@ -658,7 +658,7 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 }
 
 func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
-	// Accept both "appID" and "appID/serviceName" forms. ParseContainerName
+	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
 	// validates both components so a crafted value cannot reach the label filter
 	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
 	if _, _, err := ParseContainerName(appName); err != nil {
@@ -689,7 +689,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			return nil, fmt.Errorf("loading container %q: %w", appName, err)
 		}
 		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID/serviceName) to start a specific service", appName)
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 		}
 		container = ctrs[0]
 	}
@@ -792,7 +792,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			return nil, fmt.Errorf("loading container %q: %w", appName, err)
 		}
 		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID/serviceName) to start a specific service", appName)
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 		}
 		container = ctrs[0]
 	}
@@ -1123,20 +1123,36 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 		return fmt.Errorf("marshaling spec: %w", err)
 	}
 
-	// Validate the container name BEFORE deleting so that a tampered or
-	// malformed name in the containerd store does not leave the container
-	// deleted without a replacement (SOC2-CC8).
-	parsedAppID, parsedSvcName, err := ParseContainerName(appName)
-	if err != nil {
-		return fmt.Errorf("refusing to recreate container with malformed name: %w", err)
+	// Derive appID and serviceName from labels — they are the authoritative
+	// source (set at creation time by wendyLabels). Parsing the container name
+	// is intentionally avoided: the name format is an encoded composite of
+	// appID+serviceName and labels are unambiguous (SOC2-CC8).
+	labelAppID := info.Labels[labelKeyAppID]
+	labelSvcName := info.Labels[labelKeyServiceName]
+	if labelAppID == "" {
+		// Fallback for containers created before label-based identity was
+		// introduced; parse the name as a best-effort recovery.
+		var parseErr error
+		labelAppID, labelSvcName, parseErr = ParseContainerName(appName)
+		if parseErr != nil {
+			return fmt.Errorf("refusing to recreate container with malformed name: %w", parseErr)
+		}
+	}
+	if err := appconfig.ValidateAppID(labelAppID); err != nil {
+		return fmt.Errorf("refusing to recreate container with invalid appID in labels: %w", err)
+	}
+	if labelSvcName != "" {
+		if err := appconfig.ValidateServiceName(labelSvcName); err != nil {
+			return fmt.Errorf("refusing to recreate container with invalid serviceName in labels: %w", err)
+		}
 	}
 
 	// Delete the container (cascades to orphaned task).
 	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return fmt.Errorf("deleting container: %w", err)
 	}
-	snapshotKey := SnapshotKey(parsedAppID, parsedSvcName)
-	_, err = c.client.NewContainer(ctx, ContainerName(parsedAppID, parsedSvcName),
+	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
+	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
 		containerd.WithImage(image),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),

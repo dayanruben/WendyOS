@@ -553,7 +553,7 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 	// Resolve every container ID that belongs to this app (one for
 	// single-container apps, one per service for multi-service apps) so the
 	// monitor can mark each before any stop is issued. Marking only the bare
-	// appName would miss {appID}/{serviceName} entries registered by the monitor.
+	// appName would miss {appID}_{serviceName} entries registered by the monitor.
 	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
@@ -596,7 +596,7 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 
 	// Resolve all container IDs before deletion so the monitor can unregister
 	// each one. Unregistering only the bare appName would leave
-	// {appID}/{serviceName} monitor entries alive and potentially trigger
+	// {appID}_{serviceName} monitor entries alive and potentially trigger
 	// spurious restart attempts while the container is being removed.
 	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
 	if err != nil {
@@ -622,7 +622,7 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	if req.GetDeleteVolumes() {
 		// Volumes are keyed by appID, not by per-service container ID, so we
 		// call deleteVolumes once with the app name rather than once per service
-		// container (which would be "appID/serviceName" and find nothing).
+		// container (which would be "appID_serviceName" and find nothing).
 		s.deleteVolumes(appName)
 	}
 

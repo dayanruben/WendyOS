@@ -130,7 +130,7 @@ type AppConfig struct {
 	AppID string `json:"appId"`
 	// ServiceName is set when this AppConfig describes a single service within
 	// a multi-service app.  When non-empty the agent uses the
-	// {appId}/{serviceName} container naming convention (WDY-878).
+	// {appId}_{serviceName} container naming convention (WDY-878).
 	ServiceName  string           `json:"serviceName,omitempty"`
 	Version      string           `json:"version,omitempty"`
 	Platform     string           `json:"platform,omitempty"`
@@ -153,11 +153,13 @@ type AppConfig struct {
 }
 
 // ContainerName returns the container identifier for this app config.
-// For multi-service apps (ServiceName != "") it returns "{AppID}/{ServiceName}";
+// For multi-service apps (ServiceName != "") it returns "{AppID}_{ServiceName}";
 // for single-container apps it returns AppID.
+// "_" is the separator because containerd container IDs must match
+// ^[A-Za-z0-9]+(?:[._-](?:[A-Za-z0-9]+))*$ and "/" is not permitted.
 func (a *AppConfig) ContainerName() string {
 	if a.ServiceName != "" {
-		return a.AppID + "/" + a.ServiceName
+		return a.AppID + "_" + a.ServiceName
 	}
 	return a.AppID
 }
