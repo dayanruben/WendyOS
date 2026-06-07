@@ -530,14 +530,19 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		workingDir = "/"
 	}
 
-	// Build environment variables: image env first, then our overrides.
-	env, err := buildContainerBaseEnv(appID, serviceName)
+	// Build environment variables.
+	// Order: image built-in env → user-provided env (from request) → Wendy system env.
+	// Wendy vars appear last so they always win in OCI semantics (last KEY wins).
+	wendyEnv, err := buildContainerBaseEnv(appID, serviceName)
 	if err != nil {
 		return fmt.Errorf("building container env: %w", err)
 	}
+	var env []string
 	if specErr == nil {
-		env = append(imageSpec.Config.Env, env...)
+		env = append(env, imageSpec.Config.Env...)
 	}
+	env = append(env, req.GetEnv()...)
+	env = append(env, wendyEnv...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
