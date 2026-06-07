@@ -362,6 +362,9 @@ func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *compos
 // wendy.json present).
 //
 // Merge rules:
+//   - AppID and ServiceName are set from the companion so the agent creates the
+//     container as "{appId}/{serviceName}" (WDY-878) and injects WENDY_APP_ID /
+//     WENDY_HOSTNAME correctly.
 //   - Top-level isolation and frameworks from the companion are applied to every service.
 //   - Per-service entitlements in the companion are appended to the synthesised
 //     entitlements (compose-derived network/persist entitlements are preserved).
@@ -370,6 +373,8 @@ func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.App
 	if companion == nil {
 		return
 	}
+	appCfg.AppID = companion.AppID
+	appCfg.ServiceName = serviceName
 	appCfg.Isolation = companion.Isolation
 	appCfg.Frameworks = companion.Frameworks
 	if svc, ok := companion.Services[serviceName]; ok && svc != nil {
@@ -653,18 +658,18 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 		createReq := &agentpb.CreateContainerRequest{
 			ImageName:     imageName,
-			AppName:       appCfg.AppID,
+			AppName:       appCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			Cmd:           cmd,
 			RestartPolicy: restartPolicy,
 			UserArgs:      extraArgs,
 		}
 
-		cliLogln("Creating container for service %s (%s)...", name, appCfg.AppID)
+		cliLogln("Creating container for service %s (%s)...", name, appCfg.ContainerName())
 		if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
-		cliLogln("Container %s created.", appCfg.AppID)
+		cliLogln("Container %s created.", appCfg.ContainerName())
 	}
 
 	if opts.deploy {
@@ -693,9 +698,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			name := ordered[i]
 			svc := cfg.Services[name]
 			appCfg := composeAppConfig(projectName, name, svc)
+			applyComposeCompanion(appCfg, companion, name)
 			cliLogln("Stopping %s...", name)
 			_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
-				AppName: appCfg.AppID,
+				AppName: appCfg.ContainerName(),
 			})
 			stopped++
 		}
@@ -707,8 +713,9 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		for _, name := range ordered {
 			svc := cfg.Services[name]
 			appCfg := composeAppConfig(projectName, name, svc)
+			applyComposeCompanion(appCfg, companion, name)
 			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
-				AppName: appCfg.AppID,
+				AppName: appCfg.ContainerName(),
 			})
 			if err != nil {
 				return fmt.Errorf("starting service %s: %w", name, err)
@@ -735,9 +742,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	for _, name := range ordered {
 		svc := cfg.Services[name]
 		appCfg := composeAppConfig(projectName, name, svc)
+		applyComposeCompanion(appCfg, companion, name)
 
 		wg.Add(1)
-		go func(serviceName, appID string) {
+		go func(serviceName, containerID string) {
 			defer wg.Done()
 			outW := stdoutWriters[serviceName]
 			errW := stderrWriters[serviceName]
@@ -748,7 +756,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			// used when the agent is too old to support AttachContainer.
 			openStart := func() (containerOutputStream, error) {
 				startStream, startErr := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
-					AppName: appID,
+					AppName: containerID,
 				})
 				if startErr != nil {
 					return nil, fmt.Errorf("starting service %s: %w", serviceName, startErr)
@@ -761,7 +769,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			attachStream, streamErr := conn.ContainerService.AttachContainer(runCtx)
 			if streamErr == nil {
 				streamErr = attachStream.Send(&agentpb.AttachContainerRequest{
-					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appID},
+					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: containerID},
 				})
 				// Compose never forwards stdin; half-close the send side so the
 				// container sees stdin EOF instead of hanging on a read.
@@ -813,7 +821,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					errW.Write(out.GetData())
 				}
 			}
-		}(name, appCfg.AppID)
+		}(name, appCfg.ContainerName())
 	}
 
 	cliLogln("All services started.")

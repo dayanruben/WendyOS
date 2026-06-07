@@ -464,7 +464,7 @@ func TestApplyComposeCompanion(t *testing.T) {
 		}
 	})
 
-	t.Run("sets isolation and group frameworks", func(t *testing.T) {
+	t.Run("sets appId, serviceName, isolation and group frameworks", func(t *testing.T) {
 		companion := &appconfig.AppConfig{
 			AppID:      "com.example.robot",
 			Isolation:  "shared-ipc",
@@ -472,6 +472,12 @@ func TestApplyComposeCompanion(t *testing.T) {
 		}
 		got := baseAppCfg()
 		applyComposeCompanion(got, companion, "camera")
+		if got.AppID != "com.example.robot" {
+			t.Errorf("AppID = %q, want %q", got.AppID, "com.example.robot")
+		}
+		if got.ServiceName != "camera" {
+			t.Errorf("ServiceName = %q, want %q", got.ServiceName, "camera")
+		}
 		if got.Isolation != "shared-ipc" {
 			t.Errorf("Isolation = %q, want %q", got.Isolation, "shared-ipc")
 		}

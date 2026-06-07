@@ -152,6 +152,16 @@ type AppConfig struct {
 	Services   map[string]*ServiceConfig `json:"services,omitempty"`
 }
 
+// ContainerName returns the container identifier for this app config.
+// For multi-service apps (ServiceName != "") it returns "{AppID}/{ServiceName}";
+// for single-container apps it returns AppID.
+func (a *AppConfig) ContainerName() string {
+	if a.ServiceName != "" {
+		return a.AppID + "/" + a.ServiceName
+	}
+	return a.AppID
+}
+
 // XcodeConfig holds Xcode-specific build settings.
 type XcodeConfig struct {
 	Scheme string `json:"scheme,omitempty"`
