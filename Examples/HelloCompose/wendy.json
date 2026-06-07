@@ -5,6 +5,7 @@
       "entitlements": [
         { "type": "gpu" }
       ]
-    }
+    },
+    "client": {}
   }
 }
