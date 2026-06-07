@@ -527,7 +527,7 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	ctx := stream.Context()
 	devID := req.GetDeviceId()
 	if devID > maxVideoDeviceID {
-		return status.Errorf(codes.InvalidArgument, "device ID %d out of range [0, %d]", devID, maxVideoDeviceID)
+		return status.Errorf(codes.InvalidArgument, "device ID out of range")
 	}
 	if err := validateStreamParams(req); err != nil {
 		return err
@@ -837,6 +837,13 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 	if !isValidGSTElementName(enc.element) {
 		return status.Errorf(codes.Internal, "GStreamer encoder name contains invalid characters")
 	}
+	// Explicitly validate the device path before interpolating into the pipeline
+	// string. path is always fmt.Sprintf("/dev/video%d", devID) where devID is a
+	// range-validated uint32, so it will never contain GStreamer pipeline tokens,
+	// but this check makes the invariant auditable in the diff.
+	if !isValidGSTDevicePath(path) {
+		return status.Errorf(codes.Internal, "unexpected device path format")
+	}
 	s.logger.Info("GStreamer encoder selected", zap.String("encoder", enc.element), zap.String("codec", enc.codec.String()))
 
 	args := buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse)
@@ -1075,6 +1082,22 @@ func keyframeArg(encoder string, gop int) string {
 	default:
 		return ""
 	}
+}
+
+// isValidGSTDevicePath reports whether path is a safe V4L2 device node path of the
+// form /dev/videoN. Only alphanumeric characters, hyphens, underscores and forward
+// slashes are permitted, preventing GStreamer pipeline tokens (!, (, ), ;) from
+// reaching the gst-launch-1.0 argument string via a crafted device path.
+func isValidGSTDevicePath(path string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	for _, c := range path {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '/' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // isValidGSTElementName reports whether name is a safe GStreamer element identifier.
