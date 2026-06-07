@@ -234,8 +234,6 @@ func (h *deviceHub) broadcast(frame videoFrame) bool {
 		snapshot = append(snapshot, ch)
 	}
 	h.mu.Unlock()
-	// Make ONE copy of frame data and share it across all subscribers.
-	// Subscribers only read the slice (via stream.Send), never write to it.
 	// Copy frame.data once per subscriber so each goroutine owns its slice and
 	// there is no aliasing between concurrent stream.Send() calls. The
 	// subscriber count is bounded by maxSubscribersPerHub (16), so the total
@@ -288,7 +286,10 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 			return strings.TrimSpace(string(b)), err
 		},
 		hasVideoCapture: func(path string) bool {
-			fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			// O_RDONLY is sufficient for VIDIOC_QUERYCAP (read-only ioctl).
+			// Using O_RDWR requests unnecessary write privilege and can cause EBUSY
+			// on exclusive-access cameras that reject a second writable open.
+			fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 			if err != nil {
 				return false
 			}
@@ -469,17 +470,25 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	}
 	s.mu.Unlock()
 
-	// Store the terminal error (if any) and close all subscriber channels so
-	// their loops unblock. Both happen under h.mu. Readers call terminalErr()
-	// which acquires h.mu, establishing the required happens-before edge.
+	// Store the terminal error and snapshot subscriber channels under h.mu, then
+	// close channels after releasing the lock. The close must be visible to readers
+	// of h.err (via terminalErr()) — the happens-before is established by the
+	// mutex: h.err is written under h.mu; terminalErr() reads it under h.mu.
+	// Channels are closed outside the lock to avoid holding h.mu while closing up
+	// to maxSubscribersPerHub channels, which would block concurrent subscribe()
+	// and broadcast() calls unnecessarily.
 	h.mu.Lock()
 	if err != nil && ctx.Err() == nil {
 		h.err = err
 	}
+	toClose := make([]chan videoFrame, 0, len(h.subs))
 	for _, ch := range h.subs {
-		close(ch)
+		toClose = append(toClose, ch)
 	}
 	h.mu.Unlock()
+	for _, ch := range toClose {
+		close(ch)
+	}
 
 	// Signal that the device fd is fully released. getOrCreateHub waits on
 	// this before opening a new producer to avoid EBUSY on reconnect.
