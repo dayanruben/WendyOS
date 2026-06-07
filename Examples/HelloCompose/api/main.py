@@ -35,7 +35,7 @@ def gpu_info() -> str:
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        print(f"[api] {fmt % args}", flush=True)
+        print(fmt % args, flush=True)
 
     def do_GET(self):
         body = json.dumps({
@@ -60,6 +60,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-print(f"[api] Starting on :8080  (Python {sys.version.split()[0]}, {platform.machine()})", flush=True)
-print(f"[api] GPU: {gpu_info()}", flush=True)
+print(f"Starting on :8080  (Python {sys.version.split()[0]}, {platform.machine()})", flush=True)
+print(f"GPU: {gpu_info()}", flush=True)
 HTTPServer(("", 8080), Handler).serve_forever()

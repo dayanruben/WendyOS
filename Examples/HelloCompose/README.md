@@ -57,7 +57,7 @@ Expected output:
 [client] API GPU:     NVIDIA Orin
 [client] API WENDY_APP_ID:    sh.wendy.examples.hellocompose
 [client] API WENDY_HOSTNAME:  api.local
-[client] Note: GPU entitlement is declared in wendy.json; ...
+[client] Note: GPU entitlement is declared in wendy.json; docker-compose.yml stays Docker Desktop-compatible.
 [client] Done.
 ```
 
