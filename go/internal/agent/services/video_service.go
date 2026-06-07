@@ -734,6 +734,13 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 
 		idx := dqbuf.index()
 		if n := dqbuf.bytesUsed(); n > 0 {
+			// Cap at maxFrameBytes before allocating: a misbehaving or compromised
+			// V4L2 driver could report bytesUsed up to the full mmap region size.
+			// Capping here bounds the allocation at the source rather than relying
+			// solely on the drop check inside broadcast().
+			if n > maxFrameBytes {
+				n = maxFrameBytes
+			}
 			// Copy out of the mmap region before requeuing: the slice handed to
 			// subscribers must not alias a buffer the camera may refill.
 			data := make([]byte, n)
@@ -894,6 +901,10 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
+			if n > maxFrameBytes {
+				s.logger.Warn("GStreamer frame exceeds maxFrameBytes, truncating", zap.Int("size", n))
+				n = maxFrameBytes
+			}
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			if !broadcast(data, uint64(time.Now().UnixNano()), enc.codec) {

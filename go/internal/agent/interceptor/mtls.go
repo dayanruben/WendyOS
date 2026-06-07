@@ -53,25 +53,25 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 		return status.Errorf(codes.Unauthenticated, "client certificate not verified")
 	}
 	leaf := tlsInfo.State.VerifiedChains[0][0]
-	// Defence-in-depth EKU check: verify the leaf asserts clientAuth (or carries no
-	// EKU restriction, which permits all uses). The VerifyPeerCertificate hook in
-	// mtls.NewTLSConfig already enforces this during the handshake, but re-checking
-	// here ensures the constraint holds even if that hook is absent or the TLS config
-	// is replaced without updating the server options.
-	if len(leaf.ExtKeyUsage) > 0 {
-		hasClientAuth := false
-		for _, eku := range leaf.ExtKeyUsage {
-			if eku == x509.ExtKeyUsageClientAuth {
-				hasClientAuth = true
-				break
-			}
+	// Defence-in-depth EKU check: the leaf must explicitly assert clientAuth.
+	// Certs with no EKU extension (empty ExtKeyUsage) are also rejected: absence
+	// of the extension means the cert is technically unrestricted under RFC 5280,
+	// but for a zero-trust mTLS service every client cert must be scoped. The TLS
+	// handshake's VerifyPeerCertificate hook enforces this too, but re-checking here
+	// ensures the constraint holds even if that hook is absent or the TLS config is
+	// replaced without updating the server options.
+	hasClientAuth := false
+	for _, eku := range leaf.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageClientAuth {
+			hasClientAuth = true
+			break
 		}
-		if !hasClientAuth {
-			logger.Warn("rejected cert without clientAuth EKU",
-				zap.String("remote", peerAddr(ctx)),
-				zap.String("serial", leaf.SerialNumber.String()))
-			return status.Errorf(codes.Unauthenticated, "certificate is not valid for client authentication")
-		}
+	}
+	if !hasClientAuth {
+		logger.Warn("rejected cert without clientAuth EKU",
+			zap.String("remote", peerAddr(ctx)),
+			zap.String("serial", leaf.SerialNumber.String()))
+		return status.Errorf(codes.Unauthenticated, "certificate is not valid for client authentication")
 	}
 	// Log the serial number (not PII) at Debug level for per-call audit correlation.
 	// Subject CN is omitted: it may contain a username or device identifier, logging
