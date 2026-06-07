@@ -218,27 +218,21 @@ const maxFrameBytes = 2 * 1024 * 1024 // 2 MiB
 // Late-joining subscribers receive whatever frame the producer sends next;
 // they will not see an IDR/keyframe until the next one arrives naturally (at most
 // one GOP interval away for GStreamer pipelines with key-int-max set).
+//
+// Sends are performed while holding h.mu so that runProducer cannot close
+// subscriber channels concurrently — sending on a closed channel panics. With
+// maxSubscribersPerHub = 16 and non-blocking selects, the lock is held for
+// O(16) nanoseconds, making the contention cost negligible.
 func (h *deviceHub) broadcast(frame videoFrame) bool {
 	if len(frame.data) > maxFrameBytes {
 		return true // oversized frame: drop silently, keep the hub alive
 	}
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	if len(h.subs) == 0 {
-		h.mu.Unlock()
 		return false
 	}
-	// Snapshot the subscriber map under the lock so we hold h.mu only for the
-	// map read, not for the channel sends.
-	snapshot := make([]chan videoFrame, 0, len(h.subs))
 	for _, ch := range h.subs {
-		snapshot = append(snapshot, ch)
-	}
-	h.mu.Unlock()
-	// frame.data is write-once: copied from the V4L2 mmap region or GStreamer
-	// pipe before broadcast() is called and never written again. All subscriber
-	// goroutines receive the same videoFrame value; stream.Send() reads but never
-	// writes the data slice, so concurrent reads are safe per the Go memory model.
-	for _, ch := range snapshot {
 		select {
 		case ch <- frame:
 		default:
@@ -464,25 +458,19 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	}
 	s.mu.Unlock()
 
-	// Store the terminal error and snapshot subscriber channels under h.mu, then
-	// close channels after releasing the lock. The close must be visible to readers
-	// of h.err (via terminalErr()) — the happens-before is established by the
-	// mutex: h.err is written under h.mu; terminalErr() reads it under h.mu.
-	// Channels are closed outside the lock to avoid holding h.mu while closing up
-	// to maxSubscribersPerHub channels, which would block concurrent subscribe()
-	// and broadcast() calls unnecessarily.
+	// Store the terminal error and close subscriber channels under h.mu.
+	// broadcast() also holds h.mu during sends, so closing inside the lock is
+	// the synchronisation point that prevents send-on-closed-channel panics:
+	// either broadcast() holds h.mu (and finishes its sends before we close),
+	// or we hold h.mu first (and close before broadcast() can send).
 	h.mu.Lock()
 	if err != nil && ctx.Err() == nil {
 		h.err = err
 	}
-	toClose := make([]chan videoFrame, 0, len(h.subs))
 	for _, ch := range h.subs {
-		toClose = append(toClose, ch)
-	}
-	h.mu.Unlock()
-	for _, ch := range toClose {
 		close(ch)
 	}
+	h.mu.Unlock()
 
 	// Signal that the device fd is fully released. getOrCreateHub waits on
 	// this before opening a new producer to avoid EBUSY on reconnect.
@@ -1091,7 +1079,10 @@ const leakyRawQueue = "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0
 // than relying solely on caller-side allowlist validation.
 func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) ([]string, error) {
 	for _, s := range []string{devicePath, encoder} {
-		if strings.ContainsAny(s, "!();") {
+		// Space and tab are included because buildGStreamerArgs splits the pipeline
+		// string with strings.Fields — a space in a validated value would inject
+		// extra tokens into the argument list even if pipeline operators are blocked.
+		if strings.ContainsAny(s, "!(); \t") {
 			return nil, fmt.Errorf("GStreamer argument contains pipeline injection token: %q", s)
 		}
 	}
@@ -1156,8 +1147,11 @@ func keyframeArg(encoder string, gop int) string {
 
 // isValidGSTDevicePath reports whether path is a safe V4L2 device node path of the
 // form /dev/videoN. Only alphanumeric characters, hyphens, underscores and forward
-// slashes are permitted, preventing GStreamer pipeline tokens (!, (, ), ;) from
-// reaching the gst-launch-1.0 argument string via a crafted device path.
+// slashes are permitted, preventing GStreamer pipeline tokens (!, (, ), ;) and
+// whitespace (space, tab) from reaching the gst-launch-1.0 argument string via a
+// crafted device path. Whitespace is blocked because buildGStreamerArgs splits the
+// constructed pipeline string with strings.Fields — a space in the path would inject
+// extra tokens into the argument list.
 func isValidGSTDevicePath(path string) bool {
 	if len(path) == 0 {
 		return false
@@ -1172,8 +1166,9 @@ func isValidGSTDevicePath(path string) bool {
 
 // isValidGSTElementName reports whether name is a safe GStreamer element identifier.
 // GStreamer element names are restricted to letters, digits, underscores and hyphens;
-// any other character (including pipeline tokens !, (, ), ;) would enable pipeline injection
-// when the name is interpolated into a gst-launch-1.0 argument string.
+// any other character (including pipeline tokens !, (, ), ; and whitespace) would
+// enable pipeline injection when the name is interpolated into a gst-launch-1.0
+// argument string that is subsequently split with strings.Fields.
 func isValidGSTElementName(name string) bool {
 	if len(name) == 0 {
 		return false
