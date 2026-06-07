@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"go.uber.org/zap"
@@ -89,6 +91,23 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 		zap.String("container_id", containerID),
 		zap.String("ip", ip))
 	return ip, nil
+}
+
+// writeHostsFile writes a hosts-format file at path with entries for each
+// service name → IP mapping. Always includes 127.0.0.1 localhost.
+// Entries are written in sorted order for determinism.
+func writeHostsFile(path string, serviceIPs map[string]string) error {
+	var sb strings.Builder
+	sb.WriteString("127.0.0.1\tlocalhost\n")
+	names := make([]string, 0, len(serviceIPs))
+	for n := range serviceIPs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(&sb, "%s\t%s\n", serviceIPs[name], name)
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }
 
 // CNIDel calls the CNI bridge plugin DEL to release a container's IP.

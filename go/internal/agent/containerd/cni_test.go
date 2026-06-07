@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -41,5 +42,31 @@ func TestAllocateSubnet(t *testing.T) {
 	}
 	if !strings.HasPrefix(s2, "10.89.") {
 		t.Errorf("subnet %q should start with 10.89.", s2)
+	}
+}
+
+func TestWriteHostsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/hosts"
+	entries := map[string]string{
+		"db":  "10.89.1.2",
+		"api": "10.89.1.3",
+	}
+	if err := writeHostsFile(path, entries); err != nil {
+		t.Fatalf("writeHostsFile error: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading hosts file: %v", err)
+	}
+	s := string(content)
+	if !strings.Contains(s, "10.89.1.2\tdb") {
+		t.Errorf("hosts file missing db entry, got:\n%s", s)
+	}
+	if !strings.Contains(s, "10.89.1.3\tapi") {
+		t.Errorf("hosts file missing api entry, got:\n%s", s)
+	}
+	if !strings.Contains(s, "127.0.0.1\tlocalhost") {
+		t.Errorf("hosts file missing localhost entry, got:\n%s", s)
 	}
 }

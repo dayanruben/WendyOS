@@ -67,6 +67,10 @@ type Client struct {
 	// appIsolation caches the isolation mode for each appID.
 	// Populated on CreateContainerWithProgress; read by StartContainer.
 	appIsolation map[string]string
+
+	// serviceIPs maps appID → serviceName → IP for isolated-mode apps.
+	// Updated after each successful CNI ADD. Protected by mu.
+	serviceIPs map[string]map[string]string
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -120,6 +124,17 @@ func (c *Client) getPrimaryPID(appID string) (uint32, bool) {
 // Caller must hold c.mu.
 func (c *Client) clearPrimaryPID(appID string) {
 	delete(c.primaryPIDs, appID)
+}
+
+// recordServiceIP stores the CNI-assigned IP for a service. Caller must hold c.mu.
+func (c *Client) recordServiceIP(appID, serviceName, ip string) {
+	if c.serviceIPs == nil {
+		c.serviceIPs = make(map[string]map[string]string)
+	}
+	if c.serviceIPs[appID] == nil {
+		c.serviceIPs[appID] = make(map[string]string)
+	}
+	c.serviceIPs[appID][serviceName] = ip
 }
 
 // ListLayers walks the content store and returns metadata for all layer blobs.
@@ -635,6 +650,17 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
 
+	// Inject /etc/hosts bind-mount for isolated multi-service apps so service
+	// names resolve via CNI-assigned IPs.
+	if appCfg.Isolation == "isolated" && len(appCfg.Services) > 1 {
+		hostsPath := "/run/wendy/hosts/" + appID
+		if _, statErr := os.Stat(hostsPath); os.IsNotExist(statErr) {
+			_ = os.MkdirAll("/run/wendy/hosts", 0o755)
+			_ = os.WriteFile(hostsPath, []byte("127.0.0.1\tlocalhost\n"), 0o644)
+		}
+		localoci.InjectHostsMount(spec, hostsPath)
+	}
+
 	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
 	if appconfig.IsSharedNamespaceIsolation(appCfg.Isolation) {
 		primaryPID, hasPrimary := c.getPrimaryPID(appID)
@@ -746,7 +772,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
 	// validates both components so a crafted value cannot reach the label filter
 	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
-	appID, _, err := ParseContainerName(appName)
+	appID, serviceName, err := ParseContainerName(appName)
 	if err != nil {
 		return nil, fmt.Errorf("StartContainer: invalid app name: %w", err)
 	}
@@ -856,6 +882,21 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// not need it (it only reads from pipes).
 	muHeld = false
 	c.mu.Unlock()
+
+	// CNI ADD for isolated multi-service apps: assign IP and update /etc/hosts.
+	if isolation == "isolated" && serviceName != "" {
+		netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
+		if cniErr != nil {
+			c.logger.Error("CNI ADD failed", zap.String("app_id", appID), zap.Error(cniErr))
+		} else {
+			c.mu.Lock()
+			c.recordServiceIP(appID, serviceName, ip)
+			hostsPath := "/run/wendy/hosts/" + appID
+			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
+			c.mu.Unlock()
+		}
+	}
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
