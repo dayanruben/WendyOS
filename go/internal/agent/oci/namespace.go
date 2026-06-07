@@ -5,6 +5,18 @@ import (
 	"os"
 )
 
+// ociNSTypeToProcName maps OCI spec namespace type strings to the Linux kernel
+// name used in /proc/{pid}/ns/. They differ for "network" (→ "net") and
+// "mount" (→ "mnt"); the others match directly.
+var ociNSTypeToProcName = map[string]string{
+	"ipc":     "ipc",
+	"mount":   "mnt",
+	"network": "net",
+	"pid":     "pid",
+	"user":    "user",
+	"uts":     "uts",
+}
+
 // JoinGroupNamespaces modifies spec so the container joins the Linux namespaces
 // owned by the primary container (identified by primaryPID).
 //
@@ -35,8 +47,12 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) error 
 
 	for i, ns := range spec.Linux.Namespaces {
 		if join[ns.Type] {
-			nsPath := fmt.Sprintf("/proc/%d/ns/%s", primaryPID, ns.Type)
-			// Verify the namespace path exists before writing it into the spec.
+			kernelName, ok := ociNSTypeToProcName[ns.Type]
+			if !ok {
+				return fmt.Errorf("JoinGroupNamespaces: unknown OCI namespace type %q", ns.Type)
+			}
+			nsPath := fmt.Sprintf("/proc/%d/ns/%s", primaryPID, kernelName)
+			// Verify the path exists before writing it into the spec.
 			// An absent path means the primary container has already exited;
 			// fail fast rather than silently joining a recycled PID's namespace
 			// (SOC2-CC6, NIST-SC-7: PID-reuse defence-in-depth).

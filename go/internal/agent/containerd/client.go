@@ -731,21 +731,23 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	c.logger.Info("Container created", createdFields...)
 
-	// Cache services map for stop-order resolution.
+	// Cache services map for stop-order resolution and isolation mode for
+	// StartContainer PID tracking. Both maps are read under c.mu elsewhere,
+	// so writes must also hold c.mu (SOC2-CC6, NIST-AC-3: race prevention).
+	c.mu.Lock()
 	if len(appCfg.Services) > 0 {
 		if c.appServices == nil {
 			c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
 		}
 		c.appServices[appID] = appCfg.Services
 	}
-
-	// Cache isolation mode for StartContainer PID tracking.
 	if appCfg.Isolation != "" {
 		if c.appIsolation == nil {
 			c.appIsolation = make(map[string]string)
 		}
 		c.appIsolation[appID] = appCfg.Isolation
 	}
+	c.mu.Unlock()
 
 	return nil
 }

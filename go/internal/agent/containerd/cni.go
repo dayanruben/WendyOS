@@ -35,9 +35,19 @@ type cniResult struct {
 //   - /proc/self/fd/{n}   — fd-anchored reference (prevents PID-reuse races)
 var netnsPathPattern = regexp.MustCompile(`^(/proc/\d+/ns/net|/proc/self/fd/\d+)$`)
 
+// containerIDPattern is an allowlist for CNI containerID values. Wendy
+// container IDs are either a bare appID or "{appID}@{serviceName}", so valid
+// characters are letters, digits, dot, underscore, hyphen, and '@'.
+// This allowlist replaces a previous denylist that blocked only a few
+// characters; an allowlist is more robust against unforeseen CNI plugin
+// behaviour (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+var containerIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,319}$`)
+
 // allocateSubnet deterministically maps an appID to a /28 subnet within
-// 10.0.0.0/8. SHA-256 provides collision resistance: even an attacker who
-// controls their appID cannot engineer a subnet collision with another app
+// 10.0.0.0/8 using three bytes of a SHA-256 digest (~1M possible subnets).
+// Birthday-paradox collision probability: ~0.05% at 30 apps, ~0.5% at 100.
+// The SHA-256 digest ensures uniform distribution; it does not provide
+// resistance against a caller who can iterate appIDs to find a collision
 // (SOC2-CC6, ISO27001-A.8, NIST-SC-7).
 func allocateSubnet(appID string) string {
 	h := sha256.Sum256([]byte(appID))
@@ -50,8 +60,8 @@ func allocateSubnet(appID string) string {
 
 // bridgeName returns a Linux network interface name for the app's CNI bridge.
 // The kernel limit is 15 chars (IFNAMSIZ-1). Short appIDs that fit are embedded
-// directly; longer ones fall back to an 8-hex-digit SHA-256 prefix, which is
-// collision-resistant even against a caller who controls their appID.
+// directly; longer ones fall back to an 8-hex-digit SHA-256 prefix for uniform
+// distribution (birthday collision probability ~0.12% at 100 apps).
 func bridgeName(appID string) string {
 	const prefix = "wendy-br-"
 	if len(prefix)+len(appID) <= 15 {
@@ -68,12 +78,8 @@ func validateCNIInputs(appID, containerID, netnsPath string) error {
 	if err := appconfig.ValidateAppID(appID); err != nil {
 		return fmt.Errorf("CNI: %w", err)
 	}
-	if containerID == "" || len(containerID) > 320 {
-		return fmt.Errorf("CNI: containerID must be 1–320 chars, got %d", len(containerID))
-	}
-	// NUL, CR, LF, and '=' are special in execve envp / env-var parsing.
-	if strings.ContainsAny(containerID, "\x00\n\r=") {
-		return fmt.Errorf("CNI: containerID contains forbidden characters (NUL/CR/LF/equals)")
+	if !containerIDPattern.MatchString(containerID) {
+		return fmt.Errorf("CNI: containerID %q does not match allowed pattern (letters, digits, '.', '_', '@', '-'; 1–320 chars)", containerID)
 	}
 	if !netnsPathPattern.MatchString(netnsPath) {
 		return fmt.Errorf("CNI: netnsPath %q does not match expected pattern", netnsPath)

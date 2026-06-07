@@ -31,8 +31,9 @@ func TestJoinGroupNamespaces_SharedIPC(t *testing.T) {
 	if nsMap["ipc"] != fmt.Sprintf("/proc/%d/ns/ipc", pid) {
 		t.Errorf("ipc namespace path = %q, want /proc/%d/ns/ipc", nsMap["ipc"], pid)
 	}
-	if nsMap["network"] != fmt.Sprintf("/proc/%d/ns/network", pid) {
-		t.Errorf("network namespace path = %q, want /proc/%d/ns/network", nsMap["network"], pid)
+	// OCI type "network" maps to the kernel procfs name "net", not "network".
+	if nsMap["network"] != fmt.Sprintf("/proc/%d/ns/net", pid) {
+		t.Errorf("network namespace path = %q, want /proc/%d/ns/net", nsMap["network"], pid)
 	}
 	if nsMap["uts"] != fmt.Sprintf("/proc/%d/ns/uts", pid) {
 		t.Errorf("uts namespace path = %q, want /proc/%d/ns/uts", nsMap["uts"], pid)
@@ -54,8 +55,9 @@ func TestJoinGroupNamespaces_SharedNetwork(t *testing.T) {
 	for _, ns := range spec.Linux.Namespaces {
 		nsMap[ns.Type] = ns.Path
 	}
-	if nsMap["network"] != fmt.Sprintf("/proc/%d/ns/network", pid) {
-		t.Errorf("network namespace path = %q, want /proc/%d/ns/network", nsMap["network"], pid)
+	// OCI type "network" maps to kernel procfs name "net".
+	if nsMap["network"] != fmt.Sprintf("/proc/%d/ns/net", pid) {
+		t.Errorf("network namespace path = %q, want /proc/%d/ns/net", nsMap["network"], pid)
 	}
 	if nsMap["uts"] != fmt.Sprintf("/proc/%d/ns/uts", pid) {
 		t.Errorf("uts namespace path = %q, want /proc/%d/ns/uts", nsMap["uts"], pid)
