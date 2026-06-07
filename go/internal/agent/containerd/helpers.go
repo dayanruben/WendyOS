@@ -51,6 +51,80 @@ const labelKeyGCRoot = "containerd.io/gc.root"
 // labelKeyWendyLayer marks a content blob as a Wendy-pushed layer.
 const labelKeyWendyLayer = "sh.wendy.layer"
 
+// labelKeyAppID is the app identity (appId from wendy.json) for every
+// Wendy-managed container. Always set, regardless of whether the app uses
+// multi-service naming. Used to find all containers belonging to an app without
+// relying on container-name conventions.
+const labelKeyAppID = "sh.wendy/app.id"
+
+// labelKeyServiceName is the service name for a multi-service container.
+// Set whenever appCfg.ServiceName is non-empty.
+const labelKeyServiceName = "sh.wendy/service"
+
+// ContainerName returns the containerd container ID for the given appID and
+// optional serviceName.
+//
+//   - Single-container apps (serviceName == ""): returns appID unchanged,
+//     preserving backward-compatibility with all existing tooling.
+//   - Multi-service apps (serviceName != ""): returns "{appID}/{serviceName}".
+//     Containerd allows "/" in container names, so no escaping is needed.
+//
+// Precondition: callers must have validated appID with appconfig.ValidateAppID
+// and serviceName with appconfig.ValidateServiceName. An appID containing "/"
+// would produce a multi-component container name; a serviceName containing "@"
+// would collide with SnapshotKey's separator. Neither is possible if the values
+// passed ValidateAppID/ValidateServiceName, which reject those characters.
+func ContainerName(appID, serviceName string) string {
+	if serviceName == "" {
+		return appID
+	}
+	return appID + "/" + serviceName
+}
+
+// SnapshotKey returns the containerd snapshot key for the given appID and
+// optional serviceName.
+//
+//   - Single-container apps (serviceName == ""): "wendy-{appID}" (unchanged).
+//   - Multi-service apps (serviceName != ""): "wendy-{appID}@{serviceName}".
+//
+// "@" is used as the separator because it cannot appear in a valid appID
+// ([a-zA-Z0-9._-]) or a valid serviceName ([a-z]([a-z0-9-]{0,55}[a-z0-9])?), making
+// the key unambiguous and free of collisions (e.g. SnapshotKey("foo-bar","baz")
+// vs SnapshotKey("foo","bar-baz") produce distinct keys).
+// Note: the key is not path-sanitised; "@" is safe for overlayfs snapshot
+// stores (the containerd default), but callers must not treat it as a filename.
+//
+// Precondition: same as ContainerName — inputs must have passed validation.
+func SnapshotKey(appID, serviceName string) string {
+	if serviceName == "" {
+		return "wendy-" + appID
+	}
+	return "wendy-" + appID + "@" + serviceName
+}
+
+// ParseContainerName is the inverse of ContainerName. It splits a container
+// name of the form "{appID}" or "{appID}/{serviceName}" back into its
+// components. Returns an error when the name is malformed, the appID portion
+// fails ValidateAppID, or the serviceName portion (if present) fails
+// ValidateServiceName.
+//
+// Using this helper in recreateContainer keeps the parsing logic in one place
+// and ensures the same validation invariants as the creation path.
+func ParseContainerName(name string) (appID, serviceName string, err error) {
+	parts := strings.SplitN(name, "/", 2)
+	appID = parts[0]
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", "", fmt.Errorf("invalid container name %q: %w", sanitizeForLog(name, 300), err)
+	}
+	if len(parts) == 2 {
+		serviceName = parts[1]
+		if err := appconfig.ValidateServiceName(serviceName); err != nil {
+			return "", "", fmt.Errorf("invalid container name %q: %w", sanitizeForLog(name, 300), err)
+		}
+	}
+	return appID, serviceName, nil
+}
+
 // computeChainID computes the chain ID for a layer given its parent chain ID
 // and the layer's diff ID. The chain ID is defined recursively:
 //
@@ -96,11 +170,33 @@ func gcTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// sanitizeForLog strips control characters from s (replacing each with '?')
+// and truncates to maxLen bytes before the result is used as a structured log
+// field. This prevents log injection when s has not yet passed validation;
+// zap's JSON encoder is safe, but text/syslog transports are not.
+func sanitizeForLog(s string, maxLen int) string {
+	s = s[:min(len(s), maxLen)]
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
 // wendyLabels builds the standard set of containerd labels for a Wendy-managed
 // container. These labels are used to identify, filter, and manage containers.
-func wendyLabels(appName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement) map[string]string {
+//
+// When serviceName is non-empty (multi-service app), labelKeyServiceName is
+// additionally set to serviceName.
+func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement) map[string]string {
 	labels := map[string]string{
 		labelKeyAppVersion: version,
+		labelKeyAppID:      appName,
+	}
+
+	if serviceName != "" {
+		labels[labelKeyServiceName] = serviceName
 	}
 
 	if restartPolicy != nil {

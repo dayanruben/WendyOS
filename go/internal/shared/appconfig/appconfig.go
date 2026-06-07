@@ -19,6 +19,14 @@ import (
 // space, or newline in appId would otherwise corrupt those downstream uses.
 var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
+// serviceNamePattern validates serviceName: a lowercase letter as the first
+// character, lowercase letters, digits, or hyphens in the middle, and a letter
+// or digit as the last character (RFC 1123 DNS label — no trailing hyphens).
+// Capped at 57 chars so the derived mDNS hostname "{serviceName}.local" stays
+// within 63 chars total (applying the RFC 1123 label limit conservatively to
+// the full hostname rather than just the serviceName component).
+var serviceNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$`)
+
 // EntitlementType enumerates the supported entitlement types.
 const (
 	EntitlementNetwork   = "network"
@@ -105,7 +113,11 @@ type ServiceConfig struct {
 
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
-	AppID        string                    `json:"appId"`
+	AppID string `json:"appId"`
+	// ServiceName is set when this AppConfig describes a single service within
+	// a multi-service app.  When non-empty the agent uses the
+	// {appId}/{serviceName} container naming convention (WDY-878).
+	ServiceName  string                    `json:"serviceName,omitempty"`
 	Version      string                    `json:"version,omitempty"`
 	Platform     string                    `json:"platform,omitempty"`
 	Language     string                    `json:"language,omitempty"`
@@ -291,10 +303,38 @@ func ValidateAppID(id string) error {
 	return nil
 }
 
+// ValidateServiceName reports whether name is a well-formed serviceName.
+// serviceName is used to build container IDs, snapshot keys, cgroup paths,
+// container labels, and env vars (e.g. WENDY_HOSTNAME={serviceName}.local), so
+// it must be a safe DNS label: lowercase letter, then lowercase letters/digits/hyphens,
+// ending with a letter or digit.
+func ValidateServiceName(name string) error {
+	// Cheap length guard before the regex — makes the 57-char cap explicit and
+	// avoids running the regex on pathologically long inputs.
+	if len(name) > 57 {
+		return fmt.Errorf("serviceName too long: %d chars (max 57)", len(name))
+	}
+	// Fast-fail on characters that break env var or container name invariants,
+	// providing defence-in-depth against potential regex edge cases.
+	if strings.ContainsAny(name, "\x00\n\r=\t") {
+		return fmt.Errorf("serviceName contains invalid control character")
+	}
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("serviceName %q is invalid: must start with a lowercase letter, contain only lowercase letters, digits, or hyphens, end with a letter or digit, and be at most 57 chars (RFC 1123)", name)
+	}
+	return nil
+}
+
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
 	if err := ValidateAppID(c.AppID); err != nil {
 		return err
+	}
+
+	if c.ServiceName != "" {
+		if err := ValidateServiceName(c.ServiceName); err != nil {
+			return err
+		}
 	}
 
 	if err := validateEntitlements(c.Entitlements, "entitlement"); err != nil {

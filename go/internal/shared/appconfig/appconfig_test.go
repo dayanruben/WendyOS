@@ -134,11 +134,51 @@ func TestValidate_AppIDCharset(t *testing.T) {
 		"app with spaces",  // disallowed
 		"app\nnewline",     // would inject an env entry
 		"emoji-\U0001F600", // non-ASCII
+		// containerd filter-grammar special characters (SOC2-CC6, NIST-SI-10):
+		// ValidateAppID must reject all of these so containersForApp can safely
+		// interpolate appID into a label filter string via fmt.Sprintf/%q.
+		`app"quoted`, // double-quote — closes the %q-quoted value early
+		`app\slash`,  // backslash — escape in filter grammar
+		"app~tilde",  // tilde — used as regex operator in containerd filters
+		"app/slash",  // forward-slash — path separator in container names
+		"app@at",     // @ — snapshot key separator used by SnapshotKey
 	}
 	for _, id := range invalid {
 		cfg := &AppConfig{AppID: id}
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("Validate() expected error for invalid appId %q, got nil", id)
+		}
+	}
+}
+
+func TestValidateServiceName(t *testing.T) {
+	valid := []string{
+		"api",    // typical multi-service name
+		"db",     // two chars — boundary minimum
+		"a",      // single char — intentionally allowed (not a DNS-minimum violation)
+		"my-svc", // hyphen in middle
+		"svc1",   // trailing digit
+		"ab",     // two chars
+	}
+	for _, name := range valid {
+		if err := ValidateServiceName(name); err != nil {
+			t.Errorf("ValidateServiceName(%q) unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []string{
+		"",                      // empty
+		"Api",                   // uppercase rejected
+		"api-",                  // trailing hyphen (RFC 1123)
+		"-api",                  // leading hyphen
+		"api\nnewline",          // would break env-var injection
+		"api\x00null",           // null byte
+		"api=value",             // equals sign
+		strings.Repeat("a", 58), // too long (> 57 chars)
+	}
+	for _, name := range invalid {
+		if err := ValidateServiceName(name); err == nil {
+			t.Errorf("ValidateServiceName(%q) expected error, got nil", name)
 		}
 	}
 }
