@@ -1291,6 +1291,197 @@ func TestServiceConfigValidation(t *testing.T) {
 	})
 }
 
+func TestLoadComposeCompanion_NotFound(t *testing.T) {
+	cfg, warnings, err := LoadComposeCompanion(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected nil error for missing wendy.json, got %v", err)
+	}
+	if cfg != nil {
+		t.Fatalf("expected nil config for missing wendy.json, got %+v", cfg)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+}
+
+func TestLoadComposeCompanion_Valid(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"isolation": "shared-ipc",
+		"frameworks": { "ros2": { "domainId": 5, "rmw": "cyclonedds" } },
+		"entitlements": [{ "type": "gpu" }]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, warnings, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.AppID != "com.example.robot" {
+		t.Errorf("AppID = %q, want %q", cfg.AppID, "com.example.robot")
+	}
+	if cfg.Isolation != "shared-ipc" {
+		t.Errorf("Isolation = %q, want %q", cfg.Isolation, "shared-ipc")
+	}
+	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
+		t.Fatal("Frameworks.ROS2 is nil")
+	}
+	if cfg.Frameworks.ROS2.DomainID != 5 {
+		t.Errorf("ROS2.DomainID = %d, want 5", cfg.Frameworks.ROS2.DomainID)
+	}
+	if cfg.Frameworks.ROS2.RMW != "cyclonedds" {
+		t.Errorf("ROS2.RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "cyclonedds")
+	}
+	if len(cfg.Entitlements) != 1 || cfg.Entitlements[0].Type != "gpu" {
+		t.Errorf("Entitlements = %+v", cfg.Entitlements)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestLoadComposeCompanion_WithServices(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": {
+			"camera": {
+				"entitlements": [{ "type": "camera" }, { "type": "gpu" }],
+				"frameworks": { "ros2": { "domainId": 42 } }
+			},
+			"detector": {
+				"entitlements": [{ "type": "gpu" }]
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion: %v", err)
+	}
+	if len(cfg.Services) != 2 {
+		t.Fatalf("want 2 services, got %d", len(cfg.Services))
+	}
+	camera := cfg.Services["camera"]
+	if camera == nil {
+		t.Fatal("camera service is nil")
+	}
+	if len(camera.Entitlements) != 2 {
+		t.Errorf("camera entitlements = %d, want 2", len(camera.Entitlements))
+	}
+	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID != 42 {
+		t.Errorf("camera.Frameworks.ROS2.DomainID mismatch")
+	}
+	if cfg.Services["detector"] == nil {
+		t.Fatal("detector service is nil")
+	}
+}
+
+func TestLoadComposeCompanion_InvalidEntitlement(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"entitlements": [{ "type": "banana" }]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadComposeCompanion(dir); err == nil {
+		t.Fatal("expected error for unknown entitlement type")
+	}
+}
+
+func TestLoadComposeCompanion_NullServiceRejected(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": { "camera": null }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadComposeCompanion(dir); err == nil {
+		t.Fatal("expected error for null service")
+	}
+}
+
+func TestLoadComposeCompanion_MissingAppID(t *testing.T) {
+	dir := t.TempDir()
+	data := `{ "isolation": "shared-ipc" }`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadComposeCompanion(dir); err == nil {
+		t.Fatal("expected error for missing appId")
+	}
+}
+
+func TestLoadComposeCompanion_ContextNotRequired(t *testing.T) {
+	// Unlike Validate(), LoadComposeCompanion does not require context in services.
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": {
+			"camera": { "entitlements": [{ "type": "camera" }] }
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion must not require context: %v", err)
+	}
+	if cfg.Services["camera"] == nil {
+		t.Fatal("camera service missing")
+	}
+}
+
+func TestFrameworksConfig_ParseJSON(t *testing.T) {
+	data := `{
+		"appId": "com.example.app",
+		"frameworks": {
+			"ros2": { "domainId": 10, "rmw": "fastrtps" }
+		}
+	}`
+	cfg, err := LoadFromBytes([]byte(data))
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Frameworks == nil {
+		t.Fatal("Frameworks is nil")
+	}
+	if cfg.Frameworks.ROS2 == nil {
+		t.Fatal("Frameworks.ROS2 is nil")
+	}
+	if cfg.Frameworks.ROS2.DomainID != 10 {
+		t.Errorf("DomainID = %d, want 10", cfg.Frameworks.ROS2.DomainID)
+	}
+	if cfg.Frameworks.ROS2.RMW != "fastrtps" {
+		t.Errorf("RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "fastrtps")
+	}
+}
+
+func TestAppConfig_Isolation_RoundTrip(t *testing.T) {
+	data := `{"appId": "com.example.app", "isolation": "shared-ipc"}`
+	cfg, err := LoadFromBytes([]byte(data))
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Isolation != "shared-ipc" {
+		t.Errorf("Isolation = %q, want %q", cfg.Isolation, "shared-ipc")
+	}
+}
+
 func TestValidateJSON_ServiceEntitlements(t *testing.T) {
 	t.Run("unknown key in service entitlement warns", func(t *testing.T) {
 		data := []byte(`{

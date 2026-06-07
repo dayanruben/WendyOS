@@ -66,19 +66,22 @@ const labelKeyServiceName = "sh.wendy/service"
 //
 //   - Single-container apps (serviceName == ""): returns appID unchanged,
 //     preserving backward-compatibility with all existing tooling.
-//   - Multi-service apps (serviceName != ""): returns "{appID}/{serviceName}".
-//     Containerd allows "/" in container names, so no escaping is needed.
+//   - Multi-service apps (serviceName != ""): returns "{appID}_{serviceName}".
+//     "_" is the separator because containerd identifiers must match
+//     ^[A-Za-z0-9]+(?:[._-](?:[A-Za-z0-9]+))*$ and "/" is not in that set.
+//     serviceName is validated to contain only [a-z0-9-] so it cannot itself
+//     contain "_", keeping the last "_" in the name as the unambiguous
+//     app–service boundary (validated inputs only; see Precondition).
 //
 // Precondition: callers must have validated appID with appconfig.ValidateAppID
-// and serviceName with appconfig.ValidateServiceName. An appID containing "/"
-// would produce a multi-component container name; a serviceName containing "@"
-// would collide with SnapshotKey's separator. Neither is possible if the values
-// passed ValidateAppID/ValidateServiceName, which reject those characters.
+// and serviceName with appconfig.ValidateServiceName before calling. A
+// serviceName containing "_" would break ParseContainerName; neither is
+// possible when both values have passed validation.
 func ContainerName(appID, serviceName string) string {
 	if serviceName == "" {
 		return appID
 	}
-	return appID + "/" + serviceName
+	return appID + "_" + serviceName
 }
 
 // SnapshotKey returns the containerd snapshot key for the given appID and
@@ -103,26 +106,34 @@ func SnapshotKey(appID, serviceName string) string {
 }
 
 // ParseContainerName is the inverse of ContainerName. It splits a container
-// name of the form "{appID}" or "{appID}/{serviceName}" back into its
-// components. Returns an error when the name is malformed, the appID portion
-// fails ValidateAppID, or the serviceName portion (if present) fails
-// ValidateServiceName.
+// name of the form "{appID}" or "{appID}_{serviceName}" back into its
+// components. Returns an error when the name is malformed.
 //
-// Using this helper in recreateContainer keeps the parsing logic in one place
-// and ensures the same validation invariants as the creation path.
+// The separator is "_". Because serviceName is validated to contain only
+// [a-z0-9-] (no underscores), the LAST "_" in a multi-service container name
+// is the unambiguous boundary. The algorithm:
+//  1. If ValidateAppID passes for the whole name → single-container, no service.
+//  2. Otherwise try splitting at the last "_": if the suffix passes
+//     ValidateServiceName and the prefix passes ValidateAppID → multi-service.
+//  3. Otherwise the name is malformed.
+//
+// Note: this function is used for format validation in StartContainer and as a
+// best-effort parser in recreateContainer (which prefers container labels as
+// the authoritative source for appID/serviceName).
 func ParseContainerName(name string) (appID, serviceName string, err error) {
-	parts := strings.SplitN(name, "/", 2)
-	appID = parts[0]
-	if err := appconfig.ValidateAppID(appID); err != nil {
-		return "", "", fmt.Errorf("invalid container name %q: %w", sanitizeForLog(name, 300), err)
+	// Fast path: whole name is a valid appID (single-container app).
+	if appconfig.ValidateAppID(name) == nil {
+		return name, "", nil
 	}
-	if len(parts) == 2 {
-		serviceName = parts[1]
-		if err := appconfig.ValidateServiceName(serviceName); err != nil {
-			return "", "", fmt.Errorf("invalid container name %q: %w", sanitizeForLog(name, 300), err)
+	// Try to split at the last "_" (multi-service: "{appID}_{serviceName}").
+	idx := strings.LastIndexByte(name, '_')
+	if idx > 0 {
+		prefix, suffix := name[:idx], name[idx+1:]
+		if appconfig.ValidateAppID(prefix) == nil && appconfig.ValidateServiceName(suffix) == nil {
+			return prefix, suffix, nil
 		}
 	}
-	return appID, serviceName, nil
+	return "", "", fmt.Errorf("invalid container name %q: does not match appID or appID_serviceName format", sanitizeForLog(name, 300))
 }
 
 // computeChainID computes the chain ID for a layer given its parent chain ID

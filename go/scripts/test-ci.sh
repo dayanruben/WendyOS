@@ -199,6 +199,7 @@ ALL_TESTS=(
     python-servicename
     compose-hello
     compose-images
+    compose-companion
     otel-localhost-only
 )
 

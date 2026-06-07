@@ -658,7 +658,7 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 }
 
 func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
-	// Accept both "appID" and "appID/serviceName" forms. ParseContainerName
+	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
 	// validates both components so a crafted value cannot reach the label filter
 	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
 	if _, _, err := ParseContainerName(appName); err != nil {
@@ -689,7 +689,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			return nil, fmt.Errorf("loading container %q: %w", appName, err)
 		}
 		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID/serviceName) to start a specific service", appName)
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 		}
 		container = ctrs[0]
 	}
@@ -792,7 +792,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			return nil, fmt.Errorf("loading container %q: %w", appName, err)
 		}
 		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID/serviceName) to start a specific service", appName)
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 		}
 		container = ctrs[0]
 	}
@@ -1123,20 +1123,36 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 		return fmt.Errorf("marshaling spec: %w", err)
 	}
 
-	// Validate the container name BEFORE deleting so that a tampered or
-	// malformed name in the containerd store does not leave the container
-	// deleted without a replacement (SOC2-CC8).
-	parsedAppID, parsedSvcName, err := ParseContainerName(appName)
-	if err != nil {
-		return fmt.Errorf("refusing to recreate container with malformed name: %w", err)
+	// Derive appID and serviceName from labels — they are the authoritative
+	// source (set at creation time by wendyLabels). Parsing the container name
+	// is intentionally avoided: the name format is an encoded composite of
+	// appID+serviceName and labels are unambiguous (SOC2-CC8).
+	labelAppID := info.Labels[labelKeyAppID]
+	labelSvcName := info.Labels[labelKeyServiceName]
+	if labelAppID == "" {
+		// Fallback for containers created before label-based identity was
+		// introduced; parse the name as a best-effort recovery.
+		var parseErr error
+		labelAppID, labelSvcName, parseErr = ParseContainerName(appName)
+		if parseErr != nil {
+			return fmt.Errorf("refusing to recreate container with malformed name: %w", parseErr)
+		}
+	}
+	if err := appconfig.ValidateAppID(labelAppID); err != nil {
+		return fmt.Errorf("refusing to recreate container with invalid appID in labels: %w", err)
+	}
+	if labelSvcName != "" {
+		if err := appconfig.ValidateServiceName(labelSvcName); err != nil {
+			return fmt.Errorf("refusing to recreate container with invalid serviceName in labels: %w", err)
+		}
 	}
 
 	// Delete the container (cascades to orphaned task).
 	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return fmt.Errorf("deleting container: %w", err)
 	}
-	snapshotKey := SnapshotKey(parsedAppID, parsedSvcName)
-	_, err = c.client.NewContainer(ctx, ContainerName(parsedAppID, parsedSvcName),
+	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
+	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
 		containerd.WithImage(image),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),
@@ -1440,9 +1456,10 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 }
 
 // ListContainers lists all Wendy-managed apps. Multi-service apps (whose
-// container IDs follow the {appID}/{serviceName} convention) are grouped under
-// their bare appID: the entry is RUNNING if any service is running, and the
-// version is taken from the first service encountered. This ensures that
+// container IDs follow the {appID}_{serviceName} convention) are grouped under
+// their bare appID: the aggregate entry is RUNNING if any service is running,
+// and AppContainer.Services is populated with one ServiceEntry per service so
+// callers can display individual service state. This ensures that
 // stop/start/remove — which address by appID — operate on the same granularity
 // shown in the list and picker.
 func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -1453,10 +1470,15 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 
+	type serviceEntry struct {
+		name         string
+		runningState agentpb.AppRunningState
+	}
 	type entry struct {
 		version      string
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
+		services     []serviceEntry
 	}
 	grouped := make(map[string]*entry)
 	var order []string
@@ -1483,16 +1505,24 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
-		// The labelKeyAppID label is always set by wendyLabels; fall back to the
-		// container ID for containers created before this label was introduced.
+		// labelKeyAppID is always set by wendyLabels; fall back to container ID
+		// for containers created before this label was introduced.
 		appID := info.Labels[labelKeyAppID]
 		if appID == "" {
 			appID = ctr.ID()
 		}
+		serviceName := info.Labels[labelKeyServiceName]
+
+		svc := serviceEntry{name: serviceName, runningState: runningState}
 
 		if e, ok := grouped[appID]; !ok {
 			order = append(order, appID)
-			grouped[appID] = &entry{version: appVersion, runningState: runningState, mcpPort: mcpPort}
+			grouped[appID] = &entry{
+				version:      appVersion,
+				runningState: runningState,
+				mcpPort:      mcpPort,
+				services:     []serviceEntry{svc},
+			}
 		} else {
 			if runningState == agentpb.AppRunningState_RUNNING {
 				e.runningState = agentpb.AppRunningState_RUNNING
@@ -1500,17 +1530,33 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
 			}
+			e.services = append(e.services, svc)
 		}
 	}
 
 	result := make([]*agentpb.AppContainer, 0, len(grouped))
 	for _, appID := range order {
 		e := grouped[appID]
+
+		// Populate per-service entries only for multi-service apps; single-service
+		// apps leave Services empty so callers can distinguish them cheaply.
+		var services []*agentpb.ServiceEntry
+		if len(e.services) > 1 {
+			services = make([]*agentpb.ServiceEntry, len(e.services))
+			for i, s := range e.services {
+				services[i] = &agentpb.ServiceEntry{
+					Name:         s.name,
+					RunningState: s.runningState,
+				}
+			}
+		}
+
 		result = append(result, &agentpb.AppContainer{
 			AppName:      appID,
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
+			Services:     services,
 		})
 	}
 	return result, nil
