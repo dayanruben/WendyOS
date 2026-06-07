@@ -697,3 +697,39 @@ func TestPrimaryPIDTracking(t *testing.T) {
 		t.Fatal("expected primary PID to be cleared")
 	}
 }
+
+func TestBuildROS2Env_WithConfig(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{
+				DomainID: 42,
+				RMW:      "rmw_cyclonedds_cpp",
+			},
+		},
+	}
+	got := buildROS2Env(cfg)
+	found42 := false
+	foundRMW := false
+	for _, e := range got {
+		if e == "ROS_DOMAIN_ID=42" {
+			found42 = true
+		}
+		if e == "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" {
+			foundRMW = true
+		}
+	}
+	if !found42 {
+		t.Errorf("expected ROS_DOMAIN_ID=42 in env, got %v", got)
+	}
+	if !foundRMW {
+		t.Errorf("expected RMW_IMPLEMENTATION=rmw_cyclonedds_cpp in env, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_NoConfig(t *testing.T) {
+	cfg := &appconfig.AppConfig{}
+	got := buildROS2Env(cfg)
+	if len(got) != 0 {
+		t.Errorf("expected empty env for no ROS2 config, got %v", got)
+	}
+}

@@ -645,3 +645,11 @@ func validateHooksJSON(hooksRaw json.RawMessage) []string {
 func IsSharedNamespaceIsolation(isolation string) bool {
 	return isolation == "shared-ipc" || isolation == "shared-network"
 }
+
+// GetROS2Config returns the ROS2 framework config if set, nil otherwise.
+func (a *AppConfig) GetROS2Config() *ROS2Config {
+	if a.Frameworks == nil {
+		return nil
+	}
+	return a.Frameworks.ROS2
+}

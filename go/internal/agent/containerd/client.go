@@ -580,6 +580,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	env = append(env, req.GetEnv()...)
 	env = append(env, wendyEnv...)
+	env = append(env, buildROS2Env(appCfg)...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
@@ -1050,6 +1051,19 @@ func validateUserEnv(entries []string) error {
 		}
 	}
 	return nil
+}
+
+// buildROS2Env returns ROS2 environment variables from the app's frameworks.ros2 config.
+func buildROS2Env(appCfg *appconfig.AppConfig) []string {
+	ros2 := appCfg.GetROS2Config()
+	if ros2 == nil {
+		return nil
+	}
+	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
+	if ros2.RMW != "" {
+		env = append(env, "RMW_IMPLEMENTATION="+ros2.RMW)
+	}
+	return env
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
