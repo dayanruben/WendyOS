@@ -167,6 +167,15 @@ func TestInjectHostsMount(t *testing.T) {
 			if m.Type != "bind" {
 				t.Errorf("Type = %q, want bind", m.Type)
 			}
+			hasRO := false
+			for _, opt := range m.Options {
+				if opt == "ro" {
+					hasRO = true
+				}
+			}
+			if !hasRO {
+				t.Errorf("Options %v should contain 'ro'", m.Options)
+			}
 		}
 	}
 	if !found {
