@@ -102,13 +102,27 @@ type RunConfig struct {
 	Args []string `json:"args,omitempty"`
 }
 
+// ROS2Config holds ROS 2 runtime configuration for a container.
+type ROS2Config struct {
+	DomainID int    `json:"domainId,omitempty"`
+	RMW      string `json:"rmw,omitempty"`
+}
+
+// RuntimesConfig holds optional runtime environment configuration.
+// It is nested under the "runtimes" key in wendy.json (WDY-1339).
+type RuntimesConfig struct {
+	ROS2 *ROS2Config `json:"ros2,omitempty"`
+}
+
 // ServiceConfig holds the per-service build and runtime configuration for a
 // multi-service wendy.json (the services map).
 type ServiceConfig struct {
 	// Context is the build context directory, relative to wendy.json.
-	Context      string        `json:"context"`
-	Entitlements []Entitlement `json:"entitlements,omitempty"`
-	DependsOn    []string      `json:"dependsOn,omitempty"`
+	// Required for standalone multi-service apps; omitted in compose companion files.
+	Context      string          `json:"context"`
+	Entitlements []Entitlement   `json:"entitlements,omitempty"`
+	DependsOn    []string        `json:"dependsOn,omitempty"`
+	Runtimes     *RuntimesConfig `json:"runtimes,omitempty"`
 }
 
 // AppConfig represents the wendy.json application configuration.
@@ -117,19 +131,25 @@ type AppConfig struct {
 	// ServiceName is set when this AppConfig describes a single service within
 	// a multi-service app.  When non-empty the agent uses the
 	// {appId}/{serviceName} container naming convention (WDY-878).
-	ServiceName  string                    `json:"serviceName,omitempty"`
-	Version      string                    `json:"version,omitempty"`
-	Platform     string                    `json:"platform,omitempty"`
-	Language     string                    `json:"language,omitempty"`
-	Xcode        *XcodeConfig              `json:"xcode,omitempty"`
-	Run          *RunConfig                `json:"run,omitempty"`
-	Entitlements []Entitlement             `json:"entitlements,omitempty"`
-	Readiness    *ReadinessConfig          `json:"readiness,omitempty"`
-	Hooks        *HooksConfig              `json:"hooks,omitempty"`
-	Python       *PythonConfig             `json:"python,omitempty"`
-	Debug        bool                      `json:"debug,omitempty"`
-	Files        []FileSyncEntry           `json:"files,omitempty"`
-	Services     map[string]*ServiceConfig `json:"services,omitempty"`
+	ServiceName  string           `json:"serviceName,omitempty"`
+	Version      string           `json:"version,omitempty"`
+	Platform     string           `json:"platform,omitempty"`
+	Language     string           `json:"language,omitempty"`
+	Xcode        *XcodeConfig     `json:"xcode,omitempty"`
+	Run          *RunConfig       `json:"run,omitempty"`
+	Entitlements []Entitlement    `json:"entitlements,omitempty"`
+	Readiness    *ReadinessConfig `json:"readiness,omitempty"`
+	Hooks        *HooksConfig     `json:"hooks,omitempty"`
+	Python       *PythonConfig    `json:"python,omitempty"`
+	Debug        bool             `json:"debug,omitempty"`
+	Files        []FileSyncEntry  `json:"files,omitempty"`
+	// Isolation sets the namespace isolation mode for multi-container deployments
+	// (e.g. "shared-ipc"). Enforced by the agent at container creation time.
+	Isolation string `json:"isolation,omitempty"`
+	// Runtimes holds optional runtime environment configuration (e.g. ROS 2).
+	// Nested under "runtimes" per WDY-1339.
+	Runtimes *RuntimesConfig           `json:"runtimes,omitempty"`
+	Services map[string]*ServiceConfig `json:"services,omitempty"`
 }
 
 // XcodeConfig holds Xcode-specific build settings.
@@ -407,6 +427,51 @@ func containsDotDot(p string) bool {
 		}
 	}
 	return false
+}
+
+// LoadComposeCompanion looks for a wendy.json alongside a docker-compose file
+// in dir. It returns (nil, nil, nil) when no wendy.json is present — not an
+// error. When found, the file is parsed and validated for compose use:
+// entitlements are checked, but service context and dependsOn fields are not
+// required (they come from the compose file instead).
+//
+// The returned warnings come from ValidateJSON (unknown keys, deprecated types,
+// etc). Service name mismatches against the compose file are the caller's
+// responsibility.
+func LoadComposeCompanion(dir string) (*AppConfig, []string, error) {
+	companionPath := filepath.Join(dir, "wendy.json")
+	data, err := os.ReadFile(companionPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("reading companion wendy.json: %w", err)
+	}
+
+	var cfg AppConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("parsing companion wendy.json: %w", err)
+	}
+
+	if err := ValidateAppID(cfg.AppID); err != nil {
+		return nil, nil, err
+	}
+
+	if err := validateEntitlements(cfg.Entitlements, "entitlement"); err != nil {
+		return nil, nil, err
+	}
+
+	for name, svc := range cfg.Services {
+		if svc == nil {
+			return nil, nil, fmt.Errorf("services[%q]: must not be null", name)
+		}
+		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	warnings := ValidateJSON(data)
+	return &cfg, warnings, nil
 }
 
 // isValidI2CDevice reports whether device is a safe I2C device name (i2c-N).

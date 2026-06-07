@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -339,6 +340,46 @@ func composeAppConfig(projectName, serviceName string, svc composeService) *appc
 	}
 }
 
+// composeCompanionWarnings returns warnings for service names declared in the
+// companion wendy.json that have no matching service in the compose file.
+// A nil companion produces no warnings.
+func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *composeConfig) []string {
+	if companion == nil || len(companion.Services) == 0 {
+		return nil
+	}
+	var warnings []string
+	for name := range companion.Services {
+		if _, ok := composeCfg.Services[name]; !ok {
+			warnings = append(warnings, fmt.Sprintf("wendy.json: service %q is not defined in the compose file", name))
+		}
+	}
+	sort.Strings(warnings)
+	return warnings
+}
+
+// applyComposeCompanion merges Wendy-specific config from a companion wendy.json
+// into an AppConfig synthesised from compose fields. companion may be nil (no
+// wendy.json present).
+//
+// Merge rules:
+//   - Top-level isolation and runtimes from the companion are applied to every service.
+//   - Per-service entitlements in the companion are appended to the synthesised
+//     entitlements (compose-derived network/persist entitlements are preserved).
+//   - Per-service runtimes override the group-level runtimes for that service.
+func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.AppConfig, serviceName string) {
+	if companion == nil {
+		return
+	}
+	appCfg.Isolation = companion.Isolation
+	appCfg.Runtimes = companion.Runtimes
+	if svc, ok := companion.Services[serviceName]; ok && svc != nil {
+		appCfg.Entitlements = append(appCfg.Entitlements, svc.Entitlements...)
+		if svc.Runtimes != nil {
+			appCfg.Runtimes = svc.Runtimes
+		}
+	}
+}
+
 // serviceOrder returns service names sorted by depends_on so dependencies
 // start before dependents. It returns an error if any depends_on entry
 // references an undefined service. Cycles are ignored; remaining services are
@@ -454,7 +495,9 @@ func (w *serviceLogWriter) Flush() {
 
 // runComposeWithAgent orchestrates a docker-compose project on a WendyOS device:
 // builds service images, pushes them to the device registry, creates containers,
-// and streams their combined output.
+// and streams their combined output. When a companion wendy.json exists in the
+// same directory it is merged to supply Wendy-specific config (entitlements,
+// isolation, runtimes) without modifying the compose file.
 func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, projectDir string, opts runOptions) error {
 	cfg, composeFilename, err := parseComposeFile(projectDir)
 	if err != nil {
@@ -462,6 +505,18 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	if len(cfg.Services) == 0 {
 		return fmt.Errorf("%s defines no services", composeFilename)
+	}
+
+	// Load an optional companion wendy.json from the same directory.
+	companion, companionWarnings, err := appconfig.LoadComposeCompanion(projectDir)
+	if err != nil {
+		return fmt.Errorf("companion wendy.json: %w", err)
+	}
+	for _, w := range companionWarnings {
+		cliLogln("warning: %s", w)
+	}
+	for _, w := range composeCompanionWarnings(companion, cfg) {
+		cliLogln("warning: %s", w)
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {
@@ -557,6 +612,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	for _, name := range ordered {
 		svc := cfg.Services[name]
 		appCfg := composeAppConfig(projectName, name, svc)
+		applyComposeCompanion(appCfg, companion, name)
 
 		// Determine image: built image or declared image. Public image refs
 		// like "python:3.11-slim" must be canonicalised to "docker.io/library/…"

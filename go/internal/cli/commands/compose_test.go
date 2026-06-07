@@ -394,6 +394,169 @@ func TestShellSplit(t *testing.T) {
 	}
 }
 
+func TestComposeCompanionWarnings(t *testing.T) {
+	cfg := &composeConfig{
+		Services: map[string]composeService{
+			"camera":   {},
+			"detector": {},
+		},
+	}
+
+	t.Run("nil companion produces no warnings", func(t *testing.T) {
+		if w := composeCompanionWarnings(nil, cfg); len(w) != 0 {
+			t.Fatalf("want no warnings, got %v", w)
+		}
+	})
+
+	t.Run("all services matched", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera":   {Entitlements: []appconfig.Entitlement{{Type: "camera"}}},
+				"detector": {Entitlements: []appconfig.Entitlement{{Type: "gpu"}}},
+			},
+		}
+		if w := composeCompanionWarnings(companion, cfg); len(w) != 0 {
+			t.Fatalf("want no warnings for matched services, got %v", w)
+		}
+	})
+
+	t.Run("unmatched service name warns", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera":  {Entitlements: []appconfig.Entitlement{{Type: "camera"}}},
+				"missing": {Entitlements: []appconfig.Entitlement{{Type: "gpu"}}},
+			},
+		}
+		w := composeCompanionWarnings(companion, cfg)
+		if len(w) != 1 {
+			t.Fatalf("want 1 warning, got %v", w)
+		}
+		if !strings.Contains(w[0], "missing") {
+			t.Errorf("warning should mention the unknown service name, got %q", w[0])
+		}
+	})
+
+	t.Run("empty services map produces no warnings", func(t *testing.T) {
+		companion := &appconfig.AppConfig{AppID: "com.example.robot"}
+		if w := composeCompanionWarnings(companion, cfg); len(w) != 0 {
+			t.Fatalf("want no warnings for empty services, got %v", w)
+		}
+	})
+}
+
+func TestApplyComposeCompanion(t *testing.T) {
+	baseAppCfg := func() *appconfig.AppConfig {
+		return &appconfig.AppConfig{
+			AppID: "proj-camera",
+			Entitlements: []appconfig.Entitlement{
+				{Type: appconfig.EntitlementNetwork},
+			},
+		}
+	}
+
+	t.Run("nil companion is a no-op", func(t *testing.T) {
+		got := baseAppCfg()
+		applyComposeCompanion(got, nil, "camera")
+		if len(got.Entitlements) != 1 || got.Isolation != "" || got.Runtimes != nil {
+			t.Errorf("nil companion should not change AppConfig: %+v", got)
+		}
+	})
+
+	t.Run("sets isolation and group runtimes", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID:     "com.example.robot",
+			Isolation: "shared-ipc",
+			Runtimes:  &appconfig.RuntimesConfig{ROS2: &appconfig.ROS2Config{DomainID: 0}},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if got.Isolation != "shared-ipc" {
+			t.Errorf("Isolation = %q, want %q", got.Isolation, "shared-ipc")
+		}
+		if got.Runtimes == nil || got.Runtimes.ROS2 == nil {
+			t.Error("Runtimes.ROS2 should be set")
+		}
+	})
+
+	t.Run("appends per-service entitlements", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {
+					Entitlements: []appconfig.Entitlement{
+						{Type: appconfig.EntitlementCamera},
+						{Type: appconfig.EntitlementGPU},
+					},
+				},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if len(got.Entitlements) != 3 {
+			t.Fatalf("want 3 entitlements (1 compose + 2 companion), got %d: %+v", len(got.Entitlements), got.Entitlements)
+		}
+	})
+
+	t.Run("per-service runtimes override group runtimes", func(t *testing.T) {
+		groupROS2 := &appconfig.ROS2Config{DomainID: 0}
+		svcROS2 := &appconfig.ROS2Config{DomainID: 42}
+		companion := &appconfig.AppConfig{
+			AppID:    "com.example.robot",
+			Runtimes: &appconfig.RuntimesConfig{ROS2: groupROS2},
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {
+					Runtimes: &appconfig.RuntimesConfig{ROS2: svcROS2},
+				},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if got.Runtimes == nil || got.Runtimes.ROS2 == nil {
+			t.Fatal("Runtimes.ROS2 should be set")
+		}
+		if got.Runtimes.ROS2.DomainID != 42 {
+			t.Errorf("DomainID = %d, want 42 (per-service override)", got.Runtimes.ROS2.DomainID)
+		}
+	})
+
+	t.Run("group runtimes apply when service has no runtimes", func(t *testing.T) {
+		groupROS2 := &appconfig.ROS2Config{DomainID: 5}
+		companion := &appconfig.AppConfig{
+			AppID:    "com.example.robot",
+			Runtimes: &appconfig.RuntimesConfig{ROS2: groupROS2},
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if got.Runtimes == nil || got.Runtimes.ROS2 == nil || got.Runtimes.ROS2.DomainID != 5 {
+			t.Errorf("expected group-level ROS2 DomainID=5, got %+v", got.Runtimes)
+		}
+	})
+
+	t.Run("unknown service uses only group config", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID:     "com.example.robot",
+			Isolation: "shared-ipc",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "detector") // not in services map
+		if got.Isolation != "shared-ipc" {
+			t.Errorf("Isolation = %q, want %q", got.Isolation, "shared-ipc")
+		}
+		// No per-service entitlements should be added.
+		if len(got.Entitlements) != 1 {
+			t.Errorf("want 1 entitlement (no per-service addition), got %d", len(got.Entitlements))
+		}
+	})
+}
+
 func TestComposeRestartPolicy(t *testing.T) {
 	cases := []struct {
 		in   string
