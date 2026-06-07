@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -71,7 +72,10 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBefor
 }
 
 // NewServer creates a gRPC server with mTLS credentials.
-// Additional gRPC server options can be passed and will be applied alongside the TLS credentials.
+// The mTLS interceptors are always applied — they cannot be omitted via extraOpts.
+// This ensures no handler can accidentally receive an unauthenticated call regardless
+// of how the caller configures the server. Callers may add further interceptors via
+// extraOpts; those run after the mandatory mTLS check.
 // logger may be nil; when provided, rejected client certificates are logged at WARN level.
 // notBeforeFloor is forwarded to NewTLSConfig; see its documentation for details.
 func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
@@ -83,6 +87,10 @@ func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFl
 	creds := credentials.NewTLS(tlsConfig)
 	opts := []grpc.ServerOption{
 		grpc.Creds(creds),
+		// mTLS interceptors are mandatory: they run before any caller-provided interceptors
+		// so that no handler can be reached without a verified client certificate.
+		grpc.ChainUnaryInterceptor(interceptor.UnaryMTLSInterceptor(logger)),
+		grpc.ChainStreamInterceptor(interceptor.StreamMTLSInterceptor(logger)),
 		grpc.InitialWindowSize(8 * 1024 * 1024),
 		grpc.InitialConnWindowSize(16 * 1024 * 1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{

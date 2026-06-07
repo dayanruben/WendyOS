@@ -3,15 +3,16 @@ package services
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -31,6 +32,11 @@ const (
 	v4l2PixFmtH264          = 0x34363248 // 'H264' little-endian FourCC
 	v4l2FieldNone           = 1
 
+	v4l2CapVideoCapture = 0x00000001
+	v4l2CapMetaCapture  = 0x00800000
+	v4l2CapDeviceCaps   = 0x80000000
+
+	vidiocQueryCap  = 0x80685600
 	vidiocSFmt      = 0xC0D05605
 	vidiocReqbufs   = 0xC0145608
 	vidiocQuerybuf  = 0xC0585609
@@ -85,6 +91,27 @@ func (b *v4l2Buf) bytesUsed() uint32  { return *(*uint32)(unsafe.Pointer(&b[8]))
 func (b *v4l2Buf) setMemory(m uint32) { *(*uint32)(unsafe.Pointer(&b[60])) = m }
 func (b *v4l2Buf) offset() uint32     { return *(*uint32)(unsafe.Pointer(&b[64])) }
 
+// v4l2Capability matches struct v4l2_capability (104 bytes).
+type v4l2Capability struct {
+	Driver       [16]byte
+	Card         [32]byte
+	BusInfo      [32]byte
+	Version      uint32
+	Capabilities uint32
+	DeviceCaps   uint32
+	Reserved     [3]uint32
+}
+
+func (c *v4l2Capability) hasVideoCapture() bool {
+	caps := c.Capabilities
+	if caps&v4l2CapDeviceCaps != 0 {
+		caps = c.DeviceCaps
+	}
+	// Require VIDEO_CAPTURE and exclude metadata-only nodes (e.g. the UVC
+	// metadata companion device that some drivers expose on /dev/video1).
+	return caps&v4l2CapVideoCapture != 0 && caps&v4l2CapMetaCapture == 0
+}
+
 // v4l2ExtControl is a fixed-size array matching the __packed struct
 // v4l2_ext_control (20 bytes): id@0, size@4, reserved2@8, then an 8-byte union
 // whose __s32 value member sits at offset 12.
@@ -107,16 +134,143 @@ type nativeH264NotSupported struct{ msg string }
 
 func (e nativeH264NotSupported) Error() string { return e.msg }
 
-type VideoService struct {
-	agentpb.UnimplementedWendyVideoServiceServer
-	logger         *zap.Logger
-	globDevices    func() ([]string, error)
-	readDeviceName func(base string) (string, error)
+// videoFrame carries a single encoded video frame from a producer to subscribers.
+// IMMUTABLE after creation: the data slice is allocated once (copied from the V4L2
+// mmap region or GStreamer pipe) and never written again. Frames are distributed as
+// *videoFrame pointers so all subscribers share the same allocation with zero copies
+// at broadcast time. stream.Send() serialises the proto synchronously before returning,
+// so reading frame.data without a per-subscriber copy is safe.
+type videoFrame struct {
+	data  []byte
+	tsNs  uint64
+	codec agentpb.VideoCodec
 }
 
-func NewVideoService(logger *zap.Logger) *VideoService {
+// deviceHub multiplexes one camera producer to multiple gRPC subscribers.
+type deviceHub struct {
+	mu     sync.Mutex
+	subs   map[int]chan *videoFrame
+	nextID int
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{} // closed by runProducer after the device fd is released
+	// err is set by runProducer to the terminal error before closing subscriber
+	// channels. Nil on graceful shutdown (context cancelled). Protected by h.mu.
+	err error
+	// width, height, framerate are copied from the request that started this hub.
+	// Storing scalars (not a proto pointer) prevents data races if the caller's
+	// proto message is ever mutated by middleware after the hub is created.
+	width, height, framerate uint32
+}
+
+// maxSubscribersPerHub caps the number of concurrent gRPC streams sharing one
+// camera producer. Exceeding this returns ResourceExhausted to the caller.
+// The cap bounds per-device channel memory and broadcast work proportionally.
+const maxSubscribersPerHub = 16
+
+// subscribe adds a new subscriber and returns its channel and integer ID.
+// Returns codes.Unavailable if the hub's context has already been cancelled
+// (checked atomically under h.mu so no subscriber can be added to a dying hub),
+// or codes.ResourceExhausted if the hub already has maxSubscribersPerHub active subscribers.
+func (h *deviceHub) subscribe() (int, chan *videoFrame, error) {
+	ch := make(chan *videoFrame, 4)
+	h.mu.Lock()
+	if h.ctx.Err() != nil {
+		h.mu.Unlock()
+		return 0, nil, status.Errorf(codes.Unavailable, "video hub is shutting down")
+	}
+	if len(h.subs) >= maxSubscribersPerHub {
+		h.mu.Unlock()
+		return 0, nil, status.Errorf(codes.ResourceExhausted, "too many concurrent streams for this device (max %d)", maxSubscribersPerHub)
+	}
+	id := h.nextID
+	h.nextID++
+	h.subs[id] = ch
+	h.mu.Unlock()
+	return id, ch, nil
+}
+
+// unsubscribe removes a subscriber. When the last subscriber leaves it cancels the producer.
+// cancel() is called while h.mu is still held to close the race window where a concurrent
+// getOrCreateHub could observe h.ctx.Err()==nil between the delete and the cancel call.
+func (h *deviceHub) unsubscribe(id int) {
+	h.mu.Lock()
+	delete(h.subs, id)
+	if len(h.subs) == 0 {
+		h.cancel()
+	}
+	h.mu.Unlock()
+}
+
+// terminalErr returns the error recorded by runProducer under h.mu.
+// Reading h.err must always go through this method: StreamVideo reads h.err
+// after receiving from a closed channel, but the close/write ordering in
+// runProducer does not provide a happens-before edge visible to the reader
+// without an explicit mutex acquisition on the reader side.
+func (h *deviceHub) terminalErr() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.err
+}
+
+// maxFrameBytes is the maximum accepted size of a single encoded video frame.
+// Frames larger than this are dropped before distribution to prevent a
+// malfunctioning or compromised device from triggering memory exhaustion.
+const maxFrameBytes = 2 * 1024 * 1024 // 2 MiB
+
+// broadcast delivers a frame to all subscribers, dropping for slow consumers.
+// Returns false when there are no subscribers left (producer should stop).
+// Late-joining subscribers receive whatever frame the producer sends next;
+// they will not see an IDR/keyframe until the next one arrives naturally (at most
+// one GOP interval away for GStreamer pipelines with key-int-max set).
+//
+// Sends are performed while holding h.mu so that runProducer cannot close
+// subscriber channels concurrently — sending on a closed channel panics. With
+// maxSubscribersPerHub = 16 and non-blocking selects, the lock is held for
+// O(16) nanoseconds, making the contention cost negligible.
+func (h *deviceHub) broadcast(frame *videoFrame) bool {
+	if len(frame.data) > maxFrameBytes {
+		return true // oversized frame: drop silently, keep the hub alive
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.subs) == 0 {
+		return false
+	}
+	for _, ch := range h.subs {
+		select {
+		case ch <- frame:
+		default:
+		}
+	}
+	return true
+}
+
+// VideoService implements agentpb.WendyVideoServiceServer.
+type VideoService struct {
+	agentpb.UnimplementedWendyVideoServiceServer
+	logger          *zap.Logger
+	globDevices     func() ([]string, error)
+	readDeviceName  func(base string) (string, error)
+	hasVideoCapture func(path string) bool
+
+	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
+	cancel context.CancelFunc // cancels ctx
+	wg     sync.WaitGroup     // tracks active runProducer goroutines
+
+	mu   sync.Mutex
+	hubs map[string]*deviceHub
+}
+
+// NewVideoService creates a VideoService whose producer goroutines are tied to ctx.
+// Call Shutdown to cancel all active producers and wait for them to exit.
+func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
+	svcCtx, cancel := context.WithCancel(ctx)
 	return &VideoService{
 		logger: logger,
+		ctx:    svcCtx,
+		cancel: cancel,
+		hubs:   make(map[string]*deviceHub),
 		globDevices: func() ([]string, error) {
 			return filepath.Glob("/dev/video*")
 		},
@@ -124,7 +278,26 @@ func NewVideoService(logger *zap.Logger) *VideoService {
 			b, err := os.ReadFile(fmt.Sprintf("/sys/class/video4linux/%s/name", base))
 			return strings.TrimSpace(string(b)), err
 		},
+		hasVideoCapture: func(path string) bool {
+			// O_RDONLY is sufficient for VIDIOC_QUERYCAP (read-only ioctl).
+			// Using O_RDWR requests unnecessary write privilege and can cause EBUSY
+			// on exclusive-access cameras that reject a second writable open.
+			fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			if err != nil {
+				return false
+			}
+			defer unix.Close(fd) //nolint:errcheck
+			var cap v4l2Capability
+			_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQueryCap, uintptr(unsafe.Pointer(&cap)))
+			return errno == 0 && cap.hasVideoCapture()
+		},
 	}
+}
+
+// Shutdown cancels all active producer goroutines and waits for them to exit.
+func (s *VideoService) Shutdown() {
+	s.cancel()
+	s.wg.Wait()
 }
 
 func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
@@ -138,6 +311,9 @@ func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
 		numStr := strings.TrimPrefix(base, "video")
 		id, err := strconv.ParseUint(numStr, 10, 32)
 		if err != nil {
+			continue
+		}
+		if !s.hasVideoCapture(path) {
 			continue
 		}
 		name, err := s.readDeviceName(base)
@@ -161,29 +337,274 @@ func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVide
 	return &agentpb.ListVideoDevicesResponse{Devices: devices}, nil
 }
 
-// Tries native H.264 capture via V4L2 mmap first; falls back to GStreamer if the device
-// does not expose H.264 output.
-func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.ServerStreamingServer[agentpb.VideoFrame]) error {
-	ctx := stream.Context()
-	path := fmt.Sprintf("/dev/video%d", req.GetDeviceId())
+// maxHubRetries is the maximum number of times getOrCreateHub will retry after
+// observing a race between subscribe() and the last subscriber's cancel() call.
+// Exceeding this indicates pathological churn and we return Unavailable.
+// hubTeardownTimeout caps how long each retry waits for a dying hub to release
+// the device fd, bounding the worst-case total wait to maxHubRetries * timeout.
+const (
+	maxHubRetries      = 3
+	hubTeardownTimeout = 500 * time.Millisecond
+)
 
-	if _, err := os.Stat(path); err != nil {
-		return status.Errorf(codes.NotFound, "video device %s not found", path)
+// getOrCreateHub returns the existing hub for path, or starts a new producer and hub.
+// The caller receives a hub with at least one subscriber already registered (the returned id/ch).
+// Returns an error if a hub already exists with different stream parameters.
+func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *agentpb.StreamVideoRequest) (h *deviceHub, id int, ch chan *videoFrame, err error) {
+	for retries := 0; ; retries++ {
+		if retries >= maxHubRetries {
+			s.logger.Warn("hub retry limit exceeded", zap.String("device", path), zap.Int("retries", retries))
+			return nil, 0, nil, status.Errorf(codes.Unavailable, "video device temporarily unavailable, please retry")
+		}
+		s.mu.Lock()
+		h, exists := s.hubs[path]
+		if !exists {
+			break
+		}
+		if h.ctx.Err() == nil {
+			if h.width != req.GetWidth() || h.height != req.GetHeight() || h.framerate != req.GetFramerate() {
+				s.mu.Unlock()
+				s.logger.Debug("stream parameter mismatch", zap.String("device", path),
+					zap.Uint32("existing_w", h.width), zap.Uint32("existing_h", h.height),
+					zap.Uint32("existing_fps", h.framerate))
+				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
+			}
+			id, ch, err = h.subscribe()
+			s.mu.Unlock()
+			if err != nil {
+				if st, _ := status.FromError(err); st.Code() == codes.Unavailable {
+					// subscribe() detected a cancelled hub atomically under h.mu.
+					// Wait for the producer to release the device fd, evict the stale
+					// hub, and retry so we create a fresh one.
+					waitCtx, waitCancel := context.WithTimeout(ctx, hubTeardownTimeout)
+					select {
+					case <-h.done:
+					case <-ctx.Done():
+						waitCancel()
+						return nil, 0, nil, ctx.Err()
+					case <-waitCtx.Done():
+						if ctx.Err() != nil {
+							waitCancel()
+							return nil, 0, nil, ctx.Err()
+						}
+						s.logger.Warn("timed out waiting for hub teardown", zap.String("device", path))
+					}
+					waitCancel()
+					s.mu.Lock()
+					if s.hubs[path] == h {
+						delete(s.hubs, path)
+					}
+					s.mu.Unlock()
+					continue
+				}
+				return nil, 0, nil, err
+			}
+			return h, id, ch, nil
+		}
+		// Hub is cancelling. Evict it and wait for the producer to release
+		// the device fd before opening a new one — otherwise VIDIOC_S_FMT
+		// returns EBUSY while the old streaming session is still active.
+		delete(s.hubs, path)
+		done := h.done
+		s.mu.Unlock()
+		waitCtx, waitCancel := context.WithTimeout(ctx, hubTeardownTimeout)
+		select {
+		case <-done:
+		case <-ctx.Done():
+			waitCancel()
+			return nil, 0, nil, ctx.Err()
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				waitCancel()
+				return nil, 0, nil, ctx.Err()
+			}
+			s.logger.Warn("timed out waiting for hub teardown", zap.String("device", path))
+		}
+		waitCancel()
 	}
+	// s.mu is held here (broke out of loop with no hub in map).
 
-	err := s.streamV4L2Native(ctx, stream, path, req)
-	if _, ok := err.(nativeH264NotSupported); ok {
-		s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
-		return s.streamGStreamer(ctx, stream, path, req)
+	hctx, cancel := context.WithCancel(s.ctx)
+	h = &deviceHub{
+		subs:      make(map[int]chan *videoFrame),
+		ctx:       hctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		width:     req.GetWidth(),
+		height:    req.GetHeight(),
+		framerate: req.GetFramerate(),
 	}
-	return err
+	// New hub: the first subscriber is always within the cap.
+	id, ch, _ = h.subscribe()
+	s.hubs[path] = h
+	s.mu.Unlock()
+
+	s.wg.Add(1)
+	go s.runProducer(hctx, h, path, req)
+	return h, id, ch, nil
 }
 
-// Returns nativeH264NotSupported if the device rejects the H.264 pixel format.
-func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], path string, req *agentpb.StreamVideoRequest) error {
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC, 0)
+// runProducer drives the capture loop for a single device hub.
+// It tries native V4L2 H.264 first, falling back to GStreamer when unsupported.
+// When the hub loses its last subscriber the context is cancelled and this goroutine exits.
+func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path string, req *agentpb.StreamVideoRequest) {
+	defer s.wg.Done()
+	broadcast := func(data []byte, tsNs uint64, codec agentpb.VideoCodec) bool {
+		return h.broadcast(&videoFrame{data: data, tsNs: tsNs, codec: codec})
+	}
+
+	err := s.streamV4L2Native(ctx, broadcast, path, req)
+	if _, ok := err.(nativeH264NotSupported); ok {
+		s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+		err = s.streamGStreamer(ctx, broadcast, path, req)
+	}
+	if err != nil && ctx.Err() == nil {
+		s.logger.Error("video producer exited with error", zap.String("device", path), zap.Error(err))
+	}
+
+	// Remove hub so the next StreamVideo call spawns a fresh producer.
+	s.mu.Lock()
+	if s.hubs[path] == h {
+		delete(s.hubs, path)
+	}
+	s.mu.Unlock()
+
+	// Store the terminal error and close subscriber channels under h.mu.
+	// broadcast() also holds h.mu during sends, so closing inside the lock is
+	// the synchronisation point that prevents send-on-closed-channel panics:
+	// either broadcast() holds h.mu (and finishes its sends before we close),
+	// or we hold h.mu first (and close before broadcast() can send).
+	h.mu.Lock()
+	if err != nil && ctx.Err() == nil {
+		h.err = err
+	}
+	for _, ch := range h.subs {
+		close(ch)
+	}
+	h.mu.Unlock()
+
+	// Signal that the device fd is fully released. getOrCreateHub waits on
+	// this before opening a new producer to avoid EBUSY on reconnect.
+	close(h.done)
+}
+
+// maxVideoDeviceID is the upper bound for accepted device IDs.
+// Linux's VIDEO_NUM_DEVICES kernel constant (v4l2-dev.h) allows video0–video255.
+const maxVideoDeviceID = 255
+
+// v4l2MajorDevice is the Linux character device major number for V4L2 devices
+// (documented in Documentation/admin-guide/devices.txt as major 81).
+const v4l2MajorDevice = 81
+
+// validateStreamParams checks width, height, and framerate against known-safe values
+// before constructing GStreamer pipeline arguments. Zero means "device default" and is
+// always accepted. This prevents unexpected pipeline behaviour from extreme values.
+func validateStreamParams(req *agentpb.StreamVideoRequest) error {
+	w, h := req.GetWidth(), req.GetHeight()
+	if w != 0 || h != 0 {
+		switch [2]uint32{w, h} {
+		case [2]uint32{320, 240},
+			[2]uint32{640, 480},
+			[2]uint32{1280, 720},
+			[2]uint32{1920, 1080},
+			[2]uint32{3840, 2160}:
+		default:
+			return status.Errorf(codes.InvalidArgument, "unsupported resolution")
+		}
+	}
+	fps := req.GetFramerate()
+	if fps != 0 {
+		switch fps {
+		case 15, 24, 25, 30, 60, 90, 120:
+		default:
+			return status.Errorf(codes.InvalidArgument, "unsupported framerate")
+		}
+	}
+	return nil
+}
+
+// StreamVideo streams H.264 frames from a V4L2 camera.
+// Multiple concurrent callers for the same device share one producer via a deviceHub.
+func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.ServerStreamingServer[agentpb.VideoFrame]) error {
+	ctx := stream.Context()
+	devID := req.GetDeviceId()
+	if devID > maxVideoDeviceID {
+		return status.Errorf(codes.InvalidArgument, "device ID out of range")
+	}
+	if err := validateStreamParams(req); err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/dev/video%d", devID)
+
+	// Lstat validates the path before any open: the node must be a character
+	// device with V4L2 major number 81 and must not be a symlink. This catches
+	// obvious misconfiguration and prevents symlink-based traversal before
+	// O_NOFOLLOW is applied at the real open() inside streamV4L2Native.
+	// A residual TOCTOU window between this Lstat and the open in streamV4L2Native
+	// is unavoidable in the current architecture; O_NOFOLLOW + major-number
+	// enforcement together bound it to physical device substitution by a
+	// privileged local process, which is outside the threat model for this agent.
+	var stat unix.Stat_t
+	if err := unix.Lstat(path, &stat); err != nil {
+		return status.Errorf(codes.NotFound, "video device not found")
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFCHR || unix.Major(uint64(stat.Rdev)) != v4l2MajorDevice {
+		return status.Errorf(codes.InvalidArgument, "path is not a V4L2 video device")
+	}
+	// hasVideoCapture is intentionally not called here: it would open the device
+	// a second time before streamV4L2Native opens it, adding an extra TOCTOU
+	// window. streamV4L2Native performs VIDIOC_QUERYCAP on the same fd it will
+	// use for streaming, so capability verification and streaming happen atomically
+	// on a single fd rather than across separate opens.
+
+	h, id, ch, err := s.getOrCreateHub(ctx, path, req)
 	if err != nil {
-		return status.Errorf(codes.Internal, "open %s: %v", path, err)
+		return err
+	}
+	defer h.unsubscribe(id)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case frame, ok := <-ch:
+			if !ok {
+				// Producer exited. Return the original error if one was recorded.
+				if err := h.terminalErr(); err != nil {
+					return err
+				}
+				// If the hub context was cancelled (e.g. service shutdown), propagate that.
+				if err := h.ctx.Err(); err != nil {
+					return status.FromContextError(err).Err()
+				}
+				return status.Errorf(codes.Internal, "video producer stopped unexpectedly")
+			}
+			// frame.data is an immutable, per-frame allocation produced by the
+			// capture loop and never modified after broadcast(). stream.Send()
+			// serialises the proto synchronously (marshal → TLS write) before
+			// returning, so passing the shared slice directly is safe and avoids
+			// an O(N × frameSize) heap allocation per broadcast.
+			if err := stream.Send(&agentpb.VideoFrame{
+				Data:        frame.data,
+				TimestampNs: frame.tsNs,
+				Codec:       frame.codec,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// streamV4L2Native opens the V4L2 device, configures H.264 output via VIDIOC_S_FMT,
+// allocates mmap buffers, and streams frames until ctx is cancelled or an error occurs.
+// Each captured frame is delivered via the broadcast callback; if the callback returns
+// false the loop exits cleanly (no subscribers remain).
+// Returns nativeH264NotSupported if the device rejects the H.264 pixel format.
+func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) error {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(err))
+		return status.Errorf(codes.Internal, "failed to open video device")
 	}
 	defer unix.Close(fd) //nolint:errcheck
 
@@ -203,7 +624,8 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 		if errno == unix.EINVAL {
 			return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_S_FMT H264 rejected: %v", errno)}
 		}
-		return status.Errorf(codes.Internal, "VIDIOC_S_FMT failed for %s: %v", path, errno)
+		s.logger.Error("VIDIOC_S_FMT failed", zap.String("device", path), zap.Error(errno))
+		return status.Errorf(codes.Internal, "failed to configure video device")
 	}
 	if vfmt.PixelFormat != v4l2PixFmtH264 {
 		return nativeH264NotSupported{msg: "device switched pixel format away from H264"}
@@ -214,7 +636,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 	s.setV4L2KeyframeInterval(fd, keyframeIntervalFrames(req.GetFramerate()))
 
 	// Two buffers: one dequeued/in-flight, one queued for the camera to fill.
-	// More buffers increase kernel-side lag when the gRPC send lags the camera.
+	// More buffers increase kernel-side lag when the broadcast lags the camera.
 	const numBuffers = 2
 	var req4 v4l2ReqBuffers
 	req4.Count = numBuffers
@@ -267,64 +689,29 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, stream grpc.ServerS
 		unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocStreamoff, uintptr(unsafe.Pointer(&bufType))) //nolint:errcheck
 	}()
 
-	// Capture and send run on separate goroutines joined by a single-slot,
-	// drop-oldest hand-off. Capture runs at camera speed; the sender may stall
-	// on gRPC flow control. While the sender stalls, the slot keeps being
-	// overwritten, so the sender always transmits the freshest frame and the
-	// frames captured in between are dropped instead of delivered late.
-	slot := newFrameSlot()
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	errCh := make(chan error, 2)
-	go func() { errCh <- s.captureV4L2Frames(runCtx, fd, mapped, slot) }()
-	go func() { errCh <- s.sendV4L2Frames(runCtx, stream, slot) }()
-
-	// Whichever goroutine exits first, cancel the other and collect both errors.
-	first := <-errCh
-	cancel()
-	second := <-errCh
-	return pickV4L2StreamError(first, second, ctx.Err())
-}
-
-// pickV4L2StreamError selects which of the capture/sender goroutine errors
-// streamV4L2Native returns. nativeH264NotSupported wins so StreamVideo can fall
-// back to the GStreamer encoder; otherwise the first non-cancellation error is
-// the root cause, since the other goroutine usually only reports the context
-// cancellation that the first one triggered.
-func pickV4L2StreamError(first, second, ctxErr error) error {
-	for _, err := range []error{first, second} {
-		if _, ok := err.(nativeH264NotSupported); ok {
-			return err
-		}
+	if fd > math.MaxInt32 {
+		return status.Errorf(codes.Internal, "file descriptor value out of range for poll")
 	}
-	for _, err := range []error{first, second} {
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-	}
-	if ctxErr != nil {
-		return ctxErr
-	}
-	return first
-}
-
-// captureV4L2Frames runs the V4L2 capture loop: dequeue a filled buffer, copy
-// the access unit into a fresh slice, hand it to slot (dropping any frame the
-// sender has not yet taken), and requeue the buffer. It runs as fast as the
-// camera delivers frames, decoupled from the gRPC sender.
-//
-// It returns nativeH264NotSupported if VIDIOC_DQBUF fails before any frame is
-// captured: the device accepted the H.264 format but never delivered a frame, so
-// the caller can fall back to the GStreamer software encoder. Because no frame
-// was captured, none was handed to the sender, so the fallback stream is clean.
-func (s *VideoService) captureV4L2Frames(ctx context.Context, fd int, mapped [][]byte, slot *frameSlot) error {
-	var framesCaptured int
+	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	var framesSent int
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		// Poll with a short timeout so context cancellation is noticed quickly.
+		// VIDIOC_DQBUF blocks until a buffer arrives; without this a cancelled
+		// context can wait up to one full frame period before the producer exits,
+		// holding the device fd and delaying the next StreamVideo caller.
+		ready, err := unix.Poll(pollFds, 100)
+		if err == unix.EINTR || (err == nil && ready == 0) {
+			continue // timeout or signal — re-check ctx.Done
+		}
+		if err != nil {
+			s.logger.Error("poll failed on video device", zap.String("device", path), zap.Error(err))
+			return status.Errorf(codes.Internal, "video device poll error")
 		}
 
 		var dqbuf v4l2Buf
@@ -337,7 +724,7 @@ func (s *VideoService) captureV4L2Frames(ctx context.Context, fd int, mapped [][
 			}
 			// Device accepted H264 format but failed before delivering any frame —
 			// signal the caller to fall back to the GStreamer software encoder.
-			if framesCaptured == 0 {
+			if framesSent == 0 {
 				return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_DQBUF failed before first frame: %v", errno)}
 			}
 			return status.Errorf(codes.Internal, "VIDIOC_DQBUF: %v", errno)
@@ -345,40 +732,30 @@ func (s *VideoService) captureV4L2Frames(ctx context.Context, fd int, mapped [][
 
 		idx := dqbuf.index()
 		if n := dqbuf.bytesUsed(); n > 0 {
+			// Cap at maxFrameBytes before allocating: a misbehaving or compromised
+			// V4L2 driver could report bytesUsed up to the full mmap region size.
+			// Capping here bounds the allocation at the source rather than relying
+			// solely on the drop check inside broadcast().
+			if n > maxFrameBytes {
+				n = maxFrameBytes
+			}
 			// Copy out of the mmap region before requeuing: the slice handed to
-			// the sender must not alias a buffer the camera may refill.
-			frameData := make([]byte, n)
-			copy(frameData, mapped[idx][:n])
-			slot.put(frameData)
-			framesCaptured++
+			// subscribers must not alias a buffer the camera may refill.
+			data := make([]byte, n)
+			copy(data, mapped[idx][:n])
+			if !broadcast(data, uint64(time.Now().UnixNano()), agentpb.VideoCodec_VIDEO_CODEC_H264) {
+				return nil
+			}
+			framesSent++
 		}
 
-		// Re-queue the buffer (including empty ones) so the camera can refill it.
+		// Re-queue the buffer.
 		var qbuf v4l2Buf
 		qbuf.setIndex(idx)
 		qbuf.setType(v4l2BufTypeVideoCapture)
 		qbuf.setMemory(v4l2MemoryMmap)
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQbuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
 			return status.Errorf(codes.Internal, "VIDIOC_QBUF requeue[%d]: %v", idx, errno)
-		}
-	}
-}
-
-// sendV4L2Frames takes the freshest captured frame from slot and sends it over
-// the gRPC stream. While stream.Send blocks on flow control, the capture
-// goroutine keeps overwriting the slot, so every Send transmits the newest frame
-// available — frames captured during the stall are dropped.
-func (s *VideoService) sendV4L2Frames(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], slot *frameSlot) error {
-	for {
-		frame, ok := slot.take(ctx)
-		if !ok {
-			return ctx.Err()
-		}
-		if err := stream.Send(&agentpb.VideoFrame{
-			Data:        frame,
-			TimestampNs: uint64(time.Now().UnixNano()),
-		}); err != nil {
-			return err
 		}
 	}
 }
@@ -432,6 +809,25 @@ func setV4L2ExtControl(fd int, controlID uint32, value int32) unix.Errno {
 	return errno
 }
 
+// limitedBuffer is a bytes.Buffer wrapper that silently drops writes beyond limit
+// bytes. Used for GStreamer stderr so a misbehaving or crashing process cannot
+// exhaust the heap via unbounded stderr output.
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := l.limit - l.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	return l.buf.Write(p)
+}
+
 // gstFallbackDirs is the list of directories searched for GStreamer binaries
 // when they are not on PATH. wendy-agent runs as a systemd service whose
 // inherited PATH may omit the standard system bin directories (observed on
@@ -456,8 +852,8 @@ func resolveGSTBinary(name string) (string, error) {
 }
 
 // streamGStreamer spawns gst-launch-1.0 on the device to encode via the best available
-// encoder and pipes the resulting stream back as VideoFrame chunks.
-func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerStreamingServer[agentpb.VideoFrame], path string, req *agentpb.StreamVideoRequest) (runErr error) {
+// encoder and pipes the resulting stream back as videoFrame chunks via the broadcast callback.
+func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) (runErr error) {
 	gstPath, err := resolveGSTBinary("gst-launch-1.0")
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -471,12 +867,26 @@ func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerSt
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
+	if !isValidGSTElementName(enc.element) {
+		return status.Errorf(codes.Internal, "GStreamer encoder name contains invalid characters")
+	}
+	// Explicitly validate the device path before interpolating into the pipeline
+	// string. path is always fmt.Sprintf("/dev/video%d", devID) where devID is a
+	// range-validated uint32, so it will never contain GStreamer pipeline tokens,
+	// but this check makes the invariant auditable in the diff.
+	if !isValidGSTDevicePath(path) {
+		return status.Errorf(codes.Internal, "unexpected device path format")
+	}
 	s.logger.Info("GStreamer encoder selected", zap.String("encoder", enc.element), zap.String("codec", enc.codec.String()))
 
-	args := buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse)
+	args, err := buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse)
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to build GStreamer pipeline: %v", err)
+	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	const maxStderrBytes = 64 * 1024
+	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
+	cmd.Stderr = stderrBuf
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -491,17 +901,31 @@ func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerSt
 		io.Copy(io.Discard, stdout) // drain so Wait's internal goroutine can exit
 		waitErr := cmd.Wait()
 		if runErr == nil {
-			msg := strings.TrimSpace(stderrBuf.String())
+			// Log stderr internally — do NOT embed in the gRPC response. GStreamer
+			// stderr routinely includes device paths, kernel module names, library
+			// versions, and pipeline topology. Returning it verbatim lets an
+			// authenticated client enumerate the system via deliberate failures.
+			msg := strings.TrimSpace(stderrBuf.buf.String())
 			if msg != "" {
-				runErr = status.Errorf(codes.Internal, "gstreamer exited with error: %s", msg)
+				s.logger.Error("GStreamer pipeline failed", zap.String("device", path), zap.String("stderr", msg))
+				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
 			} else if waitErr != nil {
-				runErr = status.Errorf(codes.Internal, "gstreamer exited with error: %v", waitErr)
+				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
 			}
 		}
 	}()
 
 	const chunkSize = 256 * 1024
 	buf := make([]byte, chunkSize)
+
+	// gstMaxFrameRate is the maximum number of frame allocations per second from
+	// the GStreamer read loop. A misbehaving or adversarially replaced gst-launch
+	// binary could write at arbitrarily high rate; bounding the allocation rate
+	// prevents it from forcing excessive GC pressure. Chunks arriving faster than
+	// this are discarded — H.264/VP8 byte streams self-synchronise at I-frames.
+	const gstMaxFrameRate = 240
+	minFrameInterval := time.Second / gstMaxFrameRate
+	var lastFrameTime time.Time
 
 	for {
 		select {
@@ -512,14 +936,18 @@ func (s *VideoService) streamGStreamer(ctx context.Context, stream grpc.ServerSt
 
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
-			frameData := make([]byte, n)
-			copy(frameData, buf[:n])
-			if sendErr := stream.Send(&agentpb.VideoFrame{
-				Data:        frameData,
-				TimestampNs: uint64(time.Now().UnixNano()),
-				Codec:       enc.codec,
-			}); sendErr != nil {
-				return sendErr
+			now := time.Now()
+			passFrame := lastFrameTime.IsZero() || now.Sub(lastFrameTime) >= minFrameInterval
+			lastFrameTime = now // always update to prevent burst bypass after a gap
+			if passFrame {
+				if n > maxFrameBytes {
+					n = maxFrameBytes
+				}
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				if !broadcast(data, uint64(now.UnixNano()), enc.codec) {
+					return nil
+				}
 			}
 		}
 		if readErr != nil {
@@ -655,7 +1083,24 @@ func keyframeIntervalFrames(fps uint32) int {
 const leakyRawQueue = "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream"
 
 // buildGStreamerArgs constructs the gst-launch-1.0 argument list for V4L2 encode.
-func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
+// Returns an error if any interpolated string contains GStreamer pipeline injection
+// tokens — making the security property a hard failure at construction time rather
+// than relying solely on caller-side allowlist validation.
+func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) ([]string, error) {
+	// Validate numeric request parameters here (not only at StreamVideo entry) so
+	// buildGStreamerArgs is safe regardless of call site — prevents injection via
+	// unbounded width/height/framerate values if called from a different path.
+	if err := validateStreamParams(req); err != nil {
+		return nil, fmt.Errorf("invalid stream parameters for GStreamer pipeline: %w", err)
+	}
+	for _, s := range []string{devicePath, encoder} {
+		// Space and tab are included because buildGStreamerArgs splits the pipeline
+		// string with strings.Fields — a space in a validated value would inject
+		// extra tokens into the argument list even if pipeline operators are blocked.
+		if strings.ContainsAny(s, "!(); \t") {
+			return nil, fmt.Errorf("GStreamer argument contains pipeline injection token: %q", s)
+		}
+	}
 	src := fmt.Sprintf("v4l2src device=%s", devicePath)
 	gop := keyframeIntervalFrames(req.GetFramerate())
 
@@ -679,7 +1124,7 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	}
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
-	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...)
+	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...), nil
 }
 
 // h264ByteStream normalizes any encoder's H.264 output to Annex B byte-stream
@@ -715,6 +1160,48 @@ func keyframeArg(encoder string, gop int) string {
 	}
 }
 
+// isValidGSTDevicePath reports whether path is a safe V4L2 device node path of the
+// form /dev/videoN. Only alphanumeric characters, hyphens, underscores and forward
+// slashes are permitted, preventing GStreamer pipeline tokens (!, (, ), ;) and
+// whitespace (space, tab) from reaching the gst-launch-1.0 argument string via a
+// crafted device path. Whitespace is blocked because buildGStreamerArgs splits the
+// constructed pipeline string with strings.Fields — a space in the path would inject
+// extra tokens into the argument list.
+func isValidGSTDevicePath(path string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	for _, c := range path {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '/' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidGSTElementName reports whether name is a safe GStreamer element identifier.
+// GStreamer element names are restricted to letters, digits, underscores and hyphens;
+// any other character (including pipeline tokens !, (, ), ; and whitespace) would
+// enable pipeline injection when the name is interpolated into a gst-launch-1.0
+// argument string that is subsequently split with strings.Fields.
+func isValidGSTElementName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// encoderSegment returns the GStreamer pipeline segment for the given encoder element.
+// H.264 encoders force I420 (4:2:0) input to avoid 4:4:4 output paths that can make
+// encoders such as x264enc select profile 244 (High 4:4:4 Predictive), which
+// VideoToolbox and most hardware decoders reject. This input cap does not by itself
+// enforce a specific H.264 output profile; explicit profile caps are added only where needed
+// (for example, v4l2h264enc is capped to baseline below).
 func encoderSegment(encoder string, hasH264Parse bool, gop int) string {
 	if encoder == "vp8enc" {
 		// webmmux streamable=true writes headers that matroskademux can parse from a pipe.

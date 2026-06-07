@@ -173,7 +173,6 @@ func main() {
 		containerSvcOpts...,
 	)
 	audioSvc := services.NewAudioService(logger)
-	videoSvc := services.NewVideoService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
@@ -195,6 +194,9 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	videoSvc := services.NewVideoService(ctx, logger)
+	defer videoSvc.Shutdown()
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
@@ -387,8 +389,10 @@ func main() {
 		}
 
 		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor,
-			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
-			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			// UnaryMTLSInterceptor and StreamMTLSInterceptor are embedded inside
+			// mtls.NewServer and run before these caller-provided interceptors.
+			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+			grpc.ChainStreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
 		)
 		if err != nil {
 			logger.Error("Failed to create mTLS server", zap.Error(err))
