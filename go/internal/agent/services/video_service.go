@@ -940,8 +940,9 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
 			now := time.Now()
-			if lastFrameTime.IsZero() || now.Sub(lastFrameTime) >= minFrameInterval {
-				lastFrameTime = now
+			passFrame := lastFrameTime.IsZero() || now.Sub(lastFrameTime) >= minFrameInterval
+			lastFrameTime = now // always update to prevent burst bypass after a gap
+			if passFrame {
 				if n > maxFrameBytes {
 					n = maxFrameBytes
 				}

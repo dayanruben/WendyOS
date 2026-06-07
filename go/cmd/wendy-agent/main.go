@@ -389,8 +389,10 @@ func main() {
 		}
 
 		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor,
-			grpc.ChainUnaryInterceptor(interceptor.UnaryMTLSInterceptor(logger), interceptor.UnaryErrorInterceptor(logger)),
-			grpc.ChainStreamInterceptor(interceptor.StreamMTLSInterceptor(logger), interceptor.StreamErrorInterceptor(logger)),
+			// UnaryMTLSInterceptor and StreamMTLSInterceptor are embedded inside
+			// mtls.NewServer and run before these caller-provided interceptors.
+			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+			grpc.ChainStreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
 		)
 		if err != nil {
 			logger.Error("Failed to create mTLS server", zap.Error(err))
