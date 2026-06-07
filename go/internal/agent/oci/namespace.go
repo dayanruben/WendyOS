@@ -37,3 +37,27 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) error 
 	}
 	return nil
 }
+
+// SharedSHMMount returns a bind-mount that maps hostSHMPath into /dev/shm.
+// Use this for shared-ipc isolation where all services share one shm segment.
+// hostSHMPath should be /run/wendy/shm/{appID}.
+func SharedSHMMount(hostSHMPath string) Mount {
+	return Mount{
+		Destination: "/dev/shm",
+		Type:        "bind",
+		Source:      hostSHMPath,
+		Options:     []string{"rbind", "rw"},
+	}
+}
+
+// RemoveDefaultSHM removes the default per-container tmpfs /dev/shm mount from spec.
+// Call this before adding a SharedSHMMount to avoid duplicate mounts.
+func RemoveDefaultSHM(spec *Spec) {
+	mounts := spec.Mounts[:0]
+	for _, m := range spec.Mounts {
+		if m.Destination != "/dev/shm" {
+			mounts = append(mounts, m)
+		}
+	}
+	spec.Mounts = mounts
+}

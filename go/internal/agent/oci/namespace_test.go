@@ -75,3 +75,45 @@ func TestJoinGroupNamespaces_NilLinux(t *testing.T) {
 		t.Fatal("expected error for nil Linux, got nil")
 	}
 }
+
+func TestSharedSHMMount(t *testing.T) {
+	m := SharedSHMMount("/run/wendy/shm/com.example.app")
+	if m.Destination != "/dev/shm" {
+		t.Errorf("Destination = %q, want /dev/shm", m.Destination)
+	}
+	if m.Type != "bind" {
+		t.Errorf("Type = %q, want bind", m.Type)
+	}
+	if m.Source != "/run/wendy/shm/com.example.app" {
+		t.Errorf("Source = %q, want /run/wendy/shm/com.example.app", m.Source)
+	}
+	found := false
+	for _, opt := range m.Options {
+		if opt == "rbind" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Options %v should contain 'rbind'", m.Options)
+	}
+}
+
+func TestRemoveDefaultSHM(t *testing.T) {
+	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
+	// Verify /dev/shm exists before removal.
+	hasSHM := false
+	for _, m := range spec.Mounts {
+		if m.Destination == "/dev/shm" {
+			hasSHM = true
+		}
+	}
+	if !hasSHM {
+		t.Skip("DefaultSpec does not include /dev/shm mount; skipping")
+	}
+	RemoveDefaultSHM(spec)
+	for _, m := range spec.Mounts {
+		if m.Destination == "/dev/shm" {
+			t.Error("default /dev/shm should be removed after RemoveDefaultSHM")
+		}
+	}
+}

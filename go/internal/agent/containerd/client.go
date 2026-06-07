@@ -634,6 +634,32 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
 
+	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
+	if appconfig.IsSharedNamespaceIsolation(appCfg.Isolation) {
+		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		if hasPrimary {
+			// Secondary service: join the primary's namespaces.
+			if err := localoci.JoinGroupNamespaces(spec, primaryPID, appCfg.Isolation); err != nil {
+				return fmt.Errorf("joining group namespaces: %w", err)
+			}
+			if appCfg.Isolation == "shared-ipc" {
+				shmPath, shmErr := ensureSharedSHM(appID)
+				if shmErr != nil {
+					return shmErr
+				}
+				localoci.RemoveDefaultSHM(spec)
+				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
+			}
+		} else {
+			// Primary service: create shared shm dir so secondaries can find it.
+			if appCfg.Isolation == "shared-ipc" {
+				if _, shmErr := ensureSharedSHM(appID); shmErr != nil {
+					return shmErr
+				}
+			}
+		}
+	}
+
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
@@ -1524,6 +1550,19 @@ func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []cont
 		}
 	}
 	return result
+}
+
+// ensureSharedSHM creates the host-side shared memory directory for a
+// shared-ipc app group. Returns the path so it can be bind-mounted.
+func ensureSharedSHM(appID string) (string, error) {
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", fmt.Errorf("ensureSharedSHM: %w", err)
+	}
+	path := "/run/wendy/shm/" + appID
+	if err := os.MkdirAll(path, 0o1777); err != nil {
+		return "", fmt.Errorf("creating shared shm dir %q: %w", path, err)
+	}
+	return path, nil
 }
 
 // deleteOne kills any running task, deletes a single container and its
