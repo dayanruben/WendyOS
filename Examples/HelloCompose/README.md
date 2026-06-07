@@ -51,7 +51,7 @@ Expected output:
 [client] WENDY_APP_ID          = sh.wendy.examples.hellocompose
 [client] WENDY_HOSTNAME        = client.local
 [client] WENDY_DEVICE_HOSTNAME = wendyos-<name>.local
-[client] Waiting for api at http://localhost:8080...
+[client] Waiting for api at http://wendyos-<name>.local:8080 ...
 [client] Hello from the API!
 [client] API machine: arm64  python: 3.11.x
 [client] API GPU:     NVIDIA Orin
@@ -69,8 +69,9 @@ Expected output:
 docker compose up
 ```
 
-The only difference: Wendy env vars (`WENDY_APP_ID`, `WENDY_HOSTNAME`, …) are
-not injected by Docker Desktop, so those fields show `"not set"`.
+The client falls back to `http://api:8080` when `WENDY_DEVICE_HOSTNAME` is
+absent, using Docker's built-in service-name DNS. Wendy env vars
+(`WENDY_APP_ID`, `WENDY_HOSTNAME`, …) will show `"not set"`.
 
 ## Service identity
 

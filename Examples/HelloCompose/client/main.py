@@ -13,7 +13,11 @@ import time
 import urllib.error
 import urllib.request
 
-API = "http://localhost:8080"
+# On a Wendy device, WENDY_DEVICE_HOSTNAME is the device's mDNS name and the
+# API container (with its port entitlement) is reachable on that host.
+# On Docker Desktop the env var is absent; fall back to Docker's bridge DNS.
+_device = os.environ.get("WENDY_DEVICE_HOSTNAME")
+API = f"http://{_device}:8080" if _device else "http://api:8080"
 
 WENDY_APP_ID = os.environ.get("WENDY_APP_ID", "not set")
 WENDY_HOSTNAME = os.environ.get("WENDY_HOSTNAME", "not set")
@@ -22,7 +26,7 @@ WENDY_DEVICE_HOSTNAME = os.environ.get("WENDY_DEVICE_HOSTNAME", "not set")
 print(f"[client] WENDY_APP_ID          = {WENDY_APP_ID}", flush=True)
 print(f"[client] WENDY_HOSTNAME        = {WENDY_HOSTNAME}", flush=True)
 print(f"[client] WENDY_DEVICE_HOSTNAME = {WENDY_DEVICE_HOSTNAME}", flush=True)
-print(f"[client] Waiting for api at {API}...", flush=True)
+print(f"[client] Waiting for api at {API} ...", flush=True)
 
 for attempt in range(30):
     try:
