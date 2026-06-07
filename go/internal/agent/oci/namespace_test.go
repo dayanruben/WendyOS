@@ -1,9 +1,9 @@
 package oci
 
 import (
-	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -20,23 +20,29 @@ func TestJoinGroupNamespaces_SharedIPC(t *testing.T) {
 	// Use the current process PID — guaranteed to have valid namespace paths.
 	pid := uint32(os.Getpid())
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
-	if err := JoinGroupNamespaces(spec, pid, "shared-ipc"); err != nil {
+	anchors, err := JoinGroupNamespaces(spec, pid, "shared-ipc")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		for _, f := range anchors {
+			f.Close()
+		}
+	}()
+	// shared-ipc joins ipc, network, uts — 3 anchors.
+	if len(anchors) != 3 {
+		t.Errorf("shared-ipc: got %d fd anchors, want 3", len(anchors))
 	}
 
 	nsMap := make(map[string]string)
 	for _, ns := range spec.Linux.Namespaces {
 		nsMap[ns.Type] = ns.Path
 	}
-	if nsMap["ipc"] != fmt.Sprintf("/proc/%d/ns/ipc", pid) {
-		t.Errorf("ipc namespace path = %q, want /proc/%d/ns/ipc", nsMap["ipc"], pid)
-	}
-	// OCI type "network" maps to the kernel procfs name "net", not "network".
-	if nsMap["network"] != fmt.Sprintf("/proc/%d/ns/net", pid) {
-		t.Errorf("network namespace path = %q, want /proc/%d/ns/net", nsMap["network"], pid)
-	}
-	if nsMap["uts"] != fmt.Sprintf("/proc/%d/ns/uts", pid) {
-		t.Errorf("uts namespace path = %q, want /proc/%d/ns/uts", nsMap["uts"], pid)
+	// Paths must be fd-anchored (/proc/self/fd/{n}) to prevent TOCTOU PID reuse.
+	for _, nsType := range []string{"ipc", "network", "uts"} {
+		if !strings.HasPrefix(nsMap[nsType], "/proc/self/fd/") {
+			t.Errorf("%s namespace path = %q, want /proc/self/fd/<n>", nsType, nsMap[nsType])
+		}
 	}
 	if nsMap["pid"] != "" {
 		t.Errorf("pid namespace should not be joined, got %q", nsMap["pid"])
@@ -47,20 +53,29 @@ func TestJoinGroupNamespaces_SharedNetwork(t *testing.T) {
 	requireLinux(t)
 	pid := uint32(os.Getpid())
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
-	if err := JoinGroupNamespaces(spec, pid, "shared-network"); err != nil {
+	anchors, err := JoinGroupNamespaces(spec, pid, "shared-network")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		for _, f := range anchors {
+			f.Close()
+		}
+	}()
+	// shared-network joins network and uts — 2 anchors.
+	if len(anchors) != 2 {
+		t.Errorf("shared-network: got %d fd anchors, want 2", len(anchors))
 	}
 
 	nsMap := make(map[string]string)
 	for _, ns := range spec.Linux.Namespaces {
 		nsMap[ns.Type] = ns.Path
 	}
-	// OCI type "network" maps to kernel procfs name "net".
-	if nsMap["network"] != fmt.Sprintf("/proc/%d/ns/net", pid) {
-		t.Errorf("network namespace path = %q, want /proc/%d/ns/net", nsMap["network"], pid)
-	}
-	if nsMap["uts"] != fmt.Sprintf("/proc/%d/ns/uts", pid) {
-		t.Errorf("uts namespace path = %q, want /proc/%d/ns/uts", nsMap["uts"], pid)
+	// Paths must be fd-anchored (/proc/self/fd/{n}) to prevent TOCTOU PID reuse.
+	for _, nsType := range []string{"network", "uts"} {
+		if !strings.HasPrefix(nsMap[nsType], "/proc/self/fd/") {
+			t.Errorf("%s namespace path = %q, want /proc/self/fd/<n>", nsType, nsMap[nsType])
+		}
 	}
 	// ipc should remain isolated in shared-network mode
 	if nsMap["ipc"] != "" {
@@ -72,8 +87,12 @@ func TestJoinGroupNamespaces_Isolated(t *testing.T) {
 	// "isolated" mode is a no-op — no namespace paths are set regardless of
 	// platform, so no requireLinux needed.
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
-	if err := JoinGroupNamespaces(spec, 9999, "isolated"); err != nil {
+	anchors, err := JoinGroupNamespaces(spec, 9999, "isolated")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(anchors) != 0 {
+		t.Errorf("isolated mode should return no fd anchors, got %d", len(anchors))
 	}
 	for _, ns := range spec.Linux.Namespaces {
 		if ns.Path != "" {
@@ -84,14 +103,14 @@ func TestJoinGroupNamespaces_Isolated(t *testing.T) {
 
 func TestJoinGroupNamespaces_ZeroPID(t *testing.T) {
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
-	if err := JoinGroupNamespaces(spec, 0, "shared-ipc"); err == nil {
+	if _, err := JoinGroupNamespaces(spec, 0, "shared-ipc"); err == nil {
 		t.Fatal("expected error for zero PID, got nil")
 	}
 }
 
 func TestJoinGroupNamespaces_NilLinux(t *testing.T) {
 	spec := &Spec{}
-	if err := JoinGroupNamespaces(spec, 1234, "shared-ipc"); err == nil {
+	if _, err := JoinGroupNamespaces(spec, 1234, "shared-ipc"); err == nil {
 		t.Fatal("expected error for nil Linux, got nil")
 	}
 }
@@ -100,7 +119,7 @@ func TestJoinGroupNamespaces_StaleProcess(t *testing.T) {
 	requireLinux(t)
 	// PID 2^22 is beyond the Linux default PID limit (4M) and will not exist.
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
-	if err := JoinGroupNamespaces(spec, 1<<22, "shared-ipc"); err == nil {
+	if _, err := JoinGroupNamespaces(spec, 1<<22, "shared-ipc"); err == nil {
 		t.Fatal("expected error for non-existent PID, got nil")
 	}
 }

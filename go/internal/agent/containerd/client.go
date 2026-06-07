@@ -674,9 +674,17 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		primaryPID, hasPrimary := c.getPrimaryPID(appID)
 		if hasPrimary {
 			// Secondary service: join the primary's namespaces.
-			if err := localoci.JoinGroupNamespaces(spec, primaryPID, appCfg.Isolation); err != nil {
+			// nsAnchors holds open fds for each namespace so the paths embedded
+			// in the spec (/proc/self/fd/{n}) remain valid until runc opens them.
+			nsAnchors, err := localoci.JoinGroupNamespaces(spec, primaryPID, appCfg.Isolation)
+			if err != nil {
 				return fmt.Errorf("joining group namespaces: %w", err)
 			}
+			defer func() {
+				for _, f := range nsAnchors {
+					f.Close()
+				}
+			}()
 			if appCfg.Isolation == "shared-ipc" {
 				shmPath, shmErr := ensureSharedSHM(appID)
 				if shmErr != nil {
@@ -1115,13 +1123,31 @@ func buildContainerBaseEnv(appID, serviceName string) ([]string, error) {
 // validateUserEnv rejects caller-supplied env entries that contain characters
 // which could break the OCI env format or enable injection attacks.
 // Mirrors the defence-in-depth checks in buildContainerBaseEnv (SOC2-CC6, NIST-SI-10).
+// blockedEnvPrefixes is the set of key prefixes that user-supplied env vars
+// must not use. These keys affect dynamic linker behavior (LD_*) or are
+// reserved by Wendy (WENDY_*); a compromised or malicious caller could use
+// them to preload arbitrary code or override Wendy internals
+// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+var blockedEnvPrefixes = []string{
+	"LD_",    // LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, LD_DEBUG, etc.
+	"DYLD_",  // macOS dynamic linker (defense-in-depth for cross-platform images)
+	"WENDY_", // Wendy-internal variables must not be overrideable by callers
+}
+
 func validateUserEnv(entries []string) error {
 	for _, kv := range entries {
 		if strings.ContainsAny(kv, "\x00\n\r") {
 			return fmt.Errorf("env entry contains forbidden control character: %q", sanitizeForLog(kv, 80))
 		}
-		if !strings.Contains(kv, "=") {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
 			return fmt.Errorf("env entry missing '=' separator: %q", sanitizeForLog(kv, 80))
+		}
+		upper := strings.ToUpper(key)
+		for _, prefix := range blockedEnvPrefixes {
+			if strings.HasPrefix(upper, prefix) {
+				return fmt.Errorf("env key %q is reserved and cannot be set by callers (SOC2-CC6, NIST-SI-10)", key)
+			}
 		}
 	}
 	return nil
@@ -1557,22 +1583,28 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 // CreateContainerWithProgress from inserting a new service container between
 // the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
 func (c *Client) StopContainer(ctx context.Context, appID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	ctx = c.withNamespace(ctx)
+
+	// Hold mutex only long enough to enumerate containers and resolve stop order.
+	// Releasing before stopOne prevents holding c.mu across potentially long
+	// blocking I/O (SIGTERM wait, 10 s timeout), which would starve concurrent
+	// StartContainer / CreateContainerWithProgress calls (SOC2-CC6, NIST-AC-3).
+	c.mu.Lock()
 	ctrs, err := c.containersForApp(ctx, appID)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
 	if len(ctrs) == 0 {
 		// Idempotent: already stopped / never created.
 		c.logger.Info("StopContainer: no containers found, already stopped",
 			zap.String("app_id", sanitizeForLog(appID, 253)))
+		c.mu.Unlock()
 		return nil
 	}
-
 	stopOrder := c.resolveStopOrder(ctx, appID, ctrs)
+	c.mu.Unlock()
+
 	var errs []error
 	for _, ctrID := range stopOrder {
 		if err := c.stopOne(ctx, ctrID); err != nil {
@@ -1582,12 +1614,18 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 			errs = append(errs, err)
 		}
 	}
+
+	// Re-acquire mutex for map cleanup. Both reads and writes of these maps
+	// are protected by c.mu to prevent data races with concurrent callers
+	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+	c.mu.Lock()
 	c.clearPrimaryPID(appID)
 	// Release per-app metadata to prevent unbounded map growth on devices with
 	// many app lifecycle cycles (SOC2-CC8, ISO27001-A.12).
 	delete(c.appServices, appID)
 	delete(c.appIsolation, appID)
 	delete(c.serviceIPs, appID)
+	c.mu.Unlock()
 	return errors.Join(errs...)
 }
 

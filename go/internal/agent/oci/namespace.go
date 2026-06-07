@@ -24,12 +24,20 @@ var ociNSTypeToProcName = map[string]string{
 //   - "shared-network": joins network and uts namespaces
 //   - "shared-ipc":     also joins ipc namespace (enables /dev/shm sharing for ROS2/dora-rs)
 //   - anything else:    no-op
-func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) error {
+//
+// It returns a set of open file descriptors whose paths are embedded in the
+// spec as /proc/self/fd/{n}. The caller MUST keep these fds open until the
+// OCI runtime (runc) has consumed the spec and started the container, then
+// close them. Holding the fds prevents the kernel from recycling the
+// underlying namespace when the primary container exits between the Lstat
+// check and runc opening the path — eliminating the TOCTOU PID-reuse window
+// (SOC2-CC6, ISO27001-A.8, NIST-SC-7, NIST-SI-16).
+func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os.File, error) {
 	if spec.Linux == nil {
-		return fmt.Errorf("JoinGroupNamespaces: spec.Linux is nil")
+		return nil, fmt.Errorf("JoinGroupNamespaces: spec.Linux is nil")
 	}
 	if primaryPID == 0 {
-		return fmt.Errorf("JoinGroupNamespaces: primaryPID must be non-zero")
+		return nil, fmt.Errorf("JoinGroupNamespaces: primaryPID must be non-zero")
 	}
 
 	join := map[string]bool{}
@@ -42,27 +50,37 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) error 
 		join["network"] = true
 		join["uts"] = true
 	default:
-		return nil
+		return nil, nil
 	}
 
+	var anchors []*os.File
 	for i, ns := range spec.Linux.Namespaces {
 		if join[ns.Type] {
 			kernelName, ok := ociNSTypeToProcName[ns.Type]
 			if !ok {
-				return fmt.Errorf("JoinGroupNamespaces: unknown OCI namespace type %q", ns.Type)
+				for _, f := range anchors {
+					f.Close()
+				}
+				return nil, fmt.Errorf("JoinGroupNamespaces: unknown OCI namespace type %q", ns.Type)
 			}
 			nsPath := fmt.Sprintf("/proc/%d/ns/%s", primaryPID, kernelName)
-			// Verify the path exists before writing it into the spec.
-			// An absent path means the primary container has already exited;
-			// fail fast rather than silently joining a recycled PID's namespace
-			// (SOC2-CC6, NIST-SC-7: PID-reuse defence-in-depth).
-			if _, err := os.Lstat(nsPath); err != nil {
-				return fmt.Errorf("JoinGroupNamespaces: namespace path %q not available (primary container exited?): %w", nsPath, err)
+			// Open the namespace file to anchor it: the open fd prevents the
+			// kernel from deallocating the namespace when the primary container
+			// exits. We embed /proc/self/fd/{n} in the spec instead of the raw
+			// procfs path so runc opens our fd-anchored reference, not the
+			// (potentially recycled) PID path.
+			f, err := os.Open(nsPath)
+			if err != nil {
+				for _, a := range anchors {
+					a.Close()
+				}
+				return nil, fmt.Errorf("JoinGroupNamespaces: namespace path %q not available (primary container exited?): %w", nsPath, err)
 			}
-			spec.Linux.Namespaces[i].Path = nsPath
+			anchors = append(anchors, f)
+			spec.Linux.Namespaces[i].Path = fmt.Sprintf("/proc/self/fd/%d", f.Fd())
 		}
 	}
-	return nil
+	return anchors, nil
 }
 
 // SharedSHMMount returns a bind-mount that maps hostSHMPath into /dev/shm.
