@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -653,7 +654,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Inject /etc/hosts bind-mount for isolated multi-service apps so service
 	// names resolve via CNI-assigned IPs.
 	if appCfg.Isolation == "isolated" && len(appCfg.Services) > 1 {
-		hostsPath := "/run/wendy/hosts/" + appID
+		// Defence-in-depth: use filepath.Join so that any residual path-traversal
+		// in appID is neutralised before the path reaches the filesystem
+		// (SOC2-CC6, ISO27001-A.8, NIST-SI-10). ValidateAppID above already rejects
+		// pure-dot strings; this check is an explicit failsafe at the injection site.
+		hostsPath := filepath.Join("/run/wendy/hosts", appID)
+		if !strings.HasPrefix(hostsPath, "/run/wendy/hosts/") {
+			return fmt.Errorf("security: appID %q produces path outside /run/wendy/hosts", appID)
+		}
 		if _, statErr := os.Stat(hostsPath); os.IsNotExist(statErr) {
 			_ = os.MkdirAll("/run/wendy/hosts", 0o755)
 			_ = os.WriteFile(hostsPath, []byte("127.0.0.1\tlocalhost\n"), 0o644)
@@ -892,8 +900,13 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		} else {
 			c.mu.Lock()
 			c.recordServiceIP(appID, serviceName, ip)
-			hostsPath := "/run/wendy/hosts/" + appID
-			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
+			hostsPath := filepath.Join("/run/wendy/hosts", appID)
+			if strings.HasPrefix(hostsPath, "/run/wendy/hosts/") {
+				_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
+			} else {
+				c.logger.Error("security: appID produces path outside /run/wendy/hosts",
+					zap.String("app_id", appID), zap.String("path", hostsPath))
+			}
 			c.mu.Unlock()
 		}
 	}

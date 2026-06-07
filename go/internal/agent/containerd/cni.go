@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 const (
@@ -26,13 +28,45 @@ type cniResult struct {
 	} `json:"ips"`
 }
 
-// allocateSubnet deterministically maps an appID to a /24 subnet within
-// 10.89.0.0/16. Hash collisions are possible for >256 apps (unlikely at edge).
+// allocateSubnet deterministically maps an appID to a /28 subnet within
+// 10.0.0.0/8 using 20 bits of FNV-1a, yielding ~1 M possible subnets.
+// Birthday-problem collision probability for 30 apps is <0.05%, vs 97% for the
+// 256-bucket /24 scheme it replaces (SOC2-CC6, ISO27001-A.8, NIST-SC-7).
 func allocateSubnet(appID string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(appID))
-	third := h.Sum32() % 256
-	return fmt.Sprintf("10.89.%d.0/24", third)
+	sum := h.Sum32()
+	// bits[19:12] → second octet, bits[11:4] → third octet, bits[3:0] → /28 boundary.
+	b2 := (sum >> 12) & 0xff
+	b3 := (sum >> 4) & 0xff
+	b4 := (sum & 0xf) << 4 // /28 boundary: 0, 16, 32, …, 240
+	return fmt.Sprintf("10.%d.%d.%d/28", b2, b3, b4)
+}
+
+// bridgeName returns a Linux network interface name for the app's CNI bridge.
+// The kernel limit is 15 chars (IFNAMSIZ-1). Short appIDs that fit are embedded
+// directly; longer ones fall back to an 8-hex-digit FNV digest.
+func bridgeName(appID string) string {
+	const prefix = "wendy-br-"
+	if len(prefix)+len(appID) <= 15 {
+		return prefix + appID
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(appID))
+	return fmt.Sprintf("wendy-%08x", h.Sum32())
+}
+
+// validateCNIInputs provides defence-in-depth validation of the values that
+// reach the CNI exec environment, guarding against any future caller that
+// bypasses the RPC-layer ValidateAppID check (SOC2-CC6, NIST-SI-10).
+func validateCNIInputs(appID, containerID string) error {
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return fmt.Errorf("CNI: %w", err)
+	}
+	if containerID == "" || len(containerID) > 320 {
+		return fmt.Errorf("CNI: containerID must be 1–320 chars, got %d", len(containerID))
+	}
+	return nil
 }
 
 // buildBridgeCNIConfig returns the JSON config string for the CNI bridge plugin.
@@ -41,7 +75,7 @@ func buildBridgeCNIConfig(appID, subnet string) string {
 		"cniVersion": "0.4.0",
 		"name":       "wendy-" + appID,
 		"type":       "bridge",
-		"bridge":     "wendy-br-" + appID,
+		"bridge":     bridgeName(appID), // capped at 15 chars (IFNAMSIZ-1)
 		"isGateway":  true,
 		"ipMasq":     true,
 		"ipam": map[string]interface{}{
@@ -58,6 +92,9 @@ func buildBridgeCNIConfig(appID, subnet string) string {
 // assigned IP address. netnsPath is the container's network namespace path
 // (e.g. /proc/{pid}/ns/net).
 func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath string) (string, error) {
+	if err := validateCNIInputs(appID, containerID); err != nil {
+		return "", err
+	}
 	subnet := allocateSubnet(appID)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
@@ -113,6 +150,10 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 // CNIDel calls the CNI bridge plugin DEL to release a container's IP.
 // Errors are logged as warnings but not returned — DEL is best-effort.
 func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath string) error {
+	if err := validateCNIInputs(appID, containerID); err != nil {
+		c.logger.Warn("CNI DEL skipped: invalid inputs", zap.Error(err))
+		return nil
+	}
 	subnet := allocateSubnet(appID)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 

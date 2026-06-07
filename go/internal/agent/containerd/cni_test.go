@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildCNIConfig(t *testing.T) {
-	cfg := buildBridgeCNIConfig("com.example.myapp", "10.89.42.0/24")
+	cfg := buildBridgeCNIConfig("com.example.myapp", "10.12.186.224/28")
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(cfg), &m); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
@@ -16,8 +16,13 @@ func TestBuildCNIConfig(t *testing.T) {
 	if m["type"] != "bridge" {
 		t.Errorf("type = %q, want bridge", m["type"])
 	}
-	if m["bridge"] != "wendy-br-com.example.myapp" {
-		t.Errorf("bridge = %q, want wendy-br-com.example.myapp", m["bridge"])
+	// Bridge name must fit within the 15-char kernel limit (IFNAMSIZ-1).
+	bridge, _ := m["bridge"].(string)
+	if len(bridge) > 15 {
+		t.Errorf("bridge name %q is %d chars, must be ≤15 (IFNAMSIZ-1)", bridge, len(bridge))
+	}
+	if !strings.HasPrefix(bridge, "wendy-") {
+		t.Errorf("bridge name %q should start with wendy-", bridge)
 	}
 	ipam, ok := m["ipam"].(map[string]interface{})
 	if !ok {
@@ -26,8 +31,27 @@ func TestBuildCNIConfig(t *testing.T) {
 	if ipam["type"] != "host-local" {
 		t.Errorf("ipam.type = %q, want host-local", ipam["type"])
 	}
-	if ipam["subnet"] != "10.89.42.0/24" {
-		t.Errorf("ipam.subnet = %q, want 10.89.42.0/24", ipam["subnet"])
+	if ipam["subnet"] != "10.12.186.224/28" {
+		t.Errorf("ipam.subnet = %q, want 10.12.186.224/28", ipam["subnet"])
+	}
+}
+
+func TestBridgeName(t *testing.T) {
+	// Short appID: direct embedding.
+	if got := bridgeName("myapp"); got != "wendy-br-myapp" {
+		t.Errorf("bridgeName(%q) = %q, want wendy-br-myapp", "myapp", got)
+	}
+	// Long appID: hash fallback, must be ≤15 chars.
+	long := bridgeName("com.example.myapp")
+	if len(long) > 15 {
+		t.Errorf("bridgeName(long) = %q (%d chars), must be ≤15", long, len(long))
+	}
+	if !strings.HasPrefix(long, "wendy-") {
+		t.Errorf("bridgeName(long) = %q, should start with wendy-", long)
+	}
+	// Deterministic: same appID → same name.
+	if bridgeName("com.example.myapp") != bridgeName("com.example.myapp") {
+		t.Error("bridgeName should be deterministic")
 	}
 }
 
@@ -37,11 +61,30 @@ func TestAllocateSubnet(t *testing.T) {
 	if s1 == s2 {
 		t.Errorf("different appIDs should get different subnets, both got %q", s1)
 	}
-	if !strings.HasPrefix(s1, "10.89.") {
-		t.Errorf("subnet %q should start with 10.89.", s1)
+	// Subnets are /28 blocks within 10.0.0.0/8.
+	for _, s := range []string{s1, s2} {
+		if !strings.HasPrefix(s, "10.") {
+			t.Errorf("subnet %q should start with 10.", s)
+		}
+		if !strings.HasSuffix(s, "/28") {
+			t.Errorf("subnet %q should be a /28", s)
+		}
 	}
-	if !strings.HasPrefix(s2, "10.89.") {
-		t.Errorf("subnet %q should start with 10.89.", s2)
+	// Deterministic: same appID → same subnet.
+	if allocateSubnet("com.example.app1") != s1 {
+		t.Error("allocateSubnet should be deterministic")
+	}
+}
+
+func TestValidateCNIInputs(t *testing.T) {
+	if err := validateCNIInputs("com.example.app", "com.example.app@svc"); err != nil {
+		t.Errorf("valid inputs rejected: %v", err)
+	}
+	if err := validateCNIInputs("..", "container"); err == nil {
+		t.Error("pure-dot appID should be rejected")
+	}
+	if err := validateCNIInputs("valid", ""); err == nil {
+		t.Error("empty containerID should be rejected")
 	}
 }
 
