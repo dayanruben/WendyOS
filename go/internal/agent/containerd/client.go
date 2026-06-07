@@ -59,6 +59,14 @@ type Client struct {
 	// appServices caches the services map for multi-service apps, keyed by appID.
 	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
 	appServices map[string]map[string]*appconfig.ServiceConfig
+
+	// primaryPIDs tracks the PID of the primary (namespace-owner) container
+	// for each shared-namespace app group. Protected by mu.
+	primaryPIDs map[string]uint32
+
+	// appIsolation caches the isolation mode for each appID.
+	// Populated on CreateContainerWithProgress; read by StartContainer.
+	appIsolation map[string]string
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -90,6 +98,28 @@ func (c *Client) Close() error {
 
 func (c *Client) withNamespace(ctx context.Context) context.Context {
 	return namespaces.WithNamespace(ctx, c.namespace)
+}
+
+// setPrimaryPID records the PID of the primary container for appID.
+// Caller must hold c.mu.
+func (c *Client) setPrimaryPID(appID string, pid uint32) {
+	if c.primaryPIDs == nil {
+		c.primaryPIDs = make(map[string]uint32)
+	}
+	c.primaryPIDs[appID] = pid
+}
+
+// getPrimaryPID returns the PID of the primary container, if known.
+// Caller must hold c.mu.
+func (c *Client) getPrimaryPID(appID string) (uint32, bool) {
+	pid, ok := c.primaryPIDs[appID]
+	return pid, ok
+}
+
+// clearPrimaryPID removes the primary PID entry when the app group stops.
+// Caller must hold c.mu.
+func (c *Client) clearPrimaryPID(appID string) {
+	delete(c.primaryPIDs, appID)
 }
 
 // ListLayers walks the content store and returns metadata for all layer blobs.
@@ -648,6 +678,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		c.appServices[appID] = appCfg.Services
 	}
 
+	// Cache isolation mode for StartContainer PID tracking.
+	if appCfg.Isolation != "" {
+		if c.appIsolation == nil {
+			c.appIsolation = make(map[string]string)
+		}
+		c.appIsolation[appID] = appCfg.Isolation
+	}
+
 	return nil
 }
 
@@ -681,7 +719,8 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
 	// validates both components so a crafted value cannot reach the label filter
 	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
-	if _, _, err := ParseContainerName(appName); err != nil {
+	appID, _, err := ParseContainerName(appName)
+	if err != nil {
 		return nil, fmt.Errorf("StartContainer: invalid app name: %w", err)
 	}
 	// Hold c.mu for container lookup and task creation to prevent a concurrent
@@ -777,6 +816,14 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 
 	c.logger.Info("Container started", zap.String("app_name", appName))
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
+
+	// Track the primary PID for shared-namespace app groups.
+	isolation := c.appIsolation[appID]
+	if appconfig.IsSharedNamespaceIsolation(isolation) {
+		if _, alreadyHasPrimary := c.getPrimaryPID(appID); !alreadyHasPrimary {
+			c.setPrimaryPID(appID, task.Pid())
+		}
+	}
 
 	// Release the mutex before launching the streaming goroutine, which does
 	// not need it (it only reads from pipes).
@@ -1421,6 +1468,7 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 			errs = append(errs, err)
 		}
 	}
+	c.clearPrimaryPID(appID)
 	return errors.Join(errs...)
 }
 

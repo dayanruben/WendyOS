@@ -680,3 +680,20 @@ func TestResolveStopOrder_ReversesTopoOrder(t *testing.T) {
 		t.Errorf("expected [api db], got %v", order)
 	}
 }
+
+func TestPrimaryPIDTracking(t *testing.T) {
+	c := &Client{primaryPIDs: make(map[string]uint32)}
+	c.setPrimaryPID("com.example.app", 12345)
+	got, ok := c.getPrimaryPID("com.example.app")
+	if !ok {
+		t.Fatal("expected primary PID to be found")
+	}
+	if got != 12345 {
+		t.Fatalf("got PID %d, want 12345", got)
+	}
+	c.clearPrimaryPID("com.example.app")
+	_, ok = c.getPrimaryPID("com.example.app")
+	if ok {
+		t.Fatal("expected primary PID to be cleared")
+	}
+}

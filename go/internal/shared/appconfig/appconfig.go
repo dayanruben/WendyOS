@@ -639,3 +639,9 @@ func validateHooksJSON(hooksRaw json.RawMessage) []string {
 	}
 	return nil
 }
+
+// IsSharedNamespaceIsolation reports whether isolation is a mode that shares
+// Linux namespaces across containers in an app group.
+func IsSharedNamespaceIsolation(isolation string) bool {
+	return isolation == "shared-ipc" || isolation == "shared-network"
+}
