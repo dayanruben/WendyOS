@@ -580,8 +580,16 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 				}
 				return status.Errorf(codes.Internal, "video producer stopped unexpectedly")
 			}
+			// Copy frame.data per subscriber so the serialisation path inside
+			// stream.Send() — proto marshalling, TLS record packing — operates on
+			// a slice that is not aliased by any other concurrent goroutine.
+			// broadcast() sends the same videoFrame to all subscriber channels for
+			// O(1) distribution; the copy is deferred to here so it is made exactly
+			// once per goroutine, just before the write-capable Send call.
+			data := make([]byte, len(frame.data))
+			copy(data, frame.data)
 			if err := stream.Send(&agentpb.VideoFrame{
-				Data:        frame.data,
+				Data:        data,
 				TimestampNs: frame.tsNs,
 				Codec:       frame.codec,
 			}); err != nil {
@@ -805,6 +813,25 @@ func setV4L2ExtControl(fd int, controlID uint32, value int32) unix.Errno {
 	return errno
 }
 
+// limitedBuffer is a bytes.Buffer wrapper that silently drops writes beyond limit
+// bytes. Used for GStreamer stderr so a misbehaving or crashing process cannot
+// exhaust the heap via unbounded stderr output.
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := l.limit - l.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	return l.buf.Write(p)
+}
+
 // gstFallbackDirs is the list of directories searched for GStreamer binaries
 // when they are not on PATH. wendy-agent runs as a systemd service whose
 // inherited PATH may omit the standard system bin directories (observed on
@@ -861,8 +888,9 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		return status.Errorf(codes.Internal, "failed to build GStreamer pipeline: %v", err)
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	const maxStderrBytes = 64 * 1024
+	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
+	cmd.Stderr = stderrBuf
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -877,7 +905,7 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		io.Copy(io.Discard, stdout) // drain so Wait's internal goroutine can exit
 		waitErr := cmd.Wait()
 		if runErr == nil {
-			msg := strings.TrimSpace(stderrBuf.String())
+			msg := strings.TrimSpace(stderrBuf.buf.String())
 			if msg != "" {
 				runErr = status.Errorf(codes.Internal, "gstreamer exited with error: %s", msg)
 			} else if waitErr != nil {
