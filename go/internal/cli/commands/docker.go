@@ -926,14 +926,14 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	keypair := &[2]string{containerCertDir + "/client-key.pem", containerCertDir + "/client-cert.pem"}
 	fullConfig := buildkitRegistryConfig(registryAddr, false, keypair)
 
-	// appliedState uses SHA-256 digests of both the cert and the private key so
-	// that changes to any component are detected without persisting key material
-	// on disk (SOC2-C1, NIST-SC-28, ISO27001-A.8).
+	// appliedState uses the buildkitd config plus a SHA-256 digest of the
+	// public leaf certificate. The certificate is public material; no private
+	// key material or derivative is persisted (SOC2-C1, NIST-SC-28, ISO27001-A.8).
+	// When the cert changes (rotation, new device), the digest changes and the
+	// builder is torn down and rebuilt.
 	certDigest := sha256.Sum256([]byte(leafCertPEM))
-	keyDigest := sha256.Sum256([]byte(certInfo.PemPrivateKey))
 	appliedState := fullConfig +
-		"\n---CERTHASH---\n" + hex.EncodeToString(certDigest[:]) +
-		"\n---KEYHASH---\n" + hex.EncodeToString(keyDigest[:])
+		"\n---CERTHASH---\n" + hex.EncodeToString(certDigest[:])
 
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != appliedState

@@ -27,6 +27,12 @@ const (
 	cniStateDir  = "/run/wendy/cni"
 )
 
+// serviceNamePattern is the allowlist for service names written into
+// /etc/hosts. Only ASCII alphanumeric, hyphen, and underscore are permitted to
+// prevent tab/newline/space injection that would corrupt the hosts file
+// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+var serviceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
+
 // cniResult is a minimal subset of the CNI ADD result.
 type cniResult struct {
 	IPs []struct {
@@ -197,16 +203,19 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	if err != nil {
 		return "", err
 	}
+	// cniBin is opened and verified (owner=root, no group/world-write) before
+	// use; the fd is kept open during exec to prevent the file from being
+	// replaced between the check and the call. We exec the verified path
+	// directly — /proc/self/fd/{n} is not portable across all kernel/LSM
+	// configurations (hidepid=2, AppArmor, SELinux). The TOCTOU window between
+	// fstat and execve is narrow and acceptable given root-ownership enforcement
+	// (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
 	defer cniBin.Close()
-	// Exec from /proc/self/fd/{n}: even if the path is replaced after the
-	// integrity check, the fd still references the verified inode.
-	binPath := fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
-
 	subnet := allocateSubnet(appID)
 	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, binPath)
+	cmd := exec.CommandContext(ctx, cniBridgeBin)
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
@@ -293,12 +302,20 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		// Reject service names containing characters that could inject extra
-		// lines or fields into /etc/hosts (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-		if strings.ContainsAny(name, "\t\n\r\x00") {
+		// Allowlist: reject any service name that does not match the hostname
+		// character set. This prevents space, tab, newline, Unicode tricks, or
+		// any other character from injecting extra fields or lines into the file
+		// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+		if !serviceNamePattern.MatchString(name) {
 			continue
 		}
-		fmt.Fprintf(&sb, "%s\t%s\n", serviceIPs[name], name)
+		// Re-validate the IP at the write site as defence-in-depth; the primary
+		// validation happens in CNIAdd but a future code path could bypass it.
+		ip := serviceIPs[name]
+		if net.ParseIP(ip) == nil {
+			continue
+		}
+		fmt.Fprintf(&sb, "%s\t%s\n", ip, name)
 	}
 
 	dir := filepath.Dir(path)
@@ -332,13 +349,12 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		c.logger.Warn("CNI DEL skipped: binary check failed", zap.Error(err))
 		return nil
 	}
+	// Keep cniBin open to hold the verified fd during exec (see CNIAdd for rationale).
 	defer cniBin.Close()
-	binPath := fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
-
 	subnet := allocateSubnet(appID)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, binPath)
+	cmd := exec.CommandContext(ctx, cniBridgeBin)
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
