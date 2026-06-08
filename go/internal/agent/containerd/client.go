@@ -127,6 +127,11 @@ func (c *Client) clearPrimaryPID(appID string) {
 	delete(c.primaryPIDs, appID)
 }
 
+// getIsolation returns the cached isolation mode for appID. Caller must hold c.mu.
+func (c *Client) getIsolation(appID string) string {
+	return c.appIsolation[appID]
+}
+
 // recordServiceIP stores the CNI-assigned IP for a service. Caller must hold c.mu.
 func (c *Client) recordServiceIP(appID, serviceName, ip string) {
 	if c.serviceIPs == nil {
@@ -889,7 +894,8 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
 	// Track the primary PID for shared-namespace app groups.
-	isolation := c.appIsolation[appID]
+	// getIsolation requires c.mu (held here via muHeld).
+	isolation := c.getIsolation(appID)
 	if appconfig.IsSharedNamespaceIsolation(isolation) {
 		if _, alreadyHasPrimary := c.getPrimaryPID(appID); !alreadyHasPrimary {
 			c.setPrimaryPID(appID, task.Pid())
@@ -1161,6 +1167,14 @@ func buildROS2Env(appCfg *appconfig.AppConfig) []string {
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
 	if ros2.RMW != "" {
+		// Validate the RMW value for control characters before concatenation.
+		// This value comes from app config (not user RPC input) but must not
+		// contain NUL/newline/CR that would corrupt the OCI env list or allow
+		// injection of additional env entries (SOC2-CC6, NIST-SI-10).
+		if strings.ContainsAny(ros2.RMW, "\x00\n\r") {
+			// Drop the invalid value rather than injecting corrupt env.
+			return env
+		}
 		env = append(env, "RMW_IMPLEMENTATION="+ros2.RMW)
 	}
 	return env

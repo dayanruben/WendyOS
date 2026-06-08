@@ -140,10 +140,12 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		// Sanitize stderr before logging to prevent log injection from a rogue
+		// CNI binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
 		c.logger.Warn("CNI ADD failed",
 			zap.String("app_id", appID),
 			zap.String("container_id", containerID),
-			zap.String("stderr", stderr.String()),
+			zap.String("stderr", sanitizeForLog(stderr.String(), 512)),
 			zap.Error(err))
 		return "", fmt.Errorf("CNI ADD failed for %s/%s; see agent logs for details", appID, containerID)
 	}
