@@ -347,19 +347,26 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	// already-verified fd, not from the string path. This closes the TOCTOU
 	// window between fstat and execve: even if /opt/cni/bin/bridge is replaced
 	// after the integrity check, the exec still runs the inode that was verified.
-	// cniBin must remain open until cmd.Run() returns (defer ensures this).
-	// cmd.Args[0] keeps the human-readable path for process listings (SOC2-CC6,
-	// NIST-SI-3, ISO27001-A.8).
-	defer cniBin.Close()
+	// cniBin is NOT deferred — it must stay open through cmd.Run() and
+	// runtime.KeepAlive; we close it explicitly after both complete so the
+	// sequence is unambiguous (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
+		cniBin.Close()
 		return "", err
 	}
 	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	// cmd.Path is the exec path (fd-resolved inode). cmd.Args[0] is set
+	// explicitly to the human-readable binary name for process listings;
+	// exec.CommandContext already sets Args[0] = cniBridgeBin, but the
+	// explicit assignment documents the intent and guards against future
+	// refactors that might remove the exec.CommandContext call (SOC2-CC6,
+	// NIST-SI-3).
 	cmd.Path = fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
+	cmd.Args = []string{cniBridgeBin}
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
@@ -379,10 +386,11 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	cmd.Stderr = &stderr
 
 	runErr := cmd.Run()
-	// runtime.KeepAlive ensures cniBin is not garbage-collected before cmd.Run()
-	// completes, keeping the /proc/self/fd/{n} fd valid through the execve
-	// (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
+	// KeepAlive must be called immediately after cmd.Run() to guarantee cniBin
+	// is not GC-collected before execve completes (SOC2-CC6, NIST-SI-3).
+	// Close follows KeepAlive — never reorder these three lines.
 	runtime.KeepAlive(cniBin)
+	cniBin.Close()
 	if runErr != nil {
 		// Sanitize stderr before logging to prevent log injection from a rogue
 		// CNI binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
@@ -502,18 +510,20 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		c.logger.Warn("CNI DEL skipped: binary check failed", zap.Error(err))
 		return nil
 	}
-	// See CNIAdd for exec-via-fd rationale. Keep cniBin open until cmd.Run() returns.
-	defer cniBin.Close()
+	// See CNIAdd for exec-via-fd rationale. cniBin is NOT deferred — explicit
+	// close follows runtime.KeepAlive after cmd.Run() (SOC2-CC6, NIST-SI-3).
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
 		c.logger.Warn("CNI DEL skipped: subnet allocation failed", zap.Error(err))
+		cniBin.Close()
 		return nil
 	}
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
 	cmd.Path = fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
-	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
+	cmd.Args = []string{cniBridgeBin} // human-readable name; cmd.Path is the exec path
+	cmd.Dir = "/"                     // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
 		// Explicit minimal environment — never inherit the agent's environment
@@ -526,7 +536,9 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		"CNI_PATH=" + cniPluginDir,
 	}
 	runErr := cmd.Run()
-	runtime.KeepAlive(cniBin) // keep fd alive through exec (SOC2-CC6, NIST-SI-3)
+	// KeepAlive then Close — never reorder (SOC2-CC6, NIST-SI-3).
+	runtime.KeepAlive(cniBin)
+	cniBin.Close()
 	if runErr != nil {
 		c.logger.Warn("CNI DEL failed (non-fatal)",
 			zap.String("app_id", appID),

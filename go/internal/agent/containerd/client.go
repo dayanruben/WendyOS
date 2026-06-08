@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -660,16 +659,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Inject /etc/hosts bind-mount for isolated multi-service apps so service
 	// names resolve via CNI-assigned IPs.
 	if appCfg.Isolation == "isolated" && len(appCfg.Services) > 1 {
-		// Defence-in-depth: filepath.Join + filepath.Clean eliminates any residual
-		// path-traversal in appID before the path reaches the filesystem. We compare
-		// the cleaned path against the cleaned base + "/" so that both the result and
-		// the base are in canonical form (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-		// ValidateAppID above already rejects pure-dot strings; this is an explicit
-		// failsafe at the injection site.
-		const hostsBase = "/run/wendy/hosts"
-		hostsPath := filepath.Join(hostsBase, appID)
-		if !strings.HasPrefix(filepath.Clean(hostsPath), filepath.Clean(hostsBase)+"/") {
-			return fmt.Errorf("security: appID %q produces path outside /run/wendy/hosts", appID)
+		// safeJoin rejects separators and dot-only segments, then verifies the
+		// result is directly under the base dir (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+		hostsPath, err := safeJoin("/run/wendy/hosts", appID)
+		if err != nil {
+			return fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, err)
 		}
 		// Always create the directory (os.MkdirAll is idempotent) and seed the
 		// hosts file with IPs already known from previously-started sibling services.
@@ -947,19 +941,19 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		} else {
 			c.mu.Lock()
 			c.recordServiceIP(appID, serviceName, ip)
-			hostsPath := filepath.Join("/run/wendy/hosts", appID)
-			if !strings.HasPrefix(filepath.Clean(hostsPath), filepath.Clean("/run/wendy/hosts")+"/") {
-				// Hard error: a validated appID must never produce an out-of-bounds path.
+			hostsPath, pathErr := safeJoin("/run/wendy/hosts", appID)
+			if pathErr != nil {
+				// Hard error: a validated appID must never produce an unsafe path.
 				// Remove the just-recorded IP so it cannot pollute future writeHostsFile
 				// calls for the same appID (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
 				if c.serviceIPs != nil {
 					delete(c.serviceIPs[appID], serviceName)
 				}
-				c.logger.Error("security: appID produces path outside /run/wendy/hosts",
-					zap.String("app_id", appID), zap.String("path", hostsPath))
+				c.logger.Error("security: appID produces unsafe hosts path",
+					zap.String("app_id", appID), zap.Error(pathErr))
 				c.mu.Unlock()
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
-				return nil, fmt.Errorf("security: appID %q produces path outside /run/wendy/hosts", appID)
+				return nil, fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, pathErr)
 			}
 			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
 			c.mu.Unlock()
@@ -1194,11 +1188,22 @@ func validateUserEnv(entries []string) error {
 	return nil
 }
 
+// ros2DomainIDMax is the conservative upper bound for ROS 2 domain IDs.
+// The ROS 2 spec defines valid IDs as 0–101 (conservative); some platforms
+// allow up to 232 but 101 covers all standard deployments (SOC2-CC6, NIST-SI-10).
+const (
+	ros2DomainIDMin = 0
+	ros2DomainIDMax = 101
+)
+
 // buildROS2Env returns ROS2 environment variables from the app's frameworks.ros2 config.
 func buildROS2Env(appCfg *appconfig.AppConfig) []string {
 	ros2 := appCfg.GetROS2Config()
 	if ros2 == nil {
 		return nil
+	}
+	if ros2.DomainID < ros2DomainIDMin || ros2.DomainID > ros2DomainIDMax {
+		return nil // invalid domain ID; caller should have validated at config parse time
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
 	if ros2.RMW != "" {
