@@ -1,12 +1,14 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
@@ -14,15 +16,27 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// mustBuildGStreamerArgs calls buildGStreamerArgs and fails the test if it returns an error.
+func mustBuildGStreamerArgs(t *testing.T, gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
+	t.Helper()
+	args, err := buildGStreamerArgs(gstPath, devicePath, req, encoder, hasH264Parse)
+	if err != nil {
+		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
+	}
+	return args
+}
+
 // newTestVideoService creates a VideoService with injectable filesystem functions.
+// hasVideoCapture defaults to always returning true so tests are not gated on real V4L2 devices.
 func newTestVideoService(glob func() ([]string, error), readName func(string) (string, error)) *VideoService {
-	svc := NewVideoService(zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop())
 	if glob != nil {
 		svc.globDevices = glob
 	}
 	if readName != nil {
 		svc.readDeviceName = readName
 	}
+	svc.hasVideoCapture = func(string) bool { return true }
 	return svc
 }
 
@@ -138,7 +152,7 @@ func TestVideoService_ListVideoDevices_GlobError(t *testing.T) {
 
 func TestBuildGStreamerArgs_NoDimensions(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	if len(args) == 0 || args[0] != "/usr/bin/gst-launch-1.0" {
 		t.Errorf("expected first arg to be gst-launch-1.0 path, got %v", args)
 	}
@@ -165,7 +179,7 @@ func TestBuildGStreamerArgs_NoDimensions(t *testing.T) {
 
 func TestBuildGStreamerArgs_WithoutH264Parse(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", false)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", false)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "h264parse") {
 		t.Errorf("pipeline must not use h264parse when unavailable: %v", args)
@@ -179,7 +193,7 @@ func TestBuildGStreamerArgs_WithoutH264Parse(t *testing.T) {
 
 func TestBuildGStreamerArgs_X264ProfileIsCapsFilter(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
 	// profile=high must be an output capsfilter (,profile=high), not an x264enc
 	// element property ( profile=high) — as a property x264enc may select a
@@ -212,7 +226,7 @@ func TestKeyframeIntervalFrames(t *testing.T) {
 
 func TestBuildGStreamerArgs_X264SetsShortKeyframeInterval(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
 	// fps 0 -> default 30 -> a keyframe every ~0.5s -> 15 frames. A short GOP
 	// lets a client resync within ~0.5s after a dropped or skipped frame.
@@ -226,7 +240,7 @@ func TestBuildGStreamerArgs_X264SetsShortKeyframeInterval(t *testing.T) {
 
 func TestBuildGStreamerArgs_KeyframeIntervalScalesWithFramerate(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{Framerate: 60}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "key-int-max=30") {
 		t.Errorf("at 60fps the GOP should be 30 frames (~0.5s): %v", args)
@@ -235,7 +249,7 @@ func TestBuildGStreamerArgs_KeyframeIntervalScalesWithFramerate(t *testing.T) {
 
 func TestBuildGStreamerArgs_VP8SetsShortKeyframeInterval(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "keyframe-max-dist=15") {
 		t.Errorf("vp8enc pipeline must cap the GOP via keyframe-max-dist: %v", args)
@@ -244,7 +258,7 @@ func TestBuildGStreamerArgs_VP8SetsShortKeyframeInterval(t *testing.T) {
 
 func TestBuildGStreamerArgs_NVV4L2SetsKeyframeInterval(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "iframeinterval=15") {
 		t.Errorf("nvv4l2h264enc pipeline must set iframeinterval: %v", args)
@@ -253,7 +267,7 @@ func TestBuildGStreamerArgs_NVV4L2SetsKeyframeInterval(t *testing.T) {
 
 func TestBuildGStreamerArgs_V4L2SetsKeyframeInterval(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "h264_i_frame_period=15") {
 		t.Errorf("v4l2h264enc pipeline must set the I-frame period via extra-controls: %v", args)
@@ -262,7 +276,7 @@ func TestBuildGStreamerArgs_V4L2SetsKeyframeInterval(t *testing.T) {
 
 func TestBuildGStreamerArgs_WithDimensionsAndFramerate(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "width=1280") || !strings.Contains(joined, "height=720") || !strings.Contains(joined, "framerate=30/1") {
 		t.Errorf("expected dimension caps in args: %v", args)
@@ -271,7 +285,7 @@ func TestBuildGStreamerArgs_WithDimensionsAndFramerate(t *testing.T) {
 
 func TestBuildGStreamerArgs_V4L2HardwareEncoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "v4l2h264enc") || !strings.Contains(joined, "video/x-h264") {
 		t.Errorf("expected v4l2h264enc pipeline segment: %v", args)
@@ -280,7 +294,7 @@ func TestBuildGStreamerArgs_V4L2HardwareEncoder(t *testing.T) {
 
 func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "nvv4l2h264enc") {
 		t.Errorf("expected nvv4l2h264enc in pipeline: %v", args)
@@ -292,7 +306,7 @@ func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 
 func TestBuildGStreamerArgs_VP8Encoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "vp8enc", false)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "vp8enc") || !strings.Contains(joined, "webmmux") {
 		t.Errorf("expected vp8enc+webmmux pipeline segment: %v", args)
@@ -307,7 +321,7 @@ func TestBuildGStreamerArgs_LeakyRawQueueBeforeEncoder(t *testing.T) {
 	// the encoder always works on the freshest raw frame and a capture backlog
 	// drains by dropping raw frames rather than encoding stale ones.
 	req := &agentpb.StreamVideoRequest{}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream") {
 		t.Fatalf("pipeline must insert a leaky raw queue before the encoder: %v", args)
@@ -324,7 +338,7 @@ func TestBuildGStreamerArgs_LeakyRawQueueWithCaps(t *testing.T) {
 	// With raw caps requested, the leaky queue must come after the caps filter
 	// and before the encoder segment.
 	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
-	args := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "x264enc", true)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream") {
 		t.Fatalf("pipeline must insert a leaky raw queue before the encoder: %v", args)
@@ -468,37 +482,6 @@ func TestFindGStreamerEncoder_FallsBackToVP8WhenNoH264Encoder(t *testing.T) {
 	}
 }
 
-func TestPickV4L2StreamError(t *testing.T) {
-	notSupported := nativeH264NotSupported{msg: "no h264"}
-	captureErr := status.Errorf(codes.Internal, "VIDIOC_DQBUF: boom")
-	sendErr := status.Errorf(codes.Unavailable, "client gone")
-
-	cases := []struct {
-		name          string
-		first, second error
-		ctxErr        error
-		want          error
-	}{
-		// nativeH264NotSupported must win regardless of position so StreamVideo
-		// falls back to GStreamer.
-		{"notSupported in first", notSupported, context.Canceled, nil, notSupported},
-		{"notSupported in second", context.Canceled, notSupported, nil, notSupported},
-		// The goroutine that failed first is the root cause; the other usually
-		// just reports the context cancellation it triggered.
-		{"real capture error over cancelled sender", captureErr, context.Canceled, nil, captureErr},
-		{"real send error over cancelled capture", context.Canceled, sendErr, context.Canceled, sendErr},
-		// Both goroutines stopped only because the parent context was cancelled.
-		{"both cancelled returns ctx error", context.Canceled, context.Canceled, context.Canceled, context.Canceled},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := pickV4L2StreamError(c.first, c.second, c.ctxErr); got != c.want {
-				t.Errorf("pickV4L2StreamError(%v, %v, %v) = %v, want %v", c.first, c.second, c.ctxErr, got, c.want)
-			}
-		})
-	}
-}
-
 func TestV4L2KeyframeControlIDs(t *testing.T) {
 	// V4L2_CID_CODEC_BASE = V4L2_CTRL_CLASS_CODEC | 0x900. The keyframe control
 	// IDs are fixed offsets from that base in the kernel uapi headers; pin them
@@ -555,7 +538,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	prev := gstFallbackDirs
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
-	svc := NewVideoService(zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop())
 	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
@@ -566,5 +549,141 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	}
 	if st.Code() != codes.FailedPrecondition {
 		t.Errorf("expected FailedPrecondition, got %v", st.Code())
+	}
+}
+
+func newTestHub(t *testing.T) (*deviceHub, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &deviceHub{
+		subs:   make(map[int]chan *videoFrame),
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	return h, cancel
+}
+
+func TestDeviceHub_TwoSubscribersReceiveSameFrame(t *testing.T) {
+	h, cancel := newTestHub(t)
+	defer cancel()
+
+	id1, ch1, _ := h.subscribe()
+	id2, ch2, _ := h.subscribe()
+	defer h.unsubscribe(id1)
+	defer h.unsubscribe(id2)
+
+	frame := &videoFrame{data: []byte{0xAB, 0xCD}, tsNs: 12345}
+	if !h.broadcast(frame) {
+		t.Fatal("broadcast returned false with two active subscribers")
+	}
+
+	for _, ch := range []chan *videoFrame{ch1, ch2} {
+		select {
+		case f := <-ch:
+			if !bytes.Equal(f.data, frame.data) || f.tsNs != frame.tsNs {
+				t.Errorf("subscriber received wrong frame: got data=%x tsNs=%d, want data=%x tsNs=%d",
+					f.data, f.tsNs, frame.data, frame.tsNs)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Error("subscriber did not receive frame within timeout")
+		}
+	}
+}
+
+func TestDeviceHub_LastUnsubscribeCancelsProducer(t *testing.T) {
+	h, _ := newTestHub(t)
+
+	id1, _, _ := h.subscribe()
+	id2, _, _ := h.subscribe()
+
+	h.unsubscribe(id1)
+	if h.ctx.Err() != nil {
+		t.Error("context cancelled after first of two subscribers unsubscribed")
+	}
+
+	h.unsubscribe(id2)
+	if h.ctx.Err() == nil {
+		t.Error("context not cancelled after last subscriber unsubscribed")
+	}
+}
+
+func TestDeviceHub_SlowSubscriberDropsFrames(t *testing.T) {
+	h, cancel := newTestHub(t)
+	defer cancel()
+
+	_, ch, _ := h.subscribe()
+
+	// Send more frames than the channel buffer (capacity 4).
+	for i := 0; i < 10; i++ {
+		h.broadcast(&videoFrame{data: []byte{byte(i)}})
+	}
+
+	if len(ch) > cap(ch) {
+		t.Errorf("channel overfull: len=%d cap=%d", len(ch), cap(ch))
+	}
+	// Drain without blocking.
+	for len(ch) > 0 {
+		<-ch
+	}
+}
+
+func TestDeviceHub_BroadcastReturnsFalseWithNoSubscribers(t *testing.T) {
+	h, cancel := newTestHub(t)
+	defer cancel()
+
+	id, _, _ := h.subscribe()
+	h.unsubscribe(id)
+
+	if h.broadcast(&videoFrame{data: []byte{1}}) {
+		t.Error("broadcast should return false when there are no subscribers")
+	}
+}
+
+func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
+	h, _ := newTestHub(t)
+
+	_, ch, _ := h.subscribe()
+
+	// Simulate producer recording an error and closing the channel.
+	wantErr := status.Errorf(codes.Internal, "camera read failed: test error")
+	h.mu.Lock()
+	h.err = wantErr
+	for _, c := range h.subs {
+		close(c)
+	}
+	h.mu.Unlock()
+
+	// Drain the closed channel.
+	for range ch {
+	}
+
+	if h.err != wantErr {
+		t.Errorf("expected stored error %v, got %v", wantErr, h.err)
+	}
+}
+
+func TestDeviceHub_GetOrCreateHub_RejectsParamMismatch(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req1 := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
+	req2 := &agentpb.StreamVideoRequest{Width: 640, Height: 480, Framerate: 30}
+
+	h, id, _, err := svc.getOrCreateHub(ctx, "/dev/video0", req1)
+	if err != nil {
+		t.Fatalf("first getOrCreateHub failed: %v", err)
+	}
+	defer h.unsubscribe(id)
+
+	_, _, _, err = svc.getOrCreateHub(ctx, "/dev/video0", req2)
+	if err == nil {
+		t.Fatal("expected error for mismatched params, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		t.Errorf("expected InvalidArgument, got %v", err)
 	}
 }

@@ -10,6 +10,7 @@ set -euo pipefail
 REPO="wendylabsinc/wendy-agent"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="wendy"
+HOMEBREW_FORMULA="wendylabsinc/tap/wendy"
 YES=false
 
 usage() {
@@ -86,6 +87,29 @@ download() {
   fi
 }
 
+# --- Homebrew helper ---
+homebrew_supports_trust() {
+  brew help trust >/dev/null 2>&1
+}
+
+trust_homebrew_formula() {
+  local formula="$1"
+
+  if ! homebrew_supports_trust; then
+    return 0
+  fi
+
+  echo "Trusting Homebrew formula: ${formula}"
+  if brew trust --formula "$formula"; then
+    return 0
+  fi
+
+  echo "Error: Homebrew could not trust ${formula}." >&2
+  echo "Run this command, then re-run the installer:" >&2
+  echo "  brew trust --formula ${formula}" >&2
+  exit 1
+}
+
 # --- Prompt for confirmation ---
 confirm() {
   if [[ "$YES" == true ]]; then return 0; fi
@@ -131,9 +155,16 @@ echo ""
 # ===== macOS =====
 if [[ "$OS" == "darwin" ]]; then
   if command -v brew &>/dev/null; then
-    echo "Homebrew detected. Will install via: brew install wendylabsinc/tap/wendy"
+    if homebrew_supports_trust; then
+      echo "Homebrew detected. Will trust and install via:"
+      echo "  brew trust --formula ${HOMEBREW_FORMULA}"
+      echo "  brew install ${HOMEBREW_FORMULA}"
+    else
+      echo "Homebrew detected. Will install via: brew install ${HOMEBREW_FORMULA}"
+    fi
     confirm "Proceed?"
-    brew install wendylabsinc/tap/wendy
+    trust_homebrew_formula "$HOMEBREW_FORMULA"
+    brew install "$HOMEBREW_FORMULA"
   else
     ARTIFACT="wendy-cli-darwin-${ARCH}-${VERSION}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
