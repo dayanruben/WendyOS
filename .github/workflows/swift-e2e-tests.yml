@@ -38,7 +38,7 @@ on:
 
 concurrency:
   group: swift-e2e-tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -54,7 +54,7 @@ jobs:
     name: ${{ matrix.target.name }}
     runs-on: ["self-hosted", "${{ matrix.target.runner_label }}"]
     concurrency:
-      group: swift-e2e-${{ matrix.target.device_id }}
+      group: device-${{ matrix.target.device_id }}
       cancel-in-progress: false
       queue: max
     timeout-minutes: 120
@@ -62,15 +62,16 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - name: macOS 26 → Jetson Orin Nano
-            target_id: macos-jetson-orin-nano
-            runner_id: macos-26
-            runner_label: macos-26
-            cli_os: macOS
-            device_id: jetson-orin-nano
-            device_address: wendyos-strong-dunlin.local
-            agent_os: wendyOS
-            transport: lan
+          # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
+          # - name: macOS 26 → Jetson Orin Nano
+          #   target_id: macos-jetson-orin-nano
+          #   runner_id: macos-26
+          #   runner_label: macos-26
+          #   cli_os: macOS
+          #   device_id: jetson-orin-nano
+          #   device_address: wendyos-strong-dunlin.local
+          #   agent_os: wendyOS
+          #   transport: lan
 
           # // DISABLED: no CI hardware set up yet for this job.
           # - name: Windows 11 → Ubuntu 24
