@@ -119,25 +119,31 @@ const cniStdoutLimit = 64 << 10 // 64 KB
 // cniBridgeBin is the full path to the CNI bridge plugin binary.
 const cniBridgeBin = cniPluginDir + "/bridge"
 
-// verifyCNIBinary checks that the CNI bridge binary exists, is owned by root
-// (uid 0), and has no group-write or world-write bits set. An absent,
-// non-root-owned, or writable binary could be a sign of tampering; executing it
-// would give an attacker code execution in the agent process context
-// (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
-func verifyCNIBinary() error {
-	fi, err := os.Stat(cniBridgeBin)
+// openAndVerifyCNIBinary opens the CNI bridge binary and verifies ownership
+// and permissions on the open fd. Stat-on-fd (not stat-on-path) eliminates the
+// TOCTOU window between the integrity check and exec: even if the path is
+// replaced after this function returns, the returned *os.File still references
+// the original (verified) inode. The caller MUST keep the file open until after
+// exec completes and then close it (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
+func openAndVerifyCNIBinary() (*os.File, error) {
+	f, err := os.Open(cniBridgeBin)
 	if err != nil {
-		return fmt.Errorf("CNI bridge binary %q not accessible: %w", cniBridgeBin, err)
+		return nil, fmt.Errorf("CNI bridge binary %q not accessible: %w", cniBridgeBin, err)
 	}
-	// Require root ownership.
+	fi, err := f.Stat() // stat on the open fd, not the path — TOCTOU-safe
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("CNI bridge binary %q: fstat failed: %w", cniBridgeBin, err)
+	}
 	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
-		return fmt.Errorf("CNI bridge binary %q must be owned by root (uid 0) — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
+		f.Close()
+		return nil, fmt.Errorf("CNI bridge binary %q must be owned by root (uid 0) — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
 	}
-	// Require no group-write or world-write (permissions ≤ 0o755).
 	if fi.Mode()&0o022 != 0 {
-		return fmt.Errorf("CNI bridge binary %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
+		f.Close()
+		return nil, fmt.Errorf("CNI bridge binary %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
 	}
-	return nil
+	return f, nil
 }
 
 // warnSubnetCollision checks whether the allocated /28 subnet overlaps with
@@ -185,14 +191,22 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
 		return "", err
 	}
-	if err := verifyCNIBinary(); err != nil {
+	// Open and verify the binary on its fd — fd-anchored stat eliminates the
+	// TOCTOU window between the integrity check and exec (SOC2-CC6, NIST-SI-3).
+	cniBin, err := openAndVerifyCNIBinary()
+	if err != nil {
 		return "", err
 	}
+	defer cniBin.Close()
+	// Exec from /proc/self/fd/{n}: even if the path is replaced after the
+	// integrity check, the fd still references the verified inode.
+	binPath := fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
+
 	subnet := allocateSubnet(appID)
 	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	cmd := exec.CommandContext(ctx, binPath)
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
@@ -308,14 +322,18 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		c.logger.Warn("CNI DEL skipped: invalid inputs", zap.Error(err))
 		return nil
 	}
-	if err := verifyCNIBinary(); err != nil {
+	cniBin, err := openAndVerifyCNIBinary()
+	if err != nil {
 		c.logger.Warn("CNI DEL skipped: binary check failed", zap.Error(err))
 		return nil
 	}
+	defer cniBin.Close()
+	binPath := fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
+
 	subnet := allocateSubnet(appID)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	cmd := exec.CommandContext(ctx, binPath)
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{

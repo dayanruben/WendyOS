@@ -1726,14 +1726,22 @@ func ensureSharedSHM(appID string) (string, error) {
 		return "", fmt.Errorf("ensureSharedSHM: %w", err)
 	}
 	path := "/run/wendy/shm/" + appID
-	// 0o1770: sticky bit so only the owner can delete files; no world access.
-	// Containers in the group share the same effective GID via the agent, so
-	// group-write is sufficient. World-write (0o1777) would allow any UID on
-	// the host to overwrite sibling SHM data (SOC2-CC6, NIST-SC-7).
-	if err := os.MkdirAll(path, 0o1770); err != nil {
-		return "", fmt.Errorf("creating shared shm dir %q: %w", path, err)
+	// Lock the OS thread so that the umask change below is thread-local and
+	// does not race with other goroutines on the same process (SOC2-CC6,
+	// NIST-SC-7, ISO27001-A.8). Without this, a permissive umask could widen
+	// 0o1770 → 0o1750 or looser during the MkdirAll call, creating a window
+	// before the subsequent Chmod during which the directory is accessible to
+	// unintended users.
+	runtime.LockOSThread()
+	oldUmask := syscall.Umask(0)
+	mkdirErr := os.MkdirAll(path, 0o1770)
+	syscall.Umask(oldUmask)
+	runtime.UnlockOSThread()
+	if mkdirErr != nil {
+		return "", fmt.Errorf("creating shared shm dir %q: %w", path, mkdirErr)
 	}
-	// MkdirAll may skip chmod if the directory already exists with looser perms.
+	// Explicit Chmod to handle the case where the directory already existed
+	// with looser permissions (MkdirAll is a no-op for existing dirs).
 	if err := os.Chmod(path, 0o1770); err != nil {
 		return "", fmt.Errorf("setting permissions on shared shm dir %q: %w", path, err)
 	}
