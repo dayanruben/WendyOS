@@ -116,7 +116,7 @@ jobs:
           xcodebuild build \
             -workspace WendyAgent.xcworkspace \
             -scheme WendyAgentMac \
-            -configuration Release \
+            -configuration Debug \
             -destination 'platform=macOS' \
             -derivedDataPath "$DERIVED_DATA_PATH" \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
