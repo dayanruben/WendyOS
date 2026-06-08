@@ -293,6 +293,11 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		// Reject service names containing characters that could inject extra
+		// lines or fields into /etc/hosts (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+		if strings.ContainsAny(name, "\t\n\r\x00") {
+			continue
+		}
 		fmt.Fprintf(&sb, "%s\t%s\n", serviceIPs[name], name)
 	}
 

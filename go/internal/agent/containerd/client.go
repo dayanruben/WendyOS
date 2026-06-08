@@ -672,14 +672,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			return fmt.Errorf("security: appID %q produces path outside /run/wendy/hosts", appID)
 		}
 		// Always create the directory (os.MkdirAll is idempotent) and seed the
-		// hosts file atomically via writeHostsFile rather than check-then-act.
-		// Two concurrent CreateContainerWithProgress calls for the same app
-		// could both see the file absent in a Stat check; the atomic rename in
-		// writeHostsFile ensures neither sees a truncated file (SOC2-CC6, NIST-SI-10).
+		// hosts file with IPs already known from previously-started sibling services.
+		// c.mu is held here (defer Unlock above), so reading c.serviceIPs is safe.
+		// Seeding with existing IPs means containers that start late see a useful
+		// /etc/hosts from the first moment rather than an empty file (SOC2-CC6).
+		// The atomic rename in writeHostsFile prevents truncated reads (NIST-SI-10).
 		if err := os.MkdirAll("/run/wendy/hosts", 0o755); err != nil {
 			return fmt.Errorf("creating hosts dir: %w", err)
 		}
-		if err := writeHostsFile(hostsPath, nil); err != nil {
+		if err := writeHostsFile(hostsPath, c.serviceIPs[appID]); err != nil {
 			return fmt.Errorf("initialising hosts file for %s: %w", appID, err)
 		}
 		localoci.InjectHostsMount(spec, hostsPath)
