@@ -125,13 +125,24 @@ const cniStdoutLimit = 64 << 10 // 64 KB
 // cniBridgeBin is the full path to the CNI bridge plugin binary.
 const cniBridgeBin = cniPluginDir + "/bridge"
 
-// openAndVerifyCNIBinary opens the CNI bridge binary and verifies ownership
-// and permissions on the open fd. Stat-on-fd (not stat-on-path) eliminates the
-// TOCTOU window between the integrity check and exec: even if the path is
-// replaced after this function returns, the returned *os.File still references
-// the original (verified) inode. The caller MUST keep the file open until after
-// exec completes and then close it (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
+// openAndVerifyCNIBinary opens the CNI bridge binary and verifies both the
+// binary and its parent directory. Stat-on-fd eliminates the TOCTOU window for
+// the binary itself; the directory check prevents a world-writable parent from
+// allowing a swap attack between Open() and exec. The caller MUST keep the
+// returned file open until exec completes (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
 func openAndVerifyCNIBinary() (*os.File, error) {
+	// Verify parent directory is root-owned and not group/world-writable.
+	dirInfo, err := os.Stat(cniPluginDir)
+	if err != nil {
+		return nil, fmt.Errorf("CNI plugin directory %q not accessible: %w", cniPluginDir, err)
+	}
+	if dst, ok := dirInfo.Sys().(*syscall.Stat_t); !ok || dst.Uid != 0 {
+		return nil, fmt.Errorf("CNI plugin directory %q must be owned by root (uid 0) — refusing to execute (SOC2-CC6, NIST-SI-3)", cniPluginDir)
+	}
+	if dirInfo.Mode()&0o022 != 0 {
+		return nil, fmt.Errorf("CNI plugin directory %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniPluginDir)
+	}
+
 	f, err := os.Open(cniBridgeBin)
 	if err != nil {
 		return nil, fmt.Errorf("CNI bridge binary %q not accessible: %w", cniBridgeBin, err)

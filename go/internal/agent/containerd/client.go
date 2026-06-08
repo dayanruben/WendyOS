@@ -945,12 +945,17 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			c.mu.Lock()
 			c.recordServiceIP(appID, serviceName, ip)
 			hostsPath := filepath.Join("/run/wendy/hosts", appID)
-			if strings.HasPrefix(filepath.Clean(hostsPath), filepath.Clean("/run/wendy/hosts")+"/") {
-				_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
-			} else {
+			if !strings.HasPrefix(filepath.Clean(hostsPath), filepath.Clean("/run/wendy/hosts")+"/") {
+				// Hard error: a validated appID must never produce an out-of-bounds path.
+				// Stop the already-started task before returning so it is not orphaned
+				// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
 				c.logger.Error("security: appID produces path outside /run/wendy/hosts",
 					zap.String("app_id", appID), zap.String("path", hostsPath))
+				c.mu.Unlock()
+				_, _ = task.Delete(ctx, containerd.WithProcessKill)
+				return nil, fmt.Errorf("security: appID %q produces path outside /run/wendy/hosts", appID)
 			}
+			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
 			c.mu.Unlock()
 		}
 	}
