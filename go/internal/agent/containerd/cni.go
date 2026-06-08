@@ -282,10 +282,14 @@ func openAndVerifyCNIBinary(logger *zap.Logger) (*os.File, error) {
 	// is TOCTOU-safe — the hash covers exactly the inode that will be exec'd.
 	// Always log a warning when the file is absent so operators see it in audit
 	// logs and can pin the digest (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
+	// Hash file is mandatory: absence is a hard configuration error, not a
+	// degraded-mode warning. Operators must pin the CNI binary digest before
+	// the agent will exec it (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
+	// To generate the hash: sha256sum /opt/cni/bin/bridge | awk '{print "sha256:"$1}'
 	hashData, hashErr := os.ReadFile(cniHashesPath)
 	if hashErr != nil {
-		logger.Warn("CNI binary integrity check skipped: hash file absent — pin the digest to enforce supply-chain verification",
-			zap.String("hash_file", cniHashesPath))
+		f.Close()
+		return nil, fmt.Errorf("CNI binary integrity check: hash file %q is required but missing or unreadable — pin the bridge digest to enable CNI (SOC2-CC6, NIST-SI-3): %w", cniHashesPath, hashErr)
 	} else {
 		var hashes map[string]string
 		if json.Unmarshal(hashData, &hashes) == nil {

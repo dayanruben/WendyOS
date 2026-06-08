@@ -22,9 +22,15 @@ const cniNetnsBindDir = "/run/wendy/netns"
 // On error, the function falls back to the fd-path approach (/proc/self/fd/<n>)
 // with the caller responsible for keeping netnsRef open until CNI completes.
 func bindNetnsForCNI(containerID string, netnsRef *os.File) (netnsPath string, cleanup func()) {
-	if err := os.MkdirAll(cniNetnsBindDir, 0o750); err != nil {
+	// 0o700: owner-only, consistent with /run/wendy/cni and /run/wendy/shm.
+	// Network namespace bind-mount points must not be reachable by group-0
+	// daemons — opening a netns fd exposes network attack surface
+	// (SOC2-CC6, NIST-SI-10, ISO27001-A.8).
+	if err := os.MkdirAll(cniNetnsBindDir, 0o700); err != nil {
 		return fmt.Sprintf("/proc/self/fd/%d", netnsRef.Fd()), func() { netnsRef.Close() }
 	}
+	// Explicit chmod handles pre-existing directories with wider permissions.
+	_ = os.Chmod(cniNetnsBindDir, 0o700)
 
 	// Use the base component of containerID as the bind-point filename;
 	// containerID is validated by containerIDPattern (no path separators).
