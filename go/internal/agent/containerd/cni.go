@@ -157,7 +157,14 @@ outer:
 	if err != nil {
 		return "", fmt.Errorf("marshalling CNI subnet registry: %w", err)
 	}
+	// LockOSThread + Umask(0) ensures os.CreateTemp creates the file with the
+	// kernel-assigned 0600 mode (before umask), closing the window between file
+	// creation and the subsequent Chmod call (SOC2-CC6, NIST-SI-10).
+	runtime.LockOSThread()
+	oldUmask := syscall.Umask(0)
 	tmp, err := os.CreateTemp(stateDir, ".subnets-*.json.tmp")
+	syscall.Umask(oldUmask)
+	runtime.UnlockOSThread()
 	if err != nil {
 		return "", fmt.Errorf("creating temp CNI registry: %w", err)
 	}
@@ -314,6 +321,12 @@ func openAndVerifyCNIBinary() (*os.File, error) {
 	if actual != pinned {
 		f.Close()
 		return nil, fmt.Errorf("CNI bridge binary hash mismatch: got %s, want %s — update %s or reinstall the plugin (SOC2-CC6, NIST-SI-3)", actual, pinned, cniHashesPath)
+	}
+	// Rewind so the caller (cmd.Path via /proc/self/fd/<n>) reads from the
+	// start of the binary, not from EOF where io.Copy left the offset.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("seeking CNI binary after hash verification: %w", err)
 	}
 	return f, nil
 }
@@ -515,7 +528,13 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 	}
 
 	dir := filepath.Dir(path)
+	// LockOSThread + Umask(0) closes the window between os.CreateTemp and
+	// the subsequent fd-based Chmod (SOC2-CC6, NIST-SI-10).
+	runtime.LockOSThread()
+	oldUmask := syscall.Umask(0)
 	tmp, err := os.CreateTemp(dir, ".hosts-*.tmp")
+	syscall.Umask(oldUmask)
+	runtime.UnlockOSThread()
 	if err != nil {
 		return fmt.Errorf("creating temp hosts file: %w", err)
 	}

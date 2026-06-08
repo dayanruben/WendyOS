@@ -685,7 +685,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		// Seeding with existing IPs means containers that start late see a useful
 		// /etc/hosts from the first moment rather than an empty file (SOC2-CC6).
 		// The atomic rename in writeHostsFile prevents truncated reads (NIST-SI-10).
-		if err := os.MkdirAll("/run/wendy/hosts", 0o755); err != nil {
+		if err := os.MkdirAll("/run/wendy/hosts", 0o700); err != nil {
 			return fmt.Errorf("creating hosts dir: %w", err)
 		}
 		if err := writeHostsFile(hostsPath, c.serviceIPs[appID]); err != nil {
@@ -1739,16 +1739,11 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	// Re-acquire mutex for map cleanup. Both reads and writes of these maps
 	// are protected by c.mu to prevent data races with concurrent callers
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+	// clearPrimaryPID under the lock; other per-app metadata is kept alive until
+	// after the late sweep so that appIsolation is still readable by any
+	// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
 	c.mu.Lock()
 	c.clearPrimaryPID(appID)
-	// Release per-app metadata to prevent unbounded map growth on devices with
-	// many app lifecycle cycles (SOC2-CC8, ISO27001-A.12).
-	delete(c.appServices, appID)
-	delete(c.appIsolation, appID)
-	delete(c.serviceIPs, appID)
-	// appStopping is cleared AFTER the late-sweep so that concurrent
-	// CreateContainerWithProgress calls remain blocked during the sweep window
-	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	c.mu.Unlock()
 
 	// Re-enumerate unconditionally to catch any containers that appeared after
@@ -1765,9 +1760,15 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 		}
 	}
 
-	// Clear appStopping only after the late sweep so no new container slips
-	// through the guard window.
+	// Release per-app metadata in one atomic section AFTER the late sweep, so
+	// no partial-state window exists between metadata deletion and appStopping
+	// clearance. Concurrent CreateContainerWithProgress remains blocked (via
+	// appStopping) until this section completes (SOC2-CC6, NIST-AC-3, NIST-SI-16,
+	// ISO27001-A.8, SOC2-CC8/ISO27001-A.12 unbounded-growth prevention).
 	c.mu.Lock()
+	delete(c.appServices, appID)
+	delete(c.appIsolation, appID)
+	delete(c.serviceIPs, appID)
 	delete(c.appStopping, appID)
 	c.mu.Unlock()
 
