@@ -97,7 +97,11 @@ func allocateSubnet(appID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening CNI registry lock: %w", err)
 	}
-	defer lockF.Close()
+	defer func() {
+		if closeErr := lockF.Close(); closeErr != nil {
+			zap.L().Warn("failed to close CNI registry lock file", zap.Error(closeErr))
+		}
+	}()
 	if err := syscall.Flock(int(lockF.Fd()), syscall.LOCK_EX); err != nil {
 		return "", fmt.Errorf("locking CNI registry: %w", err)
 	}
