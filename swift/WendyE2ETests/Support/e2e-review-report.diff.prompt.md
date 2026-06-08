@@ -13,7 +13,10 @@ Guidelines:
 - Write one Markdown file per actionable diff-related run-level or cross-suite
   review issue under the top-level review directory named in the generated prompt.
 - Use JSON `severity` to classify each issue as `info`, `concern`, or
-  `fail`. Do not write prose status/severity lines such as `Status: pass`,
+  `fail`. Keep those exact JSON values. If human-facing review text mentions a
+  severity label, use `🛑 Error`, `⚠️ Concern`, and `💡 Info` for `fail`,
+  `concern`, and `info`, respectively. Do not use heart emojis as severity
+  markers. Do not write prose status/severity lines such as `Status: pass`,
   `Status: concern`, or `Status: fail`.
 - Each review summary should be GitHub-comment-sized: one concise explanation
   tied to the diff plus the suggested action.
