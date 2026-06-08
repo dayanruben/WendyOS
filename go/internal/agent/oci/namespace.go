@@ -86,12 +86,16 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os
 // SharedSHMMount returns a bind-mount that maps hostSHMPath into /dev/shm.
 // Use this for shared-ipc isolation where all services share one shm segment.
 // hostSHMPath should be /run/wendy/shm/{appID}.
+// nosuid and nodev prevent setuid executables or device files from being placed
+// on the shared mount by a compromised sibling service (SOC2-CC6, ISO27001-A.8).
+// Note: all services in a shared-ipc group have read-write access to this
+// mount — they are explicitly mutually trusted at the app-group level.
 func SharedSHMMount(hostSHMPath string) Mount {
 	return Mount{
 		Destination: "/dev/shm",
 		Type:        "bind",
 		Source:      hostSHMPath,
-		Options:     []string{"rbind", "rw"},
+		Options:     []string{"rbind", "rw", "nosuid", "nodev"},
 	}
 }
 

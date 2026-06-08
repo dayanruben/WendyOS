@@ -203,19 +203,20 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	if err != nil {
 		return "", err
 	}
-	// cniBin is opened and verified (owner=root, no group/world-write) before
-	// use; the fd is kept open during exec to prevent the file from being
-	// replaced between the check and the call. We exec the verified path
-	// directly — /proc/self/fd/{n} is not portable across all kernel/LSM
-	// configurations (hidepid=2, AppArmor, SELinux). The TOCTOU window between
-	// fstat and execve is narrow and acceptable given root-ownership enforcement
-	// (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
+	// Exec via /proc/self/fd/{n} so the kernel resolves the binary from the
+	// already-verified fd, not from the string path. This closes the TOCTOU
+	// window between fstat and execve: even if /opt/cni/bin/bridge is replaced
+	// after the integrity check, the exec still runs the inode that was verified.
+	// cniBin must remain open until cmd.Run() returns (defer ensures this).
+	// cmd.Args[0] keeps the human-readable path for process listings (SOC2-CC6,
+	// NIST-SI-3, ISO27001-A.8).
 	defer cniBin.Close()
 	subnet := allocateSubnet(appID)
 	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	cmd.Path = fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
@@ -349,12 +350,13 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		c.logger.Warn("CNI DEL skipped: binary check failed", zap.Error(err))
 		return nil
 	}
-	// Keep cniBin open to hold the verified fd during exec (see CNIAdd for rationale).
+	// See CNIAdd for exec-via-fd rationale. Keep cniBin open until cmd.Run() returns.
 	defer cniBin.Close()
 	subnet := allocateSubnet(appID)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	cmd.Path = fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
 	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
