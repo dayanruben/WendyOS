@@ -42,10 +42,11 @@ type cniResult struct {
 	} `json:"ips"`
 }
 
-// netnsPathPattern accepts the two netns path forms used in this package:
-//   - /proc/{pid}/ns/net  — direct procfs reference
-//   - /proc/self/fd/{n}   — fd-anchored reference (prevents PID-reuse races)
-var netnsPathPattern = regexp.MustCompile(`^(/proc/\d+/ns/net|/proc/self/fd/\d+)$`)
+// netnsPathPattern accepts the three netns path forms used in this package:
+//   - /proc/{pid}/ns/net          — direct procfs reference
+//   - /proc/self/fd/{n}           — fd-anchored reference (prevents PID-reuse races)
+//   - /run/wendy/netns/{ctrID}    — bind-mounted path (spec-compliant for CNI plugins)
+var netnsPathPattern = regexp.MustCompile(`^(/proc/\d+/ns/net|/proc/self/fd/\d+|/run/wendy/netns/[a-zA-Z0-9][a-zA-Z0-9._@-]{0,319})$`)
 
 // containerIDPattern is an allowlist for CNI containerID values. Wendy
 // container IDs are either a bare appID or "{appID}@{serviceName}", so valid
@@ -107,18 +108,33 @@ func allocateSubnet(appID string) (string, error) {
 		return existing, nil
 	}
 
-	// Compute candidate subnet from 4 SHA-256 bytes.
+	// Compute candidate subnet from 4 SHA-256 bytes; use linear probing across
+	// all 16 /28 blocks in the same /24 to handle hash collisions without
+	// returning a hard error (birthday probability ~50% at ~1400 apps without
+	// probing; SOC2-CC6, NIST-SC-7, ISO27001-A.8).
 	h := sha256.Sum256([]byte(appID))
 	b2 := h[0]
 	b3 := h[1]
-	b4 := (h[2] ^ h[3]) & 0xF0
-	candidate := fmt.Sprintf("10.%d.%d.%d/28", b2, b3, b4)
+	b4base := (h[2] ^ h[3]) & 0xF0
 
-	// Reject if another appID already owns this subnet.
-	for existingApp, existingSubnet := range registry {
-		if existingSubnet == candidate {
-			return "", fmt.Errorf("CNI subnet collision: appID %q and %q both hash to %s — rename one of the apps (SOC2-CC6, NIST-SC-7)", appID, existingApp, candidate)
+	var candidate string
+	for probe := 0; probe < 16; probe++ {
+		b4 := byte((int(b4base)+probe*0x10)&0xFF) & 0xF0
+		c := fmt.Sprintf("10.%d.%d.%d/28", b2, b3, b4)
+		taken := false
+		for _, existingSubnet := range registry {
+			if existingSubnet == c {
+				taken = true
+				break
+			}
 		}
+		if !taken {
+			candidate = c
+			break
+		}
+	}
+	if candidate == "" {
+		return "", fmt.Errorf("all 16 /28 subnets in 10.%d.%d.0/24 are allocated (SOC2-CC6, NIST-SC-7)", b2, b3)
 	}
 
 	// Persist the new assignment atomically via temp-file + rename so the

@@ -933,12 +933,15 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	c.mu.Unlock()
 
 	// CNI ADD for isolated multi-service apps: assign IP and update /etc/hosts.
-	// The netnsRef fd anchors the namespace so PID recycling cannot redirect
-	// the CNI plugin to an unrelated process's network namespace.
+	// bindNetnsForCNI creates a stable bind-mount under /run/wendy/netns/ so
+	// CNI_NETNS is a real filesystem path as required by the CNI spec — not a
+	// /proc/self/fd/<n> reference that third-party CNI plugins may not honour.
+	// It also closes the fd (the bind-mount anchors the namespace independently).
+	// On Linux the bind-mount is used; on other platforms the fd path is the fallback.
 	if isolation == "isolated" && serviceName != "" && netnsRef != nil {
-		netnsPath := fmt.Sprintf("/proc/self/fd/%d", netnsRef.Fd())
+		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
-		netnsRef.Close()
+		cleanupNetns()
 		if cniErr != nil {
 			c.logger.Error("CNI ADD failed", zap.String("app_id", appID), zap.Error(cniErr))
 		} else {

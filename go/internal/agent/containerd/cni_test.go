@@ -112,6 +112,10 @@ func TestValidateCNIInputs(t *testing.T) {
 	if err := validateCNIInputs("com.example.app", "com.example.app@svc", validFD); err != nil {
 		t.Errorf("fd-style netnsPath rejected: %v", err)
 	}
+	validBind := "/run/wendy/netns/com.example.app@svc"
+	if err := validateCNIInputs("com.example.app", "com.example.app@svc", validBind); err != nil {
+		t.Errorf("bind-mount netnsPath rejected: %v", err)
+	}
 	if err := validateCNIInputs("..", "container", validNetns); err == nil {
 		t.Error("pure-dot appID should be rejected")
 	}
