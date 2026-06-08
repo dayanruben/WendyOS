@@ -547,7 +547,7 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 	// Chmod via the open fd before Close to eliminate the TOCTOU window between
 	// tmp.Close() and os.Chmod(path) — an attacker cannot swap the file between
 	// the fd-based chmod and the subsequent rename (SOC2-CC6, NIST-SI-10).
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		return fmt.Errorf("chmod temp hosts file: %w", err)

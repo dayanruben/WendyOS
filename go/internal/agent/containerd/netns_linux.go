@@ -5,7 +5,6 @@ package containerd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,9 +31,12 @@ func bindNetnsForCNI(containerID string, netnsRef *os.File) (netnsPath string, c
 	// Explicit chmod handles pre-existing directories with wider permissions.
 	_ = os.Chmod(cniNetnsBindDir, 0o700)
 
-	// Use the base component of containerID as the bind-point filename;
-	// containerID is validated by containerIDPattern (no path separators).
-	bindPath := filepath.Join(cniNetnsBindDir, filepath.Base(containerID))
+	// safeJoin validates that containerID contains no path separators and does
+	// not escape the bind directory — stronger than filepath.Base alone.
+	bindPath, safeErr := safeJoin(cniNetnsBindDir, containerID)
+	if safeErr != nil {
+		return fmt.Sprintf("/proc/self/fd/%d", netnsRef.Fd()), func() { netnsRef.Close() }
+	}
 
 	// Create the bind point — must be a regular file (not a dir) for netns bind-mounts.
 	f, err := os.OpenFile(bindPath, os.O_CREATE|os.O_EXCL, 0o600)

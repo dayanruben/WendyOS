@@ -95,6 +95,11 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		logger:       logger,
 		namespace:    "default",
 		proxyManager: proxyMgr,
+		appServices:  make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:  make(map[string]uint32),
+		appIsolation: make(map[string]string),
+		serviceIPs:   make(map[string]map[string]string),
+		appStopping:  make(map[string]bool),
 	}, nil
 }
 
