@@ -54,17 +54,21 @@ var netnsPathPattern = regexp.MustCompile(`^(/proc/\d+/ns/net|/proc/self/fd/\d+)
 var containerIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,319}$`)
 
 // allocateSubnet deterministically maps an appID to a /28 subnet within
-// 10.0.0.0/8 using three bytes of a SHA-256 digest (~1M possible subnets).
-// Birthday-paradox collision probability: ~0.05% at 30 apps, ~0.5% at 100.
+// 10.0.0.0/8 using four bytes of a SHA-256 digest (~1M possible /28 subnets).
+// Four hash bytes (32 bits of input) are used: h[0] and h[1] select the second
+// and third octets (8 bits each); h[2] XOR h[3] selects the /28 block in the
+// fourth octet (upper nibble, 4 bits). XOR-mixing distributes entropy from
+// both h[2] and h[3] across the selection.
+// Birthday-paradox collision probability: ~0.05% at 30 apps, ~0.5% at 145.
 // The SHA-256 digest ensures uniform distribution; it does not provide
 // resistance against a caller who can iterate appIDs to find a collision
 // (SOC2-CC6, ISO27001-A.8, NIST-SC-7).
 func allocateSubnet(appID string) string {
 	h := sha256.Sum256([]byte(appID))
-	// Use three bytes from the digest: second octet, third octet, /28 boundary.
 	b2 := h[0]
 	b3 := h[1]
-	b4 := (h[2] & 0xf) << 4 // /28 boundary: 0, 16, 32, …, 240
+	// XOR two independent hash bytes then mask to /28 alignment (SOC2-CC6).
+	b4 := (h[2] ^ h[3]) & 0xF0
 	return fmt.Sprintf("10.%d.%d.%d/28", b2, b3, b4)
 }
 
@@ -341,11 +345,15 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("writing temp hosts file: %w", err)
 	}
-	tmp.Close()
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	// Chmod via the open fd before Close to eliminate the TOCTOU window between
+	// tmp.Close() and os.Chmod(path) — an attacker cannot swap the file between
+	// the fd-based chmod and the subsequent rename (SOC2-CC6, NIST-SI-10).
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
 		os.Remove(tmpName)
 		return fmt.Errorf("chmod temp hosts file: %w", err)
 	}
+	tmp.Close()
 	return os.Rename(tmpName, path)
 }
 

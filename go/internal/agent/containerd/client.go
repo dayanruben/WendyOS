@@ -947,8 +947,11 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			hostsPath := filepath.Join("/run/wendy/hosts", appID)
 			if !strings.HasPrefix(filepath.Clean(hostsPath), filepath.Clean("/run/wendy/hosts")+"/") {
 				// Hard error: a validated appID must never produce an out-of-bounds path.
-				// Stop the already-started task before returning so it is not orphaned
-				// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+				// Remove the just-recorded IP so it cannot pollute future writeHostsFile
+				// calls for the same appID (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+				if c.serviceIPs != nil {
+					delete(c.serviceIPs[appID], serviceName)
+				}
 				c.logger.Error("security: appID produces path outside /run/wendy/hosts",
 					zap.String("app_id", appID), zap.String("path", hostsPath))
 				c.mu.Unlock()
