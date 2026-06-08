@@ -1726,8 +1726,16 @@ func ensureSharedSHM(appID string) (string, error) {
 		return "", fmt.Errorf("ensureSharedSHM: %w", err)
 	}
 	path := "/run/wendy/shm/" + appID
-	if err := os.MkdirAll(path, 0o1777); err != nil {
+	// 0o1770: sticky bit so only the owner can delete files; no world access.
+	// Containers in the group share the same effective GID via the agent, so
+	// group-write is sufficient. World-write (0o1777) would allow any UID on
+	// the host to overwrite sibling SHM data (SOC2-CC6, NIST-SC-7).
+	if err := os.MkdirAll(path, 0o1770); err != nil {
 		return "", fmt.Errorf("creating shared shm dir %q: %w", path, err)
+	}
+	// MkdirAll may skip chmod if the directory already exists with looser perms.
+	if err := os.Chmod(path, 0o1770); err != nil {
+		return "", fmt.Errorf("setting permissions on shared shm dir %q: %w", path, err)
 	}
 	return path, nil
 }

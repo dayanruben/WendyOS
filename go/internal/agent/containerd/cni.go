@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"go.uber.org/zap"
 
@@ -118,17 +119,23 @@ const cniStdoutLimit = 64 << 10 // 64 KB
 // cniBridgeBin is the full path to the CNI bridge plugin binary.
 const cniBridgeBin = cniPluginDir + "/bridge"
 
-// verifyCNIBinary checks that the CNI bridge binary exists and is not
-// world-writable. An absent or world-writable binary could be a sign of
-// tampering; executing it would give an attacker code execution in the agent
-// process context (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+// verifyCNIBinary checks that the CNI bridge binary exists, is owned by root
+// (uid 0), and has no group-write or world-write bits set. An absent,
+// non-root-owned, or writable binary could be a sign of tampering; executing it
+// would give an attacker code execution in the agent process context
+// (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
 func verifyCNIBinary() error {
 	fi, err := os.Stat(cniBridgeBin)
 	if err != nil {
 		return fmt.Errorf("CNI bridge binary %q not accessible: %w", cniBridgeBin, err)
 	}
-	if fi.Mode()&0o002 != 0 {
-		return fmt.Errorf("CNI bridge binary %q is world-writable — refusing to execute (SOC2-CC6, NIST-SI-10)", cniBridgeBin)
+	// Require root ownership.
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
+		return fmt.Errorf("CNI bridge binary %q must be owned by root (uid 0) — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
+	}
+	// Require no group-write or world-write (permissions ≤ 0o755).
+	if fi.Mode()&0o022 != 0 {
+		return fmt.Errorf("CNI bridge binary %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
 	}
 	return nil
 }
@@ -186,8 +193,12 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
+		// Explicit minimal environment — never inherit the agent's environment,
+		// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
+		"PATH=/opt/cni/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"CNI_COMMAND=ADD",
 		"CNI_CONTAINERID=" + containerID,
 		"CNI_NETNS=" + netnsPath,
@@ -305,8 +316,12 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
+	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
+		// Explicit minimal environment — never inherit the agent's environment
+		// (SOC2-CC6, NIST-SC-7).
+		"PATH=/opt/cni/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"CNI_COMMAND=DEL",
 		"CNI_CONTAINERID=" + containerID,
 		"CNI_NETNS=" + netnsPath,
