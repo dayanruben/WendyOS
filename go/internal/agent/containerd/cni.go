@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,18 +66,40 @@ var cniSubnetRegistryPath = cniStateDir + "/subnets.json"
 //     and rejected immediately rather than silently routing cross-app traffic
 //     (SOC2-CC6, ISO27001-A.8, NIST-SC-7).
 //
+// The read-modify-write is serialised with an exclusive flock on a companion
+// lock file to prevent two concurrent app starts from both reading the same
+// unallocated subnet and writing conflicting entries (SOC2-CC6, NIST-SC-7).
+//
 // Four bytes of SHA-256 are used as the initial candidate. If a collision is
 // detected the candidate is rejected and an error is returned.
 func allocateSubnet(appID string) (string, error) {
 	registryPath := cniSubnetRegistryPath
-	if err := os.MkdirAll(filepath.Dir(registryPath), 0o750); err != nil {
+	stateDir := filepath.Dir(registryPath)
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
 		return "", fmt.Errorf("creating CNI state dir: %w", err)
 	}
 
-	// Load the existing registry.
+	// Serialise concurrent read-modify-writes with an exclusive file lock.
+	// A companion lock file (not the registry itself) is used so the lock
+	// remains valid across the atomic rename that replaces subnets.json
+	// (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
+	lockF, err := os.OpenFile(registryPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("opening CNI registry lock: %w", err)
+	}
+	defer lockF.Close()
+	if err := syscall.Flock(int(lockF.Fd()), syscall.LOCK_EX); err != nil {
+		return "", fmt.Errorf("locking CNI registry: %w", err)
+	}
+	defer syscall.Flock(int(lockF.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	// Load the existing registry; a corrupted file is a hard error rather than
+	// a silent reset to avoid masking filesystem or write failures.
 	registry := map[string]string{}
 	if data, err := os.ReadFile(registryPath); err == nil {
-		_ = json.Unmarshal(data, &registry)
+		if jsonErr := json.Unmarshal(data, &registry); jsonErr != nil {
+			return "", fmt.Errorf("CNI subnet registry corrupted (%w): delete %s to reset", jsonErr, registryPath)
+		}
 	}
 
 	// Return already-assigned subnet for this appID.
@@ -98,10 +121,32 @@ func allocateSubnet(appID string) (string, error) {
 		}
 	}
 
-	// Persist the new assignment.
+	// Persist the new assignment atomically via temp-file + rename so the
+	// registry is never partially written (SOC2-CC6, NIST-SC-7).
 	registry[appID] = candidate
-	if data, err := json.Marshal(registry); err == nil {
-		_ = os.WriteFile(registryPath, data, 0o600)
+	data, err := json.Marshal(registry)
+	if err != nil {
+		return "", fmt.Errorf("marshalling CNI subnet registry: %w", err)
+	}
+	tmp, err := os.CreateTemp(stateDir, ".subnets-*.json.tmp")
+	if err != nil {
+		return "", fmt.Errorf("creating temp CNI registry: %w", err)
+	}
+	tmpName := tmp.Name()
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", fmt.Errorf("chmod temp CNI registry: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", fmt.Errorf("writing temp CNI registry: %w", err)
+	}
+	tmp.Close()
+	if err := os.Rename(tmpName, registryPath); err != nil {
+		os.Remove(tmpName)
+		return "", fmt.Errorf("renaming temp CNI registry: %w", err)
 	}
 	return candidate, nil
 }
@@ -163,11 +208,19 @@ const cniStdoutLimit = 64 << 10 // 64 KB
 // cniBridgeBin is the full path to the CNI bridge plugin binary.
 const cniBridgeBin = cniPluginDir + "/bridge"
 
+// cniHashesPath is the optional pinned-digest file for CNI plugin binaries.
+// Format: {"bridge": "sha256:<hex>"}.
+// When present, the digest of the opened binary fd is compared before exec.
+const cniHashesPath = "/etc/wendy/cni-hashes.json"
+
 // openAndVerifyCNIBinary opens the CNI bridge binary and verifies both the
 // binary and its parent directory. Stat-on-fd eliminates the TOCTOU window for
 // the binary itself; the directory check prevents a world-writable parent from
-// allowing a swap attack between Open() and exec. The caller MUST keep the
-// returned file open until exec completes (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
+// allowing a swap attack between Open() and exec. If /etc/wendy/cni-hashes.json
+// exists with a "bridge" entry, the binary content is verified against the
+// pinned SHA-256 digest to guard against supply-chain compromise. The caller
+// MUST keep the returned file open until exec completes (SOC2-CC6,
+// ISO27001-A.8, NIST-SI-3).
 func openAndVerifyCNIBinary() (*os.File, error) {
 	// Verify parent directory is root-owned and not group/world-writable.
 	dirInfo, err := os.Stat(cniPluginDir)
@@ -197,6 +250,28 @@ func openAndVerifyCNIBinary() (*os.File, error) {
 	if fi.Mode()&0o022 != 0 {
 		f.Close()
 		return nil, fmt.Errorf("CNI bridge binary %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
+	}
+
+	// Optional content-hash verification: if cniHashesPath lists a "bridge"
+	// digest, compare against the SHA-256 of the opened fd. Reading via the fd
+	// is TOCTOU-safe — the hash covers exactly the inode that will be exec'd.
+	// If no hash file is present, log-only (operators may not have pinned yet).
+	if hashData, err := os.ReadFile(cniHashesPath); err == nil {
+		var hashes map[string]string
+		if json.Unmarshal(hashData, &hashes) == nil {
+			if pinned := hashes["bridge"]; pinned != "" {
+				hasher := sha256.New()
+				if _, err := io.Copy(hasher, f); err != nil {
+					f.Close()
+					return nil, fmt.Errorf("hashing CNI bridge binary: %w", err)
+				}
+				actual := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+				if actual != pinned {
+					f.Close()
+					return nil, fmt.Errorf("CNI bridge binary hash mismatch: got %s, want %s — update %s or reinstall the plugin (SOC2-CC6, NIST-SI-3)", actual, pinned, cniHashesPath)
+				}
+			}
+		}
 	}
 	return f, nil
 }
