@@ -86,16 +86,27 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os
 // SharedSHMMount returns a bind-mount that maps hostSHMPath into /dev/shm.
 // Use this for shared-ipc isolation where all services share one shm segment.
 // hostSHMPath should be /run/wendy/shm/{appID}.
-// nosuid and nodev prevent setuid executables or device files from being placed
-// on the shared mount by a compromised sibling service (SOC2-CC6, ISO27001-A.8).
-// Note: all services in a shared-ipc group have read-write access to this
-// mount — they are explicitly mutually trusted at the app-group level.
+//
+// Threat model: all services in a shared-ipc group are explicitly mutually
+// trusted for read-write /dev/shm access — they share IPC namespace by
+// declaration and may communicate freely via POSIX shared memory.
+// Isolation between services in the same shared-ipc group is out of scope.
+//
+// Mount options rationale:
+//   - nosuid: prevents setuid executables placed in /dev/shm from escalating privilege
+//   - nodev:  prevents device file creation
+//   - noexec: prevents direct execve of files in /dev/shm by any service,
+//     limiting the blast radius of a compromised sibling that places a
+//     binary there (SOC2-CC6, NIST-AC-3, ISO27001-A.9)
+//
+// Note: noexec does not prevent mmap(PROT_EXEC) on shared memory segments
+// used for DDS/ROS2 transport, which does not require file execution.
 func SharedSHMMount(hostSHMPath string) Mount {
 	return Mount{
 		Destination: "/dev/shm",
 		Type:        "bind",
 		Source:      hostSHMPath,
-		Options:     []string{"rbind", "rw", "nosuid", "nodev"},
+		Options:     []string{"rbind", "rw", "nosuid", "nodev", "noexec"},
 	}
 }
 

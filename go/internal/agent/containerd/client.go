@@ -1196,6 +1196,17 @@ const (
 	ros2DomainIDMax = 101
 )
 
+// validRMWImplementations is the allowlist of known RMW (ROS Middleware)
+// implementation identifiers. Validating against a fixed set prevents
+// injection of arbitrary strings into the container environment via the
+// RMW field in wendy.json (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+var validRMWImplementations = map[string]bool{
+	"rmw_cyclonedds_cpp": true,
+	"rmw_fastrtps_cpp":   true,
+	"rmw_connextdds":     true,
+	"rmw_gurumdds_cpp":   true,
+}
+
 // buildROS2Env returns ROS2 environment variables from the app's frameworks.ros2 config.
 func buildROS2Env(appCfg *appconfig.AppConfig) []string {
 	ros2 := appCfg.GetROS2Config()
@@ -1207,13 +1218,12 @@ func buildROS2Env(appCfg *appconfig.AppConfig) []string {
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
 	if ros2.RMW != "" {
-		// Validate the RMW value for control characters before concatenation.
-		// This value comes from app config (not user RPC input) but must not
-		// contain NUL/newline/CR that would corrupt the OCI env list or allow
-		// injection of additional env entries (SOC2-CC6, NIST-SI-10).
-		if strings.ContainsAny(ros2.RMW, "\x00\n\r") {
-			// Drop the invalid value rather than injecting corrupt env.
-			return env
+		// Allowlist validation: only known RMW identifiers are injected.
+		// A control-char check alone is insufficient — an unknown value with
+		// only printable chars could still corrupt the env or trigger
+		// plugin-specific parsing bugs (SOC2-CC6, NIST-SI-10).
+		if !validRMWImplementations[ros2.RMW] {
+			return env // unknown RMW: drop rather than inject
 		}
 		env = append(env, "RMW_IMPLEMENTATION="+ros2.RMW)
 	}

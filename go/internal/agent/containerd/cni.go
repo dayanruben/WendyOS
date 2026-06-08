@@ -358,6 +358,15 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
+	// Defence-in-depth NUL guard: validateCNIInputs uses allowlist regexes
+	// that already exclude NUL, but an explicit check at the exec boundary
+	// prevents a kernel-level env truncation if a NUL ever reaches here via a
+	// future bypass (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
+	if strings.ContainsRune(containerID, '\x00') || strings.ContainsRune(netnsPath, '\x00') {
+		cniBin.Close()
+		return "", fmt.Errorf("CNI ADD: NUL byte in containerID or netnsPath rejected")
+	}
+
 	cmd := exec.CommandContext(ctx, cniBridgeBin)
 	// cmd.Path is the exec path (fd-resolved inode). cmd.Args[0] is set
 	// explicitly to the human-readable binary name for process listings;
@@ -512,6 +521,12 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 	}
 	// See CNIAdd for exec-via-fd rationale. cniBin is NOT deferred — explicit
 	// close follows runtime.KeepAlive after cmd.Run() (SOC2-CC6, NIST-SI-3).
+	// NUL guard: defence-in-depth at the exec boundary (SOC2-CC6, NIST-SC-7).
+	if strings.ContainsRune(containerID, '\x00') || strings.ContainsRune(netnsPath, '\x00') {
+		c.logger.Warn("CNI DEL skipped: NUL byte in input", zap.String("container_id", containerID))
+		cniBin.Close()
+		return nil
+	}
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
 		c.logger.Warn("CNI DEL skipped: subnet allocation failed", zap.Error(err))
