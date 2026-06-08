@@ -115,6 +115,62 @@ func buildBridgeCNIConfig(appID, subnet string) string {
 // (SOC2-CC6, NIST-SI-10: input bounds enforcement).
 const cniStdoutLimit = 64 << 10 // 64 KB
 
+// cniBridgeBin is the full path to the CNI bridge plugin binary.
+const cniBridgeBin = cniPluginDir + "/bridge"
+
+// verifyCNIBinary checks that the CNI bridge binary exists and is not
+// world-writable. An absent or world-writable binary could be a sign of
+// tampering; executing it would give an attacker code execution in the agent
+// process context (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+func verifyCNIBinary() error {
+	fi, err := os.Stat(cniBridgeBin)
+	if err != nil {
+		return fmt.Errorf("CNI bridge binary %q not accessible: %w", cniBridgeBin, err)
+	}
+	if fi.Mode()&0o002 != 0 {
+		return fmt.Errorf("CNI bridge binary %q is world-writable — refusing to execute (SOC2-CC6, NIST-SI-10)", cniBridgeBin)
+	}
+	return nil
+}
+
+// warnSubnetCollision checks whether the allocated /28 subnet overlaps with
+// any address already assigned to a network interface on this host. A collision
+// means two apps would share the same bridge subnet, causing routing conflicts.
+// The allocation is deterministic so we cannot change it here; we log a warning
+// so operators can detect and resolve the conflict (SOC2-CC6, NIST-SC-7).
+func warnSubnetCollision(logger *zap.Logger, appID, subnet string) {
+	_, allocNet, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return // malformed subnet is caught elsewhere
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return // best-effort; failure to list interfaces is not fatal here
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip != nil && allocNet.Contains(ip) {
+				logger.Warn("CNI subnet collision detected",
+					zap.String("app_id", appID),
+					zap.String("allocated_subnet", subnet),
+					zap.String("conflicting_interface", iface.Name),
+					zap.String("conflicting_ip", ip.String()))
+			}
+		}
+	}
+}
+
 // CNIAdd calls the CNI bridge plugin ADD for a container, returning its
 // assigned IP address. netnsPath is the container's network namespace path
 // (e.g. /proc/self/fd/{n} for fd-anchored references, or /proc/{pid}/ns/net).
@@ -122,10 +178,14 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
 		return "", err
 	}
+	if err := verifyCNIBinary(); err != nil {
+		return "", err
+	}
 	subnet := allocateSubnet(appID)
+	warnSubnetCollision(c.logger, appID, subnet)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, cniPluginDir+"/bridge")
+	cmd := exec.CommandContext(ctx, cniBridgeBin)
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
 		"CNI_COMMAND=ADD",
@@ -237,10 +297,14 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 		c.logger.Warn("CNI DEL skipped: invalid inputs", zap.Error(err))
 		return nil
 	}
+	if err := verifyCNIBinary(); err != nil {
+		c.logger.Warn("CNI DEL skipped: binary check failed", zap.Error(err))
+		return nil
+	}
 	subnet := allocateSubnet(appID)
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, cniPluginDir+"/bridge")
+	cmd := exec.CommandContext(ctx, cniBridgeBin)
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
 		"CNI_COMMAND=DEL",
