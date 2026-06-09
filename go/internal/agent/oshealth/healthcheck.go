@@ -74,10 +74,15 @@ func (c *Checker) checkOne(ctx context.Context, svc CriticalService) ServiceResu
 		interval = defaultPollInterval
 	}
 	deadline := time.Now().Add(svc.Timeout)
+	// Bound SystemctlShow by the service deadline: systemctl itself can hang
+	// when systemd or D-Bus is unhealthy — exactly the boots this gate exists
+	// for — and an unbounded call would block agent startup forever.
+	checkCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	lastState := "no state observed"
 
 	for {
-		props, err := c.SystemctlShow(ctx, svc.Unit)
+		props, err := c.SystemctlShow(checkCtx, svc.Unit)
 		switch {
 		case err != nil:
 			// systemctl itself may be briefly unavailable early in boot;
@@ -102,20 +107,26 @@ func (c *Checker) checkOne(ctx context.Context, svc CriticalService) ServiceResu
 			}
 		}
 
+		timedOut := ServiceResult{
+			Unit:   svc.Unit,
+			Status: StatusFailed,
+			Reason: fmt.Sprintf("timed out after %s waiting for active; last state: %s", svc.Timeout, lastState),
+		}
 		if time.Now().After(deadline) {
-			return ServiceResult{
-				Unit:   svc.Unit,
-				Status: StatusFailed,
-				Reason: fmt.Sprintf("timed out after %s waiting for active; last state: %s", svc.Timeout, lastState),
-			}
+			return timedOut
 		}
 		select {
-		case <-ctx.Done():
-			return ServiceResult{
-				Unit:   svc.Unit,
-				Status: StatusFailed,
-				Reason: fmt.Sprintf("check aborted: %v; last state: %s", ctx.Err(), lastState),
+		case <-checkCtx.Done():
+			// checkCtx closes both when the caller cancels and when the
+			// service deadline expires; only the former is an abort.
+			if ctx.Err() != nil {
+				return ServiceResult{
+					Unit:   svc.Unit,
+					Status: StatusFailed,
+					Reason: fmt.Sprintf("check aborted: %v; last state: %s", ctx.Err(), lastState),
+				}
 			}
+			return timedOut
 		case <-time.After(interval):
 		}
 	}
@@ -128,6 +139,8 @@ func systemctlShow(ctx context.Context, unit string) (map[string]string, error) 
 	cmd := exec.CommandContext(ctx, "/usr/bin/systemctl", "show",
 		"--property=LoadState,ActiveState,SubState,Result,UnitFileState", unit)
 	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	// Don't wait forever for the killed process's pipes after cancellation.
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl show %s: %w", unit, err)

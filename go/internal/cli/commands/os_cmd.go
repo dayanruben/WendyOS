@@ -543,6 +543,16 @@ func evaluateOSUpdateOutcome(
 
 	switch resp.GetOutcome() {
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
+		// Both versions come from wendyOSVersion() on the device, so they are
+		// directly comparable. A mismatch means the record describes a commit
+		// to an OS the device is not running — most likely a record from an
+		// earlier attempt, or an update that did not survive the reboot.
+		if postUpdateOSVersion != "" && resp.GetNewOsVersion() != "" && postUpdateOSVersion != resp.GetNewOsVersion() {
+			return fmt.Sprintf("Warning: the device reports a committed update to %s but is running %s — "+
+					"the status may belong to an earlier update. Check the device with `wendy status`.",
+					resp.GetNewOsVersion(), postUpdateOSVersion),
+				errors.New("OS update status does not match the running OS version")
+		}
 		runningVersion := postUpdateOSVersion
 		if runningVersion == "" {
 			runningVersion = resp.GetNewOsVersion()

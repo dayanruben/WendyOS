@@ -4,6 +4,8 @@
 package oshealth
 
 import (
+	"os"
+	"strings"
 	"time"
 )
 
@@ -29,6 +31,23 @@ type PendingMarker struct {
 	OldOSVersion string    `json:"old_os_version,omitempty"`
 	ArtifactURL  string    `json:"artifact_url,omitempty"`
 	AgentVersion string    `json:"agent_version,omitempty"`
+	// BootID is the kernel boot ID of the boot that installed the update. The
+	// gate only consumes the marker on a *different* boot: seeing the same
+	// boot ID means the device has not rebooted into the new slot yet, so
+	// there is nothing to verify (e.g. the agent restarted between install
+	// and reboot).
+	BootID string `json:"boot_id,omitempty"`
+}
+
+// CurrentBootID returns the kernel's boot ID, which uniquely identifies the
+// current boot. Empty when unavailable (non-Linux, restricted /proc); callers
+// must treat empty as "cannot verify" and fail open.
+func CurrentBootID() string {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func WritePendingMarker(dir string, m PendingMarker) error {

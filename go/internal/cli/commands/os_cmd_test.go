@@ -144,6 +144,25 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 			wantContains: []string{"verified"},
 		},
 		{
+			name:    "committed for a version the device is not running is rejected",
+			resp:    committed,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"WendyOS-0.11.0",
+				"WendyOS-0.10.4",
+			},
+		},
+		{
+			name:         "committed with unknown running version is trusted",
+			resp:         committed,
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "",
+			wantErr:      false,
+			wantContains: []string{"verified", "WendyOS-0.11.0"},
+		},
+		{
 			name:    "rolled back reports failed services",
 			resp:    rolledBack,
 			preVer:  "WendyOS-0.10.4",

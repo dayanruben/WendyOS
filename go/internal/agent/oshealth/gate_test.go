@@ -57,6 +57,7 @@ func newGateFixture(t *testing.T, commitResult, rollbackResult MenderResult) *ga
 			return nil
 		},
 		OSVersion: func() string { return "WendyOS-0.11.0" },
+		BootID:    func() string { return "boot-current" },
 		Now:       func() time.Time { return gateNow },
 	}
 	return fx
@@ -200,6 +201,56 @@ func TestGateCorruptMarker(t *testing.T) {
 	}
 	if fx.commits != 1 {
 		t.Errorf("commits = %d, want 1 (plain commit)", fx.commits)
+	}
+}
+
+func TestGateSameBootLeavesMarkerUntouched(t *testing.T) {
+	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{Status: MenderOK})
+	err := WritePendingMarker(fx.dir, PendingMarker{
+		CreatedAt:    gateNow.Add(-2 * time.Minute),
+		OldOSVersion: "WendyOS-0.10.4",
+		BootID:       "boot-current", // written in this boot: no reboot happened yet
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 0 || fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 0/0/0 before the reboot",
+			fx.commits, fx.rollback, fx.reboots)
+	}
+	if !fx.markerExists(t) {
+		t.Error("marker must be left pending for the boot that runs the updated OS")
+	}
+	if n := fx.systemd.callCount("a.service"); n != 0 {
+		t.Errorf("healthchecks must not run before the reboot (%d calls)", n)
+	}
+	if _, found := fx.readResult(t); found {
+		t.Error("no result record should be written before the reboot")
+	}
+}
+
+func TestGateDifferentBootRunsHealthchecks(t *testing.T) {
+	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
+	err := WritePendingMarker(fx.dir, PendingMarker{
+		CreatedAt:    gateNow.Add(-2 * time.Minute),
+		OldOSVersion: "WendyOS-0.10.4",
+		BootID:       "boot-before-update",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 {
+		t.Errorf("commits = %d, want 1", fx.commits)
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
 	}
 }
 

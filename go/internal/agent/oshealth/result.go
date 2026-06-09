@@ -42,6 +42,10 @@ func WriteUpdateResult(dir string, r UpdateResult) error {
 	return writeJSONAtomic(dir, resultFile, r)
 }
 
+func ClearUpdateResult(dir string) error {
+	return removeIfExists(dir, resultFile)
+}
+
 func ReadUpdateResult(dir string) (UpdateResult, bool, error) {
 	var r UpdateResult
 	found, err := readJSON(dir, resultFile, &r)

@@ -44,6 +44,8 @@ type Gate struct {
 	Reboot func() error
 	// OSVersion reports the OS version of the currently running slot.
 	OSVersion func() string
+	// BootID reports the current kernel boot ID; defaults to CurrentBootID.
+	BootID func() string
 	// Now defaults to time.Now.
 	Now func() time.Time
 }
@@ -75,6 +77,16 @@ func (g *Gate) Run(ctx context.Context) {
 		return
 	}
 
+	if cur := g.bootID(); marker.BootID != "" && cur != "" && cur == marker.BootID {
+		// The marker was written in this same boot: the device has not
+		// rebooted into the new slot yet (e.g. the agent restarted between
+		// install and reboot). Committing now would confirm an image that has
+		// never booted, so leave the update pending for the next boot.
+		g.Logger.Info("OS update installed but the device has not rebooted yet; leaving the update pending",
+			zap.String("boot_id", cur))
+		return
+	}
+
 	g.Logger.Info("Pending OS update detected, healthchecking critical services before commit",
 		zap.String("old_os_version", marker.OldOSVersion))
 	results := g.Checker.CheckAll(ctx, g.Services)
@@ -87,8 +99,10 @@ func (g *Gate) Run(ctx context.Context) {
 	}
 
 	if failed := failedUnits(results); len(failed) > 0 {
+		// Log the full results too: if persisting the record fails, this
+		// journal line is the only evidence of why the device rolled back.
 		g.Logger.Error("Critical services unhealthy after OS update, rolling back",
-			zap.Strings("failed_units", failed))
+			zap.Strings("failed_units", failed), zap.Any("services", results))
 		g.rollBack(record)
 		return
 	}
@@ -219,6 +233,13 @@ func (g *Gate) now() time.Time {
 		return g.Now()
 	}
 	return time.Now()
+}
+
+func (g *Gate) bootID() string {
+	if g.BootID != nil {
+		return g.BootID()
+	}
+	return CurrentBootID()
 }
 
 func failedUnits(results []ServiceResult) []string {

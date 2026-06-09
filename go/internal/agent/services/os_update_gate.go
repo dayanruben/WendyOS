@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -69,10 +70,16 @@ func menderRun(logger *zap.Logger, subcommand string) oshealth.MenderResult {
 // marker the next boot performs a plain commit, matching the pre-healthcheck
 // behavior.
 func recordPendingOSUpdate(logger *zap.Logger, stateDir, artifactURL string) {
+	// A result record left over from a previous attempt must not be mistaken
+	// for this update's outcome, so drop it before the reboot.
+	if err := oshealth.ClearUpdateResult(stateDir); err != nil {
+		logger.Warn("Failed to clear previous OS update result record", zap.Error(err))
+	}
 	marker := oshealth.PendingMarker{
 		CreatedAt:    time.Now(),
-		ArtifactURL:  artifactURL,
+		ArtifactURL:  redactURLCredentials(artifactURL),
 		AgentVersion: version.Version,
+		BootID:       oshealth.CurrentBootID(),
 	}
 	if v, ok := wendyOSVersion(); ok {
 		marker.OldOSVersion = v
@@ -81,4 +88,14 @@ func recordPendingOSUpdate(logger *zap.Logger, stateDir, artifactURL string) {
 		logger.Warn("Failed to write pending OS update marker; post-reboot healthchecks will be skipped",
 			zap.Error(err))
 	}
+}
+
+// redactURLCredentials masks the password of a URL before it is persisted or
+// logged; the marker only needs the URL for debugging.
+func redactURLCredentials(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Redacted()
 }

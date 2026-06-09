@@ -187,6 +187,30 @@ func TestCheckOneSystemctlErrorFailsAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestCheckOneHungSystemctlFailsAtTimeout(t *testing.T) {
+	c := NewChecker(zap.NewNop())
+	c.PollInterval = 5 * time.Millisecond
+	c.SystemctlShow = func(ctx context.Context, unit string) (map[string]string, error) {
+		// Simulate `systemctl show` hanging (e.g. D-Bus unresponsive during a
+		// bad boot): block until the context is cancelled.
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	start := time.Now()
+	got := c.CheckAll(context.Background(), []CriticalService{{Unit: "containerd.service", Timeout: 50 * time.Millisecond}})
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("hung systemctl blocked the check for %v, expected return at ~50ms timeout", elapsed)
+	}
+	if got[0].Status != StatusFailed {
+		t.Errorf("got %+v, want failed", got[0])
+	}
+	if !strings.Contains(got[0].Reason, "timed out") {
+		t.Errorf("reason %q should report the timeout", got[0].Reason)
+	}
+}
+
 func TestCheckOneContextCancelled(t *testing.T) {
 	f := &fakeSystemctl{sequences: map[string][]map[string]string{
 		"avahi-daemon.service": {loaded("activating")},

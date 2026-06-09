@@ -8,11 +8,18 @@ import (
 	"path/filepath"
 )
 
-// writeJSONAtomic marshals v and writes it to dir/name via a temp file and
-// rename, so a crash mid-write never leaves a truncated file behind.
+// writeJSONAtomic marshals v and writes it to dir/name via a temp file,
+// fsync, and rename, so a crash mid-write never leaves a truncated file
+// behind. The fsyncs matter: the gate reboots the device right after writing,
+// and the record must survive that.
 func writeJSONAtomic(dir, name string, v any) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating state dir %s: %w", dir, err)
+	}
+	// MkdirAll only applies the mode to directories it creates; keep a
+	// pre-existing state dir private too.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("restricting state dir %s: %w", dir, err)
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -28,6 +35,11 @@ func writeJSONAtomic(dir, name string, v any) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("writing %s: %w", name, err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("syncing %s: %w", name, err)
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("closing %s: %w", name, err)
@@ -36,7 +48,19 @@ func writeJSONAtomic(dir, name string, v any) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("renaming %s into place: %w", name, err)
 	}
+	syncDir(dir)
 	return nil
+}
+
+// syncDir flushes the rename itself; best-effort because some filesystems
+// reject fsync on directories.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	defer d.Close()
+	_ = d.Sync()
 }
 
 // readJSON unmarshals dir/name into v. The second return value reports

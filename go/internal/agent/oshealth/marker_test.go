@@ -44,6 +44,23 @@ func TestWritePendingMarkerCreatesStateDir(t *testing.T) {
 	}
 }
 
+func TestWritePendingMarkerTightensExistingDirPermissions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePendingMarker(dir, PendingMarker{CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("WritePendingMarker: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("state dir permissions = %o, want 700 even when the dir pre-exists", perm)
+	}
+}
+
 func TestReadPendingMarkerMissing(t *testing.T) {
 	_, found, err := ReadPendingMarker(t.TempDir())
 	if err != nil {
