@@ -39,7 +39,7 @@ While writing, the tool reports bytes written to the drive. There is no separate
 
 ### macOS
 
-The image is written via `dd` to the raw disk device (`/dev/rdiskN`), bypassing the filesystem buffer cache. NVMe drives in USB enclosures use a 64 MiB block size to reduce per-write overhead over the USB link. `dd` is invoked with `conv=sync` so the final partial block is padded to the block size, keeping all writes to the raw device sector-aligned (required for `/dev/rdiskN`).
+The image is written via `dd` to the raw disk device (`/dev/rdiskN`), bypassing the filesystem buffer cache. NVMe drives in USB enclosures use a 64 MiB block size to reduce per-write overhead over the USB link. `dd` is invoked with `iflag=fullblock` so BSD `dd` reads until a full block is assembled before writing to the raw device. This prevents zero-padding corruption when the image is streamed through a pipe, such as from a ZIP entry.
 
 ### Linux
 

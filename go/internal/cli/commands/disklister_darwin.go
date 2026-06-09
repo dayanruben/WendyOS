@@ -191,7 +191,12 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 		bs = "64m"
 	}
 
-	cmd := exec.Command("sudo", darwinDDArgs(d.RawPath, bs)...)
+	ddArgs, err := darwinDDArgs(d.RawPath, bs)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("sudo", ddArgs...)
 	cmd.Stdin = r
 
 	stderr, err := cmd.StderrPipe()
@@ -224,20 +229,6 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 	exec.Command("sync").Run() //nolint:errcheck
 
 	return nil
-}
-
-func darwinDDArgs(rawPath, bs string) []string {
-	// Use rdisk for faster raw writes on macOS. The CLI streams image readers
-	// such as ZIP entries through stdin; if BSD dd sees short pipe reads,
-	// conv=sync pads each short read to bs and can write/corrupt far more than
-	// the image size. iflag=fullblock keeps reading until a full block or EOF.
-	return []string{
-		"dd",
-		fmt.Sprintf("of=%s", rawPath),
-		"bs=" + bs,
-		"iflag=fullblock",
-		"status=progress",
-	}
 }
 
 // ejectDisk ejects the disk so macOS shows the safe-to-remove notification.
