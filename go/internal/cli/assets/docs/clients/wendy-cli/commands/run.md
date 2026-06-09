@@ -43,7 +43,7 @@ If the current directory contains a `docker-compose.yml` (or `compose.yml`) but 
 
 ## Swift Package Manager projects (macOS)
 
-From a Darwin SwiftPM project, target the Mac agent explicitly:
+From a macOS (Darwin) SwiftPM project, target the Mac agent explicitly:
 
 ```bash
 wendy run --device <hostname-or-ip>:50051
