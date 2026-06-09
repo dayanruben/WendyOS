@@ -245,6 +245,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      issues: write
     environment:
       name: docs
       url: ${{ needs.build.outputs.url }}
@@ -339,6 +340,42 @@ jobs:
             curl -fsS --max-time 30 -o "${response_file}" "${DOCS_URL}"
             grep -q "WendyOS Docs" "${response_file}"
           done <<< "${DEPLOY_PATHS}"
+
+      - name: Comment with docs preview URL
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOCS_PREVIEW_URL: ${{ needs.build.outputs.url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          marker='<!-- wendy-docs-preview -->'
+          body_file="$(mktemp)"
+          payload_file="$(mktemp)"
+
+          cat > "${body_file}" <<EOF
+          ${marker}
+          ## Docs preview
+
+          Preview this PR's docs at: ${DOCS_PREVIEW_URL}
+
+          _This comment is updated automatically when the docs preview is redeployed._
+          EOF
+
+          jq -n --rawfile body "${body_file}" '{ body: $body }' > "${payload_file}"
+
+          comment_id="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --paginate \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id" \
+            | tail -n 1)"
+
+          if [[ -n "${comment_id}" ]]; then
+            gh api --method PATCH "repos/${REPOSITORY}/issues/comments/${comment_id}" --input "${payload_file}"
+          else
+            gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --input "${payload_file}"
+          fi
 
       - name: Delete expired branch previews
         env:
