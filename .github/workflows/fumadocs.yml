@@ -180,14 +180,14 @@ jobs:
             validate_deploy_path "${PATH_TO_VALIDATE}"
           done
 
-          echo "deploy_path=${DEPLOY_PATH}" >> "$GITHUB_OUTPUT"
           {
+            echo "deploy_path=${DEPLOY_PATH}"
             echo "deploy_paths<<EOF"
             printf '%s\n' "${DEPLOY_PATHS[@]}"
             echo "EOF"
+            echo "is_release_deploy=${IS_RELEASE_DEPLOY}"
+            echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/"
           } >> "$GITHUB_OUTPUT"
-          echo "is_release_deploy=${IS_RELEASE_DEPLOY}" >> "$GITHUB_OUTPUT"
-          echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/" >> "$GITHUB_OUTPUT"
 
       - name: Build static site exports
         env:
