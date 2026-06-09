@@ -389,10 +389,10 @@ func (f *espFlasher) getSecurityInfo() (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(resp) < 4 {
+	if len(resp) < 8 {
 		return 0, fmt.Errorf("getSecurityInfo: response too short (%d bytes)", len(resp))
 	}
-	return binary.LittleEndian.Uint32(resp[:4]), nil
+	return binary.LittleEndian.Uint32(resp[4:8]), nil
 }
 
 // readReg reads a 32-bit peripheral register at addr.
