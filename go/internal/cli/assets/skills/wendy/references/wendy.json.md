@@ -19,7 +19,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 |-------|-------------|
 | `appId` | Unique identifier (reverse domain notation recommended) |
 | `version` | Application version string |
-| `platform` | Target platform: `wendyos`, `wendy-lite`, or `darwin` |
+| `platform` | Target platform: `wendyos`, `linux`, `wendy-lite`, or `darwin` |
 | `entitlements` | Array of entitlement objects specifying required permissions |
 
 ## Platforms
@@ -27,6 +27,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 | Value | Description |
 |-------|-------------|
 | `wendyos` | Linux edge device running WendyOS; apps run in containers |
+| `linux` | Linux target, including WendyOS or generic Linux agents; apps run in containers |
 | `wendy-lite` | ESP32 WASM target |
 | `darwin` | Native macOS execution through [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) |
 

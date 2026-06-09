@@ -85,6 +85,7 @@ var allowedKeys = map[string][]string{
 // Platform constants identify the target hardware family.
 const (
 	PlatformWendyOS   = "wendyos"
+	PlatformLinux     = "linux"
 	PlatformWendyLite = "wendy-lite"
 	PlatformDarwin    = "darwin"
 )
