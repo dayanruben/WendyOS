@@ -31,6 +31,7 @@ type chipModel int
 
 const (
 	chipUnknown chipModel = iota
+	chipESP32C5
 	chipESP32C6
 	chipESP32P4
 )
@@ -58,6 +59,26 @@ type chipRegs struct {
 	spiUser1 uint32 // SPI_MEM_USER1_REG (offset +0x20)
 	spiClock uint32 // SPI_MEM_CLOCK_REG (offset +0x28)
 	spiW0    uint32 // SPI_MEM_W0_REG    (offset +0x58)
+}
+
+// ESP32-C5 shares WDT and SPI registers with C6; only the eFuse base differs.
+var regsESP32C5 = chipRegs{
+	name:       "ESP32-C5",
+	wdtProtect: 0x600b1c18,
+	wdtConfig0: 0x600b1c00,
+	swdProtect: 0x600b1c20,
+	swdConf:    0x600b1c1c,
+	efuseA:     0x600b4830,
+	efuseB:     0x600b4838,
+	chipID0:    0x600b4850,
+	chipID1:    0x600b4854,
+	macLow:     0x600b4844,
+	macHigh:    0x600b4848,
+	spiCmd:     0x60003000,
+	spiUser:    0x60003018,
+	spiUser1:   0x60003020,
+	spiClock:   0x60003028,
+	spiW0:      0x60003058,
 }
 
 var regsESP32C6 = chipRegs{
@@ -471,6 +492,9 @@ func (f *espFlasher) detectChip() error {
 	chipID := binary.LittleEndian.Uint32(resp[chipIDOff : chipIDOff+4])
 	dbgf("detectChip: chipID=0x%04x", chipID)
 	switch chipID {
+	case 0x0017:
+		f.chip = chipESP32C5
+		f.regs = &regsESP32C5
 	case 0x000d:
 		f.chip = chipESP32C6
 		f.regs = &regsESP32C6
