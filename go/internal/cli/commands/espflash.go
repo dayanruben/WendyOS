@@ -855,6 +855,14 @@ func espResetViaUsbJtag(port serial.Port, enterBootloader bool) {
 
 // flashFirmware is the main entry point: flash a .bin file to the ESP32.
 func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) error {
+	info, err := os.Stat(firmwarePath)
+	if err != nil {
+		return fmt.Errorf("reading firmware: %w", err)
+	}
+	if info.Size() > maxFlashSize {
+		return fmt.Errorf("firmware too large (%d bytes, max %d)", info.Size(), maxFlashSize)
+	}
+
 	firmware, err := os.ReadFile(firmwarePath)
 	if err != nil {
 		return fmt.Errorf("reading firmware: %w", err)
@@ -936,8 +944,8 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 
 	// Step 8: Flash the firmware.
 	totalSize := len(firmware)
-	if totalSize > maxFlashSize {
-		return fmt.Errorf("firmware too large (%d bytes, max %d)", totalSize, maxFlashSize)
+	if totalSize > int(detectedFlashSize) {
+		return fmt.Errorf("firmware too large (%d bytes, max %d)", totalSize, detectedFlashSize)
 	}
 	blockCount := (totalSize + espFlashBlockSize - 1) / espFlashBlockSize
 	dbgf("flash: totalSize=%d blockCount=%d", totalSize, blockCount)
