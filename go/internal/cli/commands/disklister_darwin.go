@@ -191,17 +191,7 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 		bs = "64m"
 	}
 
-	// Use rdisk for faster raw writes on macOS. Read from stdin so the
-	// caller can pipe an io.Reader (e.g. a streaming zip entry) without
-	// materialising the image to disk first.
-	// conv=sync pads the final partial block to bs so that all writes to the
-	// raw device are sector-aligned (macOS requires this on /dev/rdiskN).
-	cmd := exec.Command("sudo", "dd",
-		fmt.Sprintf("of=%s", d.RawPath),
-		"bs="+bs,
-		"conv=sync",
-		"status=progress",
-	)
+	cmd := exec.Command("sudo", darwinDDArgs(d.RawPath, bs)...)
 	cmd.Stdin = r
 
 	stderr, err := cmd.StderrPipe()
@@ -234,6 +224,20 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 	exec.Command("sync").Run() //nolint:errcheck
 
 	return nil
+}
+
+func darwinDDArgs(rawPath, bs string) []string {
+	// Use rdisk for faster raw writes on macOS. The CLI streams image readers
+	// such as ZIP entries through stdin; if BSD dd sees short pipe reads,
+	// conv=sync pads each short read to bs and can write/corrupt far more than
+	// the image size. iflag=fullblock keeps reading until a full block or EOF.
+	return []string{
+		"dd",
+		fmt.Sprintf("of=%s", rawPath),
+		"bs=" + bs,
+		"iflag=fullblock",
+		"status=progress",
+	}
 }
 
 // ejectDisk ejects the disk so macOS shows the safe-to-remove notification.
