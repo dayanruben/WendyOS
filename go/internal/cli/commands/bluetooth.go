@@ -41,14 +41,23 @@ func newBluetoothListCmd() *cobra.Command {
 
 			stream, err := conn.AgentService.ScanBluetoothPeripherals(ctx)
 			if err != nil {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+					return fmt.Errorf("starting Bluetooth scan: %w", macErr)
+				}
 				return fmt.Errorf("starting Bluetooth scan: %w", err)
 			}
 
 			// Send a scan request to start scanning.
 			if err := stream.Send(&agentpb.ScanBluetoothPeripheralsRequest{}); err != nil {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+					return fmt.Errorf("sending scan request: %w", macErr)
+				}
 				return fmt.Errorf("sending scan request: %w", err)
 			}
 			if err := stream.CloseSend(); err != nil {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+					return fmt.Errorf("closing send: %w", macErr)
+				}
 				return fmt.Errorf("closing send: %w", err)
 			}
 
@@ -59,6 +68,9 @@ func newBluetoothListCmd() *cobra.Command {
 					break
 				}
 				if err != nil {
+					if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+						return fmt.Errorf("receiving Bluetooth scan result: %w", macErr)
+					}
 					return fmt.Errorf("receiving Bluetooth scan result: %w", err)
 				}
 				allDevices = append(allDevices, resp.GetDiscoveredDevices()...)
