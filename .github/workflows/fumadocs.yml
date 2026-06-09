@@ -245,7 +245,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      issues: write
+      pull-requests: write
     environment:
       name: docs
       url: ${{ needs.build.outputs.url }}
@@ -352,8 +352,25 @@ jobs:
           set -euo pipefail
 
           marker='<!-- wendy-docs-preview -->'
-          body_file="$(mktemp)"
-          payload_file="$(mktemp)"
+
+          if ! [[ "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Unexpected repository value: ${REPOSITORY}"
+            exit 1
+          fi
+          if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unexpected PR number: ${PR_NUMBER}"
+            exit 1
+          fi
+          if ! [[ "${DOCS_PREVIEW_URL}" =~ ^https://docs\.wendy\.dev/[a-z0-9][a-z0-9._-]{0,200}/$ ]]; then
+            echo "::error::Unexpected docs preview URL: ${DOCS_PREVIEW_URL}"
+            exit 1
+          fi
+
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+          body_file="${tmp_dir}/body.md"
+          payload_file="${tmp_dir}/payload.json"
+          comments_file="${tmp_dir}/comments.json"
 
           cat > "${body_file}" <<EOF
           ${marker}
@@ -364,11 +381,36 @@ jobs:
           _This comment is updated automatically when the docs preview is redeployed._
           EOF
 
-          jq -n --rawfile body "${body_file}" '{ body: $body }' > "${payload_file}"
+          python3 - "${body_file}" "${payload_file}" <<'PY'
+          import json
+          import pathlib
+          import sys
 
-          mapfile -t comment_ids < <(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            --paginate \
-            --jq ".[] | select(.body | contains(\"${marker}\")) | .id")
+          body = pathlib.Path(sys.argv[1]).read_text()
+          pathlib.Path(sys.argv[2]).write_text(json.dumps({"body": body}))
+          PY
+
+          gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp > "${comments_file}"
+          mapfile -t comment_ids < <(MARKER="${marker}" python3 - "${comments_file}" <<'PY'
+          import json
+          import os
+          import sys
+
+          marker = os.environ["MARKER"]
+          with open(sys.argv[1], encoding="utf-8") as file:
+              pages = json.load(file)
+
+          for page in pages:
+              comments = page if isinstance(page, list) else [page]
+              for comment in comments:
+                  body = comment.get("body") or ""
+                  comment_id = comment.get("id")
+                  if marker in body:
+                      if not isinstance(comment_id, int):
+                          raise SystemExit(f"Unexpected comment id: {comment_id!r}")
+                      print(comment_id)
+          PY
+          )
 
           if (( ${#comment_ids[@]} > 0 )); then
             comment_id="${comment_ids[$((${#comment_ids[@]} - 1))]}"
