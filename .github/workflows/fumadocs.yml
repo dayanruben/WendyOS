@@ -366,13 +366,17 @@ jobs:
 
           jq -n --rawfile body "${body_file}" '{ body: $body }' > "${payload_file}"
 
-          comment_id="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+          mapfile -t comment_ids < <(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --paginate \
-            --jq ".[] | select(.body | contains(\"${marker}\")) | .id" \
-            | tail -n 1)"
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id")
 
-          if [[ -n "${comment_id}" ]]; then
+          if (( ${#comment_ids[@]} > 0 )); then
+            comment_id="${comment_ids[$((${#comment_ids[@]} - 1))]}"
             gh api --method PATCH "repos/${REPOSITORY}/issues/comments/${comment_id}" --input "${payload_file}"
+
+            for stale_comment_id in "${comment_ids[@]:0:$((${#comment_ids[@]} - 1))}"; do
+              gh api --method DELETE "repos/${REPOSITORY}/issues/comments/${stale_comment_id}" >/dev/null
+            done
           else
             gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --input "${payload_file}"
           fi
