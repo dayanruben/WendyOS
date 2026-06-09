@@ -813,16 +813,16 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 	}
 
 	// Step 8: Flash the firmware.
-	if len(firmware) > maxFlashSize {
-		return fmt.Errorf("firmware too large (%d bytes, max %d)", len(firmware), maxFlashSize)
+	totalSize := len(firmware)
+	if totalSize > maxFlashSize {
+		return fmt.Errorf("firmware too large (%d bytes, max %d)", totalSize, maxFlashSize)
 	}
-	totalSize := uint32(len(firmware))
 	blockCount := (totalSize + espFlashBlockSize - 1) / espFlashBlockSize
-	if err := f.flashBegin(totalSize, blockCount, espFlashBlockSize, 0); err != nil {
+	if err := f.flashBegin(uint32(totalSize), uint32(blockCount), espFlashBlockSize, 0); err != nil {
 		return fmt.Errorf("flash begin: %w", err)
 	}
 
-	for seq := uint32(0); seq < blockCount; seq++ {
+	for seq := uint32(0); seq < uint32(blockCount); seq++ {
 		offset := int(seq) * espFlashBlockSize
 		end := offset + espFlashBlockSize
 		if end > len(firmware) {
