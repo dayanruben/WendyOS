@@ -76,7 +76,13 @@ static WendySerialList wendy_find_usb_serial(int wantVID, int wantPID) {
 		if (matched) {
 			if (result.count >= cap) {
 				cap *= 2;
-				result.paths = (char**)realloc(result.paths, cap * sizeof(char*));
+				char **tmp = (char**)realloc(result.paths, cap * sizeof(char*));
+				if (!tmp) {
+					free(path);
+					IOObjectRelease(svc);
+					break;
+				}
+				result.paths = tmp;
 			}
 			result.paths[result.count++] = path;
 		} else {
