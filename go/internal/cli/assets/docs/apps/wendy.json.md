@@ -38,11 +38,10 @@ Target platform. One of:
 | Value | Description |
 |-------|-------------|
 | `wendyos` | Linux edge device running WendyOS |
-| `linux` | Linux target, including WendyOS or generic Linux agents |
 | `wendy-lite` | ESP32 WASM target |
 | `darwin` | Native macOS app running through Wendy Agent for Mac |
 
-Omit to target the default platform. Use `"linux"` when you want to target the connected agent's Linux architecture explicitly.
+Omit to target the default platform.
 
 Use `"darwin"` for native macOS targets managed by [Wendy Agent for Mac](/docs/installation/wendy-agent-macos). The CLI builds the app on a Mac development machine, syncs the build output to the Mac agent, and launches it as a native macOS process. Darwin apps run natively and non-containerized; they do not use the WendyOS Linux container runtime.
 
