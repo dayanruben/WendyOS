@@ -487,7 +487,9 @@ func (f *espFlasher) chipDetect() error {
 // waitSPICmd polls regSPICmd until the SPI_USR bit (bit 18) is cleared,
 // indicating the hardware has finished executing the command.
 func (f *espFlasher) waitSPICmd() error {
-	for {
+	const timeout = 4000 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
 		val, err := f.readReg(regSPICmd)
 		if err != nil {
 			return err
@@ -495,7 +497,9 @@ func (f *espFlasher) waitSPICmd() error {
 		if val&0x00040000 == 0 {
 			return nil
 		}
+		time.Sleep(time.Millisecond)
 	}
+	return fmt.Errorf("SPI command timeout")
 }
 
 // initFlashChip performs the SPI flash controller register sequence
