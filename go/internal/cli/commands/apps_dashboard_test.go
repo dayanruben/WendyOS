@@ -159,3 +159,10 @@ func TestFormatBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatDiskUsage(t *testing.T) {
+	got := formatDiskUsage(2_340_000_000, 120_000_000_000)
+	if got != "2.34 GB / 120 GB" {
+		t.Fatalf("formatDiskUsage() = %q, want %q", got, "2.34 GB / 120 GB")
+	}
+}

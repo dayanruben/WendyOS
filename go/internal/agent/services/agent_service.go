@@ -88,6 +88,11 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
 
+	if usage, ok := rootDiskUsage(); ok {
+		resp.DiskUsedBytes = &usage.usedBytes
+		resp.DiskTotalBytes = &usage.totalBytes
+	}
+
 	return resp, nil
 }
 
