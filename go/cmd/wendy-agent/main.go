@@ -120,7 +120,7 @@ func main() {
 	}
 
 	configpartition.Apply(logger, configPath)
-	services.CommitMenderUpdate(logger)
+	services.RunOSUpdateGate(logger)
 
 	services.CleanupOldBackups(logger)
 	cdi.EnsureNVIDIACDISpec(logger)
