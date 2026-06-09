@@ -26,16 +26,25 @@ type Peripheral struct {
 }
 
 // FromProto converts a DiscoveredBluetoothPeripheral into the local Peripheral.
+// The address is canonicalized to upper-case so identity comparisons (Upsert,
+// optimistic updates) are exact and two scans reporting the same MAC in
+// different case can never shadow one another.
 func FromProto(p *agentpb.DiscoveredBluetoothPeripheral) Peripheral {
 	return Peripheral{
 		Name:       p.GetName(),
-		Address:    p.GetAddress(),
+		Address:    NormalizeAddress(p.GetAddress()),
 		DeviceType: p.GetDeviceType(),
 		Paired:     p.GetPaired(),
 		Connected:  p.GetConnected(),
 		Trusted:    p.GetTrusted(),
 		RSSI:       p.GetRssi(),
 	}
+}
+
+// NormalizeAddress canonicalizes a Bluetooth MAC to upper-case (BlueZ already
+// reports upper-case, so this is normally a no-op) and trims surrounding space.
+func NormalizeAddress(addr string) string {
+	return strings.ToUpper(strings.TrimSpace(addr))
 }
 
 // Sort sorts peripherals in-place: connected first, then paired, then by
@@ -77,7 +86,7 @@ func DeviceTypeLabel(t string) string {
 // scan response or a future incremental stream without changing behavior.
 func Upsert(list []Peripheral, p Peripheral) []Peripheral {
 	for i := range list {
-		if strings.EqualFold(list[i].Address, p.Address) {
+		if list[i].Address == p.Address {
 			list[i] = p
 			return list
 		}

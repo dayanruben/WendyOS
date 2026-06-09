@@ -9,6 +9,7 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
@@ -68,8 +69,10 @@ type OpResultMsg struct {
 	Err     error
 }
 
-// flashClearMsg clears the current flash message after a delay.
-type flashClearMsg struct{}
+// flashClearMsg clears the current flash message after a delay. The token
+// identifies which flash scheduled the clear so a stale timer cannot wipe a
+// newer message.
+type flashClearMsg struct{ token int }
 
 const flashDuration = 4 * time.Second
 
@@ -85,6 +88,11 @@ type Model struct {
 	busy         bool
 	flashMessage string
 	flashIsError bool
+	flashToken   int
+
+	// scanSeen records the addresses observed during the in-flight scan so a
+	// successful ScanDoneMsg can prune devices that have disappeared.
+	scanSeen map[string]bool
 
 	result Result
 	done   bool
@@ -106,6 +114,7 @@ func NewModel(peripherals []Peripheral) Model {
 		table:       tui.NewBubbleTable(true, btColumns()),
 		spinner:     s,
 		scanning:    true,
+		scanSeen:    map[string]bool{},
 	}
 	m.refreshRows()
 	return m
@@ -192,8 +201,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case ScanResultMsg:
+		if m.scanSeen == nil {
+			m.scanSeen = map[string]bool{}
+		}
 		for _, p := range msg.Peripherals {
 			m.peripherals = Upsert(m.peripherals, p)
+			m.scanSeen[p.Address] = true
 		}
 		Sort(m.peripherals)
 		m.refreshRows()
@@ -205,26 +218,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ScanDoneMsg:
 		m.scanning = false
 		if msg.Err != nil {
-			m.flashMessage = fmt.Sprintf("Scan failed: %v", msg.Err)
-			m.flashIsError = true
-			return m, clearFlashAfter(flashDuration)
+			// Keep the previously-known peripherals on a failed scan.
+			m.scanSeen = map[string]bool{}
+			return m, m.setFlash(fmt.Sprintf("Scan failed: %s", userFacingError(msg.Err)), true)
 		}
+		// Reconcile: drop devices that this completed scan did not report.
+		m.peripherals = pruneUnseen(m.peripherals, m.scanSeen)
+		m.scanSeen = map[string]bool{}
+		Sort(m.peripherals)
+		m.refreshRows()
 		return m, nil
 
 	case OpResultMsg:
 		m.busy = false
-		m.flashMessage, m.flashIsError = flashFor(msg)
+		text, isErr := flashFor(msg)
 		if msg.Err == nil {
 			m.applyOptimisticUpdate(msg)
 			m.refreshRows()
 		}
 		// Deliberately no auto-rescan: a Bluetooth rescan is an ~8s window, so we
 		// rely on the optimistic update and let the user press `r` to reconcile.
-		return m, clearFlashAfter(flashDuration)
+		return m, m.setFlash(text, isErr)
 
 	case flashClearMsg:
-		m.flashMessage = ""
-		m.flashIsError = false
+		if msg.token == m.flashToken {
+			m.flashMessage = ""
+			m.flashIsError = false
+		}
 		return m, nil
 	}
 
@@ -253,9 +273,7 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if p.Connected {
-			m.flashMessage = fmt.Sprintf("Already connected to %s.", displayName(p))
-			m.flashIsError = false
-			return m, clearFlashAfter(flashDuration)
+			return m, m.setFlash(fmt.Sprintf("Already connected to %s.", displayName(p)), false)
 		}
 		return m.dispatchConnect(p)
 
@@ -268,9 +286,7 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !p.Connected {
-			m.flashMessage = "Only connected devices can be disconnected."
-			m.flashIsError = true
-			return m, clearFlashAfter(flashDuration)
+			return m, m.setFlash("Only connected devices can be disconnected.", true)
 		}
 		return m.dispatchDisconnect(p)
 
@@ -283,9 +299,7 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !p.Paired {
-			m.flashMessage = "Only paired devices can be forgotten."
-			m.flashIsError = true
-			return m, clearFlashAfter(flashDuration)
+			return m, m.setFlash("Only paired devices can be forgotten.", true)
 		}
 		return m.dispatchForget(p)
 
@@ -294,8 +308,8 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.scanning = true
-		m.flashMessage = ""
-		m.flashIsError = false
+		m.scanSeen = map[string]bool{}
+		m.setFlashText("", false)
 		return m, tea.Batch(m.handler.StartScan(), m.spinner.Tick)
 	}
 
@@ -319,8 +333,7 @@ func (m Model) dispatchConnect(p Peripheral) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.busy = true
-	m.flashMessage = fmt.Sprintf("Connecting to %s...", displayName(p))
-	m.flashIsError = false
+	m.setFlashText(fmt.Sprintf("Connecting to %s...", displayName(p)), false)
 	return m, m.handler.Connect(p.Address)
 }
 
@@ -331,8 +344,7 @@ func (m Model) dispatchDisconnect(p Peripheral) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.busy = true
-	m.flashMessage = fmt.Sprintf("Disconnecting %s...", displayName(p))
-	m.flashIsError = false
+	m.setFlashText(fmt.Sprintf("Disconnecting %s...", displayName(p)), false)
 	return m, m.handler.Disconnect(p.Address)
 }
 
@@ -343,8 +355,7 @@ func (m Model) dispatchForget(p Peripheral) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.busy = true
-	m.flashMessage = fmt.Sprintf("Forgetting %s...", displayName(p))
-	m.flashIsError = false
+	m.setFlashText(fmt.Sprintf("Forgetting %s...", displayName(p)), false)
 	return m, m.handler.Forget(p.Address)
 }
 
@@ -378,15 +389,16 @@ func flashFor(msg OpResultMsg) (string, bool) {
 		label = msg.Address
 	}
 	if msg.Err != nil {
+		reason := userFacingError(msg.Err)
 		switch msg.Action {
 		case ActionConnect:
-			return fmt.Sprintf("Connect to %s failed: %v", label, msg.Err), true
+			return fmt.Sprintf("Connect to %s failed: %s", label, reason), true
 		case ActionDisconnect:
-			return fmt.Sprintf("Disconnect %s failed: %v", label, msg.Err), true
+			return fmt.Sprintf("Disconnect %s failed: %s", label, reason), true
 		case ActionForget:
-			return fmt.Sprintf("Forget %s failed: %v", label, msg.Err), true
+			return fmt.Sprintf("Forget %s failed: %s", label, reason), true
 		default:
-			return msg.Err.Error(), true
+			return reason, true
 		}
 	}
 	switch msg.Action {
@@ -400,11 +412,48 @@ func flashFor(msg OpResultMsg) (string, bool) {
 	return "", false
 }
 
-func clearFlashAfter(d time.Duration) tea.Cmd {
-	return func() tea.Msg {
-		time.Sleep(d)
-		return flashClearMsg{}
+// userFacingError renders a remote error for display, preferring the gRPC
+// status message so internal "rpc error: code = ..." framing and metadata are
+// not surfaced in the UI. Non-gRPC errors fall back to their plain text.
+func userFacingError(err error) string {
+	if err == nil {
+		return ""
 	}
+	if st, ok := status.FromError(err); ok {
+		return st.Message()
+	}
+	return err.Error()
+}
+
+// setFlash sets a transient message and returns a command that clears it after
+// flashDuration, unless a newer flash supersedes it first (tracked by token).
+func (m *Model) setFlash(msg string, isErr bool) tea.Cmd {
+	m.setFlashText(msg, isErr)
+	token := m.flashToken
+	return func() tea.Msg {
+		time.Sleep(flashDuration)
+		return flashClearMsg{token: token}
+	}
+}
+
+// setFlashText sets a message without scheduling an automatic clear, for
+// in-progress status that a follow-up message replaces.
+func (m *Model) setFlashText(msg string, isErr bool) {
+	m.flashMessage = msg
+	m.flashIsError = isErr
+	m.flashToken++
+}
+
+// pruneUnseen returns the peripherals whose address was observed in the
+// completed scan (present in seen).
+func pruneUnseen(list []Peripheral, seen map[string]bool) []Peripheral {
+	kept := make([]Peripheral, 0, len(list))
+	for _, p := range list {
+		if seen[p.Address] {
+			kept = append(kept, p)
+		}
+	}
+	return kept
 }
 
 func displayName(p Peripheral) string {

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fakeHandler records dispatched ops and returns canned tea.Cmds so callers can
@@ -338,6 +340,103 @@ func TestViewRendersTitleFooterAndScanning(t *testing.T) {
 	m, _ = updateModel(m, ScanDoneMsg{})
 	if strings.Contains(strings.ToLower(m.View()), "scanning") {
 		t.Errorf("View should not show scanning after ScanDoneMsg")
+	}
+}
+
+func TestRescanRemovesStalePeripherals(t *testing.T) {
+	h := &fakeHandler{}
+	m := NewModel(nil).WithHandler(h)
+
+	// Initial scan finds two devices.
+	m, _ = updateModel(m, ScanResultMsg{Peripherals: []Peripheral{
+		{Name: "A", Address: "AA"},
+		{Name: "B", Address: "BB"},
+	}})
+	m, _ = updateModel(m, ScanDoneMsg{})
+	if len(m.peripherals) != 2 {
+		t.Fatalf("setup: expected 2 peripherals, got %d", len(m.peripherals))
+	}
+
+	// Rescan: only A is still present — B must be reconciled away.
+	m = sendKey(m, "r")
+	m, _ = updateModel(m, ScanResultMsg{Peripherals: []Peripheral{{Name: "A", Address: "AA"}}})
+	m, _ = updateModel(m, ScanDoneMsg{})
+	if len(m.peripherals) != 1 || m.peripherals[0].Address != "AA" {
+		t.Fatalf("stale peripheral B not removed: %+v", m.peripherals)
+	}
+
+	// A rescan that returns no ScanResultMsg before ScanDoneMsg clears the table
+	// (the Linux agent omits the batch entirely when nothing is found).
+	m = sendKey(m, "r")
+	m, _ = updateModel(m, ScanDoneMsg{})
+	if len(m.peripherals) != 0 {
+		t.Fatalf("expected empty table after an empty rescan, got %d", len(m.peripherals))
+	}
+}
+
+func TestFailedRescanKeepsExistingPeripherals(t *testing.T) {
+	h := &fakeHandler{}
+	m := NewModel(nil).WithHandler(h)
+	m, _ = updateModel(m, ScanResultMsg{Peripherals: []Peripheral{{Name: "A", Address: "AA"}}})
+	m, _ = updateModel(m, ScanDoneMsg{})
+
+	// A rescan that fails must not wipe the previously-known devices.
+	m = sendKey(m, "r")
+	m, _ = updateModel(m, ScanDoneMsg{Err: errors.New("scan boom")})
+	if len(m.peripherals) != 1 {
+		t.Fatalf("failed rescan should preserve existing peripherals, got %d", len(m.peripherals))
+	}
+	if !m.flashIsError {
+		t.Errorf("expected an error flash on failed scan")
+	}
+}
+
+func TestStaleFlashClearIgnored(t *testing.T) {
+	m := NewModel(nil)
+	m.setFlash("A", false)
+	tokenA := m.flashToken
+	m.setFlash("B", true)
+
+	// A clear stamped with the older token must not wipe the newer flash.
+	next, _ := m.Update(flashClearMsg{token: tokenA})
+	m = next.(Model)
+	if m.flashMessage != "B" {
+		t.Errorf("stale clear wiped a newer flash: %q", m.flashMessage)
+	}
+
+	// The current token's clear does wipe it.
+	next2, _ := m.Update(flashClearMsg{token: m.flashToken})
+	m = next2.(Model)
+	if m.flashMessage != "" {
+		t.Errorf("matching clear should wipe the flash, got %q", m.flashMessage)
+	}
+}
+
+func TestUserFacingErrorStripsGRPCFraming(t *testing.T) {
+	err := status.Error(codes.Internal, "failed to connect bluetooth peripheral: boom")
+	got := userFacingError(err)
+	if got != "failed to connect bluetooth peripheral: boom" {
+		t.Errorf("userFacingError = %q", got)
+	}
+	if strings.Contains(got, "rpc error") {
+		t.Errorf("grpc framing leaked into UI string: %q", got)
+	}
+	if userFacingError(errors.New("plain")) != "plain" {
+		t.Errorf("non-grpc error should fall back to Error()")
+	}
+}
+
+func TestOpErrorFlashIsSanitized(t *testing.T) {
+	h := &fakeHandler{connectResult: status.Error(codes.Internal, "pair failed")}
+	m := NewModel([]Peripheral{{Name: "Buds", Address: "BB"}}).WithHandler(h)
+	m.table.SetCursor(0)
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = runCmd(next.(Model), cmd)
+	if strings.Contains(m.flashMessage, "rpc error") {
+		t.Errorf("op error flash should be sanitized, got %q", m.flashMessage)
+	}
+	if !strings.Contains(m.flashMessage, "pair failed") {
+		t.Errorf("sanitized flash should keep the useful message, got %q", m.flashMessage)
 	}
 }
 

@@ -101,3 +101,24 @@ func TestUpsertAppendsNewAddress(t *testing.T) {
 		t.Fatalf("Upsert should append a new address; got %d entries", len(list))
 	}
 }
+
+func TestFromProtoNormalizesAddressToUpper(t *testing.T) {
+	p := FromProto(&agentpb.DiscoveredBluetoothPeripheral{Address: "ac:12:34:56:78:9f", Name: "x"})
+	if p.Address != "AC:12:34:56:78:9F" {
+		t.Fatalf("address not normalized to upper: %q", p.Address)
+	}
+}
+
+func TestUpsertDedupsCaseDifferingAddressesAfterNormalization(t *testing.T) {
+	// Two scans report the same MAC in different case; after FromProto
+	// normalization they must collapse to a single entry, not shadow each other.
+	upper := FromProto(&agentpb.DiscoveredBluetoothPeripheral{Address: "AC:12:34:56:78:9F", Name: "Upper"})
+	lower := FromProto(&agentpb.DiscoveredBluetoothPeripheral{Address: "ac:12:34:56:78:9f", Name: "Lower", Paired: true})
+	list := Upsert([]Peripheral{upper}, lower)
+	if len(list) != 1 {
+		t.Fatalf("expected a single deduped entry, got %d", len(list))
+	}
+	if !list[0].Paired {
+		t.Errorf("expected the existing entry to be updated in place: %+v", list[0])
+	}
+}
