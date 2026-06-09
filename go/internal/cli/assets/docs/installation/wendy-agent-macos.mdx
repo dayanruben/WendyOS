@@ -136,29 +136,26 @@ The CLI builds the app on the Mac development machine, syncs the build output
 to Wendy Agent for Mac, and starts it as a native macOS process. These apps
 currently run natively on macOS, not inside a Linux-style container.
 
-## Beta Support Notes
+## What Works in the Mac Beta
 
-Wendy for Mac beta is intentionally smaller than WendyOS on Raspberry Pi or NVIDIA Jetson. macOS does not currently provide the same app containerization path that Wendy Agent uses on Linux, so apps run as native macOS processes rather than Linux containers.
+Wendy for Mac is focused on native macOS app deployment first. Apps run as regular macOS processes, not Linux containers.
 
-Currently supported first:
+### Should work
 
-- Apple Silicon Mac targets
-- WendyAgentMac running as a menu bar app
-- CLI connection to the Mac agent
-- Native macOS app deployment through file sync
-- Native, non-containerized app execution on macOS
-- Native app lifecycle management where supported by the current agent
+- Apple Silicon Mac targets running macOS 15 or later.
+- Installing WendyAgentMac with Homebrew or the release zip.
+- Running WendyAgentMac as a menu bar app.
+- Connecting from the Wendy CLI with an explicit `localhost:50051`, `{hostname}.local:50051`, or `{ip-address}:50051` address.
+- Discovering WendyAgentMac over Bonjour/mDNS when the network and macOS Local Network permission allow it.
+- Setting the Mac as your default Wendy device.
+- Deploying native SwiftPM macOS apps with `wendy run` and `platform: "darwin"`.
 
-Current limitations:
+### Not supported in this beta
 
-- Intel Macs are not supported
-- Native macOS app deployment requires a Mac development machine
-- Wi-Fi management, Bluetooth peripheral control, camera/video, audio, GPU,
-  USB, GPIO, and I2C access are not available through Wendy hardware APIs in
-  the initial Mac beta
-- Virtualized Linux containers, once enabled later, are intended for
-  self-contained services such as databases, queues, and web workers, not
-  hardware access
+- Intel Macs.
+- Linux-container deployment to Mac targets, including Dockerfile and Compose projects.
+- Wendy hardware APIs on the Mac agent, including Wi-Fi management, Bluetooth, audio, camera/video, GPU, USB, GPIO, and I2C.
+- WendyOS OTA updates with `wendy os update`. Update macOS and WendyAgentMac through their normal macOS installation/update path.
 
 Unsupported features should either be hidden, clearly marked as unsupported, or
 fail with an actionable unsupported message.
