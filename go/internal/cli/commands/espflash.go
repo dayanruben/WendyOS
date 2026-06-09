@@ -131,10 +131,18 @@ func espLoaderErrorMessage(code byte) string {
 
 func flashSize(id JedecID) uint32 {
 	const defaultSize = 4 * 1024 * 1024
+	const maxSize = 128 * 1024 * 1024 // 128 MiB, generous upper bound for NOR flash
 	if id.capacity == 0 {
 		return defaultSize
 	}
-	return uint32(1) << id.capacity
+	if id.capacity > 31 {
+		return maxSize
+	}
+	size := uint32(1) << id.capacity
+	if size > maxSize {
+		return maxSize
+	}
+	return size
 }
 
 func slipEncode(data []byte) []byte {
