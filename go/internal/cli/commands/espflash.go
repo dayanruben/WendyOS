@@ -55,7 +55,8 @@ const (
 )
 
 const (
-	espFlashBlockSize = 0x1000 // 4 KiB per flash data block
+	espFlashBlockSize = 0x1000            // 4 KiB per flash data block
+	maxFlashSize      = 128 * 1024 * 1024 // 128 MiB, generous upper bound for NOR flash
 	espSyncTimeout    = 3 * time.Second
 	espCmdTimeout     = 10 * time.Second
 	flashBaudRate     = 921600
@@ -131,16 +132,15 @@ func espLoaderErrorMessage(code byte) string {
 
 func flashSize(id JedecID) uint32 {
 	const defaultSize = 4 * 1024 * 1024
-	const maxSize = 128 * 1024 * 1024 // 128 MiB, generous upper bound for NOR flash
 	if id.capacity == 0 {
 		return defaultSize
 	}
 	if id.capacity > 31 {
-		return maxSize
+		return maxFlashSize
 	}
 	size := uint32(1) << id.capacity
-	if size > maxSize {
-		return maxSize
+	if size > maxFlashSize {
+		return maxFlashSize
 	}
 	return size
 }
@@ -813,6 +813,9 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 	}
 
 	// Step 8: Flash the firmware.
+	if len(firmware) > maxFlashSize {
+		return fmt.Errorf("firmware too large (%d bytes, max %d)", len(firmware), maxFlashSize)
+	}
 	totalSize := uint32(len(firmware))
 	blockCount := (totalSize + espFlashBlockSize - 1) / espFlashBlockSize
 	if err := f.flashBegin(totalSize, blockCount, espFlashBlockSize, 0); err != nil {
