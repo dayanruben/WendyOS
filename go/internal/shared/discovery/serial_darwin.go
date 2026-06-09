@@ -80,7 +80,7 @@ static WendySerialList wendy_find_usb_serial(int wantVID, int wantPID) {
 				if (!tmp) {
 					free(path);
 					IOObjectRelease(svc);
-					break;
+					goto cleanup;
 				}
 				result.paths = tmp;
 			}
@@ -90,6 +90,7 @@ static WendySerialList wendy_find_usb_serial(int wantVID, int wantPID) {
 		}
 		IOObjectRelease(svc);
 	}
+cleanup:
 	IOObjectRelease(iter);
 	return result;
 }
