@@ -26,8 +26,9 @@ Native macOS app deployment requires a Mac development machine because the Wendy
 For a new Mac mini or Mac Studio that will run without a monitor, do the
 headless setup manually in System Settings before putting it on the shelf:
 
-1. Plug in a virtual display dongle / HDMI dummy plug. This makes headless
-   desktop sessions and screen sharing more reliable.
+1. Plug in a virtual display dongle / HDMI dummy plug, then open **System
+   Settings → Displays** and confirm macOS sees it. This makes headless desktop
+   sessions and screen sharing more reliable.
 2. Open **System Settings → Energy Saver** (or **Battery → Options** on a
    MacBook used as a target) and keep the Mac awake on AC power. Enable
    **Prevent automatic sleeping when the display is off** and **Wake for
@@ -38,9 +39,10 @@ headless setup manually in System Settings before putting it on the shelf:
 4. If you need remote UI access, open **System Settings → General → Sharing**
    and enable **Screen Sharing** or **Remote Management** for the accounts you
    trust. This is a macOS privacy-sensitive choice, so configure it manually.
-5. If the agent must come back after unattended reboots, consider automatic
-   login for a dedicated lab account and add Wendy Agent to Login Items. Only
-   enable automatic login on a trusted, access-controlled Mac.
+5. After installing Wendy Agent, if it must come back after unattended reboots,
+   open **System Settings → General → Login Items** and add it there. If you
+   also choose automatic login in **System Settings → Users & Groups**, use a
+   dedicated lab account and only enable it on a trusted, access-controlled Mac.
 
 Optional advanced reference for already configured lab machines:
 
