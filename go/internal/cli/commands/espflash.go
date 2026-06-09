@@ -389,6 +389,9 @@ func (f *espFlasher) getSecurityInfo() (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	// It is not yet clear if the relevant data is in resp[0:4] or resp[4:8].
+	// The doc is vague and AI sources are inconsistent.
+	// Keeping resp[4:8] for now since this value is discarded anyway.
 	if len(resp) < 8 {
 		return 0, fmt.Errorf("getSecurityInfo: response too short (%d bytes)", len(resp))
 	}
