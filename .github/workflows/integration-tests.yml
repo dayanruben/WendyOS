@@ -96,7 +96,7 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Build CLI
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
@@ -120,27 +120,22 @@ jobs:
           fi
           echo "$RESULT" | jq .
 
+          # Allowlist of known CI target devices. Only devices in this list are
+          # included in the test matrix — unexpected devices on the LAN are ignored.
           EXPECTED=(
-            "wendyos-keen-channel.local"
-            "wendyos-robust-cloud.local"
-            "wendyos-dynamic-cosmos.local"
             "wendy-SER9.local"
+            "wendyos-jetson-thor-ci.local"
+            "wendyos-dynamic-channel.local"
           )
 
-          FAIL=0
           for host in "${EXPECTED[@]}"; do
             if echo "$RESULT" | jq -e --arg h "$host" \
               '(.lanDevices // [])[] | select(.hostname == $h)' > /dev/null 2>&1; then
               echo "FOUND: $host"
             else
               echo "MISSING: $host"
-              FAIL=1
             fi
           done
-
-          if [ $FAIL -ne 0 ]; then
-            echo "WARNING: Some expected devices were not found. They may be offline."
-          fi
 
           validate_device_hostname() {
             local value="$1"
@@ -161,7 +156,16 @@ jobs:
               echo "ERROR: invalid discovered device hostname: $host" >&2
               exit 1
             fi
-            HOSTS+=("$host")
+            # Only include devices that are in the allowlist.
+            IN_EXPECTED=false
+            for expected in "${EXPECTED[@]}"; do
+              [[ "$host" == "$expected" ]] && IN_EXPECTED=true && break
+            done
+            if [[ "$IN_EXPECTED" == true ]]; then
+              HOSTS+=("$host")
+            else
+              echo "SKIPPED (not in allowlist): $host"
+            fi
           done < <(echo "$RESULT" | jq -r '(.lanDevices // [])[].hostname // empty')
 
           COUNT=${#HOSTS[@]}
@@ -209,7 +213,7 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Build CLI
         working-directory: go
@@ -331,7 +335,7 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Build CLI
         working-directory: go
