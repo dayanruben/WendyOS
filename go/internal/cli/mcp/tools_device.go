@@ -145,6 +145,10 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	if resp.StorageMedium != nil {
 		info["storage_medium"] = resp.GetStorageMedium()
 	}
+	if resp.DiskUsedBytes != nil && resp.DiskTotalBytes != nil {
+		info["disk_used_bytes"] = resp.GetDiskUsedBytes()
+		info["disk_total_bytes"] = resp.GetDiskTotalBytes()
+	}
 	if resp.HasGpu != nil {
 		info["has_gpu"] = resp.GetHasGpu()
 	}

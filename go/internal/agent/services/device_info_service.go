@@ -53,6 +53,11 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
 
+	if usage, ok := rootDiskUsage(); ok {
+		resp.DiskUsedBytes = &usage.usedBytes
+		resp.DiskTotalBytes = &usage.totalBytes
+	}
+
 	return resp, nil
 }
 
