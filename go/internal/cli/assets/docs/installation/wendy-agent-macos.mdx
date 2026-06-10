@@ -41,10 +41,11 @@ for reliable desktop sessions and screen sharing.
    adapter when inactive** to a short interval, such as 10 minutes. The display
    can sleep; the Mac itself should stay awake while on AC power.
 5. Recommended: open **System Settings → General → Sharing** and enable
-   **Screen Sharing** for trusted admin users so you can administer the Mac for
-   OS updates and troubleshooting. Use **Remote Management** only if you need
+   **Screen Sharing** for named trusted admin users, not all users, so you can
+   administer the Mac for OS updates and troubleshooting. Keep Screen Sharing on
+   a trusted, firewalled lab network. Use **Remote Management** only if you need
    Apple Remote Desktop features.
-6. Recommended: in the same **Sharing** pane, enable **Remote Login** for
+6. Recommended: in the same **Sharing** pane, enable **Remote Login** for named
    trusted admin users and set up key-based SSH access from your development
    Mac:
 
@@ -54,12 +55,23 @@ for reliable desktop sessions and screen sharing.
    ```
 
    Replace `{user}` with the Mac account name and `{hostname}` with the Mac's
-   hostname or IP address.
+   stable hostname or IP address. On first connect, verify the SSH host
+   fingerprint against the value shown on the Mac:
+
+   ```bash
+   ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub
+   ```
+
+   After key-based login works, disable password SSH authentication if your lab
+   setup allows it by setting `PasswordAuthentication no` in
+   `/etc/ssh/sshd_config`, then turn **Remote Login** off and on again.
 7. When Wendy Agent first opens, leave **Open Wendy Agent automatically when you
    log in** enabled in the Welcome screen.
 8. Optional: if you also choose macOS automatic login, configure it manually in
-   **System Settings → Users & Groups** for a dedicated lab account, and only on
-   a trusted, access-controlled Mac.
+   **System Settings → Users & Groups** for a dedicated non-admin lab account.
+   Automatic login starts an unlocked desktop session after boot, which weakens
+   FileVault and keychain protection; only enable it when unattended reboot
+   recovery is required and the Mac is in a locked, access-controlled lab.
 
 ## Installation
 
