@@ -44,7 +44,18 @@ for reliable desktop sessions and screen sharing.
    **Screen Sharing** for trusted admin users so you can administer the Mac for
    OS updates and troubleshooting. Use **Remote Management** only if you need
    Apple Remote Desktop features.
-6. When Wendy Agent first opens, leave **Open Wendy Agent automatically when you
+6. Recommended: in the same **Sharing** pane, enable **Remote Login** for
+   trusted admin users and set up key-based SSH access from your development
+   Mac:
+
+   ```bash
+   ssh-copy-id {user}@{hostname}
+   ssh {user}@{hostname}
+   ```
+
+   Replace `{user}` with the Mac account name and `{hostname}` with the Mac's
+   hostname or IP address.
+7. When Wendy Agent first opens, leave **Open Wendy Agent automatically when you
    log in** enabled in the Welcome screen. If you also choose macOS automatic
    login, configure it manually in **System Settings → Users & Groups** for a
    dedicated lab account, and only on a trusted, access-controlled Mac.
