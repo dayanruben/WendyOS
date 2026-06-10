@@ -155,7 +155,7 @@ configureSSHDForE2E() {
   local config_dir="/etc/ssh/sshd_config.d"
   local config_file="$config_dir/99-wendy-e2e.conf"
 
-  sudo mkdir -p "$config_dir"
+  sudo mkdir -p "$config_dir" /run/sshd
   sudo tee "$config_file" >/dev/null <<'EOF'
 # Managed by Wendy Swift E2E setup.
 # The E2E harness runs each command through SSH; parallel tests can briefly
