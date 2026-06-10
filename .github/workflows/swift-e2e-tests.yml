@@ -13,10 +13,14 @@ on:
         description: 'Comma-separated SwiftPM test filters (empty = WendyE2ETests)'
         required: false
         default: ''
-      target_ids:
-        description: 'Comma-separated matrix target IDs to run (empty = all)'
+      target_group:
+        description: 'Matrix target group to run'
         required: false
-        default: ''
+        default: all
+        type: choice
+        options:
+          - all
+          - local
       diff_base_ref:
         description: 'Optional ref to diff against (empty = full review)'
         required: false
@@ -27,10 +31,10 @@ on:
         type: string
         required: false
         default: ''
-      target_ids:
+      target_group:
         type: string
         required: false
-        default: ''
+        default: all
       diff_base_ref:
         type: string
         required: false
@@ -64,7 +68,7 @@ jobs:
       queue: max
     timeout-minutes: 120
     env:
-      WENDY_E2E_TARGET_IDS: ${{ inputs.target_ids || '' }}
+      WENDY_E2E_TARGET_GROUP: ${{ inputs.target_group || 'all' }}
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +83,7 @@ jobs:
             device_address: 127.0.0.1:50051
             agent_os: macOS
             transport: local
+            target_group: local
             setup: true
             managed_agent: true
 
@@ -92,6 +97,7 @@ jobs:
             device_address: 127.0.0.1:50051
             agent_os: linux
             transport: local
+            target_group: local
             setup: true
             managed_agent: true
 
@@ -127,6 +133,7 @@ jobs:
             device_address: wendy-SER9.local
             agent_os: linux
             transport: lan
+            target_group: physical
 
           # // DISABLED: no CI hardware set up yet for this job.
           # - name: Ubuntu 24 → Ubuntu 24
@@ -228,9 +235,9 @@ jobs:
           #   transport: lan
     steps:
       - uses: actions/checkout@v6
-        if: ${{ env.WENDY_E2E_TARGET_IDS == '' || contains(format(',{0},', env.WENDY_E2E_TARGET_IDS), format(',{0},', matrix.target.target_id)) }}
+        if: ${{ env.WENDY_E2E_TARGET_GROUP == 'all' || matrix.target.target_group == env.WENDY_E2E_TARGET_GROUP }}
       - uses: ./.github/actions/swift-e2e-run
-        if: ${{ env.WENDY_E2E_TARGET_IDS == '' || contains(format(',{0},', env.WENDY_E2E_TARGET_IDS), format(',{0},', matrix.target.target_id)) }}
+        if: ${{ env.WENDY_E2E_TARGET_GROUP == 'all' || matrix.target.target_group == env.WENDY_E2E_TARGET_GROUP }}
         with:
           tests: ${{ inputs.tests || '' }}
           target_id: ${{ matrix.target.target_id }}

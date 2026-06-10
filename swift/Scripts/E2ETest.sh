@@ -588,8 +588,16 @@ start_managed_agent() {
   local pid_path="$managed_dir/pid"
   local port="50051"
 
+  if [[ "$AGENT_CONNECT_ADDRESS" == *@* ]]; then
+    echo "ERROR: --agent-connect-address must not contain credentials." >&2
+    return 64
+  fi
   if [[ "$AGENT_CONNECT_ADDRESS" == *:* ]]; then
     port="${AGENT_CONNECT_ADDRESS##*:}"
+  fi
+  if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || (( port < 1 || port > 65535 )); then
+    echo "ERROR: invalid managed agent port in --agent-connect-address: $port" >&2
+    return 64
   fi
 
   echo "==> Starting managed wendy-agent"
@@ -598,20 +606,25 @@ start_managed_agent() {
   echo "    Logs:    $stdout_path, $stderr_path"
 
   mkdir -p "$config_dir"
-  WENDY_CONFIG_PATH="$config_dir" \
-  WENDY_AGENT_PORT="$port" \
-  WENDY_OTEL_PORT=0 \
-  WENDY_OTEL_HTTP_PORT=0 \
-  WENDY_REGISTRY_ADDR=127.0.0.1:0 \
+  env -i \
+    HOME="${HOME:-}" \
+    LOGNAME="${LOGNAME:-${USER:-}}" \
+    PATH="$PATH" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    USER="${USER:-}" \
+    WENDY_CONFIG_PATH="$config_dir" \
+    WENDY_AGENT_PORT="$port" \
+    WENDY_OTEL_PORT=0 \
+    WENDY_OTEL_HTTP_PORT=0 \
+    WENDY_REGISTRY_ADDR=127.0.0.1:0 \
     "$agent_path" >"$stdout_path" 2>"$stderr_path" &
   MANAGED_AGENT_PID=$!
   printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path"
 
-  local deadline=$((SECONDS + 30))
-  while (( SECONDS < deadline )); do
+  local attempt max_attempts=30
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
-      echo "ERROR: managed wendy-agent exited before becoming ready." >&2
-      sed -n '1,160p' "$stderr_path" >&2 || true
+      echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$AGENT_CONNECT_ADDRESS" device info >/dev/null 2>&1; then
@@ -621,8 +634,7 @@ start_managed_agent() {
     sleep 1
   done
 
-  echo "ERROR: managed wendy-agent did not become ready at $AGENT_CONNECT_ADDRESS." >&2
-  sed -n '1,160p' "$stderr_path" >&2 || true
+  echo "ERROR: managed wendy-agent did not become ready at $AGENT_CONNECT_ADDRESS; see $stderr_path in the E2E artifact." >&2
   return 1
 }
 
@@ -725,7 +737,7 @@ write_attempt_info() {
 
   mkdir -p "$RUN_DIR"
 
-  local created_at git_commit git_branch git_ref git_remote git_dirty github_sha swift_version go_version
+  local created_at git_commit git_branch git_ref git_remote git_dirty github_sha swift_version go_version safe_agent_connect_address
   created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   git_commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
   git_branch="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || true)"
@@ -739,6 +751,7 @@ write_attempt_info() {
   github_sha="${GITHUB_SHA:-}"
   swift_version="$(swift --version 2>/dev/null | head -n 1 || true)"
   go_version="$(go version 2>/dev/null || true)"
+  safe_agent_connect_address="${AGENT_CONNECT_ADDRESS##*@}"
 
   {
     echo "{"
@@ -769,7 +782,7 @@ write_attempt_info() {
     printf '    "cliUser": '; json_string_or_null "$CLI_USER"; echo ","
     printf '    "agentOS": '; json_string_or_null "$AGENT_OS"; echo ","
     printf '    "agentAddress": '; json_string_or_null "$AGENT_ADDRESS"; echo ","
-    printf '    "agentConnectAddress": '; json_string_or_null "$AGENT_CONNECT_ADDRESS"; echo ","
+    printf '    "agentConnectAddress": '; json_string_or_null "$safe_agent_connect_address"; echo ","
     printf '    "agentUser": '; json_string_or_null "$AGENT_USER"; echo ","
     printf '    "transport": '; json_string_or_null "$TRANSPORT"; echo ","
     printf '    "agentInfo": '; json_raw_or_null "$AGENT_INFO_JSON"; echo

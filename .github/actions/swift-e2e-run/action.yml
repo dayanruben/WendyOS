@@ -72,9 +72,11 @@ runs:
       if: runner.os != 'Windows'
       id: swift-toolchain-unix
       shell: bash
+      env:
+        RUNNER_ID: ${{ inputs.runner_id }}
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.runner_id }}" == "macos-26" ]]; then
+        if [[ "$RUNNER_ID" == "macos-26" ]]; then
           version="$(xcodebuild -version | awk '/Xcode/ { print $2 }')"
         else
           version="$(swift --version | head -n 1 | tr -cs '[:alnum:]._-' '-')"
@@ -108,6 +110,9 @@ runs:
       if: runner.os != 'Windows'
       id: e2e-run-unix
       shell: bash
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
       run: |
         set -euo pipefail
         slug() {
@@ -116,8 +121,8 @@ runs:
             | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
         }
 
-        workflow_id="$(slug "${{ inputs.workflow_id }}")"
-        target_id="$(slug "${{ inputs.target_id }}")"
+        workflow_id="$(slug "$WORKFLOW_ID")"
+        target_id="$(slug "$TARGET_ID")"
         printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
         echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
 
@@ -125,6 +130,9 @@ runs:
       if: runner.os == 'Windows'
       id: e2e-run-windows
       shell: pwsh
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
       run: |
         $ErrorActionPreference = 'Stop'
         function Convert-ToSlug([string]$Value) {
@@ -133,8 +141,8 @@ runs:
           return $slug.Trim('-')
         }
 
-        $workflowID = Convert-ToSlug '${{ inputs.workflow_id }}'
-        $targetID = Convert-ToSlug '${{ inputs.target_id }}'
+        $workflowID = Convert-ToSlug $env:WORKFLOW_ID
+        $targetID = Convert-ToSlug $env:TARGET_ID
         $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
         $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
         "run_id=$runID" >> $env:GITHUB_OUTPUT
@@ -150,14 +158,16 @@ runs:
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
         WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
         WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+        MANAGED_AGENT: ${{ inputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
       run: |
         set -euo pipefail
         output_dir="${RUNNER_TEMP}/wendy"
         args=(--output-dir "$output_dir")
-        if [[ "${{ inputs.managed_agent }}" == "true" ]]; then
-          args+=(--managed-agent --agent-connect-address "${{ inputs.device_address }}")
+        if [[ "$MANAGED_AGENT" == "true" ]]; then
+          args+=(--managed-agent --agent-connect-address "$DEVICE_ADDRESS")
         else
-          args+=(--agent-address "${{ inputs.device_address }}")
+          args+=(--agent-address "$DEVICE_ADDRESS")
         fi
         bash ./Scripts/E2ETest.sh "${args[@]}"
 
@@ -172,13 +182,15 @@ runs:
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
         WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
         WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+        MANAGED_AGENT: ${{ inputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
       run: |
         $ErrorActionPreference = 'Stop'
-        if ('${{ inputs.managed_agent }}' -eq 'true') {
+        if ($env:MANAGED_AGENT -eq 'true') {
           throw 'managed_agent is not supported by the Windows Swift E2E runner yet.'
         }
         $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
-        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "${{ inputs.device_address }}"
+        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address $env:DEVICE_ADDRESS
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Upload Swift E2E run (Unix)
