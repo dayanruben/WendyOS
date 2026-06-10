@@ -11,6 +11,37 @@ import (
 type localWifiNetwork struct {
 	SSID           string
 	SignalStrength int32 // 0–100 percentage, or 0 if unknown
+	// Security is a best-effort human label ("Open", "WPA2", "WPA3", ...)
+	// normalized across the per-platform scanners; empty when unknown.
+	Security string
+}
+
+// normalizeWifiSecurity maps raw scanner security strings (nmcli's
+// "WPA1 WPA2", netsh's "WPA2-Personal", ...) onto the short labels the agent
+// side uses, picking the strongest advertised suite. Returns the raw string
+// when nothing matches so unusual suites still surface, and "" for unknown.
+func normalizeWifiSecurity(raw string) string {
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	suffix := ""
+	if strings.Contains(s, "ENTERPRISE") || strings.Contains(s, "802.1X") || strings.Contains(s, "EAP") {
+		suffix = "-Ent"
+	}
+	switch {
+	case strings.Contains(s, "WPA3") || strings.Contains(s, "SAE"):
+		return "WPA3" + suffix
+	case strings.Contains(s, "WPA2") || strings.Contains(s, "RSNA"):
+		return "WPA2" + suffix
+	case strings.Contains(s, "WPA"):
+		return "WPA" + suffix
+	case strings.Contains(s, "WEP"):
+		return "WEP"
+	case s == "--" || s == "NONE" || strings.Contains(s, "OPEN"):
+		return "Open"
+	}
+	return strings.TrimSpace(raw)
 }
 
 // ssidLine matches `SSID 1 : MyNetwork`. The `\d+` between `SSID` and the
@@ -19,6 +50,9 @@ var ssidLine = regexp.MustCompile(`^SSID\s+\d+\s*:\s*(.*)$`)
 
 // signalLine matches `         Signal             : 78%`.
 var signalLine = regexp.MustCompile(`^\s*Signal\s*:\s*(\d+)%`)
+
+// authLine matches `    Authentication          : WPA2-Personal`.
+var authLine = regexp.MustCompile(`^\s*Authentication\s*:\s*(.+)$`)
 
 // parseNetshNetworks parses the localized text output of
 // `netsh wlan show networks mode=bssid` into a deduplicated list of SSIDs,
@@ -30,8 +64,9 @@ var signalLine = regexp.MustCompile(`^\s*Signal\s*:\s*(\d+)%`)
 // `scanLocalWifiNetworks` implementation.
 func parseNetshNetworks(output string) []localWifiNetwork {
 	type entry struct {
-		index  int
-		signal int32
+		index    int
+		signal   int32
+		security string
 	}
 	entries := make(map[string]*entry)
 	order := 0
@@ -66,12 +101,19 @@ func parseNetshNetworks(output string) []localWifiNetwork {
 					e.signal = signal
 				}
 			}
+			continue
+		}
+
+		if m := authLine.FindStringSubmatch(line); m != nil {
+			if e := entries[currentSSID]; e != nil && e.security == "" {
+				e.security = normalizeWifiSecurity(m[1])
+			}
 		}
 	}
 
 	out := make([]localWifiNetwork, len(entries))
 	for ssid, e := range entries {
-		out[e.index] = localWifiNetwork{SSID: ssid, SignalStrength: e.signal}
+		out[e.index] = localWifiNetwork{SSID: ssid, SignalStrength: e.signal, Security: e.security}
 	}
 	return out
 }

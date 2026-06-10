@@ -23,11 +23,23 @@ guard let iface = client.interface() else {
     fputs("no wifi interface\n", stderr)
     exit(1)
 }
+// Strongest advertised suite wins; transition (mixed-mode) networks count as
+// the newer suite, matching how the agent labels nmcli scan results.
+func securityLabel(_ net: CWNetwork) -> String {
+    if net.supportsSecurity(.wpa3Personal) || net.supportsSecurity(.wpa3Transition) { return "WPA3" }
+    if net.supportsSecurity(.wpa3Enterprise) { return "WPA3-Ent" }
+    if net.supportsSecurity(.wpa2Enterprise) || net.supportsSecurity(.enterprise) || net.supportsSecurity(.wpaEnterprise) || net.supportsSecurity(.wpaEnterpriseMixed) { return "WPA2-Ent" }
+    if net.supportsSecurity(.wpa2Personal) || net.supportsSecurity(.personal) { return "WPA2" }
+    if net.supportsSecurity(.wpaPersonal) || net.supportsSecurity(.wpaPersonalMixed) { return "WPA" }
+    if net.supportsSecurity(.WEP) || net.supportsSecurity(.dynamicWEP) { return "WEP" }
+    if net.supportsSecurity(.none) || net.supportsSecurity(.OWE) || net.supportsSecurity(.oweTransition) { return "Open" }
+    return ""
+}
 do {
     let networks = try iface.scanForNetworks(withSSID: nil)
     for net in networks.sorted(by: { $0.rssiValue > $1.rssiValue }) {
         guard let ssid = net.ssid, !ssid.isEmpty else { continue }
-        print("\(ssid)\t\(net.rssiValue)")
+        print("\(ssid)\t\(net.rssiValue)\t\(securityLabel(net))")
     }
 } catch {
     fputs("scan failed: \(error)\n", stderr)
@@ -51,7 +63,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
-		parts := strings.SplitN(scanner.Text(), "\t", 2)
+		parts := strings.SplitN(scanner.Text(), "\t", 3)
 		if len(parts) < 2 {
 			continue
 		}
@@ -75,7 +87,12 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 			signal = int32(pct)
 		}
 
-		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal})
+		security := ""
+		if len(parts) >= 3 {
+			security = strings.TrimSpace(parts[2])
+		}
+
+		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal, Security: security})
 	}
 
 	if err := scanner.Err(); err != nil {

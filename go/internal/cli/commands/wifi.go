@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -56,12 +58,10 @@ func runWifiInteractive(cmd *cobra.Command) error {
 	}
 	defer client.Close()
 
-	networks, err := client.List(ctx)
-	if err != nil {
-		return err
-	}
-
-	model := wifitable.NewModel(networksToView(networks)).WithHandler(&wifiTUIHandler{ctx: ctx, client: client})
+	// Start with an empty table: the model's Init fires the first refresh and
+	// keeps polling, so the TUI opens instantly and rows stream in while the
+	// device-side rescan (which can take several seconds) fills its cache.
+	model := wifitable.NewModel(nil).WithHandler(&wifiTUIHandler{ctx: ctx, client: client})
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("wifi TUI: %w", err)
@@ -628,90 +628,139 @@ func newWifiForgetCmd() *cobra.Command {
 	return cmd
 }
 
-// ── WiFi network picker (legacy, still used by `connect`) ──────────
+// ── WiFi network picker (used by `connect`) ────────────────────────
 
+// wifiPickerColumns renders PickerItems built by wifiPickerItems /
+// localWifiPickerItems: Name carries the SSID, Type the security label and
+// Size the signal percentage.
+func wifiPickerColumns() []tui.PickerColumn {
+	return []tui.PickerColumn{
+		{Title: "SSID", MinWidth: 24, Required: true, Value: func(it tui.PickerItem) string { return it.Name }},
+		{Title: "Security", MinWidth: 10, Value: func(it tui.PickerItem) string { return it.Type }},
+		{Title: "Signal", MinWidth: 8, Value: func(it tui.PickerItem) string { return it.Size }},
+	}
+}
+
+func wifiPickerItems(networks []*agentpb.ListWiFiNetworksResponse_WiFiNetwork) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(networks))
+	for _, n := range networks {
+		signal := ""
+		if n.GetSignalStrength() > 0 {
+			signal = fmt.Sprintf("%d%%", n.GetSignalStrength())
+		}
+		items = append(items, tui.PickerItem{
+			Name:  n.GetSsid(),
+			Type:  wifitable.SecurityLabel(n.GetSecurity()),
+			Size:  signal,
+			Value: n.GetSsid(),
+		})
+	}
+	return items
+}
+
+func localWifiPickerItems(networks []localWifiNetwork) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(networks))
+	for _, n := range networks {
+		signal := ""
+		if n.SignalStrength > 0 {
+			signal = fmt.Sprintf("%d%%", n.SignalStrength)
+		}
+		items = append(items, tui.PickerItem{
+			Name:  n.SSID,
+			Type:  n.Security,
+			Size:  signal,
+			Value: n.SSID,
+		})
+	}
+	return items
+}
+
+// pickWifiNetwork shows the network picker immediately and feeds scan results
+// in as they arrive, instead of blocking on the scan before any UI appears.
+// Typing filters the list; matches are highlighted in the SSID column.
 func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error) {
-	type wifiEntry struct {
-		ssid           string
-		signalStrength int32
+	picker := tui.NewPickerWithTitleAndColumns("Select a WiFi network", wifiPickerColumns())
+	picker.Filterable = true
+	p := tea.NewProgram(picker)
+
+	scanCtx, cancelScan := context.WithCancel(ctx)
+	defer cancelScan()
+
+	var scanErrMu sync.Mutex
+	var scanErr error
+	recordScanErr := func(err error) {
+		scanErrMu.Lock()
+		defer scanErrMu.Unlock()
+		if scanErr == nil {
+			scanErr = err
+		}
 	}
 
-	var networks []wifiEntry
-
 	switch {
-	case target.Bluetooth != nil && target.Bluetooth.IsWendyAgent():
-		cliLogln("Scanning for WiFi networks on %s...", target.Bluetooth.DisplayName)
-		tlsCfg, err := bleTLSConfig()
+	case target.Bluetooth != nil && !target.Bluetooth.IsWendyAgent():
+		// Wendy Lite — scan from the host machine (one-shot).
+		go func() {
+			defer p.Send(tui.PickerDoneMsg{})
+			nets, err := scanLocalWifiNetworks()
+			if err != nil {
+				recordScanErr(fmt.Errorf("scanning local WiFi networks: %w", err))
+				return
+			}
+			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
+		}()
+
+	case target.Bluetooth != nil || target.Agent != nil:
+		client, err := newWifiClient(target)
 		if err != nil {
 			return "", err
 		}
-		client, err := ble.ConnectAgent(target.Bluetooth, tlsCfg)
-		if err != nil {
-			return "", fmt.Errorf("connecting to device: %w", err)
-		}
 		defer client.Close()
 
-		nets, err := client.WifiList()
-		if err != nil {
-			return "", fmt.Errorf("listing WiFi networks: %w", err)
-		}
-		for _, n := range nets {
-			networks = append(networks, wifiEntry{ssid: n.GetSsid(), signalStrength: n.GetSignalStrength()})
-		}
+		// Authoritative scan: blocks until the device-side rescan finishes.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer p.Send(tui.PickerDoneMsg{})
+			nets, err := client.List(scanCtx)
+			if err != nil {
+				recordScanErr(err)
+				return
+			}
+			p.Send(tui.PickerAddMsg{Items: wifiPickerItems(nets)})
+		}()
 
-	case target.Bluetooth != nil:
-		cliLogln("Scanning for WiFi networks on this computer...")
-		nets, err := scanLocalWifiNetworks()
-		if err != nil {
-			return "", fmt.Errorf("scanning local WiFi networks: %w", err)
-		}
-		for _, n := range nets {
-			networks = append(networks, wifiEntry{ssid: n.SSID, signalStrength: n.SignalStrength})
-		}
-
-	case target.Agent != nil:
-		cliLogln("Scanning for WiFi networks...")
-		resp, err := target.Agent.AgentService.ListWiFiNetworks(ctx, &agentpb.ListWiFiNetworksRequest{})
-		if err != nil {
-			return "", fmt.Errorf("listing WiFi networks: %w", err)
-		}
-		for _, n := range resp.GetNetworks() {
-			networks = append(networks, wifiEntry{ssid: n.GetSsid(), signalStrength: n.GetSignalStrength()})
+		// While the rescan runs, poll the device's scan cache so SSIDs stream
+		// into the picker as they are found. Each poll returns quickly: the
+		// in-progress scan rejects new rescan requests and the list call reads
+		// the cache. Only over gRPC — the BLE transport can't multiplex
+		// concurrent calls.
+		if client.agent != nil {
+			go func() {
+				ticker := time.NewTicker(1500 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-done:
+						return
+					case <-scanCtx.Done():
+						return
+					case <-ticker.C:
+						nets, err := client.List(scanCtx)
+						if err != nil {
+							continue
+						}
+						p.Send(tui.PickerAddMsg{Items: wifiPickerItems(nets)})
+					}
+				}
+			}()
 		}
 
 	default:
 		return "", fmt.Errorf("selected device does not support WiFi network scanning")
 	}
 
-	if len(networks) == 0 {
-		if wifiScanCacheHint != "" {
-			return "", fmt.Errorf("no WiFi networks found (%s)", wifiScanCacheHint)
-		}
-		return "", fmt.Errorf("no WiFi networks found")
-	}
-
-	var items []tui.PickerItem
-	for _, n := range networks {
-		signal := ""
-		if n.signalStrength > 0 {
-			signal = fmt.Sprintf("%d%%", n.signalStrength)
-		}
-		items = append(items, tui.PickerItem{
-			Name:  n.ssid,
-			Type:  signal,
-			Value: n.ssid,
-		})
-	}
-
-	picker := tui.NewPickerWithTitle("Select a WiFi network")
-	p := tea.NewProgram(picker)
-
-	go func() {
-		p.Send(tui.PickerAddMsg{Items: items})
-		p.Send(tui.PickerDoneMsg{})
-	}()
-
 	finalModel, err := p.Run()
+	cancelScan()
 	if err != nil {
 		return "", fmt.Errorf("network picker: %w", err)
 	}
@@ -722,7 +771,16 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 	}
 	sel := pm.Selected()
 	if sel == nil {
-		return "", fmt.Errorf("no network selected")
+		scanErrMu.Lock()
+		err := scanErr
+		scanErrMu.Unlock()
+		if err != nil {
+			return "", err
+		}
+		if wifiScanCacheHint != "" {
+			return "", fmt.Errorf("no WiFi networks found (%s)", wifiScanCacheHint)
+		}
+		return "", fmt.Errorf("no WiFi networks found")
 	}
 
 	ssid, ok := sel.Value.(string)
@@ -816,14 +874,14 @@ func wifiListFromHost() error {
 		return nil
 	}
 
-	headers := []string{"SSID", "Signal"}
+	headers := []string{"SSID", "Security", "Signal"}
 	var rows [][]string
 	for _, n := range networks {
 		signal := ""
 		if n.SignalStrength > 0 {
 			signal = fmt.Sprintf("%d%%", n.SignalStrength)
 		}
-		rows = append(rows, []string{n.SSID, signal})
+		rows = append(rows, []string{n.SSID, n.Security, signal})
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil

@@ -582,3 +582,126 @@ func lastNonEmptyLine(view string) string {
 	}
 	return strings.TrimSpace(lines[len(lines)-1])
 }
+
+// ── Filterable picker ────────────────────────────────────────────────
+
+func typeIntoPicker(t *testing.T, m PickerModel, s string) PickerModel {
+	t.Helper()
+	for _, r := range s {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(PickerModel)
+	}
+	return m
+}
+
+func newFilterablePicker(t *testing.T) PickerModel {
+	t.Helper()
+	m := NewPickerWithTitle("Select a WiFi network")
+	m.Filterable = true
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "HomeNet", Type: "82%", Value: "HomeNet"},
+		{Name: "my home 5G", Type: "70%", Value: "my home 5G"},
+		{Name: "CafeSpot", Type: "55%", Value: "CafeSpot"},
+	}})
+	return updated.(PickerModel)
+}
+
+func TestPickerModel_FilterNarrowsCaseInsensitively(t *testing.T) {
+	pm := typeIntoPicker(t, newFilterablePicker(t), "home")
+
+	visible := pm.visibleItems()
+	if len(visible) != 2 {
+		t.Fatalf("expected 2 matches for 'home', got %d: %+v", len(visible), visible)
+	}
+	for _, item := range visible {
+		if !strings.Contains(strings.ToLower(item.Name), "home") {
+			t.Errorf("unexpected item in filtered view: %q", item.Name)
+		}
+	}
+	if view := pm.View(); !strings.Contains(view, "Filter: home") {
+		t.Errorf("expected the active filter to be shown, got %q", view)
+	}
+}
+
+func TestPickerModel_FilterSpaceAndBackspace(t *testing.T) {
+	pm := typeIntoPicker(t, newFilterablePicker(t), "my")
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	pm = updated.(PickerModel)
+	pm = typeIntoPicker(t, pm, "homex")
+
+	if got := len(pm.visibleItems()); got != 0 {
+		t.Fatalf("expected 0 matches for 'my homex', got %d", got)
+	}
+
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	pm = updated.(PickerModel)
+	if got := pm.filter; got != "my home" {
+		t.Fatalf("filter after backspace = %q, want %q", got, "my home")
+	}
+	if got := len(pm.visibleItems()); got != 1 {
+		t.Fatalf("expected 1 match for 'my home', got %d", got)
+	}
+}
+
+func TestPickerModel_EnterSelectsFromFilteredView(t *testing.T) {
+	pm := typeIntoPicker(t, newFilterablePicker(t), "cafe")
+
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+	if pm.Selected() == nil {
+		t.Fatal("expected a selection")
+	}
+	if got := pm.Selected().Value.(string); got != "CafeSpot" {
+		t.Fatalf("selected %q, want CafeSpot", got)
+	}
+}
+
+func TestPickerModel_EscClearsFilterThenQuits(t *testing.T) {
+	pm := typeIntoPicker(t, newFilterablePicker(t), "cafe")
+
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	pm = updated.(PickerModel)
+	if pm.filter != "" {
+		t.Fatalf("first esc should clear the filter, got %q", pm.filter)
+	}
+	if pm.Cancelled() {
+		t.Fatal("first esc must not quit while a filter is active")
+	}
+	if got := len(pm.visibleItems()); got != 3 {
+		t.Fatalf("expected full list after clearing filter, got %d", got)
+	}
+
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	pm = updated.(PickerModel)
+	if !pm.Cancelled() {
+		t.Fatal("second esc should quit the picker")
+	}
+}
+
+func TestPickerModel_FilterableRoutesQToQuery(t *testing.T) {
+	pm := typeIntoPicker(t, newFilterablePicker(t), "q")
+	if pm.Cancelled() {
+		t.Fatal("'q' must filter, not quit, when Filterable is set")
+	}
+	if pm.filter != "q" {
+		t.Fatalf("filter = %q, want %q", pm.filter, "q")
+	}
+}
+
+func TestPickerModel_NonFilterableKeepsQQuit(t *testing.T) {
+	m := NewPickerWithTitle("plain")
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "a", Value: "a"}}})
+	pm := updated.(PickerModel)
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	pm = updated.(PickerModel)
+	if !pm.Cancelled() {
+		t.Fatal("'q' should still quit a non-filterable picker")
+	}
+}
+
+func TestPickerModel_NoMatchesShowsHint(t *testing.T) {
+	pm := typeIntoPicker(t, newFilterablePicker(t), "zzz")
+	if view := pm.View(); !strings.Contains(view, "No matches") {
+		t.Errorf("expected a no-matches hint, got %q", view)
+	}
+}
