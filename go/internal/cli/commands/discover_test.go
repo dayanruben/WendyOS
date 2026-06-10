@@ -461,6 +461,28 @@ func TestMergePickerItemClearsNoAccessHintWhenVersionKnown(t *testing.T) {
 	if existing.Hint != discoverNoAccessHint {
 		t.Fatalf("Hint = %q, want no-access hint to persist", existing.Hint)
 	}
+
+	// A BLE backfill that supplies the version must also clear the hint,
+	// not just LAN merges.
+	existing = lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true})
+	bleDev := models.BluetoothDevice{DisplayName: "wendy-locked", AgentVersion: "1.2.3"}
+	mergePickerItem(&existing, tui.PickerItem{
+		Name:         bleDev.DisplayName,
+		Type:         "Bluetooth",
+		AgentVersion: bleDev.AgentVersion,
+		DedupKey:     bleDev.DisplayName,
+		Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+			DisplayName:  bleDev.DisplayName,
+			AgentVersion: bleDev.AgentVersion,
+			Bluetooth:    &bleDev,
+		}},
+	})
+	if existing.AgentVersion != "1.2.3" {
+		t.Fatalf("AgentVersion = %q, want BLE-backfilled version", existing.AgentVersion)
+	}
+	if existing.Hint != "" {
+		t.Fatalf("Hint = %q, want cleared after BLE version backfill", existing.Hint)
+	}
 }
 
 func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
