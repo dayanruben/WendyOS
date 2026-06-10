@@ -55,7 +55,78 @@ func newProvisionedAgentUnauthorizedError(cause error) error {
 }
 
 func (e provisionedAgentUnauthorizedError) Error() string {
-	return fmt.Sprintf("%s\nLast mTLS error: %v", provisionedAgentUnauthorizedMessage, e.cause)
+	msg := fmt.Sprintf("%s\nLast mTLS error: %v", provisionedAgentUnauthorizedMessage, e.cause)
+	if isCertRefreshableError(e.cause) {
+		msg += "\nYour stored certificates may be outdated. Run 'wendy auth refresh-certs' to re-issue them."
+	}
+	return msg
+}
+
+// isCertRefreshableError reports whether an mTLS failure is one that
+// re-issuing the client certificate can fix: the agent rejecting a cert
+// without the clientAuth EKU, an expired or not-yet-valid cert, or a
+// server-sent TLS alert rejecting the presented cert. Reachability problems
+// and plaintext ports probed with TLS are excluded — new certs cannot fix
+// those.
+func isCertRefreshableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "first record does not look like a TLS handshake") {
+		return false
+	}
+	for _, signal := range []string{
+		"certificate is not valid for client authentication",
+		"certificate not valid at current time",
+		"certificate has expired",
+		"expired certificate",
+		"remote error: tls: bad certificate",
+		"remote error: tls: certificate required",
+	} {
+		if strings.Contains(msg, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+// promptYesNoFn reads a Y/n answer from stdin; empty input counts as yes.
+// Stubbed in tests.
+var promptYesNoFn = func(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+var refreshAllCertsFn = refreshAllCerts
+
+// offerCertRefreshAndRetry prompts to re-issue mTLS certificates after a
+// provisioned agent rejected the client certificate for a reason that
+// re-issuance fixes, then retries the connection once. Returns (conn, true)
+// only when the user accepted, the refresh succeeded, and the retry
+// connected; in every other case the caller should surface the original
+// error (whose message already carries the refresh-certs hint).
+func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
+	if jsonOutput || !isInteractiveTerminal() || !isCertRefreshableError(cause) {
+		return nil, false
+	}
+	fmt.Fprintln(os.Stderr, "The device rejected your client certificate; it may be outdated.")
+	if !promptYesNoFn("Refresh certificates and retry? [Y/n] ") {
+		return nil, false
+	}
+	if err := refreshAllCertsFn(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Certificate refresh failed: %v\n", err)
+		return nil, false
+	}
+	conn, err := retry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Still unable to connect after refreshing certificates: %v\n", err)
+		return nil, false
+	}
+	return conn, true
 }
 
 func (e provisionedAgentUnauthorizedError) Is(target error) bool {
@@ -523,18 +594,24 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, connErr
 			}
 			if errors.Is(connErr, errProvisionedAgentUnauthorized) {
-				return nil, connErr
-			}
-			// Default device is unreachable — offer interactive recovery.
-			if isDefault && !jsonOutput && isInteractiveTerminal() {
+				refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, knownProvisionedMTLS)
+				})
+				if !ok {
+					return nil, connErr
+				}
+				conn = refreshedConn
+			} else if isDefault && !jsonOutput && isInteractiveTerminal() {
+				// Default device is unreachable — offer interactive recovery.
 				hostname, _, _ := net.SplitHostPort(addr)
 				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
 				if recErr != nil {
 					return nil, recErr
 				}
 				return connectFromSelectedDevice(target, cfg)
+			} else {
+				return nil, connErr
 			}
-			return nil, connErr
 		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
@@ -1063,13 +1140,19 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 				return nil, err
 			}
 			if errors.Is(err, errProvisionedAgentUnauthorized) {
+				refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
+				})
+				if !ok {
+					return nil, err
+				}
+				conn = refreshedConn
+			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
+				// Default device is unreachable — offer interactive recovery.
+				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+			} else {
 				return nil, err
 			}
-			// Default device is unreachable — offer interactive recovery.
-			if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
-				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
-			}
-			return nil, err
 		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
