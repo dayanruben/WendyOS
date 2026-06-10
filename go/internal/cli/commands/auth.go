@@ -440,41 +440,51 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 		Short: "Refresh mTLS certificates",
 		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			if len(cfg.Auth) == 0 {
-				return fmt.Errorf("not logged in; run 'wendy auth login' first")
-			}
-
-			// Refresh certificates for each auth entry.
-			for i, auth := range cfg.Auth {
-				if len(auth.Certificates) == 0 {
-					fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
-					continue
-				}
-
-				fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
-
-				if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
-					fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
-					continue
-				}
-
-				fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
-			}
-
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
-			}
-
-			return nil
+			return refreshAllCerts(cmd.Context())
 		},
 	}
+}
+
+// refreshAllCerts re-issues certificates for every stored auth entry and
+// saves the updated config. It returns an error when not logged in or when
+// no entry could be refreshed, so callers that retry a connection afterwards
+// do not retry with the same stale certificates.
+func refreshAllCerts(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	if len(cfg.Auth) == 0 {
+		return fmt.Errorf("not logged in; run 'wendy auth login' first")
+	}
+
+	refreshed := 0
+	for i, auth := range cfg.Auth {
+		if len(auth.Certificates) == 0 {
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
+			continue
+		}
+
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
+
+		if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
+			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
+			continue
+		}
+
+		refreshed++
+		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
+	}
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	if refreshed == 0 {
+		return fmt.Errorf("no certificates were refreshed")
+	}
+	return nil
 }
 
 // certCommonName extracts the Subject CN from a PEM-encoded certificate.
