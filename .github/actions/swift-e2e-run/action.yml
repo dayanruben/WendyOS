@@ -92,12 +92,21 @@ runs:
           local value="$1" filter
           [[ ${#value} -le 500 ]] || return 1
           [[ -z "$value" || "$value" =~ ^[A-Za-z0-9][A-Za-z0-9\,\ \._:/\|\(\)_-]*$ ]] || return 1
+          [[ "$value" != *'<<'* ]] || return 1
           IFS=',' read -ra filters <<< "$value"
           for filter in "${filters[@]}"; do
             filter="${filter#${filter%%[![:space:]]*}}"
             filter="${filter%${filter##*[![:space:]]}}"
             [[ -z "$filter" || "$filter" != -* ]] || return 1
           done
+        }
+        write_output() {
+          local name="$1" value="$2" delimiter="WENDY_EOF_${name}"
+          {
+            printf '%s<<%s\n' "$name" "$delimiter"
+            printf '%s\n' "$value"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
         }
         require_match WORKFLOW_ID "$WORKFLOW_ID" '^[A-Za-z0-9._-]{1,80}$'
         require_match TARGET_ID "$TARGET_ID" '^[A-Za-z0-9._-]{1,80}$'
@@ -116,15 +125,13 @@ runs:
           echo "ERROR: invalid TESTS" >&2
           exit 64
         fi
-        {
-          echo "validated=true"
-          echo "tests=$TESTS"
-          echo "managed_agent=$MANAGED_AGENT"
-          echo "device_address=$DEVICE_ADDRESS"
-          echo "cli_os=$CLI_OS"
-          echo "agent_os=$AGENT_OS"
-          echo "transport=$TRANSPORT"
-        } >> "$GITHUB_OUTPUT"
+        write_output validated true
+        write_output tests "$TESTS"
+        write_output managed_agent "$MANAGED_AGENT"
+        write_output device_address "$DEVICE_ADDRESS"
+        write_output cli_os "$CLI_OS"
+        write_output agent_os "$AGENT_OS"
+        write_output transport "$TRANSPORT"
 
     - name: Validate Swift E2E inputs (Windows)
       id: validate-windows
@@ -168,11 +175,18 @@ runs:
         function Test-Tests([string]$Value) {
           if ($Value.Length -gt 500) { return $false }
           if ($Value.Length -gt 0 -and $Value -notmatch '^[A-Za-z0-9][A-Za-z0-9, ._:/|()_-]*$') { return $false }
+          if ($Value.Contains('<<')) { return $false }
           foreach ($Filter in ($Value -split ',')) {
             $Trimmed = $Filter.Trim()
             if ($Trimmed.StartsWith('-')) { return $false }
           }
           return $true
+        }
+        function Write-OutputValue([string]$Name, [string]$Value) {
+          $Delimiter = "WENDY_EOF_$Name"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "$Name<<$Delimiter"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $Value
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $Delimiter
         }
         Require-Match WORKFLOW_ID $env:WORKFLOW_ID '^[A-Za-z0-9._-]{1,80}$'
         Require-Match TARGET_ID $env:TARGET_ID '^[A-Za-z0-9._-]{1,80}$'
@@ -189,13 +203,13 @@ runs:
         if (-not (Test-Tests $env:TESTS)) {
           throw 'invalid TESTS'
         }
-        "validated=true" >> $env:GITHUB_OUTPUT
-        "tests=$env:TESTS" >> $env:GITHUB_OUTPUT
-        "managed_agent=$env:MANAGED_AGENT" >> $env:GITHUB_OUTPUT
-        "device_address=$env:DEVICE_ADDRESS" >> $env:GITHUB_OUTPUT
-        "cli_os=$env:CLI_OS" >> $env:GITHUB_OUTPUT
-        "agent_os=$env:AGENT_OS" >> $env:GITHUB_OUTPUT
-        "transport=$env:TRANSPORT" >> $env:GITHUB_OUTPUT
+        Write-OutputValue validated 'true'
+        Write-OutputValue tests $env:TESTS
+        Write-OutputValue managed_agent $env:MANAGED_AGENT
+        Write-OutputValue device_address $env:DEVICE_ADDRESS
+        Write-OutputValue cli_os $env:CLI_OS
+        Write-OutputValue agent_os $env:AGENT_OS
+        Write-OutputValue transport $env:TRANSPORT
 
     - name: Set up Swift E2E host (Unix)
       if: runner.os != 'Windows' && inputs.setup == 'true'
