@@ -109,6 +109,9 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 			return
 		}
 		apiKey := r.URL.Query().Get("api_key")
+		if !strings.HasPrefix(apiKey, "wnd_pat_") || len(apiKey) > 256 {
+			apiKey = ""
+		}
 
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprintf(w, `<!DOCTYPE html>
