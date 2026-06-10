@@ -213,11 +213,19 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case (msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace) && m.Filterable:
 			// Pasted input can carry control characters; keep them out of
-			// the query (it is echoed back to the terminal verbatim).
+			// the query (it is echoed back to the terminal verbatim), and
+			// cap its length so a large paste can't distort the layout.
 			if typed := StripControl(string(msg.Runes)); typed != "" {
-				m.filter += typed
-				m.table.SetCursor(0)
-				m.refreshTable()
+				const maxFilterLen = 64
+				if room := maxFilterLen - len([]rune(m.filter)); room > 0 {
+					runes := []rune(typed)
+					if len(runes) > room {
+						runes = runes[:room]
+					}
+					m.filter += string(runes)
+					m.table.SetCursor(0)
+					m.refreshTable()
+				}
 			}
 			return m, nil
 		default:

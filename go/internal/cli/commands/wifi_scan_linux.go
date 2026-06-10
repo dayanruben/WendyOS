@@ -61,7 +61,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 
 		security := ""
 		if len(fields) >= 3 {
-			security = normalizeWifiSecurity(fields[2])
+			security = normalizeWifiSecurity(tui.StripControl(fields[2]))
 		}
 
 		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal, Security: security})

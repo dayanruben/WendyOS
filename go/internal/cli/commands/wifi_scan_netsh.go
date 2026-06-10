@@ -56,8 +56,10 @@ var ssidLine = regexp.MustCompile(`^SSID\s+\d+\s*:\s*(.*)$`)
 // signalLine matches `         Signal             : 78%`.
 var signalLine = regexp.MustCompile(`^\s*Signal\s*:\s*(\d+)%`)
 
-// authLine matches `    Authentication          : WPA2-Personal`.
-var authLine = regexp.MustCompile(`^\s*Authentication\s*:\s*(.+)$`)
+// authLine matches `    Authentication          : WPA2-Personal`. The capture
+// is bounded — real netsh values are short, and the value comes from
+// over-the-air scan data.
+var authLine = regexp.MustCompile(`^\s*Authentication\s*:\s*(.{1,64})`)
 
 // parseNetshNetworks parses the localized text output of
 // `netsh wlan show networks mode=bssid` into a deduplicated list of SSIDs,
@@ -111,7 +113,7 @@ func parseNetshNetworks(output string) []localWifiNetwork {
 
 		if m := authLine.FindStringSubmatch(line); m != nil {
 			if e := entries[currentSSID]; e != nil && e.security == "" {
-				e.security = normalizeWifiSecurity(m[1])
+				e.security = normalizeWifiSecurity(tui.StripControl(m[1]))
 			}
 		}
 	}

@@ -41,7 +41,14 @@ do {
     let networks = try iface.scanForNetworks(withSSID: nil)
     for net in networks.sorted(by: { $0.rssiValue > $1.rssiValue }) {
         guard let ssid = net.ssid, !ssid.isEmpty else { continue }
-        print("\(ssid)\t\(net.rssiValue)\t\(securityLabel(net))")
+        // Strip C0/DEL/C1 control characters before printing: SSIDs come
+        // from beacon frames, and a tab would shift the tab-delimited
+        // fields, letting attacker bytes land in the security column.
+        let clean = String(ssid.unicodeScalars.filter {
+            $0.value >= 0x20 && $0.value != 0x7F && !(0x80...0x9F).contains($0.value)
+        }.map { Character($0) })
+        guard !clean.isEmpty else { continue }
+        print("\(clean)\t\(net.rssiValue)\t\(securityLabel(net))")
     }
 } catch {
     fputs("scan failed: \(error)\n", stderr)
@@ -91,7 +98,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 
 		security := ""
 		if len(parts) >= 3 {
-			security = strings.TrimSpace(parts[2])
+			security = tui.StripControl(strings.TrimSpace(parts[2]))
 		}
 
 		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal, Security: security})

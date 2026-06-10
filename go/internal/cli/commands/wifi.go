@@ -670,7 +670,7 @@ func localWifiPickerItems(networks []localWifiNetwork) []tui.PickerItem {
 		}
 		items = append(items, tui.PickerItem{
 			Name:  n.SSID,
-			Type:  n.Security,
+			Type:  tui.StripControl(n.Security),
 			Size:  signal,
 			Value: n.SSID,
 		})
@@ -756,6 +756,10 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 					case <-ticker.C:
 						nets, err := client.List(scanCtx)
 						if err != nil {
+							// Surfaced after the picker exits if nothing was
+							// ever found; transient poll errors are expected
+							// while the device scan is busy.
+							recordScanErr(err)
 							continue
 						}
 						items := wifiPickerItems(nets)
