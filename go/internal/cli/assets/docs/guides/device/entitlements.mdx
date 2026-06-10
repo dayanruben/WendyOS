@@ -80,10 +80,8 @@ When enabled, this entitlement:
 - Injects NVIDIA Container Device Interface (CDI) specifications
 - Sets up environment variables for CUDA and GPU libraries
 
-On **Raspberry Pi** hosts, the same entitlement also exposes the VideoCore mailbox device (`/dev/vcio`), letting your application read board telemetry — power, voltage/current, temperature, and (on Pi 5) PMIC ADC readings — through the firmware property interface (the interface `vcgencmd` uses). This is added only on Raspberry Pi hardware and only when the device node is present.
-
 <Callout type="info">
-  **NVIDIA vs Raspberry Pi**: The GPU device access (CDI specs, CUDA libraries, `/dev/nvidia*`) applies to NVIDIA Jetson devices. On Raspberry Pi, the entitlement instead grants the VideoCore mailbox (`/dev/vcio`) for board telemetry. The entitlement is a no-op on hardware that has neither.
+  **Hardware-specific behavior**: What the `gpu` entitlement exposes depends on the device — NVIDIA GPU access on Jetson, and VideoCore board telemetry on Raspberry Pi. See [GPU Access](/docs/guides/device/hardware-gpu) for the details.
 </Callout>
 
 ### Camera Entitlement
