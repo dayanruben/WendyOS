@@ -13,6 +13,10 @@ on:
         description: 'Comma-separated SwiftPM test filters (empty = WendyE2ETests)'
         required: false
         default: ''
+      target_ids:
+        description: 'Comma-separated matrix target IDs to run (empty = all)'
+        required: false
+        default: ''
       diff_base_ref:
         description: 'Optional ref to diff against (empty = full review)'
         required: false
@@ -20,6 +24,10 @@ on:
   workflow_call:
     inputs:
       tests:
+        type: string
+        required: false
+        default: ''
+      target_ids:
         type: string
         required: false
         default: ''
@@ -55,6 +63,8 @@ jobs:
       cancel-in-progress: false
       queue: max
     timeout-minutes: 120
+    env:
+      WENDY_E2E_TARGET_IDS: ${{ inputs.target_ids || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -218,7 +228,9 @@ jobs:
           #   transport: lan
     steps:
       - uses: actions/checkout@v6
+        if: ${{ env.WENDY_E2E_TARGET_IDS == '' || contains(format(',{0},', env.WENDY_E2E_TARGET_IDS), format(',{0},', matrix.target.target_id)) }}
       - uses: ./.github/actions/swift-e2e-run
+        if: ${{ env.WENDY_E2E_TARGET_IDS == '' || contains(format(',{0},', env.WENDY_E2E_TARGET_IDS), format(',{0},', matrix.target.target_id)) }}
         with:
           tests: ${{ inputs.tests || '' }}
           target_id: ${{ matrix.target.target_id }}
