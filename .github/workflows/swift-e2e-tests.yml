@@ -1,12 +1,9 @@
 name: Swift E2E Tests
 
+# TEMPORARILY DISABLED: Pull request Swift E2E runs are disabled while
+# WDY-1479 investigates the SER9 mTLS auth failure. Keep main, manual dispatch,
+# and workflow_call available for targeted debugging.
 on:
-  pull_request:
-    paths:
-      - 'swift/**'
-      - 'Proto/**'
-      - '.github/actions/swift-e2e-run/**'
-      - '.github/workflows/swift-e2e-tests.yml'
   push:
     branches:
       - main
