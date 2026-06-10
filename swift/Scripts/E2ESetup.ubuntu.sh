@@ -227,7 +227,6 @@ setupE2EUbuntu() {
   checkCommand go
   checkCommand make
   checkCommand swift
-  checkCommand swiftly
   checkCommand zip
   checkCommand unzip
   checkCommand ssh "openssh-client"
