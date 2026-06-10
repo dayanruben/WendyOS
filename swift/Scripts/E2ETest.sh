@@ -466,6 +466,10 @@ mkdir -p "$RUN_DIR"
 if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
   DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
 fi
+if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
+  echo "ERROR: invalid --device-address." >&2
+  exit 64
+fi
 
 ssh_target() {
   local user="$1"
@@ -649,7 +653,7 @@ start_managed_agent() {
   env -i \
     HOME="$config_dir/home" \
     LOGNAME="wendy-e2e-agent" \
-    PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     TMPDIR="${TMPDIR:-/tmp}" \
     USER="wendy-e2e-agent" \
     WENDY_CONFIG_PATH="$config_dir" \
@@ -662,6 +666,11 @@ start_managed_agent() {
     "$agent_path" >"$stdout_path" 2>"$stderr_path" &
   MANAGED_AGENT_PID=$!
   printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path"
+
+  if ! valid_device_address "$DEVICE_ADDRESS"; then
+    echo "ERROR: invalid --device-address." >&2
+    return 64
+  fi
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do

@@ -68,7 +68,8 @@ jobs:
       queue: max
     timeout-minutes: 120
     env:
-      WENDY_E2E_TARGET_GROUP: ${{ inputs.target_group || 'all' }}
+      WENDY_E2E_TARGET_GROUP: ${{ (inputs.target_group == 'local' || inputs.target_group == 'all') && inputs.target_group || 'all' }}
+      WENDY_E2E_TESTS: ${{ inputs.tests || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -239,7 +240,7 @@ jobs:
       - uses: ./.github/actions/swift-e2e-run
         if: ${{ env.WENDY_E2E_TARGET_GROUP == 'all' || matrix.target.target_group == env.WENDY_E2E_TARGET_GROUP }}
         with:
-          tests: ${{ inputs.tests || '' }}
+          tests: ${{ env.WENDY_E2E_TESTS }}
           target_id: ${{ matrix.target.target_id }}
           runner_id: ${{ matrix.target.runner_id }}
           cli_os: ${{ matrix.target.cli_os }}
