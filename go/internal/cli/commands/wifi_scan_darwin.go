@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 // wifiScanCacheHint is empty on macOS: CoreWLAN's scanForNetworks performs
@@ -68,7 +70,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 			continue
 		}
 
-		ssid := parts[0]
+		ssid := tui.StripControl(parts[0])
 		if ssid == "" || seen[ssid] {
 			continue
 		}

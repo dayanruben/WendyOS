@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
 )
 
@@ -47,7 +48,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 			continue
 		}
 
-		ssid := fields[0]
+		ssid := tui.StripControl(fields[0])
 		if ssid == "" || seen[ssid] {
 			continue
 		}

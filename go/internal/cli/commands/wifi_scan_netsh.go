@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 // localWifiNetwork is the host-side scan result type shared across platforms.
@@ -41,7 +43,7 @@ func normalizeWifiSecurity(raw string) string {
 	case s == "--" || s == "NONE" || strings.Contains(s, "OPEN"):
 		return "Open"
 	}
-	return strings.TrimSpace(raw)
+	return tui.StripControl(strings.TrimSpace(raw))
 }
 
 // ssidLine matches `SSID 1 : MyNetwork`. The `\d+` between `SSID` and the
@@ -79,7 +81,7 @@ func parseNetshNetworks(output string) []localWifiNetwork {
 		line := scanner.Text()
 
 		if m := ssidLine.FindStringSubmatch(line); m != nil {
-			currentSSID = strings.TrimSpace(m[1])
+			currentSSID = tui.StripControl(strings.TrimSpace(m[1]))
 			haveSSID = currentSSID != ""
 			if haveSSID {
 				if _, ok := entries[currentSSID]; !ok {

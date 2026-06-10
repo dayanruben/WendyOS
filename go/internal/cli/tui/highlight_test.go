@@ -78,3 +78,19 @@ func TestHighlightMatchesEmptyQueryNoop(t *testing.T) {
 		t.Errorf("empty query must be a no-op, got %q", out)
 	}
 }
+
+func TestStripControl(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"PlainNet", "PlainNet"},
+		{"\x1b[2J\x1b[HFake Header\x1b[0m", "[2J[HFake Header[0m"},
+		{"\x1b]8;;http://evil\x07click\x1b]8;;\x07", "]8;;http://evilclick]8;;"},
+		{"tab\tand\nnewline", "tabandnewline"},
+		{"del\x7fchar", "delchar"},
+		{"emoji 📶 ok", "emoji 📶 ok"},
+	}
+	for _, c := range cases {
+		if got := StripControl(c.in); got != c.want {
+			t.Errorf("StripControl(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

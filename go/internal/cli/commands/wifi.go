@@ -648,11 +648,14 @@ func wifiPickerItems(networks []*agentpb.ListWiFiNetworksResponse_WiFiNetwork) [
 		if n.GetSignalStrength() > 0 {
 			signal = fmt.Sprintf("%d%%", n.GetSignalStrength())
 		}
+		// SSIDs come from over-the-air beacon frames; strip control
+		// characters so hostile names can't inject escape sequences.
+		ssid := tui.StripControl(n.GetSsid())
 		items = append(items, tui.PickerItem{
-			Name:  n.GetSsid(),
+			Name:  ssid,
 			Type:  wifitable.SecurityLabel(n.GetSecurity()),
 			Size:  signal,
-			Value: n.GetSsid(),
+			Value: ssid,
 		})
 	}
 	return items

@@ -1249,11 +1249,18 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 		picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
 		picker.Filterable = true
 		p := tea.NewProgram(picker)
+
+		var scanErrMu sync.Mutex
+		var scanErr error
 		go func() {
 			defer p.Send(tui.PickerDoneMsg{})
 			nets, err := scanLocalWifiNetworks()
 			if err != nil {
-				// Scan failures fall through to the manual SSID prompt below.
+				// Recorded so the fallthrough to the manual prompt can say
+				// why the list stayed empty.
+				scanErrMu.Lock()
+				scanErr = err
+				scanErrMu.Unlock()
 				return
 			}
 			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
@@ -1271,6 +1278,13 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 		// prompt, as the title advertises.
 		if sel := pm.Selected(); sel != nil {
 			c.SSID, _ = sel.Value.(string)
+		} else {
+			scanErrMu.Lock()
+			err := scanErr
+			scanErrMu.Unlock()
+			if err != nil {
+				cliNotice("WiFi scan failed (%v) — enter the network name manually.", err)
+			}
 		}
 	}
 
