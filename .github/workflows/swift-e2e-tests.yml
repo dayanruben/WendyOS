@@ -49,7 +49,7 @@ jobs:
   # instead of canceling older pending routes.
   swift-e2e-tests:
     name: ${{ matrix.target.name }}
-    runs-on: ["self-hosted", "${{ matrix.target.runner_label }}"]
+    runs-on: ${{ fromJSON(matrix.target.runs_on) }}
     concurrency:
       group: device-${{ matrix.target.device_id }}
       cancel-in-progress: false
@@ -59,6 +59,32 @@ jobs:
       fail-fast: false
       matrix:
         target:
+          - name: local macOS 26 → local macOS 26
+            target_id: local-macos-macos
+            runner_id: macos-26
+            runner_label: macos-26
+            runs_on: '["macos-26"]'
+            cli_os: macOS
+            device_id: local-macos-hosted
+            device_address: 127.0.0.1:50051
+            agent_os: macOS
+            transport: local
+            setup: true
+            managed_agent: true
+
+          - name: local Ubuntu 24 → local Ubuntu 24
+            target_id: local-ubuntu-ubuntu-24
+            runner_id: ubuntu-24-04
+            runner_label: ubuntu-24-04
+            runs_on: '["ubuntu-24.04"]'
+            cli_os: linux
+            device_id: local-ubuntu-hosted
+            device_address: 127.0.0.1:50051
+            agent_os: linux
+            transport: local
+            setup: true
+            managed_agent: true
+
           # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
           # - name: macOS 26 → Jetson Orin Nano
           #   target_id: macos-jetson-orin-nano
@@ -85,6 +111,7 @@ jobs:
             target_id: macos-ubuntu-24
             runner_id: macos-26
             runner_label: macos-26
+            runs_on: '["self-hosted","macos-26"]'
             cli_os: macOS
             device_id: ubuntu-24
             device_address: wendy-SER9.local
@@ -200,6 +227,8 @@ jobs:
           device_address: ${{ matrix.target.device_address }}
           agent_os: ${{ matrix.target.agent_os }}
           transport: ${{ matrix.target.transport }}
+          setup: ${{ matrix.target.setup || false }}
+          managed_agent: ${{ matrix.target.managed_agent || false }}
 
   swift-e2e-analyze:
     name: Analyze E2E Results
