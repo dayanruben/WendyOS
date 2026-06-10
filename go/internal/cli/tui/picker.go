@@ -312,7 +312,9 @@ func (m PickerModel) View() string {
 	sb.WriteString(m.viewLine(pickerTitle.Render(m.Title)+pickerHint.Render(hint)) + "\n\n")
 
 	if m.Filterable && m.filter != "" {
-		sb.WriteString(m.viewLine("  Filter: "+m.filter+pickerHint.Render("  (esc to clear)")) + "\n\n")
+		// The query is sanitized as it is typed; strip again here so this
+		// render site is safe in isolation.
+		sb.WriteString(m.viewLine("  Filter: "+StripControl(m.filter)+pickerHint.Render("  (esc to clear)")) + "\n\n")
 	}
 
 	if len(m.items) == 0 {
