@@ -232,6 +232,7 @@ type discoverModel struct {
 	ctx                context.Context
 	opts               discovery.DiscoveryOptions
 	collection         *models.DevicesCollection
+	tableItems         []discoverTableItem  // cached by refreshTable; row order matches the table
 	bleSeen            map[string]time.Time // device ID -> time last seen in a BLE scan
 	usbInterval        increasingRefreshInterval
 	ethernetInterval   increasingRefreshInterval
@@ -346,7 +347,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "enter":
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) > 0 && cursor >= 0 && cursor < len(items) {
 				m.flashMessage, m.flashIsError = copyDeviceJSON(items[cursor].info)
@@ -354,7 +355,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "a":
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			if len(items) > 0 {
 				var all []discoverDeviceInfo
 				for _, item := range items {
@@ -371,7 +372,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.updatingDeviceName != "" {
 				return m, nil // already updating
 			}
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) == 0 || cursor < 0 || cursor >= len(items) {
 				return m, nil
@@ -393,7 +394,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashIsError = false
 			return m, m.startDeviceUpdateCmd(addr, item.info.Name)
 		case "d":
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) > 0 && cursor >= 0 && cursor < len(items) {
 				deviceID := items[cursor].defaultDevice
@@ -590,8 +591,8 @@ func (m discoverModel) View() string {
 }
 
 func (m *discoverModel) refreshTable() {
-	items := discoverTableItems(m.collection)
-	pickerItems := discoverPickerItems(items)
+	m.tableItems = discoverTableItems(m.collection)
+	pickerItems := discoverPickerItems(m.tableItems)
 	cols, rows := tui.PickerDeviceTableData(pickerItems, discoverDefaultKey(), true)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -605,12 +606,11 @@ func (m *discoverModel) refreshTable() {
 // selectedHint returns the hint for the highlighted table row, e.g. the
 // no-access explanation for a provisioned device this CLI cannot query.
 func (m discoverModel) selectedHint() string {
-	items := discoverTableItems(m.collection)
 	cursor := m.table.Cursor()
-	if cursor < 0 || cursor >= len(items) {
+	if cursor < 0 || cursor >= len(m.tableItems) {
 		return ""
 	}
-	return strings.TrimSpace(items[cursor].picker.Hint)
+	return strings.TrimSpace(m.tableItems[cursor].picker.Hint)
 }
 
 func (m discoverModel) viewLine(line string) string {

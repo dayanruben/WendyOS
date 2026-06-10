@@ -421,6 +421,48 @@ func TestDiscoverTableItemsProvisionedStateAndNoAccessHint(t *testing.T) {
 	}
 }
 
+func TestMergePickerItemClearsNoAccessHintWhenVersionKnown(t *testing.T) {
+	lanItem := func(dev models.LANDevice) tui.PickerItem {
+		return tui.PickerItem{
+			Name:         dev.DisplayName,
+			Type:         "LAN",
+			AgentVersion: dev.AgentVersion,
+			Provisioned:  lanProvisionedDisplay(&dev),
+			Hint:         lanNoAccessHint(&dev, dev.AgentVersion),
+			DedupKey:     dev.DisplayName,
+			Value:        &pickerEntry{mergedDevice: &models.DiscoveredDevice{DisplayName: dev.DisplayName, AgentVersion: dev.AgentVersion, LAN: &dev}},
+		}
+	}
+
+	// A successful probe followed by a failed re-probe: the carried-over
+	// version must not coexist with a hint claiming details are unreadable.
+	existing := lanItem(models.LANDevice{DisplayName: "wendy-mine", IsMTLS: true, AgentVersion: "1.2.3"})
+	mergePickerItem(&existing, lanItem(models.LANDevice{DisplayName: "wendy-mine", IsMTLS: true}))
+	if existing.Hint != "" {
+		t.Fatalf("Hint = %q, want empty when AgentVersion is already known", existing.Hint)
+	}
+	if existing.AgentVersion != "1.2.3" {
+		t.Fatalf("AgentVersion = %q, want carried-over version", existing.AgentVersion)
+	}
+
+	// A failed probe followed by a successful one clears the hint.
+	existing = lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true})
+	if existing.Hint == "" {
+		t.Fatal("expected no-access hint on inaccessible provisioned device")
+	}
+	mergePickerItem(&existing, lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true, AgentVersion: "1.2.3"}))
+	if existing.Hint != "" {
+		t.Fatalf("Hint = %q, want cleared after successful probe", existing.Hint)
+	}
+
+	// Still-failing probes keep the hint while no version is known.
+	existing = lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true})
+	mergePickerItem(&existing, lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true}))
+	if existing.Hint != discoverNoAccessHint {
+		t.Fatalf("Hint = %q, want no-access hint to persist", existing.Hint)
+	}
+}
+
 func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
 	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{})
 	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{

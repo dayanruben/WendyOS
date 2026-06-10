@@ -1282,11 +1282,17 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	// Propagate security status: LAN probes determine mTLS, BLE doesn't. Once
 	// we know a device is insecure (or secure), update the existing item.
 	// The same goes for the provisioned state and the no-access hint, which
-	// clears once a probe succeeds.
+	// clears once a probe succeeds. The hint must stay consistent with the
+	// version cell: AgentVersion is carried over from earlier probes (or
+	// backfilled from BLE) above, so a failed re-probe must not claim the
+	// agent details are unreadable while a version is displayed.
 	if nd.LAN != nil {
 		existing.Insecure = incoming.Insecure
 		existing.Provisioned = incoming.Provisioned
 		existing.Hint = incoming.Hint
+		if existing.AgentVersion != "" {
+			existing.Hint = ""
+		}
 	}
 }
 
