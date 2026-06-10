@@ -339,6 +339,19 @@ if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
   exit 64
 fi
 
+if [[ "$DEVICE_ADDRESS" == *@* ]]; then
+  echo "ERROR: --device-address must not contain credentials." >&2
+  exit 64
+fi
+if [[ -n "$DEVICE_ADDRESS" && ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:%-]{1,255}$ ]]; then
+  echo "ERROR: invalid --device-address." >&2
+  exit 64
+fi
+if [[ -n "$TRANSPORT" && ! "$TRANSPORT" =~ ^[A-Za-z0-9._-]{1,40}$ ]]; then
+  echo "ERROR: WENDY_E2E_TRANSPORT contains invalid characters." >&2
+  exit 64
+fi
+
 shell_quote() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
@@ -588,12 +601,10 @@ start_managed_agent() {
   local pid_path="$managed_dir/pid"
   local port="50051"
 
-  if [[ "$DEVICE_ADDRESS" == *@* ]]; then
-    echo "ERROR: --device-address must not contain credentials." >&2
-    return 64
-  fi
-  if [[ "$DEVICE_ADDRESS" == *:* ]]; then
-    port="${DEVICE_ADDRESS##*:}"
+  if [[ "$DEVICE_ADDRESS" =~ ^\[[^]]+\]:([0-9]+)$ ]]; then
+    port="${BASH_REMATCH[1]}"
+  elif [[ "$DEVICE_ADDRESS" =~ ^[^:]+:([0-9]+)$ ]]; then
+    port="${BASH_REMATCH[1]}"
   fi
   if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || (( port < 1 || port > 65535 )); then
     echo "ERROR: invalid managed agent port in --device-address: $port" >&2
@@ -880,7 +891,7 @@ else
   echo "    Agent:   <local>:${AGENT_REPO_DIR:-<no-repo>}"
 fi
 if [[ -n "$DEVICE_ADDRESS" ]]; then
-  echo "    Device address: $DEVICE_ADDRESS"
+  echo "    Device address: ${DEVICE_ADDRESS##*@}"
 fi
 echo "    Agent OS: ${AGENT_OS:-<current>}"
 echo "    Transport: ${TRANSPORT:-<none>}"

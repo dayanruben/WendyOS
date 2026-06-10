@@ -41,6 +41,83 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate Swift E2E inputs (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+        RUNNER_ID: ${{ inputs.runner_id }}
+        CLI_OS: ${{ inputs.cli_os }}
+        AGENT_OS: ${{ inputs.agent_os }}
+        TRANSPORT: ${{ inputs.transport }}
+        MANAGED_AGENT: ${{ inputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        TESTS: ${{ inputs.tests }}
+      run: |
+        set -euo pipefail
+        require_match() {
+          local name="$1" value="$2" pattern="$3"
+          if [[ ! "$value" =~ $pattern ]]; then
+            echo "ERROR: invalid $name" >&2
+            exit 64
+          fi
+        }
+        reject_newline() {
+          local name="$1" value="$2"
+          if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+            echo "ERROR: invalid newline in $name" >&2
+            exit 64
+          fi
+        }
+        require_match WORKFLOW_ID "$WORKFLOW_ID" '^[A-Za-z0-9._-]{1,80}$'
+        require_match TARGET_ID "$TARGET_ID" '^[A-Za-z0-9._-]{1,80}$'
+        require_match RUNNER_ID "$RUNNER_ID" '^[A-Za-z0-9._-]{1,80}$'
+        require_match CLI_OS "$CLI_OS" '^[A-Za-z0-9._-]{1,40}$'
+        require_match AGENT_OS "$AGENT_OS" '^[A-Za-z0-9._-]{1,40}$'
+        require_match TRANSPORT "$TRANSPORT" '^[A-Za-z0-9._-]{1,40}$'
+        require_match MANAGED_AGENT "$MANAGED_AGENT" '^(true|false)$'
+        reject_newline DEVICE_ADDRESS "$DEVICE_ADDRESS"
+        reject_newline TESTS "$TESTS"
+        if [[ "$DEVICE_ADDRESS" == *@* || ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:%-]{1,255}$ ]]; then
+          echo "ERROR: invalid DEVICE_ADDRESS" >&2
+          exit 64
+        fi
+
+    - name: Validate Swift E2E inputs (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+        RUNNER_ID: ${{ inputs.runner_id }}
+        CLI_OS: ${{ inputs.cli_os }}
+        AGENT_OS: ${{ inputs.agent_os }}
+        TRANSPORT: ${{ inputs.transport }}
+        MANAGED_AGENT: ${{ inputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        TESTS: ${{ inputs.tests }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Require-Match([string]$Name, [string]$Value, [string]$Pattern) {
+          if ($Value -notmatch $Pattern) { throw "invalid $Name" }
+        }
+        function Reject-Newline([string]$Name, [string]$Value) {
+          if ($Value -match "[`r`n]") { throw "invalid newline in $Name" }
+        }
+        Require-Match WORKFLOW_ID $env:WORKFLOW_ID '^[A-Za-z0-9._-]{1,80}$'
+        Require-Match TARGET_ID $env:TARGET_ID '^[A-Za-z0-9._-]{1,80}$'
+        Require-Match RUNNER_ID $env:RUNNER_ID '^[A-Za-z0-9._-]{1,80}$'
+        Require-Match CLI_OS $env:CLI_OS '^[A-Za-z0-9._-]{1,40}$'
+        Require-Match AGENT_OS $env:AGENT_OS '^[A-Za-z0-9._-]{1,40}$'
+        Require-Match TRANSPORT $env:TRANSPORT '^[A-Za-z0-9._-]{1,40}$'
+        Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
+        Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
+        Reject-Newline TESTS $env:TESTS
+        if ($env:DEVICE_ADDRESS -match '@' -or $env:DEVICE_ADDRESS -notmatch '^[A-Za-z0-9._:%\[\]-]{1,255}$') {
+          throw 'invalid DEVICE_ADDRESS'
+        }
+
     - name: Set up Swift E2E host (Unix)
       if: runner.os != 'Windows' && inputs.setup == 'true'
       shell: bash
