@@ -165,7 +165,7 @@ runs:
         output_dir="${RUNNER_TEMP}/wendy"
         args=(--output-dir "$output_dir")
         if [[ "$MANAGED_AGENT" == "true" ]]; then
-          args+=(--managed-agent --agent-connect-address "$DEVICE_ADDRESS")
+          args+=(--managed-agent --device-address "$DEVICE_ADDRESS")
         else
           args+=(--agent-address "$DEVICE_ADDRESS")
         fi
