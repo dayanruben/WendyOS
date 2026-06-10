@@ -343,7 +343,7 @@ if [[ "$DEVICE_ADDRESS" == *@* ]]; then
   echo "ERROR: --device-address must not contain credentials." >&2
   exit 64
 fi
-if [[ -n "$DEVICE_ADDRESS" && ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:%-]{1,255}$ ]]; then
+if [[ -n "$DEVICE_ADDRESS" && ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:-]{1,255}$ ]]; then
   echo "ERROR: invalid --device-address." >&2
   exit 64
 fi

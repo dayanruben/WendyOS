@@ -79,7 +79,7 @@ runs:
         require_match MANAGED_AGENT "$MANAGED_AGENT" '^(true|false)$'
         reject_newline DEVICE_ADDRESS "$DEVICE_ADDRESS"
         reject_newline TESTS "$TESTS"
-        if [[ "$DEVICE_ADDRESS" == *@* || ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:%-]{1,255}$ ]]; then
+        if [[ "$DEVICE_ADDRESS" == *@* || ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:-]{1,255}$ ]]; then
           echo "ERROR: invalid DEVICE_ADDRESS" >&2
           exit 64
         fi
@@ -114,7 +114,7 @@ runs:
         Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
         Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
         Reject-Newline TESTS $env:TESTS
-        if ($env:DEVICE_ADDRESS -match '@' -or $env:DEVICE_ADDRESS -notmatch '^[A-Za-z0-9._:%\[\]-]{1,255}$') {
+        if ($env:DEVICE_ADDRESS -match '@' -or $env:DEVICE_ADDRESS -notmatch '^[A-Za-z0-9._:\[\]-]{1,255}$') {
           throw 'invalid DEVICE_ADDRESS'
         }
 
@@ -130,18 +130,26 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        for env_file in \
-          "$HOME/.swiftly/env.sh" \
-          "$HOME/.local/share/swiftly/env.sh"
-        do
-          if [[ -f "$env_file" ]]; then
-            # shellcheck disable=SC1090
-            . "$env_file"
+        append_path_dir() {
+          local dir="$1"
+          if [[ -z "$dir" || "$dir" != /* || "$dir" == *$'\n'* || "$dir" == *$'\r'* ]]; then
+            return 0
+          fi
+          case "$dir" in
+            "$HOME/.swiftly/bin"|"$HOME/.local/share/swiftly/bin"|/usr/bin|/usr/local/bin|/usr/share/swift/usr/bin|/opt/hostedtoolcache/*|/Applications/*|/Library/*)
+              printf '%s\n' "$dir" >> "$GITHUB_PATH"
+              ;;
+          esac
+        }
+
+        for dir in "$HOME/.swiftly/bin" "$HOME/.local/share/swiftly/bin"; do
+          if [[ -d "$dir" ]]; then
+            append_path_dir "$dir"
           fi
         done
         for tool in swift swiftly; do
-          if command -v "$tool" >/dev/null 2>&1; then
-            dirname "$(command -v "$tool")" >> "$GITHUB_PATH"
+          if tool_path="$(command -v "$tool" 2>/dev/null)"; then
+            append_path_dir "$(dirname "$tool_path")"
           fi
         done
 

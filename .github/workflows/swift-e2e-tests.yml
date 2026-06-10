@@ -61,7 +61,7 @@ jobs:
   # instead of canceling older pending routes.
   swift-e2e-tests:
     name: ${{ matrix.target.name }}
-    runs-on: ${{ fromJSON(matrix.target.runs_on) }}
+    runs-on: ${{ matrix.target.runs_on }}
     concurrency:
       group: device-${{ matrix.target.device_id }}
       cancel-in-progress: false
@@ -77,7 +77,7 @@ jobs:
             target_id: local-macos
             runner_id: macos-26
             runner_label: macos-26
-            runs_on: '["macos-26"]'
+            runs_on: [macos-26]
             cli_os: macOS
             device_id: local-macos-hosted
             device_address: 127.0.0.1:50051
@@ -91,7 +91,7 @@ jobs:
             target_id: local-ubuntu-24
             runner_id: ubuntu-24-04
             runner_label: ubuntu-24-04
-            runs_on: '["ubuntu-24.04"]'
+            runs_on: [ubuntu-24.04]
             cli_os: linux
             device_id: local-ubuntu-hosted
             device_address: 127.0.0.1:50051
@@ -127,7 +127,7 @@ jobs:
             target_id: macos-ubuntu-24
             runner_id: macos-26
             runner_label: macos-26
-            runs_on: '["self-hosted","macos-26"]'
+            runs_on: [self-hosted, macos-26]
             cli_os: macOS
             device_id: ubuntu-24
             device_address: wendy-SER9.local
