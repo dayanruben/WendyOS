@@ -537,7 +537,7 @@ var (
 	scanStyle       = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 	flashStyle      = lipgloss.NewStyle().Foreground(tui.ColorAccent)
 	flashErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")) // red
-	hintWarnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // amber
+	hintWarnStyle   = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 )
 
 func (m discoverModel) View() string {
