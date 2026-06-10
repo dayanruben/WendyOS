@@ -88,6 +88,8 @@ func TestStripControl(t *testing.T) {
 		{"del\x7fchar", "delchar"},
 		{"c1\u009bcsi", "c1csi"}, // U+009B is a single-rune CSI introducer
 		{"c1\u0085nel", "c1nel"},
+		{"bidi\u202eflip", "bidiflip"}, // RLO override (Trojan Source spoofing)
+		{"zero\u200bwidth\u200djoin", "zerowidthjoin"},
 		{"emoji 📶 ok", "emoji 📶 ok"},
 	}
 	for _, c := range cases {
