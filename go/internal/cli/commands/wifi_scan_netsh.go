@@ -20,8 +20,9 @@ type localWifiNetwork struct {
 
 // normalizeWifiSecurity maps raw scanner security strings (nmcli's
 // "WPA1 WPA2", netsh's "WPA2-Personal", ...) onto the short labels the agent
-// side uses, picking the strongest advertised suite. Returns the raw string
-// when nothing matches so unusual suites still surface, and "" for unknown.
+// side uses, picking the strongest advertised suite. Unrecognized strings map
+// to "" — the raw value comes from over-the-air scan data, so omitting an
+// exotic suite is safer than rendering it verbatim.
 func normalizeWifiSecurity(raw string) string {
 	s := strings.ToUpper(strings.TrimSpace(raw))
 	if s == "" {
@@ -40,10 +41,12 @@ func normalizeWifiSecurity(raw string) string {
 		return "WPA" + suffix
 	case strings.Contains(s, "WEP"):
 		return "WEP"
-	case s == "--" || s == "NONE" || strings.Contains(s, "OPEN"):
+	case s == "--" || s == "NONE" || strings.Contains(s, "OPEN") || strings.Contains(s, "OWE"):
+		// OWE is "enhanced open" — encrypted but passwordless, so Open is
+		// the honest label for connection purposes.
 		return "Open"
 	}
-	return tui.StripControl(strings.TrimSpace(raw))
+	return ""
 }
 
 // ssidLine matches `SSID 1 : MyNetwork`. The `\d+` between `SSID` and the

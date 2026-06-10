@@ -86,6 +86,8 @@ func TestStripControl(t *testing.T) {
 		{"\x1b]8;;http://evil\x07click\x1b]8;;\x07", "]8;;http://evilclick]8;;"},
 		{"tab\tand\nnewline", "tabandnewline"},
 		{"del\x7fchar", "delchar"},
+		{"c1\u009bcsi", "c1csi"}, // U+009B is a single-rune CSI introducer
+		{"c1\u0085nel", "c1nel"},
 		{"emoji 📶 ok", "emoji 📶 ok"},
 	}
 	for _, c := range cases {

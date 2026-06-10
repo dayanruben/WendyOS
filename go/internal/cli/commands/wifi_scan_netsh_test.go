@@ -189,7 +189,8 @@ func TestNormalizeWifiSecurity(t *testing.T) {
 		{"WPA2 802.1X", "WPA2-Ent"},
 		{"WPA3-Enterprise", "WPA3-Ent"},
 		{"SAE", "WPA3"},
-		{"SomethingElse", "SomethingElse"}, // unknown suites pass through
+		{"OWE", "Open"},
+		{"SomethingElse", ""}, // unknown scan-derived suites are omitted, not echoed
 	}
 	for _, c := range cases {
 		if got := normalizeWifiSecurity(c.in); got != c.want {

@@ -736,23 +736,38 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 		// into the picker as they are found. Each poll returns quickly: the
 		// in-progress scan rejects new rescan requests and the list call reads
 		// the cache. Only over gRPC — the BLE transport can't multiplex
-		// concurrent calls.
+		// concurrent calls. The deadline caps RPC traffic if the
+		// authoritative scan wedges; its result still lands whenever it
+		// finishes.
 		if client.agent != nil {
 			go func() {
 				ticker := time.NewTicker(1500 * time.Millisecond)
 				defer ticker.Stop()
+				deadline := time.After(30 * time.Second)
+				lastSeen := ""
 				for {
 					select {
 					case <-done:
 						return
 					case <-scanCtx.Done():
 						return
+					case <-deadline:
+						return
 					case <-ticker.C:
 						nets, err := client.List(scanCtx)
 						if err != nil {
 							continue
 						}
-						p.Send(tui.PickerAddMsg{Items: wifiPickerItems(nets)})
+						items := wifiPickerItems(nets)
+						// Skip redraws when the cache hasn't changed.
+						sig := make([]string, 0, len(items))
+						for _, it := range items {
+							sig = append(sig, it.Name)
+						}
+						if joined := strings.Join(sig, "\x00"); joined != lastSeen {
+							lastSeen = joined
+							p.Send(tui.PickerAddMsg{Items: items})
+						}
 					}
 				}
 			}()
