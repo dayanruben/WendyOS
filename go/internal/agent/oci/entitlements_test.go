@@ -157,6 +157,98 @@ func TestApplyEntitlements_GPU(t *testing.T) {
 	if !hasEnv(spec, "NVIDIA_VISIBLE_DEVICES") {
 		t.Error("GPU entitlement did not set NVIDIA_VISIBLE_DEVICES")
 	}
+
+	// On a generic (non-Pi) host, the GPU entitlement must not expose the
+	// Raspberry Pi VideoCore mailbox device.
+	if hasMountDest(spec, "/dev/vcio") {
+		t.Error("GPU entitlement must not mount /dev/vcio on a non-Raspberry-Pi host")
+	}
+}
+
+// installFakeVCIO points vcioDevicePath at a temp file, makes statMajor report
+// the given major for it, and reports the host as a Raspberry Pi — so the
+// vcio branch of applyGPU can be exercised without a real /dev/vcio (which only
+// exists on a Pi and whose major needs root/mknod to fake). Restored on cleanup.
+func installFakeVCIO(t *testing.T, major int64) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "vcio")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+
+	origPath := vcioDevicePath
+	origStat := statMajor
+	origBoard := boardDetect
+	t.Cleanup(func() {
+		vcioDevicePath = origPath
+		statMajor = origStat
+		boardDetect = origBoard
+	})
+
+	vcioDevicePath = p
+	statMajor = func(q string) (int64, error) {
+		if q == p {
+			return major, nil
+		}
+		return 0, os.ErrNotExist
+	}
+	boardDetect = func() board.Info { return board.Info{Kind: board.RaspberryPi} }
+	return p
+}
+
+func TestApplyGPU_RaspberryPiExposesVCIO(t *testing.T) {
+	source := installFakeVCIO(t, 249)
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// /dev/vcio must be bind-mounted from the host node.
+	m, ok := mountForDest(spec, "/dev/vcio")
+	if !ok {
+		t.Fatal("GPU entitlement did not mount /dev/vcio on a Raspberry Pi")
+	}
+	if m.Type != "bind" || m.Source != source {
+		t.Errorf("/dev/vcio mount = {Type:%q Source:%q}, want bind from %q", m.Type, m.Source, source)
+	}
+
+	// The dynamic major must be allowed, exactly once, with "rw" (no mknod).
+	if !hasMajorRule(spec, 249) {
+		t.Error("GPU entitlement did not allow the /dev/vcio major on a Raspberry Pi")
+	}
+	if got := countMajorRule(spec, 249); got != 1 {
+		t.Errorf("vcio major rule should be deduplicated, got %d entries", got)
+	}
+	if acc, _ := majorRuleAccess(spec, 249); acc != "rw" {
+		t.Errorf("vcio major Access = %q, want %q (mknod must be withheld)", acc, "rw")
+	}
+}
+
+func TestApplyGPU_RaspberryPiSkipsVCIOWhenAbsent(t *testing.T) {
+	// Report a Pi, but leave vcioDevicePath at its default (/dev/vcio), which
+	// does not exist on the test host: the bind mount must be skipped so a
+	// missing source cannot stop the container from starting.
+	origBoard := boardDetect
+	t.Cleanup(func() { boardDetect = origBoard })
+	boardDetect = func() board.Info { return board.Info{Kind: board.RaspberryPi} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if hasMountDest(spec, "/dev/vcio") {
+		t.Error("GPU entitlement mounted /dev/vcio even though the host node is absent")
+	}
 }
 
 func TestApplyEntitlements_Network_Host(t *testing.T) {
