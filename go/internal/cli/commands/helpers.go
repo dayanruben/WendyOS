@@ -1281,8 +1281,12 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 
 	// Propagate security status: LAN probes determine mTLS, BLE doesn't. Once
 	// we know a device is insecure (or secure), update the existing item.
+	// The same goes for the provisioned state and the no-access hint, which
+	// clears once a probe succeeds.
 	if nd.LAN != nil {
 		existing.Insecure = incoming.Insecure
+		existing.Provisioned = incoming.Provisioned
+		existing.Hint = incoming.Hint
 	}
 }
 
@@ -1342,6 +1346,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			Address:      preferredLANAddress(dev),
 			AgentVersion: dev.AgentVersion,
 			OSVersion:    dev.OSVersion,
+			Provisioned:  lanProvisionedDisplay(&devCopy),
+			Hint:         lanNoAccessHint(&devCopy, dev.AgentVersion),
 			DedupKey:     dev.DisplayName,
 			SortKey:      usbFirstSortKey(dev.DisplayName, dev.USB),
 			Insecure:     insecure,

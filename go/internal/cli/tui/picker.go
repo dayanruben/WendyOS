@@ -22,6 +22,7 @@ type PickerItem struct {
 	Address      string
 	AgentVersion string
 	OSVersion    string
+	Provisioned  string // "Provisioned" or "Unprovisioned" when known, empty otherwise
 	Hint         string // optional footer text shown when this item is highlighted
 
 	// DedupKey is used for deduplication. If empty, Name is used.
@@ -402,6 +403,13 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 		minWidth: 16,
 		value: func(item PickerItem) string {
 			return item.OSVersion
+		},
+	},
+	{
+		title:    "Provisioned",
+		minWidth: 13,
+		value: func(item PickerItem) string {
+			return item.Provisioned
 		},
 	},
 	pickerColumnDefs[3],

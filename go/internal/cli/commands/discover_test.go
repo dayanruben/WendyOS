@@ -366,6 +366,95 @@ func TestDiscoverTableItemsAnnotatesLANUSBFromEthernetInterface(t *testing.T) {
 	}
 }
 
+func TestDiscoverTableItemsProvisionedStateAndNoAccessHint(t *testing.T) {
+	collection := &models.DevicesCollection{
+		LANDevices: []models.LANDevice{
+			// Provisioned device the CLI cannot read (metadata probe failed).
+			{DisplayName: "wendy-locked", IPAddress: "192.168.1.30", IsMTLS: true},
+			// Provisioned device the CLI can read.
+			{DisplayName: "wendy-mine", IPAddress: "192.168.1.31", IsMTLS: true, AgentVersion: "1.2.3"},
+			// Unprovisioned device.
+			{DisplayName: "wendy-open", IPAddress: "192.168.1.32", AgentVersion: "1.2.3"},
+		},
+	}
+
+	items := discoverTableItems(collection)
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3", len(items))
+	}
+	byName := make(map[string]discoverTableItem, len(items))
+	for _, item := range items {
+		byName[item.info.Name] = item
+	}
+
+	locked := byName["wendy-locked"]
+	if locked.picker.Provisioned != "Provisioned" {
+		t.Fatalf("locked Provisioned = %q, want \"Provisioned\"", locked.picker.Provisioned)
+	}
+	if locked.picker.Hint != discoverNoAccessHint {
+		t.Fatalf("locked Hint = %q, want no-access hint", locked.picker.Hint)
+	}
+	if locked.info.Provisioned != "Provisioned" {
+		t.Fatalf("locked info.Provisioned = %q, want \"Provisioned\"", locked.info.Provisioned)
+	}
+
+	mine := byName["wendy-mine"]
+	if mine.picker.Provisioned != "Provisioned" {
+		t.Fatalf("mine Provisioned = %q, want \"Provisioned\"", mine.picker.Provisioned)
+	}
+	if mine.picker.Hint != "" {
+		t.Fatalf("mine Hint = %q, want empty for accessible device", mine.picker.Hint)
+	}
+
+	open := byName["wendy-open"]
+	if open.picker.Provisioned != "Unprovisioned" {
+		t.Fatalf("open Provisioned = %q, want \"Unprovisioned\"", open.picker.Provisioned)
+	}
+	if open.picker.Hint != "" {
+		t.Fatalf("open Hint = %q, want empty", open.picker.Hint)
+	}
+
+	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
+	// Columns with default marker: 0=★ 1=Name 2=Type 3=Address 4=agent 5=OS 6=Provisioned.
+	if rows[0][6] != "Provisioned" {
+		t.Fatalf("Provisioned cell = %q, want \"Provisioned\"", rows[0][6])
+	}
+}
+
+func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
+	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{})
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName: "wendy-locked",
+		IPAddress:   "192.168.1.30",
+		IsMTLS:      true,
+	}}})
+	dm := updated.(discoverModel)
+
+	view := ansi.Strip(dm.View())
+	if !strings.Contains(view, "does not have access") {
+		t.Fatalf("expected no-access hint in view, got %q", view)
+	}
+	if !strings.Contains(view, "wendy auth login") {
+		t.Fatalf("expected login suggestion in view, got %q", view)
+	}
+}
+
+func TestDiscoverModelViewOmitsHintForAccessibleDevice(t *testing.T) {
+	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{})
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName:  "wendy-mine",
+		IPAddress:    "192.168.1.31",
+		IsMTLS:       true,
+		AgentVersion: "1.2.3",
+	}}})
+	dm := updated.(discoverModel)
+
+	view := ansi.Strip(dm.View())
+	if strings.Contains(view, "does not have access") {
+		t.Fatalf("unexpected no-access hint for accessible device: %q", view)
+	}
+}
+
 func TestDiscoverDeviceInfo_JSONSingleDevice(t *testing.T) {
 	info := discoverDeviceInfo{
 		Name:    "wendyos-brave-phoenix",

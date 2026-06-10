@@ -198,11 +198,12 @@ type extScanMsg struct{ devices []models.ExternalDevice }
 
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
 type discoverDeviceInfo struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	USB     string `json:"usb,omitempty"`
-	Address string `json:"address"`
-	Version string `json:"version,omitempty"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	USB         string `json:"usb,omitempty"`
+	Address     string `json:"address"`
+	Version     string `json:"version,omitempty"`
+	Provisioned string `json:"provisioned,omitempty"`
 }
 
 type discoverTableItem struct {
@@ -535,6 +536,7 @@ var (
 	scanStyle       = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 	flashStyle      = lipgloss.NewStyle().Foreground(tui.ColorAccent)
 	flashErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")) // red
+	hintWarnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // amber
 )
 
 func (m discoverModel) View() string {
@@ -567,6 +569,9 @@ func (m discoverModel) View() string {
 
 	if !m.collection.IsEmpty() {
 		sb.WriteString(m.tableView() + "\n")
+		if hint := m.selectedHint(); hint != "" {
+			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
+		}
 	} else if m.hasResults {
 		sb.WriteString(m.viewLine(dimStyle.Render("No devices found yet...")) + "\n")
 	}
@@ -595,6 +600,17 @@ func (m *discoverModel) refreshTable() {
 	}
 	m.table.SetWidth(tui.PickerTableWidth(m.table.Columns()))
 	m.table.SetHeight(tui.PickerTableHeight(len(rows), m.windowHeight))
+}
+
+// selectedHint returns the hint for the highlighted table row, e.g. the
+// no-access explanation for a provisioned device this CLI cannot query.
+func (m discoverModel) selectedHint() string {
+	items := discoverTableItems(m.collection)
+	cursor := m.table.Cursor()
+	if cursor < 0 || cursor >= len(items) {
+		return ""
+	}
+	return strings.TrimSpace(items[cursor].picker.Hint)
 }
 
 func (m discoverModel) viewLine(line string) string {
@@ -733,6 +749,34 @@ func humanReadableDeviceType(dt string) string {
 		return name
 	}
 	return dt
+}
+
+// discoverNoAccessHint explains a blank version column on a provisioned
+// device: the metadata probe failed because this CLI has no certificate the
+// device accepts (unprovisioned CLI, or logged into a different account).
+const discoverNoAccessHint = "This device is provisioned and this CLI does not have access, so agent details cannot be read. Run 'wendy auth login' with an account that can access it."
+
+// lanProvisionedDisplay maps a LAN device's advertised mTLS state to the
+// "Provisioned" column value. Non-LAN devices don't advertise this, so nil
+// returns "".
+func lanProvisionedDisplay(lan *models.LANDevice) string {
+	if lan == nil {
+		return ""
+	}
+	if lan.IsMTLS {
+		return "Provisioned"
+	}
+	return "Unprovisioned"
+}
+
+// lanNoAccessHint returns discoverNoAccessHint when the device advertises
+// mTLS (provisioned) but the agent metadata probe came back empty — the
+// signature of a CLI that cannot authenticate to it.
+func lanNoAccessHint(lan *models.LANDevice, agentVersion string) string {
+	if lan != nil && lan.IsMTLS && agentVersion == "" {
+		return discoverNoAccessHint
+	}
+	return ""
 }
 
 // markOutdated prefixes the version string with "* " when the agent is behind
@@ -897,6 +941,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 			address = preferredLANAddress(*d.LAN)
 			defaultDevice = firstNonEmpty(d.LAN.Hostname, d.LAN.IPAddress, d.LAN.DisplayName)
 		}
+		provisioned := lanProvisionedDisplay(d.LAN)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
 				Name:         discovery.SanitiseDisplayName(d.DisplayName),
@@ -905,15 +950,18 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:      address,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
 				OSVersion:    d.OSVersion,
+				Provisioned:  provisioned,
+				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
 				DedupKey:     d.DisplayName,
 				SortKey:      usbFirstSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
-				Name:    d.DisplayName,
-				Type:    deviceType,
-				USB:     usb,
-				Address: address,
-				Version: d.AgentVersion,
+				Name:        d.DisplayName,
+				Type:        deviceType,
+				USB:         usb,
+				Address:     address,
+				Version:     d.AgentVersion,
+				Provisioned: provisioned,
 			},
 			lanName:       lanName,
 			defaultDevice: defaultDevice,

@@ -192,7 +192,7 @@ func TestPickerDeviceTableData_UsesStableDeviceSchema(t *testing.T) {
 		Name: "alpha",
 	}}, "", false)
 
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Description"} {
+	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Provisioned", "Description"} {
 		if !hasColumn(cols, want) {
 			t.Fatalf("expected stable device column %q, got %v", want, cols)
 		}
@@ -208,10 +208,31 @@ func TestNewPicker_UsesStableDeviceSchemaBeforeMetadataArrives(t *testing.T) {
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
 	pm := updated.(PickerModel)
 
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Description"} {
+	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Provisioned", "Description"} {
 		if !hasColumn(pm.table.Columns(), want) {
 			t.Fatalf("expected stable device column %q, got %v", want, pm.table.Columns())
 		}
+	}
+}
+
+func TestPickerDeviceTableData_ShowsProvisionedState(t *testing.T) {
+	_, rows := PickerDeviceTableData([]PickerItem{
+		{Name: "alpha", Provisioned: "Provisioned"},
+		{Name: "beta", Provisioned: "Unprovisioned"},
+		{Name: "gamma"},
+	}, "", false)
+
+	if len(rows) != 3 {
+		t.Fatalf("rows = %v, want 3", rows)
+	}
+	if rows[0][5] != "Provisioned" {
+		t.Fatalf("provisioned cell = %q, want \"Provisioned\"", rows[0][5])
+	}
+	if rows[1][5] != "Unprovisioned" {
+		t.Fatalf("provisioned cell = %q, want \"Unprovisioned\"", rows[1][5])
+	}
+	if rows[2][5] != "" {
+		t.Fatalf("provisioned cell = %q, want empty for unknown state", rows[2][5])
 	}
 }
 
