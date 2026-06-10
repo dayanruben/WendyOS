@@ -69,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - name: local macOS 26 → local macOS 26
+          - name: 'Local: macOS 26'
             target_id: local-macos-macos
             runner_id: macos-26
             runner_label: macos-26
@@ -82,7 +82,7 @@ jobs:
             setup: true
             managed_agent: true
 
-          - name: local Ubuntu 24 → local Ubuntu 24
+          - name: 'Local: Ubuntu 24'
             target_id: local-ubuntu-ubuntu-24
             runner_id: ubuntu-24-04
             runner_label: ubuntu-24-04
