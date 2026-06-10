@@ -903,7 +903,9 @@ func wifiListFromHost() error {
 		if n.SignalStrength > 0 {
 			signal = fmt.Sprintf("%d%%", n.SignalStrength)
 		}
-		rows = append(rows, []string{n.SSID, n.Security, signal})
+		// Scanner output is already sanitized at ingestion; strip again at
+		// the render boundary so this site is safe in isolation.
+		rows = append(rows, []string{tui.StripControl(n.SSID), tui.StripControl(n.Security), signal})
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
