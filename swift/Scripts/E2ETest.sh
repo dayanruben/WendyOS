@@ -645,14 +645,16 @@ start_managed_agent() {
   echo "    Config:  $config_dir"
   echo "    Logs:    $stdout_path, $stderr_path"
 
-  mkdir -p "$config_dir"
+  mkdir -p "$config_dir/home" "$config_dir/xdg-config" "$config_dir/xdg-data"
   env -i \
-    HOME="${HOME:-}" \
-    LOGNAME="${LOGNAME:-${USER:-}}" \
+    HOME="$config_dir/home" \
+    LOGNAME="wendy-e2e-agent" \
     PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     TMPDIR="${TMPDIR:-/tmp}" \
-    USER="${USER:-}" \
+    USER="wendy-e2e-agent" \
     WENDY_CONFIG_PATH="$config_dir" \
+    XDG_CONFIG_HOME="$config_dir/xdg-config" \
+    XDG_DATA_HOME="$config_dir/xdg-data" \
     WENDY_AGENT_PORT="$port" \
     WENDY_OTEL_PORT=0 \
     WENDY_OTEL_HTTP_PORT=0 \

@@ -187,7 +187,7 @@ runs:
         bash swift/Scripts/E2ESetup.sh
 
     - name: Configure Swiftly PATH (Unix)
-      if: runner.os != 'Windows'
+      if: runner.os != 'Windows' && runner.environment == 'github-hosted'
       shell: bash
       run: |
         set -euo pipefail
@@ -197,7 +197,7 @@ runs:
             return 0
           fi
           case "$dir" in
-            "$HOME/.swiftly/bin"|"$HOME/.local/share/swiftly/bin"|/usr/bin|/usr/local/bin|/usr/share/swift/usr/bin|/opt/hostedtoolcache/*|/Applications/*|/Library/*)
+            "$HOME/.swiftly/bin"|"$HOME/.local/share/swiftly/bin"|/usr/bin|/usr/local/bin|/usr/share/swift/usr/bin)
               printf '%s\n' "$dir" >> "$GITHUB_PATH"
               ;;
           esac
@@ -332,11 +332,33 @@ runs:
         DEVICE_ADDRESS: ${{ inputs.device_address }}
       run: |
         $ErrorActionPreference = 'Stop'
+        function Test-Port([string]$Port) {
+          if ($Port -notmatch '^[0-9]{1,5}$') { return $false }
+          $Number = [int]$Port
+          return ($Number -ge 1 -and $Number -le 65535)
+        }
+        function Test-DeviceAddress([string]$Value) {
+          if ($Value -match '@') { return $false }
+          $Port = $null
+          if ($Value -match '^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$') {
+            $Port = $Matches[2]
+          } elseif ($Value -match '^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$') {
+            $Port = $Matches[2]
+          } else {
+            return $false
+          }
+          return ([string]::IsNullOrEmpty($Port) -or (Test-Port $Port))
+        }
         if ($env:MANAGED_AGENT -eq 'true') {
           throw 'managed_agent is not supported by the Windows Swift E2E runner yet.'
         }
+        if (-not (Test-DeviceAddress $env:DEVICE_ADDRESS)) {
+          throw 'invalid DEVICE_ADDRESS'
+        }
         $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
-        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "$env:DEVICE_ADDRESS"
+        $deviceAddress = [string]$env:DEVICE_ADDRESS
+        $e2eArgs = @('--output-dir', $outputDir, '--agent-address', $deviceAddress)
+        & ./Scripts/E2ETest.ps1 @e2eArgs
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Upload Swift E2E run (Unix)
