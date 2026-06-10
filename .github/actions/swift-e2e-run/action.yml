@@ -42,6 +42,7 @@ runs:
   using: composite
   steps:
     - name: Validate Swift E2E inputs (Unix)
+      id: validate-unix
       if: runner.os != 'Windows'
       shell: bash
       env:
@@ -115,8 +116,18 @@ runs:
           echo "ERROR: invalid TESTS" >&2
           exit 64
         fi
+        {
+          echo "validated=true"
+          echo "tests=$TESTS"
+          echo "managed_agent=$MANAGED_AGENT"
+          echo "device_address=$DEVICE_ADDRESS"
+          echo "cli_os=$CLI_OS"
+          echo "agent_os=$AGENT_OS"
+          echo "transport=$TRANSPORT"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Validate Swift E2E inputs (Windows)
+      id: validate-windows
       if: runner.os == 'Windows'
       shell: pwsh
       env:
@@ -178,6 +189,13 @@ runs:
         if (-not (Test-Tests $env:TESTS)) {
           throw 'invalid TESTS'
         }
+        "validated=true" >> $env:GITHUB_OUTPUT
+        "tests=$env:TESTS" >> $env:GITHUB_OUTPUT
+        "managed_agent=$env:MANAGED_AGENT" >> $env:GITHUB_OUTPUT
+        "device_address=$env:DEVICE_ADDRESS" >> $env:GITHUB_OUTPUT
+        "cli_os=$env:CLI_OS" >> $env:GITHUB_OUTPUT
+        "agent_os=$env:AGENT_OS" >> $env:GITHUB_OUTPUT
+        "transport=$env:TRANSPORT" >> $env:GITHUB_OUTPUT
 
     - name: Set up Swift E2E host (Unix)
       if: runner.os != 'Windows' && inputs.setup == 'true'
@@ -294,18 +312,18 @@ runs:
         "run_id=$runID" >> $env:GITHUB_OUTPUT
 
     - name: Run Swift E2E tests (Unix)
-      if: runner.os != 'Windows'
+      if: runner.os != 'Windows' && steps.validate-unix.outputs.validated == 'true'
       working-directory: swift
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
+        WENDY_E2E_TEST_FILTERS: ${{ steps.validate-unix.outputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
-        WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
-        WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
-        WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
-        MANAGED_AGENT: ${{ inputs.managed_agent }}
-        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        WENDY_E2E_CLI_OS: ${{ steps.validate-unix.outputs.cli_os }}
+        WENDY_E2E_AGENT_OS: ${{ steps.validate-unix.outputs.agent_os }}
+        WENDY_E2E_TRANSPORT: ${{ steps.validate-unix.outputs.transport }}
+        MANAGED_AGENT: ${{ steps.validate-unix.outputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ steps.validate-unix.outputs.device_address }}
       run: |
         set -euo pipefail
         output_dir="${RUNNER_TEMP}/wendy"
@@ -318,18 +336,18 @@ runs:
         bash ./Scripts/E2ETest.sh "${args[@]}"
 
     - name: Run Swift E2E tests (Windows)
-      if: runner.os == 'Windows'
+      if: runner.os == 'Windows' && steps.validate-windows.outputs.validated == 'true'
       working-directory: swift
       shell: pwsh
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
+        WENDY_E2E_TEST_FILTERS: ${{ steps.validate-windows.outputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
-        WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
-        WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
-        WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
-        MANAGED_AGENT: ${{ inputs.managed_agent }}
-        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        WENDY_E2E_CLI_OS: ${{ steps.validate-windows.outputs.cli_os }}
+        WENDY_E2E_AGENT_OS: ${{ steps.validate-windows.outputs.agent_os }}
+        WENDY_E2E_TRANSPORT: ${{ steps.validate-windows.outputs.transport }}
+        MANAGED_AGENT: ${{ steps.validate-windows.outputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ steps.validate-windows.outputs.device_address }}
       run: |
         $ErrorActionPreference = 'Stop'
         function Test-Port([string]$Port) {
