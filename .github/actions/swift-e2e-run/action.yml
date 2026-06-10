@@ -101,7 +101,8 @@ runs:
           done
         }
         write_output() {
-          local name="$1" value="$2" delimiter="WENDY_EOF_${name}"
+          local name="$1" value="$2" delimiter
+          delimiter="WENDY_EOF_${name}"
           {
             printf '%s<<%s\n' "$name" "$delimiter"
             printf '%s\n' "$value"
