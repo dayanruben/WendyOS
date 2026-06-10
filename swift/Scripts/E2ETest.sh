@@ -102,6 +102,32 @@ normalize_isolation() {
   esac
 }
 
+validate_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( 10#$port >= 1 && 10#$port <= 65535 ))
+}
+
+valid_device_address() {
+  local value="$1" port=""
+  [[ "$value" != *@* ]] || return 1
+  if [[ "$value" =~ ^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$ ]]; then
+    port="${BASH_REMATCH[2]:-}"
+  elif [[ "$value" =~ ^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$ ]]; then
+    port="${BASH_REMATCH[2]:-}"
+  else
+    return 1
+  fi
+  [[ -z "$port" ]] || validate_port "$port"
+}
+
+validate_test_filter() {
+  local filter="$1"
+  [[ -n "$filter" && ${#filter} -le 200 ]] || return 1
+  [[ "$filter" != -* ]] || return 1
+  [[ "$filter" =~ ^[A-Za-z0-9][A-Za-z0-9\ \._:/\|\(\),_-]*$ ]]
+}
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -282,7 +308,8 @@ done
 if [[ ${#TEST_FILTERS[@]} -eq 0 && -n "${WENDY_E2E_TEST_FILTERS:-}" ]]; then
   IFS=',' read -ra RAW_FILTERS <<< "${WENDY_E2E_TEST_FILTERS}"
   for filter in "${RAW_FILTERS[@]}"; do
-    filter="$(echo "$filter" | xargs)"
+    filter="${filter#${filter%%[![:space:]]*}}"
+    filter="${filter%${filter##*[![:space:]]}}"
     [[ -n "$filter" ]] && TEST_FILTERS+=("$filter")
   done
 fi
@@ -339,14 +366,16 @@ if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
   exit 64
 fi
 
-if [[ "$DEVICE_ADDRESS" == *@* ]]; then
-  echo "ERROR: --device-address must not contain credentials." >&2
-  exit 64
-fi
-if [[ -n "$DEVICE_ADDRESS" && ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:-]{1,255}$ ]]; then
+if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
   echo "ERROR: invalid --device-address." >&2
   exit 64
 fi
+for filter in "${TEST_FILTERS[@]}"; do
+  if ! validate_test_filter "$filter"; then
+    echo "ERROR: invalid SwiftPM test filter: $filter" >&2
+    exit 64
+  fi
+done
 if [[ -n "$TRANSPORT" && ! "$TRANSPORT" =~ ^[A-Za-z0-9._-]{1,40}$ ]]; then
   echo "ERROR: WENDY_E2E_TRANSPORT contains invalid characters." >&2
   exit 64
@@ -601,18 +630,18 @@ start_managed_agent() {
   local pid_path="$managed_dir/pid"
   local port="50051"
 
-  if [[ "$DEVICE_ADDRESS" =~ ^\[[^]]+\]:([0-9]+)$ ]]; then
+  if [[ "$DEVICE_ADDRESS" =~ ^[A-Za-z0-9._-]{1,253}:([0-9]{1,5})$ ]]; then
     port="${BASH_REMATCH[1]}"
-  elif [[ "$DEVICE_ADDRESS" =~ ^[^:]+:([0-9]+)$ ]]; then
+  elif [[ "$DEVICE_ADDRESS" =~ ^\[[0-9A-Fa-f:]+\]:([0-9]{1,5})$ ]]; then
     port="${BASH_REMATCH[1]}"
   fi
-  if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || (( port < 1 || port > 65535 )); then
+  if ! validate_port "$port"; then
     echo "ERROR: invalid managed agent port in --device-address: $port" >&2
     return 64
   fi
 
   echo "==> Starting managed wendy-agent"
-  echo "    Address: $DEVICE_ADDRESS"
+  echo "    Address: ${DEVICE_ADDRESS##*@}"
   echo "    Config:  $config_dir"
   echo "    Logs:    $stdout_path, $stderr_path"
 
@@ -620,7 +649,7 @@ start_managed_agent() {
   env -i \
     HOME="${HOME:-}" \
     LOGNAME="${LOGNAME:-${USER:-}}" \
-    PATH="$PATH" \
+    PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     TMPDIR="${TMPDIR:-/tmp}" \
     USER="${USER:-}" \
     WENDY_CONFIG_PATH="$config_dir" \

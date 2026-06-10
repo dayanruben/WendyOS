@@ -70,6 +70,34 @@ runs:
             exit 64
           fi
         }
+        validate_port() {
+          local port="$1"
+          [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+          (( 10#$port >= 1 && 10#$port <= 65535 ))
+        }
+        valid_device_address() {
+          local value="$1" port=""
+          [[ "$value" != *@* ]] || return 1
+          if [[ "$value" =~ ^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$ ]]; then
+            port="${BASH_REMATCH[2]:-}"
+          elif [[ "$value" =~ ^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$ ]]; then
+            port="${BASH_REMATCH[2]:-}"
+          else
+            return 1
+          fi
+          [[ -z "$port" ]] || validate_port "$port"
+        }
+        validate_tests() {
+          local value="$1" filter
+          [[ ${#value} -le 500 ]] || return 1
+          [[ -z "$value" || "$value" =~ ^[A-Za-z0-9][A-Za-z0-9\,\ \._:/\|\(\)_-]*$ ]] || return 1
+          IFS=',' read -ra filters <<< "$value"
+          for filter in "${filters[@]}"; do
+            filter="${filter#${filter%%[![:space:]]*}}"
+            filter="${filter%${filter##*[![:space:]]}}"
+            [[ -z "$filter" || "$filter" != -* ]] || return 1
+          done
+        }
         require_match WORKFLOW_ID "$WORKFLOW_ID" '^[A-Za-z0-9._-]{1,80}$'
         require_match TARGET_ID "$TARGET_ID" '^[A-Za-z0-9._-]{1,80}$'
         require_match RUNNER_ID "$RUNNER_ID" '^[A-Za-z0-9._-]{1,80}$'
@@ -79,8 +107,12 @@ runs:
         require_match MANAGED_AGENT "$MANAGED_AGENT" '^(true|false)$'
         reject_newline DEVICE_ADDRESS "$DEVICE_ADDRESS"
         reject_newline TESTS "$TESTS"
-        if [[ "$DEVICE_ADDRESS" == *@* || ! "$DEVICE_ADDRESS" =~ ^[][A-Za-z0-9._:-]{1,255}$ ]]; then
+        if ! valid_device_address "$DEVICE_ADDRESS"; then
           echo "ERROR: invalid DEVICE_ADDRESS" >&2
+          exit 64
+        fi
+        if ! validate_tests "$TESTS"; then
+          echo "ERROR: invalid TESTS" >&2
           exit 64
         fi
 
@@ -105,6 +137,32 @@ runs:
         function Reject-Newline([string]$Name, [string]$Value) {
           if ($Value -match "[`r`n]") { throw "invalid newline in $Name" }
         }
+        function Test-Port([string]$Port) {
+          if ($Port -notmatch '^[0-9]{1,5}$') { return $false }
+          $Number = [int]$Port
+          return ($Number -ge 1 -and $Number -le 65535)
+        }
+        function Test-DeviceAddress([string]$Value) {
+          if ($Value -match '@') { return $false }
+          $Port = $null
+          if ($Value -match '^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$') {
+            $Port = $Matches[2]
+          } elseif ($Value -match '^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$') {
+            $Port = $Matches[2]
+          } else {
+            return $false
+          }
+          return ([string]::IsNullOrEmpty($Port) -or (Test-Port $Port))
+        }
+        function Test-Tests([string]$Value) {
+          if ($Value.Length -gt 500) { return $false }
+          if ($Value.Length -gt 0 -and $Value -notmatch '^[A-Za-z0-9][A-Za-z0-9, ._:/|()_-]*$') { return $false }
+          foreach ($Filter in ($Value -split ',')) {
+            $Trimmed = $Filter.Trim()
+            if ($Trimmed.StartsWith('-')) { return $false }
+          }
+          return $true
+        }
         Require-Match WORKFLOW_ID $env:WORKFLOW_ID '^[A-Za-z0-9._-]{1,80}$'
         Require-Match TARGET_ID $env:TARGET_ID '^[A-Za-z0-9._-]{1,80}$'
         Require-Match RUNNER_ID $env:RUNNER_ID '^[A-Za-z0-9._-]{1,80}$'
@@ -114,8 +172,11 @@ runs:
         Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
         Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
         Reject-Newline TESTS $env:TESTS
-        if ($env:DEVICE_ADDRESS -match '@' -or $env:DEVICE_ADDRESS -notmatch '^[A-Za-z0-9._:\[\]-]{1,255}$') {
+        if (-not (Test-DeviceAddress $env:DEVICE_ADDRESS)) {
           throw 'invalid DEVICE_ADDRESS'
+        }
+        if (-not (Test-Tests $env:TESTS)) {
+          throw 'invalid TESTS'
         }
 
     - name: Set up Swift E2E host (Unix)
