@@ -76,7 +76,7 @@ wendy run
 
 On Raspberry Pi hosts, the `gpu` entitlement also exposes the VideoCore mailbox device (`/dev/vcio`). This lets your app read board telemetry — power, voltage and current, temperature, throttling state, and (on Raspberry Pi 5) the PMIC ADC channels — through the firmware property interface, the same channel the `vcgencmd` tool uses.
 
-This is added only on Raspberry Pi hardware, and only when the `/dev/vcio` node is present. On NVIDIA Jetson devices the entitlement instead grants the CUDA/CDI access described above; on hardware that has neither, it has no effect.
+This is added only on Raspberry Pi hardware, and only when the `/dev/vcio` node is present. On NVIDIA Jetson devices the entitlement grants the CUDA/CDI access described above instead — the VideoCore mailbox is not exposed there — and on hardware that is neither, it has no effect.
 
 ```json
 {

@@ -145,11 +145,19 @@ IP networking access.
 
 ### `gpu`
 
-GPU access for AI inference or general-purpose compute.
+Hardware-dependent GPU or board-telemetry access.
 
 ```json
 { "type": "gpu" }
 ```
+
+| Host hardware | Grant |
+|---------------|-------|
+| NVIDIA Jetson | NVIDIA CDI specs, CUDA env vars, `/dev/nvidia*` |
+| Raspberry Pi | `/dev/vcio` (VideoCore mailbox) for board telemetry — power, voltage/current, temperature, throttling, Pi 5 PMIC ADC |
+| Other | No hardware-specific grant |
+
+On Raspberry Pi, `/dev/vcio` is bind-mounted only when present on the host; access is `rw` (no `mknod`).
 
 ### `camera`
 
