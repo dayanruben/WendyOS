@@ -70,7 +70,7 @@ jobs:
       matrix:
         target:
           - name: 'Local: macOS 26'
-            target_id: local-macos-macos
+            target_id: local-macos
             runner_id: macos-26
             runner_label: macos-26
             runs_on: '["macos-26"]'
@@ -83,7 +83,7 @@ jobs:
             managed_agent: true
 
           - name: 'Local: Ubuntu 24'
-            target_id: local-ubuntu-ubuntu-24
+            target_id: local-ubuntu-24
             runner_id: ubuntu-24-04
             runner_label: ubuntu-24-04
             runs_on: '["ubuntu-24.04"]'
