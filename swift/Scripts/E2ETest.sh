@@ -665,7 +665,7 @@ start_managed_agent() {
     WENDY_REGISTRY_ADDR=127.0.0.1:0 \
     "$agent_path" >"$stdout_path" 2>"$stderr_path" &
   MANAGED_AGENT_PID=$!
-  printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path"
+  (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
 
   if ! valid_device_address "$DEVICE_ADDRESS"; then
     echo "ERROR: invalid --device-address." >&2
