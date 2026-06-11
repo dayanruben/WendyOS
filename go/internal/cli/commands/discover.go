@@ -570,6 +570,7 @@ func (m discoverModel) View() string {
 
 	if !m.collection.IsEmpty() {
 		sb.WriteString(m.tableView() + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend)) + "\n")
 		if hint := m.selectedHint(); hint != "" {
 			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
 		}
@@ -722,7 +723,7 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 	t.SetWidth(tui.PickerTableWidth(t.Columns()))
 	t.SetHeight(max(len(rows)+1, 1))
 
-	return t.View() + "\n"
+	return t.View() + "\n" + dimStyle.Render("  "+tui.DeviceTableLegend) + "\n"
 }
 
 func newDiscoverTable(interactive bool) tui.BubbleTable {

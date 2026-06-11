@@ -90,6 +90,7 @@ type PickerModel struct {
 	table        BubbleTable
 	columns      []pickerColumnDef
 	fixedColumns bool
+	legend       string // optional glyph legend rendered under the table
 	selected     *PickerItem
 	scanning     bool
 	quitting     bool
@@ -112,6 +113,7 @@ func NewPicker() PickerModel {
 		table:        newPickerTable(),
 		columns:      pickerDeviceColumnDefs,
 		fixedColumns: true,
+		legend:       DeviceTableLegend,
 		scanning:     true,
 	}
 	m.refreshTable()
@@ -278,6 +280,10 @@ func (m PickerModel) View() string {
 
 	sb.WriteString(m.tableView() + "\n")
 
+	if m.legend != "" {
+		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")
+	}
+
 	cursor := m.table.Cursor()
 	if cursor >= 0 && cursor < len(m.items) && m.items[cursor].Insecure {
 		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
@@ -325,11 +331,27 @@ func (m PickerModel) Selected() *PickerItem {
 	return m.selected
 }
 
+// DeviceTableLegend explains the glyphs used in the compact device table.
+const DeviceTableLegend = "● provisioned  ○ unprovisioned  ⚠ agent older than CLI"
+
 type pickerColumnDef struct {
 	title    string
 	minWidth int
 	value    func(PickerItem) string
 	required bool
+	optional bool // hidden when no item has a value, even with fixed columns
+}
+
+// provisionedGlyph maps the PickerItem.Provisioned state to the 1-char cell
+// rendered in the compact "P" column. See DeviceTableLegend.
+func provisionedGlyph(provisioned string) string {
+	switch provisioned {
+	case "Provisioned":
+		return "●"
+	case "Unprovisioned":
+		return "○"
+	}
+	return ""
 }
 
 func pickerColumnDefsFromColumns(columns []PickerColumn) []pickerColumnDef {
@@ -392,27 +414,34 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 	pickerColumnDefs[1],
 	pickerColumnDefs[2],
 	{
-		title:    "wendy-agent version",
-		minWidth: 20,
+		title:    "Agent",
+		minWidth: 7,
 		value: func(item PickerItem) string {
 			return item.AgentVersion
 		},
 	},
 	{
-		title:    "WendyOS Version",
-		minWidth: 16,
+		title:    "OS",
+		minWidth: 4,
 		value: func(item PickerItem) string {
 			return item.OSVersion
 		},
 	},
 	{
-		title:    "Provisioned",
-		minWidth: 13,
+		title:    "P",
+		minWidth: 3,
 		value: func(item PickerItem) string {
-			return item.Provisioned
+			return provisionedGlyph(item.Provisioned)
 		},
 	},
-	pickerColumnDefs[3],
+	{
+		title:    "Description",
+		minWidth: 20,
+		value: func(item PickerItem) string {
+			return item.Description
+		},
+		optional: true,
+	},
 }
 
 func newPickerTable() BubbleTable {
@@ -491,12 +520,9 @@ func pickerActiveColumnsForDefs(items []PickerItem, defs []pickerColumnDef, fixe
 	if len(defs) == 0 {
 		defs = pickerColumnDefs
 	}
-	if fixed {
-		return defs
-	}
 	var active []pickerColumnDef
 	for _, def := range defs {
-		if def.required {
+		if def.required || (fixed && !def.optional) {
 			active = append(active, def)
 			continue
 		}

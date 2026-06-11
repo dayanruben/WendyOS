@@ -192,13 +192,27 @@ func TestPickerDeviceTableData_UsesStableDeviceSchema(t *testing.T) {
 		Name: "alpha",
 	}}, "", false)
 
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Provisioned", "Description"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "P"} {
 		if !hasColumn(cols, want) {
 			t.Fatalf("expected stable device column %q, got %v", want, cols)
 		}
 	}
+	if hasColumn(cols, "Description") {
+		t.Fatalf("expected Description column hidden when no item sets it, got %v", cols)
+	}
 	if len(rows) != 1 || len(rows[0]) != len(cols) {
 		t.Fatalf("row/column mismatch: rows=%v cols=%v", rows, cols)
+	}
+}
+
+func TestPickerDeviceTableData_ShowsDescriptionWhenAnyItemSetsIt(t *testing.T) {
+	cols, _ := PickerDeviceTableData([]PickerItem{
+		{Name: "alpha"},
+		{Name: "beta", Description: "Full Linux-based edge device"},
+	}, "", false)
+
+	if !hasColumn(cols, "Description") {
+		t.Fatalf("expected Description column when an item sets it, got %v", cols)
 	}
 }
 
@@ -208,7 +222,7 @@ func TestNewPicker_UsesStableDeviceSchemaBeforeMetadataArrives(t *testing.T) {
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
 	pm := updated.(PickerModel)
 
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Provisioned", "Description"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "P"} {
 		if !hasColumn(pm.table.Columns(), want) {
 			t.Fatalf("expected stable device column %q, got %v", want, pm.table.Columns())
 		}
@@ -225,14 +239,36 @@ func TestPickerDeviceTableData_ShowsProvisionedState(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("rows = %v, want 3", rows)
 	}
-	if rows[0][5] != "Provisioned" {
-		t.Fatalf("provisioned cell = %q, want \"Provisioned\"", rows[0][5])
+	if rows[0][5] != "●" {
+		t.Fatalf("provisioned cell = %q, want \"●\"", rows[0][5])
 	}
-	if rows[1][5] != "Unprovisioned" {
-		t.Fatalf("provisioned cell = %q, want \"Unprovisioned\"", rows[1][5])
+	if rows[1][5] != "○" {
+		t.Fatalf("provisioned cell = %q, want \"○\"", rows[1][5])
 	}
 	if rows[2][5] != "" {
 		t.Fatalf("provisioned cell = %q, want empty for unknown state", rows[2][5])
+	}
+}
+
+func TestNewPicker_ShowsDeviceTableLegend(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
+	pm := updated.(PickerModel)
+
+	if !strings.Contains(pm.View(), DeviceTableLegend) {
+		t.Fatalf("expected device picker view to contain legend %q, got %q", DeviceTableLegend, pm.View())
+	}
+}
+
+func TestNewPickerWithTitle_HasNoDeviceTableLegend(t *testing.T) {
+	m := NewPickerWithTitle("Select a WiFi network")
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
+	pm := updated.(PickerModel)
+
+	if strings.Contains(pm.View(), "● provisioned") {
+		t.Fatalf("expected non-device picker view without legend, got %q", pm.View())
 	}
 }
 

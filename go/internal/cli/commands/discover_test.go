@@ -277,6 +277,25 @@ func TestDiscoverModel_DKeySetsDefaultAndMarksSelectedDevice(t *testing.T) {
 	}
 }
 
+func TestDiscoverModel_ViewShowsLegendWithDevices(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts())
+
+	if strings.Contains(m.View(), tui.DeviceTableLegend) {
+		t.Fatalf("expected no legend before any device is found, got %q", m.View())
+	}
+
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName: "ubuntu",
+		Hostname:    "ubuntu.local",
+		Port:        defaultAgentPort,
+	}}})
+	m = updated.(discoverModel)
+
+	if !strings.Contains(m.View(), tui.DeviceTableLegend) {
+		t.Fatalf("expected legend under device table, got %q", m.View())
+	}
+}
+
 func TestRenderDeviceTable(t *testing.T) {
 	collection := &models.DevicesCollection{
 		LANDevices: []models.LANDevice{{
@@ -289,7 +308,7 @@ func TestRenderDeviceTable(t *testing.T) {
 	}
 
 	output := renderDeviceTable(collection)
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10:8443"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10:8443", tui.DeviceTableLegend} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
@@ -415,9 +434,9 @@ func TestDiscoverTableItemsProvisionedStateAndNoAccessHint(t *testing.T) {
 	}
 
 	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
-	// Columns with default marker: 0=★ 1=Name 2=Type 3=Address 4=agent 5=OS 6=Provisioned.
-	if rows[0][6] != "Provisioned" {
-		t.Fatalf("Provisioned cell = %q, want \"Provisioned\"", rows[0][6])
+	// Columns with default marker: 0=★ 1=Name 2=Type 3=Address 4=Agent 5=OS 6=P.
+	if rows[0][6] != "●" {
+		t.Fatalf("Provisioned cell = %q, want \"●\"", rows[0][6])
 	}
 }
 
