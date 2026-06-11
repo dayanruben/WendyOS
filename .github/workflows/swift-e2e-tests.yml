@@ -107,11 +107,14 @@ jobs:
 
   # Physical/future route ledger.
   # Keep disabled routes close to the hosted local jobs so re-enabling a route is
-  # a small uncomment-and-add-to-needs change while runner labels stay explicit.
+  # a small uncomment-and-add-to-analysis-needs change while runner labels stay explicit.
+  # Physical routes are gated by target agent OS: Linux/WendyOS targets depend on
+  # the local Ubuntu run, while macOS targets depend on the local macOS run.
   #
   # // DISABLED: Mac → Ubuntu/SER9 mDNS discovery is unreliable; WDY-968 tracks re-enabling.
   # swift-e2e-physical-macos-ubuntu:
   #   name: macOS 26 → Ubuntu 24
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, macos-26]
   #   concurrency:
@@ -136,6 +139,7 @@ jobs:
   # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
   # swift-e2e-physical-macos-jetson:
   #   name: macOS 26 → Jetson Orin Nano
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, macos-26]
   #   concurrency:
@@ -160,6 +164,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-windows-ubuntu:
   #   name: Windows 11 → Ubuntu 24
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, windows-11]
   #   concurrency:
@@ -184,6 +189,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-ubuntu-ubuntu:
   #   name: Ubuntu 24 → Ubuntu 24
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, ubuntu-24]
   #   concurrency:
@@ -208,6 +214,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-ubuntu-raspberry-pi:
   #   name: Ubuntu 24 → Raspberry Pi 5
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, ubuntu-24]
   #   concurrency:
@@ -232,6 +239,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-windows-mac-mini:
   #   name: Windows 11 → Mac mini
+  #   needs: swift-e2e-local-macos
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, windows-11]
   #   concurrency:
@@ -256,6 +264,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-ubuntu-jetson:
   #   name: Ubuntu 24 → Jetson Orin Nano
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, ubuntu-24]
   #   concurrency:
@@ -280,6 +289,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-windows-raspberry-pi:
   #   name: Windows 11 → Raspberry Pi 5
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, windows-11]
   #   concurrency:
@@ -304,6 +314,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-macos-mac-mini:
   #   name: macOS 26 → Mac mini
+  #   needs: swift-e2e-local-macos
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, macos-26]
   #   concurrency:
@@ -328,6 +339,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-windows-jetson:
   #   name: Windows 11 → Jetson Orin Nano
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, windows-11]
   #   concurrency:
@@ -352,6 +364,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-macos-raspberry-pi:
   #   name: macOS 26 → Raspberry Pi 5
+  #   needs: swift-e2e-local-ubuntu
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, macos-26]
   #   concurrency:
@@ -376,6 +389,7 @@ jobs:
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-ubuntu-mac-mini:
   #   name: Ubuntu 24 → Mac mini
+  #   needs: swift-e2e-local-macos
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, ubuntu-24]
   #   concurrency:
