@@ -44,6 +44,10 @@ consistent:
 4. **Legend line.** A dim legend rendered under the table in both the discover
    TUI and the device picker: `● provisioned  ○ unprovisioned  ⚠ agent older
    than CLI`. Shown whenever the table has rows.
+5. **Short Type labels.** "Bluetooth" → "BLE" (ConnectionTypes), the Docker
+   provider/device display name "Docker Desktop" → "Docker", and the local
+   provider/device shows a platform name: "This Mac" on macOS, "This PC"
+   elsewhere (replacing "Local Machine" and "This Device").
 
 Out of scope: `cloud_discover.go` has its own table (`discoverTableColumns`)
 and is unchanged. Connection-type glyphs were considered and rejected (chosen

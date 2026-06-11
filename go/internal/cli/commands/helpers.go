@@ -1457,7 +1457,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				if err == nil && len(bleDevices) > 0 {
 					var items []tui.PickerItem
 					for i := range bleDevices {
-						connType := "Bluetooth"
+						connType := "BLE"
 						if !bleDevices[i].IsWendyAgent() {
 							connType = "BLE (Lite)"
 						}

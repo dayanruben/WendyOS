@@ -518,7 +518,7 @@ func TestEnsureProviderSupportsProjectType_LocalRejectsContainerProjects(t *test
 				t.Fatal("expected error")
 			}
 			msg := err.Error()
-			for _, want := range []string{"Local Machine", "host-native", "Docker Desktop", "--device docker"} {
+			for _, want := range []string{providers.LocalDisplayName(), "host-native", "Docker", "--device docker"} {
 				if !strings.Contains(msg, want) {
 					t.Fatalf("error = %q, want substring %q", msg, want)
 				}

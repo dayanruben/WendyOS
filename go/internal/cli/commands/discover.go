@@ -1058,9 +1058,9 @@ func externalProviderSortKey(providerKey, name string) string {
 func externalProviderPickerHint(providerKey string) string {
 	switch providerKey {
 	case providers.ProviderKeyDocker:
-		return "Hint: Use Docker Desktop for local container or Compose runs when you do not need WendyOS hardware."
+		return "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
 	case providers.ProviderKeyLocal:
-		return "Hint: Use Local Machine for native Swift, Go, or Python apps that should run directly on this computer."
+		return fmt.Sprintf("Hint: Use %s for native Swift, Go, or Python apps that should run directly on this computer.", providers.LocalDisplayName())
 	}
 	return ""
 }

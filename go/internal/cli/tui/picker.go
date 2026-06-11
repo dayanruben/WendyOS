@@ -14,7 +14,7 @@ type PickerItem struct {
 	// Display columns rendered in the table.
 	Name         string
 	Description  string // optional secondary text rendered dimmed
-	Type         string // "LAN", "Bluetooth", "External", etc.
+	Type         string // "LAN", "BLE", "External", etc.
 	Size         string // optional picker-specific metadata column
 	Parameters   string // optional picker-specific metadata column
 	Comments     string // optional picker-specific metadata column

@@ -418,12 +418,9 @@ func ensureProviderSupportsProjectType(provider providers.DeviceProvider, projec
 	}
 
 	providerName := provider.DisplayName()
-	if provider.Key() == providers.ProviderKeyLocal {
-		providerName = "Local Machine"
-	}
 
 	if provider.Key() == providers.ProviderKeyLocal && (projectType == "docker" || projectType == "compose") {
-		return fmt.Errorf("%s runs host-native apps and does not support %s projects; choose Docker Desktop with --device docker for local container runs", providerName, projectType)
+		return fmt.Errorf("%s runs host-native apps and does not support %s projects; choose Docker with --device docker for local container runs", providerName, projectType)
 	}
 
 	return fmt.Errorf("%s provider does not support %s projects; supported build types: %s", providerName, projectType, strings.Join(provider.SupportedBuildTypes(), ", "))

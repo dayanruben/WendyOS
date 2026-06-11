@@ -40,7 +40,7 @@ func composeFile(dir string) string {
 type DockerProvider struct{}
 
 func (p *DockerProvider) Key() string         { return ProviderKeyDocker }
-func (p *DockerProvider) DisplayName() string { return "Docker Desktop" }
+func (p *DockerProvider) DisplayName() string { return "Docker" }
 
 func (p *DockerProvider) IsAvailable(ctx context.Context) bool {
 	cmd := exec.CommandContext(ctx, "docker", "--version")
@@ -68,7 +68,7 @@ func (p *DockerProvider) DiscoverDevices(ctx context.Context) ([]models.External
 	return []models.ExternalDevice{
 		{
 			ID:            "docker",
-			DisplayName:   "Docker Desktop",
+			DisplayName:   "Docker",
 			ProviderKey:   p.Key(),
 			IsWendyDevice: false,
 			AgentVersion:  version,

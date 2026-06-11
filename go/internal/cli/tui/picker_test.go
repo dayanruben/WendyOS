@@ -427,13 +427,13 @@ func TestPickerModel_ShowsUSBInTypeColumn(t *testing.T) {
 }
 
 func TestPickerModel_ShowsSelectedHintAtBottom(t *testing.T) {
-	dockerHint := "Hint: Use Docker Desktop for local container or Compose runs when you do not need WendyOS hardware."
-	localHint := "Hint: Use Local Machine for native Swift, Go, or Python apps that should run directly on this computer."
+	dockerHint := "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
+	localHint := "Hint: Use This Mac for native Swift, Go, or Python apps that should run directly on this computer."
 	m := NewPicker()
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
-		{Name: "Docker Desktop", Type: "Docker Desktop", Hint: dockerHint, Value: "docker"},
-		{Name: "Local Machine", Type: "This Device", Hint: localHint, Value: "local"},
+		{Name: "Docker", Type: "Docker", Hint: dockerHint, Value: "docker"},
+		{Name: "This Mac", Type: "This Mac", Hint: localHint, Value: "local"},
 	}})
 	pm := updated.(PickerModel)
 
