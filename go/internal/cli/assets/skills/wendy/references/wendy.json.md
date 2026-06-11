@@ -69,18 +69,17 @@ Controls network access for your application.
 
 ### GPU Entitlement
 
-Enables NVIDIA GPU access on Jetson devices for ML inference, computer vision, and GPU-accelerated computing.
+Enables GPU or board-telemetry access on supported devices.
 
 ```json
 { "type": "gpu" }
 ```
 
 When enabled:
-- Adds application to the video group for GPU device access
-- Injects NVIDIA Container Device Interface (CDI) specifications
-- Sets up CUDA and GPU library environment variables
+- **NVIDIA Jetson**: Adds application to video group, injects NVIDIA CDI specs, sets CUDA env vars
+- **Raspberry Pi**: Exposes `/dev/vcio` (VideoCore mailbox) for board telemetry (power, voltage, temperature)
 
-**Note**: GPU entitlements are specifically for NVIDIA Jetson devices.
+**Note**: GPU entitlement behavior is hardware-specific.
 
 ### Video Entitlement
 
