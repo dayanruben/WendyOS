@@ -22,6 +22,16 @@ type preEnrollOptions struct {
 // skipEnrollmentValue is the picker value for the explicit skip option.
 const skipEnrollmentValue = "skip-enrollment"
 
+// mapConfirmCancel converts the TUI cancel sentinel to the package-level one
+// so Ctrl+C at a confirm prompt cancels the install cleanly (exit 0) instead
+// of surfacing as an error.
+func mapConfirmCancel(ok bool, err error) (bool, error) {
+	if errors.Is(err, tui.ErrCancelled) {
+		return false, ErrUserCancelled
+	}
+	return ok, err
+}
+
 // Interactive hooks used by the pre-enrollment flow, declared as package vars
 // so unit tests can stub them (same pattern as promptDeviceName).
 var (
@@ -29,10 +39,10 @@ var (
 		return pickFromItems("Select the Wendy Cloud session to use for enrollment", items)
 	}
 	confirmPreEnroll = func() (bool, error) {
-		return tui.ConfirmDefaultYes("Pre-enroll this device with Wendy Cloud?")
+		return mapConfirmCancel(tui.ConfirmDefaultYes("Pre-enroll this device with Wendy Cloud?"))
 	}
 	confirmContinueUnenrolled = func() (bool, error) {
-		return tui.Confirm("Continue installing without enrollment?")
+		return mapConfirmCancel(tui.Confirm("Continue installing without enrollment?"))
 	}
 	preEnrollDeviceFn = preEnrollDevice
 )
@@ -51,7 +61,7 @@ func selectEnrollmentAuth(cfg *config.Config, cloudGRPC string, interactive bool
 				return authEntryWithCerts(&cfg.Auth[i])
 			}
 		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login' against that environment first", cloudGRPC)
+		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
 	}
 	if len(cfg.Auth) == 1 {
 		return authEntryWithCerts(&cfg.Auth[0])

@@ -305,6 +305,29 @@ func TestResolvePreEnrollmentForcedSkipsConfirm(t *testing.T) {
 	}
 }
 
+func TestMapConfirmCancel(t *testing.T) {
+	if _, err := mapConfirmCancel(false, tui.ErrCancelled); !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("tui.ErrCancelled must map to ErrUserCancelled, got %v", err)
+	}
+	if ok, err := mapConfirmCancel(true, nil); !ok || err != nil {
+		t.Fatalf("clean result must pass through, got %v / %v", ok, err)
+	}
+	otherErr := errors.New("boom")
+	if _, err := mapConfirmCancel(false, otherErr); !errors.Is(err, otherErr) {
+		t.Fatalf("other errors must pass through, got %v", err)
+	}
+}
+
+func TestResolvePreEnrollmentConfirmCancelled(t *testing.T) {
+	stubEnrollPrompts(t)
+	confirmPreEnroll = func() (bool, error) { return false, ErrUserCancelled }
+
+	_, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("cancel at the pre-enroll confirm must cancel the install, got %v", err)
+	}
+}
+
 func TestResolvePreEnrollmentAuthErrorInteractiveAsksToContinue(t *testing.T) {
 	stubEnrollPrompts(t)
 	// Single session without certificates: selection fails, user accepts
