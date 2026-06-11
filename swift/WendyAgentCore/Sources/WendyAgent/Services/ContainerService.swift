@@ -350,6 +350,30 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         await self.publishApps()
     }
 
+    private func removeNativeAppDirectory(appName: String) throws {
+        let appsBaseDirectory = self.appsBase.standardizedFileURL
+        let appDirectory = appsBaseDirectory.appendingPathComponent(appName).standardizedFileURL
+
+        guard appDirectory.path.hasPrefix(appsBaseDirectory.path + "/") else {
+            self.logger.warning(
+                "Skipping native app directory removal outside apps base",
+                metadata: [
+                    "app_name": "\(appName)",
+                    "directory": "\(appDirectory.path)",
+                    "apps_base": "\(appsBaseDirectory.path)",
+                ]
+            )
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: appDirectory.path) else { return }
+        try FileManager.default.removeItem(at: appDirectory)
+        self.logger.info(
+            "Native app directory removed",
+            metadata: ["app_name": "\(appName)", "directory": "\(appDirectory.path)"]
+        )
+    }
+
     nonisolated private static func makeProcessExitTask(
         _ process: Foundation.Process
     ) -> Task<Void, Never> {
@@ -706,6 +730,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             await self.removeApp(id: appName)
             logger.info("Docker container removed", metadata: ["app_name": "\(appName)"])
         } else {
+            try self.removeNativeAppDirectory(appName: appName)
             await self.removeApp(id: appName)
         }
 

@@ -9,6 +9,7 @@ For most users, the recommended installation method is the install script docume
 On Homebrew versions that support formula trust:
 
 ```sh
+brew trust wendylabsinc/tap
 brew trust --formula wendylabsinc/tap/wendy
 brew install wendylabsinc/tap/wendy
 ```
@@ -25,6 +26,7 @@ For the nightly (prerelease) version:
 On Homebrew versions that support formula trust:
 
 ```sh
+brew trust wendylabsinc/tap
 brew trust --formula wendylabsinc/tap/wendy-nightly
 brew install wendylabsinc/tap/wendy-nightly
 ```
