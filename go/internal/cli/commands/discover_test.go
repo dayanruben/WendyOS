@@ -434,9 +434,9 @@ func TestDiscoverTableItemsProvisionedStateAndNoAccessHint(t *testing.T) {
 	}
 
 	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
-	// Columns with default marker: 0=★ 1=Name 2=Type 3=Address 4=Agent 5=OS 6=P.
-	if rows[0][6] != "●" {
-		t.Fatalf("Provisioned cell = %q, want \"●\"", rows[0][6])
+	// Columns: 0=marker (★ default + provisioned glyph) 1=Name 2=Type 3=Address 4=Agent 5=OS.
+	if rows[0][0] != "●" {
+		t.Fatalf("provisioned marker cell = %q, want \"●\"", rows[0][0])
 	}
 }
 

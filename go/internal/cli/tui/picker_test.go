@@ -192,13 +192,15 @@ func TestPickerDeviceTableData_UsesStableDeviceSchema(t *testing.T) {
 		Name: "alpha",
 	}}, "", false)
 
-	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "P"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS"} {
 		if !hasColumn(cols, want) {
 			t.Fatalf("expected stable device column %q, got %v", want, cols)
 		}
 	}
-	if hasColumn(cols, "Description") {
-		t.Fatalf("expected Description column hidden when no item sets it, got %v", cols)
+	for _, gone := range []string{"Description", "P"} {
+		if hasColumn(cols, gone) {
+			t.Fatalf("expected no %q column, got %v", gone, cols)
+		}
 	}
 	if len(rows) != 1 || len(rows[0]) != len(cols) {
 		t.Fatalf("row/column mismatch: rows=%v cols=%v", rows, cols)
@@ -222,31 +224,54 @@ func TestNewPicker_UsesStableDeviceSchemaBeforeMetadataArrives(t *testing.T) {
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
 	pm := updated.(PickerModel)
 
-	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "P"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS"} {
 		if !hasColumn(pm.table.Columns(), want) {
 			t.Fatalf("expected stable device column %q, got %v", want, pm.table.Columns())
 		}
 	}
 }
 
-func TestPickerDeviceTableData_ShowsProvisionedState(t *testing.T) {
-	_, rows := PickerDeviceTableData([]PickerItem{
+func TestPickerDeviceTableData_ShowsProvisionedStateInMarkerColumn(t *testing.T) {
+	cols, rows := PickerDeviceTableData([]PickerItem{
 		{Name: "alpha", Provisioned: "Provisioned"},
 		{Name: "beta", Provisioned: "Unprovisioned"},
 		{Name: "gamma"},
 	}, "", false)
 
+	// The marker column appears even without default tracking because rows
+	// carry provisioned glyphs.
+	if cols[0].Title != "" {
+		t.Fatalf("cols[0] = %v, want unlabeled marker column", cols)
+	}
 	if len(rows) != 3 {
 		t.Fatalf("rows = %v, want 3", rows)
 	}
-	if rows[0][5] != "●" {
-		t.Fatalf("provisioned cell = %q, want \"●\"", rows[0][5])
+	if rows[0][0] != "●" {
+		t.Fatalf("provisioned cell = %q, want \"●\"", rows[0][0])
 	}
-	if rows[1][5] != "○" {
-		t.Fatalf("provisioned cell = %q, want \"○\"", rows[1][5])
+	if rows[1][0] != "○" {
+		t.Fatalf("provisioned cell = %q, want \"○\"", rows[1][0])
 	}
-	if rows[2][5] != "" {
-		t.Fatalf("provisioned cell = %q, want empty for unknown state", rows[2][5])
+	if rows[2][0] != "" {
+		t.Fatalf("provisioned cell = %q, want empty for unknown state", rows[2][0])
+	}
+}
+
+func TestPickerDeviceTableData_CombinesDefaultMarkerAndProvisionedGlyph(t *testing.T) {
+	_, rows := PickerDeviceTableData([]PickerItem{
+		{Name: "alpha", Provisioned: "Provisioned"},
+	}, "alpha", true)
+
+	if rows[0][0] != "★●" {
+		t.Fatalf("marker cell = %q, want \"★●\"", rows[0][0])
+	}
+}
+
+func TestPickerDeviceTableData_OmitsMarkerColumnWithoutDefaultsOrGlyphs(t *testing.T) {
+	cols, _ := PickerDeviceTableData([]PickerItem{{Name: "alpha"}}, "", false)
+
+	if cols[0].Title != "Name" {
+		t.Fatalf("cols = %v, want Name first without marker column", cols)
 	}
 }
 

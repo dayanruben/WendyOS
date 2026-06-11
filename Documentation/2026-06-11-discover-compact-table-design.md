@@ -10,13 +10,13 @@ Description column (min 20) that is empty in discover output.
 
 ## Design
 
-Target layout (~80 columns):
+Target layout (~78 columns):
 
 ```
-     Name            Type       Address        Agent     OS      P
- ★   wendy-jetson    USB, LAN   wendy.local    1.2.3 ⚠   12.4    ●
-     pi5-dev         LAN        10.0.1.5       1.2.4     12.4    ○
-     esp32-c6        ESP32      /dev/tty.usb1
+      Name            Type       Address        Agent     OS
+ ★●   wendy-jetson    USB, LAN   wendy.local    1.2.3 ⚠   12.4
+  ○   pi5-dev         LAN        10.0.1.5       1.2.4     12.4
+      esp32-c6        ESP32      /dev/tty.usb1
 
   ● provisioned  ○ unprovisioned  ⚠ agent older than CLI
 ```
@@ -26,10 +26,13 @@ consistent:
 
 1. **Short headers.** "wendy-agent version" → "Agent" (minWidth 20 → 7),
    "WendyOS Version" → "OS" (minWidth 16 → 4).
-2. **Provisioned glyph column.** Header "P", minWidth 3. Values: `●` for
-   provisioned, `○` for unprovisioned, empty when unknown (non-LAN devices).
-   The `PickerItem.Provisioned` string field keeps its current
-   "Provisioned"/"Unprovisioned"/"" semantics; only the rendered cell changes.
+2. **Provisioned glyph in the marker column.** The leading unlabeled column
+   (previously only the ★ default marker) now also carries the provisioned
+   glyph: `●` provisioned, `○` unprovisioned, empty when unknown (non-LAN
+   devices). A default provisioned device renders `★●`. The column appears
+   when default tracking is on or any row has a glyph. The
+   `PickerItem.Provisioned` string field keeps its current
+   "Provisioned"/"Unprovisioned"/"" semantics; only the rendering changes.
    The clipboard JSON (`discoverDeviceInfo.Provisioned`) keeps the full word.
 3. **Auto-hide empty Description.** Add an `optional` flag to
    `pickerColumnDef`: an optional column is hidden when no item has a value,

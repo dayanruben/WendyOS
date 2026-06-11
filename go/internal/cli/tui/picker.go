@@ -342,8 +342,8 @@ type pickerColumnDef struct {
 	optional bool // hidden when no item has a value, even with fixed columns
 }
 
-// provisionedGlyph maps the PickerItem.Provisioned state to the 1-char cell
-// rendered in the compact "P" column. See DeviceTableLegend.
+// provisionedGlyph maps the PickerItem.Provisioned state to the 1-char glyph
+// rendered in the leading marker column. See DeviceTableLegend.
 func provisionedGlyph(provisioned string) string {
 	switch provisioned {
 	case "Provisioned":
@@ -425,13 +425,6 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 		minWidth: 4,
 		value: func(item PickerItem) string {
 			return item.OSVersion
-		},
-	},
-	{
-		title:    "P",
-		minWidth: 3,
-		value: func(item PickerItem) string {
-			return provisionedGlyph(item.Provisioned)
 		},
 	},
 	{
@@ -549,21 +542,32 @@ func PickerDeviceTableData(items []PickerItem, defaultKey string, hasDefaultCol 
 
 func pickerTableDataForColumns(items []PickerItem, defaultKey string, hasDefaultCol bool, defs []pickerColumnDef, fixed bool) ([]bubbleTable.Column, []bubbleTable.Row) {
 	activeCols := pickerActiveColumnsForDefs(items, defs, fixed)
-	rows := pickerRows(items, activeCols, defaultKey, hasDefaultCol)
-	return pickerColumns(rows, activeCols, hasDefaultCol), rows
+	hasMarkerCol := hasDefaultCol || anyProvisionedGlyph(items)
+	rows := pickerRows(items, activeCols, defaultKey, hasDefaultCol, hasMarkerCol)
+	return pickerColumns(rows, activeCols, hasMarkerCol), rows
 }
 
-func pickerRows(items []PickerItem, cols []pickerColumnDef, defaultKey string, hasDefaultCol bool) []bubbleTable.Row {
+func anyProvisionedGlyph(items []PickerItem) bool {
+	for _, item := range items {
+		if provisionedGlyph(item.Provisioned) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func pickerRows(items []PickerItem, cols []pickerColumnDef, defaultKey string, hasDefaultCol, hasMarkerCol bool) []bubbleTable.Row {
 	rows := make([]bubbleTable.Row, 0, len(items))
 	for _, item := range items {
 		var row bubbleTable.Row
-		// Always add the ★ column when default tracking is enabled.
-		if hasDefaultCol {
-			if pickerItemMatchesDefaultKey(item, defaultKey) {
-				row = append(row, "★")
-			} else {
-				row = append(row, "")
+		// The marker column combines the ★ default indicator with the
+		// provisioned-state glyph (see DeviceTableLegend).
+		if hasMarkerCol {
+			marker := ""
+			if hasDefaultCol && pickerItemMatchesDefaultKey(item, defaultKey) {
+				marker = "★"
 			}
+			row = append(row, marker+provisionedGlyph(item.Provisioned))
 		}
 		for _, col := range cols {
 			val := col.value(item)
@@ -594,10 +598,10 @@ func pickerItemMatchesDefaultKey(item PickerItem, defaultKey string) bool {
 	return key == defaultKey
 }
 
-func pickerColumns(rows []bubbleTable.Row, defs []pickerColumnDef, hasDefaultCol bool) []bubbleTable.Column {
+func pickerColumns(rows []bubbleTable.Row, defs []pickerColumnDef, hasMarkerCol bool) []bubbleTable.Column {
 	cols := make([]bubbleTable.Column, 0, len(defs)+1)
 	offset := 0
-	if hasDefaultCol {
+	if hasMarkerCol {
 		cols = append(cols, bubbleTable.Column{Title: "", Width: 3})
 		offset = 1
 	}
