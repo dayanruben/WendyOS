@@ -110,7 +110,9 @@ review_single_run() {
   if [[ "$OVERWRITE" == "true" ]]; then
     command_args+=("--overwrite")
   fi
-  command_args+=("${EXTRA_ARGS[@]}")
+  if (( ${#EXTRA_ARGS[@]} > 0 )); then
+    command_args+=("${EXTRA_ARGS[@]}")
+  fi
 
   echo "==> Reviewing Swift E2E run results"
   echo "    Package:  $PACKAGE_DIR"
