@@ -349,6 +349,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if err := preAuthElevation(); err != nil {
 		return err
 	}
+	// The download can take minutes or hours, which is longer than the default
+	// sudo credential cache window. Refresh in the background so the cached
+	// timestamp never expires before writeImageToDisk runs.
+	elevationCtx, cancelElevation := context.WithCancel(ctx)
+	defer cancelElevation()
+	keepElevationAlive(elevationCtx)
 
 	// Step 1: Resolve version — use flag, nightly shortcut, or pick interactively.
 	selectedVersion := device.RawVersion // default: latest (or nightly if --nightly)
