@@ -1364,8 +1364,19 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 
 	// Propagate security status: LAN probes determine mTLS, BLE doesn't. Once
 	// we know a device is insecure (or secure), update the existing item.
+	// The same goes for the provisioned state and the no-access hint, which
+	// clears once a probe succeeds.
 	if nd.LAN != nil {
 		existing.Insecure = incoming.Insecure
+		existing.Provisioned = incoming.Provisioned
+		existing.Hint = incoming.Hint
+	}
+	// The no-access hint must stay consistent with the version cell no matter
+	// which transport supplied the version: AgentVersion is carried over from
+	// earlier LAN probes or backfilled from BLE above, and a hint claiming
+	// agent details are unreadable must not accompany a displayed version.
+	if existing.AgentVersion != "" && existing.Hint == discoverNoAccessHint {
+		existing.Hint = ""
 	}
 }
 
@@ -1385,7 +1396,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	picker := tui.NewPicker()
 	picker.MergeItem = mergePickerItem
 
-	// Load current default device to show ★ indicator.
+	// Load current default device to show ✦ indicator.
 	if loadedCfg, err := config.Load(); err == nil && loadedCfg.DefaultDevice != "" {
 		picker.DefaultKey = strings.ToLower(loadedCfg.DefaultDevice)
 	}
@@ -1425,6 +1436,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			Address:      preferredLANAddress(dev),
 			AgentVersion: dev.AgentVersion,
 			OSVersion:    dev.OSVersion,
+			Provisioned:  lanProvisionedDisplay(&devCopy),
+			Hint:         lanNoAccessHint(&devCopy, dev.AgentVersion),
 			DedupKey:     dev.DisplayName,
 			SortKey:      usbFirstSortKey(dev.DisplayName, dev.USB),
 			Insecure:     insecure,
@@ -1495,7 +1508,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							items = append(items, tui.PickerItem{
 								Name:         devices[i].DisplayName,
 								Type:         prov.DisplayName(),
-								Address:      fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								Address:      externalProviderAddress(devices[i].ProviderKey, devices[i].ID),
 								AgentVersion: devices[i].AgentVersion,
 								OSVersion:    devices[i].OSVersion,
 								DedupKey:     devices[i].DisplayName,
@@ -1527,7 +1540,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				if err == nil && len(bleDevices) > 0 {
 					var items []tui.PickerItem
 					for i := range bleDevices {
-						connType := "Bluetooth"
+						connType := "BLE"
 						if !bleDevices[i].IsWendyAgent() {
 							connType = "BLE (Lite)"
 						}

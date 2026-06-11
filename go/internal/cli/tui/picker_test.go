@@ -182,7 +182,7 @@ func TestPickerTableData_KeepsDefaultMarkerInNarrowWidth(t *testing.T) {
 	if len(cols) < 2 || cols[0].Title != "" || cols[1].Title != "Name" {
 		t.Fatalf("columns = %v, want marker and Name columns", cols)
 	}
-	if len(rows) != 1 || len(rows[0]) < 1 || rows[0][0] != "★" {
+	if len(rows) != 1 || len(rows[0]) < 1 || rows[0][0] != "✦" {
 		t.Fatalf("default marker row = %v, want leading star", rows)
 	}
 }
@@ -192,13 +192,29 @@ func TestPickerDeviceTableData_UsesStableDeviceSchema(t *testing.T) {
 		Name: "alpha",
 	}}, "", false)
 
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Description"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS"} {
 		if !hasColumn(cols, want) {
 			t.Fatalf("expected stable device column %q, got %v", want, cols)
 		}
 	}
+	for _, gone := range []string{"Description", "P"} {
+		if hasColumn(cols, gone) {
+			t.Fatalf("expected no %q column, got %v", gone, cols)
+		}
+	}
 	if len(rows) != 1 || len(rows[0]) != len(cols) {
 		t.Fatalf("row/column mismatch: rows=%v cols=%v", rows, cols)
+	}
+}
+
+func TestPickerDeviceTableData_ShowsDescriptionWhenAnyItemSetsIt(t *testing.T) {
+	cols, _ := PickerDeviceTableData([]PickerItem{
+		{Name: "alpha"},
+		{Name: "beta", Description: "Full Linux-based edge device"},
+	}, "", false)
+
+	if !hasColumn(cols, "Description") {
+		t.Fatalf("expected Description column when an item sets it, got %v", cols)
 	}
 }
 
@@ -208,10 +224,76 @@ func TestNewPicker_UsesStableDeviceSchemaBeforeMetadataArrives(t *testing.T) {
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
 	pm := updated.(PickerModel)
 
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "Description"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS"} {
 		if !hasColumn(pm.table.Columns(), want) {
 			t.Fatalf("expected stable device column %q, got %v", want, pm.table.Columns())
 		}
+	}
+}
+
+func TestPickerDeviceTableData_ShowsProvisionedStateInMarkerColumn(t *testing.T) {
+	cols, rows := PickerDeviceTableData([]PickerItem{
+		{Name: "alpha", Provisioned: "Provisioned"},
+		{Name: "beta", Provisioned: "Unprovisioned"},
+		{Name: "gamma"},
+	}, "", false)
+
+	// The marker column appears even without default tracking because rows
+	// carry provisioned glyphs.
+	if cols[0].Title != "" {
+		t.Fatalf("cols[0] = %v, want unlabeled marker column", cols)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %v, want 3", rows)
+	}
+	if rows[0][0] != "●" {
+		t.Fatalf("provisioned cell = %q, want \"●\"", rows[0][0])
+	}
+	if rows[1][0] != "○" {
+		t.Fatalf("provisioned cell = %q, want \"○\"", rows[1][0])
+	}
+	if rows[2][0] != "" {
+		t.Fatalf("provisioned cell = %q, want empty for unknown state", rows[2][0])
+	}
+}
+
+func TestPickerDeviceTableData_CombinesDefaultMarkerAndProvisionedGlyph(t *testing.T) {
+	_, rows := PickerDeviceTableData([]PickerItem{
+		{Name: "alpha", Provisioned: "Provisioned"},
+	}, "alpha", true)
+
+	if rows[0][0] != "● ✦" {
+		t.Fatalf("marker cell = %q, want \"● ✦\"", rows[0][0])
+	}
+}
+
+func TestPickerDeviceTableData_OmitsMarkerColumnWithoutDefaultsOrGlyphs(t *testing.T) {
+	cols, _ := PickerDeviceTableData([]PickerItem{{Name: "alpha"}}, "", false)
+
+	if cols[0].Title != "Name" {
+		t.Fatalf("cols = %v, want Name first without marker column", cols)
+	}
+}
+
+func TestNewPicker_ShowsDeviceTableLegend(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
+	pm := updated.(PickerModel)
+
+	if !strings.Contains(pm.View(), DeviceTableLegend) {
+		t.Fatalf("expected device picker view to contain legend %q, got %q", DeviceTableLegend, pm.View())
+	}
+}
+
+func TestNewPickerWithTitle_HasNoDeviceTableLegend(t *testing.T) {
+	m := NewPickerWithTitle("Select a WiFi network")
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
+	pm := updated.(PickerModel)
+
+	if strings.Contains(pm.View(), "● provisioned") {
+		t.Fatalf("expected non-device picker view without legend, got %q", pm.View())
 	}
 }
 
@@ -345,13 +427,13 @@ func TestPickerModel_ShowsUSBInTypeColumn(t *testing.T) {
 }
 
 func TestPickerModel_ShowsSelectedHintAtBottom(t *testing.T) {
-	dockerHint := "Hint: Use Docker Desktop for local container or Compose runs when you do not need WendyOS hardware."
-	localHint := "Hint: Use Local Machine for native Swift, Go, or Python apps that should run directly on this computer."
+	dockerHint := "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
+	localHint := "Hint: Use This Mac for native Swift, Go, or Python apps that should run directly on this computer."
 	m := NewPicker()
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
-		{Name: "Docker Desktop", Type: "Docker Desktop", Hint: dockerHint, Value: "docker"},
-		{Name: "Local Machine", Type: "This Device", Hint: localHint, Value: "local"},
+		{Name: "Docker", Type: "Docker", Hint: dockerHint, Value: "docker"},
+		{Name: "This Mac", Type: "This Mac", Hint: localHint, Value: "local"},
 	}})
 	pm := updated.(PickerModel)
 
@@ -388,8 +470,8 @@ func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	pm := updated.(PickerModel)
 
 	view := pm.View()
-	if !strings.Contains(view, "★") {
-		t.Error("expected ★ indicator for default item")
+	if !strings.Contains(view, "✦") {
+		t.Error("expected ✦ indicator for default item")
 	}
 	if !strings.Contains(view, "d set default") {
 		t.Error("expected hint text to contain 'd set default'")
@@ -410,8 +492,8 @@ func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
-	if rows[0][0] != "★" {
-		t.Fatalf("default marker = %q, want ★", rows[0][0])
+	if rows[0][0] != "✦" {
+		t.Fatalf("default marker = %q, want ✦", rows[0][0])
 	}
 }
 

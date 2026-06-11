@@ -14,7 +14,7 @@ type PickerItem struct {
 	// Display columns rendered in the table.
 	Name         string
 	Description  string // optional secondary text rendered dimmed
-	Type         string // "LAN", "Bluetooth", "External", etc.
+	Type         string // "LAN", "BLE", "External", etc.
 	Size         string // optional picker-specific metadata column
 	Parameters   string // optional picker-specific metadata column
 	Comments     string // optional picker-specific metadata column
@@ -22,6 +22,7 @@ type PickerItem struct {
 	Address      string
 	AgentVersion string
 	OSVersion    string
+	Provisioned  string // "Provisioned" or "Unprovisioned" when known, empty otherwise
 	Hint         string // optional footer text shown when this item is highlighted
 
 	// DedupKey is used for deduplication. If empty, Name is used.
@@ -81,7 +82,7 @@ type PickerModel struct {
 
 	// DefaultKey is compared case-insensitively against each item's DedupKey
 	// (or Name if DedupKey is empty). Should be stored lowercase for consistency.
-	// Shown with a ★ indicator in the table.
+	// Shown with a ✦ indicator in the table.
 	DefaultKey string
 
 	// Filterable enables find-as-you-type filtering: printable keys narrow
@@ -99,6 +100,7 @@ type PickerModel struct {
 	table        BubbleTable
 	columns      []pickerColumnDef
 	fixedColumns bool
+	legend       string // optional glyph legend rendered under the table
 	selected     *PickerItem
 	scanning     bool
 	quitting     bool
@@ -121,6 +123,7 @@ func NewPicker() PickerModel {
 		table:        newPickerTable(),
 		columns:      pickerDeviceColumnDefs,
 		fixedColumns: true,
+		legend:       DeviceTableLegend,
 		scanning:     true,
 	}
 	m.refreshTable()
@@ -334,6 +337,10 @@ func (m PickerModel) View() string {
 
 	sb.WriteString(m.tableView() + "\n")
 
+	if m.legend != "" {
+		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")
+	}
+
 	cursor := m.table.Cursor()
 	if cursor >= 0 && cursor < len(visible) && visible[cursor].Insecure {
 		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
@@ -402,11 +409,27 @@ func (m PickerModel) Selected() *PickerItem {
 	return m.selected
 }
 
+// DeviceTableLegend explains the glyphs used in the compact device table.
+const DeviceTableLegend = "● provisioned  ○ unprovisioned  ✦ default  ⚠ agent older than CLI"
+
 type pickerColumnDef struct {
 	title    string
 	minWidth int
 	value    func(PickerItem) string
 	required bool
+	optional bool // hidden when no item has a value, even with fixed columns
+}
+
+// provisionedGlyph maps the PickerItem.Provisioned state to the 1-char glyph
+// rendered in the leading marker column. See DeviceTableLegend.
+func provisionedGlyph(provisioned string) string {
+	switch provisioned {
+	case "Provisioned":
+		return "●"
+	case "Unprovisioned":
+		return "○"
+	}
+	return ""
 }
 
 func pickerColumnDefsFromColumns(columns []PickerColumn) []pickerColumnDef {
@@ -469,20 +492,27 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 	pickerColumnDefs[1],
 	pickerColumnDefs[2],
 	{
-		title:    "wendy-agent version",
-		minWidth: 20,
+		title:    "Agent",
+		minWidth: 7,
 		value: func(item PickerItem) string {
 			return item.AgentVersion
 		},
 	},
 	{
-		title:    "WendyOS Version",
-		minWidth: 16,
+		title:    "OS",
+		minWidth: 4,
 		value: func(item PickerItem) string {
 			return item.OSVersion
 		},
 	},
-	pickerColumnDefs[3],
+	{
+		title:    "Description",
+		minWidth: 20,
+		value: func(item PickerItem) string {
+			return item.Description
+		},
+		optional: true,
+	},
 }
 
 func newPickerTable() BubbleTable {
@@ -585,12 +615,9 @@ func pickerActiveColumnsForDefs(items []PickerItem, defs []pickerColumnDef, fixe
 	if len(defs) == 0 {
 		defs = pickerColumnDefs
 	}
-	if fixed {
-		return defs
-	}
 	var active []pickerColumnDef
 	for _, def := range defs {
-		if def.required {
+		if def.required || (fixed && !def.optional) {
 			active = append(active, def)
 			continue
 		}
@@ -617,21 +644,35 @@ func PickerDeviceTableData(items []PickerItem, defaultKey string, hasDefaultCol 
 
 func pickerTableDataForColumns(items []PickerItem, defaultKey string, hasDefaultCol bool, defs []pickerColumnDef, fixed bool) ([]bubbleTable.Column, []bubbleTable.Row) {
 	activeCols := pickerActiveColumnsForDefs(items, defs, fixed)
-	rows := pickerRows(items, activeCols, defaultKey, hasDefaultCol)
-	return pickerColumns(rows, activeCols, hasDefaultCol), rows
+	hasMarkerCol := hasDefaultCol || anyProvisionedGlyph(items)
+	rows := pickerRows(items, activeCols, defaultKey, hasDefaultCol, hasMarkerCol)
+	return pickerColumns(rows, activeCols, hasMarkerCol), rows
 }
 
-func pickerRows(items []PickerItem, cols []pickerColumnDef, defaultKey string, hasDefaultCol bool) []bubbleTable.Row {
+func anyProvisionedGlyph(items []PickerItem) bool {
+	for _, item := range items {
+		if provisionedGlyph(item.Provisioned) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func pickerRows(items []PickerItem, cols []pickerColumnDef, defaultKey string, hasDefaultCol, hasMarkerCol bool) []bubbleTable.Row {
 	rows := make([]bubbleTable.Row, 0, len(items))
 	for _, item := range items {
 		var row bubbleTable.Row
-		// Always add the ★ column when default tracking is enabled.
-		if hasDefaultCol {
-			if pickerItemMatchesDefaultKey(item, defaultKey) {
-				row = append(row, "★")
-			} else {
-				row = append(row, "")
+		// The marker column combines the provisioned-state glyph with the
+		// ✦ default indicator (see DeviceTableLegend).
+		if hasMarkerCol {
+			cell := provisionedGlyph(item.Provisioned)
+			if hasDefaultCol && pickerItemMatchesDefaultKey(item, defaultKey) {
+				if cell != "" {
+					cell += " "
+				}
+				cell += "✦"
 			}
+			row = append(row, cell)
 		}
 		for _, col := range cols {
 			val := col.value(item)
@@ -662,10 +703,10 @@ func pickerItemMatchesDefaultKey(item PickerItem, defaultKey string) bool {
 	return key == defaultKey
 }
 
-func pickerColumns(rows []bubbleTable.Row, defs []pickerColumnDef, hasDefaultCol bool) []bubbleTable.Column {
+func pickerColumns(rows []bubbleTable.Row, defs []pickerColumnDef, hasMarkerCol bool) []bubbleTable.Column {
 	cols := make([]bubbleTable.Column, 0, len(defs)+1)
 	offset := 0
-	if hasDefaultCol {
+	if hasMarkerCol {
 		cols = append(cols, bubbleTable.Column{Title: "", Width: 3})
 		offset = 1
 	}

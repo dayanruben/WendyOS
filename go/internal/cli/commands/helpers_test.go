@@ -87,12 +87,12 @@ func TestExternalProviderPickerHint(t *testing.T) {
 		{
 			name:        "docker",
 			providerKey: providers.ProviderKeyDocker,
-			want:        "Docker Desktop",
+			want:        "Docker",
 		},
 		{
 			name:        "local",
 			providerKey: providers.ProviderKeyLocal,
-			want:        "Local Machine",
+			want:        providers.LocalDisplayName(),
 		},
 		{
 			name:        "other",
@@ -112,6 +112,11 @@ func TestExternalProviderPickerHint(t *testing.T) {
 			}
 			if !strings.Contains(got, tt.want) {
 				t.Fatalf("hint = %q, want it to mention %q", got, tt.want)
+			}
+			for _, stale := range []string{"Docker Desktop", "Local Machine"} {
+				if strings.Contains(got, stale) {
+					t.Fatalf("hint = %q, want long label %q replaced", got, stale)
+				}
 			}
 		})
 	}
