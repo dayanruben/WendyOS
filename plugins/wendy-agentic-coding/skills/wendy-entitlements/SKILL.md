@@ -32,7 +32,7 @@ Use this table as the starting point, then verify against the local repo when ch
 | Type | Required keys | Common optional keys | Runtime effect |
 | --- | --- | --- | --- |
 | `network` | none | `mode` as `host` or `none` | Defaults to host networking when `mode` is empty; `host` removes the network namespace and mounts host DNS config. |
-| `gpu` | none | none | Adds NVIDIA device nodes, NVIDIA env vars, and relies on CDI for full Jetson/NVIDIA library/device wiring. |
+| `gpu` | none | none | Jetson: adds NVIDIA device nodes, env vars, CDI wiring. Raspberry Pi: exposes `/dev/vcio` for board telemetry. |
 | `audio` | none | none | Adds audio group, mounts `/dev/snd`, allows sound devices, and mounts PipeWire/Pulse sockets when present. |
 | `camera` | none | `mode`, `allowlist` | Canonical V4L2/camera entitlement; allows major 81, bind-mounts host `/dev` for live camera hotplug, and bind-mounts `/run/udev` read-only for libcamera CSI enumeration. |
 | `video` | none | `mode`, `allowlist` | Deprecated compatibility alias for `camera`; prefer `camera` in new configs. |
