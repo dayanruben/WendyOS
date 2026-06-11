@@ -122,14 +122,14 @@ jobs:
       queue: max
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: ./.github/actions/swift-e2e-run
         with:
           tests: ${{ inputs.tests || '' }}
           target_id: macos-ubuntu-24
           runner_id: macos-26
           cli_os: macOS
-          device_address: wendy-SER9.local
+          device_address: ${{ vars.SWIFT_E2E_UBUNTU_24_DEVICE_ADDRESS }}
           agent_os: linux
           transport: lan
           setup: false
@@ -146,14 +146,14 @@ jobs:
       queue: max
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: ./.github/actions/swift-e2e-run
         with:
           tests: ${{ inputs.tests || '' }}
           target_id: macos-jetson-orin-nano
           runner_id: macos-26
           cli_os: macOS
-          device_address: wendyos-strong-dunlin.local
+          device_address: ${{ vars.SWIFT_E2E_JETSON_ORIN_NANO_DEVICE_ADDRESS }}
           agent_os: wendyOS
           transport: lan
           setup: false
