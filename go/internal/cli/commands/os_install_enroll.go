@@ -1,0 +1,170 @@
+//go:build darwin || linux || windows
+
+package commands
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+)
+
+// preEnrollOptions carries the pre-enrollment flags from cobra into the
+// install flow.
+type preEnrollOptions struct {
+	mode      preEnrollMode
+	cloudGRPC string // --cloud-grpc: auth session to enroll with when several exist
+}
+
+// skipEnrollmentValue is the picker value for the explicit skip option.
+const skipEnrollmentValue = "skip-enrollment"
+
+// Interactive hooks used by the pre-enrollment flow, declared as package vars
+// so unit tests can stub them (same pattern as promptDeviceName).
+var (
+	promptEnrollmentSession = func(items []tui.PickerItem) (string, error) {
+		return pickFromItems("Select the Wendy Cloud session to use for enrollment", items)
+	}
+	confirmPreEnroll = func() (bool, error) {
+		return tui.ConfirmDefaultYes("Pre-enroll this device with Wendy Cloud?")
+	}
+	confirmContinueUnenrolled = func() (bool, error) {
+		return tui.Confirm("Continue installing without enrollment?")
+	}
+	preEnrollDeviceFn = preEnrollDevice
+)
+
+// selectEnrollmentAuth resolves which auth session to use for pre-enrollment.
+// With multiple sessions in interactive mode it presents a picker that
+// includes an explicit skip option (WDY-1476). Returns (nil, nil) when the
+// user chooses to skip enrollment.
+func selectEnrollmentAuth(cfg *config.Config, cloudGRPC string, interactive bool) (*config.AuthConfig, error) {
+	if len(cfg.Auth) == 0 {
+		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
+	}
+	if cloudGRPC != "" {
+		for i := range cfg.Auth {
+			if cfg.Auth[i].CloudGRPC == cloudGRPC {
+				return authEntryWithCerts(&cfg.Auth[i])
+			}
+		}
+		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login' against that environment first", cloudGRPC)
+	}
+	if len(cfg.Auth) == 1 {
+		return authEntryWithCerts(&cfg.Auth[0])
+	}
+	if !interactive {
+		return nil, fmt.Errorf("multiple auth sessions exist; pass --cloud-grpc to select one")
+	}
+
+	items := make([]tui.PickerItem, 0, len(cfg.Auth)+1)
+	for i := range cfg.Auth {
+		a := &cfg.Auth[i]
+		name := a.CloudDashboard
+		if name == "" {
+			name = a.CloudGRPC
+		}
+		desc := a.CloudGRPC
+		if len(a.Certificates) > 0 {
+			desc = fmt.Sprintf("org %d — %s", a.Certificates[0].OrganizationID, a.CloudGRPC)
+		}
+		items = append(items, tui.PickerItem{Name: name, Description: desc, Value: strconv.Itoa(i)})
+	}
+	items = append(items, tui.PickerItem{
+		Name:        "Skip enrollment",
+		Description: "continue installing without enrolling this device",
+		Value:       skipEnrollmentValue,
+	})
+
+	picked, err := promptEnrollmentSession(items)
+	if err != nil {
+		return nil, err
+	}
+	if picked == skipEnrollmentValue {
+		return nil, nil
+	}
+	idx, convErr := strconv.Atoi(picked)
+	if convErr != nil || idx < 0 || idx >= len(cfg.Auth) {
+		return nil, fmt.Errorf("invalid session selection %q", picked)
+	}
+	return authEntryWithCerts(&cfg.Auth[idx])
+}
+
+// authEntryWithCerts rejects sessions that cannot enroll because they hold no
+// certificate material.
+func authEntryWithCerts(a *config.AuthConfig) (*config.AuthConfig, error) {
+	if len(a.Certificates) == 0 {
+		return nil, fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", a.CloudGRPC)
+	}
+	return a, nil
+}
+
+// resolvePreEnrollment drives the pre-enrollment step of os install. It runs
+// before the image download/write, so any abort here costs the user nothing.
+// Returns the provisioning JSON for the config partition, or nil when
+// enrollment is skipped (user choice, auto mode without a TTY/sessions, or an
+// acknowledged failure). The install must not proceed past a failed
+// enrollment without explicit user acknowledgement (WDY-1476).
+func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrollOptions, interactive bool, deviceName string) ([]byte, error) {
+	switch opts.mode {
+	case preEnrollSkip:
+		return nil, nil
+	case preEnrollAuto:
+		if !interactive || len(cfg.Auth) == 0 {
+			return nil, nil
+		}
+		ok, err := confirmPreEnroll()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+	}
+
+	auth, err := selectEnrollmentAuth(cfg, opts.cloudGRPC, interactive)
+	if err != nil {
+		if errors.Is(err, ErrUserCancelled) {
+			return nil, err
+		}
+		if !interactive {
+			return nil, fmt.Errorf("--pre-enroll: %w", err)
+		}
+		fmt.Printf("Cannot pre-enroll: %v\n", err)
+		return nil, ackContinueUnenrolled()
+	}
+	if auth == nil {
+		fmt.Println("Skipping enrollment. The device will boot unenrolled; run 'wendy device enroll' after first boot.")
+		return nil, nil
+	}
+
+	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
+	js, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, nil)
+	if enrollErr == nil {
+		fmt.Println("Device pre-enrolled. It will be secure from first boot.")
+		return js, nil
+	}
+	if !interactive {
+		return nil, fmt.Errorf("--pre-enroll: pre-enrollment failed: %w", enrollErr)
+	}
+	fmt.Printf("Pre-enrollment failed: %v\n", enrollErr)
+	return nil, ackContinueUnenrolled()
+}
+
+// ackContinueUnenrolled pauses for explicit confirmation before continuing an
+// install whose enrollment step failed. Returns ErrUserCancelled when the
+// user declines, nil when they accept.
+func ackContinueUnenrolled() error {
+	ok, err := confirmContinueUnenrolled()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrUserCancelled
+	}
+	fmt.Println("Continuing without enrollment. Run 'wendy device enroll' after first boot.")
+	return nil
+}
