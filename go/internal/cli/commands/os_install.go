@@ -52,6 +52,7 @@ func newOSInstallCmd() *cobra.Command {
 	var wifiEntries []string
 	var noWifi bool
 	var deviceName string
+	var enrollCloudGRPC string
 
 	cmd := &cobra.Command{
 		Use:   "install [image] [drive]",
@@ -83,8 +84,8 @@ Flags can be provided progressively — omitted values trigger interactive picke
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Positional direct-install mode is incompatible with manifest-backed flags.
-			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "") {
-				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, or --device-name")
+			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
+				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
 			}
 			if nightly && versionFlag != "" {
 				return fmt.Errorf("--nightly and --version are mutually exclusive")
@@ -108,7 +109,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, opts, deviceName, mode)
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
 		},
 	}
 
@@ -124,6 +125,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&noWifi, "no-wifi", false, "Skip WiFi setup entirely (no interactive prompt, no pre-seeded networks)")
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "Set device name on first boot (e.g. brave-dolphin)")
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
+	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (when multiple sessions exist)")
 
 	return cmd
 }
@@ -237,7 +239,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, mode preEnrollMode) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
@@ -336,12 +338,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if device.IsESP32 {
 		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
 	}
-	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, wifi, deviceName, mode)
+	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, wifi, deviceName, preOpts)
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
 // nightly, flagVersion, flagDrive, and force allow skipping the corresponding interactive prompts.
-func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, mode preEnrollMode) error {
+func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Authenticate elevation up front so we don't pay for the multi-hundred-MB
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
@@ -422,43 +424,17 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// Resolve pre-enrollment — must happen before provisionConfigPartition because
 	// the config partition is mounted and unmounted inside that call.
 	var provisioningJSON []byte
-	switch mode {
-	case preEnrollForced:
-		auth, authErr := pickAuthEntry("")
-		if authErr != nil {
-			return fmt.Errorf("--pre-enroll: %w", authErr)
-		}
-		fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-		js, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
-		if enrollErr != nil {
-			fmt.Printf("Warning: pre-enrollment failed: %v\n", enrollErr)
-			fmt.Println("The device will boot unenrolled. Run 'wendy device enroll' after first boot.")
-		} else {
-			provisioningJSON = js
-			fmt.Println("Device pre-enrolled. It will be secure from first boot.")
-		}
-	case preEnrollAuto:
-		if isInteractiveTerminal() {
-			cfg, loadErr := config.Load()
-			if loadErr == nil && len(cfg.Auth) > 0 {
-				ok, _ := tui.ConfirmDefaultYes("Pre-enroll this device with Wendy Cloud?")
-				if ok {
-					auth, authErr := pickAuthEntry("")
-					if authErr != nil {
-						fmt.Printf("Warning: could not resolve auth for pre-enrollment: %v\n", authErr)
-					} else {
-						fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-						js, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
-						if enrollErr != nil {
-							fmt.Printf("Warning: pre-enrollment failed: %v\n", enrollErr)
-							fmt.Println("The device will boot unenrolled. Run 'wendy device enroll' after first boot.")
-						} else {
-							provisioningJSON = js
-							fmt.Println("Device pre-enrolled. It will be secure from first boot.")
-						}
-					}
-				}
+	if preOpts.mode != preEnrollSkip {
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			if preOpts.mode == preEnrollForced {
+				return fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
 			}
+			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
+		}
+		provisioningJSON, err = resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if err != nil {
+			return err
 		}
 	}
 
