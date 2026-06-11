@@ -978,3 +978,44 @@ func TestDownloadParallel(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveDeviceNamePromptStatesConstraints(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origPrompt := promptDeviceName
+	isInteractiveTerminalFn = func() bool { return true }
+
+	var gotHint string
+	var gotValidate tui.ValidateFunc
+	promptDeviceName = func(_, hint string, validate tui.ValidateFunc) (string, error) {
+		gotHint = hint
+		gotValidate = validate
+		return "brave-dolphin", nil
+	}
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		promptDeviceName = origPrompt
+	})
+
+	if _, err := resolveDeviceName(""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The hint must surface the naming constraints inline (WDY-1475).
+	for _, want := range []string{"a-z", "3–64", "auto-generate"} {
+		if !strings.Contains(gotHint, want) {
+			t.Errorf("hint %q should mention %q", gotHint, want)
+		}
+	}
+
+	// The prompt must be wired to the real validator so invalid input
+	// re-prompts with the specific violation instead of terminating.
+	if gotValidate == nil {
+		t.Fatal("prompt must receive a validator")
+	}
+	if err := gotValidate("MyDevice"); err == nil || !strings.Contains(err.Error(), "lowercase") {
+		t.Fatalf("validator should reject uppercase with a specific message, got %v", err)
+	}
+	if err := gotValidate(""); err != nil {
+		t.Fatalf("validator should accept empty (auto-generate), got %v", err)
+	}
+}

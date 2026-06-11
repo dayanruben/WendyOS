@@ -1323,7 +1323,7 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 			return c, false, err
 		}
 		if !manual {
-			fmt.Println("Skipping WiFi setup. You can configure WiFi after first boot with 'wendy wifi connect'.")
+			fmt.Println("Skipping WiFi setup. You can configure WiFi later with 'wendy wifi connect' once the device is reachable (e.g. over ethernet or USB).")
 			return c, false, nil
 		}
 	}
@@ -1414,7 +1414,11 @@ func resolveDeviceName(flagName string) (string, error) {
 	}
 
 	fmt.Println()
-	name, err := promptDeviceName("Device name", "(leave empty to auto-generate)", optionalDeviceNameValidator)
+	name, err := promptDeviceName(
+		"Device name",
+		"(a-z, 0-9 and hyphens, starts with a letter, 3–64 chars; empty = auto-generate)",
+		optionalDeviceNameValidator,
+	)
 	if err != nil {
 		if errors.Is(err, tui.ErrCancelled) {
 			return "", ErrUserCancelled
