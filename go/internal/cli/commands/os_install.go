@@ -1242,39 +1242,63 @@ func splitEscaped(s string, sep byte) []string {
 	return out
 }
 
+// Interactive hooks used by promptAddOneCredential, declared as package vars
+// so unit tests can stub them (same pattern as promptDeviceName below).
+var (
+	scanWifiNetworksWithSpinner = scanWifiNetworksSpinner
+	confirmManualWifiEntry      = func() (bool, error) {
+		return tui.ConfirmDefaultYes("Enter WiFi network details manually?")
+	}
+	confirmKeychainLookup = func(ssid string) (bool, error) {
+		return tui.ConfirmDefaultYes(fmt.Sprintf("Look up password for '%s' from keychain? (macOS will ask for permission)", ssid))
+	}
+	promptWifiSSID = func() (string, error) {
+		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
+	}
+	promptWifiPassword = func(ssid string) (string, error) {
+		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+	}
+)
+
+// scanWifiNetworksSpinner runs the platform WiFi scan behind a spinner.
+// Returns ErrUserCancelled when the user quits the spinner (Ctrl+C/q) before
+// the scan completes.
+func scanWifiNetworksSpinner() ([]localWifiNetwork, error) {
+	spin := tui.NewSpinner("Scanning for nearby WiFi networks…")
+	p := tea.NewProgram(spin)
+	go func() {
+		nets, err := scanLocalWifiNetworks()
+		p.Send(tui.SpinnerDoneMsg{Result: nets, Err: err})
+	}()
+	finalModel, runErr := p.Run()
+	if runErr != nil {
+		return nil, fmt.Errorf("scanning WiFi networks: %w", runErr)
+	}
+	sm, ok := finalModel.(tui.SpinnerModel)
+	if !ok {
+		return nil, fmt.Errorf("scanning WiFi networks: unexpected spinner model %T", finalModel)
+	}
+	if !sm.Done() {
+		return nil, ErrUserCancelled
+	}
+	result, err := sm.Result()
+	nets, _ := result.([]localWifiNetwork)
+	return nets, err
+}
+
 // promptAddOneCredential runs the local scan + picker + password prompt to
 // collect a single WiFi credential. index is the zero-based count of entries
-// already collected (used to suggest a descending priority).
+// already collected (used to suggest a descending priority). Returns
+// added=false (with nil error) when the user chooses to skip WiFi setup
+// after a failed or empty scan (WDY-1474).
 func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	var c wendyconf.WifiCredential
 
-	var networks []localWifiNetwork
-	var scanErr error
-	{
-		spin := tui.NewSpinner("Scanning for nearby WiFi networks…")
-		p := tea.NewProgram(spin)
-		go func() {
-			nets, err := scanLocalWifiNetworks()
-			p.Send(tui.SpinnerDoneMsg{Result: nets, Err: err})
-		}()
-		finalModel, runErr := p.Run()
-		if runErr != nil {
-			return c, false, fmt.Errorf("scanning WiFi networks: %w", runErr)
-		}
-		sm, ok := finalModel.(tui.SpinnerModel)
-		if !ok {
-			return c, false, fmt.Errorf("scanning WiFi networks: unexpected spinner model %T", finalModel)
-		}
-		// A spinner that quit before receiving SpinnerDoneMsg means the user
-		// pressed Ctrl+C/q during the scan; treat that as a cancellation rather
-		// than silently falling through to the manual SSID prompt.
-		if !sm.Done() {
-			return c, false, ErrUserCancelled
-		}
-		result, err := sm.Result()
-		networks, _ = result.([]localWifiNetwork)
-		scanErr = err
+	networks, scanErr := scanWifiNetworksWithSpinner()
+	if errors.Is(scanErr, ErrUserCancelled) {
+		return c, false, scanErr
 	}
+
 	if scanErr == nil && len(networks) > 0 {
 		var items []tui.PickerItem
 		for _, n := range networks {
@@ -1289,10 +1313,23 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 		if pickErr == nil {
 			c.SSID = picked
 		}
+	} else {
+		// Scan failed or found nothing: say why, then let the user choose
+		// between manual entry and skipping WiFi setup entirely instead of
+		// trapping them in a mandatory SSID prompt (WDY-1474).
+		fmt.Println(wifiScanFailureNotice(scanErr))
+		manual, err := confirmManualWifiEntry()
+		if err != nil {
+			return c, false, err
+		}
+		if !manual {
+			fmt.Println("Skipping WiFi setup. You can configure WiFi after first boot with 'wendy wifi connect'.")
+			return c, false, nil
+		}
 	}
 
 	if c.SSID == "" {
-		ssid, err := tui.PromptText("WiFi SSID", "", nonEmptyValidator)
+		ssid, err := promptWifiSSID()
 		if err != nil {
 			return c, false, err
 		}
@@ -1300,7 +1337,7 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	}
 
 	if supportsKeychainLookup {
-		useKeychain, err := tui.ConfirmDefaultYes(fmt.Sprintf("Look up password for '%s' from keychain? (macOS will ask for permission)", c.SSID))
+		useKeychain, err := confirmKeychainLookup(c.SSID)
 		if err != nil {
 			return c, false, err
 		}
@@ -1315,7 +1352,7 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	}
 
 	if c.Password == "" {
-		pw, err := tui.PromptText(fmt.Sprintf("Password for %s", c.SSID), "(leave empty for open network)", nil)
+		pw, err := promptWifiPassword(c.SSID)
 		if err != nil {
 			return c, false, err
 		}

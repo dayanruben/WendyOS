@@ -497,6 +497,89 @@ func TestResolveDeviceNameInteractiveBlankReturnsEmpty(t *testing.T) {
 	}
 }
 
+// stubWifiPrompts replaces all interactive prompt hooks used by
+// promptAddOneCredential and restores them on test cleanup.
+func stubWifiPrompts(t *testing.T) {
+	t.Helper()
+	origScan := scanWifiNetworksWithSpinner
+	origManual := confirmManualWifiEntry
+	origKeychain := confirmKeychainLookup
+	origSSID := promptWifiSSID
+	origPassword := promptWifiPassword
+	t.Cleanup(func() {
+		scanWifiNetworksWithSpinner = origScan
+		confirmManualWifiEntry = origManual
+		confirmKeychainLookup = origKeychain
+		promptWifiSSID = origSSID
+		promptWifiPassword = origPassword
+	})
+}
+
+func TestPromptAddOneCredentialSkipsWhenManualEntryDeclined(t *testing.T) {
+	stubWifiPrompts(t)
+	scanWifiNetworksWithSpinner = func() ([]localWifiNetwork, error) { return nil, errNoWifiAdapter }
+	confirmManualWifiEntry = func() (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) {
+		t.Fatal("SSID prompt must not be shown after declining manual entry")
+		return "", nil
+	}
+
+	_, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if added {
+		t.Fatal("expected added=false when the user skips WiFi setup")
+	}
+}
+
+func TestPromptAddOneCredentialManualEntryAfterScanFailure(t *testing.T) {
+	stubWifiPrompts(t)
+	scanWifiNetworksWithSpinner = func() ([]localWifiNetwork, error) { return nil, errors.New("exit status 1") }
+	confirmManualWifiEntry = func() (bool, error) { return true, nil }
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) { return "homenet", nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added {
+		t.Fatal("expected added=true after manual entry")
+	}
+	if c.SSID != "homenet" || c.Password != "hunter2" {
+		t.Fatalf("got SSID=%q password=%q; want homenet/hunter2", c.SSID, c.Password)
+	}
+	if c.Priority != 100 {
+		t.Fatalf("got priority %d; want 100 for first network", c.Priority)
+	}
+}
+
+func TestPromptAddOneCredentialEmptyScanOffersSkip(t *testing.T) {
+	stubWifiPrompts(t)
+	scanWifiNetworksWithSpinner = func() ([]localWifiNetwork, error) { return nil, nil }
+	confirmManualWifiEntry = func() (bool, error) { return false, nil }
+
+	_, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if added {
+		t.Fatal("expected added=false when scan finds nothing and user declines manual entry")
+	}
+}
+
+func TestPromptAddOneCredentialScanCancelled(t *testing.T) {
+	stubWifiPrompts(t)
+	scanWifiNetworksWithSpinner = func() ([]localWifiNetwork, error) { return nil, ErrUserCancelled }
+
+	_, _, err := promptAddOneCredential(0)
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("expected ErrUserCancelled, got %v", err)
+	}
+}
+
 func TestResolveDeviceNameFlagValidation(t *testing.T) {
 	tests := []struct {
 		name    string
