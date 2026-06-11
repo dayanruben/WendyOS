@@ -497,6 +497,142 @@ func TestResolveDeviceNameInteractiveBlankReturnsEmpty(t *testing.T) {
 	}
 }
 
+// stubWifiPrompts replaces all interactive prompt hooks used by
+// promptAddOneCredential and restores them on test cleanup.
+func stubWifiPrompts(t *testing.T) {
+	t.Helper()
+	origSelect := selectWifiNetworkFromScan
+	origManual := confirmManualWifiEntry
+	origKeychain := confirmKeychainLookup
+	origSSID := promptWifiSSID
+	origPassword := promptWifiPassword
+	t.Cleanup(func() {
+		selectWifiNetworkFromScan = origSelect
+		confirmManualWifiEntry = origManual
+		confirmKeychainLookup = origKeychain
+		promptWifiSSID = origSSID
+		promptWifiPassword = origPassword
+	})
+}
+
+func TestPromptAddOneCredentialSkipsWhenManualEntryDeclined(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{ScanErr: errNoWifiAdapter}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) {
+		t.Fatal("SSID prompt must not be shown after declining manual entry")
+		return "", nil
+	}
+
+	_, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if added {
+		t.Fatal("expected added=false when the user skips WiFi setup")
+	}
+}
+
+func TestPromptAddOneCredentialManualEntryAfterScanFailure(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{ScanErr: errors.New("exit status 1")}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) { return true, nil }
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) { return "homenet", nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added {
+		t.Fatal("expected added=true after manual entry")
+	}
+	if c.SSID != "homenet" || c.Password != "hunter2" {
+		t.Fatalf("got SSID=%q password=%q; want homenet/hunter2", c.SSID, c.Password)
+	}
+	if c.Priority != 100 {
+		t.Fatalf("got priority %d; want 100 for first network", c.Priority)
+	}
+}
+
+func TestPromptAddOneCredentialEmptyScanOffersSkip(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) { return false, nil }
+
+	_, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if added {
+		t.Fatal("expected added=false when scan finds nothing and user declines manual entry")
+	}
+}
+
+func TestPromptAddOneCredentialScanCancelled(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{}, ErrUserCancelled
+	}
+
+	_, _, err := promptAddOneCredential(0)
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("expected ErrUserCancelled, got %v", err)
+	}
+}
+
+func TestPromptAddOneCredentialUsesPickedNetwork(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{SSID: "cafe", HadNetworks: true}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) {
+		t.Fatal("skip confirm must not be shown after a successful pick")
+		return false, nil
+	}
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added || c.SSID != "cafe" {
+		t.Fatalf("got added=%v SSID=%q; want picked network", added, c.SSID)
+	}
+}
+
+func TestPromptAddOneCredentialEscWithNetworksGoesManual(t *testing.T) {
+	stubWifiPrompts(t)
+	// Networks were listed but the user pressed esc to type manually, as
+	// the picker title advertises: no skip confirm, straight to the prompt.
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{HadNetworks: true}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) {
+		t.Fatal("skip confirm must not be shown when the user chose manual entry")
+		return false, nil
+	}
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) { return "homenet", nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added || c.SSID != "homenet" {
+		t.Fatalf("got added=%v SSID=%q; want manual entry", added, c.SSID)
+	}
+}
+
 func TestResolveDeviceNameFlagValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -893,5 +1029,46 @@ func TestDownloadParallel(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestResolveDeviceNamePromptStatesConstraints(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origPrompt := promptDeviceName
+	isInteractiveTerminalFn = func() bool { return true }
+
+	var gotHint string
+	var gotValidate tui.ValidateFunc
+	promptDeviceName = func(_, hint string, validate tui.ValidateFunc) (string, error) {
+		gotHint = hint
+		gotValidate = validate
+		return "brave-dolphin", nil
+	}
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		promptDeviceName = origPrompt
+	})
+
+	if _, err := resolveDeviceName(""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The hint must surface the naming constraints inline (WDY-1475).
+	for _, want := range []string{"a-z", "3–64", "auto-generate"} {
+		if !strings.Contains(gotHint, want) {
+			t.Errorf("hint %q should mention %q", gotHint, want)
+		}
+	}
+
+	// The prompt must be wired to the real validator so invalid input
+	// re-prompts with the specific violation instead of terminating.
+	if gotValidate == nil {
+		t.Fatal("prompt must receive a validator")
+	}
+	if err := gotValidate("MyDevice"); err == nil || !strings.Contains(err.Error(), "lowercase") {
+		t.Fatalf("validator should reject uppercase with a specific message, got %v", err)
+	}
+	if err := gotValidate(""); err != nil {
+		t.Fatalf("validator should accept empty (auto-generate), got %v", err)
 	}
 }

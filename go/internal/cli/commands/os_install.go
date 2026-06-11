@@ -1218,60 +1218,107 @@ func splitEscaped(s string, sep byte) []string {
 	return out
 }
 
+// Interactive hooks used by promptAddOneCredential, declared as package vars
+// so unit tests can stub them (same pattern as promptDeviceName below).
+var (
+	selectWifiNetworkFromScan = selectWifiNetworkStreaming
+	confirmManualWifiEntry    = func() (bool, error) {
+		return tui.ConfirmDefaultYes("Enter WiFi network details manually?")
+	}
+	confirmKeychainLookup = func(ssid string) (bool, error) {
+		return tui.ConfirmDefaultYes(fmt.Sprintf("Look up password for '%s' from keychain? (macOS will ask for permission)", ssid))
+	}
+	promptWifiSSID = func() (string, error) {
+		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
+	}
+	promptWifiPassword = func(ssid string) (string, error) {
+		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+	}
+)
+
+// wifiScanSelection is the outcome of the streaming scan-and-pick step.
+type wifiScanSelection struct {
+	SSID        string // empty when the user made no selection
+	HadNetworks bool   // the scan returned at least one network
+	ScanErr     error  // scan failure recorded while the picker was open
+}
+
+// selectWifiNetworkStreaming shows the WiFi picker immediately and streams
+// the scan results in: the CoreWLAN/nmcli/netsh scan can take several
+// seconds, and a visible "Scanning..." list reads better than blocking
+// before any UI appears.
+func selectWifiNetworkStreaming() (wifiScanSelection, error) {
+	var sel wifiScanSelection
+
+	picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
+	picker.Filterable = true
+	p := tea.NewProgram(picker)
+
+	// The user can quit the picker before the scan goroutine finishes, so
+	// every access to sel is mutex-guarded.
+	var mu sync.Mutex
+	go func() {
+		defer p.Send(tui.PickerDoneMsg{})
+		nets, err := scanLocalWifiNetworks()
+		mu.Lock()
+		sel.ScanErr = err
+		sel.HadNetworks = len(nets) > 0
+		mu.Unlock()
+		if err != nil {
+			return
+		}
+		p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
+	}()
+	fmt.Println()
+	finalModel, runErr := p.Run()
+	if runErr != nil {
+		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: %w", runErr)
+	}
+	pm, ok := finalModel.(tui.PickerModel)
+	if !ok {
+		return wifiScanSelection{}, fmt.Errorf("scanning WiFi networks: unexpected picker model %T", finalModel)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if picked := pm.Selected(); picked != nil {
+		sel.SSID, _ = picked.Value.(string)
+	}
+	return sel, nil
+}
+
 // promptAddOneCredential runs the local scan + picker + password prompt to
 // collect a single WiFi credential. index is the zero-based count of entries
-// already collected (used to suggest a descending priority).
+// already collected (used to suggest a descending priority). Returns
+// added=false (with nil error) when the user chooses to skip WiFi setup
+// after a failed or empty scan (WDY-1474).
 func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	var c wendyconf.WifiCredential
 
-	// Show the picker immediately and stream the scan results in: the
-	// CoreWLAN/nmcli/netsh scan can take several seconds, and a visible
-	// "Scanning..." list reads better than blocking before any UI appears.
-	{
-		picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
-		picker.Filterable = true
-		p := tea.NewProgram(picker)
+	sel, err := selectWifiNetworkFromScan()
+	if err != nil {
+		return c, false, err
+	}
+	c.SSID = sel.SSID
 
-		var scanErrMu sync.Mutex
-		var scanErr error
-		go func() {
-			defer p.Send(tui.PickerDoneMsg{})
-			nets, err := scanLocalWifiNetworks()
-			if err != nil {
-				// Recorded so the fallthrough to the manual prompt can say
-				// why the list stayed empty.
-				scanErrMu.Lock()
-				scanErr = err
-				scanErrMu.Unlock()
-				return
-			}
-			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
-		}()
-		fmt.Println()
-		finalModel, runErr := p.Run()
-		if runErr != nil {
-			return c, false, fmt.Errorf("scanning WiFi networks: %w", runErr)
+	// No selection and nothing usable was scanned: say why, then let the
+	// user choose between manual entry and skipping WiFi setup entirely
+	// instead of trapping them in a mandatory SSID prompt (WDY-1474). A
+	// deliberate esc while networks are listed falls straight through to
+	// the manual prompt, as the picker title advertises.
+	if c.SSID == "" && (sel.ScanErr != nil || !sel.HadNetworks) {
+		fmt.Println(wifiScanFailureNotice(sel.ScanErr))
+		manual, err := confirmManualWifiEntry()
+		if err != nil {
+			return c, false, err
 		}
-		pm, ok := finalModel.(tui.PickerModel)
-		if !ok {
-			return c, false, fmt.Errorf("scanning WiFi networks: unexpected picker model %T", finalModel)
-		}
-		// Cancelling the picker (esc/Ctrl+C) falls through to the manual SSID
-		// prompt, as the title advertises.
-		if sel := pm.Selected(); sel != nil {
-			c.SSID, _ = sel.Value.(string)
-		} else {
-			scanErrMu.Lock()
-			err := scanErr
-			scanErrMu.Unlock()
-			if err != nil {
-				cliNotice("WiFi scan failed (%v) — enter the network name manually.", err)
-			}
+		if !manual {
+			fmt.Println("Skipping WiFi setup. You can configure WiFi later with 'wendy wifi connect' once the device is reachable (e.g. over ethernet or USB).")
+			return c, false, nil
 		}
 	}
 
 	if c.SSID == "" {
-		ssid, err := tui.PromptText("WiFi SSID", "", nonEmptyValidator)
+		ssid, err := promptWifiSSID()
 		if err != nil {
 			return c, false, err
 		}
@@ -1279,7 +1326,7 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	}
 
 	if supportsKeychainLookup {
-		useKeychain, err := tui.ConfirmDefaultYes(fmt.Sprintf("Look up password for '%s' from keychain? (macOS will ask for permission)", c.SSID))
+		useKeychain, err := confirmKeychainLookup(c.SSID)
 		if err != nil {
 			return c, false, err
 		}
@@ -1294,7 +1341,7 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	}
 
 	if c.Password == "" {
-		pw, err := tui.PromptText(fmt.Sprintf("Password for %s", c.SSID), "(leave empty for open network)", nil)
+		pw, err := promptWifiPassword(c.SSID)
 		if err != nil {
 			return c, false, err
 		}
@@ -1356,7 +1403,11 @@ func resolveDeviceName(flagName string) (string, error) {
 	}
 
 	fmt.Println()
-	name, err := promptDeviceName("Device name", "(leave empty to auto-generate)", optionalDeviceNameValidator)
+	name, err := promptDeviceName(
+		"Device name",
+		"(a-z, 0-9 and hyphens, starts with a letter, 3–64 chars; empty = auto-generate)",
+		optionalDeviceNameValidator,
+	)
 	if err != nil {
 		if errors.Is(err, tui.ErrCancelled) {
 			return "", ErrUserCancelled

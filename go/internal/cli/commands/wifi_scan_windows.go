@@ -25,7 +25,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	cmd := exec.Command("netsh", "wlan", "show", "networks", "mode=bssid")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("scanning WiFi networks: %w", err)
+		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))
 	}
 	return parseNetshNetworks(string(output)), nil
 }
