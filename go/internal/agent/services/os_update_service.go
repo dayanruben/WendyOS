@@ -87,21 +87,31 @@ func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.S
 		})
 	}
 
+	// Retain the tail of mender's output so a non-zero exit can report the
+	// real cause (e.g. an incompatible device type) instead of a bare
+	// "exit status 1".
+	outputTail := newLineRing(menderErrorTailLines)
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
 		line := scanner.Text()
+		outputTail.push(line)
 		if m := menderProgressRe.FindStringSubmatch(line); len(m) > 1 {
 			if pct := parseInt32(m[1]); pct >= 0 {
 				sendProgress("installing", pct)
 			}
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		s.logger.Warn("mender output scan error", zap.Error(err))
+	}
 
 	if err := cmd.Wait(); err != nil {
+		msg := formatMenderFailure(err, outputTail.tail())
+		s.logger.Error("mender install failed", zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
 		return stream.Send(&agentpbv2.UpdateOSResponse{
 			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
 				Failed: &agentpbv2.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("mender failed: %v", err),
+					ErrorMessage: msg,
 				},
 			},
 		})
