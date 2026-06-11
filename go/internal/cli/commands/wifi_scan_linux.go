@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
 )
 
@@ -38,7 +39,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	// Trigger a rescan first (may fail if already scanning).
 	_ = nmcli.Command(context.Background(), nmcliPath, "device", "wifi", "rescan").Run()
 
-	cmd := nmcli.Command(context.Background(), nmcliPath, "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list")
+	cmd := nmcli.Command(context.Background(), nmcliPath, "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))
@@ -52,12 +53,12 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 		// Use the shared nmcli parser so SSIDs containing literal `:` (escaped
 		// by nmcli as `\:`) and `\` survive intact, and so the parsing is
 		// consistent with the agent side.
-		fields := nmcli.Split(scanner.Text(), 2)
+		fields := nmcli.Split(scanner.Text(), 3)
 		if len(fields) < 2 {
 			continue
 		}
 
-		ssid := fields[0]
+		ssid := tui.StripControl(fields[0])
 		if ssid == "" || seen[ssid] {
 			continue
 		}
@@ -68,7 +69,12 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 			signal = int32(s)
 		}
 
-		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal})
+		security := ""
+		if len(fields) >= 3 {
+			security = normalizeWifiSecurity(tui.StripControl(fields[2]))
+		}
+
+		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal, Security: security})
 	}
 
 	if err := scanner.Err(); err != nil {
