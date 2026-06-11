@@ -90,9 +90,11 @@ runs:
         }
         validate_tests() {
           local value="$1" filter
+          local filters=()
           [[ ${#value} -le 500 ]] || return 1
-          [[ -z "$value" || "$value" =~ ^[A-Za-z0-9][A-Za-z0-9\,\ \._:/\|\(\)_-]*$ ]] || return 1
           [[ "$value" != *'<<'* ]] || return 1
+          [[ -n "$value" ]] || return 0
+          [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9\,\ \._:/\|\(\)_-]*$ ]] || return 1
           IFS=',' read -ra filters <<< "$value"
           for filter in "${filters[@]}"; do
             filter="${filter#${filter%%[![:space:]]*}}"
