@@ -10,6 +10,7 @@ import (
 // errNoWifiAdapter signals that the host has no usable WiFi hardware, as
 // opposed to a transient scan failure. Platform scanners return it (possibly
 // wrapped) so the install flow can show a specific message (WDY-1474).
+// Keep its text in sync with the user-facing copy in wifiScanFailureNotice.
 var errNoWifiAdapter = errors.New("no WiFi adapter detected on this machine")
 
 // exitErrWithStderr enriches an error from exec's Output() with the captured

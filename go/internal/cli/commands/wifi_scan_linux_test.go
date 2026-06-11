@@ -31,6 +31,11 @@ func TestNmcliHasWifiDevice(t *testing.T) {
 			"weird\\:name:wifi\n",
 			true,
 		},
+		{
+			"unexpected third column does not match",
+			"wlan0:wifi:connected\n",
+			false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
