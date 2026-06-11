@@ -272,8 +272,33 @@ func TestDiscoverModel_DKeySetsDefaultAndMarksSelectedDevice(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected clearFlashAfter cmd")
 	}
-	if !strings.Contains(um.table.View(), "★") {
+	if !strings.Contains(um.table.View(), "✦") {
 		t.Fatalf("expected selected default device to show marker, got %q", um.table.View())
+	}
+}
+
+func TestDiscoverTableItemsHidesAddressForDockerAndLocal(t *testing.T) {
+	collection := &models.DevicesCollection{
+		ExternalDevices: []models.ExternalDevice{
+			{ID: "docker", DisplayName: "Docker", ProviderKey: "docker"},
+			{ID: "local", DisplayName: "This Mac", ProviderKey: "local"},
+			{ID: "emulator-5554", DisplayName: "Pixel 8", ProviderKey: "android-adb"},
+		},
+	}
+
+	items := discoverTableItems(collection)
+	byName := make(map[string]discoverTableItem, len(items))
+	for _, item := range items {
+		byName[item.info.Name] = item
+	}
+
+	for _, name := range []string{"Docker", "This Mac"} {
+		if got := byName[name].picker.Address; got != "" {
+			t.Fatalf("%s Address = %q, want hidden", name, got)
+		}
+	}
+	if got := byName["Pixel 8"].picker.Address; got != "android-adb: emulator-5554" {
+		t.Fatalf("Pixel 8 Address = %q, want provider-qualified ID", got)
 	}
 }
 
@@ -434,7 +459,7 @@ func TestDiscoverTableItemsProvisionedStateAndNoAccessHint(t *testing.T) {
 	}
 
 	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
-	// Columns: 0=marker (★ default + provisioned glyph) 1=Name 2=Type 3=Address 4=Agent 5=OS.
+	// Columns: 0=marker (provisioned glyph + ✦ default) 1=Name 2=Type 3=Address 4=Agent 5=OS.
 	if rows[0][0] != "●" {
 		t.Fatalf("provisioned marker cell = %q, want \"●\"", rows[0][0])
 	}

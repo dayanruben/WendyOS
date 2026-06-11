@@ -82,7 +82,7 @@ type PickerModel struct {
 
 	// DefaultKey is compared case-insensitively against each item's DedupKey
 	// (or Name if DedupKey is empty). Should be stored lowercase for consistency.
-	// Shown with a ★ indicator in the table.
+	// Shown with a ✦ indicator in the table.
 	DefaultKey string
 
 	items        []PickerItem
@@ -332,7 +332,7 @@ func (m PickerModel) Selected() *PickerItem {
 }
 
 // DeviceTableLegend explains the glyphs used in the compact device table.
-const DeviceTableLegend = "● provisioned  ○ unprovisioned  ⚠ agent older than CLI"
+const DeviceTableLegend = "● provisioned  ○ unprovisioned  ✦ default  ⚠ agent older than CLI"
 
 type pickerColumnDef struct {
 	title    string
@@ -560,14 +560,17 @@ func pickerRows(items []PickerItem, cols []pickerColumnDef, defaultKey string, h
 	rows := make([]bubbleTable.Row, 0, len(items))
 	for _, item := range items {
 		var row bubbleTable.Row
-		// The marker column combines the ★ default indicator with the
-		// provisioned-state glyph (see DeviceTableLegend).
+		// The marker column combines the provisioned-state glyph with the
+		// ✦ default indicator (see DeviceTableLegend).
 		if hasMarkerCol {
-			marker := ""
+			cell := provisionedGlyph(item.Provisioned)
 			if hasDefaultCol && pickerItemMatchesDefaultKey(item, defaultKey) {
-				marker = "★"
+				if cell != "" {
+					cell += " "
+				}
+				cell += "✦"
 			}
-			row = append(row, marker+provisionedGlyph(item.Provisioned))
+			row = append(row, cell)
 		}
 		for _, col := range cols {
 			val := col.value(item)

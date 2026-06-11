@@ -1313,7 +1313,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	picker := tui.NewPicker()
 	picker.MergeItem = mergePickerItem
 
-	// Load current default device to show ★ indicator.
+	// Load current default device to show ✦ indicator.
 	if loadedCfg, err := config.Load(); err == nil && loadedCfg.DefaultDevice != "" {
 		picker.DefaultKey = strings.ToLower(loadedCfg.DefaultDevice)
 	}
@@ -1425,7 +1425,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							items = append(items, tui.PickerItem{
 								Name:         devices[i].DisplayName,
 								Type:         prov.DisplayName(),
-								Address:      fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								Address:      externalProviderAddress(devices[i].ProviderKey, devices[i].ID),
 								AgentVersion: devices[i].AgentVersion,
 								OSVersion:    devices[i].OSVersion,
 								DedupKey:     devices[i].DisplayName,

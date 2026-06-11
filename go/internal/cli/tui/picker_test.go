@@ -182,7 +182,7 @@ func TestPickerTableData_KeepsDefaultMarkerInNarrowWidth(t *testing.T) {
 	if len(cols) < 2 || cols[0].Title != "" || cols[1].Title != "Name" {
 		t.Fatalf("columns = %v, want marker and Name columns", cols)
 	}
-	if len(rows) != 1 || len(rows[0]) < 1 || rows[0][0] != "★" {
+	if len(rows) != 1 || len(rows[0]) < 1 || rows[0][0] != "✦" {
 		t.Fatalf("default marker row = %v, want leading star", rows)
 	}
 }
@@ -262,8 +262,8 @@ func TestPickerDeviceTableData_CombinesDefaultMarkerAndProvisionedGlyph(t *testi
 		{Name: "alpha", Provisioned: "Provisioned"},
 	}, "alpha", true)
 
-	if rows[0][0] != "★●" {
-		t.Fatalf("marker cell = %q, want \"★●\"", rows[0][0])
+	if rows[0][0] != "● ✦" {
+		t.Fatalf("marker cell = %q, want \"● ✦\"", rows[0][0])
 	}
 }
 
@@ -470,8 +470,8 @@ func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	pm := updated.(PickerModel)
 
 	view := pm.View()
-	if !strings.Contains(view, "★") {
-		t.Error("expected ★ indicator for default item")
+	if !strings.Contains(view, "✦") {
+		t.Error("expected ✦ indicator for default item")
 	}
 	if !strings.Contains(view, "d set default") {
 		t.Error("expected hint text to contain 'd set default'")
@@ -492,8 +492,8 @@ func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
-	if rows[0][0] != "★" {
-		t.Fatalf("default marker = %q, want ★", rows[0][0])
+	if rows[0][0] != "✦" {
+		t.Fatalf("default marker = %q, want ✦", rows[0][0])
 	}
 }
 

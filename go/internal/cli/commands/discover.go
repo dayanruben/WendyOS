@@ -973,7 +973,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		if d.ProviderKey == "wendy-lite" {
 			continue
 		}
-		addr := fmt.Sprintf("%s: %s", d.ProviderKey, d.ID)
+		addr := externalProviderAddress(d.ProviderKey, d.ID)
 		deviceType := externalProviderDisplayName(d.ProviderKey)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
@@ -1053,6 +1053,17 @@ func externalProviderSortKey(providerKey, name string) string {
 		return "~1_" + strings.ToLower(name)
 	}
 	return ""
+}
+
+// externalProviderAddress returns the provider-qualified ID shown in the
+// Address column. Docker and the local machine have fixed, meaningless IDs
+// ("docker: docker", "local: local"), so their address is hidden.
+func externalProviderAddress(providerKey, id string) string {
+	switch providerKey {
+	case providers.ProviderKeyDocker, providers.ProviderKeyLocal:
+		return ""
+	}
+	return fmt.Sprintf("%s: %s", providerKey, id)
 }
 
 func externalProviderPickerHint(providerKey string) string {
