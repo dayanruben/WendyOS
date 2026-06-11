@@ -10,11 +10,14 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 ## In Progress
 
-- **Wendy for Mac**: headless Mac mini and Mac Studio support using a macOS-specific `wendy-agent` workflow.
 - **Jetson AGX Thor support**: WendyOS support for AGX Thor-class physical AI workloads.
 - **MLX Swift support**: MLX Swift integration for unified-memory AI workloads.
 - **Companion SDK** — _planned release **2026-07-03**, not yet shipped_ ([WDY-1235](https://linear.app/wendylabsinc/issue/WDY-1235)): the companion SDK and its associated applications are demoable today but still need polish for an official release. The launch is sequenced one week after the Pipecat Agent template refresh ([WDY-1228](https://linear.app/wendylabsinc/issue/WDY-1228)) to avoid overlapping marketing pushes.
 - **MLX LLM in a local container** — _planned, not yet shipped_ ([WDY-1229](https://linear.app/wendylabsinc/issue/WDY-1229)): MLX currently compiles as a Swift package; remaining work is Wendy-ecosystem integration plus Dockerfiles for Linux compilation, building toward a containerised demo of MLX LLM.
+
+## Available Beta
+
+- **Wendy for Mac**: deploy native macOS apps to Apple Silicon Mac targets with [Wendy Agent for Mac](/docs/installation/wendy-agent-macos). Beta limitations are documented in the macOS install guide.
 
 ## Shipped
 
