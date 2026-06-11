@@ -1248,46 +1248,49 @@ func splitEscaped(s string, sep byte) []string {
 func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	var c wendyconf.WifiCredential
 
-	var networks []localWifiNetwork
-	var scanErr error
+	// Show the picker immediately and stream the scan results in: the
+	// CoreWLAN/nmcli/netsh scan can take several seconds, and a visible
+	// "Scanning..." list reads better than blocking before any UI appears.
 	{
-		spin := tui.NewSpinner("Scanning for nearby WiFi networks…")
-		p := tea.NewProgram(spin)
+		picker := tui.NewPickerWithTitleAndColumns("Select WiFi network (or esc to type manually)", wifiPickerColumns())
+		picker.Filterable = true
+		p := tea.NewProgram(picker)
+
+		var scanErrMu sync.Mutex
+		var scanErr error
 		go func() {
+			defer p.Send(tui.PickerDoneMsg{})
 			nets, err := scanLocalWifiNetworks()
-			p.Send(tui.SpinnerDoneMsg{Result: nets, Err: err})
+			if err != nil {
+				// Recorded so the fallthrough to the manual prompt can say
+				// why the list stayed empty.
+				scanErrMu.Lock()
+				scanErr = err
+				scanErrMu.Unlock()
+				return
+			}
+			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
 		}()
+		fmt.Println()
 		finalModel, runErr := p.Run()
 		if runErr != nil {
 			return c, false, fmt.Errorf("scanning WiFi networks: %w", runErr)
 		}
-		sm, ok := finalModel.(tui.SpinnerModel)
+		pm, ok := finalModel.(tui.PickerModel)
 		if !ok {
-			return c, false, fmt.Errorf("scanning WiFi networks: unexpected spinner model %T", finalModel)
+			return c, false, fmt.Errorf("scanning WiFi networks: unexpected picker model %T", finalModel)
 		}
-		// A spinner that quit before receiving SpinnerDoneMsg means the user
-		// pressed Ctrl+C/q during the scan; treat that as a cancellation rather
-		// than silently falling through to the manual SSID prompt.
-		if !sm.Done() {
-			return c, false, ErrUserCancelled
-		}
-		result, err := sm.Result()
-		networks, _ = result.([]localWifiNetwork)
-		scanErr = err
-	}
-	if scanErr == nil && len(networks) > 0 {
-		var items []tui.PickerItem
-		for _, n := range networks {
-			signal := ""
-			if n.SignalStrength > 0 {
-				signal = fmt.Sprintf("%d%%", n.SignalStrength)
+		// Cancelling the picker (esc/Ctrl+C) falls through to the manual SSID
+		// prompt, as the title advertises.
+		if sel := pm.Selected(); sel != nil {
+			c.SSID, _ = sel.Value.(string)
+		} else {
+			scanErrMu.Lock()
+			err := scanErr
+			scanErrMu.Unlock()
+			if err != nil {
+				cliNotice("WiFi scan failed (%v) — enter the network name manually.", err)
 			}
-			items = append(items, tui.PickerItem{Name: n.SSID, Type: signal, Value: n.SSID})
-		}
-		fmt.Println()
-		picked, pickErr := pickFromItems("Select WiFi network (or Ctrl+C to type manually)", items)
-		if pickErr == nil {
-			c.SSID = picked
 		}
 	}
 

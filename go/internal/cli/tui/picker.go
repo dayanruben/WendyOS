@@ -84,6 +84,16 @@ type PickerModel struct {
 	// Shown with a ★ indicator in the table.
 	DefaultKey string
 
+	// Filterable enables find-as-you-type filtering: printable keys narrow
+	// the list to items whose Name contains the typed query
+	// (case-insensitive), backspace edits the query, and esc clears it (esc
+	// and ctrl+c quit when the query is empty). Matched characters are
+	// highlighted in the Name column. Enabling this retargets the plain
+	// 'q'/'d'/'x' hotkeys into the filter query, so only use it for pickers
+	// whose items are free-form text (e.g. WiFi SSIDs).
+	Filterable bool
+
+	filter       string
 	items        []PickerItem
 	seenIdx      map[string]int // dedup key -> index in items
 	table        BubbleTable
@@ -153,15 +163,17 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTable()
 		return m, cmd
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
+		key := msg.String()
+		switch {
+		case key == "enter":
+			visible := m.visibleItems()
 			cursor := m.table.Cursor()
-			if len(m.items) > 0 && cursor >= 0 && cursor < len(m.items) {
-				item := m.items[cursor]
+			if len(visible) > 0 && cursor >= 0 && cursor < len(visible) {
+				item := visible[cursor]
 				m.selected = &item
 				return m, tea.Quit
 			}
-		case "d":
+		case key == "d" && !m.Filterable:
 			if m.OnSetDefault != nil {
 				cursor := m.table.Cursor()
 				if len(m.items) > 0 && cursor >= 0 && cursor < len(m.items) {
@@ -176,16 +188,46 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "x":
+		case key == "x" && !m.Filterable:
 			if m.OnUnsetDefault != nil {
 				m.DefaultKey = ""
 				m.OnUnsetDefault()
 				m.refreshTable()
 			}
 			return m, nil
-		case "q", "ctrl+c":
+		case key == "esc" && m.Filterable && m.filter != "":
+			m.filter = ""
+			m.table.SetCursor(0)
+			m.refreshTable()
+			return m, nil
+		case key == "ctrl+c", key == "esc", key == "q" && !m.Filterable:
 			m.quitting = true
 			return m, tea.Quit
+		case key == "backspace" && m.Filterable:
+			if m.filter != "" {
+				runes := []rune(m.filter)
+				m.filter = string(runes[:len(runes)-1])
+				m.table.SetCursor(0)
+				m.refreshTable()
+			}
+			return m, nil
+		case (msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace) && m.Filterable:
+			// Pasted input can carry control characters; keep them out of
+			// the query (it is echoed back to the terminal verbatim), and
+			// cap its length so a large paste can't distort the layout.
+			if typed := StripControl(string(msg.Runes)); typed != "" {
+				const maxFilterLen = 64
+				if room := maxFilterLen - len([]rune(m.filter)); room > 0 {
+					runes := []rune(typed)
+					if len(runes) > room {
+						runes = runes[:room]
+					}
+					m.filter += string(runes)
+					m.table.SetCursor(0)
+					m.refreshTable()
+				}
+			}
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
@@ -254,6 +296,9 @@ func (m PickerModel) View() string {
 		scrollHint = ", ←/→ scroll"
 	}
 	hint := " (↑/↓ navigate" + scrollHint + ", enter select, q quit)"
+	if m.Filterable {
+		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", enter select, esc quit)"
+	}
 	if m.OnSetDefault != nil || m.OnUnsetDefault != nil {
 		extras := ""
 		if m.OnSetDefault != nil {
@@ -266,6 +311,12 @@ func (m PickerModel) View() string {
 	}
 	sb.WriteString(m.viewLine(pickerTitle.Render(m.Title)+pickerHint.Render(hint)) + "\n\n")
 
+	if m.Filterable && m.filter != "" {
+		// The query is sanitized as it is typed; strip again here so this
+		// render site is safe in isolation.
+		sb.WriteString(m.viewLine("  Filter: "+StripControl(m.filter)+pickerHint.Render("  (esc to clear)")) + "\n\n")
+	}
+
 	if len(m.items) == 0 {
 		if m.scanning {
 			sb.WriteString(m.viewLine(pickerScanning.Render("  Scanning...")) + "\n")
@@ -275,10 +326,16 @@ func (m PickerModel) View() string {
 		return sb.String()
 	}
 
+	visible := m.visibleItems()
+	if len(visible) == 0 {
+		sb.WriteString(m.viewLine(pickerHint.Render("  No matches — esc to clear the filter.")) + "\n")
+		return sb.String()
+	}
+
 	sb.WriteString(m.tableView() + "\n")
 
 	cursor := m.table.Cursor()
-	if cursor >= 0 && cursor < len(m.items) && m.items[cursor].Insecure {
+	if cursor >= 0 && cursor < len(visible) && visible[cursor].Insecure {
 		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
 	}
 
@@ -297,11 +354,12 @@ func (m PickerModel) View() string {
 }
 
 func (m PickerModel) selectedHint() string {
+	visible := m.visibleItems()
 	cursor := m.table.Cursor()
-	if cursor < 0 || cursor >= len(m.items) {
+	if cursor < 0 || cursor >= len(visible) {
 		return ""
 	}
-	return strings.TrimSpace(m.items[cursor].Hint)
+	return strings.TrimSpace(visible[cursor].Hint)
 }
 
 func (m PickerModel) viewLine(line string) string {
@@ -312,7 +370,27 @@ func (m PickerModel) viewLine(line string) string {
 }
 
 func (m PickerModel) tableView() string {
-	return m.table.View()
+	if !m.Filterable || m.filter == "" {
+		return m.table.View()
+	}
+	// Highlight filter matches in the Name column. The cell layout is
+	// 1 padding + content + 1 padding per column; the Name column is first
+	// unless the ★ default column (width 3 + padding) precedes it.
+	cols := m.table.Columns()
+	nameIdx := 0
+	start := 1
+	if m.OnSetDefault != nil && len(cols) > 1 {
+		nameIdx = 1
+		start += cols[0].Width + 2
+	}
+	if nameIdx >= len(cols) {
+		return m.table.View()
+	}
+	view := HighlightMatches(m.table.FullView(), m.filter, start, start+cols[nameIdx].Width)
+	if w := m.table.ViewportWidth(); w > 0 {
+		view = CropANSIView(view, m.table.ScrollOffset(), w)
+	}
+	return view
 }
 
 // Cancelled returns true if the user quit the picker without selecting (e.g. Ctrl+C).
@@ -411,9 +489,27 @@ func newPickerTable() BubbleTable {
 	return NewBubbleTable(true, nil)
 }
 
+// visibleItems returns the items that pass the active filter, in display
+// order. With no filter (or filtering disabled) it returns the full list, so
+// table cursor indexes always address this slice.
+func (m PickerModel) visibleItems() []PickerItem {
+	if !m.Filterable || m.filter == "" {
+		return m.items
+	}
+	query := strings.ToLower(m.filter)
+	out := make([]PickerItem, 0, len(m.items))
+	for _, item := range m.items {
+		if strings.Contains(strings.ToLower(item.Name), query) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func (m *PickerModel) currentCursorKey() string {
-	if cursor := m.table.Cursor(); cursor >= 0 && cursor < len(m.items) {
-		return strings.ToLower(pickerItemKey(m.items[cursor]))
+	visible := m.visibleItems()
+	if cursor := m.table.Cursor(); cursor >= 0 && cursor < len(visible) {
+		return strings.ToLower(pickerItemKey(visible[cursor]))
 	}
 	return ""
 }
@@ -446,8 +542,9 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 		m.seenIdx[strings.ToLower(pickerItemKey(item))] = i
 	}
 
+	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
-	cols, rows := pickerTableDataForColumns(m.items, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
+	cols, rows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
 	m.table.SetRows(nil)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -455,12 +552,17 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 	// Restore cursor to the same item when possible. If that item disappeared,
 	// keep the cursor near its previous position and clamp it into range.
 	if len(rows) > 0 {
+		visIdx := -1
 		if cursorKey != "" {
-			if idx, ok := m.seenIdx[cursorKey]; ok {
-				m.table.SetCursor(idx)
-			} else if m.table.Cursor() < 0 || m.table.Cursor() >= len(rows) {
-				m.table.SetCursor(len(rows) - 1)
+			for i, item := range visible {
+				if strings.ToLower(pickerItemKey(item)) == cursorKey {
+					visIdx = i
+					break
+				}
 			}
+		}
+		if visIdx >= 0 {
+			m.table.SetCursor(visIdx)
 		} else if m.table.Cursor() < 0 {
 			m.table.SetCursor(0)
 		} else if m.table.Cursor() >= len(rows) {

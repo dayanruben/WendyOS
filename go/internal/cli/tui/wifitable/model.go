@@ -19,6 +19,7 @@ type mode int
 
 const (
 	modeBrowsing mode = iota
+	modeFiltering
 	modeRanking
 	modeUnlisted
 	modePassword
@@ -79,7 +80,22 @@ type OpResultMsg struct {
 // flashClearMsg clears the current flash message after a delay.
 type flashClearMsg struct{}
 
-const flashDuration = 4 * time.Second
+// refreshTickMsg drives the periodic background refresh that keeps the table
+// populating while the device-side scan fills its cache.
+type refreshTickMsg struct{}
+
+const (
+	flashDuration = 4 * time.Second
+	// refreshInterval is how often the model re-polls the device. The first
+	// device-side rescan blocks for several seconds, but repeated list calls
+	// return the partially-filled scan cache immediately — so polling makes
+	// SSIDs stream into the table instead of arriving all at once.
+	refreshInterval = 2500 * time.Millisecond
+)
+
+func refreshTick() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} })
+}
 
 // Model is the Bubble Tea model for the interactive WiFi table.
 type Model struct {
@@ -101,9 +117,18 @@ type Model struct {
 	// per-row password prompt
 	pwFor string
 
+	// find-as-you-type filter over SSIDs (modeFiltering)
+	filterInput textinput.Model
+
 	flashMessage string
 	flashIsError bool
 	busy         bool // true while an op is in-flight
+	// scanning is true until the first RefreshMsg arrives, so an empty table
+	// reads as "scan in progress" rather than "no networks".
+	scanning bool
+	// refreshInFlight guards against stacking refresh RPCs when ticks fire
+	// faster than the device answers (BLE transports can't multiplex).
+	refreshInFlight bool
 	// stickyConnectedSSID is the SSID of the most recent successful connect.
 	// It survives RefreshMsgs that haven't yet reflected the new state
 	// (nmcli rescan can lag behind association by a few seconds). Cleared
@@ -141,13 +166,20 @@ func NewModel(networks []Network) Model {
 	pw.CharLimit = 128
 	pw.Width = 32
 
+	fi := textinput.New()
+	fi.Prompt = "Filter: "
+	fi.CharLimit = 64
+	fi.Width = 32
+
 	m := Model{
 		networks:      networks,
 		table:         tui.NewBubbleTable(true, wifiColumns()),
 		mode:          modeBrowsing,
 		ssidInput:     ti,
 		passwordInput: pw,
+		filterInput:   fi,
 		secIndex:      3, // WPA2-PSK default
+		scanning:      len(networks) == 0,
 	}
 	m.refreshRows()
 	return m
@@ -157,10 +189,21 @@ func NewModel(networks []Network) Model {
 // so the TUI stays open between edits.
 func (m Model) WithHandler(h Handler) Model {
 	m.handler = h
+	// Init dispatches the first Refresh; mark it in flight so the first tick
+	// doesn't stack a second one on top.
+	m.refreshInFlight = true
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+// Init kicks off the first refresh and the polling loop. The caller starts
+// the TUI without waiting for an initial list, so the table appears
+// immediately and rows stream in as the device scan progresses.
+func (m Model) Init() tea.Cmd {
+	if m.handler == nil {
+		return nil
+	}
+	return tea.Batch(m.handler.Refresh(), refreshTick())
+}
 
 func wifiColumns() []bubbleTable.Column {
 	return []bubbleTable.Column{
@@ -172,9 +215,27 @@ func wifiColumns() []bubbleTable.Column {
 	}
 }
 
-func (m *Model) refreshRows() {
-	rows := make([]bubbleTable.Row, 0, len(m.networks))
+// filteredNetworks returns the networks whose SSID contains the filter query
+// (case-insensitive). With no active query it returns the full list, so table
+// cursor indexes always address this slice in every mode.
+func (m Model) filteredNetworks() []Network {
+	query := strings.ToLower(m.filterInput.Value())
+	if query == "" {
+		return m.networks
+	}
+	out := make([]Network, 0, len(m.networks))
 	for _, n := range m.networks {
+		if strings.Contains(strings.ToLower(n.SSID), query) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func (m *Model) refreshRows() {
+	visible := m.filteredNetworks()
+	rows := make([]bubbleTable.Row, 0, len(visible))
+	for _, n := range visible {
 		known := ""
 		if n.Known {
 			known = "★"
@@ -214,15 +275,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case RefreshMsg:
-		if m.mode == modeBrowsing {
+		m.refreshInFlight = false
+		m.scanning = false
+		if m.mode == modeBrowsing || m.mode == modeFiltering {
 			m.networks = m.reconcileRefresh(msg.Networks)
 			Sort(m.networks)
 			m.refreshRows()
 		}
 		return m, nil
 
+	case refreshTickMsg:
+		cmds := []tea.Cmd{refreshTick()}
+		// Re-poll only while the user is looking at the list; skip when an
+		// op or refresh is already talking to the device.
+		if m.handler != nil && !m.refreshInFlight && !m.busy &&
+			(m.mode == modeBrowsing || m.mode == modeFiltering) {
+			m.refreshInFlight = true
+			cmds = append(cmds, m.handler.Refresh())
+		}
+		return m, tea.Batch(cmds...)
+
 	case OpResultMsg:
 		m.busy = false
+		if msg.Action == ActionNone {
+			// A refresh (not a user op) failed; the next tick retries.
+			m.refreshInFlight = false
+		}
 		m.flashMessage, m.flashIsError = flashFor(msg)
 		if msg.Err != nil {
 			return m, clearFlashAfter(flashDuration)
@@ -233,6 +311,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyOptimisticUpdate(msg)
 		m.refreshRows()
 		if m.handler != nil {
+			m.refreshInFlight = true
 			return m, tea.Batch(m.handler.Refresh(), clearFlashAfter(flashDuration))
 		}
 		return m, clearFlashAfter(flashDuration)
@@ -246,6 +325,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeBrowsing:
 		return m.updateBrowsing(msg)
+	case modeFiltering:
+		return m.updateFiltering(msg)
 	case modeRanking:
 		return m.updateRanking(msg)
 	case modeUnlisted:
@@ -276,24 +357,9 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if idx < 0 || idx >= len(m.networks) {
 			return m, nil
 		}
-		n := m.networks[idx]
-		if n.Known {
-			// nmcli will reuse the saved profile (and its stored password).
-			return m.dispatchConnect(n.SSID, "", n.Security, false)
-		}
-		if n.Security == agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_OPEN {
-			return m.dispatchConnect(n.SSID, "", n.Security, false)
-		}
-		// Unknown with a secured or ambiguous (UNSPECIFIED) security type →
-		// prompt for a password. Treating UNSPECIFIED as open is unsafe,
-		// since many drivers omit the security field in scan output. The
-		// password input accepts an empty value for networks that turn out
-		// to be open.
-		m.pwFor = n.SSID
-		m.passwordInput.SetValue("")
-		m.passwordInput.Focus()
-		m.mode = modePassword
-		return m, textinput.Blink
+		return m.connectTo(m.networks[idx])
+	case "/":
+		return m.startFiltering("")
 	case "r":
 		if m.busy {
 			return m, nil
@@ -341,8 +407,120 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.dispatchForget(m.networks[idx].SSID)
 	}
 
+	// Any other printable key starts find-as-you-type filtering, seeded with
+	// that key — except j/k/h/l, which stay table navigation (their letters
+	// can still be matched after entering filter mode via another key or /).
+	if km.Type == tea.KeyRunes || km.Type == tea.KeySpace {
+		switch km.String() {
+		case "j", "k", "h", "l":
+		default:
+			return m.startFiltering(string(km.Runes))
+		}
+	}
+
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
+	return m, cmd
+}
+
+// connectTo runs the shared connect flow for a row picked in browse or filter
+// mode: known profiles and explicitly-open networks connect directly,
+// everything else prompts for a password. Treating UNSPECIFIED as open would
+// be unsafe — many drivers omit the security field in scan output — so the
+// prompt appears for ambiguous networks too (it accepts an empty password for
+// networks that turn out to be open).
+func (m Model) connectTo(n Network) (tea.Model, tea.Cmd) {
+	if n.Known {
+		// nmcli will reuse the saved profile (and its stored password).
+		return m.dispatchConnect(n.SSID, "", n.Security, false)
+	}
+	if n.Security == agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_OPEN {
+		return m.dispatchConnect(n.SSID, "", n.Security, false)
+	}
+	m.pwFor = n.SSID
+	m.passwordInput.SetValue("")
+	m.passwordInput.Focus()
+	m.mode = modePassword
+	return m, textinput.Blink
+}
+
+func (m Model) startFiltering(seed string) (tea.Model, tea.Cmd) {
+	m.mode = modeFiltering
+	m.filterInput.SetValue(seed)
+	m.filterInput.CursorEnd()
+	m.filterInput.Focus()
+	m.table.SetCursor(0)
+	m.refreshRows()
+	return m, textinput.Blink
+}
+
+// stopFiltering clears the query and returns to browse mode, keeping the
+// cursor on the network that was highlighted in the filtered view.
+func (m Model) stopFiltering() (tea.Model, tea.Cmd) {
+	var selectedSSID string
+	if visible := m.filteredNetworks(); len(visible) > 0 {
+		if idx := m.table.Cursor(); idx >= 0 && idx < len(visible) {
+			selectedSSID = visible[idx].SSID
+		}
+	}
+	m.filterInput.SetValue("")
+	m.filterInput.Blur()
+	m.mode = modeBrowsing
+	m.refreshRows()
+	for i, n := range m.networks {
+		if n.SSID == selectedSSID {
+			m.table.SetCursor(i)
+			break
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateFiltering(msg tea.Msg) (tea.Model, tea.Cmd) {
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		var cmd tea.Cmd
+		m.filterInput, cmd = m.filterInput.Update(msg)
+		return m, cmd
+	}
+	switch km.String() {
+	case "ctrl+c":
+		m.result.Action = ActionQuit
+		m.done = true
+		return m, tea.Quit
+	case "esc":
+		return m.stopFiltering()
+	case "up", "down":
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		return m, cmd
+	case "enter":
+		if m.busy {
+			return m, nil
+		}
+		visible := m.filteredNetworks()
+		idx := m.table.Cursor()
+		if idx < 0 || idx >= len(visible) {
+			return m, nil
+		}
+		n := visible[idx]
+		// Leave filter mode before dispatching so the table under the
+		// password prompt (and after the op) shows the full list again.
+		next, _ := m.stopFiltering()
+		return next.(Model).connectTo(n)
+	case "backspace":
+		if m.filterInput.Value() == "" {
+			return m.stopFiltering()
+		}
+	}
+
+	before := m.filterInput.Value()
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	if m.filterInput.Value() != before {
+		m.table.SetCursor(0)
+		m.refreshRows()
+	}
 	return m, cmd
 }
 
@@ -706,6 +884,7 @@ func restoreOrder(networks []Network, origOrder []string) []Network {
 
 var (
 	footerStyle     = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	scanningStyle   = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(tui.ColorPrimary)
 	modalBorder     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tui.ColorBorder).Padding(0, 1)
 	modalSelected   = lipgloss.NewStyle().Bold(true).Foreground(tui.ColorPrimary)
@@ -719,8 +898,22 @@ func (m Model) View() string {
 	}
 	var sb strings.Builder
 	sb.WriteString(m.viewLine(titleStyle.Render("WiFi networks")) + "\n\n")
-	sb.WriteString(m.table.View())
+	if m.mode == modeFiltering {
+		count := footerStyle.Render(fmt.Sprintf("  %d/%d", len(m.filteredNetworks()), len(m.networks)))
+		sb.WriteString(m.viewLine(m.filterInput.View()+count) + "\n\n")
+	}
+	sb.WriteString(m.tableView())
 	sb.WriteString("\n")
+
+	if len(m.networks) == 0 {
+		if m.scanning {
+			sb.WriteString(m.viewLine(scanningStyle.Render("  Scanning for nearby networks...")) + "\n")
+		} else {
+			sb.WriteString(m.viewLine(footerStyle.Render("  No networks found.")) + "\n")
+		}
+	} else if m.mode == modeFiltering && len(m.filteredNetworks()) == 0 {
+		sb.WriteString(m.viewLine(footerStyle.Render("  No SSIDs match the filter.")) + "\n")
+	}
 
 	if m.flashMessage != "" {
 		style := flashStyle
@@ -732,11 +925,13 @@ func (m Model) View() string {
 
 	switch m.mode {
 	case modeBrowsing:
-		hint := "↑/↓ move · enter connect · r rank · n new · f forget · q quit"
+		hint := "↑/↓ move · enter connect · / filter · r rank · n new · f forget · q quit"
 		if m.table.CanScroll() {
-			hint = "↑/↓ move · ←/→ scroll · enter connect · r rank · n new · f forget · q quit"
+			hint = "↑/↓ move · ←/→ scroll · enter connect · / filter · r rank · n new · f forget · q quit"
 		}
 		sb.WriteString(m.viewLine(footerStyle.Render(hint)) + "\n")
+	case modeFiltering:
+		sb.WriteString(m.viewLine(footerStyle.Render("type to filter · ↑/↓ move · enter connect · esc cancel")) + "\n")
 	case modeRanking:
 		sb.WriteString(m.viewLine(footerStyle.Render("rank mode: ↑/↓ reorder · enter commit · esc cancel")) + "\n")
 	case modePassword:
@@ -754,6 +949,22 @@ func (m Model) viewLine(line string) string {
 		return line
 	}
 	return tui.CropANSIView(line, 0, m.width)
+}
+
+// tableView renders the table, wrapping filter matches in the SSID column
+// with the shared highlight style. Highlighting happens on the uncropped view
+// so match positions line up, then the horizontal crop is reapplied.
+func (m Model) tableView() string {
+	query := m.filterInput.Value()
+	if m.mode != modeFiltering || query == "" {
+		return m.table.View()
+	}
+	ssidWidth := wifiColumns()[0].Width
+	view := tui.HighlightMatches(m.table.FullView(), query, 1, 1+ssidWidth)
+	if w := m.table.ViewportWidth(); w > 0 {
+		view = tui.CropANSIView(view, m.table.ScrollOffset(), w)
+	}
+	return view
 }
 
 func (m Model) renderUnlistedModal() string {
