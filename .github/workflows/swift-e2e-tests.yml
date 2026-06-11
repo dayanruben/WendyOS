@@ -17,7 +17,7 @@ on:
         required: false
         default: ''
       target_group:
-        description: 'Matrix target group to run'
+        description: 'Swift E2E target group to run'
         required: false
         default: all
         type: choice
@@ -105,7 +105,35 @@ jobs:
           setup: true
           managed_agent: true
 
-  # // DISABLED: Jetson mDNS discovery is unreliable; WDY-968 tracks re-enabling.
+  # Physical/future route ledger.
+  # Keep disabled routes close to the hosted local jobs so re-enabling a route is
+  # a small uncomment-and-add-to-needs change while runner labels stay explicit.
+  #
+  # // DISABLED: Mac → Ubuntu/SER9 mDNS discovery is unreliable; WDY-968 tracks re-enabling.
+  # swift-e2e-physical-macos-ubuntu:
+  #   name: macOS 26 → Ubuntu 24
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, macos-26]
+  #   concurrency:
+  #     group: device-ubuntu-24
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: macos-ubuntu-24
+  #         runner_id: macos-26
+  #         cli_os: macOS
+  #         device_address: wendy-SER9.local
+  #         agent_os: linux
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
   # swift-e2e-physical-macos-jetson:
   #   name: macOS 26 → Jetson Orin Nano
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
@@ -123,34 +151,251 @@ jobs:
   #         target_id: macos-jetson-orin-nano
   #         runner_id: macos-26
   #         cli_os: macOS
+  #         device_address: wendyos-strong-dunlin.local
+  #         agent_os: wendyOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-windows-ubuntu:
+  #   name: Windows 11 → Ubuntu 24
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, windows-11]
+  #   concurrency:
+  #     group: device-ubuntu-24
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: windows-ubuntu-24
+  #         runner_id: windows-11
+  #         cli_os: windows
+  #         device_address: wendy-SER9.local
+  #         agent_os: linux
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-ubuntu-ubuntu:
+  #   name: Ubuntu 24 → Ubuntu 24
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, ubuntu-24]
+  #   concurrency:
+  #     group: device-ubuntu-24
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: ubuntu-ubuntu-24
+  #         runner_id: ubuntu-24-04
+  #         cli_os: linux
+  #         device_address: wendy-SER9.local
+  #         agent_os: linux
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-ubuntu-raspberry-pi:
+  #   name: Ubuntu 24 → Raspberry Pi 5
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, ubuntu-24]
+  #   concurrency:
+  #     group: device-raspberry-pi-5
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: ubuntu-raspberry-pi-5
+  #         runner_id: ubuntu-24-04
+  #         cli_os: linux
+  #         device_address: wendyos-raspberry-pi-5.local
+  #         agent_os: wendyOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-windows-mac-mini:
+  #   name: Windows 11 → Mac mini
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, windows-11]
+  #   concurrency:
+  #     group: device-mac-mini
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: windows-mac-mini
+  #         runner_id: windows-11
+  #         cli_os: windows
+  #         device_address: mac-mini.local
+  #         agent_os: macOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-ubuntu-jetson:
+  #   name: Ubuntu 24 → Jetson Orin Nano
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, ubuntu-24]
+  #   concurrency:
+  #     group: device-jetson-orin-nano
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: ubuntu-jetson-orin-nano
+  #         runner_id: ubuntu-24-04
+  #         cli_os: linux
   #         device_address: wendyos-jetson-orin-nano.local
   #         agent_os: wendyOS
   #         transport: lan
   #         setup: false
   #         managed_agent: false
-
-  swift-e2e-physical-macos-ubuntu:
-    name: macOS 26 → Ubuntu 24
-    if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-    runs-on: [self-hosted, macos-26]
-    concurrency:
-      group: device-ubuntu-24
-      cancel-in-progress: false
-      queue: max
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/swift-e2e-run
-        with:
-          tests: ${{ inputs.tests || '' }}
-          target_id: macos-ubuntu-24
-          runner_id: macos-26
-          cli_os: macOS
-          device_address: wendy-SER9.local
-          agent_os: linux
-          transport: lan
-          setup: false
-          managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-windows-raspberry-pi:
+  #   name: Windows 11 → Raspberry Pi 5
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, windows-11]
+  #   concurrency:
+  #     group: device-raspberry-pi-5
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: windows-raspberry-pi-5
+  #         runner_id: windows-11
+  #         cli_os: windows
+  #         device_address: wendyos-raspberry-pi-5.local
+  #         agent_os: wendyOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-macos-mac-mini:
+  #   name: macOS 26 → Mac mini
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, macos-26]
+  #   concurrency:
+  #     group: device-mac-mini
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: macos-mac-mini
+  #         runner_id: macos-26
+  #         cli_os: macOS
+  #         device_address: mac-mini.local
+  #         agent_os: macOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-windows-jetson:
+  #   name: Windows 11 → Jetson Orin Nano
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, windows-11]
+  #   concurrency:
+  #     group: device-jetson-orin-nano
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: windows-jetson-orin-nano
+  #         runner_id: windows-11
+  #         cli_os: windows
+  #         device_address: wendyos-jetson-orin-nano.local
+  #         agent_os: wendyOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-macos-raspberry-pi:
+  #   name: macOS 26 → Raspberry Pi 5
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, macos-26]
+  #   concurrency:
+  #     group: device-raspberry-pi-5
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: macos-raspberry-pi-5
+  #         runner_id: macos-26
+  #         cli_os: macOS
+  #         device_address: wendyos-raspberry-pi-5.local
+  #         agent_os: wendyOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
+  #
+  # // DISABLED: no CI hardware set up yet for this job.
+  # swift-e2e-physical-ubuntu-mac-mini:
+  #   name: Ubuntu 24 → Mac mini
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, ubuntu-24]
+  #   concurrency:
+  #     group: device-mac-mini
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: ubuntu-mac-mini
+  #         runner_id: ubuntu-24-04
+  #         cli_os: linux
+  #         device_address: mac-mini.local
+  #         agent_os: macOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
 
   swift-e2e-analyze:
     name: Analyze E2E Results
@@ -158,7 +403,6 @@ jobs:
     needs:
       - swift-e2e-local-macos
       - swift-e2e-local-ubuntu
-      - swift-e2e-physical-macos-ubuntu
     runs-on: [self-hosted, AI]
     timeout-minutes: 60
     steps:
