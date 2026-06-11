@@ -5,6 +5,7 @@ package commands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -43,7 +44,11 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("scanning WiFi networks: %w", err)
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "no wifi interface") {
+			return nil, errNoWifiAdapter
+		}
+		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))
 	}
 
 	seen := make(map[string]bool)
