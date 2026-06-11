@@ -135,31 +135,30 @@ jobs:
           setup: false
           managed_agent: false
 
-  # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
-  # swift-e2e-physical-macos-jetson:
-  #   name: macOS 26 → Jetson Orin Nano
-  #   needs: swift-e2e-local-ubuntu
-  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-  #   runs-on: [self-hosted, macos-26]
-  #   concurrency:
-  #     group: device-jetson-orin-nano
-  #     cancel-in-progress: false
-  #     queue: max
-  #   timeout-minutes: 120
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #     - uses: ./.github/actions/swift-e2e-run
-  #       with:
-  #         tests: ${{ inputs.tests || '' }}
-  #         target_id: macos-jetson-orin-nano
-  #         runner_id: macos-26
-  #         cli_os: macOS
-  #         device_address: wendyos-strong-dunlin.local
-  #         agent_os: wendyOS
-  #         transport: lan
-  #         setup: false
-  #         managed_agent: false
-  #
+  swift-e2e-physical-macos-jetson:
+    name: macOS 26 → Jetson Orin Nano
+    needs: swift-e2e-local-ubuntu
+    if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+    runs-on: [self-hosted, macos-26]
+    concurrency:
+      group: device-jetson-orin-nano
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: macos-jetson-orin-nano
+          runner_id: macos-26
+          cli_os: macOS
+          device_address: wendyos-strong-dunlin.local
+          agent_os: wendyOS
+          transport: lan
+          setup: false
+          managed_agent: false
+
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-windows-ubuntu:
   #   name: Windows 11 → Ubuntu 24
@@ -417,6 +416,7 @@ jobs:
       - swift-e2e-local-macos
       - swift-e2e-local-ubuntu
       - swift-e2e-physical-macos-ubuntu
+      - swift-e2e-physical-macos-jetson
     runs-on: [self-hosted, AI]
     timeout-minutes: 60
     steps:
