@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -107,7 +108,10 @@ func newCameraViewCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			stream, err := conn.VideoService.StreamVideo(ctx, &agentpb.StreamVideoRequest{
+			streamCtx, cancelStream := context.WithCancel(ctx)
+			defer cancelStream()
+
+			stream, err := conn.VideoService.StreamVideo(streamCtx, &agentpb.StreamVideoRequest{
 				DeviceId:  deviceID,
 				Width:     width,
 				Height:    height,
@@ -122,7 +126,7 @@ func newCameraViewCmd() *cobra.Command {
 			if toStdout {
 				return pipeVideoToStdout(stream, cmd.OutOrStdout())
 			}
-			return playVideoWithGStreamer(ctx, stream)
+			return playVideoWithGStreamer(streamCtx, stream)
 		},
 	}
 
@@ -155,25 +159,44 @@ func pipeVideoToStdout(stream videoStream, w io.Writer) error {
 	}
 }
 
+const gstMissingRemoteErrorGrace = 500 * time.Millisecond
+
+type firstVideoFrameResult struct {
+	frame *agentpb.VideoFrame
+	err   error
+}
+
+type gstLaunchResult struct {
+	path string
+	err  error
+}
+
 // playVideoWithGStreamer spawns gst-launch-1.0 and feeds it the video stream via stdin.
 // It peeks the first frame to determine the codec, then starts the matching decoder pipeline.
 func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
-	// Peek the first frame before checking local playback dependencies. Server-
-	// streaming RPCs can surface Unimplemented only on Recv(), and that remote
-	// unsupported error is more actionable than a missing local GStreamer binary.
-	first, err := stream.Recv()
-	if err == io.EOF {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("receiving video: %w", err)
-	}
-	codec := first.GetCodec()
+	firstCh := make(chan firstVideoFrameResult, 1)
+	go func() {
+		first, err := stream.Recv()
+		if err == io.EOF {
+			err = nil
+		}
+		if err != nil {
+			err = fmt.Errorf("receiving video: %w", err)
+		}
+		firstCh <- firstVideoFrameResult{frame: first, err: err}
+	}()
 
-	gstPath, err := resolveGSTLaunch()
-	if err != nil {
+	gstCh := make(chan gstLaunchResult, 1)
+	go func() {
+		path, err := resolveGSTLaunch()
+		gstCh <- gstLaunchResult{path: path, err: err}
+	}()
+
+	first, gstPath, err := waitForFirstVideoFrameAndGStreamer(ctx, firstCh, gstCh)
+	if err != nil || first == nil {
 		return err
 	}
+	codec := first.GetCodec()
 
 	gst := exec.CommandContext(ctx, gstPath, playbackPipelineArgs(codec)...)
 	gst.Stderr = os.Stderr
@@ -200,6 +223,60 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
 		return err
 	case <-ctx.Done():
 		return nil
+	}
+}
+
+func waitForFirstVideoFrameAndGStreamer(
+	ctx context.Context,
+	firstCh <-chan firstVideoFrameResult,
+	gstCh <-chan gstLaunchResult,
+) (*agentpb.VideoFrame, string, error) {
+	var first *agentpb.VideoFrame
+	var gstPath string
+	var gstErr error
+	firstDone := false
+	gstDone := false
+
+	for {
+		select {
+		case r := <-firstCh:
+			if r.err != nil || r.frame == nil {
+				return nil, "", r.err
+			}
+			first = r.frame
+			firstDone = true
+			if gstDone {
+				return first, gstPath, gstErr
+			}
+
+		case g := <-gstCh:
+			gstPath, gstErr = g.path, g.err
+			gstDone = true
+			if firstDone {
+				return first, gstPath, gstErr
+			}
+			if gstErr != nil {
+				// A server-streaming Unimplemented can arrive on Recv(), while a
+				// missing local GStreamer binary is usually known immediately. Give
+				// a remote unsupported status a brief chance to arrive so we don't
+				// mask it, but still fail promptly if a working device never sends a
+				// frame and playback is impossible locally.
+				select {
+				case r := <-firstCh:
+					if r.err != nil || r.frame == nil {
+						return nil, "", r.err
+					}
+					return r.frame, "", gstErr
+				case <-time.After(gstMissingRemoteErrorGrace):
+					return nil, "", gstErr
+				case <-ctx.Done():
+					return nil, "", nil
+				}
+			}
+
+		case <-ctx.Done():
+			return nil, "", nil
+		}
 	}
 }
 
