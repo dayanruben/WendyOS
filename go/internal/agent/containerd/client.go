@@ -770,11 +770,17 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
 			}
 		} else {
-			// Primary service: create shared shm dir so secondaries can find it.
+			// Primary service: mount the shared shm segment too. Creating the
+			// host dir alone is not enough — without the bind mount the
+			// primary keeps its private tmpfs /dev/shm and never shares
+			// segments with the secondaries that mount /run/wendy/shm/<appID>.
 			if appCfg.Isolation == "shared-ipc" {
-				if _, shmErr := ensureSharedSHM(appID); shmErr != nil {
+				shmPath, shmErr := ensureSharedSHM(appID)
+				if shmErr != nil {
 					return shmErr
 				}
+				localoci.RemoveDefaultSHM(spec)
+				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
 			}
 		}
 	}
