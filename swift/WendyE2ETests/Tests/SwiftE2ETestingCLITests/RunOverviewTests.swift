@@ -66,61 +66,6 @@ struct `run overview` {
     }
 
     @Test
-    func `uses recording identity when file suite contains multiple test suites`() throws {
-        let rootURL = e2eTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: rootURL) }
-
-        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
-        let suiteURL = runURL.appendingPathComponent(
-            "wendy-device-info",
-            isDirectory: true
-        )
-        let testURL = suiteURL.appendingPathComponent(
-            "json-keeps-json-output-clean",
-            isDirectory: true
-        )
-        let targetURL = testURL.appendingPathComponent("macos-to-rpi", isDirectory: true)
-        let attemptURL = targetURL.appendingPathComponent("0001", isDirectory: true)
-
-        try FileManager.default.createDirectory(
-            at: attemptURL,
-            withIntermediateDirectories: true
-        )
-        let xml = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <testsuite tests="3">
-              <testcase classname="WendyE2ETests.`'wendy device version'`" name="`'--json' keeps JSON output clean`()" time="0.25" />
-              <testcase classname="WendyE2ETests.`'wendy cloud device version'`" name="`'--json' keeps JSON output clean`()" time="0.10"><skipped /></testcase>
-              <testcase classname="WendyE2ETests.`'wendy cloud run'`" name="`'--json' keeps JSON output clean`()" time="0.10"><skipped /></testcase>
-            </testsuite>
-            """
-        try xml.write(
-            to: attemptURL.appendingPathComponent("test-results.xml"),
-            atomically: true,
-            encoding: .utf8
-        )
-        let recording = """
-            # Wendy E2E test recording
-
-            - Source: `WendyDeviceInfoTests.swift`
-            - Suite: `'wendy device version'`
-            - Test: `'--json' keeps JSON output clean`
-            - Function: `'--json' keeps JSON output clean()`
-            """
-        try recording.write(
-            to: attemptURL.appendingPathComponent("recording.md"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let overview = try writeRunOverview(in: runURL)
-
-        #expect(overview.summary.passed == 1)
-        #expect(overview.summary.unknown == 0)
-        #expect(overview.noteworthy.unknowns.isEmpty)
-    }
-
-    @Test
     func `aggregates failed outcomes with AI review summaries`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }

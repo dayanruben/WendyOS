@@ -313,15 +313,6 @@ private func overviewObservationResult(
         return result
     }
 
-    if let identity = attemptRecordingIdentity(at: attemptURL),
-        let result = results.first(where: { key, _ in
-            overviewSlug(key.suite) == overviewSlug(identity.suite)
-                && overviewSlug(key.name) == overviewSlug(identity.test)
-        })?.value
-    {
-        return result
-    }
-
     let matchingTestNames = results.filter { key, _ in
         overviewSlug(key.name) == testKey
     }

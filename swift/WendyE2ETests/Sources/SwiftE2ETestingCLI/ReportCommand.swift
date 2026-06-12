@@ -616,15 +616,6 @@ private func runObservationStatus(
         return status
     }
 
-    if let identity = attemptRecordingIdentity(at: attemptURL),
-        let status = results.first(where: { key, _ in
-            slug(key.suite) == slug(identity.suite)
-                && slug(key.name) == slug(identity.test)
-        })?.value
-    {
-        return status
-    }
-
     let matchingTestNames = results.filter { key, _ in
         slug(key.name) == testKey
     }
