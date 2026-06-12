@@ -1531,7 +1531,8 @@ private func renderObservations(
         let escapedTarget = isFirstTargetRow ? escapeHTML(observation.target) : ""
         let target = escapedTarget
         let route =
-            isFirstTargetRow ? renderTargetRoute(observation.route, escapedTitle: escapedTarget) : ""
+            isFirstTargetRow
+            ? renderTargetRoute(observation.route, escapedTitle: escapedTarget) : ""
         let rowClass = isFirstTargetRow ? "observation-row" : "observation-row same-target"
         chunks.append(
             "<div class=\"\(rowClass)\"><span class=\"observation-route-cell\">\(route)</span><span class=\"observation-target\">\(target)</span><span class=\"observation-spacer\" aria-hidden=\"true\"></span>\(renderObservationLinks(observation))<span class=\"observation-attempt\">\(escapeHTML(observation.attempt))</span><span class=\"badge \(observation.status.statusClass)\">\(observation.status.statusText)</span>\(observationDurationBadge(observation.duration))</div>"

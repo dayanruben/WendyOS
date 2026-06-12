@@ -9,7 +9,8 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Streaming container upload and execution is not supported by Wendy Agent for Mac."
+            message:
+                "Streaming container upload and execution is not supported by Wendy Agent for Mac."
         )
     }
 

@@ -920,7 +920,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     > {
         throw RPCError(
             code: .unimplemented,
-            message: "Container creation progress streaming is not supported by Wendy Agent for Mac."
+            message:
+                "Container creation progress streaming is not supported by Wendy Agent for Mac."
         )
     }
 

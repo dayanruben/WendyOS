@@ -198,7 +198,11 @@ struct `run overview` {
         #expect(markdown.contains("### 🛑 Agent rejected CLI auth"))
         #expect(!markdown.contains("### 🛑 Error Agent rejected CLI auth"))
         #expect(markdown.contains("The target rejected an otherwise valid authenticated request."))
-        #expect(!markdown.contains("🛑 Error: The target rejected an otherwise valid authenticated request."))
+        #expect(
+            !markdown.contains(
+                "🛑 Error: The target rejected an otherwise valid authenticated request."
+            )
+        )
         #expect(!markdown.contains("Fail: Agent rejected CLI auth"))
     }
 }
