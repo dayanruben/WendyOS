@@ -209,6 +209,11 @@ as code with single quotes. The reference extractor converts those quoted spans
 to Markdown code spans (and HTML `<code>` elements). Use `'... subcommand'` when
 referring to a related command under the same suite prefix.
 
+When the same behavior is specified for multiple related commands, keep the same
+suite structure, section order, and test-name wording wherever possible. Change
+only the quoted command fragment or the smallest phrase needed to distinguish the
+command path.
+
 ```swift
 @Suite
 struct `'wendy device info'` {

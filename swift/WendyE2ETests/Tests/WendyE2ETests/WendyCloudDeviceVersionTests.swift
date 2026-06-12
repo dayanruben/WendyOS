@@ -24,17 +24,17 @@ struct `'wendy cloud device version'` {
      warning that names `wendy cloud device info` as the replacement command.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `aliases '... cloud device info' with a cloud-specific deprecation notice`() async throws {
+    func `aliases '... cloud device info' with a deprecation notice`() async throws {
         // TODO: implement.
     }
 
     /**
-     With `--json` or non-interactive JSON output, stdout remains a single
-     machine-readable device information payload and stderr does not include
-     deprecation guidance, preserving compatibility for existing scripts.
+     With `--json` or non-interactive JSON output, deprecation guidance stays
+     out of stdout and stderr so existing scripts can continue parsing the
+     response.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `keeps JSON and non-interactive output clean`() async throws {
+    func `'--json' keeps JSON output clean`() async throws {
         // TODO: implement.
     }
 }

@@ -489,6 +489,17 @@ struct `'wendy device version'` {
     // MARK: - Compatibility
 
     /**
+     The hidden command remains directly invocable for older scripts, but
+     `wendy device --help` does not advertise it. Direct help preserves the
+     `wendy device info` option surface for users who still discover the legacy
+     command explicitly.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `is hidden from parent help while direct help mirrors '... device info'`() async throws {
+        // TODO: implement.
+    }
+
+    /**
      In human-readable mode, the deprecated command reports the same device information as `wendy device info` and directs users to the replacement command.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
@@ -510,10 +521,10 @@ struct `'wendy device version'` {
     }
 
     /**
-     The deprecated command keeps stdout machine-readable in JSON mode. Deprecation guidance is kept out of the JSON payload so existing scripts can continue parsing the response.
+     With `--json`, deprecation guidance stays out of stdout and stderr so existing scripts can continue parsing the response.
      */
     @Test
-    func `'--json' aliases '... device info' without contaminating JSON output`() async throws {
+    func `'--json' keeps JSON output clean`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy device version --json") { result in
                 let stderr = result.stderr

@@ -31,10 +31,10 @@ struct `'wendy cloud run'` {
     /**
      With `--json` or non-interactive JSON output, deprecation guidance stays
      out of stdout and stderr so existing automation can continue parsing the
-     structured `wendy run` response or failure metadata.
+     response.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `keeps JSON and non-interactive output clean`() async throws {
+    func `'--json' keeps JSON output clean`() async throws {
         // TODO: implement.
     }
 }

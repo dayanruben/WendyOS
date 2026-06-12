@@ -107,7 +107,7 @@ struct `'wendy device ps'` {
      apps list` and keeps stdout machine-readable for automation.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `preserves '... device apps list --json' output`() async throws {
+    func `keeps '... device apps list --json' output clean`() async throws {
         // TODO: implement.
     }
 }
