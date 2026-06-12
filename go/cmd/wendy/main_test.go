@@ -373,10 +373,10 @@ func TestFormatError_LocalPKICoreUnavailable(t *testing.T) {
 }
 
 func TestFormatError_UnimplementedPreservesContextualDescription(t *testing.T) {
-	err := fmt.Errorf("listing audio devices: %w", status.Error(codes.Unimplemented, "Audio device management is currently not supported on macOS."))
+	err := fmt.Errorf("listing audio devices: %w", status.Error(codes.Unimplemented, "Audio device management is not supported by Wendy Agent for Mac."))
 
 	got := formatError(err).Error()
-	want := "listing audio devices: Audio device management is currently not supported on macOS."
+	want := "listing audio devices: Audio device management is not supported by Wendy Agent for Mac."
 	if got != want {
 		t.Fatalf("formatError() = %q, want %q", got, want)
 	}

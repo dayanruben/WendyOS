@@ -158,13 +158,13 @@ func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *tes
 	t.Setenv("PATH", t.TempDir()) // empty dir — no executables on PATH
 	stubGSTFallback(t, nil)       // no install-location fallbacks either
 
-	remoteErr := status.Error(codes.Unimplemented, "Camera streaming is currently not supported on macOS.")
+	remoteErr := status.Error(codes.Unimplemented, "Camera streaming is not supported by Wendy Agent for Mac.")
 	stream := &mockVideoStream{err: remoteErr}
 	err := playVideoWithGStreamer(context.Background(), stream)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "Camera streaming is currently not supported on macOS.") {
+	if !strings.Contains(err.Error(), "Camera streaming is not supported by Wendy Agent for Mac.") {
 		t.Fatalf("expected remote unsupported error, got: %v", err)
 	}
 	if strings.Contains(err.Error(), "not found") {

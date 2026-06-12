@@ -781,7 +781,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Linux container attach is currently not supported on macOS."
+            message: "Linux container attach is not supported by Wendy Agent for Mac."
         )
     }
 
@@ -791,7 +791,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListVolumesResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Container volume management is currently not supported on macOS."
+            message: "Container volume management is not supported by Wendy Agent for Mac."
         )
     }
 
@@ -801,7 +801,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_RemoveVolumeResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Removing container volumes is currently not supported on macOS."
+            message: "Removing container volumes is not supported by Wendy Agent for Mac."
         )
     }
 
@@ -811,7 +811,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_LayerHeader> {
         throw RPCError(
             code: .unimplemented,
-            message: "Container layer listing is currently not supported on macOS."
+            message: "Container layer listing is not supported by Wendy Agent for Mac."
         )
     }
 
@@ -920,7 +920,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     > {
         throw RPCError(
             code: .unimplemented,
-            message: "Container creation progress streaming is currently not supported on macOS."
+            message: "Container creation progress streaming is not supported by Wendy Agent for Mac."
         )
     }
 
@@ -931,7 +931,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         throw RPCError(
             code: .unimplemented,
             message:
-                "Legacy container streaming execution is currently not supported on macOS. Use the native app lifecycle RPCs instead when applicable."
+                "Legacy container streaming execution is not supported by Wendy Agent for Mac. Use the native app lifecycle RPCs instead when applicable."
         )
     }
 
