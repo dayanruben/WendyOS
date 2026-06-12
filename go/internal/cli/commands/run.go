@@ -38,7 +38,22 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const linuxContainersOnMacsUnsupportedMessage = "Linux containers aren't supported on Macs yet. Support is planned for a future release. For now, deploy a native macOS app (platform: darwin) or target a Linux/WendyOS device."
+const linuxContainersOnMacsUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
+
+func rejectUnsupportedMacRunProject(projectType, platform string) error {
+	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
+		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+	}
+
+	switch projectType {
+	case "swift", "xcode":
+		return nil
+	case "docker", "python", "compose", "multi-service":
+		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+	default:
+		return nil
+	}
+}
 
 type dimWriter struct {
 	buf strings.Builder
@@ -1177,8 +1192,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
-	if agentOS == "darwin" && platformOS(platform) == "linux" {
-		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		if err := rejectUnsupportedMacRunProject(projectType, platform); err != nil {
+			return err
+		}
 	}
 
 	// Xcode projects: always use the local-build + file-sync path (darwin only).
