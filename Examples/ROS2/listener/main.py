@@ -38,20 +38,27 @@ print("[listener] ✓ ROS2 env vars injected by Wendy from frameworks.ros2 confi
 SHM = "/dev/shm/ros2-channel"
 print(f"[listener] waiting for talker messages on {SHM} ...", flush=True)
 
+# Fail loudly if the talker never shows up (broken deploy), then listen until
+# the app is stopped so the group keeps running for live inspection with
+# `wendy device ros2 ...`.
+STARTUP_TIMEOUT_S = 120
+start = time.monotonic()
 last = None
-for attempt in range(120):
+received = 0
+while True:
     try:
         with open(SHM) as f:
             val = f.read().strip()
         if val != last:
             last = val
-            if val == "done":
-                print("[listener] ✓ received all messages — shared-network isolation works", flush=True)
-                break
-            print(f"[listener] received seq #{val}", flush=True)
+            received += 1
+            if received == 1:
+                print("[listener] ✓ receiving messages — shared-network isolation works", flush=True)
+            # Log every 10th message after the first ten so the stream stays readable.
+            if received <= 10 or received % 10 == 0:
+                print(f"[listener] received seq #{val}", flush=True)
     except FileNotFoundError:
-        pass
+        if received == 0 and time.monotonic() - start > STARTUP_TIMEOUT_S:
+            print("[listener] ✗ timed out waiting for talker", flush=True)
+            sys.exit(1)
     time.sleep(0.5)
-else:
-    print("[listener] ✗ timed out waiting for talker", flush=True)
-    sys.exit(1)

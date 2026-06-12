@@ -35,16 +35,19 @@ print("[talker] ✓ ROS2 env vars injected by Wendy from frameworks.ros2 config"
 
 # In a real ROS2 node this is where you'd call rclpy.init() and start publishing.
 # Here we just emit periodic heartbeat lines so the listener can read from /dev/shm.
+# The talker publishes until the app is stopped (`wendy device apps stop` or
+# ctrl-c on `wendy run`) so the app keeps running for live inspection with
+# `wendy device ros2 ...`.
 SHM = "/dev/shm/ros2-channel"
-for i in range(10):
+i = 0
+while True:
     msg = f"hello world {i}"
     tmp = SHM + ".tmp"
     with open(tmp, "w") as f:
         f.write(f"{i}\n")
     os.replace(tmp, SHM)
-    print(f"[talker] published #{i}: {msg!r}", flush=True)
+    # Log every 10th message after the first ten so the stream stays readable.
+    if i < 10 or i % 10 == 0:
+        print(f"[talker] published #{i}: {msg!r}", flush=True)
+    i += 1
     time.sleep(1)
-
-with open(SHM, "w") as f:
-    f.write("done\n")
-print("[talker] done", flush=True)
