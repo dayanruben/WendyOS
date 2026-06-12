@@ -119,12 +119,12 @@ func TestAppsDashboardModel_QuitAction(t *testing.T) {
 
 func TestAppsDashboardModel_VolumesUnimplementedShowsCleanNotice(t *testing.T) {
 	m := newAppsDashboardModel(nil, context.Background())
-	err := status.Error(codes.Unimplemented, "Container volume management is not supported by Wendy Agent for Mac.")
+	err := status.Error(codes.Unimplemented, "Container volume management is currently not supported by Wendy Agent for Mac.")
 
 	updated, _ := m.Update(appsDashVolumesMsg{err: err})
 	m = updated.(appsDashboardModel)
 
-	want := "Poll notice: Container volume management is not supported by Wendy Agent for Mac."
+	want := "Poll notice: Container volume management is currently not supported by Wendy Agent for Mac."
 	if m.flash != want {
 		t.Fatalf("flash = %q, want %q", m.flash, want)
 	}

@@ -10,7 +10,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         throw RPCError(
             code: .unimplemented,
             message:
-                "Streaming container upload and execution is not supported by Wendy Agent for Mac."
+                "Streaming container upload and execution is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -20,7 +20,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_UpdateAgentResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Updating the agent is not supported by Wendy Agent for Mac."
+            message: "Updating the agent is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -48,7 +48,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListWiFiNetworksResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Wi-Fi network scanning is not supported by Wendy Agent for Mac."
+            message: "Wi-Fi network scanning is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -58,7 +58,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectToWiFiResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Connecting to Wi-Fi networks is not supported by Wendy Agent for Mac."
+            message: "Connecting to Wi-Fi networks is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -68,7 +68,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetWiFiStatusResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Wi-Fi status reporting is not supported by Wendy Agent for Mac."
+            message: "Wi-Fi status reporting is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -78,7 +78,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_DisconnectWiFiResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Disconnecting from Wi-Fi networks is not supported by Wendy Agent for Mac."
+            message: "Disconnecting from Wi-Fi networks is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -88,7 +88,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListKnownWiFiNetworksResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Listing saved Wi-Fi networks is not supported by Wendy Agent for Mac."
+            message: "Listing saved Wi-Fi networks is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -98,7 +98,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetWiFiNetworkPriorityResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Wi-Fi network priority management is not supported by Wendy Agent for Mac."
+            message: "Wi-Fi network priority management is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -108,7 +108,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ReorderKnownWiFiNetworksResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Reordering saved Wi-Fi networks is not supported by Wendy Agent for Mac."
+            message: "Reordering saved Wi-Fi networks is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -118,7 +118,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ForgetWiFiNetworkResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Removing saved Wi-Fi networks is not supported by Wendy Agent for Mac."
+            message: "Removing saved Wi-Fi networks is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -128,7 +128,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Hardware capability discovery is not supported by Wendy Agent for Mac."
+            message: "Hardware capability discovery is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -140,7 +140,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     > {
         throw RPCError(
             code: .unimplemented,
-            message: "Bluetooth scanning is not supported by Wendy Agent for Mac."
+            message: "Bluetooth scanning is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -150,7 +150,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Connecting Bluetooth peripherals is not supported by Wendy Agent for Mac."
+            message: "Connecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -161,7 +161,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     {
         throw RPCError(
             code: .unimplemented,
-            message: "Disconnecting Bluetooth peripherals is not supported by Wendy Agent for Mac."
+            message: "Disconnecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -171,7 +171,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ForgetBluetoothPeripheralResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Forgetting Bluetooth peripherals is not supported by Wendy Agent for Mac."
+            message: "Forgetting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
         )
     }
 
