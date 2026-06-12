@@ -47,7 +47,7 @@ private func loadE2EReviewAggregateIssues(in runURL: URL) throws -> [E2EReviewAg
         E2EReviewAggregateIssue(scope: .report, suiteKey: nil, testKey: nil, review: review)
     }
 
-    for suiteURL in try reviewAggregateDirectoryChildren(of: runURL) {
+    for suiteURL in try reviewAggregateDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
 
