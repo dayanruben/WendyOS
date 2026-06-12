@@ -69,12 +69,24 @@ struct AggregateCommand: ParsableCommand {
             throw ValidationError("Attempt directory does not exist: \(attemptURL.path)")
         }
 
+        let attemptArtifactsURL = e2eAttemptArtifactsURL(
+            in: runURL,
+            targetName: components.targetName,
+            attempt: components.attempt
+        )
+        try? FileManager.default.removeItem(at: attemptArtifactsURL)
+        try FileManager.default.createDirectory(
+            at: attemptArtifactsURL,
+            withIntermediateDirectories: true
+        )
+        try copyAttemptLevelArtifacts(from: attemptURL, to: attemptArtifactsURL)
+
         let testDirectories = try attemptTestDirectories(in: attemptURL)
         for testDirectory in testDirectories {
             let suiteKey = testDirectory.deletingLastPathComponent().lastPathComponent
             let testKey = testDirectory.lastPathComponent
             let destinationURL =
-                runURL
+                e2eObservationsRootURL(in: runURL)
                 .appendingPathComponent(suiteKey, isDirectory: true)
                 .appendingPathComponent(testKey, isDirectory: true)
                 .appendingPathComponent(components.targetName, isDirectory: true)
@@ -86,7 +98,10 @@ struct AggregateCommand: ParsableCommand {
                 withIntermediateDirectories: true
             )
             try copyItem(at: testDirectory, to: destinationURL)
-            try copyAttemptLevelFiles(from: attemptURL, to: destinationURL)
+            try copyTestMetadataIfPresent(
+                from: testDirectory,
+                to: destinationURL.deletingLastPathComponent().deletingLastPathComponent()
+            )
         }
     }
 }
@@ -115,12 +130,16 @@ private struct AttemptID {
 }
 
 private func attemptTestDirectories(in attemptURL: URL) throws -> [URL] {
-    guard FileManager.default.fileExists(atPath: attemptURL.path) else {
+    let observationsURL = attemptURL.appendingPathComponent(
+        e2eObservationsDirectoryName,
+        isDirectory: true
+    )
+    guard FileManager.default.fileExists(atPath: observationsURL.path) else {
         return []
     }
 
     let suiteURLs = try FileManager.default.contentsOfDirectory(
-        at: attemptURL,
+        at: observationsURL,
         includingPropertiesForKeys: [.isDirectoryKey],
         options: [.skipsHiddenFiles]
     )
@@ -146,11 +165,23 @@ private func isDirectory(_ url: URL) throws -> Bool {
     try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
 }
 
-private func copyAttemptLevelFiles(from attemptURL: URL, to destinationURL: URL) throws {
-    for fileName in ["attempt.json", "test-results.xml", "test-results.raw.xml"] {
-        let sourceURL = attemptURL.appendingPathComponent(fileName)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
-        try copyItem(at: sourceURL, to: destinationURL.appendingPathComponent(fileName))
+private func copyTestMetadataIfPresent(from testDirectoryURL: URL, to testRootURL: URL) throws {
+    let sourceURL = testDirectoryURL.appendingPathComponent(e2eTestMetadataFileName)
+    guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+    try copyItem(at: sourceURL, to: testRootURL.appendingPathComponent(e2eTestMetadataFileName))
+}
+
+private func copyAttemptLevelArtifacts(from attemptURL: URL, to destinationURL: URL) throws {
+    let entries = try FileManager.default.contentsOfDirectory(
+        at: attemptURL,
+        includingPropertiesForKeys: nil,
+        options: [.skipsHiddenFiles]
+    )
+    for sourceURL in entries where sourceURL.lastPathComponent != e2eObservationsDirectoryName {
+        try copyItem(
+            at: sourceURL,
+            to: destinationURL.appendingPathComponent(sourceURL.lastPathComponent)
+        )
     }
 }
 
