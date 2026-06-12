@@ -111,29 +111,33 @@ jobs:
   # Physical routes are gated by target agent OS: Linux/WendyOS targets depend on
   # the local Ubuntu run, while macOS targets depend on the local macOS run.
   #
-  swift-e2e-physical-macos-ubuntu:
-    name: macOS 26 → Ubuntu 24
-    needs: swift-e2e-local-ubuntu
-    if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-    runs-on: [self-hosted, macos-26]
-    concurrency:
-      group: device-ubuntu-24
-      cancel-in-progress: false
-      queue: max
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: ./.github/actions/swift-e2e-run
-        with:
-          tests: ${{ inputs.tests || '' }}
-          target_id: macos-ubuntu-24
-          runner_id: macos-26
-          cli_os: macOS
-          device_address: ${{ vars.SWIFT_E2E_UBUNTU_24_DEVICE_ADDRESS }}
-          agent_os: linux
-          transport: lan
-          setup: false
-          managed_agent: false
+  # // DISABLED: macOS→Ubuntu/SER9 Swift E2E is failing preflight because
+  # // wendy-SER9.local can resolve to an unreachable IPv6 address from CI
+  # // (`no route to host`). Re-enable after WDY-1519 adds IPv4 fallback
+  # // preflight hardening.
+  # swift-e2e-physical-macos-ubuntu:
+  #   name: macOS 26 → Ubuntu 24
+  #   needs: swift-e2e-local-ubuntu
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, macos-26]
+  #   concurrency:
+  #     group: device-ubuntu-24
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: macos-ubuntu-24
+  #         runner_id: macos-26
+  #         cli_os: macOS
+  #         device_address: ${{ vars.SWIFT_E2E_UBUNTU_24_DEVICE_ADDRESS }}
+  #         agent_os: linux
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
 
   swift-e2e-physical-macos-jetson:
     name: macOS 26 → Jetson Orin Nano
@@ -415,7 +419,6 @@ jobs:
     needs:
       - swift-e2e-local-macos
       - swift-e2e-local-ubuntu
-      - swift-e2e-physical-macos-ubuntu
       - swift-e2e-physical-macos-jetson
     runs-on: [self-hosted, AI]
     timeout-minutes: 60
