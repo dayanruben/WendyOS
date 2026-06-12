@@ -620,7 +620,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	env = append(env, req.GetEnv()...)
 	env = append(env, wendyEnv...)
-	env = append(env, buildROS2Env(appCfg)...)
+	env = append(env, buildROS2Env(appCfg, appID, serviceName)...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
@@ -674,6 +674,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
+
+	// Publish the resolved ROS 2 configuration as a container label so the
+	// agent can discover ROS 2 containers at runtime and configure the CLI
+	// sidecar with the right distro and DDS domain (WDY-884, WDY-1332).
+	if ros2 := appCfg.ResolveROS2ConfigForService(serviceName); ros2 != nil {
+		if v := appconfig.ROS2AnnotationValue(ros2, appID); v != "" {
+			labels[appconfig.ROS2AnnotationKey] = v
+		}
+	}
 
 	// Inject /etc/hosts bind-mount for isolated multi-service apps so service
 	// names resolve via CNI-assigned IPs.
@@ -1232,45 +1241,40 @@ func validateUserEnv(entries []string) error {
 	return nil
 }
 
-// ros2DomainIDMax is the conservative upper bound for ROS 2 domain IDs.
-// The ROS 2 spec defines valid IDs as 0–101 (conservative); some platforms
-// allow up to 232 but 101 covers all standard deployments (SOC2-CC6, NIST-SI-10).
-const (
-	ros2DomainIDMin = 0
-	ros2DomainIDMax = 101
-)
+// cycloneDDSInlineConfig is the CycloneDDS configuration passed inline via
+// CYCLONEDDS_URI (not a file mount). Shared memory enables zero-copy DDS
+// transport between containers that share /dev/shm (isolation: "shared-ipc");
+// autodetermined network interfaces keep UDP discovery working as a fallback
+// (WDY-884).
+const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>true</Enable><LogLevel>warning</LogLevel></SharedMemory><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General></CycloneDDS>`
 
-// validRMWImplementations is the allowlist of known RMW (ROS Middleware)
-// implementation identifiers. Validating against a fixed set prevents
-// injection of arbitrary strings into the container environment via the
-// RMW field in wendy.json (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-var validRMWImplementations = map[string]bool{
-	"rmw_cyclonedds_cpp": true,
-	"rmw_fastrtps_cpp":   true,
-	"rmw_connextdds":     true,
-	"rmw_gurumdds_cpp":   true,
-}
-
-// buildROS2Env returns ROS2 environment variables from the app's frameworks.ros2 config.
-func buildROS2Env(appCfg *appconfig.AppConfig) []string {
-	ros2 := appCfg.GetROS2Config()
+// buildROS2Env returns ROS2 environment variables for the container resolved
+// from the app's frameworks.ros2 config (group-level, overridden by the
+// service-level config for multi-service apps). The injected set is
+// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and
+// ROS_LOCALHOST_ONLY (WDY-884).
+func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []string {
+	ros2 := appCfg.ResolveROS2ConfigForService(serviceName)
 	if ros2 == nil {
 		return nil
 	}
-	if ros2.DomainID < ros2DomainIDMin || ros2.DomainID > ros2DomainIDMax {
-		return nil // invalid domain ID; caller should have validated at config parse time
+	domainID := ros2.ResolvedDomainID(appID)
+	if domainID < 0 {
+		return nil // invalid explicit domain ID; caller should have validated at config parse time
 	}
-	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
-	if ros2.RMW != "" {
-		// Allowlist validation: only known RMW identifiers are injected.
-		// A control-char check alone is insufficient — an unknown value with
-		// only printable chars could still corrupt the env or trigger
-		// plugin-specific parsing bugs (SOC2-CC6, NIST-SI-10).
-		if !validRMWImplementations[ros2.RMW] {
-			return env // unknown RMW: drop rather than inject
+	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
+	// ResolvedRMW validates against a fixed allowlist and returns "" for
+	// unknown values, so arbitrary wendy.json strings can never reach the
+	// container environment (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	if rmw := ros2.ResolvedRMW(); rmw != "" {
+		env = append(env, "RMW_IMPLEMENTATION="+rmw)
+		if rmw == appconfig.ROS2DefaultRMW {
+			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
-		env = append(env, "RMW_IMPLEMENTATION="+ros2.RMW)
 	}
+	// Services in an app group share a network namespace, so localhost is
+	// sufficient and DDS must not discover nodes on the wider network.
+	env = append(env, "ROS_LOCALHOST_ONLY=1")
 	return env
 }
 

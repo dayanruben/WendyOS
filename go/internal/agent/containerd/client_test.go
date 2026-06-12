@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -698,38 +699,126 @@ func TestPrimaryPIDTracking(t *testing.T) {
 	}
 }
 
+func envContains(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+func envValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return e[len(prefix):], true
+		}
+	}
+	return "", false
+}
+
 func TestBuildROS2Env_WithConfig(t *testing.T) {
+	domainID := 42
 	cfg := &appconfig.AppConfig{
 		Frameworks: &appconfig.FrameworksConfig{
 			ROS2: &appconfig.ROS2Config{
-				DomainID: 42,
+				DomainID: &domainID,
 				RMW:      "rmw_cyclonedds_cpp",
 			},
 		},
 	}
-	got := buildROS2Env(cfg)
-	found42 := false
-	foundRMW := false
-	for _, e := range got {
-		if e == "ROS_DOMAIN_ID=42" {
-			found42 = true
-		}
-		if e == "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" {
-			foundRMW = true
+	got := buildROS2Env(cfg, "com.example.app", "")
+	for _, want := range []string{
+		"ROS_DOMAIN_ID=42",
+		"RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
+		"ROS_LOCALHOST_ONLY=1",
+	} {
+		if !envContains(got, want) {
+			t.Errorf("expected %s in env, got %v", want, got)
 		}
 	}
-	if !found42 {
-		t.Errorf("expected ROS_DOMAIN_ID=42 in env, got %v", got)
-	}
-	if !foundRMW {
-		t.Errorf("expected RMW_IMPLEMENTATION=rmw_cyclonedds_cpp in env, got %v", got)
+	if uri, ok := envValue(got, "CYCLONEDDS_URI"); !ok || !strings.Contains(uri, "<SharedMemory>") {
+		t.Errorf("expected inline CYCLONEDDS_URI with shared memory config, got %v", got)
 	}
 }
 
 func TestBuildROS2Env_NoConfig(t *testing.T) {
 	cfg := &appconfig.AppConfig{}
-	got := buildROS2Env(cfg)
+	got := buildROS2Env(cfg, "com.example.app", "")
 	if len(got) != 0 {
 		t.Errorf("expected empty env for no ROS2 config, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_AutoDomainID(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}},
+	}
+	got := buildROS2Env(cfg, "com.example.app", "")
+	val, ok := envValue(got, "ROS_DOMAIN_ID")
+	if !ok {
+		t.Fatalf("expected ROS_DOMAIN_ID in env, got %v", got)
+	}
+	id, err := strconv.Atoi(val)
+	if err != nil || id < 0 || id > 101 {
+		t.Errorf("auto domain ID = %q, want integer in [0,101]", val)
+	}
+	// Stable: a second call for the same appId must produce the same ID.
+	again := buildROS2Env(cfg, "com.example.app", "")
+	if val2, _ := envValue(again, "ROS_DOMAIN_ID"); val2 != val {
+		t.Errorf("auto domain ID not stable: %q vs %q", val, val2)
+	}
+	// Defaults: CycloneDDS RMW with inline config.
+	if !envContains(got, "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp") {
+		t.Errorf("expected default RMW_IMPLEMENTATION=rmw_cyclonedds_cpp, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_InvalidDomainID(t *testing.T) {
+	domainID := 500
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{DomainID: &domainID},
+		},
+	}
+	if got := buildROS2Env(cfg, "com.example.app", ""); len(got) != 0 {
+		t.Errorf("expected empty env for out-of-range domain ID, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_NonCycloneRMWSkipsCycloneURI(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{RMW: "fastrtps"},
+		},
+	}
+	got := buildROS2Env(cfg, "com.example.app", "")
+	if !envContains(got, "RMW_IMPLEMENTATION=rmw_fastrtps_cpp") {
+		t.Errorf("expected short rmw name to normalize to rmw_fastrtps_cpp, got %v", got)
+	}
+	if _, ok := envValue(got, "CYCLONEDDS_URI"); ok {
+		t.Errorf("CYCLONEDDS_URI must not be injected for non-CycloneDDS RMW, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_ServiceOverride(t *testing.T) {
+	groupID, svcID := 1, 7
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &groupID}},
+		Services: map[string]*appconfig.ServiceConfig{
+			"detector": {
+				Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &svcID}},
+			},
+			"camera": {},
+		},
+	}
+	got := buildROS2Env(cfg, "com.example.app", "detector")
+	if !envContains(got, "ROS_DOMAIN_ID=7") {
+		t.Errorf("expected service-level override ROS_DOMAIN_ID=7, got %v", got)
+	}
+	got = buildROS2Env(cfg, "com.example.app", "camera")
+	if !envContains(got, "ROS_DOMAIN_ID=1") {
+		t.Errorf("expected group-level ROS_DOMAIN_ID=1 for camera, got %v", got)
 	}
 }

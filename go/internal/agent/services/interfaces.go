@@ -103,3 +103,42 @@ type ContainerMetrics struct {
 	SysCPUNanos  int64 // cumulative kernel-mode CPU time in nanoseconds
 	MemBytes     int64 // current memory usage in bytes
 }
+
+// ROS2Target describes a Wendy-managed container carrying the
+// sh.wendy/entitlement.ros2 label (WDY-884, WDY-1332).
+type ROS2Target struct {
+	ContainerID string
+	AppID       string
+	Distro      string // e.g. "humble"
+	DomainID    int    // resolved ROS_DOMAIN_ID
+	Running     bool
+	TaskPID     uint32 // pid of the container's init process; 0 when not running
+}
+
+// ROS2Sidecar describes the running ROS 2 CLI sidecar container.
+type ROS2Sidecar struct {
+	Distro   string
+	DomainID int // default DDS domain, taken from the anchor app container
+}
+
+// ROS2ExecOptions configures a single `ros2` invocation inside the sidecar.
+type ROS2ExecOptions struct {
+	DomainID int      // ROS_DOMAIN_ID for this invocation
+	Args     []string // arguments after `ros2`, passed without shell interpretation
+}
+
+// ROS2Runtime abstracts the containerd-side ROS 2 sidecar plumbing used by
+// the ROS2Service gRPC handlers (WDY-1332).
+type ROS2Runtime interface {
+	// FindROS2Containers returns all containers labelled with a ros2 config.
+	FindROS2Containers(ctx context.Context) ([]ROS2Target, error)
+	// EnsureROS2Sidecar starts or reuses the CLI sidecar and returns its
+	// distro and the default DDS domain.
+	EnsureROS2Sidecar(ctx context.Context) (ROS2Sidecar, error)
+	// StopROS2Sidecar stops and removes the sidecar if present.
+	StopROS2Sidecar(ctx context.Context) error
+	// ExecROS2 runs `ros2 <args>` in the sidecar, streaming output to the
+	// writers, and returns the exit code. Cancelling ctx sends SIGINT first
+	// so commands like `ros2 bag record` can finalize.
+	ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error)
+}

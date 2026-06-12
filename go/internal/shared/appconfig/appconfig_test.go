@@ -1336,8 +1336,8 @@ func TestLoadComposeCompanion_Valid(t *testing.T) {
 	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
 		t.Fatal("Frameworks.ROS2 is nil")
 	}
-	if cfg.Frameworks.ROS2.DomainID != 5 {
-		t.Errorf("ROS2.DomainID = %d, want 5", cfg.Frameworks.ROS2.DomainID)
+	if cfg.Frameworks.ROS2.DomainID == nil || *cfg.Frameworks.ROS2.DomainID != 5 {
+		t.Errorf("ROS2.DomainID = %v, want 5", cfg.Frameworks.ROS2.DomainID)
 	}
 	if cfg.Frameworks.ROS2.RMW != "cyclonedds" {
 		t.Errorf("ROS2.RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "cyclonedds")
@@ -1382,7 +1382,7 @@ func TestLoadComposeCompanion_WithServices(t *testing.T) {
 	if len(camera.Entitlements) != 2 {
 		t.Errorf("camera entitlements = %d, want 2", len(camera.Entitlements))
 	}
-	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID != 42 {
+	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID == nil || *camera.Frameworks.ROS2.DomainID != 42 {
 		t.Errorf("camera.Frameworks.ROS2.DomainID mismatch")
 	}
 	if cfg.Services["detector"] == nil {
@@ -1467,8 +1467,8 @@ func TestFrameworksConfig_ParseJSON(t *testing.T) {
 	if cfg.Frameworks.ROS2 == nil {
 		t.Fatal("Frameworks.ROS2 is nil")
 	}
-	if cfg.Frameworks.ROS2.DomainID != 10 {
-		t.Errorf("DomainID = %d, want 10", cfg.Frameworks.ROS2.DomainID)
+	if cfg.Frameworks.ROS2.DomainID == nil || *cfg.Frameworks.ROS2.DomainID != 10 {
+		t.Errorf("DomainID = %v, want 10", cfg.Frameworks.ROS2.DomainID)
 	}
 	if cfg.Frameworks.ROS2.RMW != "fastrtps" {
 		t.Errorf("RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "fastrtps")

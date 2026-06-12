@@ -67,6 +67,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceLogsCmd(),
 		newDeviceDashboardCmd(),
 		newDeviceTelemetryStreamCmd(),
+		newROS2Cmd(),
 	)
 	addToGroup("hardware",
 		newWifiCmd(),
