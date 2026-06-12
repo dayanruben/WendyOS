@@ -35,6 +35,7 @@ struct `report command` {
         try FileManager.default.createDirectory(at: attemptArtifactsURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: observationURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: noObservationAttemptURL, withIntermediateDirectories: true)
+        try writeReportTestMetadata(to: observationURL)
 
         try """
             import Testing
@@ -92,6 +93,24 @@ struct `report command` {
         #expect(html.contains("title=\"macos-to-&lt;img src=x onerror=&quot;alert(1)&quot;&gt;\""))
         #expect(html.contains("macos-to-no-observations"))
     }
+}
+
+private func writeReportTestMetadata(to observationURL: URL) throws {
+    let metadata = E2ETestMetadata(
+        schema: e2eTestMetadataSchemaID,
+        sourceFilePath: "Tests/ReportSecurityTests.swift",
+        sourceFileName: "ReportSecurityTests",
+        suiteName: "report security",
+        testName: "escapes malicious target",
+        functionName: "`escapes malicious target`()",
+        line: 5
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(metadata).write(
+        to: observationURL.appendingPathComponent(e2eTestMetadataFileName),
+        options: .atomic
+    )
 }
 
 private func temporaryDirectory() -> URL {
