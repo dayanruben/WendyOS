@@ -338,7 +338,8 @@ private func overviewObservationResult(
     return OverviewObservationResult(
         status: .unknown,
         durationSeconds: nil,
-        detail: "No Swift Testing result was found for \(metadata.suiteName) › \(metadata.testName) in test-results.xml"
+        detail:
+            "No Swift Testing result was found for \(metadata.suiteName) › \(metadata.testName) in test-results.xml"
     )
 }
 
