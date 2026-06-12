@@ -113,23 +113,25 @@ the runner uses the current CLI user's `~/.wendy/config.json` where possible.
 ## Artifacts
 
 The E2E workflow uses two artifact layouts: attempt directories from individual
-test runs, and aggregate run directories that collect attempts by suite, test,
-target, and attempt number.
+test runs, and aggregate run directories that keep attempt-level artifacts
+separate from per-test observations.
 
 ### Attempt directory
 
 `Scripts/E2ETest.sh` writes one attempt directory under the output directory.
-Suite directories use the test file stem without the `Tests` suffix, dasherized;
-test directories use the dasherized test name.
+Attempt-level artifacts stay at the attempt root. Per-test observation
+directories use the test file stem without the `Tests` suffix, dasherized; test
+directories use the dasherized test name.
 
 ```text
 <output-dir>/<attempt-id>/
 ├── attempt.json
 ├── test-results.xml
 ├── test-results.raw.xml          # only when XML sanitization changed the file
-└── <suite>/<test>/
-    ├── recording.md
-    └── recording.sh.txt
+└── observations/
+    └── <suite>/<test>/
+        ├── recording.md
+        └── recording.sh.txt
 ```
 
 The attempt ID has the shape:
@@ -151,21 +153,27 @@ directories into a run directory:
 
 ```text
 <output-dir>/<workflow-name>.<run-id>/
-└── <suite>/<test>/<target-name>/<attempt-number>/
-    ├── attempt.json
-    ├── test-results.xml
-    ├── test-results.raw.xml      # only when present in the source attempt
-    ├── recording.md
-    └── recording.sh.txt
+├── attempts/
+│   └── <target-name>/<attempt-number>/
+│       ├── attempt.json
+│       ├── test-results.xml
+│       └── test-results.raw.xml  # only when present in the source attempt
+└── observations/
+    └── <suite>/<test>/<target-name>/<attempt-number>/
+        ├── recording.md
+        └── recording.sh.txt
 ```
+
+The `attempts/` tree keeps every attempt-root artifact except `observations/`,
+so preflight logs and metadata remain attached to the attempt.
 
 `make e2e-review` writes scoped AI review issue files into the aggregate run
 directory:
 
 ```text
 <run>/review.<reviewer>/<slug>.md
-<run>/<suite>/review.<reviewer>/<slug>.md
-<run>/<suite>/<test>/review.<reviewer>/<slug>.md
+<run>/observations/<suite>/review.<reviewer>/<slug>.md
+<run>/observations/<suite>/<test>/review.<reviewer>/<slug>.md
 ```
 
 `make e2e-report` writes the rendered report files at the aggregate run root:
