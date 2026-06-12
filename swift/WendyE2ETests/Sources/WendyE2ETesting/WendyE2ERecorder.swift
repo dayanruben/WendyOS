@@ -47,12 +47,12 @@ public struct WendyE2ERecorder: Sendable {
             let recordURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
             let recordExists = FileManager.default.fileExists(atPath: recordURL.path)
 
-            try self.writeTestMetadata(nextTo: recordURL)
-
             if !recordExists {
                 try Self.recordHeader(source: self.source)
                     .write(to: recordURL, atomically: true, encoding: .utf8)
             }
+
+            try self.writeTestMetadata(nextTo: recordURL)
 
             let recordHandle = try FileHandle(forWritingTo: recordURL)
             defer { try? recordHandle.close() }

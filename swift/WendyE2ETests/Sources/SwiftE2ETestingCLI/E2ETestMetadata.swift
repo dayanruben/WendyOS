@@ -20,6 +20,47 @@ struct E2ETestMetadata: Codable, Sendable {
             testName: testName
         )
     }
+
+    func validate(sourceURL: URL) throws {
+        try validatePath(sourceFilePath, field: "sourceFilePath", sourceURL: sourceURL)
+        try validateName(sourceFileName, field: "sourceFileName", sourceURL: sourceURL)
+        try validateText(suiteName, field: "suiteName", sourceURL: sourceURL)
+        try validateText(testName, field: "testName", sourceURL: sourceURL)
+        try validateText(functionName, field: "functionName", sourceURL: sourceURL)
+        guard line > 0 else {
+            throw ValidationError("Test metadata has invalid line in \(sourceURL.path)")
+        }
+    }
+
+    private func validatePath(_ value: String, field: String, sourceURL: URL) throws {
+        try validateText(value, field: field, maxLength: 1024, sourceURL: sourceURL)
+        guard !value.hasPrefix("/"), !value.split(separator: "/").contains("..") else {
+            throw ValidationError("Test metadata has invalid \(field) in \(sourceURL.path)")
+        }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-")
+        guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw ValidationError("Test metadata has invalid \(field) characters in \(sourceURL.path)")
+        }
+    }
+
+    private func validateName(_ value: String, field: String, sourceURL: URL) throws {
+        try validateText(value, field: field, maxLength: 255, sourceURL: sourceURL)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw ValidationError("Test metadata has invalid \(field) characters in \(sourceURL.path)")
+        }
+    }
+
+    private func validateText(
+        _ value: String,
+        field: String,
+        maxLength: Int = 512,
+        sourceURL: URL
+    ) throws {
+        guard !value.isEmpty, value.count <= maxLength else {
+            throw ValidationError("Test metadata has invalid \(field) in \(sourceURL.path)")
+        }
+    }
 }
 
 struct E2ETestIdentityKey: Hashable, Sendable {
@@ -35,6 +76,7 @@ func loadE2ETestMetadata(in observationURL: URL) throws -> E2ETestMetadata {
     guard metadata.schema == e2eTestMetadataSchemaID else {
         throw ValidationError("Test metadata has unsupported schema: \(url.path)")
     }
+    try metadata.validate(sourceURL: url)
     return metadata
 }
 
@@ -67,12 +109,15 @@ func e2ePackageRelativePath(from packageURL: URL, to url: URL) -> String {
 }
 
 private func e2eMetadataDirectoryChildren(of url: URL) throws -> [URL] {
-    guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-    return try FileManager.default.contentsOfDirectory(
-        at: url,
-        includingPropertiesForKeys: [.isDirectoryKey],
-        options: [.skipsHiddenFiles]
-    )
-    .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-    .sorted { $0.path < $1.path }
+    do {
+        return try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        .sorted { $0.path < $1.path }
+    } catch let error as CocoaError where error.code == .fileNoSuchFile {
+        return []
+    }
 }

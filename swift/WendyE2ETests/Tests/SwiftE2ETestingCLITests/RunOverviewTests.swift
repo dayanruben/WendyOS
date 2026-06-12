@@ -210,21 +210,20 @@ private func writeTestMetadata(
     suiteName: String = "wendy device info",
     testName: String = "prints JSON device information"
 ) throws {
-    let json = """
-        {
-          "schema": "wendy.e2e.test.v1",
-          "sourceFilePath": "\(sourceFilePath)",
-          "sourceFileName": "\(sourceFileName)",
-          "suiteName": "\(suiteName)",
-          "testName": "\(testName)",
-          "functionName": "`\(testName)`()",
-          "line": 12
-        }
-        """
-    try json.write(
-        to: observationURL.appendingPathComponent("test.json"),
-        atomically: true,
-        encoding: .utf8
+    let metadata = E2ETestMetadata(
+        schema: e2eTestMetadataSchemaID,
+        sourceFilePath: sourceFilePath,
+        sourceFileName: sourceFileName,
+        suiteName: suiteName,
+        testName: testName,
+        functionName: "`\(testName)`()",
+        line: 12
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(metadata).write(
+        to: observationURL.appendingPathComponent(e2eTestMetadataFileName),
+        options: .atomic
     )
 }
 

@@ -42,21 +42,7 @@ struct `aggregate command` {
             atomically: true,
             encoding: .utf8
         )
-        try """
-            {
-              "schema": "wendy.e2e.test.v1",
-              "sourceFilePath": "Tests/WendyE2ETests/WendyDeviceInfoTests.swift",
-              "sourceFileName": "WendyDeviceInfoTests",
-              "suiteName": "wendy device info",
-              "testName": "prints JSON device information",
-              "functionName": "`prints JSON device information`()`",
-              "line": 12
-            }
-            """.write(
-            to: observationURL.appendingPathComponent("test.json"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try writeAggregateTestMetadata(to: observationURL)
 
         var command = try AggregateCommand.parse(["--output-dir", outputURL.path, attemptURL.path])
         try command.run()
@@ -118,6 +104,24 @@ struct `aggregate command` {
         #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("attempt.json").path))
         #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("test-results.xml").path))
     }
+}
+
+private func writeAggregateTestMetadata(to observationURL: URL) throws {
+    let metadata = E2ETestMetadata(
+        schema: e2eTestMetadataSchemaID,
+        sourceFilePath: "Tests/WendyE2ETests/WendyDeviceInfoTests.swift",
+        sourceFileName: "WendyDeviceInfoTests",
+        suiteName: "wendy device info",
+        testName: "prints JSON device information",
+        functionName: "`prints JSON device information`()",
+        line: 12
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(metadata).write(
+        to: observationURL.appendingPathComponent(e2eTestMetadataFileName),
+        options: .atomic
+    )
 }
 
 private func aggregateTemporaryDirectory() -> URL {

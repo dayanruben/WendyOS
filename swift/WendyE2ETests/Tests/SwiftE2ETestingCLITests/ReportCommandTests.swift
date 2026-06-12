@@ -96,21 +96,20 @@ struct `report command` {
 }
 
 private func writeReportTestMetadata(to observationURL: URL) throws {
-    let json = """
-        {
-          "schema": "wendy.e2e.test.v1",
-          "sourceFilePath": "Tests/ReportSecurityTests.swift",
-          "sourceFileName": "ReportSecurityTests",
-          "suiteName": "report security",
-          "testName": "escapes malicious target",
-          "functionName": "`escapes malicious target`()`",
-          "line": 5
-        }
-        """
-    try json.write(
-        to: observationURL.appendingPathComponent("test.json"),
-        atomically: true,
-        encoding: .utf8
+    let metadata = E2ETestMetadata(
+        schema: e2eTestMetadataSchemaID,
+        sourceFilePath: "Tests/ReportSecurityTests.swift",
+        sourceFileName: "ReportSecurityTests",
+        suiteName: "report security",
+        testName: "escapes malicious target",
+        functionName: "`escapes malicious target`()",
+        line: 5
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(metadata).write(
+        to: observationURL.appendingPathComponent(e2eTestMetadataFileName),
+        options: .atomic
     )
 }
 
