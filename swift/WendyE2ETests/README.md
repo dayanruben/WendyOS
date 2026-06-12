@@ -203,13 +203,30 @@ E2E source files.
 ### Organization and naming
 
 Use one flattened suite per command area. The suite name is the command phrase;
-the test name completes the behavior sentence.
+the test name completes the behavior sentence. Inside backticked Swift suite or
+test identifiers, wrap command fragments, aliases, and flags that should render
+as code with single quotes. The reference extractor converts those quoted spans
+to Markdown code spans (and HTML `<code>` elements). Use `'... subcommand'` when
+referring to a related command under the same suite prefix.
 
 ```swift
 @Suite
 struct `'wendy device info'` {
     @Test
     func `prints JSON device information`() async throws {
+        // Test body.
+    }
+
+    @Test
+    func `'--json' reports a missing device without prompting`() async throws {
+        // Test body.
+    }
+}
+
+@Suite
+struct `'wendy device ps'` {
+    @Test
+    func `aliases '... device apps list'`() async throws {
         // Test body.
     }
 }

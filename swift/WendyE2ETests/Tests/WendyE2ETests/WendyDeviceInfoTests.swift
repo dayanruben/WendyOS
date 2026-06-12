@@ -489,33 +489,22 @@ struct `'wendy device version'` {
     // MARK: - Compatibility
 
     /**
-     The deprecated command reports the same device information as `wendy device info` and directs users to the replacement command.
+     In human-readable mode, the deprecated command reports the same device information as `wendy device info` and directs users to the replacement command.
      */
-    @Test(.disabled("TODO: implement deprecation notice on the CLI side"))
-    func `aliases device info with a deprecation notice`() async throws {
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `aliases '... device info' with a deprecation notice`() async throws {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
 
-            try await cli.sh("wendy --device \(agentAddress) device version") { result in
+            try await cli.sh("wendy --json=false --device \(agentAddress) device version") { result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stderr.localizedCaseInsensitiveContains("deprecated"))
                 #expect(result.stderr.contains("wendy device info"))
-
-                let json = try #require(
-                    try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
-                        as? [String: Any]
-                )
-                let version = try #require(json["version"] as? String)
-                let os = try #require(json["os"] as? String)
-                let cpuArchitecture = try #require(json["cpuArchitecture"] as? String)
-                let cliVersion = try #require(json["cliVersion"] as? String)
-
-                #expect(!version.isEmpty)
-                #expect(!os.isEmpty)
-                #expect(!cpuArchitecture.isEmpty)
-                #expect(!cliVersion.isEmpty)
-                #expect(json["hasGpu"] is Bool)
+                #expect(result.stdout.contains("Agent Version:"))
+                #expect(result.stdout.contains("OS:"))
+                #expect(result.stdout.contains("Architecture:"))
+                #expect(result.stdout.contains("CLI Version:"))
             }
         }
     }
@@ -524,7 +513,7 @@ struct `'wendy device version'` {
      The deprecated command keeps stdout machine-readable in JSON mode. Deprecation guidance is kept out of the JSON payload so existing scripts can continue parsing the response.
      */
     @Test
-    func `'--json' aliases device info without contaminating JSON output`() async throws {
+    func `'--json' aliases '... device info' without contaminating JSON output`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy device version --json") { result in
                 let stderr = result.stderr
