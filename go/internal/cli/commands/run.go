@@ -582,6 +582,34 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	cfgPath := filepath.Join(cwd, "wendy.json")
+	cfgMissing, err := appConfigFileMissing(cfgPath)
+	if err != nil {
+		return fmt.Errorf("checking wendy.json: %w", err)
+	}
+
+	// If wendy.json is missing, resolve the target before prompting to create
+	// one. That lets Mac beta targets reject container-only project shapes with
+	// the real project/target mismatch instead of first asking about config.
+	var target *SelectedDevice
+	defer func() {
+		if target != nil && target.Agent != nil {
+			target.Agent.Close()
+		}
+	}()
+	if cfgMissing {
+		var resolveOpts []resolveOption
+		if opts.yes {
+			resolveOpts = append(resolveOpts, NonInteractive())
+		}
+		target, err = resolveRunTarget(ctx, resolveOpts...)
+		if err != nil {
+			return err
+		}
+		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
+			return err
+		}
+	}
+
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
 	if err != nil {
 		return fmt.Errorf("loading wendy.json: %w", err)
@@ -614,13 +642,15 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	// Step 2: Resolve the target device.
-	var resolveOpts []resolveOption
-	if opts.yes {
-		resolveOpts = append(resolveOpts, NonInteractive())
-	}
-	target, err := resolveRunTarget(ctx, resolveOpts...)
-	if err != nil {
-		return err
+	if target == nil {
+		var resolveOpts []resolveOption
+		if opts.yes {
+			resolveOpts = append(resolveOpts, NonInteractive())
+		}
+		target, err = resolveRunTarget(ctx, resolveOpts...)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Provider-based run path.
@@ -648,8 +678,37 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	// Agent-based run path (existing gRPC pipeline).
-	defer target.Agent.Close()
 	return runWithAgent(ctx, target.Agent, cwd, appCfg, opts)
+}
+
+func appConfigFileMissing(cfgPath string) (bool, error) {
+	if _, err := os.Stat(cfgPath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+func preflightMissingAppConfigForMacTarget(ctx context.Context, target *SelectedDevice, projectType string) error {
+	if target == nil || target.Agent == nil {
+		return nil
+	}
+	versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return nil
+	}
+	agentOS := versionResp.GetOs()
+	architecture := versionResp.GetCpuArchitecture()
+	if architecture == "" {
+		architecture = "arm64"
+	}
+	platform := resolveAgentPlatform("", agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject(projectType, platform)
+	}
+	return nil
 }
 
 // runComposeCommand handles the full device-selection + execution flow for

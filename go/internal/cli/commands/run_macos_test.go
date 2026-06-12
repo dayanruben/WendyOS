@@ -254,6 +254,32 @@ func TestAssembleSwiftPMSyncEntries_IncludesSiblingResourceDirectories(t *testin
 	}
 }
 
+func TestPreflightMissingAppConfigForMacTarget_RejectsContainerProjectBeforeConfigPrompt(t *testing.T) {
+	state := &fakeMacRunState{}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+
+	target := &SelectedDevice{Agent: conn}
+	err := preflightMissingAppConfigForMacTarget(context.Background(), target, "docker")
+	if err == nil {
+		t.Fatal("preflightMissingAppConfigForMacTarget error = nil, want unsupported Mac project error")
+	}
+	if got := err.Error(); !strings.Contains(got, "Project/target mismatch") || !strings.Contains(got, "platform: \"darwin\"") {
+		t.Fatalf("preflightMissingAppConfigForMacTarget error = %q, want Mac project guidance", got)
+	}
+}
+
+func TestPreflightMissingAppConfigForMacTarget_AllowsNativeSwiftProject(t *testing.T) {
+	state := &fakeMacRunState{}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+
+	target := &SelectedDevice{Agent: conn}
+	if err := preflightMissingAppConfigForMacTarget(context.Background(), target, "swift"); err != nil {
+		t.Fatalf("preflightMissingAppConfigForMacTarget swift error = %v, want nil", err)
+	}
+}
+
 func TestRunWithAgent_RejectsUnsupportedMacProjectShapes(t *testing.T) {
 	tests := []struct {
 		name   string
