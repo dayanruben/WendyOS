@@ -162,7 +162,7 @@ function Build-CLI {
     Push-Location (Join-Path $script:CLIRepoDir 'go')
     try {
         & go build -o $wendyPath ./cmd/wendy
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($LASTEXITCODE -ne 0) { throw "ERROR: go build failed with exit status $LASTEXITCODE." }
     } finally {
         Pop-Location
     }
@@ -247,6 +247,7 @@ function Write-AttemptInfo([int]$Status) {
 
     $path = Join-Path $script:RunDir 'attempt.json'
     $info | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding UTF8
+    $script:AttemptInfoWritten = $true
     Write-Output "==> Wrote Swift E2E attempt info: $path"
 }
 
@@ -376,6 +377,19 @@ if (Test-Path -LiteralPath $script:RunDir) { Remove-Item -LiteralPath $script:Ru
 if (-not $AgentAddress -and (Test-Path -LiteralPath $script:AgentRunDir)) { Remove-Item -LiteralPath $script:AgentRunDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
 
+$script:AttemptInfoWritten = $false
+$script:AttemptLogPath = Join-Path $script:RunDir 'attempt.log'
+Start-Transcript -Path $script:AttemptLogPath -Append | Out-Null
+trap {
+    $status = if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { [int]$LASTEXITCODE } else { 1 }
+    if (-not $script:AttemptInfoWritten) {
+        try { Write-AttemptInfo $status } catch { Write-Error $_ }
+    }
+    try { Stop-Transcript | Out-Null } catch {}
+    exit $status
+}
+Write-Output "==> Capturing Swift E2E attempt log: $script:AttemptLogPath"
+
 $script:CLIAuthConfigPath = Resolve-CLIAuthConfigPath
 
 Build-CLI
@@ -445,4 +459,5 @@ $sanitizeStatus = $LASTEXITCODE
 if ($testStatus -eq 0 -and $sanitizeStatus -ne 0) { $testStatus = $sanitizeStatus }
 
 Write-AttemptInfo $testStatus
+try { Stop-Transcript | Out-Null } catch {}
 exit $testStatus

@@ -455,6 +455,8 @@ RUN_DIR="$OUTPUT_DIR/$RUN_ID"
 CLI_RUN_DIR="$CLI_ROOT_DIR/$RUN_ID/cli"
 AGENT_RUN_DIR="$AGENT_ROOT_DIR/$RUN_ID/agent"
 TEST_RESULTS_OUTPUT_PATH="$RUN_DIR/test-results.xml"
+ATTEMPT_LOG_PATH="$RUN_DIR/attempt.log"
+ATTEMPT_INFO_WRITTEN="false"
 MANAGED_AGENT_PID=""
 
 rm -rf "$RUN_DIR"
@@ -860,9 +862,29 @@ write_attempt_info() {
     echo '  }'
     echo "}"
   } > "$info_path"
+  ATTEMPT_INFO_WRITTEN="true"
 
   echo "==> Wrote Swift E2E attempt info: $info_path"
 }
+
+finalize_attempt() {
+  local status=$?
+  trap - EXIT
+  set +e
+  stop_managed_agent
+  if [[ "$ATTEMPT_INFO_WRITTEN" != "true" ]]; then
+    write_attempt_info "$status"
+  fi
+  exit "$status"
+}
+
+# Capture the full attempt lifecycle in the attempt artifact so aggregate/review
+# can diagnose setup, preflight, and test-launch failures that happen before
+# Swift Testing writes per-test recordings.
+exec > >(tee -a "$ATTEMPT_LOG_PATH") 2>&1
+trap finalize_attempt EXIT
+
+echo "==> Capturing Swift E2E attempt log: $ATTEMPT_LOG_PATH"
 
 SWIFT_TEST_ARGS=("test")
 if [[ "$PARALLEL" != "true" ]]; then
@@ -883,7 +905,6 @@ prepare_managed_agent_auth_fixture
 
 build_cli
 if [[ "$MANAGED_AGENT" == "true" ]]; then
-  trap stop_managed_agent EXIT
   build_managed_agent
   start_managed_agent
 fi
