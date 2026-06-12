@@ -98,7 +98,7 @@ struct `'wendy device info'` {
     }
 
     /**
-     If no explicit or default device is available, interactive mode helps the user choose one. The picker discovers LAN, Bluetooth, and provider-backed devices.
+     If no explicit or default device is available, interactive mode helps the user choose one. The picker discovers LAN, BLE, and provider-backed devices.
      */
     @Test(.disabled("INTERACTIVE: requires picker harness"))
     func `opens the device picker when no device is selected`() async throws {
