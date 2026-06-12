@@ -25,12 +25,15 @@ var ociNSTypeToProcName = map[string]string{
 //   - "shared-ipc":     also joins ipc namespace (enables /dev/shm sharing for ROS2/dora-rs)
 //   - anything else:    no-op
 //
-// It returns a set of open file descriptors whose paths are embedded in the
-// spec as /proc/self/fd/{n}. The caller MUST keep these fds open until the
-// OCI runtime (runc) has consumed the spec and started the container, then
-// close them. Holding the fds prevents the kernel from recycling the
-// underlying namespace when the primary container exits between the Lstat
-// check and runc opening the path — eliminating the TOCTOU PID-reuse window
+// The spec embeds raw /proc/{pid}/ns/{name} paths — runc consumes the spec
+// in its own process, so agent-local /proc/self/fd paths would never resolve
+// there. It returns a set of open file descriptors anchoring each namespace;
+// the caller MUST keep them open until the OCI runtime (runc) has consumed
+// the spec and started the container, then close them. The anchors prevent
+// the kernel from deallocating the namespaces if the primary exits in that
+// window; a vanished primary then surfaces as a clean ENOENT from runc.
+// Callers MUST re-verify the primary's task (same PID, still running) after
+// the secondary starts, closing the residual PID-recycling TOCTOU window
 // (SOC2-CC6, ISO27001-A.8, NIST-SC-7, NIST-SI-16).
 func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os.File, error) {
 	if spec.Linux == nil {
@@ -65,10 +68,18 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os
 			}
 			nsPath := fmt.Sprintf("/proc/%d/ns/%s", primaryPID, kernelName)
 			// Open the namespace file to anchor it: the open fd prevents the
-			// kernel from deallocating the namespace when the primary container
-			// exits. We embed /proc/self/fd/{n} in the spec instead of the raw
-			// procfs path so runc opens our fd-anchored reference, not the
-			// (potentially recycled) PID path.
+			// kernel from deallocating the namespace while the secondary
+			// container is being created, even if the primary exits.
+			//
+			// The spec must embed the raw procfs path, NOT /proc/self/fd/{n}:
+			// the spec is consumed by runc in a *different process*, where an
+			// agent-local fd number can never resolve (runc would fail with
+			// "lstat /proc/self/fd/N: no such file or directory"). With the
+			// raw path, a primary that exits before runc opens it produces a
+			// clean ENOENT failure. The residual TOCTOU (primary PID recycled
+			// between this check and runc's open) must be handled by callers
+			// re-verifying the primary's task after the join (SOC2-CC6,
+			// ISO27001-A.8, NIST-SC-7, NIST-SI-16).
 			f, err := os.Open(nsPath)
 			if err != nil {
 				for _, a := range anchors {
@@ -77,7 +88,7 @@ func JoinGroupNamespaces(spec *Spec, primaryPID uint32, isolation string) ([]*os
 				return nil, fmt.Errorf("JoinGroupNamespaces: namespace path %q not available (primary container exited?): %w", nsPath, err)
 			}
 			anchors = append(anchors, f)
-			spec.Linux.Namespaces[i].Path = fmt.Sprintf("/proc/self/fd/%d", f.Fd())
+			spec.Linux.Namespaces[i].Path = nsPath
 		}
 	}
 	return anchors, nil

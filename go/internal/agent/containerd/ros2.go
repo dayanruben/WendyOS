@@ -221,11 +221,41 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		return services.ROS2Sidecar{}, fmt.Errorf("starting ROS 2 sidecar: %w", err)
 	}
 
+	// Close the residual TOCTOU window of the raw /proc/<pid>/ns paths: if
+	// the anchor container exited (and its PID was possibly recycled) while
+	// the sidecar was starting, the sidecar may have joined the wrong
+	// namespace. Re-verify the anchor task is still the same live PID;
+	// otherwise tear the sidecar down and fail (SOC2-CC6, NIST-SC-7).
+	if err := c.verifyROS2Anchor(ctx, anchor); err != nil {
+		_ = c.deleteROS2Sidecar(ctx, container)
+		return services.ROS2Sidecar{}, fmt.Errorf("ROS 2 app container changed while sidecar was starting; retry: %w", err)
+	}
+
 	c.logger.Info("ROS 2 CLI sidecar started",
 		zap.String("image", imageName),
 		zap.String("anchor", anchor.ContainerID),
 		zap.Int("domain_id", anchor.DomainID))
 	return sidecar, nil
+}
+
+// verifyROS2Anchor checks that the anchor container's task is still running
+// with the same PID recorded before the sidecar joined its namespaces.
+func (c *Client) verifyROS2Anchor(ctx context.Context, anchor *services.ROS2Target) error {
+	ctr, err := c.client.LoadContainer(ctx, anchor.ContainerID)
+	if err != nil {
+		return fmt.Errorf("anchor container gone: %w", err)
+	}
+	task, err := ctr.Task(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("anchor task gone: %w", err)
+	}
+	if st, err := task.Status(ctx); err != nil || st.Status != containerd.Running {
+		return fmt.Errorf("anchor task no longer running")
+	}
+	if task.Pid() != anchor.TaskPID {
+		return fmt.Errorf("anchor task PID changed (%d → %d)", anchor.TaskPID, task.Pid())
+	}
+	return nil
 }
 
 // StopROS2Sidecar stops and removes the ROS 2 CLI sidecar if present.
