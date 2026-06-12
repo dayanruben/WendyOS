@@ -832,6 +832,15 @@ private func runReviewObservationResult(
         return result
     }
 
+    if let identity = attemptRecordingIdentity(at: attemptURL),
+        let result = parser.results.first(where: { key, _ in
+            reviewSlug(key.suite) == reviewSlug(identity.suite)
+                && reviewSlug(key.name) == reviewSlug(identity.test)
+        })?.value
+    {
+        return result
+    }
+
     let matchingTestNames = parser.results.filter { key, _ in
         reviewSlug(key.name) == testKey
     }

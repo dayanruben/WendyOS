@@ -212,9 +212,7 @@ referring to a related command under the same suite prefix.
 When the same behavior is specified for multiple related commands, keep the same
 suite structure, section order, and test-name wording wherever possible. Change
 only the quoted command fragment or the smallest phrase needed to distinguish the
-command path. Do not give sibling tests identical names: the E2E report matcher
-uses test-name slugs as a fallback when a file contains multiple suites, so each
-related test should include enough quoted command context to remain unique.
+command path.
 
 ```swift
 @Suite

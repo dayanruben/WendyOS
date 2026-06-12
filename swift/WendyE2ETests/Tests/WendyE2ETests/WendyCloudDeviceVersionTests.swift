@@ -34,7 +34,7 @@ struct `'wendy cloud device version'` {
      response.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `'--json' keeps '... cloud device info' output clean`() async throws {
+    func `'--json' keeps JSON output clean`() async throws {
         // TODO: implement.
     }
 }
