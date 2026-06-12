@@ -409,7 +409,7 @@ private func loadRunAIReviews(in runURL: URL) throws -> RunAIReviews {
         root: try loadE2EReviews(in: runURL, expectedScope: "report", relativeTo: runURL)
     )
 
-    for suiteURL in try directoryChildren(of: runURL) {
+    for suiteURL in try directoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
         let suiteReviews = try loadE2EReviews(
@@ -449,6 +449,9 @@ private func recordKey(for recordURL: URL, relativeTo runURL: URL) -> String {
     if recordURL.lastPathComponent == "recording.md" {
         let relative = relativePath(from: runURL, to: recordURL)
         let components = relative.split(separator: "/").map(String.init)
+        if components.count >= 3, components[0] == e2eObservationsDirectoryName {
+            return "\(components[1]).\(components[2])"
+        }
         if components.count >= 2 {
             return "\(components[0]).\(components[1])"
         }
@@ -530,7 +533,7 @@ private func loadRunTestResults(
     var durations: [RunPathKey: [Double]] = [:]
     var observations: [RunPathKey: [ReportTestObservation]] = [:]
 
-    for suiteURL in try directoryChildren(of: runURL) {
+    for suiteURL in try directoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
         for testURL in try directoryChildren(of: suiteURL) {
@@ -540,16 +543,21 @@ private func loadRunTestResults(
                 let targetName = targetURL.lastPathComponent
                 for attemptURL in try directoryChildren(of: targetURL) {
                     let attemptName = attemptURL.lastPathComponent
+                    let attemptArtifactsURL = e2eAttemptArtifactsURL(
+                        in: runURL,
+                        targetName: targetName,
+                        attempt: attemptName
+                    )
                     let status = try runObservationStatus(
                         suiteKey: suiteKey,
                         testKey: testKey,
-                        attemptURL: attemptURL
+                        attemptURL: attemptArtifactsURL
                     )
                     observed[pathKey, default: [:]][targetName, default: []].append(status)
                     observations[pathKey, default: []].append(
                         ReportTestObservation(
                             target: targetName,
-                            route: try targetRoute(for: targetName, attemptURL: attemptURL),
+                            route: try targetRoute(for: targetName, attemptURL: attemptArtifactsURL),
                             attempt: attemptName,
                             status: status,
                             recordingPath: observationFilePath(
@@ -639,7 +647,7 @@ private func runObservationFileURLs(in runURL: URL, fileName: String) throws -> 
     }
 
     var urls: [URL] = []
-    for suiteURL in try directoryChildren(of: runURL) {
+    for suiteURL in try directoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         for testURL in try directoryChildren(of: suiteURL) {
             for targetURL in try directoryChildren(of: testURL) {
                 for attemptURL in try directoryChildren(of: targetURL) {
@@ -977,7 +985,12 @@ private func parseTests(
             let recordTestKey = slug(tests[testIndex].name)
             let recordKey = "\(recordSuiteKey).\(recordTestKey)"
             let directRecordName = "recording.md"
-            let nestedRecordName = "\(recordSuiteKey)/\(recordTestKey)/recording.md"
+            let nestedRecordName = [
+                e2eObservationsDirectoryName,
+                recordSuiteKey,
+                recordTestKey,
+                "recording.md",
+            ].joined(separator: "/")
             if records[recordKey] != nil,
                 FileManager.default.fileExists(
                     atPath: runURL.appendingPathComponent(directRecordName).path
@@ -1069,8 +1082,20 @@ private func extractAIItems(from lines: [String]) -> [String] {
     return items
 }
 
-private func buildTargetOverview(files: [ReportTestFile]) -> [ReportTargetOverviewRow] {
+private func buildTargetOverview(
+    runURL: URL,
+    files: [ReportTestFile]
+) throws -> [ReportTargetOverviewRow] {
     var rowsByTarget: [String: ReportTargetOverviewAccumulator] = [:]
+
+    for (target, attemptURLs) in try runAttemptArtifactURLsByTarget(in: runURL) {
+        var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
+        row.attempts.formUnion(attemptURLs.map(\.lastPathComponent))
+        if row.route == nil, let attemptURL = attemptURLs.first {
+            row.route = try? targetRoute(for: target, attemptURL: attemptURL)
+        }
+        rowsByTarget[target] = row
+    }
 
     for test in files.flatMap(\.tests) {
         let observationsByTarget = Dictionary(grouping: test.observations, by: \.target)
@@ -1094,6 +1119,15 @@ private func buildTargetOverview(files: [ReportTestFile]) -> [ReportTargetOvervi
         )
     }
     .sorted { $0.target < $1.target }
+}
+
+private func runAttemptArtifactURLsByTarget(in runURL: URL) throws -> [String: [URL]] {
+    var urlsByTarget: [String: [URL]] = [:]
+    for targetURL in try directoryChildren(of: e2eAttemptArtifactsRootURL(in: runURL)) {
+        let target = targetURL.lastPathComponent
+        urlsByTarget[target] = try directoryChildren(of: targetURL)
+    }
+    return urlsByTarget
 }
 
 private func renderReport(
@@ -1133,7 +1167,7 @@ private func renderReport(
     try renderReviewAggregateHTMLIfPresent(runURL: runURL)
 
     let reviewHTML = renderRunAIReview(aiReviews.root)
-    let targetOverview = renderTargetOverview(buildTargetOverview(files: files))
+    let targetOverview = try renderTargetOverview(buildTargetOverview(runURL: runURL, files: files))
     let testCards = renderCards(files: files)
 
     template.replaceSubrange(

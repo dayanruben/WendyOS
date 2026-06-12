@@ -182,6 +182,7 @@ public struct WendyE2ERecorder: Sendable {
     private static func testDirectoryURL(identity: TestIdentity) throws -> URL {
         if let runDirectory = WendyE2EEnvironment.runDirectory {
             let directoryURL = URL(fileURLWithPath: runDirectory, isDirectory: true)
+                .appendingPathComponent("observations", isDirectory: true)
                 .appendingPathComponent(
                     Self.recordingSuiteDirectoryName(filePath: identity.filePath),
                     isDirectory: true
