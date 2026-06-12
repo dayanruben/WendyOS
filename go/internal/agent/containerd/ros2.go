@@ -258,6 +258,30 @@ func (c *Client) verifyROS2Anchor(ctx context.Context, anchor *services.ROS2Targ
 	return nil
 }
 
+// VerifyROS2Sidecar reports whether the sidecar is still anchored to a live
+// ROS 2 app container. A stopped or replaced anchor (app redeploy) tears
+// down the network namespace the sidecar joined, invalidating any in-flight
+// command — most visibly a bag recording session.
+func (c *Client) VerifyROS2Sidecar(ctx context.Context) error {
+	ctx = c.withNamespace(ctx)
+	sidecar, err := c.client.LoadContainer(ctx, ros2SidecarName)
+	if err != nil {
+		return fmt.Errorf("sidecar not found: %w", err)
+	}
+	labels, err := sidecar.Labels(ctx)
+	if err != nil {
+		return fmt.Errorf("reading sidecar labels: %w", err)
+	}
+	anchorPID, err := strconv.ParseUint(labels[labelKeyROS2AnchorPID], 10, 32)
+	if err != nil {
+		return fmt.Errorf("sidecar has no valid anchor PID label")
+	}
+	return c.verifyROS2Anchor(ctx, &services.ROS2Target{
+		ContainerID: labels[labelKeyROS2AnchorID],
+		TaskPID:     uint32(anchorPID),
+	})
+}
+
 // StopROS2Sidecar stops and removes the ROS 2 CLI sidecar if present.
 func (c *Client) StopROS2Sidecar(ctx context.Context) error {
 	c.mu.Lock()

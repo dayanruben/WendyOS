@@ -137,6 +137,11 @@ type ROS2Runtime interface {
 	EnsureROS2Sidecar(ctx context.Context) (ROS2Sidecar, error)
 	// StopROS2Sidecar stops and removes the sidecar if present.
 	StopROS2Sidecar(ctx context.Context) error
+	// VerifyROS2Sidecar reports whether the sidecar is still anchored to a
+	// live ROS 2 app container. It returns an error describing the problem
+	// when the anchor container stopped or was replaced (e.g. the app was
+	// redeployed), which invalidates the sidecar's network namespace.
+	VerifyROS2Sidecar(ctx context.Context) error
 	// ExecROS2 runs `ros2 <args>` in the sidecar, streaming output to the
 	// writers, and returns the exit code. Cancelling ctx sends SIGINT first
 	// so commands like `ros2 bag record` can finalize.

@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -441,11 +442,15 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	type execResult struct {
+		code int
+		err  error
+	}
 	var output bytes.Buffer
-	execDone := make(chan error, 1)
+	execDone := make(chan execResult, 1)
 	go func() {
-		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{DomainID: domainID, Args: args}, &output, &output)
-		execDone <- execErr
+		code, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{DomainID: domainID, Args: args}, &output, &output)
+		execDone <- execResult{code: code, err: execErr}
 	}()
 
 	if err := stream.Send(&agentpbv2.RecordROS2BagResponse{
@@ -473,24 +478,20 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 		}
 	}()
 
-	var recorderErr error
+	var recorder execResult
 	select {
 	case <-recvDone:
 		// Stop requested (or client went away): SIGINT the recorder so
 		// rosbag2 finalizes the bag, then wait for it to exit.
 		cancel()
-		recorderErr = <-execDone
-	case recorderErr = <-execDone:
-		// Recorder exited on its own — surface its output as an error state.
+		recorder = <-execDone
+	case recorder = <-execDone:
+		// Recorder exited on its own — diagnose and surface an error state.
 		if ctx.Err() == nil {
-			msg := strings.TrimSpace(output.String())
-			if recorderErr != nil {
-				msg = recorderErr.Error() + ": " + msg
-			}
 			_ = stream.Send(&agentpbv2.RecordROS2BagResponse{
 				State:   agentpbv2.RecordROS2BagResponse_STATE_ERROR,
 				BagName: bagName,
-				Message: msg,
+				Message: s.diagnoseRecorderExit(ctx, recorder.code, recorder.err, output.String()),
 			})
 			return nil
 		}
@@ -502,14 +503,56 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 	// Cancellation propagates through ExecROS2 as ctx.Err(); that is the
 	// expected stop path, not a failure.
 	msg := ""
-	if recorderErr != nil && !strings.Contains(recorderErr.Error(), context.Canceled.Error()) {
-		msg = recorderErr.Error()
+	if recorder.err != nil && !strings.Contains(recorder.err.Error(), context.Canceled.Error()) {
+		msg = recorder.err.Error()
 	}
 	return stream.Send(&agentpbv2.RecordROS2BagResponse{
 		State:   agentpbv2.RecordROS2BagResponse_STATE_STOPPED,
 		BagName: bagName,
 		Message: msg,
 	})
+}
+
+// diagnoseRecorderExit builds the error message for a recorder that exited
+// without a stop request. The most common cause is the ROS 2 app being
+// stopped or redeployed mid-recording: that tears down the network namespace
+// the sidecar (and recorder) joined, killing the DDS session. Raw recorder
+// logs alone are misleading there, so check the anchor first and lead with
+// the actual cause.
+func (s *ROS2Service) diagnoseRecorderExit(ctx context.Context, exitCode int, execErr error, output string) string {
+	var b strings.Builder
+	if verr := s.runtime.VerifyROS2Sidecar(ctx); verr != nil {
+		b.WriteString("the ROS 2 app containers were stopped or redeployed while recording; ")
+		b.WriteString("the recording session was attached to the previous app instance. ")
+		b.WriteString("Restart the recording once the app is running (")
+		b.WriteString(verr.Error())
+		b.WriteString(")")
+	} else {
+		fmt.Fprintf(&b, "recorder exited unexpectedly (exit code %d)", exitCode)
+		if execErr != nil {
+			b.WriteString(": ")
+			b.WriteString(execErr.Error())
+		}
+	}
+	if tail := tailLines(output, 10); tail != "" {
+		b.WriteString("\nrecorder output:\n")
+		b.WriteString(tail)
+	}
+	return b.String()
+}
+
+// tailLines returns the last n non-empty lines of s.
+func tailLines(s string, n int) string {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, strings.TrimRight(line, " \r"))
+		}
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (s *ROS2Service) ListBags(ctx context.Context, _ *agentpbv2.ListROS2BagsRequest) (*agentpbv2.ListROS2BagsResponse, error) {

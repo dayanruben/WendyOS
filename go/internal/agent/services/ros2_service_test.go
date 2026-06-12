@@ -24,6 +24,7 @@ import (
 type fakeROS2Runtime struct {
 	sidecar   ROS2Sidecar
 	ensureErr error
+	verifyErr error
 	// outputs maps "node list" → stdout. Missing keys exit 1.
 	outputs map[string]string
 	// execFn, when set, overrides the outputs map entirely.
@@ -43,6 +44,8 @@ func (f *fakeROS2Runtime) EnsureROS2Sidecar(context.Context) (ROS2Sidecar, error
 }
 
 func (f *fakeROS2Runtime) StopROS2Sidecar(context.Context) error { return nil }
+
+func (f *fakeROS2Runtime) VerifyROS2Sidecar(context.Context) error { return f.verifyErr }
 
 func (f *fakeROS2Runtime) ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
 	f.calls = append(f.calls, opts)
@@ -380,5 +383,111 @@ func TestROS2Service_Exec(t *testing.T) {
 
 	if err := svc.Exec(&agentpbv2.ROS2ExecRequest{}, stream); status.Code(err) != codes.InvalidArgument {
 		t.Errorf("empty args error = %v, want InvalidArgument", err)
+	}
+}
+
+// fakeBidiStream implements grpc.BidiStreamingServer for RecordBag tests.
+type fakeBidiStream[Req, Resp any] struct {
+	grpc.ServerStream
+	ctx  context.Context
+	recv chan *Req
+	sent []*Resp
+}
+
+func (f *fakeBidiStream[Req, Resp]) Recv() (*Req, error) {
+	msg, ok := <-f.recv
+	if !ok {
+		return nil, io.EOF
+	}
+	return msg, nil
+}
+
+func (f *fakeBidiStream[Req, Resp]) Send(msg *Resp) error {
+	f.sent = append(f.sent, msg)
+	return nil
+}
+
+func (f *fakeBidiStream[Req, Resp]) Context() context.Context { return f.ctx }
+
+func TestROS2Service_RecordBag_AnchorLossDiagnosis(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar:   ROS2Sidecar{Distro: "humble"},
+		verifyErr: errors.New("anchor task gone"),
+		execFn: func(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+			io.WriteString(stdout, "[INFO] [rosbag2_recorder]: Recording...\n")
+			return 137, nil // killed: app redeploy tore down the namespace
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeBidiStream[agentpbv2.RecordROS2BagRequest, agentpbv2.RecordROS2BagResponse]{
+		ctx:  context.Background(),
+		recv: make(chan *agentpbv2.RecordROS2BagRequest, 1),
+	}
+	stream.recv <- &agentpbv2.RecordROS2BagRequest{
+		Command: &agentpbv2.RecordROS2BagRequest_Start{
+			Start: &agentpbv2.RecordROS2BagRequest_RecordStart{OutputName: "test-bag"},
+		},
+	}
+
+	if err := svc.RecordBag(stream); err != nil {
+		t.Fatalf("RecordBag: %v", err)
+	}
+	if len(stream.sent) != 2 {
+		t.Fatalf("got %d responses, want RECORDING + ERROR: %+v", len(stream.sent), stream.sent)
+	}
+	if stream.sent[0].GetState() != agentpbv2.RecordROS2BagResponse_STATE_RECORDING {
+		t.Errorf("first response state = %v, want RECORDING", stream.sent[0].GetState())
+	}
+	errResp := stream.sent[1]
+	if errResp.GetState() != agentpbv2.RecordROS2BagResponse_STATE_ERROR {
+		t.Errorf("second response state = %v, want ERROR", errResp.GetState())
+	}
+	msg := errResp.GetMessage()
+	if !strings.Contains(msg, "stopped or redeployed while recording") {
+		t.Errorf("message should diagnose anchor loss, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Recording...") {
+		t.Errorf("message should include recorder output tail, got: %s", msg)
+	}
+}
+
+func TestROS2Service_RecordBag_UnexpectedExitWithHealthyAnchor(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+			io.WriteString(stderr, "error: storage full\n")
+			return 1, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeBidiStream[agentpbv2.RecordROS2BagRequest, agentpbv2.RecordROS2BagResponse]{
+		ctx:  context.Background(),
+		recv: make(chan *agentpbv2.RecordROS2BagRequest, 1),
+	}
+	stream.recv <- &agentpbv2.RecordROS2BagRequest{
+		Command: &agentpbv2.RecordROS2BagRequest_Start{
+			Start: &agentpbv2.RecordROS2BagRequest_RecordStart{},
+		},
+	}
+
+	if err := svc.RecordBag(stream); err != nil {
+		t.Fatalf("RecordBag: %v", err)
+	}
+	last := stream.sent[len(stream.sent)-1]
+	if last.GetState() != agentpbv2.RecordROS2BagResponse_STATE_ERROR {
+		t.Fatalf("state = %v, want ERROR", last.GetState())
+	}
+	if !strings.Contains(last.GetMessage(), "exit code 1") || !strings.Contains(last.GetMessage(), "storage full") {
+		t.Errorf("message should include exit code and output, got: %s", last.GetMessage())
+	}
+}
+
+func TestTailLines(t *testing.T) {
+	in := "a\nb\n\nc\nd\ne\n"
+	if got := tailLines(in, 3); got != "c\nd\ne" {
+		t.Errorf("tailLines = %q, want last 3 non-empty lines", got)
+	}
+	if got := tailLines("", 5); got != "" {
+		t.Errorf("tailLines empty = %q", got)
 	}
 }
