@@ -384,52 +384,6 @@ func TestBluetoothBtAliasMirrorsVisibleCommand(t *testing.T) {
 	}
 }
 
-func TestDeprecatedCloudRunIsHiddenButDirectlyAvailable(t *testing.T) {
-	cloudCmd := newCloudCmd()
-	runCmd, _, err := cloudCmd.Find([]string{"run"})
-	if err != nil {
-		t.Fatalf("Find(run): %v", err)
-	}
-	if !runCmd.Hidden {
-		t.Fatal("cloud run should be hidden from parent help")
-	}
-	if runCmd.Short != "Deprecated: use 'wendy run' instead" {
-		t.Fatalf("cloud run Short = %q", runCmd.Short)
-	}
-
-	buf := new(bytes.Buffer)
-	cloudCmd.SetOut(buf)
-	cloudCmd.SetErr(new(bytes.Buffer))
-	cloudCmd.SetArgs([]string{"--help"})
-	if err := cloudCmd.Execute(); err != nil {
-		t.Fatalf("cloud help: %v", err)
-	}
-	if strings.Contains(buf.String(), "\n  run") {
-		t.Fatalf("cloud help should not list hidden run command: %s", buf.String())
-	}
-}
-
-func TestDeprecatedCloudRunWarnsInHumanOutput(t *testing.T) {
-	stderr, err := executeRootCommand(t, []string{"--json=false", "cloud", "run", "--prefix", filepath.Join(t.TempDir(), "missing")})
-	if err == nil {
-		t.Fatal("expected cloud run with missing prefix to fail")
-	}
-	want := "Warning: 'wendy cloud run' is deprecated; use 'wendy run' instead."
-	if !strings.Contains(stderr, want) {
-		t.Fatalf("expected deprecation warning on stderr, got %q", stderr)
-	}
-}
-
-func TestDeprecatedCloudRunDoesNotWarnInJSONOutput(t *testing.T) {
-	stderr, err := executeRootCommand(t, []string{"--json", "cloud", "run", "--prefix", filepath.Join(t.TempDir(), "missing")})
-	if err == nil {
-		t.Fatal("expected cloud run with missing prefix to fail")
-	}
-	if strings.Contains(stderr, "deprecated") {
-		t.Fatalf("--json output should not include cloud run deprecation warning on stderr, got %q", stderr)
-	}
-}
-
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

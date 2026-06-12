@@ -18,9 +18,6 @@ func newCloudRunCmd() *cobra.Command {
 		Short:  "Deprecated: use 'wendy run' instead",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !jsonOutput {
-				cmd.PrintErrln("Warning: 'wendy cloud run' is deprecated; use 'wendy run' instead.")
-			}
 			ctx := context.WithValue(cmd.Context(), cloudDeviceContextKey{}, cloudDeviceConfig{
 				CloudGRPC:  cloudGRPC,
 				DeviceName: deviceName,
