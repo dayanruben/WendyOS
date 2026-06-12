@@ -38,18 +38,22 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const linuxContainersOnMacsUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
+const macContainersUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
+
+func macPlatformMismatchMessage(platform string) string {
+	return fmt.Sprintf("Project/target mismatch: selected target is Wendy Agent for Mac, but wendy.json resolves to platform %q. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device.", platform)
+}
 
 func rejectUnsupportedMacRunProject(projectType, platform string) error {
 	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
-		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+		return errors.New(macPlatformMismatchMessage(platform))
 	}
 
 	switch projectType {
 	case "swift", "xcode":
 		return nil
 	case "docker", "python", "compose", "multi-service":
-		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+		return errors.New(macContainersUnsupportedMessage)
 	default:
 		return nil
 	}
@@ -589,7 +593,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// If wendy.json is missing, resolve the target before prompting to create
 	// one. That lets Mac beta targets reject container-only project shapes with
-	// the real project/target mismatch instead of first asking about config.
+	// the real project/target mismatch instead of first asking about config. The
+	// CLI owns the selected connection lifetime for both the preflight and normal
+	// run paths; lower-level run helpers do not close it.
 	var target *SelectedDevice
 	defer func() {
 		if target != nil && target.Agent != nil {
@@ -697,7 +703,7 @@ func preflightMissingAppConfigForMacTarget(ctx context.Context, target *Selected
 	}
 	versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
-		return nil
+		return fmt.Errorf("querying device version for Mac target preflight: %w", err)
 	}
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
