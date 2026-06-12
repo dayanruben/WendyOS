@@ -861,6 +861,21 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		container = ctrs[0]
 	}
 
+	// Name parsing is ambiguous for multi-service containers because '_' is
+	// also legal inside appIDs: "app_talker" parses as a bare appID, which
+	// would key the group bookkeeping below (isolation mode, primary PID for
+	// namespace joins, CNI per-service records) under the wrong identity.
+	// The labels written at create time are authoritative — prefer them,
+	// re-validating since labels are external state (SOC2-CC6, NIST-SI-10).
+	if labels, lerr := container.Labels(ctx); lerr == nil {
+		if id := labels[labelKeyAppID]; id != "" && appconfig.ValidateAppID(id) == nil {
+			svc := labels[labelKeyServiceName]
+			if svc == "" || appconfig.ValidateServiceName(svc) == nil {
+				appID, serviceName = id, svc
+			}
+		}
+	}
+
 	if restartPolicy != nil {
 		if err := c.applyRestartPolicyLabel(ctx, container, restartPolicy); err != nil {
 			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)
