@@ -210,12 +210,15 @@ E2E source files.
 
 ### Organization and naming
 
-Use one flattened suite per command area. The suite name is the command phrase;
-the test name completes the behavior sentence. Inside backticked Swift suite or
-test identifiers, wrap command fragments, aliases, and flags that should render
-as code with single quotes. The reference extractor converts those quoted spans
-to Markdown code spans (and HTML `<code>` elements). Use `'... subcommand'` when
-referring to a related command under the same suite prefix.
+Use one flattened suite per command area, and keep exactly one `@Suite` per
+source file. The suite name is the command phrase; the test name completes the
+behavior sentence. Put related aliases or deprecated command areas in their own
+test files rather than adding a second suite to an existing file. Inside
+backticked Swift suite or test identifiers, wrap command fragments, aliases, and
+flags that should render as code with single quotes. The reference extractor
+converts those quoted spans to Markdown code spans (and HTML `<code>` elements).
+Use `'... subcommand'` when referring to a related command under the same suite
+prefix.
 
 When the same behavior is specified for multiple related commands, keep the same
 suite structure, section order, and test-name wording wherever possible. Change
@@ -223,6 +226,7 @@ only the quoted command fragment or the smallest phrase needed to distinguish th
 command path.
 
 ```swift
+// WendyDeviceInfoTests.swift
 @Suite
 struct `'wendy device info'` {
     @Test
@@ -236,6 +240,7 @@ struct `'wendy device info'` {
     }
 }
 
+// WendyDevicePsTests.swift
 @Suite
 struct `'wendy device ps'` {
     @Test
