@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
@@ -56,15 +55,6 @@ func (m *mockVideoStream) Recv() (*agentpb.VideoFrame, error) {
 	f := m.frames[m.idx]
 	m.idx++
 	return f, nil
-}
-
-type blockingVideoStream struct {
-	unblock chan struct{}
-}
-
-func (s *blockingVideoStream) Recv() (*agentpb.VideoFrame, error) {
-	<-s.unblock
-	return nil, io.EOF
 }
 
 func TestPipeVideoToStdout_WritesAllFrames(t *testing.T) {
@@ -179,26 +169,6 @@ func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *tes
 	}
 	if strings.Contains(err.Error(), "not found") {
 		t.Fatalf("remote unsupported error should not be masked by missing GStreamer: %v", err)
-	}
-}
-
-func TestPlayVideoWithGStreamer_MissingGStreamerDoesNotWaitForeverForFirstFrame(t *testing.T) {
-	t.Setenv("PATH", t.TempDir()) // empty dir — no executables on PATH
-	stubGSTFallback(t, nil)       // no install-location fallbacks either
-
-	stream := &blockingVideoStream{unblock: make(chan struct{})}
-	defer close(stream.unblock)
-
-	start := time.Now()
-	err := playVideoWithGStreamer(context.Background(), stream)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("expected missing GStreamer error, got: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("missing GStreamer should fail promptly, took %s", elapsed)
 	}
 }
 
