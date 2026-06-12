@@ -728,8 +728,6 @@ private func loadRunReviewSuites(
                     suiteKey: suiteKey,
                     testKey: testKey,
                     observations: try runReviewObservations(
-                        suiteKey: suiteKey,
-                        testKey: testKey,
                         testURL: testURL,
                         runURL: runURL
                     ),
@@ -769,8 +767,6 @@ private struct RunReviewPathKey: Hashable {
 }
 
 private func runReviewObservations(
-    suiteKey: String,
-    testKey: String,
     testURL: URL,
     runURL: URL
 ) throws -> [RunReviewObservation] {
@@ -779,9 +775,9 @@ private func runReviewObservations(
         let targetName = targetURL.lastPathComponent
         for attemptURL in try runReviewDirectoryChildren(of: targetURL) {
             let attemptName = attemptURL.lastPathComponent
+            let metadata = try loadE2ETestMetadata(in: attemptURL)
             let result = try runReviewObservationResult(
-                suiteKey: suiteKey,
-                testKey: testKey,
+                metadata: metadata,
                 attemptURL: e2eAttemptArtifactsURL(
                     in: runURL,
                     targetName: targetName,
@@ -815,8 +811,7 @@ private func runReviewObservations(
 }
 
 private func runReviewObservationResult(
-    suiteKey: String,
-    testKey: String,
+    metadata: E2ETestMetadata,
     attemptURL: URL
 ) throws -> ReviewTestObservation {
     let resultURL = attemptURL.appendingPathComponent("test-results.xml")
@@ -830,20 +825,8 @@ private func runReviewObservationResult(
     guard xmlParser.parse() else {
         throw ValidationError("Could not parse Swift Testing xUnit results: \(resultURL.path)")
     }
-    if let result = parser.results.first(where: { key, _ in
-        reviewSlug(key.suite) == suiteKey && reviewSlug(key.name) == testKey
-    })?.value {
-        return result
-    }
-
-    let matchingTestNames = parser.results.filter { key, _ in
-        reviewSlug(key.name) == testKey
-    }
-    if matchingTestNames.count == 1, let result = matchingTestNames.first?.value {
-        return result
-    }
-
-    return ReviewTestObservation(status: .unknown, durationSeconds: nil)
+    return parser.results[ReviewResultKey(suite: metadata.suiteName, name: metadata.testName)]
+        ?? ReviewTestObservation(status: .unknown, durationSeconds: nil)
 }
 
 private func runReviewDirectoryChildren(of url: URL) throws -> [URL] {

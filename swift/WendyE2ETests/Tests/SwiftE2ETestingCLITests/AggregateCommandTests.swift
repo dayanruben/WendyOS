@@ -42,6 +42,21 @@ struct `aggregate command` {
             atomically: true,
             encoding: .utf8
         )
+        try """
+            {
+              "schema": "wendy.e2e.test.v1",
+              "sourceFilePath": "Tests/WendyE2ETests/WendyDeviceInfoTests.swift",
+              "sourceFileName": "WendyDeviceInfoTests",
+              "suiteName": "wendy device info",
+              "testName": "prints JSON device information",
+              "functionName": "`prints JSON device information`()`",
+              "line": 12
+            }
+            """.write(
+            to: observationURL.appendingPathComponent("test.json"),
+            atomically: true,
+            encoding: .utf8
+        )
 
         var command = try AggregateCommand.parse(["--output-dir", outputURL.path, attemptURL.path])
         try command.run()
@@ -63,6 +78,8 @@ struct `aggregate command` {
         #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("attempt.log").path))
         #expect(!FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("observations").path))
         #expect(FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("recording.md").path))
+        #expect(FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("test.json").path))
+        #expect(FileManager.default.fileExists(atPath: aggregateObservationURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("test.json").path))
         #expect(!FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("attempt.json").path))
         #expect(!FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("test-results.xml").path))
     }

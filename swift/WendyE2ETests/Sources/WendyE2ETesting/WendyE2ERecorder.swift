@@ -21,6 +21,15 @@ public struct WendyE2ERecorder: Sendable {
             testName: identity.testName,
             line: line
         )
+        self.metadata = TestMetadata(
+            schema: Self.testMetadataSchemaID,
+            sourceFilePath: Self.packageRelativeSourceFilePath(filePath),
+            sourceFileName: identity.fileName,
+            suiteName: identity.suite,
+            testName: identity.testName,
+            functionName: function,
+            line: line
+        )
     }
 
     public func record(
@@ -37,6 +46,8 @@ public struct WendyE2ERecorder: Sendable {
         do {
             let recordURL = URL(fileURLWithPath: self.recordPath, isDirectory: false)
             let recordExists = FileManager.default.fileExists(atPath: recordURL.path)
+
+            try self.writeTestMetadata(nextTo: recordURL)
 
             if !recordExists {
                 try Self.recordHeader(source: self.source)
@@ -136,6 +147,16 @@ public struct WendyE2ERecorder: Sendable {
         let line: Int
     }
 
+    struct TestMetadata: Codable, Sendable {
+        let schema: String
+        let sourceFilePath: String
+        let sourceFileName: String
+        let suiteName: String
+        let testName: String
+        let functionName: String
+        let line: Int
+    }
+
     private struct TestIdentity: Sendable {
         let filePath: String
         let fileName: String
@@ -168,6 +189,10 @@ public struct WendyE2ERecorder: Sendable {
     }
 
     private let source: Source
+    private let metadata: TestMetadata
+
+    private static let testMetadataFileName = "test.json"
+    private static let testMetadataSchemaID = "wendy.e2e.test.v1"
 
     private static let e2eTestRecordsDirectoryName: String = {
         let formatter = DateFormatter()
@@ -257,6 +282,17 @@ public struct WendyE2ERecorder: Sendable {
 
     private static func fileName(from filePath: String) -> String {
         URL(fileURLWithPath: filePath, isDirectory: false).deletingPathExtension().lastPathComponent
+    }
+
+    private static func packageRelativeSourceFilePath(_ filePath: String) -> String {
+        let sourceURL = URL(fileURLWithPath: filePath, isDirectory: false).standardizedFileURL
+        let packageURL = Self.packageRootDirectoryURL().standardizedFileURL
+        let packagePath = packageURL.path.hasSuffix("/") ? packageURL.path : packageURL.path + "/"
+        let sourcePath = sourceURL.path
+        guard sourcePath.hasPrefix(packagePath) else {
+            return sourceURL.lastPathComponent
+        }
+        return String(sourcePath.dropFirst(packagePath.count))
     }
 
     private static func recordingFileStem(filePath: String) -> String {
@@ -501,6 +537,14 @@ public struct WendyE2ERecorder: Sendable {
             ```
 
             """
+    }
+
+    private func writeTestMetadata(nextTo recordURL: URL) throws {
+        let metadataURL = recordURL.deletingLastPathComponent()
+            .appendingPathComponent(Self.testMetadataFileName, isDirectory: false)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(self.metadata).write(to: metadataURL, options: .atomic)
     }
 
     private func recordShellScript(
