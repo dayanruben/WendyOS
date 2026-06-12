@@ -18,7 +18,8 @@ struct AudioService: Wendy_Agent_Services_V1_WendyAudioService.ServiceProtocol {
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Changing the default audio device is currently not supported by Wendy Agent for Mac."
+            message:
+                "Changing the default audio device is currently not supported by Wendy Agent for Mac."
         )
     }
 

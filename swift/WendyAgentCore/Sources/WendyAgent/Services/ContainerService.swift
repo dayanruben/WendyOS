@@ -791,7 +791,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListVolumesResponse> {
         throw RPCError(
             code: .unimplemented,
-            message: "Container volume management is currently not supported by Wendy Agent for Mac."
+            message:
+                "Container volume management is currently not supported by Wendy Agent for Mac."
         )
     }
 

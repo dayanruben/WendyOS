@@ -544,7 +544,10 @@ private func loadRunTestResults(
                     observations[identityKey, default: []].append(
                         ReportTestObservation(
                             target: targetName,
-                            route: try targetRoute(for: targetName, attemptURL: attemptArtifactsURL),
+                            route: try targetRoute(
+                                for: targetName,
+                                attemptURL: attemptArtifactsURL
+                            ),
                             attempt: attemptName,
                             status: status,
                             recordingPath: observationFilePath(
