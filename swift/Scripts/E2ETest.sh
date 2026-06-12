@@ -790,7 +790,7 @@ write_attempt_info() {
 
   mkdir -p "$RUN_DIR"
 
-  local created_at git_commit git_branch git_ref git_remote git_dirty github_sha swift_version go_version safe_device_address
+  local created_at git_commit git_branch git_ref git_remote git_dirty github_sha swift_version go_version
   created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   git_commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
   git_branch="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || true)"
@@ -804,7 +804,6 @@ write_attempt_info() {
   github_sha="${GITHUB_SHA:-}"
   swift_version="$(swift --version 2>/dev/null | head -n 1 || true)"
   go_version="$(go version 2>/dev/null || true)"
-  safe_device_address="${DEVICE_ADDRESS##*@}"
 
   {
     echo "{"
@@ -826,7 +825,6 @@ write_attempt_info() {
     printf '    "runID": '; json_string_or_null "${GITHUB_RUN_ID:-}"; echo ","
     printf '    "runAttempt": '; json_string_or_null "${GITHUB_RUN_ATTEMPT:-}"; echo ","
     printf '    "job": '; json_string_or_null "${GITHUB_JOB:-}"; echo ","
-    printf '    "actor": '; json_string_or_null "${GITHUB_ACTOR:-}"; echo ","
     printf '    "sha": '; json_string_or_null "$github_sha"; echo
     echo '  },'
     echo '  "target": {'
@@ -835,7 +833,6 @@ write_attempt_info() {
     printf '    "cliUser": '; json_string_or_null "$CLI_USER"; echo ","
     printf '    "agentOS": '; json_string_or_null "$AGENT_OS"; echo ","
     printf '    "agentAddress": '; json_string_or_null "$AGENT_ADDRESS"; echo ","
-    printf '    "deviceAddress": '; json_string_or_null "$safe_device_address"; echo ","
     printf '    "agentUser": '; json_string_or_null "$AGENT_USER"; echo ","
     printf '    "transport": '; json_string_or_null "$TRANSPORT"; echo ","
     printf '    "agentInfo": '; json_raw_or_null "$AGENT_INFO_JSON"; echo
@@ -881,7 +878,7 @@ finalize_attempt() {
 # Capture the full attempt lifecycle in the attempt artifact so aggregate/review
 # can diagnose setup, preflight, and test-launch failures that happen before
 # Swift Testing writes per-test recordings.
-exec > >(tee -a "$ATTEMPT_LOG_PATH") 2>&1
+exec > >(tee "$ATTEMPT_LOG_PATH") 2>&1
 trap finalize_attempt EXIT
 
 echo "==> Capturing Swift E2E attempt log: $ATTEMPT_LOG_PATH"

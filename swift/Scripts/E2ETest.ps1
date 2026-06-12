@@ -211,7 +211,6 @@ function Write-AttemptInfo([int]$Status) {
             runID = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { $null }
             runAttempt = if ($env:GITHUB_RUN_ATTEMPT) { $env:GITHUB_RUN_ATTEMPT } else { $null }
             job = if ($env:GITHUB_JOB) { $env:GITHUB_JOB } else { $null }
-            actor = if ($env:GITHUB_ACTOR) { $env:GITHUB_ACTOR } else { $null }
             sha = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { $null }
         }
         target = [ordered]@{
@@ -379,7 +378,7 @@ New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
 
 $script:AttemptInfoWritten = $false
 $script:AttemptLogPath = Join-Path $script:RunDir 'attempt.log'
-Start-Transcript -Path $script:AttemptLogPath -Append | Out-Null
+Start-Transcript -Path $script:AttemptLogPath | Out-Null
 trap {
     $status = if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { [int]$LASTEXITCODE } else { 1 }
     if (-not $script:AttemptInfoWritten) {
