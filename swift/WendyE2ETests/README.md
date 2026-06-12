@@ -131,7 +131,8 @@ directories use the dasherized test name.
 └── observations/
     └── <suite>/<test>/
         ├── recording.md
-        └── recording.sh.txt
+        ├── recording.sh.txt
+        └── test.json
 ```
 
 The attempt ID has the shape:
@@ -161,7 +162,8 @@ directories into a run directory:
 └── observations/
     └── <suite>/<test>/<target-name>/<attempt-number>/
         ├── recording.md
-        └── recording.sh.txt
+        ├── recording.sh.txt
+        └── test.json
 ```
 
 The `attempts/` tree keeps every attempt-root artifact except `observations/`,
