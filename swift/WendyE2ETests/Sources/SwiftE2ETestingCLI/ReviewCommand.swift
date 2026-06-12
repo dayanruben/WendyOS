@@ -703,7 +703,7 @@ private func loadRunReviewSuites(
     }
 
     var suites: [RunReviewSuite] = []
-    for suiteURL in try runReviewDirectoryChildren(of: runURL) {
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
         var suiteTests: [RunReviewTest] = []
@@ -782,7 +782,11 @@ private func runReviewObservations(
             let result = try runReviewObservationResult(
                 suiteKey: suiteKey,
                 testKey: testKey,
-                attemptURL: attemptURL
+                attemptURL: e2eAttemptArtifactsURL(
+                    in: runURL,
+                    targetName: targetName,
+                    attempt: attemptName
+                )
             )
             observations.append(
                 RunReviewObservation(
@@ -891,11 +895,12 @@ private func runSuitePrompt(
     lines.append("- Suite key: `\(suite.suiteKey)`")
     lines.append("- Suite name: `\(suite.displayName)`")
     lines.append("- Source: `\(suite.sourceURL.path)`")
+    let suiteReviewURL = e2eObservationsRootURL(in: runURL)
+        .appendingPathComponent(suite.suiteKey)
+        .appendingPathComponent(reviewDirectoryName)
+    lines.append("- Suite review directory: `\(suiteReviewURL.path)`")
     lines.append(
-        "- Suite review directory: `\(runURL.appendingPathComponent(suite.suiteKey).appendingPathComponent(reviewDirectoryName).path)`"
-    )
-    lines.append(
-        "- Test review directories: `<run>/\(suite.suiteKey)/<test-key>/\(reviewDirectoryName)/`"
+        "- Test review directories: `<run>/\(e2eObservationsDirectoryName)/\(suite.suiteKey)/<test-key>/\(reviewDirectoryName)/`"
     )
     appendReviewOutputContract(
         to: &lines,
@@ -1060,7 +1065,7 @@ private func appendReviewOutputContract(
     lines.append("  ],")
     lines.append("  \"evidence\": [")
     lines.append(
-        "    { \"path\": \"wendy-cache-list/prints-values/ubuntu-24-04/0001/recording.md\" }"
+        "    { \"path\": \"observations/wendy-cache-list/prints-values/ubuntu-24-04/0001/recording.md\" }"
     )
     lines.append("  ]")
     lines.append("}")
@@ -1288,9 +1293,11 @@ private func appendRunReviewTest(
     lines.append("### \(test.test.suite) › \(test.test.name)")
     lines.append("- Test key: `\(test.suiteKey)/\(test.testKey)`")
     lines.append("- Source: `\(test.test.sourcePath):\(test.test.funcLine)`")
-    lines.append(
-        "- Review directory: `\(runURL.appendingPathComponent(test.suiteKey).appendingPathComponent(test.testKey).appendingPathComponent(reviewDirectoryName).path)`"
-    )
+    let testReviewURL = e2eObservationsRootURL(in: runURL)
+        .appendingPathComponent(test.suiteKey)
+        .appendingPathComponent(test.testKey)
+        .appendingPathComponent(reviewDirectoryName)
+    lines.append("- Review directory: `\(testReviewURL.path)`")
     appendExistingReviews(test.existingReviews, label: "Existing reviews", to: &lines)
     if !test.test.aiComments.isEmpty {
         lines.append("- `// AI:` comments:")
@@ -1356,7 +1363,7 @@ private func runReviewTargetOutcomeCounts(
 
 private func removeExistingRunReviews(in runURL: URL, reviewer: String) throws {
     removeRunReviews(in: runURL, reviewer: reviewer)
-    for suiteURL in try runReviewDirectoryChildren(of: runURL) {
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         guard !isE2EReviewDirectoryName(suiteURL.lastPathComponent) else { continue }
         removeRunReviews(in: suiteURL, reviewer: reviewer)
         for testURL in try runReviewDirectoryChildren(of: suiteURL) {
@@ -1374,7 +1381,7 @@ private func removeRunReviews(in directoryURL: URL, reviewer: String) {
 @discardableResult
 private func enforceRunSuiteReviewContract(in runURL: URL, reviewer: String) throws -> Int {
     var count = 0
-    for suiteURL in try runReviewDirectoryChildren(of: runURL) {
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         guard !isE2EReviewDirectoryName(suiteURL.lastPathComponent) else { continue }
         count += try enforceReviews(
             in: suiteURL,

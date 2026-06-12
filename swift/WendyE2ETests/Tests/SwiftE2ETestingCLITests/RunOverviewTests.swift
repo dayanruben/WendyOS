@@ -11,18 +11,30 @@ struct `run overview` {
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
-        let suiteURL = runURL.appendingPathComponent(
-            "wendy-device-info",
-            isDirectory: true
-        )
+        let suiteURL = runURL
+            .appendingPathComponent("observations", isDirectory: true)
+            .appendingPathComponent("wendy-device-info", isDirectory: true)
         let testURL = suiteURL.appendingPathComponent(
             "prints-json-device-information",
             isDirectory: true
         )
         let targetURL = testURL.appendingPathComponent("macos-to-rpi", isDirectory: true)
-        let attemptOneURL = targetURL.appendingPathComponent("0001", isDirectory: true)
-        let attemptTwoURL = targetURL.appendingPathComponent("0002", isDirectory: true)
+        let attemptOneObservationURL = targetURL.appendingPathComponent("0001", isDirectory: true)
+        let attemptTwoObservationURL = targetURL.appendingPathComponent("0002", isDirectory: true)
+        let attemptArtifactsRootURL = runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent("macos-to-rpi", isDirectory: true)
+        let attemptOneURL = attemptArtifactsRootURL.appendingPathComponent("0001", isDirectory: true)
+        let attemptTwoURL = attemptArtifactsRootURL.appendingPathComponent("0002", isDirectory: true)
 
+        try FileManager.default.createDirectory(
+            at: attemptOneObservationURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: attemptTwoObservationURL,
+            withIntermediateDirectories: true
+        )
         try FileManager.default.createDirectory(
             at: attemptOneURL,
             withIntermediateDirectories: true
@@ -39,7 +51,7 @@ struct `run overview` {
         )
         try writeXUnitResult(to: attemptTwoURL, status: .passed, duration: 0.75)
         try "# Recording\n\n## Command 1\n".write(
-            to: attemptOneURL.appendingPathComponent("recording.md"),
+            to: attemptOneObservationURL.appendingPathComponent("recording.md"),
             atomically: true,
             encoding: .utf8
         )
@@ -71,17 +83,24 @@ struct `run overview` {
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
-        let suiteURL = runURL.appendingPathComponent(
-            "wendy-device-info",
-            isDirectory: true
-        )
+        let suiteURL = runURL
+            .appendingPathComponent("observations", isDirectory: true)
+            .appendingPathComponent("wendy-device-info", isDirectory: true)
         let testURL = suiteURL.appendingPathComponent(
             "prints-json-device-information",
             isDirectory: true
         )
         let targetURL = testURL.appendingPathComponent("macos-to-rpi", isDirectory: true)
-        let attemptURL = targetURL.appendingPathComponent("0001", isDirectory: true)
+        let attemptObservationURL = targetURL.appendingPathComponent("0001", isDirectory: true)
+        let attemptURL = runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent("macos-to-rpi", isDirectory: true)
+            .appendingPathComponent("0001", isDirectory: true)
 
+        try FileManager.default.createDirectory(
+            at: attemptObservationURL,
+            withIntermediateDirectories: true
+        )
         try FileManager.default.createDirectory(
             at: attemptURL,
             withIntermediateDirectories: true
@@ -92,7 +111,7 @@ struct `run overview` {
             duration: 2.0
         )
         try "# Recording\n".write(
-            to: attemptURL.appendingPathComponent("recording.md"),
+            to: attemptObservationURL.appendingPathComponent("recording.md"),
             atomically: true,
             encoding: .utf8
         )

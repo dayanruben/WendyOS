@@ -169,7 +169,7 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
     var flakes: [E2ERunOverviewIssue] = []
     var unknowns: [E2ERunOverviewIssue] = []
 
-    for suiteURL in try overviewDirectoryChildren(of: runURL) {
+    for suiteURL in try overviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
 
@@ -186,12 +186,21 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                 for attemptURL in try overviewDirectoryChildren(of: targetURL) {
                     let attemptName = attemptURL.lastPathComponent
                     guard !isE2EReviewDirectoryName(attemptName) else { continue }
+                    let attemptArtifactsURL = e2eAttemptArtifactsURL(
+                        in: runURL,
+                        targetName: targetName,
+                        attempt: attemptName
+                    )
                     let result = try overviewObservationResult(
                         suiteKey: suiteKey,
                         testKey: testKey,
-                        attemptURL: attemptURL
+                        attemptURL: attemptArtifactsURL
                     )
-                    let artifacts = overviewArtifacts(attemptURL: attemptURL, runURL: runURL)
+                    let artifacts = overviewArtifacts(
+                        observationURL: attemptURL,
+                        attemptArtifactsURL: attemptArtifactsURL,
+                        runURL: runURL
+                    )
                     attempts.append(
                         E2ERunOverviewIssueAttempt(
                             attempt: attemptName,
@@ -340,21 +349,25 @@ private func overviewParseXUnitResults(
     return parser.results
 }
 
-private func overviewArtifacts(attemptURL: URL, runURL: URL) -> E2ERunOverviewArtifacts {
+private func overviewArtifacts(
+    observationURL: URL,
+    attemptArtifactsURL: URL,
+    runURL: URL
+) -> E2ERunOverviewArtifacts {
     E2ERunOverviewArtifacts(
         recording: overviewRelativeFilePath(
             fileName: "recording.md",
-            attemptURL: attemptURL,
+            attemptURL: observationURL,
             runURL: runURL
         ),
         shell: overviewRelativeFilePath(
             fileName: "recording.sh.txt",
-            attemptURL: attemptURL,
+            attemptURL: observationURL,
             runURL: runURL
         ),
         testResults: overviewRelativeFilePath(
             fileName: "test-results.xml",
-            attemptURL: attemptURL,
+            attemptURL: attemptArtifactsURL,
             runURL: runURL
         )
     )
