@@ -132,6 +132,30 @@ func (c *Client) getPrimaryPID(appID string) (uint32, bool) {
 	return pid, ok
 }
 
+// primaryTaskAlive reports whether pid belongs to a currently running task of
+// one of appID's containers. Used to detect stale primaryPIDs entries left
+// behind when a primary exits or is redeployed without a group stop. ctx must
+// already carry the containerd namespace; caller must hold c.mu.
+func (c *Client) primaryTaskAlive(ctx context.Context, appID string, pid uint32) bool {
+	ctrs, err := c.containersForApp(ctx, appID)
+	if err != nil {
+		return false
+	}
+	for _, ctr := range ctrs {
+		task, terr := ctr.Task(ctx, nil)
+		if terr != nil {
+			continue
+		}
+		if st, serr := task.Status(ctx); serr != nil || st.Status != containerd.Running {
+			continue
+		}
+		if task.Pid() == pid {
+			return true
+		}
+	}
+	return false
+}
+
 // clearPrimaryPID removes the primary PID entry when the app group stops.
 // Caller must hold c.mu.
 func (c *Client) clearPrimaryPID(appID string) {
@@ -711,6 +735,19 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
 	if appconfig.IsSharedNamespaceIsolation(appCfg.Isolation) {
 		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		// The recorded primary is only trustworthy while its task is alive: a
+		// primary that exited on its own or was replaced by a redeploy never
+		// passes through the StopContainer path that clears the entry.
+		// Joining a stale (possibly recycled) PID would fail — or worse, join
+		// the wrong namespace — so verify it against a running container task
+		// and promote this service to primary when stale (SOC2-CC6,
+		// NIST-SC-7, ISO27001-A.8).
+		if hasPrimary && !c.primaryTaskAlive(ctx, appID, primaryPID) {
+			c.logger.Info("Recorded primary for app group is stale; this service becomes the new primary",
+				zap.String("app_id", appID), zap.Uint32("stale_pid", primaryPID))
+			c.clearPrimaryPID(appID)
+			hasPrimary = false
+		}
 		if hasPrimary {
 			// Secondary service: join the primary's namespaces.
 			// nsAnchors holds open fds for each namespace so the paths embedded

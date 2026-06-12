@@ -13,11 +13,13 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -779,10 +781,18 @@ func newROS2BagListCmd() *cobra.Command {
 
 func newROS2BagDownloadCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "download <name> [dest]",
+		Use:   "download [name] [dest]",
 		Short: "Download a bag from the device to the local machine",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Download a bag from the device to the local machine.
+
+With no arguments, lists the bags on the device and lets you pick one
+interactively.`,
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && !isInteractiveTerminal() {
+				return errors.New("missing bag name (interactive selection needs a terminal); run `wendy device ros2 bag list`, then `wendy device ros2 bag download <name>`")
+			}
+
 			dest := "."
 			if len(args) == 2 {
 				dest = args[1]
@@ -794,7 +804,17 @@ func newROS2BagDownloadCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			stream, err := client.client.DownloadBag(cmd.Context(), &agentpbv2.DownloadROS2BagRequest{Name: args[0]})
+			name := ""
+			if len(args) > 0 {
+				name = args[0]
+			} else {
+				name, err = pickROS2Bag(cmd.Context(), client)
+				if err != nil {
+					return err
+				}
+			}
+
+			stream, err := client.client.DownloadBag(cmd.Context(), &agentpbv2.DownloadROS2BagRequest{Name: name})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -821,10 +841,51 @@ func newROS2BagDownloadCmd() *cobra.Command {
 			if err := extractROS2BagArchive(pr, dest); err != nil {
 				return err
 			}
-			cliSuccess("Downloaded bag %q to %s", args[0], filepath.Join(dest, args[0]))
+			cliSuccess("Downloaded bag %q to %s", name, filepath.Join(dest, name))
 			return nil
 		},
 	}
+}
+
+// pickROS2Bag lists the bags recorded on the device and asks the user to
+// select one interactively, returning its name.
+func pickROS2Bag(ctx context.Context, client *ros2Client) (string, error) {
+	resp, err := client.client.ListBags(ctx, &agentpbv2.ListROS2BagsRequest{})
+	if err != nil {
+		return "", ros2RPCError(err)
+	}
+	bags := resp.GetBags()
+	if len(bags) == 0 {
+		return "", errors.New("no bags recorded on the device; record one with `wendy device ros2 bag record`")
+	}
+
+	items := make([]tui.PickerItem, 0, len(bags))
+	for _, b := range bags {
+		duration := "-"
+		if b.GetDurationSeconds() > 0 {
+			duration = fmt.Sprintf("%.1fs", b.GetDurationSeconds())
+		}
+		created := "-"
+		if b.GetCreatedUnix() > 0 {
+			created = time.Unix(b.GetCreatedUnix(), 0).Format("2006-01-02 15:04:05")
+		}
+		items = append(items, tui.PickerItem{
+			Name:       b.GetName(),
+			Size:       formatBytes(b.GetSizeBytes()),
+			Parameters: duration,
+			Comments:   created,
+			// Newest bag first: invert the creation time so the picker's
+			// ascending SortKey order shows the most recent recording on top.
+			SortKey: fmt.Sprintf("%020d", int64(1)<<62-b.GetCreatedUnix()),
+			Value:   b.GetName(),
+		})
+	}
+	return pickFromItemsWithColumns("Select a bag to download", items, []tui.PickerColumn{
+		{Title: "Name", MinWidth: 18, Required: true, Value: func(i tui.PickerItem) string { return i.Name }},
+		{Title: "Size", MinWidth: 8, Value: func(i tui.PickerItem) string { return i.Size }},
+		{Title: "Duration", MinWidth: 10, Value: func(i tui.PickerItem) string { return i.Parameters }},
+		{Title: "Created", MinWidth: 12, Value: func(i tui.PickerItem) string { return i.Comments }},
+	})
 }
 
 // extractROS2BagArchive unpacks the tar stream produced by DownloadBag into
