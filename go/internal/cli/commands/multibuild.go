@@ -137,11 +137,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
 			strings.ToLower(appCfg.AppID), strings.ToLower(name))
 
-		serviceCfg := &appconfig.AppConfig{
-			AppID:        fmt.Sprintf("%s-%s", appCfg.AppID, name),
-			Platform:     appCfg.Platform,
-			Entitlements: svc.Entitlements,
-		}
+		serviceCfg := multiServiceCreateConfig(appCfg, name, svc)
 		appConfigData, err := json.Marshal(serviceCfg)
 		if err != nil {
 			return fmt.Errorf("marshaling config for service %s: %w", name, err)
@@ -150,7 +146,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		restartPolicy := resolveRestartPolicy(opts)
 		createReq := &agentpb.CreateContainerRequest{
 			ImageName:     deviceImage,
-			AppName:       serviceCfg.AppID,
+			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
 		}
@@ -286,6 +282,35 @@ func buildServicesParallel(
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
 
+// multiServiceCreateConfig builds the per-service AppConfig transmitted to
+// the agent for a standalone multi-service app. The group identity and
+// runtime context (isolation, frameworks, shared entitlements) must travel
+// with every service: the agent keys namespace sharing, ROS 2 env injection,
+// and container naming on these fields (WDY-878, WDY-884).
+func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
+	cfg := &appconfig.AppConfig{
+		AppID:       appCfg.AppID,
+		ServiceName: name,
+		Version:     appCfg.Version,
+		Platform:    appCfg.Platform,
+		Isolation:   appCfg.Isolation,
+		Frameworks:  appCfg.Frameworks,
+	}
+	cfg.Entitlements = append(append([]appconfig.Entitlement{}, appCfg.Entitlements...), svc.Entitlements...)
+	cfg.Entitlements = deduplicateEntitlements(cfg.Entitlements)
+	if svc.Frameworks != nil {
+		cfg.Frameworks = svc.Frameworks
+	}
+	return cfg
+}
+
+// multiServiceContainerName returns the container name the agent derives for
+// a service: "{appId}_{serviceName}" (WDY-878). Start/stop calls must address
+// the same name the create path produced.
+func multiServiceContainerName(appID, serviceName string) string {
+	return appID + "_" + serviceName
+}
+
 // startAndStreamServices starts all service containers and streams their
 // combined output to stdout/stderr with a "[serviceName] " prefix per line.
 // This is a best-effort multiplexer; proper per-service log routing is handled
@@ -310,7 +335,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			go func(name string) {
 				defer stopWg.Done()
 				_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
-					AppName: fmt.Sprintf("%s-%s", appID, name),
+					AppName: multiServiceContainerName(appID, name),
 				})
 			}(name)
 		}
@@ -319,7 +344,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 
 	if opts.detach {
 		for _, name := range ordered {
-			containerName := fmt.Sprintf("%s-%s", appID, name)
+			containerName := multiServiceContainerName(appID, name)
 			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
 				AppName: containerName,
 			})
@@ -346,7 +371,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
-			containerName := fmt.Sprintf("%s-%s", appID, name)
+			containerName := multiServiceContainerName(appID, name)
 			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
 				AppName: containerName,
 			})
