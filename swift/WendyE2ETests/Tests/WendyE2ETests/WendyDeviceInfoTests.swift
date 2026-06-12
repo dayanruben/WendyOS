@@ -524,7 +524,7 @@ struct `'wendy device version'` {
      With `--json`, deprecation guidance stays out of stdout and stderr so existing scripts can continue parsing the response.
      */
     @Test
-    func `'--json' keeps JSON output clean`() async throws {
+    func `'--json' keeps '... device info' output clean`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy device version --json") { result in
                 let stderr = result.stderr

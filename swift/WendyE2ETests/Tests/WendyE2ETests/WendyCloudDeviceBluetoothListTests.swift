@@ -84,7 +84,7 @@ struct `'wendy cloud device bluetooth list'` {
     }
 }
 
-/// Public Cobra alias path for `wendy cloud device bluetooth list`.
+/// Public alias path for `wendy cloud device bluetooth list`.
 ///
 /// The `bt` shorthand remains available for cloud-routed command entry and shell
 /// completion, while canonical documentation continues to prefer `bluetooth`.

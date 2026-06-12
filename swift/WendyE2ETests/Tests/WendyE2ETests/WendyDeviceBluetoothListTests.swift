@@ -74,7 +74,7 @@ struct `'wendy device bluetooth list'` {
     }
 }
 
-/// Public Cobra alias path for `wendy device bluetooth list`.
+/// Public alias path for `wendy device bluetooth list`.
 ///
 /// The `bt` shorthand remains available for command entry and shell completion,
 /// while canonical documentation continues to prefer `bluetooth`.
