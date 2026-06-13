@@ -46,11 +46,12 @@ as a LAN device when local discovery is allowed by the network and macOS Local
 Network permissions.
 
 The picker table shows the same columns as
-[`wendy discover`](./commands/discover.md#interactive-table), including a
-**Provisioned** column for LAN devices. When the highlighted device is
-provisioned but this CLI cannot read its agent details (unprovisioned CLI, or
-logged in with credentials that don't have access), a footer hint explains why
-the version is blank and suggests `wendy auth login`.
+[`wendy discover`](./commands/discover.md#interactive-table). The leading
+marker column displays provisioned state (`●`/`○`) for LAN devices alongside
+the `✦` default marker. When the highlighted device is provisioned but this
+CLI cannot read its agent details (unprovisioned CLI, or logged in with
+credentials that don't have access), a footer hint explains why the version is
+blank and suggests `wendy auth login`.
 
 In scripts, CI, SSH sessions without a TTY, or any other non-interactive
 context, no picker is shown. Pass `--device`, or configure a default with
