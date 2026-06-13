@@ -7,7 +7,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -175,15 +175,15 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 		}
 	}
 
-	r, size, err := openLocalImageStream(imagePath)
+	stream, err := openLocalImageStream(imagePath)
 	if err != nil {
 		return fmt.Errorf("opening image: %w", err)
 	}
-	defer r.Close()
+	defer stream.Close()
 
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
-	if err := writeImageToDisk(r, size, *targetDrive, nil); err != nil {
+	if err := writeImageToDisk(stream, stream.uncompressedSize, *targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
 	}
 
@@ -445,11 +445,25 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
-	r, totalSize, err := openOSImageStream(deviceKey, imgInfo)
+	stream, err := openOSImageStream(deviceKey, imgInfo)
 	if err != nil {
 		return fmt.Errorf("opening OS image: %w", err)
 	}
-	defer r.Close()
+	defer stream.Close()
+
+	// One-time sizing pass for compressed images that cannot report their
+	// decompressed size (gzip). Without it the write bar has no usable total.
+	// The result is cached in a sidecar, so this only runs on the first flash
+	// of a given image. Failure is non-fatal: the bar falls back to
+	// compressed-consumption progress.
+	if stream.uncompressedSize == 0 && stream.sourcePath != "" {
+		if err := measureImageWithProgress(stream); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			fmt.Printf("Could not determine image size: %v\n", err)
+		}
+	}
 
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
@@ -457,13 +471,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	wp := tea.NewProgram(writeProg)
 
 	go func() {
-		writeErr := writeImageToDisk(r, totalSize, targetDrive, func(written int64) {
-			if totalSize > 0 {
-				wp.Send(tui.ProgressUpdateMsg{
-					Percent: float64(written) / float64(totalSize),
-					Written: written,
-					Total:   totalSize,
-				})
+		writeErr := writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
+			if msg, ok := stream.writeProgressMsg(written); ok {
+				wp.Send(msg)
 			}
 		})
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
@@ -864,12 +874,13 @@ func (z *zipReadCloser) Close() error {
 }
 
 // streamZipImageEntry opens a zip archive and returns a streaming reader over
-// the first .img, .raw, .wic, or .sdimg entry it finds, plus the uncompressed
-// size. The caller must Close the returned reader.
-func streamZipImageEntry(zipPath string) (io.ReadCloser, int64, error) {
+// the first .img, .raw, .wic, or .sdimg entry it finds. The zip directory
+// stores an exact 64-bit uncompressed size, so the stream carries it for
+// byte-accurate progress. The caller must Close the returned reader.
+func streamZipImageEntry(zipPath string) (*imageStream, error) {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return nil, 0, fmt.Errorf("opening zip: %w", err)
+		return nil, fmt.Errorf("opening zip: %w", err)
 	}
 
 	for _, f := range r.File {
@@ -885,7 +896,7 @@ func streamZipImageEntry(zipPath string) (io.ReadCloser, int64, error) {
 		rc, err := f.Open()
 		if err != nil {
 			r.Close()
-			return nil, 0, fmt.Errorf("opening %s in zip: %w", f.Name, err)
+			return nil, fmt.Errorf("opening %s in zip: %w", f.Name, err)
 		}
 
 		size := int64(f.UncompressedSize64)
@@ -895,14 +906,17 @@ func streamZipImageEntry(zipPath string) (io.ReadCloser, int64, error) {
 		if size == 0 {
 			rc.Close()
 			r.Close()
-			return nil, 0, fmt.Errorf("zip entry %s has unknown uncompressed size", f.Name)
+			return nil, fmt.Errorf("zip entry %s has unknown uncompressed size", f.Name)
 		}
 
-		return &zipReadCloser{archive: r, entry: rc}, size, nil
+		return &imageStream{
+			ReadCloser:       &zipReadCloser{archive: r, entry: rc},
+			uncompressedSize: size,
+		}, nil
 	}
 
 	r.Close()
-	return nil, 0, fmt.Errorf("no .img, .raw, .wic, or .sdimg file found in zip archive")
+	return nil, fmt.Errorf("no .img, .raw, .wic, or .sdimg file found in zip archive")
 }
 
 func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
@@ -954,6 +968,177 @@ func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
 	return imgCached, nil
 }
 
+// imageStream couples a streaming image reader with the size information
+// available for driving a progress bar. Exactly one of two progress modes
+// applies: when uncompressedSize is non-zero it is exact and the bar tracks
+// decompressed bytes written; otherwise compressedRead/compressedSize track
+// how much of the compressed source has been consumed.
+type imageStream struct {
+	io.ReadCloser
+	// uncompressedSize is the exact decompressed byte count, or 0 when the
+	// source cannot report one reliably.
+	uncompressedSize int64
+	// compressedRead reports compressed source bytes consumed so far.
+	// nil when uncompressedSize is known.
+	compressedRead func() int64
+	// compressedSize is the total compressed source size in bytes.
+	compressedSize int64
+	// sourcePath is the compressed file on disk; set when uncompressedSize
+	// can be determined by measureUncompressedSize.
+	sourcePath string
+}
+
+// measureUncompressedSize determines the exact decompressed size by
+// decompressing the source once and counting the bytes, then records it in a
+// sidecar file so later flashes of the same image skip the pass. No-op when
+// the size is already known or the source is not measurable. progress
+// receives (compressedBytesRead, compressedTotal).
+func (s *imageStream) measureUncompressedSize(progress func(read, total int64)) error {
+	if s.uncompressedSize > 0 || s.sourcePath == "" {
+		return nil
+	}
+	size, err := measureGzipImage(s.sourcePath, progress)
+	if err != nil {
+		return err
+	}
+	s.uncompressedSize = size
+	writeImageSizeSidecar(s.sourcePath, s.compressedSize, size)
+	return nil
+}
+
+// measureGzipImage decompresses the gzip file at path, discarding the bytes,
+// and returns the exact decompressed size. This is the only reliable way to
+// size a gzip stream: the ISIZE trailer is truncated mod 2^32, and the
+// compressed-consumption fraction is wildly nonlinear for zero-heavy disk
+// images. The pass is CPU-bound and costs a few tens of seconds for a
+// multi-GiB image, against minutes of disk writing.
+func measureGzipImage(path string, progress func(read, total int64)) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("opening gzip image: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat gzip image: %w", err)
+	}
+
+	cr := &countingReader{r: f}
+	gr, err := gzip.NewReader(cr)
+	if err != nil {
+		return 0, fmt.Errorf("creating gzip reader: %w", err)
+	}
+	defer gr.Close()
+
+	var size int64
+	buf := make([]byte, 1<<20)
+	for {
+		n, readErr := gr.Read(buf)
+		size += int64(n)
+		if progress != nil && n > 0 {
+			progress(cr.n.Load(), info.Size())
+		}
+		if readErr == io.EOF {
+			return size, nil
+		}
+		if readErr != nil {
+			return 0, fmt.Errorf("decompressing image: %w", readErr)
+		}
+	}
+}
+
+// measureImageWithProgress runs stream.measureUncompressedSize behind a
+// progress bar tracking compressed bytes read. Returns context.Canceled when
+// the user quits the bar.
+func measureImageWithProgress(stream *imageStream) error {
+	prog := tui.NewProgress("Determining image size (one-time per image)...")
+	p := tea.NewProgram(prog)
+	sendProgress := throttledProgress(p, 33*time.Millisecond)
+
+	go func() {
+		p.Send(tui.ProgressDoneMsg{Err: stream.measureUncompressedSize(sendProgress)})
+	}()
+
+	final, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("progress TUI: %w", err)
+	}
+	return final.(tui.ProgressModel).Err()
+}
+
+// imageSizeSidecar caches a measured decompressed size next to the compressed
+// image, keyed to the compressed size so a replaced file invalidates it.
+type imageSizeSidecar struct {
+	CompressedSize   int64 `json:"compressed_size"`
+	UncompressedSize int64 `json:"uncompressed_size"`
+}
+
+func imageSizeSidecarPath(imagePath string) string { return imagePath + ".size" }
+
+// readImageSizeSidecar returns the cached decompressed size for imagePath,
+// or 0 when no valid sidecar exists for the given compressed size.
+func readImageSizeSidecar(imagePath string, compressedSize int64) int64 {
+	data, err := os.ReadFile(imageSizeSidecarPath(imagePath))
+	if err != nil {
+		return 0
+	}
+	var sc imageSizeSidecar
+	if json.Unmarshal(data, &sc) != nil || sc.CompressedSize != compressedSize || sc.UncompressedSize <= 0 {
+		return 0
+	}
+	return sc.UncompressedSize
+}
+
+// writeImageSizeSidecar persists a measured size. Best-effort: a failure just
+// means the next flash measures again.
+func writeImageSizeSidecar(imagePath string, compressedSize, uncompressedSize int64) {
+	data, err := json.Marshal(imageSizeSidecar{
+		CompressedSize:   compressedSize,
+		UncompressedSize: uncompressedSize,
+	})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(imageSizeSidecarPath(imagePath), data, 0o644)
+}
+
+// writeProgressMsg converts dd's running byte count into a progress update.
+// Returns false when the stream carries no usable size information.
+func (s *imageStream) writeProgressMsg(written int64) (tui.ProgressUpdateMsg, bool) {
+	switch {
+	case s.uncompressedSize > 0:
+		return tui.ProgressUpdateMsg{
+			Percent: float64(written) / float64(s.uncompressedSize),
+			Written: written,
+			Total:   s.uncompressedSize,
+		}, true
+	case s.compressedRead != nil && s.compressedSize > 0:
+		// Decompression is demand-driven by dd's reads, so the fraction of
+		// compressed input consumed tracks write completion. Total stays 0:
+		// the decompressed size is unknown and must not be guessed at.
+		return tui.ProgressUpdateMsg{
+			Percent: float64(s.compressedRead()) / float64(s.compressedSize),
+			Written: written,
+		}, true
+	default:
+		return tui.ProgressUpdateMsg{}, false
+	}
+}
+
+// countingReader counts bytes read through it. The count is read from a
+// progress goroutine while Read is called from the dd-feeding goroutine,
+// hence the atomic.
+type countingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
 // gzipReadCloser wraps a gzip.Reader so that closing it also closes the
 // underlying file, matching the io.ReadCloser contract.
 type gzipReadCloser struct {
@@ -971,36 +1156,36 @@ func (g *gzipReadCloser) Close() error {
 }
 
 // streamGzipImage opens a gzip-compressed image file and returns a streaming
-// reader over the decompressed bytes, plus the uncompressed size from the gzip
-// ISIZE trailer. ISIZE is stored mod 2^32, so it is only accurate for images
-// smaller than 4 GiB; larger images will show an incorrect size in the progress
-// bar but will still be written correctly.
-func streamGzipImage(path string) (io.ReadCloser, int64, error) {
+// reader over the decompressed bytes. The gzip format cannot report the
+// uncompressed size of large images — its ISIZE trailer is stored mod 2^32,
+// so a 19.2 GiB image reports 3.2 GiB and the progress bar overshoots its
+// total. The exact size comes from a sidecar written by a previous
+// measureUncompressedSize pass when available; otherwise it is 0 and the
+// caller should measure (or fall back to compressed-consumption progress).
+func streamGzipImage(path string) (*imageStream, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("opening gzip image: %w", err)
+		return nil, fmt.Errorf("opening gzip image: %w", err)
 	}
-
-	// Read the ISIZE field (last 4 LE bytes of the file) before creating the
-	// gzip reader, which advances the read position.
-	var isizeBuf [4]byte
-	var uncompressedSize int64
-	if _, seekErr := f.Seek(-4, io.SeekEnd); seekErr == nil {
-		if _, readErr := io.ReadFull(f, isizeBuf[:]); readErr == nil {
-			uncompressedSize = int64(binary.LittleEndian.Uint32(isizeBuf[:]))
-		}
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return nil, 0, fmt.Errorf("seeking gzip image: %w", err)
-	}
-
-	gr, err := gzip.NewReader(f)
+	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, 0, fmt.Errorf("creating gzip reader: %w", err)
+		return nil, fmt.Errorf("stat gzip image: %w", err)
 	}
-	return &gzipReadCloser{gz: gr, f: f}, uncompressedSize, nil
+
+	cr := &countingReader{r: f}
+	gr, err := gzip.NewReader(cr)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("creating gzip reader: %w", err)
+	}
+	return &imageStream{
+		ReadCloser:       &gzipReadCloser{gz: gr, f: f},
+		uncompressedSize: readImageSizeSidecar(path, info.Size()),
+		compressedRead:   cr.n.Load,
+		compressedSize:   info.Size(),
+		sourcePath:       path,
+	}, nil
 }
 
 // isGzipFile returns true when path begins with the gzip magic bytes (0x1f 0x8b).
@@ -1018,12 +1203,11 @@ func isGzipFile(path string) bool {
 }
 
 // openOSImageStream resolves the cached file for deviceKey+img, then returns
-// a streaming reader over the image bytes and the total uncompressed size.
-// The caller must Close the returned reader.
-func openOSImageStream(deviceKey string, img *imageInfo) (io.ReadCloser, int64, error) {
+// a streaming reader over the image bytes. The caller must Close it.
+func openOSImageStream(deviceKey string, img *imageInfo) (*imageStream, error) {
 	cachePath, err := resolveOSImage(deviceKey, img)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	if strings.HasSuffix(strings.ToLower(cachePath), ".zip") {
 		return streamZipImageEntry(cachePath)
@@ -1031,38 +1215,35 @@ func openOSImageStream(deviceKey string, img *imageInfo) (io.ReadCloser, int64, 
 	if isGzipFile(cachePath) {
 		return streamGzipImage(cachePath)
 	}
-	f, err := os.Open(cachePath)
-	if err != nil {
-		return nil, 0, fmt.Errorf("opening cached image: %w", err)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, 0, fmt.Errorf("stat cached image: %w", err)
-	}
-	return f, info.Size(), nil
+	return openRawImageStream(cachePath)
 }
 
 // openLocalImageStream opens an arbitrary local file for streaming.
 // If the path ends in .zip it finds the first image entry inside it.
 // Otherwise it opens the file directly as a reader.
-func openLocalImageStream(imagePath string) (io.ReadCloser, int64, error) {
+func openLocalImageStream(imagePath string) (*imageStream, error) {
 	if strings.HasSuffix(strings.ToLower(imagePath), ".zip") {
 		return streamZipImageEntry(imagePath)
 	}
 	if isGzipFile(imagePath) {
 		return streamGzipImage(imagePath)
 	}
-	f, err := os.Open(imagePath)
+	return openRawImageStream(imagePath)
+}
+
+// openRawImageStream opens an uncompressed image file; its size on disk is
+// the exact byte count that will be written.
+func openRawImageStream(path string) (*imageStream, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("opening image: %w", err)
+		return nil, fmt.Errorf("opening image: %w", err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, 0, fmt.Errorf("stat image: %w", err)
+		return nil, fmt.Errorf("stat image: %w", err)
 	}
-	return f, info.Size(), nil
+	return &imageStream{ReadCloser: f, uncompressedSize: info.Size()}, nil
 }
 
 // wifiCLIOptions captures the WiFi-related flags coming from cobra so they
