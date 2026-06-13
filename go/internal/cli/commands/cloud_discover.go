@@ -293,7 +293,7 @@ func (m cloudDiscoverModel) View() string {
 				sb.WriteString(m.viewLine(dimStyle.Render("No online devices found. Use --all to include offline devices.")) + "\n")
 			}
 		} else {
-			sb.WriteString(m.viewLine(dimStyle.Render("Fetching devices from cloud...")) + "\n")
+			sb.WriteString(m.viewLine(dimStyle.Render("Fetching active devices from cloud...")) + "\n")
 		}
 	}
 
