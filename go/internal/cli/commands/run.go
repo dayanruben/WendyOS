@@ -576,7 +576,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// For docker-type projects, resolve which Dockerfile to use before
 	// connecting to the target — so the picker shows regardless of whether
-	// we end up on the agent path or a provider path (Docker Desktop, etc.).
+	// we end up on the agent path or a provider path (Docker, etc.).
 	if projectType == "docker" && opts.dockerfile == "" {
 		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
 		if err != nil {
@@ -730,7 +730,7 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 	}
 
 	if target.External != nil && target.Provider != nil {
-		// Docker Desktop provider: use docker compose directly.
+		// Docker provider: use docker compose directly.
 		// Compose projects have no wendy.json, so entitlements are nil.
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, filepath.Base(cwd), nil, opts)
 	}
