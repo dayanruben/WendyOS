@@ -15,6 +15,50 @@ func requireLinux(t *testing.T) {
 	}
 }
 
+// TestJoinGroupNamespaces_AddsMissingNamespaceEntry guards against a join
+// silently no-op'ing when the base spec lacks the namespace entry. The function
+// must add a joining entry (Path set) for every namespace the isolation mode
+// requires, not only patch entries that happen to already be present.
+func TestJoinGroupNamespaces_AddsMissingNamespaceEntry(t *testing.T) {
+	requireLinux(t)
+	pid := uint32(os.Getpid())
+	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
+
+	// Simulate a base spec that has no network namespace entry.
+	var filtered []LinuxNamespace
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type != "network" {
+			filtered = append(filtered, ns)
+		}
+	}
+	spec.Linux.Namespaces = filtered
+
+	anchors, err := JoinGroupNamespaces(spec, pid, "shared-network")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		for _, f := range anchors {
+			f.Close()
+		}
+	}()
+
+	var netPath string
+	found := false
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == "network" {
+			netPath, found = ns.Path, true
+		}
+	}
+	if !found {
+		t.Fatal("network namespace join was silently skipped: no network entry added to spec")
+	}
+	want := fmt.Sprintf("/proc/%d/ns/net", pid)
+	if netPath != want {
+		t.Errorf("network namespace path = %q, want %q", netPath, want)
+	}
+}
+
 func TestJoinGroupNamespaces_SharedIPC(t *testing.T) {
 	requireLinux(t)
 	// Use the current process PID — guaranteed to have valid namespace paths.

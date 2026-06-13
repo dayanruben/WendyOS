@@ -1560,6 +1560,203 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	return nil
 }
 
+// Compile-time assertion that *Client provides the group-restart capability the
+// container monitor type-asserts for. Without this, a signature drift would make
+// the monitor's runtime type assertion silently fail and fall back to
+// single-container restarts, leaving shared-namespace groups broken on restart.
+var _ services.GroupRestarter = (*Client)(nil)
+
+// GroupRestartAppID reports whether appName is a member of a shared-namespace
+// app group (shared-ipc/shared-network with more than one service) and, if so,
+// returns the bare appID. The container monitor uses this to route a member's
+// restart through RestartGroup instead of an independent StartContainer, which
+// would leave a secondary attached to the primary's now-dead namespace.
+func (c *Client) GroupRestartAppID(ctx context.Context, appName string) (string, bool) {
+	appID, svcName, err := ParseContainerName(appName)
+	if err != nil || svcName == "" {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !appconfig.IsSharedNamespaceIsolation(c.getIsolation(appID)) {
+		return "", false
+	}
+	if len(c.appServices[appID]) <= 1 {
+		return "", false
+	}
+	return appID, true
+}
+
+// RestartGroup restarts every service of a shared-namespace app group as a unit.
+// A secondary's namespace join is resolved at container-create time against the
+// primary's *running* task, and the resolved /proc/<pid>/ns/* path is baked into
+// the stored OCI spec. When the primary restarts it gets a new PID and brand-new
+// kernel namespaces, so any secondary still pointing at the old PID is stranded
+// in a dead (or worse, recycled) namespace — observable as a secondary that
+// shares /dev/shm (a host bind-mount, PID-independent) but cannot reach the
+// primary over localhost (network namespace gone).
+//
+// To restore the invariant it: (1) stops every member task, (2) clears the
+// stale primary PID, (3) starts the primary so it re-registers a live PID, then
+// (4) re-resolves each secondary's namespace join against that new PID before
+// starting it. It returns the per-service output channels keyed by full
+// container name so the caller can drain them.
+func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-chan services.ContainerOutput, error) {
+	ctx = c.withNamespace(ctx)
+
+	c.mu.Lock()
+	isolation := c.getIsolation(appID)
+	servicesMap := c.appServices[appID]
+	c.mu.Unlock()
+
+	if !appconfig.IsSharedNamespaceIsolation(isolation) {
+		return nil, fmt.Errorf("RestartGroup: app %q is not a shared-namespace group (isolation %q)", appID, isolation)
+	}
+	if len(servicesMap) <= 1 {
+		return nil, fmt.Errorf("RestartGroup: app %q has %d service(s); not a group", appID, len(servicesMap))
+	}
+	order, err := appconfig.ServiceTopoOrder(servicesMap)
+	if err != nil {
+		return nil, fmt.Errorf("RestartGroup: resolving service order for %q: %w", appID, err)
+	}
+
+	// 1. Stop every member task so no secondary is left attached to a namespace
+	//    about to be recreated. Containers are kept; only tasks are deleted.
+	for _, svc := range order {
+		name := ContainerName(appID, svc)
+		if serr := c.stopOne(ctx, name); serr != nil {
+			c.logger.Warn("RestartGroup: failed to stop group member (continuing)",
+				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+		}
+	}
+
+	// 2. Clear the stale primary PID; the primary started below re-registers it.
+	c.mu.Lock()
+	c.clearPrimaryPID(appID)
+	c.mu.Unlock()
+
+	results := make(map[string]<-chan services.ContainerOutput, len(order))
+
+	// 3. Start the primary first so setPrimaryPID records the new live PID
+	//    before any secondary resolves its join against it.
+	primaryName := ContainerName(appID, order[0])
+	primaryCh, err := c.StartContainer(ctx, primaryName, "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("RestartGroup: starting primary %q: %w", primaryName, err)
+	}
+	results[primaryName] = primaryCh
+
+	c.mu.Lock()
+	primaryPID, hasPrimary := c.getPrimaryPID(appID)
+	c.mu.Unlock()
+	if !hasPrimary || primaryPID == 0 {
+		return results, fmt.Errorf("RestartGroup: primary %q started but no PID recorded", primaryName)
+	}
+
+	// 4. Re-resolve each secondary's namespace join against the new primary PID,
+	//    then start it.
+	for _, svc := range order[1:] {
+		name := ContainerName(appID, svc)
+		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
+			c.logger.Error("RestartGroup: failed to refresh secondary namespaces",
+				zap.String("app_id", appID), zap.String("service", svc), zap.Error(rerr))
+			continue
+		}
+		ch, serr := c.StartContainer(ctx, name, "", nil)
+		if serr != nil {
+			c.logger.Error("RestartGroup: failed to start secondary",
+				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+			continue
+		}
+		results[name] = ch
+	}
+	return results, nil
+}
+
+// refreshSecondaryNamespaces rewrites a secondary container's stored OCI spec so
+// its namespace join targets primaryPID, then delete+recreates the container
+// with the refreshed spec (the spec is immutable on a live container; recreating
+// is the same mechanism used by recreateContainer). The container's image and
+// labels are preserved.
+func (c *Client) refreshSecondaryNamespaces(ctx context.Context, name string, primaryPID uint32, isolation string) error {
+	ctr, err := c.client.LoadContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("loading container %q: %w", name, err)
+	}
+	info, err := ctr.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("getting container info: %w", err)
+	}
+	image, err := ctr.Image(ctx)
+	if err != nil {
+		return fmt.Errorf("getting container image: %w", err)
+	}
+	if info.Spec == nil {
+		return fmt.Errorf("container %q has no stored spec", name)
+	}
+
+	// Decode the stored spec into our spec type. The agent always stores a
+	// localoci.Spec-shaped JSON (via WithSpecFromBytes), so this round-trips.
+	var spec localoci.Spec
+	if err := json.Unmarshal(info.Spec.GetValue(), &spec); err != nil {
+		return fmt.Errorf("decoding stored spec for %q: %w", name, err)
+	}
+
+	// Re-resolve the namespace join against the new primary PID. JoinGroupNamespaces
+	// overwrites the Path on the existing ipc/network/uts entries.
+	anchors, err := localoci.JoinGroupNamespaces(&spec, primaryPID, isolation)
+	if err != nil {
+		return fmt.Errorf("re-resolving group namespaces: %w", err)
+	}
+	defer func() {
+		for _, f := range anchors {
+			f.Close()
+		}
+	}()
+
+	newSpecJSON, err := json.Marshal(&spec)
+	if err != nil {
+		return fmt.Errorf("marshaling refreshed spec: %w", err)
+	}
+
+	// Derive identity from labels (authoritative; set at creation by wendyLabels),
+	// falling back to the name only when the label is absent (SOC2-CC8).
+	labelAppID := info.Labels[labelKeyAppID]
+	labelSvcName := info.Labels[labelKeyServiceName]
+	if labelAppID == "" {
+		var parseErr error
+		labelAppID, labelSvcName, parseErr = ParseContainerName(name)
+		if parseErr != nil {
+			return fmt.Errorf("refusing to recreate container with malformed name: %w", parseErr)
+		}
+	}
+	if err := appconfig.ValidateAppID(labelAppID); err != nil {
+		return fmt.Errorf("refusing to recreate container with invalid appID in labels: %w", err)
+	}
+	if labelSvcName != "" {
+		if err := appconfig.ValidateServiceName(labelSvcName); err != nil {
+			return fmt.Errorf("refusing to recreate container with invalid serviceName in labels: %w", err)
+		}
+	}
+
+	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
+		return fmt.Errorf("deleting container: %w", err)
+	}
+	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
+	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
+		containerd.WithImage(image),
+		containerd.WithNewSnapshot(snapshotKey, image),
+		containerd.WithContainerLabels(info.Labels),
+		containerd.WithNewSpec(
+			oci.WithSpecFromBytes(newSpecJSON),
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("recreating container with refreshed namespaces: %w", err)
+	}
+	return nil
+}
+
 // applyRestartPolicyLabel updates the restart policy label on an existing container.
 func (c *Client) applyRestartPolicyLabel(ctx context.Context, container containerd.Container, restartPolicy *agentpb.RestartPolicy) error {
 	return container.Update(ctx, func(ctx context.Context, client *containerd.Client, ctr *containers.Container) error {

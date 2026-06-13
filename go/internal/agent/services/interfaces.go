@@ -64,6 +64,27 @@ type ContainerdClient interface {
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
 }
 
+// GroupRestarter is the optional capability a ContainerdClient may provide to
+// restart a shared-namespace app group as a unit. The container monitor
+// type-asserts for it and falls back to single-container restarts when the
+// client does not implement it (e.g. in tests). It is a separate interface so
+// the large ContainerdClient interface and its many mocks stay untouched.
+type GroupRestarter interface {
+	// GroupRestartAppID reports whether appName belongs to a shared-namespace app
+	// group (shared-ipc/shared-network, more than one service) and returns the
+	// bare appID when it does. Such members must restart together (see
+	// RestartGroup): a secondary's namespace join is resolved against the
+	// primary's live task, so an independent restart strands it in a dead
+	// namespace.
+	GroupRestartAppID(ctx context.Context, appName string) (appID string, grouped bool)
+	// RestartGroup restarts every service of the shared-namespace group as a unit
+	// — stopping all members, starting the primary, then re-resolving each
+	// secondary's namespace join against the primary's new task before starting
+	// it — and returns the per-service output channels keyed by full container
+	// name.
+	RestartGroup(ctx context.Context, appID string) (map[string]<-chan ContainerOutput, error)
+}
+
 // Restart policy constants mirror container.RestartPolicy values and are used
 // as the policy argument to ContainerMonitorRegistrar.Register.
 const (
