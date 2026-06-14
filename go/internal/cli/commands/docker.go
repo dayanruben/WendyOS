@@ -1066,6 +1066,15 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 }
 
 func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	// Serialize against other wendy processes: the buildx builder is shared, and
+	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
+	// Concurrent builds within this process share the lock via reference counting.
+	releaseLock, err := buildLock.acquire(ctx, logOutput)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
 	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
 	if err != nil {
 		return err
