@@ -384,6 +384,45 @@ func TestBluetoothBtAliasMirrorsVisibleCommand(t *testing.T) {
 	}
 }
 
+func TestCameraWatchIsHiddenAliasForView(t *testing.T) {
+	cameraCmd := newCameraCmd()
+
+	watchCmd, _, err := cameraCmd.Find([]string{"watch"})
+	if err != nil {
+		t.Fatalf("Find(watch): %v", err)
+	}
+	if watchCmd.Name() != "watch" || !watchCmd.Hidden {
+		t.Fatalf("watch should be a hidden command; cmd=%v hidden=%v", watchCmd.Name(), watchCmd.Hidden)
+	}
+
+	viewCmd, _, err := cameraCmd.Find([]string{"view"})
+	if err != nil {
+		t.Fatalf("Find(view): %v", err)
+	}
+	if viewCmd.Hidden {
+		t.Fatal("view should remain a visible command")
+	}
+
+	// watch must accept the same flags as view so it behaves identically.
+	for _, flag := range []string{"id", "width", "height", "fps", "stdout"} {
+		if watchCmd.Flags().Lookup(flag) == nil {
+			t.Fatalf("watch is missing the %q flag that view exposes", flag)
+		}
+	}
+
+	// watch must stay out of the parent's help output.
+	buf := new(bytes.Buffer)
+	cameraCmd.SetOut(buf)
+	cameraCmd.SetErr(new(bytes.Buffer))
+	cameraCmd.SetArgs([]string{"--help"})
+	if err := cameraCmd.Execute(); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if strings.Contains(buf.String(), "watch") {
+		t.Fatalf("camera help should not list the hidden watch alias: %s", buf.String())
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
