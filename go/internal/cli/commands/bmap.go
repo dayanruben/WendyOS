@@ -159,6 +159,74 @@ func discard(src io.Reader, n int64, buf []byte, consumed *int64, progressFn fun
 	return nil
 }
 
+// mappedBytes returns the total number of mapped (non-hole) bytes the block map
+// describes — the exact amount applyBmapSeekable will write. Used to size the
+// progress bar for the seekable path.
+func mappedBytes(b *Bmap) int64 {
+	var total int64
+	for _, r := range b.Ranges {
+		start := r.First * b.BlockSize
+		end := (r.Last + 1) * b.BlockSize
+		if end > b.ImageSize {
+			end = b.ImageSize
+		}
+		if end > start {
+			total += end - start
+		}
+	}
+	return total
+}
+
+// applyBmapSeekable reconstructs an image onto dst using the block map, reading
+// only mapped ranges from a random-access source. It Seeks to each range's
+// start, so the underlying seekable decoder never decodes hole frames — this is
+// where the zero-block speedup comes from. Each range's SHA256 is verified
+// against the bmap; a mismatch aborts. progressFn reports cumulative mapped
+// bytes written.
+func applyBmapSeekable(src io.ReadSeeker, dst io.WriterAt, b *Bmap, progressFn func(int64)) error {
+	buf := make([]byte, bmapChunkSize)
+	var written int64
+	for _, r := range b.Ranges {
+		start := r.First * b.BlockSize
+		end := (r.Last + 1) * b.BlockSize
+		if end > b.ImageSize {
+			end = b.ImageSize
+		}
+		if end <= start {
+			continue
+		}
+		if _, err := src.Seek(start, io.SeekStart); err != nil {
+			return fmt.Errorf("seeking to %d: %w", start, err)
+		}
+		h := sha256.New()
+		off := start
+		for off < end {
+			n := int64(len(buf))
+			if rem := end - off; rem < n {
+				n = rem
+			}
+			if _, err := io.ReadFull(src, buf[:n]); err != nil {
+				return fmt.Errorf("reading mapped range at %d: %w", off, err)
+			}
+			if _, err := dst.WriteAt(buf[:n], off); err != nil {
+				return fmt.Errorf("writing at %d: %w", off, err)
+			}
+			h.Write(buf[:n])
+			off += n
+			written += n
+			progressFn(written)
+		}
+		if r.Checksum != "" {
+			got := hex.EncodeToString(h.Sum(nil))
+			if !strings.EqualFold(got, r.Checksum) {
+				return fmt.Errorf("bmap: checksum mismatch for blocks %d-%d (got %s, want %s)",
+					r.First, r.Last, got, r.Checksum)
+			}
+		}
+	}
+	return nil
+}
+
 // parseRange parses a bmap range token: either "N" or "N-M".
 func parseRange(s string) (first, last int64, err error) {
 	if s == "" {

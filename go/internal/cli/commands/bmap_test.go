@@ -196,3 +196,47 @@ func TestParseBmapRejectsZeroSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyBmapSeekableWritesOnlyMappedRanges(t *testing.T) {
+	img, b := buildSparseImage() // blocks 0-1 and 4-5 mapped, bs=4096
+	comp := encodeSeekable(t, img, 4096)
+	si, err := openSeekableZstdFromReader(bytes.NewReader(comp))
+	if err != nil {
+		t.Fatalf("open seekable: %v", err)
+	}
+	defer si.Close()
+
+	dst := newMemWriterAt(b.ImageSize)
+	var progress int64
+	mapped := mappedBytes(b)
+	if err := applyBmapSeekable(si, dst, b, func(n int64) { progress = n }); err != nil {
+		t.Fatalf("applyBmapSeekable: %v", err)
+	}
+	const bs = 4096
+	if !bytes.Equal(dst.buf[0:bs*2], img[0:bs*2]) || !bytes.Equal(dst.buf[bs*4:bs*6], img[bs*4:bs*6]) {
+		t.Fatal("mapped ranges not written correctly")
+	}
+	for _, off := range []int{bs * 2, bs*4 - 1, bs * 6, bs*8 - 1} {
+		if dst.written[off] {
+			t.Fatalf("hole byte at offset %d was written", off)
+		}
+	}
+	if progress != mapped {
+		t.Fatalf("progress = %d, want mapped total %d", progress, mapped)
+	}
+}
+
+func TestApplyBmapSeekableDetectsCorruption(t *testing.T) {
+	img, b := buildSparseImage()
+	img[10] = 0xff // corrupt mapped block 0 before compression
+	comp := encodeSeekable(t, img, 4096)
+	si, err := openSeekableZstdFromReader(bytes.NewReader(comp))
+	if err != nil {
+		t.Fatalf("open seekable: %v", err)
+	}
+	defer si.Close()
+	dst := newMemWriterAt(b.ImageSize)
+	if err := applyBmapSeekable(si, dst, b, func(int64) {}); err == nil {
+		t.Fatal("expected checksum mismatch error, got nil")
+	}
+}
