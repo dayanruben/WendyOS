@@ -165,7 +165,7 @@ func scanBmapProgress(r io.Reader, progressFn func(int64)) {
 // the supplied reader (stdin in production), and applies the bmap. It runs as
 // root (re-exec'd under sudo by the parent), so it does not prompt or print
 // TUI — progress is tracked by the parent counting bytes fed to stdin.
-func runBmapWrite(devicePath, bmapPath string, image io.Reader) error {
+func runBmapWrite(devicePath, bmapPath string, image io.Reader) (retErr error) {
 	data, err := os.ReadFile(bmapPath)
 	if err != nil {
 		return fmt.Errorf("reading bmap: %w", err)
@@ -178,7 +178,11 @@ func runBmapWrite(devicePath, bmapPath string, image io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("opening device %s: %w", devicePath, err)
 	}
-	defer dev.Close()
+	defer func() {
+		if closeErr := dev.Close(); closeErr != nil && retErr == nil {
+			retErr = fmt.Errorf("closing device %s: %w", devicePath, closeErr)
+		}
+	}()
 	if err := applyBmap(image, dev, b, func(int64) {}); err != nil {
 		return err
 	}
