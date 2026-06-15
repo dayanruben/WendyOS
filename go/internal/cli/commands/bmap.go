@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -63,6 +66,94 @@ func parseBmap(data []byte) (*Bmap, error) {
 		})
 	}
 	return b, nil
+}
+
+// applyBmap reconstructs an image onto dst using the block map. It reads src
+// (the decompressed image) strictly sequentially — src may be a pipe — and
+// writes only mapped ranges via WriteAt, discarding bytes that fall in holes.
+// Each mapped range's SHA256 is verified against the bmap; a mismatch aborts.
+// progressFn is called with the cumulative number of uncompressed bytes
+// consumed from src.
+func applyBmap(src io.Reader, dst io.WriterAt, b *Bmap, progressFn func(int64)) error {
+	const chunk = 1 << 20 // 1 MiB read granularity within a range
+	buf := make([]byte, chunk)
+	var consumed int64
+
+	pos := int64(0) // next uncompressed byte offset we will read
+	for _, r := range b.Ranges {
+		start := r.First * b.BlockSize
+		end := (r.Last + 1) * b.BlockSize
+		if end > b.ImageSize {
+			end = b.ImageSize
+		}
+
+		// Skip the hole before this range by reading and discarding.
+		if start > pos {
+			if err := discard(src, start-pos, buf, &consumed, progressFn); err != nil {
+				return err
+			}
+			pos = start
+		}
+
+		// Stream the range to dst while hashing it.
+		h := sha256.New()
+		off := start
+		for off < end {
+			n := int64(len(buf))
+			if rem := end - off; rem < n {
+				n = rem
+			}
+			if _, err := io.ReadFull(src, buf[:n]); err != nil {
+				return fmt.Errorf("reading mapped range at %d: %w", off, err)
+			}
+			if _, err := dst.WriteAt(buf[:n], off); err != nil {
+				return fmt.Errorf("writing at %d: %w", off, err)
+			}
+			h.Write(buf[:n])
+			off += n
+			consumed += n
+			progressFn(consumed)
+		}
+		pos = end
+
+		if r.Checksum != "" {
+			got := hex.EncodeToString(h.Sum(nil))
+			if !strings.EqualFold(got, r.Checksum) {
+				return fmt.Errorf("bmap: checksum mismatch for blocks %d-%d (got %s, want %s)",
+					r.First, r.Last, got, r.Checksum)
+			}
+		}
+	}
+
+	// Drain any trailing holes so src is fully consumed (keeps the upstream
+	// decompressor/pipe happy and makes progress reach 100%).
+	if b.ImageSize > pos {
+		if err := discard(src, b.ImageSize-pos, buf, &consumed, progressFn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// discard reads exactly n bytes from src and throws them away, updating the
+// running consumed counter and progress.
+func discard(src io.Reader, n int64, buf []byte, consumed *int64, progressFn func(int64)) error {
+	for n > 0 {
+		m := int64(len(buf))
+		if n < m {
+			m = n
+		}
+		read, err := io.ReadFull(src, buf[:m])
+		if read > 0 {
+			*consumed += int64(read)
+			progressFn(*consumed)
+			n -= int64(read)
+		}
+		if err != nil {
+			return fmt.Errorf("reading hole: %w", err)
+		}
+	}
+	return nil
 }
 
 // parseRange parses a bmap range token: either "N" or "N-M".

@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"testing"
 )
@@ -54,5 +57,80 @@ func TestParseBmapRejectsNonSHA256(t *testing.T) {
 func TestParseBmapRejectsGarbage(t *testing.T) {
 	if _, err := parseBmap([]byte("not xml")); err == nil {
 		t.Fatal("expected error for invalid XML")
+	}
+}
+
+// memWriterAt is an in-memory io.WriterAt that records exactly which offsets
+// were written, so tests can assert holes are left untouched.
+type memWriterAt struct {
+	buf     []byte
+	written []bool // per-byte: true if written
+}
+
+func newMemWriterAt(size int64) *memWriterAt {
+	return &memWriterAt{buf: make([]byte, size), written: make([]bool, size)}
+}
+
+func (m *memWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	copy(m.buf[off:], p)
+	for i := range p {
+		m.written[off+int64(i)] = true
+	}
+	return len(p), nil
+}
+
+func blockChecksum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// buildSparseImage returns an 8-block image (block size 4096) where blocks 0-1
+// are zeros and blocks 4-5 are 0x01; blocks 2-3 and 6-7 are "holes" (zeros) we
+// expect applyBmap NOT to write.
+func buildSparseImage() ([]byte, *Bmap) {
+	const bs = 4096
+	img := make([]byte, bs*8)
+	for i := bs * 4; i < bs*6; i++ {
+		img[i] = 0x01
+	}
+	b := &Bmap{
+		BlockSize: bs,
+		ImageSize: int64(len(img)),
+		Ranges: []BmapRange{
+			{First: 0, Last: 1, Checksum: blockChecksum(img[0 : bs*2])},
+			{First: 4, Last: 5, Checksum: blockChecksum(img[bs*4 : bs*6])},
+		},
+	}
+	return img, b
+}
+
+func TestApplyBmapWritesOnlyMappedRanges(t *testing.T) {
+	img, b := buildSparseImage()
+	dst := newMemWriterAt(b.ImageSize)
+	var progress int64
+	if err := applyBmap(bytes.NewReader(img), dst, b, func(n int64) { progress = n }); err != nil {
+		t.Fatalf("applyBmap: %v", err)
+	}
+	const bs = 4096
+	if !bytes.Equal(dst.buf[0:bs*2], img[0:bs*2]) || !bytes.Equal(dst.buf[bs*4:bs*6], img[bs*4:bs*6]) {
+		t.Fatal("mapped ranges not written correctly")
+	}
+	for _, off := range []int{bs * 2, bs*4 - 1, bs * 6, bs*8 - 1} {
+		if dst.written[off] {
+			t.Fatalf("hole byte at offset %d was written", off)
+		}
+	}
+	if progress != b.ImageSize {
+		t.Fatalf("progress = %d, want %d", progress, b.ImageSize)
+	}
+}
+
+func TestApplyBmapDetectsCorruption(t *testing.T) {
+	img, b := buildSparseImage()
+	img[10] = 0xff // corrupt a byte inside mapped block 0
+	dst := newMemWriterAt(b.ImageSize)
+	err := applyBmap(bytes.NewReader(img), dst, b, func(int64) {})
+	if err == nil {
+		t.Fatal("expected checksum mismatch error, got nil")
 	}
 }
