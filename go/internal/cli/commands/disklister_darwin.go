@@ -103,6 +103,8 @@ func parseDiskutilOutput(out []byte, seen map[string]bool, isExternal bool) []dr
 			}
 			if strings.EqualFold(info.protocol, "nvme") {
 				storageType = StorageNVMe
+			} else if strings.EqualFold(info.protocol, "usb") {
+				storageType = StorageUSB
 			}
 		}
 

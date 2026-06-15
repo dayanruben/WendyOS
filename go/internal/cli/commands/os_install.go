@@ -43,6 +43,7 @@ func newOSInstallCmd() *cobra.Command {
 	var nightly bool
 	var force bool
 	var noBmap bool
+	var storageOverride string
 	var yesOverwriteInternal bool
 	var preEnroll bool
 	var deviceType string
@@ -110,13 +111,14 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
 		},
 	}
 
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
+	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect from the target drive)")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -241,7 +243,10 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
+		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
+	}
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
@@ -340,12 +345,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if device.IsESP32 {
 		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
 	}
-	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, wifi, deviceName, preOpts)
+	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, storageOverride, wifi, deviceName, preOpts)
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
 // nightly, flagVersion, flagDrive, and force allow skipping the corresponding interactive prompts.
-func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Authenticate elevation up front so we don't pay for the multi-hundred-MB
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
@@ -442,7 +447,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	// Step 5: Resolve image metadata for the target storage.
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
-	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, manifestStorage(targetDrive))
+	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, manifestStorage(targetDrive, storageOverride))
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
@@ -945,12 +950,20 @@ func osCachedBmapPath(deviceKey, version string) (string, error) {
 	return filepath.Join(dir, fmt.Sprintf("%s-%s.bmap", safeDevice, safeVersion)), nil
 }
 
-// manifestStorage maps a target drive's protocol to the manifest storage key.
-func manifestStorage(d drive) string {
-	if d.StorageType == StorageNVMe {
-		return "nvme"
+// manifestStorage maps a target drive's protocol to the manifest storage key,
+// honoring an explicit override. USB-attached drives default to nvme (e.g. a
+// Jetson NVMe in a USB enclosure); built-in SD readers and unknown buses → sd.
+func manifestStorage(d drive, override string) string {
+	switch override {
+	case "nvme", "sd":
+		return override
 	}
-	return "sd"
+	switch d.StorageType {
+	case StorageNVMe, StorageUSB:
+		return "nvme"
+	default:
+		return "sd"
+	}
 }
 
 func osCachedZstPath(deviceKey, version string) (string, error) {

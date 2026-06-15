@@ -109,6 +109,8 @@ func listDrivesLinux() ([]drive, error) {
 		storageType := StorageUnknown
 		if dev.Transport == "nvme" {
 			storageType = StorageNVMe
+		} else if dev.Transport == "usb" {
+			storageType = StorageUSB
 		}
 		drives = append(drives, drive{
 			DevicePath: devPath,

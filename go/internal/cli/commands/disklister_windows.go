@@ -140,6 +140,8 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 		storageType := StorageUnknown
 		if strings.EqualFold(d.BusType, "NVMe") {
 			storageType = StorageNVMe
+		} else if strings.EqualFold(d.BusType, "USB") {
+			storageType = StorageUSB
 		}
 		drives = append(drives, drive{
 			DevicePath:  devPath,
