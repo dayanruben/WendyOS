@@ -106,7 +106,7 @@ func validateDeviceTarget(path string) error {
 // opens the seekable image and writes only mapped ranges to the raw device,
 // emitting cumulative bytes written on stdout (one decimal per line) so the
 // parent can drive the progress bar. Runs as root; no stdin pipe.
-func runBmapWriteSeekable(devicePath, bmapPath, sourcePath string, stdout io.Writer) error {
+func runBmapWriteSeekable(devicePath, bmapPath, sourcePath string, stdout io.Writer) (retErr error) {
 	if err := validateDeviceTarget(devicePath); err != nil {
 		return err
 	}
@@ -133,7 +133,11 @@ func runBmapWriteSeekable(devicePath, bmapPath, sourcePath string, stdout io.Wri
 	if err != nil {
 		return fmt.Errorf("opening device %s: %w", devicePath, err)
 	}
-	defer dev.Close()
+	defer func() {
+		if cerr := dev.Close(); cerr != nil && retErr == nil {
+			retErr = fmt.Errorf("closing device %s: %w", devicePath, cerr)
+		}
+	}()
 	emit := func(n int64) { fmt.Fprintf(stdout, "%d\n", n) }
 	if err := applyBmapSeekable(si, dev, b, emit); err != nil {
 		return err
