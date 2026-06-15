@@ -78,6 +78,19 @@ func agentVersionHasFeature(versionResp *agentpb.GetAgentVersionResponse, featur
 	return false
 }
 
+// osAlreadyCurrent reports whether the device's current OS version is at or
+// ahead of the latest available version. The "WendyOS-" display prefix is
+// stripped before comparing so that "WendyOS-0.10.4" and "0.12.0-nightly"
+// compare correctly. Returns false when either version is unknown.
+func osAlreadyCurrent(currentOSVersion, latestVersion string, nightly bool) bool {
+	if currentOSVersion == "" || latestVersion == "" {
+		return false
+	}
+	normalized := strings.TrimPrefix(currentOSVersion, "WendyOS-")
+	return nightly && latestVersion == normalized ||
+		!nightly && version.CompareVersions(latestVersion, normalized) <= 0
+}
+
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
@@ -167,12 +180,7 @@ so the device can download it directly.`,
 					artifactURL = picked
 				} else {
 					if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
-						// Strip the "WendyOS-" display prefix before comparing so that
-						// "WendyOS-0.10.4" and "0.12.0-nightly" compare correctly.
-						normalizedOsVer := strings.TrimPrefix(osVer, "WendyOS-")
-						alreadyCurrent := nightly && latestVer == normalizedOsVer ||
-							!nightly && version.CompareVersions(latestVer, normalizedOsVer) <= 0
-						if alreadyCurrent {
+						if osAlreadyCurrent(osVer, latestVer, nightly) {
 							fmt.Printf("OS is already at the latest version (%s).\n", osVer)
 							return nil
 						}

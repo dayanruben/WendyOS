@@ -6,6 +6,31 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+func TestOSAlreadyCurrent(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		nightly bool
+		want    bool
+	}{
+		{"stable equal is current", "WendyOS-0.10.4", "0.10.4", false, true},
+		{"stable newer available", "WendyOS-0.10.4", "0.12.0", false, false},
+		{"stable device ahead is current", "WendyOS-0.12.0", "0.10.4", false, true},
+		{"nightly equal is current", "WendyOS-0.12.0-nightly", "0.12.0-nightly", true, true},
+		{"nightly different available", "WendyOS-0.12.0-nightly", "0.13.0-nightly", true, false},
+		{"empty current not current", "", "0.10.4", false, false},
+		{"empty latest not current", "WendyOS-0.10.4", "", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osAlreadyCurrent(tc.current, tc.latest, tc.nightly); got != tc.want {
+				t.Fatalf("osAlreadyCurrent(%q,%q,%v) = %v, want %v", tc.current, tc.latest, tc.nightly, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateOSUpdateIdentityAllowsWendyOSBeforeMenderCheck(t *testing.T) {
 	osVersion := "WendyOS-0.10.4"
 	resp := &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: &osVersion}
