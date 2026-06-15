@@ -1,7 +1,10 @@
 package commands
 
 import (
+	"context"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestDeviceCmd_HasPs(t *testing.T) {
@@ -29,5 +32,27 @@ func TestDefaultEnrollmentName(t *testing.T) {
 		if got := defaultEnrollmentName(in); got != want {
 			t.Errorf("defaultEnrollmentName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestMaybeCheckOSUpdateSkips(t *testing.T) {
+	strp := func(s string) *string { return &s }
+
+	tests := []struct {
+		name    string
+		version *agentpb.GetAgentVersionResponse
+	}{
+		{"nil version", nil},
+		{"non-wendyos darwin", &agentpb.GetAgentVersionResponse{Os: "darwin", OsVersion: strp("14.4")}},
+		{"wendyos with mender but no device type",
+			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"mender"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// These inputs must return before any manifest/network call.
+			if err := maybeCheckOSUpdate(context.Background(), tc.version, "", false, false); err != nil {
+				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)
+			}
+		})
 	}
 }

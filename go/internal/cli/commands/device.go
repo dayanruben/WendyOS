@@ -1629,6 +1629,83 @@ func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConn
 	return nil, fmt.Errorf("agent did not come back after update: %w", lastErr)
 }
 
+// maybeCheckOSUpdate runs the OS-update step for `device update` after the
+// agent has been updated. preUpdateVersion is the version queried before the
+// agent restart; its OsVersion/DeviceType/StorageMedium are unaffected by an
+// agent update, so they are valid here. The decision (already-current,
+// report-only, prompt, apply) needs no live connection; only the apply path
+// reconnects. Non-WendyOS / no-mender / unknown-device-type targets are
+// skipped silently — `device update` still succeeds as an agent-only update.
+func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, host string, nightly, assumeYes bool) error {
+	if preUpdateVersion == nil {
+		return nil
+	}
+	if !isWendyOSUpdateTarget(preUpdateVersion) || !agentVersionHasFeature(preUpdateVersion, "mender") {
+		return nil
+	}
+	deviceType := preUpdateVersion.GetDeviceType()
+	if deviceType == "" {
+		// No device type → cannot auto-select the GCS artifact; skip quietly.
+		return nil
+	}
+
+	otaURL, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, preUpdateVersion.GetStorageMedium(), nightly)
+	if err != nil {
+		fmt.Printf("Could not check for OS updates: %v\n", err)
+		return nil
+	}
+
+	currentOS := preUpdateVersion.GetOsVersion()
+	fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
+	if fromVer == "" {
+		fromVer = "unknown"
+	}
+
+	apply := false
+	switch decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal()) {
+	case osActionAlreadyCurrent:
+		fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
+		return nil
+	case osActionReportOnly:
+		fmt.Printf("OS update available (%s). Re-run with --yes or run 'wendy os update' to apply.\n", latestVer)
+		return nil
+	case osActionApply:
+		apply = true
+	case osActionPrompt:
+		if promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
+			apply = true
+		} else {
+			fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
+			return nil
+		}
+	}
+	if !apply {
+		return nil
+	}
+
+	fmt.Println("Reconnecting to apply the OS update...")
+	conn, err := reconnectAgentAfterRestart(ctx, host)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := streamOSUpdate(ctx, conn, otaURL); err != nil {
+		return err
+	}
+
+	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
+		fmt.Println("OS update applied; the device is rebooting. Reconnect once it is back online.")
+		return nil
+	}
+	fmt.Println("WendyOS update applied. Device is rebooting...")
+	if err := waitForDeviceOnline(ctx, host); err != nil {
+		return err
+	}
+	fmt.Println("Device is back online.")
+	return nil
+}
+
 func newDeviceUpdateCmd() *cobra.Command {
 	var binaryPath string
 	var nightly bool
