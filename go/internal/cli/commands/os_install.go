@@ -502,18 +502,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		fmt.Println("\nNote: config-partition provisioning is not yet supported on this platform; skipping. The device will run the agent baked into the image and fetch updates after first boot.")
 	} else {
 		fmt.Printf("\nWriting provisioning data to config partition...\n")
-		if err := provisionConfigPartition(targetDrive, provCreds, provDeviceName, provisioningJSON); err != nil {
-			if hasProvisioningData {
-				// User asked for --wifi / --device-name / --pre-enroll. Silently
-				// dropping their input and printing "Successfully installed"
-				// would be a lie — this is the user-visible failure mode the
-				// ticket calls out. Fail loudly so the user knows to retry.
-				ejectDisk(targetDrive)
-				return fmt.Errorf("could not write provisioning data to config partition (--wifi / --device-name / --pre-enroll were requested but not applied): %w", err)
-			}
-			fmt.Printf("Warning: could not write config partition: %v\n", err)
-			fmt.Println("Device will boot but agent auto-update will not be pre-configured.")
-		}
+		// A provisioning failure is not a flash failure: the OS image already
+		// landed on the drive above. provisionConfigWithRetry warns and offers
+		// an interactive retry rather than aborting, so the user knows the
+		// device still boots.
+		provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
 	}
 
 	ejectDisk(targetDrive)
@@ -1637,6 +1630,61 @@ func confirmOverwriteInternalDrive(d drive, force bool, yesOverwriteInternal boo
 		return fmt.Errorf("internal-drive overwrite cancelled (typed value did not match %s)", d.DevicePath)
 	}
 	return nil
+}
+
+// provisionConfigPartitionFn is the provisioning entry point used by
+// provisionConfigWithRetry. It is a package var so tests can stub the real
+// network + disk work it performs.
+var provisionConfigPartitionFn = provisionConfigPartition
+
+// confirmProvisioningRetry asks whether to re-attempt config-partition
+// provisioning after a failure. Declared as a var so tests can drive the loop.
+var confirmProvisioningRetry = func() (bool, error) {
+	return tui.Confirm("Retry writing provisioning data to the config partition?")
+}
+
+// provisionConfigWithRetry writes provisioning data — the agent binary, WiFi
+// credentials, device name, and pre-enrollment material — to the config
+// partition of a freshly imaged drive.
+//
+// A provisioning failure is never fatal. By the time we get here the OS image
+// is already written to the drive, so the device boots regardless: it runs the
+// agent baked into the image and fetches updates and configuration after first
+// boot. Treating "couldn't download the agent update" or "couldn't locate the
+// config partition" as a failure to flash the OS is misleading — so we surface
+// it as a warning instead, loudly when the user explicitly asked for --wifi /
+// --device-name / --pre-enroll (that input did not reach the device), and on an
+// interactive terminal we offer to retry — e.g. after re-seating an SD card
+// whose config partition could not be located.
+func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte, requested bool) {
+	for {
+		err := provisionConfigPartitionFn(d, creds, deviceName, provisioningJSON)
+		if err == nil {
+			return
+		}
+
+		if requested {
+			fmt.Printf("\nWarning: could not apply provisioning data — --wifi / --device-name / --pre-enroll were requested but not written: %v\n", err)
+		} else {
+			fmt.Printf("\nWarning: could not pre-configure the agent on the config partition: %v\n", err)
+		}
+		fmt.Println("The OS image itself was written successfully — the device will still boot, run the agent baked into the image, and fetch updates after first boot.")
+
+		if !isInteractiveTerminal() {
+			if requested {
+				fmt.Println("Re-run 'wendy os install' to apply WiFi / device-name / pre-enrollment, or configure the device after it boots.")
+			}
+			return
+		}
+
+		retry, err := confirmProvisioningRetry()
+		if err != nil || !retry {
+			if requested {
+				fmt.Println("Skipping provisioning. Re-run 'wendy os install' to apply it, or configure the device after it boots.")
+			}
+			return
+		}
+	}
 }
 
 // provisionConfigPartition downloads the latest stable arm64 wendy-agent binary
