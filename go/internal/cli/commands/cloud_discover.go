@@ -350,6 +350,7 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 
 func cloudDeviceInfoFromAsset(a *cloudpb.Asset, ver *agentpb.GetAgentVersionResponse) discoverDeviceInfo {
 	info := discoverDeviceInfo{
+		ID:      a.GetId(),
 		Name:    a.GetName(),
 		Type:    humanReadableDeviceType(a.GetDeviceType()),
 		Address: a.GetIpAddress(),
