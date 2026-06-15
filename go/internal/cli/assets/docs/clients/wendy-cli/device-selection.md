@@ -82,6 +82,20 @@ You can select it directly with:
 wendy run --device docker
 ```
 
+### Apple Container
+
+On Apple silicon Macs, Wendy can use Apple's `container` CLI for local
+Dockerfile runs without Docker Desktop:
+
+```sh
+container system start
+wendy run --device apple-container
+```
+
+Use this target when you want to build and run a single Dockerfile project with
+Apple's lightweight Linux container runtime. Compose projects still require the
+Docker target.
+
 ### Local
 
 Use the local target for host-native apps. The app runs directly on the computer

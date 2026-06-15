@@ -49,8 +49,9 @@ type RunOutputType int
 
 // Provider key constants for the built-in providers.
 const (
-	ProviderKeyDocker = "docker"
-	ProviderKeyLocal  = "local"
+	ProviderKeyAppleContainer = "apple-container"
+	ProviderKeyDocker         = "docker"
+	ProviderKeyLocal          = "local"
 )
 
 const (

@@ -29,6 +29,11 @@ The error explains the project/target mismatch and tells you to set `platform: "
 
 When building a Dockerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the Dockerfile can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
 
+For local-only Dockerfile runs on Apple silicon Macs, `wendy run --device
+apple-container` uses Apple's `container build` and `container run` instead of
+Docker. Start the runtime first with `container system start`. Compose projects
+and WendyOS device deployments continue through the Docker build paths.
+
 | Build-arg | Values | Notes |
 |---|---|---|
 | `WENDY_PLATFORM` | `nvidia-jetson` \| `generic` | Platform tier derived from the device type |

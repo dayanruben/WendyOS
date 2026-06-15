@@ -730,7 +730,7 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 	}
 
 	if target.External != nil && target.Provider != nil {
-		// Docker provider: use docker compose directly.
+		// External providers handle local compose support themselves.
 		// Compose projects have no wendy.json, so entitlements are nil.
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, filepath.Base(cwd), nil, opts)
 	}
