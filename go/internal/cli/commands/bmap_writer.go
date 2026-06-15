@@ -1,11 +1,15 @@
 package commands
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -62,6 +66,98 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 		c.progressFn(c.n)
 	}
 	return written, err
+}
+
+// validateBmapSource rejects a --source that is not beneath the OS image cache
+// root. The helper runs as root, so this prevents a caller from pointing it at
+// an arbitrary path via sudo.
+func validateBmapSource(path string) error {
+	root, err := osCacheDir()
+	if err != nil {
+		return fmt.Errorf("resolving cache root: %w", err)
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	if abs != absRoot && !strings.HasPrefix(abs, absRoot+string(filepath.Separator)) {
+		return fmt.Errorf("source %s is outside the image cache", path)
+	}
+	return nil
+}
+
+// validateDeviceTarget rejects a --device that is not a block/character device.
+func validateDeviceTarget(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat device: %w", err)
+	}
+	if info.Mode()&os.ModeDevice == 0 {
+		return fmt.Errorf("%s is not a device", path)
+	}
+	return nil
+}
+
+// runBmapWriteSeekable is the body of `__bmap-write` when --source is given. It
+// opens the seekable image and writes only mapped ranges to the raw device,
+// emitting cumulative bytes written on stdout (one decimal per line) so the
+// parent can drive the progress bar. Runs as root; no stdin pipe.
+func runBmapWriteSeekable(devicePath, bmapPath, sourcePath string, stdout io.Writer) error {
+	if err := validateDeviceTarget(devicePath); err != nil {
+		return err
+	}
+	if err := validateBmapSource(sourcePath); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(bmapPath)
+	if err != nil {
+		return fmt.Errorf("reading bmap: %w", err)
+	}
+	b, err := parseBmap(data)
+	if err != nil {
+		return err
+	}
+	si, err := openSeekableZstd(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer si.Close()
+	if si.Size() != b.ImageSize {
+		return fmt.Errorf("seekable image size %d != bmap image size %d", si.Size(), b.ImageSize)
+	}
+	dev, err := os.OpenFile(devicePath, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("opening device %s: %w", devicePath, err)
+	}
+	defer dev.Close()
+	emit := func(n int64) { fmt.Fprintf(stdout, "%d\n", n) }
+	if err := applyBmapSeekable(si, dev, b, emit); err != nil {
+		return err
+	}
+	if err := dev.Sync(); err != nil && !errors.Is(err, syscall.ENOTTY) {
+		return fmt.Errorf("syncing device %s: %w", devicePath, err)
+	}
+	return nil
+}
+
+// scanBmapProgress reads the helper's stdout (one cumulative decimal byte count
+// per line) and forwards each value to progressFn. Used by the parent process
+// in writeImageWithBmapSeekable (added in a later task).
+func scanBmapProgress(r io.Reader, progressFn func(int64)) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		if n, err := strconv.ParseInt(line, 10, 64); err == nil {
+			progressFn(n)
+		}
+	}
 }
 
 // runBmapWrite is the body of the hidden __bmap-write helper subcommand
