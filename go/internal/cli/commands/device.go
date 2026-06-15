@@ -1584,49 +1584,16 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
 }
 
-// reconnectAgentAfterRestart re-establishes a connection to the device the
-// command is operating on, after the agent has restarted. For a direct/LAN
-// connection it re-dials the known host. For a cloud-tunnel connection it
-// re-runs connectToAgent so the broker tunnel is rebuilt (a direct host:port
-// dial would not traverse the tunnel). host is used only for the direct/LAN
-// path; it is ignored for cloud, where the target comes from the context.
-func reconnectAgentAfterRestart(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
-	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
-		return reconnectCloudAgentAfterRestart(ctx)
+// reconnectAgentAfterRestart re-establishes a connection to the SAME device
+// conn targets, after the agent has restarted. When the connection carries a
+// Reconnect closure (cloud tunnel — pinned to a specific asset id) that is
+// used, so the reconnect can never drift to a different device. Otherwise it
+// re-dials the known host directly (LAN).
+func reconnectAgentAfterRestart(ctx context.Context, conn *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
+	if conn != nil && conn.Reconnect != nil {
+		return conn.Reconnect(ctx)
 	}
-	return waitForAgentRestart(ctx, hostPort(host, defaultAgentPort))
-}
-
-// reconnectCloudAgentAfterRestart retries connectToAgent through the cloud
-// tunnel until the agent answers GetAgentVersion or the deadline passes. The
-// deadline and settling delays are longer than waitForAgentRestart's because
-// rebuilding the broker tunnel adds latency beyond a direct TCP reconnect.
-func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConnection, error) {
-	deadline := time.Now().Add(90 * time.Second)
-	time.Sleep(2 * time.Second) // give the agent a moment to begin shutdown
-	lastErr := fmt.Errorf("agent did not come back in time")
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), ExcludeBluetooth(), SuppressUpdateCheck())
-		if err == nil {
-			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
-			cancel()
-			if probeErr == nil {
-				return conn, nil
-			}
-			conn.Close()
-			lastErr = probeErr
-		} else {
-			lastErr = err
-		}
-		time.Sleep(2 * time.Second) // broker tunnels need more settling time than direct connections
-	}
-	return nil, fmt.Errorf("agent did not come back after update: %w", lastErr)
+	return waitForAgentRestart(ctx, hostPort(conn.Host, defaultAgentPort))
 }
 
 // maybeCheckOSUpdate runs the OS-update step for `device update` after the
@@ -1641,7 +1608,7 @@ func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConn
 // Non-WendyOS / no-mender targets are skipped silently (no reconnect), and any
 // failure to re-read or look up the OS is reported but non-fatal — `device
 // update` still succeeds as an agent-only update.
-func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, host string, nightly, assumeYes bool, artifactURLOverride string) error {
+func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string) error {
 	if preUpdateVersion == nil {
 		return nil
 	}
@@ -1649,12 +1616,12 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return nil
 	}
 
-	// Any OS work needs a live connection to the just-restarted agent. This
-	// reconnect honors the cloud tunnel, so the device pulls the artifact
-	// straight from its URL (e.g. GCS) while only the control stream is
-	// tunneled.
+	// Any OS work needs a live connection to the just-restarted agent. Reconnect
+	// to the SAME device (priorConn pins the cloud asset by id, so this can't
+	// drift to another device); the device pulls the artifact straight from its
+	// URL (e.g. GCS) while only the control stream is tunneled.
 	fmt.Println("Checking for OS updates...")
-	conn, err := reconnectAgentAfterRestart(ctx, host)
+	conn, err := reconnectAgentAfterRestart(ctx, priorConn)
 	if err != nil {
 		fmt.Printf("Could not check for OS updates: %v\n", err)
 		return nil
@@ -1731,7 +1698,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return nil
 	}
 	fmt.Println("WendyOS update applied. Device is rebooting...")
-	if err := waitForDeviceOnline(ctx, host); err != nil {
+	if err := waitForDeviceOnline(ctx, priorConn.Host); err != nil {
 		return err
 	}
 	fmt.Println("Device is back online.")
@@ -1760,7 +1727,6 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			deviceHost := conn.Host
 			var preUpdateVersion *agentpb.GetAgentVersionResponse
 
 			var binaryData []byte
@@ -1890,7 +1856,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				return nil
 			}
 			fmt.Println("Agent updated successfully.")
-			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, deviceHost, nightly, assumeYes, artifactURL); err != nil {
+			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL); err != nil {
 				return err
 			}
 			return nil

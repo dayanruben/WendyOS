@@ -141,6 +141,13 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
 	}
+	// Pin reconnect to this exact asset (by id) so a post-restart reconnect
+	// can't drift to a different cloud device — the asset name may be empty or
+	// ambiguous, and re-running device discovery while the agent is mid-restart
+	// can match whichever other device happens to be reachable.
+	agentConn.Reconnect = func(rctx context.Context) (*grpcclient.AgentConnection, error) {
+		return waitForCloudAgentRestart(rctx, auth, asset, brokerURL)
+	}
 	agentConn.ExtraClosers = append(agentConn.ExtraClosers, closeFunc(closeTunnel), brokerConn)
 	cleanupBroker = false
 	return agentConn, nil
