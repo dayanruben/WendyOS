@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -84,5 +86,12 @@ func runBmapWrite(devicePath, bmapPath string, image io.Reader) error {
 	if err := applyBmap(image, dev, b, func(int64) {}); err != nil {
 		return err
 	}
-	return dev.Sync()
+	// Flush to media. fsync works on Linux block devices, but macOS raw
+	// character devices (/dev/rdiskN) reject it with ENOTTY — there the parent
+	// runs sync(8) after we exit, so a missing fsync is harmless. Treat ENOTTY
+	// as success rather than failing a flash whose data already landed.
+	if err := dev.Sync(); err != nil && !errors.Is(err, syscall.ENOTTY) {
+		return fmt.Errorf("syncing device %s: %w", devicePath, err)
+	}
+	return nil
 }
