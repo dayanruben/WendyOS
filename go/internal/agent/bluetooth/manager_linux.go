@@ -4,8 +4,8 @@ package bluetooth
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -156,45 +156,98 @@ func boolProp(props map[string]dbus.Variant, key string) bool {
 	return false
 }
 
-// Connect connects to a Bluetooth peripheral by address.
+// deviceObjectPath returns the BlueZ D-Bus object path for a device given its
+// adapter path and Bluetooth address. BlueZ encodes the address with colons
+// replaced by underscores and upper-cased hex, e.g.
+// /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF.
+func deviceObjectPath(adapterPath, address string) dbus.ObjectPath {
+	encoded := strings.ToUpper(strings.ReplaceAll(address, ":", "_"))
+	return dbus.ObjectPath(adapterPath + "/dev_" + encoded)
+}
+
+// isAlreadyExists reports whether a BlueZ D-Bus error indicates the operation
+// was a no-op because the resource already exists (e.g. pairing a device that
+// is already paired). Such errors are safe to treat as success.
+func isAlreadyExists(err error) bool {
+	var dbusErr dbus.Error
+	if errors.As(err, &dbusErr) {
+		return dbusErr.Name == "org.bluez.Error.AlreadyExists"
+	}
+	return false
+}
+
+// Connect connects to a Bluetooth peripheral by address via BlueZ over D-Bus.
+// When pair is set it registers a headless pairing agent and pairs first; when
+// trust is set it marks the device trusted so BlueZ reconnects it automatically.
 func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust bool) error {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return fmt.Errorf("connecting to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	devicePath := deviceObjectPath(bluezAdapterPath(), address)
+	device := conn.Object(bluezService, devicePath)
+
 	if trust {
-		if out, err := exec.CommandContext(ctx, "bluetoothctl", "trust", address).CombinedOutput(); err != nil {
-			m.logger.Warn("Failed to trust device", zap.Error(err), zap.String("output", string(out)))
+		if call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
+			deviceIface, "Trusted", dbus.MakeVariant(true)); call.Err != nil {
+			// Trust is best-effort: it improves reconnection but is not required
+			// for the connection itself to succeed.
+			m.logger.Warn("Failed to trust device", zap.String("address", address), zap.Error(call.Err))
 		}
 	}
 
 	if pair {
-		if out, err := exec.CommandContext(ctx, "bluetoothctl", "pair", address).CombinedOutput(); err != nil {
-			return fmt.Errorf("pairing with %s: %w (output: %s)", address, err, string(out))
+		// BlueZ rejects pairing requests unless an authentication agent is
+		// registered. Register a headless "just works" agent on this connection;
+		// it is unregistered automatically when the connection closes.
+		if err := registerPairingAgent(conn, m.logger); err != nil {
+			m.logger.Warn("Failed to register pairing agent", zap.Error(err))
+		}
+		if call := device.CallWithContext(ctx, deviceIface+".Pair", 0); call.Err != nil && !isAlreadyExists(call.Err) {
+			return fmt.Errorf("pairing with %s: %w", address, call.Err)
 		}
 	}
 
-	out, err := exec.CommandContext(ctx, "bluetoothctl", "connect", address).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("connecting to %s: %w (output: %s)", address, err, string(out))
+	if call := device.CallWithContext(ctx, deviceIface+".Connect", 0); call.Err != nil {
+		return fmt.Errorf("connecting to %s: %w", address, call.Err)
 	}
 
 	m.logger.Info("Connected to Bluetooth device", zap.String("address", address))
 	return nil
 }
 
-// Disconnect disconnects from a Bluetooth peripheral.
+// Disconnect disconnects from a Bluetooth peripheral via BlueZ over D-Bus.
 func (m *BlueZManager) Disconnect(ctx context.Context, address string) error {
-	out, err := exec.CommandContext(ctx, "bluetoothctl", "disconnect", address).CombinedOutput()
+	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
-		return fmt.Errorf("disconnecting from %s: %w (output: %s)", address, err, string(out))
+		return fmt.Errorf("connecting to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	device := conn.Object(bluezService, deviceObjectPath(bluezAdapterPath(), address))
+	if call := device.CallWithContext(ctx, deviceIface+".Disconnect", 0); call.Err != nil {
+		return fmt.Errorf("disconnecting from %s: %w", address, call.Err)
 	}
 
 	m.logger.Info("Disconnected from Bluetooth device", zap.String("address", address))
 	return nil
 }
 
-// Forget removes a paired Bluetooth peripheral.
+// Forget removes a paired Bluetooth peripheral via BlueZ's Adapter1.RemoveDevice.
 func (m *BlueZManager) Forget(ctx context.Context, address string) error {
-	out, err := exec.CommandContext(ctx, "bluetoothctl", "remove", address).CombinedOutput()
+	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
-		return fmt.Errorf("removing device %s: %w (output: %s)", address, err, string(out))
+		return fmt.Errorf("connecting to system bus: %w", err)
+	}
+	defer conn.Close()
+
+	adapterPath := bluezAdapterPath()
+	devicePath := deviceObjectPath(adapterPath, address)
+	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
+	if call := adapter.CallWithContext(ctx, adapterIface+".RemoveDevice", 0, devicePath); call.Err != nil {
+		return fmt.Errorf("removing device %s: %w", address, call.Err)
 	}
 
 	m.logger.Info("Forgot Bluetooth device", zap.String("address", address))
