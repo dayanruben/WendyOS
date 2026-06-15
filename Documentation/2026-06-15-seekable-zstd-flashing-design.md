@@ -30,6 +30,10 @@ cannot skip them.
 
 Make holes genuinely free on every flash (including the first) by decoding
 **only the bytes that bmap marks as mapped**, never materializing hole bytes.
+Secondary goal, required to deliver the speedup on multi-storage devices: make
+the image/bmap/zst artifacts **storage-keyed** (NVMe vs SD), fixing the existing
+cross-storage clobber that forces Jetson NVMe flashes onto the slow `dd` path
+(see "Storage variants").
 
 Non-goals: changing the bmap format; changing the non-bmap (`dd`) path; keeping
 the published image flashable by generic third-party tools (Etcher/dd/RPi
@@ -95,13 +99,57 @@ Publisher changes:
   artifact still downloads but offers no hole-skipping benefit — the CLI uses the
   legacy path (see fallback).
 
+### Storage variants (NVMe / SD) — and an existing bug this fixes
+
+Multi-storage devices (e.g. Jetson orin-nano) publish **two different images**
+for one version: an NVMe image and an SD image, with different partition layouts
+and therefore different bmaps. Today the CLI's install path reads a **single**
+`path` + **single** `bmap_path`, and the publisher clobbers both on every
+storage publish (last write wins). The result: `path` and `bmap_path` can
+describe different storages, the per-range checksum fails on block 0, and the
+size-mismatch guard (commit `e7271aa1`) falls back to `dd`. So the ~19 GB Jetson
+NVMe images — where this optimization matters most — currently get **no** bmap
+benefit at all.
+
+This design makes image + bmap + zst **storage-keyed**, which both fixes that
+bug and lets the seekable path engage on multi-storage devices.
+
+**Selector:** the target drive's `StorageType` is known before image resolution
+(it's chosen at `os_install.go` ~L374–397, before `getImageInfo` at L445). The
+enum is only `StorageNVMe` vs `StorageUnknown` (everything else), mapping to:
+
+- `StorageNVMe` → `nvme` variant
+- otherwise → `sd` variant (the default / removable-card image)
+
+(eMMC is not a removable flash target on this drive-writing path, so it is out of
+scope here even though the publisher may carry eMMC fields for OTA.)
+
 ### Manifest
 
-- Add a per-version field `zst_path` (sibling to `path`/`bmap_path`). When
-  present, the CLI derives `ZstURL = gcsBaseURL + "/" + zst_path`.
-- Absent `zst_path` → CLI uses the existing deflate (`.zip`/`.gz`) + bmap/`dd`
-  path unchanged. This is the rollout/back-compat seam: old manifests and
-  partially-published versions keep working.
+Add storage-keyed fields to the CLI's `deviceVersion` and the publisher's
+`VersionMetadata`, each a triple of image + bmap + zst (path/checksum/size):
+
+- `nvme_path` / `nvme_bmap_path` / `nvme_zst_path` (+ `*_checksum`, `*_size_bytes`)
+- `sd_path` / `sd_bmap_path` / `sd_zst_path` (+ `*_checksum`, `*_size_bytes`)
+- Legacy `path` / `bmap_path` / `zst_path` remain as the **fallback** triple.
+
+Resolution rule in `getImageInfo(dm, ver, storage)` (new `storage` arg derived
+from `targetDrive.StorageType`):
+
+1. Prefer the triple for the selected storage (`nvme_*` or `sd_*`).
+2. If that storage's triple is absent, fall back to the legacy `path` /
+   `bmap_path` / `zst_path` (covers single-storage devices like RPi and older
+   manifests).
+3. Within the chosen triple, `zst_path` present and `--no-bmap` unset → seekable
+   path; else deflate (`.zip`/`.gz`) + bmap/`dd`, unchanged.
+
+Crucially the image, bmap, and zst now come from the **same** storage triple, so
+they always describe the same image — the block-0 mismatch that forced `dd` can
+no longer happen from cross-storage clobbering.
+
+**Publisher back-compat:** keep writing the legacy `path`/`bmap_path` (point them
+at a sensible default storage) so old CLIs still flash; new CLIs prefer the
+storage-keyed triple. New publisher additionally writes the `*_zst_*` fields.
 
 ### CLI side
 
@@ -127,8 +175,11 @@ the separate `wendy-os-publisher` repo.
 **Publisher (`wendy-os-publisher`, separate repo):**
 
 - `cmd/upload_and_manifest.go`: add `compressSeekableZstd()`; upload `.img.zst`
-  for OS images; add `zst_path`/`zst_checksum`/`zst_size_bytes` to
-  `VersionMetadata` and populate them. Add the `zstd-seekable-format-go` dep.
+  for OS images; add the storage-keyed `*_zst_path`/`*_zst_checksum`/
+  `*_zst_size_bytes` fields (and ensure `*_bmap_path` is storage-keyed too) to
+  `VersionMetadata` and populate the triple for the storage being published;
+  keep writing legacy `path`/`bmap_path` for old CLIs. Add the
+  `zstd-seekable-format-go` dep.
 
 **CLI (`go/internal/cli/commands/`):**
 
@@ -150,7 +201,12 @@ the separate `wendy-os-publisher` repo.
   stdin.
 - `disklister_windows.go`: no helper — run the frame-walk in-process against the
   locked disk handle, source = seekable reader over the cached `.img.zst`.
-- `os_install.go`: prefer `zst_path`; thread the seekable source through;
+- `manifest.go`: add the storage-keyed `nvme_*`/`sd_*` image+bmap+zst fields to
+  `deviceVersion` and `ZstURL` to `imageInfo`; change `getImageInfo` to take a
+  `storage` arg (from `targetDrive.StorageType`) and apply the resolution rule
+  (storage triple → legacy fallback) from the Manifest section.
+- `os_install.go`: pass the target drive's storage into `getImageInfo`; prefer
+  the selected triple's `zst_path`; thread the seekable source through;
   **skip the one-time gzip "measure size" pass when a bmap is present** — the
   bmap's `ImageSize` already gives the exact uncompressed total for the bar.
   (This pass is gzip-specific: `.zip` entries and the new `.zst` reader both
@@ -220,7 +276,12 @@ Properties:
 - `seekable_zstd_test.go` (new): round-trip — encode a known buffer seekable,
   then `ReadAt` random offsets/lengths and assert bytes; frame-boundary reads;
   `Size()` correctness.
-- Manifest test: `zst_path` present → `ZstURL` set; absent → empty, legacy path.
+- Manifest test: storage resolution — `getImageInfo(.., "nvme")` picks the
+  `nvme_*` triple; `"sd"` picks `sd_*`; missing storage triple falls back to
+  legacy `path`/`bmap_path`/`zst_path`; `zst_path` present → `ZstURL` set, absent
+  → empty (legacy path). A regression case mirroring the Jetson clobber: NVMe and
+  SD triples present with different bmaps → NVMe target resolves NVMe bmap (no
+  cross-storage mismatch, no `dd` fallback).
 - An end-to-end test that flashes a small synthetic holey image to a temp file
   (not a real device) via the frame-walk and byte-compares against the expected
   reconstruction.
