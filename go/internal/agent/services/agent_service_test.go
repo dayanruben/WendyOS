@@ -433,3 +433,48 @@ func TestRunContainer_Deprecated(t *testing.T) {
 		t.Fatalf("expected Unimplemented/deprecated error, got: %v", err)
 	}
 }
+
+func TestParseDeviceTypePrefersBoard(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantType    string
+		wantStorage string
+	}{
+		{
+			name:     "board wins over machine regardless of order",
+			content:  "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\n",
+			wantType: "jetson-orin-nano",
+		},
+		{
+			name:     "board wins when listed after machine",
+			content:  "MACHINE=jetson-orin-nano-devkit-nvme-wendyos\nBOARD=jetson-orin-nano\n",
+			wantType: "jetson-orin-nano",
+		},
+		{
+			name:     "machine used only when board absent",
+			content:  "MACHINE=raspberrypi5-wendyos\n",
+			wantType: "raspberrypi5-wendyos",
+		},
+		{
+			name:        "storage parsed alongside board",
+			content:     "BOARD=jetson-orin-nano\nSTORAGE=nvme\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:     "legacy plain string passthrough",
+			content:  "raspberry-pi-5",
+			wantType: "raspberry-pi-5",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotType, gotStorage := parseDeviceType(tc.content)
+			if gotType != tc.wantType || gotStorage != tc.wantStorage {
+				t.Fatalf("parseDeviceType(%q) = (%q, %q), want (%q, %q)",
+					tc.content, gotType, gotStorage, tc.wantType, tc.wantStorage)
+			}
+		})
+	}
+}

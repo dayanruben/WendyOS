@@ -258,12 +258,18 @@ func detectFeatureset() []string {
 // parseDeviceType parses /etc/wendyos/device-type, which may be either a plain
 // string (legacy) or a KEY=VALUE file (new format).
 // Returns (deviceType, storageMedium); either may be empty.
-// MACHINE and BOARD are treated as the same thing (board identifier).
+//
+// BOARD is the stable board identity that matches the OTA manifest keys
+// (e.g. "jetson-orin-nano"), whereas MACHINE is the full Yocto machine name
+// (e.g. "jetson-orin-nano-devkit-nvme-wendyos"). The manifest is keyed by the
+// board id, so BOARD is preferred; MACHINE is only a fallback for images that
+// don't emit a BOARD line.
 func parseDeviceType(content string) (deviceType, storageMedium string) {
 	content = strings.TrimSpace(content)
 	if !strings.Contains(content, "=") {
 		return content, ""
 	}
+	var board, machine string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		k, v, ok := strings.Cut(line, "=")
@@ -271,11 +277,17 @@ func parseDeviceType(content string) (deviceType, storageMedium string) {
 			continue
 		}
 		switch strings.TrimSpace(k) {
-		case "MACHINE", "BOARD":
-			deviceType = strings.TrimSpace(v)
+		case "BOARD":
+			board = strings.TrimSpace(v)
+		case "MACHINE":
+			machine = strings.TrimSpace(v)
 		case "STORAGE":
 			storageMedium = strings.TrimSpace(v)
 		}
+	}
+	deviceType = board
+	if deviceType == "" {
+		deviceType = machine
 	}
 	return deviceType, storageMedium
 }
