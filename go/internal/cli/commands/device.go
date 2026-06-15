@@ -1709,11 +1709,14 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 func newDeviceUpdateCmd() *cobra.Command {
 	var binaryPath string
 	var nightly bool
+	var assumeYes bool
 
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update the agent binary on the target device",
-		Long:  "Downloads the latest agent binary from GitHub and uploads it to the device. Use --binary to provide a local binary instead.",
+		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
+			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
+			"--nightly selects the nightly channel for both the agent and the OS.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -1722,6 +1725,9 @@ func newDeviceUpdateCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
+
+			deviceHost := conn.Host
+			var preUpdateVersion *agentpb.GetAgentVersionResponse
 
 			var binaryData []byte
 
@@ -1737,6 +1743,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// validation in that case rather than blocking the upload.
 				versionResp, versionErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 				if versionErr == nil {
+					preUpdateVersion = versionResp
 					deviceArch := versionResp.GetCpuArchitecture()
 					if deviceArch != "" {
 						if err := checkELFArchitecture(binaryData, deviceArch); err != nil {
@@ -1753,6 +1760,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("getting device info: %w", err)
 				}
+				preUpdateVersion = versionResp
 
 				arch := versionResp.GetCpuArchitecture()
 				if arch == "" {
@@ -1844,15 +1852,20 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("failed to marshal JSON response: %w", err)
 				}
 				fmt.Println(string(b))
-			} else {
-				fmt.Println("Agent updated successfully.")
+				// OS update check is skipped in JSON mode to keep output stable.
+				return nil
+			}
+			fmt.Println("Agent updated successfully.")
+			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, deviceHost, nightly, assumeYes); err != nil {
+				return err
 			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download)")
-	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build")
+	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
 
 	return cmd
 }
