@@ -1584,6 +1584,51 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
 }
 
+// reconnectAgentAfterRestart re-establishes a connection to the device the
+// command is operating on, after the agent has restarted. For a direct/LAN
+// connection it re-dials the known host. For a cloud-tunnel connection it
+// re-runs connectToAgent so the broker tunnel is rebuilt (a direct host:port
+// dial would not traverse the tunnel).
+func reconnectAgentAfterRestart(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
+	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
+		return reconnectCloudAgentAfterRestart(ctx)
+	}
+	return waitForAgentRestart(ctx, hostPort(host, defaultAgentPort))
+}
+
+// reconnectCloudAgentAfterRestart retries connectToAgent through the cloud
+// tunnel until the agent answers GetAgentVersion or the deadline passes.
+func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConnection, error) {
+	deadline := time.Now().Add(90 * time.Second)
+	time.Sleep(2 * time.Second) // give the agent a moment to begin shutdown
+	var lastErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), ExcludeBluetooth(), SuppressUpdateCheck())
+		if err == nil {
+			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+			cancel()
+			if probeErr == nil {
+				return conn, nil
+			}
+			conn.Close()
+			lastErr = probeErr
+		} else {
+			lastErr = err
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("agent did not come back after update: %w", lastErr)
+	}
+	return nil, fmt.Errorf("agent did not come back after update")
+}
+
 func newDeviceUpdateCmd() *cobra.Command {
 	var binaryPath string
 	var nightly bool
