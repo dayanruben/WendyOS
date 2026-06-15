@@ -58,8 +58,24 @@ func (e provisionedAgentUnauthorizedError) Error() string {
 	msg := fmt.Sprintf("%s\nLast mTLS error: %v", provisionedAgentUnauthorizedMessage, e.cause)
 	if isCertRefreshableError(e.cause) {
 		msg += "\nYour stored certificates may be outdated. Run 'wendy auth refresh-certs' to re-issue them."
+	} else if isReachabilityTimeoutError(e.cause) {
+		msg += "\nThe device is enrolled and only serves mTLS on the secure port. Your wendy CLI may be too old or its certificates stale — upgrade the CLI and run 'wendy auth refresh-certs'."
 	}
 	return msg
+}
+
+// isReachabilityTimeoutError reports whether an error is a connection timeout
+// against an mTLS-enrolled device's plaintext port. This indicates the device
+// is up and enrolled (only the mTLS port is open), which may mean the CLI is
+// too old to speak mTLS or its certificates are stale.
+func isReachabilityTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection timed out") ||
+		strings.Contains(msg, "deadline exceeded")
 }
 
 // isCertRefreshableError reports whether an mTLS failure is one that

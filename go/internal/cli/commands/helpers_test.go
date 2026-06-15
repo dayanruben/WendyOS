@@ -701,6 +701,16 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 	})
 }
 
+func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
+	// A reachability timeout against an mTLS-advertised device should hint at
+	// both stale certs and a too-old CLI.
+	err := newProvisionedAgentUnauthorizedError(errors.New("dial tcp 192.168.1.50:50051: i/o timeout"))
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "upgrade") || !strings.Contains(msg, "wendy auth refresh-certs") {
+		t.Fatalf("message should mention upgrading the CLI and refresh-certs, got: %q", msg)
+	}
+}
+
 func TestIsCertRejectionError(t *testing.T) {
 	cases := []struct {
 		name string
