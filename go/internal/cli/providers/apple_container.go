@@ -141,6 +141,11 @@ func (p *AppleContainerProvider) BuildWithDockerfile(ctx context.Context, device
 		return nil, err
 	}
 
+	buildContext, err := appleContainerBuildContextPath(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving project path: %w", err)
+	}
+
 	imageName := strings.ToLower(product) + ":latest"
 	platform := "linux/arm64"
 	if device.CPUArchitecture != "" {
@@ -154,10 +159,10 @@ func (p *AppleContainerProvider) BuildWithDockerfile(ctx context.Context, device
 		}
 		args = append(args, "-f", resolved)
 	}
-	args = append(args, ".")
+	args = append(args, buildContext)
 
 	cmd := appleContainerCommandContext(ctx, "container", args...)
-	cmd.Dir = projectPath
+	cmd.Dir = buildContext
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -172,6 +177,45 @@ func (p *AppleContainerProvider) BuildWithDockerfile(ctx context.Context, device
 			ContainerName: product,
 		},
 	}, nil
+}
+
+func appleContainerBuildContextPath(projectPath string) (string, error) {
+	buildContext, err := filepath.Abs(projectPath)
+	if err != nil {
+		return "", err
+	}
+	// Apple Container 1.0.0 mishandles symlink-resolved /private/tmp build
+	// contexts. When macOS reports /private/tmp, pass the equivalent /tmp path.
+	if appleContainerHostGOOS() == "darwin" {
+		if normalized, ok := appleContainerTmpAlias(buildContext); ok {
+			return normalized, nil
+		}
+	}
+	return buildContext, nil
+}
+
+func appleContainerTmpAlias(path string) (string, bool) {
+	const privateTmp = "/private/tmp"
+	if path != privateTmp && !strings.HasPrefix(path, privateTmp+"/") {
+		return "", false
+	}
+	candidate := "/tmp" + strings.TrimPrefix(path, privateTmp)
+	if sameFilePath(path, candidate) {
+		return candidate, true
+	}
+	return "", false
+}
+
+func sameFilePath(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	if leftErr != nil {
+		return false
+	}
+	rightInfo, rightErr := os.Stat(right)
+	if rightErr != nil {
+		return false
+	}
+	return os.SameFile(leftInfo, rightInfo)
 }
 
 func confinedProviderDockerfilePath(projectPath, dockerfile string) (string, error) {

@@ -82,6 +82,10 @@ func TestAppleContainerBuildWithDockerfileUsesContainerBuild(t *testing.T) {
 	if err := os.WriteFile(dockerfile, []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolvedDockerfile, err := filepath.EvalSymlinks(dockerfile)
 	if err != nil {
 		t.Fatal(err)
@@ -104,11 +108,37 @@ func TestAppleContainerBuildWithDockerfileUsesContainerBuild(t *testing.T) {
 	for _, want := range []string{
 		"container\x00--version\n",
 		"container\x00system\x00status\n",
-		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00myapp:latest\x00-f\x00" + resolvedDockerfile + "\x00.\n",
+		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00myapp:latest\x00-f\x00" + resolvedDockerfile + "\x00" + buildContext + "\n",
 	} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("command log missing %q in:\n%s", want, log)
 		}
+	}
+}
+
+func TestAppleContainerBuildContextUsesTmpAliasWhenAvailable(t *testing.T) {
+	restore := stubAppleContainerHost(t)
+	defer restore()
+
+	dir, err := os.MkdirTemp("/tmp", "wendy-apple-context.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+
+	privateDir := "/private" + dir
+	if !sameFilePath(dir, privateDir) {
+		t.Skip("/private/tmp is not an alias for /tmp on this host")
+	}
+
+	got, err := appleContainerBuildContextPath(privateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dir {
+		t.Fatalf("build context = %q, want %q", got, dir)
 	}
 }
 
