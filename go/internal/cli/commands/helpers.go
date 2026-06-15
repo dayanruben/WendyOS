@@ -853,6 +853,11 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	if version.Version == "dev" {
 		return conn, nil
 	}
+	// A dev agent build is running intentionally — never offer to replace it
+	// with a stable release (CompareVersions treats "dev" as always-behind).
+	if agentVer == "dev" {
+		return conn, nil
+	}
 	// Unknown agent version — skip to avoid spurious update prompts.
 	if agentVer == "" {
 		return conn, nil
