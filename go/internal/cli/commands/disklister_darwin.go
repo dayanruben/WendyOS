@@ -4,6 +4,7 @@ package commands
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -178,6 +179,52 @@ func unmountDisk(devPath string) error {
 			return fmt.Errorf("unmounting %s: %s\nClose Finder windows, Disk Utility, or any apps using the disk, then retry", devPath, string(forceOut)+string(out))
 		}
 	}
+	return nil
+}
+
+// writeImageWithBmap flashes the image to d using the block map. It re-execs
+// this binary as `sudo wendy __bmap-write`, streaming the decompressed image to
+// the helper's stdin; the helper seeks and writes only mapped ranges as root.
+// progressFn receives cumulative uncompressed bytes fed to the helper.
+func writeImageWithBmap(r io.Reader, totalSize int64, d drive, bmapPath string, progressFn func(written int64)) error {
+	if err := unmountDisk(d.DevicePath); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating wendy binary: %w", err)
+	}
+	cmd := exec.Command("sudo", self, "__bmap-write", "--device", d.RawPath, "--bmap", bmapPath)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting bmap helper: %w", err)
+	}
+
+	cw := &countingWriter{w: stdin, progressFn: progressFn}
+	copyErr := func() error {
+		defer stdin.Close()
+		_, err := io.Copy(cw, r)
+		return err
+	}()
+
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("bmap write failed: %w\n%s", waitErr, stderr.String())
+		}
+		return fmt.Errorf("bmap write failed: %w", waitErr)
+	}
+	if copyErr != nil {
+		return fmt.Errorf("streaming image to bmap helper: %w", copyErr)
+	}
+	_ = totalSize
+	exec.Command("sync").Run() //nolint:errcheck
 	return nil
 }
 

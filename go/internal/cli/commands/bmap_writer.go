@@ -32,6 +32,23 @@ func downloadBmap(url, dst string) error {
 	return nil
 }
 
+// countingWriter wraps an io.Writer and reports cumulative bytes written via
+// progressFn. Used to drive the flash progress bar from bytes fed to the helper.
+type countingWriter struct {
+	w          io.Writer
+	n          int64
+	progressFn func(int64)
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	written, err := c.w.Write(p)
+	c.n += int64(written)
+	if c.progressFn != nil {
+		c.progressFn(c.n)
+	}
+	return written, err
+}
+
 // runBmapWrite is the body of the hidden __bmap-write helper subcommand
 // (Linux/macOS). It opens the raw device, reads the decompressed image from
 // the supplied reader (stdin in production), and applies the bmap. It runs as
