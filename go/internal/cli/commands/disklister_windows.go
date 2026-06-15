@@ -62,6 +62,7 @@ type drive struct {
 	Size        string // human-readable size
 	SizeBytes   int64  // size in bytes
 	IsRemovable bool
+	StorageType StorageType // underlying storage protocol
 }
 
 // psDisk is the JSON structure returned by the joined Get-Disk / Get-PhysicalDisk query.
@@ -136,6 +137,10 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 		}
 
 		devPath := fmt.Sprintf(`\\.\PhysicalDrive%d`, d.Number)
+		storageType := StorageUnknown
+		if strings.EqualFold(d.BusType, "NVMe") {
+			storageType = StorageNVMe
+		}
 		drives = append(drives, drive{
 			DevicePath:  devPath,
 			RawPath:     devPath,
@@ -143,6 +148,7 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 			Size:        humanize.Bytes(uint64(d.Size)),
 			SizeBytes:   d.Size,
 			IsRemovable: external || looksLikeCardReader(d),
+			StorageType: storageType,
 		})
 	}
 
