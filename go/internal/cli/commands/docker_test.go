@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +33,126 @@ func mustDetectProjectType(t *testing.T, dir string) string {
 		t.Fatalf("detectProjectType unexpected error: %v", err)
 	}
 	return got
+}
+
+func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\nCOPY app.py .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('hello')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := buildAndPushImageWithBuilder(
+		context.Background(),
+		imageBuilderAppleContainer,
+		dir,
+		"127.0.0.1:5000",
+		"127.0.0.1:5000/test-app:latest",
+		"linux/arm64",
+		"Dockerfile",
+		map[string]string{"B": "2", "A": "1"},
+		io.Discard,
+		io.Discard,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("buildAndPushImageWithBuilder: %v", err)
+	}
+
+	resolvedDockerfile, err := confinedDockerfilePath(dir, "Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	for _, want := range []string{
+		"container\x00--version\n",
+		"container\x00system\x00status\n",
+		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00127.0.0.1:5000/test-app:latest\x00-f\x00" + resolvedDockerfile + "\x00--build-arg\x00A=1\x00--build-arg\x00B=2\x00" + buildContext + "\n",
+		"container\x00image\x00push\x00--scheme\x00http\x00--platform\x00linux/arm64\x00127.0.0.1:5000/test-app:latest\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("command log missing %q in:\n%s", want, log)
+		}
+	}
+}
+
+func fakeImageBuilderCommandContext(logFile string) func(context.Context, string, ...string) *exec.Cmd {
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestImageBuilderHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(),
+			"GO_WANT_IMAGE_BUILDER_HELPER_PROCESS=1",
+			"IMAGE_BUILDER_HELPER_LOG="+logFile,
+		)
+		return cmd
+	}
+}
+
+func TestImageBuilderHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_IMAGE_BUILDER_HELPER_PROCESS") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	if logFile := os.Getenv("IMAGE_BUILDER_HELPER_LOG"); logFile != "" {
+		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(strings.Join(args, "\x00") + "\n")
+			_ = f.Close()
+		}
+	}
+	if len(args) >= 2 && args[0] == "container" && args[1] == "--version" {
+		_, _ = os.Stdout.WriteString("container 1.0.0\n")
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "system" && args[2] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "container" && args[1] == "build" {
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "image" && args[2] == "push" {
+		os.Exit(0)
+	}
+	os.Exit(1)
 }
 
 func TestEnsureDockerDaemon_DarwinUsesBundledCLIWhenRuntimeInstalledButDockerMissingFromPath(t *testing.T) {

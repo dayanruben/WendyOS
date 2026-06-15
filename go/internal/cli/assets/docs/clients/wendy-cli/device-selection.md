@@ -96,6 +96,13 @@ Use this target when you want to build and run a single Dockerfile project with
 Apple's lightweight Linux container runtime. Compose projects still require the
 Docker target.
 
+To deploy to a WendyOS device while using Apple Container only as the image
+builder, keep `--device` pointed at the WendyOS device and set `--builder`:
+
+```sh
+wendy --device my-wendy.local run --builder apple-container
+```
+
 ### Local
 
 Use the local target for host-native apps. The app runs directly on the computer

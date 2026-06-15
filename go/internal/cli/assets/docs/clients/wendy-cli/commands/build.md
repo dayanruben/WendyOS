@@ -18,7 +18,7 @@ If multiple manifests are present you can override detection with `--build-type`
 
 | Manifest | Required host | Notes |
 |---|---|---|
-| `Dockerfile` | Docker Desktop, Apple `container` on Apple silicon macOS, or WendyOS | Local Docker builds use `docker buildx`; `--device apple-container` uses `container build` |
+| `Dockerfile` | Docker Desktop, Apple `container` on Apple silicon macOS, or WendyOS | Local Docker builds use `docker buildx`; `--device apple-container` uses `container build`; WendyOS device builds can select `--builder docker` or `--builder apple-container` |
 | `Package.swift` | macOS or Linux | Requires a host Swift toolchain |
 | `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile` managed automatically |
 
@@ -29,9 +29,17 @@ If multiple manifests are present you can override detection with `--build-type`
 `wendy build` invokes `docker buildx build` targeting the device's CPU architecture. It passes the following build-args so the Dockerfile can adapt to the target hardware — declare them with `ARG` to use them:
 
 On Apple silicon Macs with [Apple `container`](https://github.com/apple/container)
-installed and started, select `--device apple-container` to build a local
-Dockerfile project with `container build` instead of Docker. Compose projects
-and WendyOS device deployments still use Docker build paths.
+installed and started, select `--builder apple-container` when the target is a
+WendyOS device:
+
+```sh
+container system start
+wendy --device my-wendy.local build --builder apple-container
+```
+
+For local-only Dockerfile builds on the Mac itself, select the local provider
+with `--device apple-container` instead. Compose projects still require Docker
+for local provider runs.
 
 | Build-arg | Values | Notes |
 |---|---|---|

@@ -623,7 +623,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 
 	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
+	registryAddr, proxyCleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, opts.builder)
 	if err != nil {
 		return err
 	}
@@ -668,7 +668,8 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			allBuildArgs[k] = v
 		}
 
-		cliLogln("Building image for service %s...", name)
+		builder, _ := normalizeImageBuilder(opts.builder)
+		cliLogln("Building image for service %s with %s...", name, imageBuilderDisplayName(builder))
 
 		// If a non-default Dockerfile is specified, we need to pass it via -f.
 		// buildAndPushImage always uses "." as the path; for compose we pass the
@@ -684,7 +685,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return fmt.Errorf("service %s: custom Dockerfile path %q is not yet supported; rename it to 'Dockerfile'", name, dockerfile)
 		}
 
-		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, "", allBuildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
+		if err := buildAndPushImageWithBuilder(ctx, opts.builder, ctxDir, registryAddr, imageName, platform, "", allBuildArgs, os.Stdout, os.Stderr, useMTLS); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
 		cliLogln("Service %s image built and pushed.", name)

@@ -96,7 +96,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
+	registryAddr, proxyCleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, opts.builder)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, cwd, appCfg.AppID, services, registryAddr, platform, buildArgs, conn.IsMTLS); err != nil {
+	if err := buildServicesParallel(ctx, cwd, appCfg.AppID, services, registryAddr, platform, buildArgs, opts.builder, useMTLS); err != nil {
 		return err
 	}
 
@@ -183,6 +183,7 @@ func buildServicesParallel(
 	services map[string]*appconfig.ServiceConfig,
 	registryAddr, platform string,
 	buildArgs map[string]string,
+	builder string,
 	useMTLS bool,
 ) error {
 	names := make([]string, 0, len(services))
@@ -240,7 +241,7 @@ func buildServicesParallel(
 			if prog == nil {
 				logOut = os.Stderr
 			}
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
+			err := buildAndPushImageWithBuilder(ctx, builder, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
 			dur := time.Since(start)
 
 			if prog != nil {

@@ -37,6 +37,40 @@ import (
 // command execution and outputs.
 var neighborExecCommandContext = exec.CommandContext
 
+var (
+	imageBuilderCommandContext = exec.CommandContext
+	imageBuilderLookPath       = exec.LookPath
+	imageBuilderHostGOOS       = func() string { return runtime.GOOS }
+	imageBuilderHostGOARCH     = func() string { return runtime.GOARCH }
+)
+
+const (
+	imageBuilderDocker         = "docker"
+	imageBuilderAppleContainer = "apple-container"
+)
+
+func normalizeImageBuilder(builder string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(builder)) {
+	case "":
+		return imageBuilderDocker, nil
+	case imageBuilderDocker:
+		return imageBuilderDocker, nil
+	case imageBuilderAppleContainer:
+		return imageBuilderAppleContainer, nil
+	default:
+		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker or apple-container", builder)
+	}
+}
+
+func imageBuilderDisplayName(builder string) string {
+	switch builder {
+	case imageBuilderAppleContainer:
+		return "Apple Container"
+	default:
+		return "Docker"
+	}
+}
+
 // requireRegistryAuth checks whether the device's registry requires mTLS
 // authentication and verifies the CLI has the necessary certs.
 // Returns an error if the device is provisioned but no CLI certs are available.
@@ -1190,6 +1224,160 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		return fmt.Errorf("docker buildx build failed: %w", err)
 	}
 	return nil
+}
+
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	switch normalized {
+	case imageBuilderDocker:
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	case imageBuilderAppleContainer:
+		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	default:
+		return fmt.Errorf("unsupported image builder %q", normalized)
+	}
+}
+
+func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	if useMTLS {
+		return fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry; use --builder docker or connect through a local registry proxy")
+	}
+	if err := checkAppleContainerBuilder(ctx); err != nil {
+		return err
+	}
+	if err := buildImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput); err != nil {
+		return err
+	}
+
+	args := []string{"image", "push", "--scheme", "http", "--platform", platform, registryImage}
+	fmt.Fprintf(logOutput, "[apple-container] pushing image: container %s\n", strings.Join(args, " "))
+	cmd := imageBuilderCommandContext(ctx, "container", args...)
+	cmd.Stdout = streamOutput
+	cmd.Stderr = streamOutput
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("container image push failed: %w", err)
+	}
+	return nil
+}
+
+func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		return fmt.Errorf("resolving project path: %w", err)
+	}
+	args := []string{"build", "--platform", platform, "-t", imageName}
+	if dockerfile != "" {
+		resolvedDockerfile, err := confinedDockerfilePath(dir, dockerfile)
+		if err != nil {
+			return err
+		}
+		args = append(args, "-f", resolvedDockerfile)
+	}
+	keys := make([]string, 0, len(buildArgs))
+	for k := range buildArgs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--build-arg", k+"="+buildArgs[k])
+	}
+	args = append(args, buildContext)
+
+	fmt.Fprintf(logOutput, "[apple-container] starting build: container %s\n", strings.Join(args, " "))
+	cmd := imageBuilderCommandContext(ctx, "container", args...)
+	cmd.Dir = buildContext
+	cmd.Stdout = streamOutput
+	cmd.Stderr = streamOutput
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("container build failed: %w", err)
+	}
+	return nil
+}
+
+func checkAppleContainerBuilder(ctx context.Context) error {
+	if imageBuilderHostGOOS() != "darwin" || imageBuilderHostGOARCH() != "arm64" {
+		return fmt.Errorf("Apple Container builder requires an Apple silicon Mac")
+	}
+	if _, err := imageBuilderLookPath("container"); err != nil {
+		return fmt.Errorf("container CLI is not installed or not in PATH")
+	}
+	if err := imageBuilderCommandContext(ctx, "container", "--version").Run(); err != nil {
+		return fmt.Errorf("container CLI is not usable: %w", err)
+	}
+	cmd := imageBuilderCommandContext(ctx, "container", "system", "status")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			msg = ": " + msg
+		}
+		return fmt.Errorf("Apple Container system is not running%s. Run 'container system start' and try again: %w", msg, err)
+	}
+	return nil
+}
+
+func appleContainerBuildContextPath(projectPath string) (string, error) {
+	buildContext, err := filepath.Abs(projectPath)
+	if err != nil {
+		return "", err
+	}
+	if imageBuilderHostGOOS() == "darwin" {
+		if normalized, ok := appleContainerTmpAlias(buildContext); ok {
+			return normalized, nil
+		}
+	}
+	return buildContext, nil
+}
+
+func appleContainerTmpAlias(path string) (string, bool) {
+	const privateTmp = "/private/tmp"
+	if path != privateTmp && !strings.HasPrefix(path, privateTmp+"/") {
+		return "", false
+	}
+	candidate := "/tmp" + strings.TrimPrefix(path, privateTmp)
+	if sameFilePath(path, candidate) {
+		return candidate, true
+	}
+	return "", false
+}
+
+func sameFilePath(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	if leftErr != nil {
+		return false
+	}
+	rightInfo, rightErr := os.Stat(right)
+	if rightErr != nil {
+		return false
+	}
+	return os.SameFile(leftInfo, rightInfo)
+}
+
+func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return "", nil, false, err
+	}
+	switch normalized {
+	case imageBuilderDocker:
+		registryAddr, cleanup, err = resolveRegistryForAgent(ctx, conn, port)
+		return registryAddr, cleanup, conn.IsMTLS, err
+	case imageBuilderAppleContainer:
+		var appleUseMTLS bool
+		registryAddr, appleUseMTLS, cleanup, err = resolveRegistryForSwiftAgent(ctx, conn, port)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if appleUseMTLS {
+			cleanup()
+			return "", nil, false, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
+		}
+		return registryAddr, cleanup, false, nil
+	default:
+		return "", nil, false, fmt.Errorf("unsupported image builder %q", normalized)
+	}
 }
 
 // registryHost formats a host:port for use in a registry image reference,

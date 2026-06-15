@@ -463,6 +463,7 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 type runOptions struct {
 	buildType            string
 	dockerfile           string
+	builder              string
 	debug                bool
 	deploy               bool
 	detach               bool
@@ -490,6 +491,7 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile to build from (e.g. Dockerfile.prod); shows a selection menu when multiple Dockerfiles exist")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to use for Dockerfile builds: docker or apple-container")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
@@ -543,6 +545,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
 		return fmt.Errorf("resolving working directory: %w", err)
+	}
+	if _, err := normalizeImageBuilder(opts.builder); err != nil {
+		return err
 	}
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
@@ -730,6 +735,9 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 	}
 
 	if target.External != nil && target.Provider != nil {
+		if opts.builder != "" {
+			return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
+		}
 		// External providers handle local compose support themselves.
 		// Compose projects have no wendy.json, so entitlements are nil.
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, filepath.Base(cwd), nil, opts)
@@ -1110,6 +1118,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 // runWithProvider builds and runs via an external device provider.
 func runWithProvider(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, product string, entitlements []appconfig.Entitlement, opts runOptions) error {
+	if opts.builder != "" {
+		return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
+	}
 	projectType, err := resolveRunProjectType(projectPath, opts.buildType)
 	if err != nil {
 		return err
@@ -1319,6 +1330,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			cliLogln("Note: --debug requires debugpy in the container image. Ensure your Dockerfile installs debugpy (e.g. RUN pip install debugpy).")
 		}
 	case "swift":
+		if normalized, _ := normalizeImageBuilder(opts.builder); normalized == imageBuilderAppleContainer {
+			return fmt.Errorf("Apple Container builder is only supported for Dockerfile builds; provide a Dockerfile or omit --builder")
+		}
 		// Dockerfile exists; use the Docker build path.
 	default:
 		return fmt.Errorf("unable to detect project type; ensure a Dockerfile, requirements.txt, or Package.swift is present")
@@ -1359,7 +1373,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	regPort := registryPort(agentOS)
 	// For link-local addresses (USB), a TCP proxy bridges the Docker VM
 	// to the host so buildx can reach the device.
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
+	registryAddr, proxyCleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, opts.builder)
 	if err != nil {
 		return err
 	}
@@ -1368,9 +1382,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	repo := strings.ToLower(appCfg.AppID)
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
 
-	cliLogln("Building and pushing Docker image for %s...", platform)
-	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
-		return fmt.Errorf("building and pushing Docker image: %w", err)
+	builder, _ := normalizeImageBuilder(opts.builder)
+	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(builder), platform)
+	if err := buildAndPushImageWithBuilder(ctx, opts.builder, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, useMTLS); err != nil {
+		return fmt.Errorf("building and pushing image: %w", err)
 	}
 	cliLogln("Build and push completed.")
 
