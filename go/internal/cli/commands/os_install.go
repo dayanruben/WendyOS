@@ -475,8 +475,18 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
 		} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
 			fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
-		} else if _, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
+		} else if parsed, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
 			fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+		} else if stream.uncompressedSize > 0 && parsed.ImageSize != stream.uncompressedSize {
+			// The manifest can advertise a bmap that does not describe this
+			// image. Multi-storage Jetson builds (e.g. orin-nano) publish both
+			// an NVMe and an SD image but share a single bmap_path: the SD
+			// publish runs last and overwrites it, while `path` stays the NVMe
+			// image. Flashing the NVMe image against the SD block map fails
+			// per-range checksum verification on the very first block. The bmap
+			// records the full image size, so a size mismatch is a cheap, sure
+			// signal that the map is for a different image — fall back to dd.
+			fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
 		} else {
 			bmapPath = candidate
 		}
