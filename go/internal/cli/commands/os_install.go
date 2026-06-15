@@ -456,14 +456,19 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if !noBmap && imgInfo.ZstURL != "" && imgInfo.BmapURL != "" {
 		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, imgInfo.ZstURL)
 		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion)
-		if zerr == nil && berr == nil && downloadBmap(imgInfo.BmapURL, bmapCandidate) == nil {
-			if parsed, perr := parseBmap(readFileOrNil(bmapCandidate)); perr == nil {
-				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
-			} else {
-				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
-			}
-		} else if zerr != nil {
+		switch {
+		case zerr != nil:
 			fmt.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
+		case berr != nil:
+			fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", berr)
+		default:
+			if derr := downloadBmap(imgInfo.BmapURL, bmapCandidate); derr != nil {
+				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+			} else if parsed, perr := parseBmap(readFileOrNil(bmapCandidate)); perr != nil {
+				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+			} else {
+				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
+			}
 		}
 	}
 
@@ -516,8 +521,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		case seekableZst != "":
 			fmt.Println("Using seekable block map for faster flashing.")
 			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, func(written int64) {
+				var pct float64
+				if seekableTotal > 0 {
+					pct = float64(written) / float64(seekableTotal)
+				}
 				wp.Send(tui.ProgressUpdateMsg{
-					Percent: float64(written) / float64(seekableTotal),
+					Percent: pct,
 					Written: written,
 					Total:   seekableTotal,
 				})
