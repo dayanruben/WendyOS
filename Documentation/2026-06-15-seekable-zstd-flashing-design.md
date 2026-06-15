@@ -9,17 +9,22 @@ Status: Design — pending review
 Flashing a WendyOS image is slow on zero-heavy ("holey") images even when the
 block map (bmap) is engaged. bmap already eliminates the *write* I/O for holes:
 the writer only `WriteAt`s mapped ranges. But the parent process still
-gzip-decompresses the **entire** uncompressed image — holes included — because
-it streams the decompressed bytes through a pipe to the writer, and a gzip pipe
-is not seekable. To advance the stream to the next mapped range, every hole byte
-must be produced by the (single-threaded) gzip decoder and then discarded.
+decompresses the **entire** uncompressed image — holes included — because it
+streams the decompressed bytes through a pipe to the writer, and a deflate
+(zip/gzip) pipe is not seekable. To advance the stream to the next mapped range,
+every hole byte must be produced by the (single-threaded) decoder and discarded.
+
+(The OS images published to `wendyos-images-public` are currently `.zip`
+artifacts — `wendy-os-publisher` re-compresses the raw `.img`/`.wic` with
+`zip -6` — and the CLI also accepts `.gz` and raw for local files. All use
+single-threaded deflate, so the analysis is the same regardless of which.)
 
 For a typical Jetson image (~19 GB uncompressed, ~4 GB of real mapped data),
 that means decoding ~15 GB of zeros we immediately throw away. Single-threaded
-gzip decode (~150–250 MB/s) of the full image is the wall-clock bottleneck.
+deflate decode (~150–250 MB/s) of the full image is the wall-clock bottleneck.
 
-**Root cause:** holes cost decompression, not write I/O, and a gzip pipe cannot
-skip them.
+**Root cause:** holes cost decompression, not write I/O, and a deflate pipe
+cannot skip them.
 
 ## Goal
 
@@ -57,26 +62,46 @@ speed — roughly **15–20× faster wall-clock** on holey images. Download stay
 
 ## Architecture
 
-### Build side (meta-wendyos)
+### Build side (wendy-os-publisher, Go)
 
-- Compress each published image as seekable zstd → `<image>.img.zst`, frame size
-  **4 MiB uncompressed** (balances seek-table size against worst-case wasted
-  decode per range; tunable).
-- Continue publishing the existing `.bmap` unchanged.
-- The seek table is embedded in the `.zst` file (a trailing skippable frame), so
-  the artifact is self-contained — no separate index sidecar.
-- A small in-repo Go encoder (`cmd/`, reusing the same seekable library as the
-  reader so writer/reader cannot drift) produces the artifact; the Yocto
-  publish step invokes it. Build-side details (recipe wiring) are out of scope
-  for this CLI spec beyond "publish `.img.zst` + `.bmap`".
+The seekable-zstd artifact is produced in **`wendy-os-publisher`**, not in Yocto.
+Rationale: compression already lives there (it re-compresses raw `.img`/`.wic`
+→ `.zip`); it receives the **raw, uncompressed** image as input (exactly what a
+seekable encoder needs); and it is the single choke point that **both RPi
+(Yocto) and Jetson (NVIDIA L4T + bash)** funnel through, so one change covers
+both device families. It can also reuse the same `zstd-seekable-format-go`
+library as the CLI reader, so writer and reader cannot drift. Yocto and the
+Jetson scripts are unchanged.
+
+> Note: stock `zstd` (including `--long`) does **not** emit the seekable
+> container. Seekable zstd is a distinct format (independent frames + a trailing
+> skippable seek-table frame); it must be written by the seekable library.
+
+Publisher changes:
+
+- New `compressSeekableZstd()` path for OS images: read the raw image, write
+  `<image>.img.zst` in seekable format, frame size **4 MiB uncompressed**
+  (balances seek-table size against worst-case wasted decode per range; tunable).
+  The seek table is embedded in the `.zst` (trailing skippable frame), so the
+  artifact is self-contained — no separate index sidecar.
+- Upload `.img.zst` to GCS alongside the existing artifacts and populate a new
+  manifest field `zst_path` (+ `zst_checksum`, `zst_size_bytes`) on
+  `VersionMetadata`, mirroring how `path`/`checksum`/`size_bytes` are set.
+- The seekable artifact is produced for OS-image uploads only (not OTA/recovery).
+- **Prerequisite to verify, not assume:** the `.bmap` must be uploaded and
+  `bmap_path` set in the manifest. Production manifests already carry `bmap_path`
+  (bmap flashing is live), so this path exists; confirm it covers the device
+  families we target before relying on it. If a device has no bmap, the seekable
+  artifact still downloads but offers no hole-skipping benefit — the CLI uses the
+  legacy path (see fallback).
 
 ### Manifest
 
 - Add a per-version field `zst_path` (sibling to `path`/`bmap_path`). When
   present, the CLI derives `ZstURL = gcsBaseURL + "/" + zst_path`.
-- Absent `zst_path` → CLI uses the existing gzip + bmap/`dd` path unchanged.
-  This is the rollout/back-compat seam: old manifests and partially-published
-  versions keep working.
+- Absent `zst_path` → CLI uses the existing deflate (`.zip`/`.gz`) + bmap/`dd`
+  path unchanged. This is the rollout/back-compat seam: old manifests and
+  partially-published versions keep working.
 
 ### CLI side
 
@@ -96,14 +121,25 @@ silent fallback that would leave a half-written disk).
 
 ## Components / where the code lands
 
-All paths under `go/internal/cli/commands/` unless noted.
+CLI paths are under `go/internal/cli/commands/`. The build-side change lands in
+the separate `wendy-os-publisher` repo.
+
+**Publisher (`wendy-os-publisher`, separate repo):**
+
+- `cmd/upload_and_manifest.go`: add `compressSeekableZstd()`; upload `.img.zst`
+  for OS images; add `zst_path`/`zst_checksum`/`zst_size_bytes` to
+  `VersionMetadata` and populate them. Add the `zstd-seekable-format-go` dep.
+
+**CLI (`go/internal/cli/commands/`):**
 
 - `seekable_zstd.go` (new): the seekable reader — `ReaderAt`/`Size` over the
   decompressed image, plus frame iteration (`forEachFrame`/offset→frame lookup).
-- `bmap.go`: replace `applyBmap`'s stream-and-discard loop with the frame-walk
-  driven by an `io.ReaderAt` source. Keep `parseBmap` and per-range SHA256
-  verification. `discard()` becomes unused for this path and is removed if no
-  other caller remains.
+- `bmap.go`: add a new frame-walk writer (`applyBmapSeekable`, driven by an
+  `io.ReaderAt` source) **alongside** the existing streaming `applyBmap`. The
+  streaming version stays — it's still used by the legacy deflate+bmap fallback
+  path (which has only a sequential pipe, not a seekable source). Both share
+  `parseBmap` and the per-range SHA256 verification helper; factor that hashing
+  so the two writers can't diverge on the verification guarantee.
 - `bmap_writer.go` / `root.go`: `__bmap-write` gains `--source <.img.zst>`; the
   helper opens the seekable reader and runs the frame-walk itself as root,
   emitting a newline-delimited cumulative-bytes-written counter on stdout.
@@ -117,13 +153,19 @@ All paths under `go/internal/cli/commands/` unless noted.
 - `os_install.go`: prefer `zst_path`; thread the seekable source through;
   **skip the one-time gzip "measure size" pass when a bmap is present** — the
   bmap's `ImageSize` already gives the exact uncompressed total for the bar.
+  (This pass is gzip-specific: `.zip` entries and the new `.zst` reader both
+  report their size directly, so it only affects local `.gz` flashes. Minor,
+  independent win — included because it's cheap and removes a redundant full
+  decode on that path.)
 - `manifest.go`: add `zst_path` parsing and `ZstURL` on `imageInfo`.
 
 ### Dependency
 
 Add `github.com/SaveTheRbtz/zstd-seekable-format-go` (reader + writer), layered
-on the already-vendored `github.com/klauspost/compress`. Used by both the CLI
-reader and the in-repo build encoder.
+on the already-vendored `github.com/klauspost/compress`. Used by the CLI reader
+(`go.mod` in this repo) and by the publisher's writer (`go.mod` in
+`wendy-os-publisher`). Same library on both sides so the on-disk format cannot
+drift.
 
 ## Frame-walk algorithm
 
@@ -158,7 +200,8 @@ Properties:
 
 - Missing `zst_path`, seekable-open failure, or `Size()` ≠ bmap `ImageSize`
   *before* writing begins → print a `Note:` and fall back to the existing
-  gzip + bmap/`dd` path (consistent with current fallback style).
+  deflate (`.zip`/`.gz`) + bmap/`dd` path (consistent with current fallback
+  style).
 - `--no-bmap` forces the legacy path (a `.img.zst` with no usable bmap offers no
   benefit; we do not add a hole-less seekable mode).
 - Checksum mismatch, short write, decode error, or helper non-zero exit *during*
@@ -185,6 +228,8 @@ Properties:
 ## Rollout
 
 1. Land CLI support gated on `zst_path` (no-op until manifests carry it).
-2. Build publishes `.img.zst` for new image versions.
-3. CLI prefers `.img.zst` when present; older versions keep using gzip.
-No flag day; the manifest field is the switch.
+2. Land publisher support; it emits `.img.zst` + `zst_path` for new uploads.
+3. CLI prefers `.img.zst` when present; existing versions keep using the `.zip`
+   path. Yocto and the Jetson build scripts are unchanged.
+No flag day; the manifest field is the switch. Old CLIs ignore `zst_path` and
+keep downloading the `.zip`, so a published seekable artifact is backward-safe.
