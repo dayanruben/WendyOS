@@ -21,7 +21,7 @@ func TestGetImageInfoResolvesBmapURL(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &dm); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	info, err := getImageInfo(&dm, "0.11.0")
+	info, err := getImageInfo(&dm, "0.11.0", "")
 	if err != nil {
 		t.Fatalf("getImageInfo: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestGetImageInfoNoBmap(t *testing.T) {
 	dm := deviceManifest{Versions: map[string]deviceVersion{
 		"1.0.0": {Path: "p/x.img", SizeBytes: 1},
 	}}
-	info, err := getImageInfo(&dm, "1.0.0")
+	info, err := getImageInfo(&dm, "1.0.0", "")
 	if err != nil {
 		t.Fatalf("getImageInfo: %v", err)
 	}

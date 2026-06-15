@@ -364,7 +364,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	selectedVersion := device.RawVersion // default: latest (or nightly if --nightly)
 	if flagVersion != "" {
 		// Validate the requested version exists in the manifest.
-		if _, err := getImageInfo(device.Manifest, flagVersion); err != nil {
+		if _, err := getImageInfo(device.Manifest, flagVersion, ""); err != nil {
 			return fmt.Errorf("version %q not found for %s", flagVersion, device.Name)
 		}
 		selectedVersion = flagVersion
@@ -442,7 +442,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	// Step 5: Resolve image (cached or download) and open streaming reader.
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
-	imgInfo, err := getImageInfo(device.Manifest, selectedVersion)
+	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, "")
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
