@@ -91,6 +91,33 @@ func osAlreadyCurrent(currentOSVersion, latestVersion string, nightly bool) bool
 		!nightly && version.CompareVersions(latestVersion, normalized) <= 0
 }
 
+// osUpdateAction is the decision for the OS-update step of `device update`.
+type osUpdateAction int
+
+const (
+	osActionAlreadyCurrent osUpdateAction = iota // device is already at/ahead of latest
+	osActionApply                                // apply without prompting (--yes)
+	osActionPrompt                               // interactive: ask the user
+	osActionReportOnly                           // non-interactive, no --yes: report and skip
+)
+
+// decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
+// available. It is pure so it can be unit-tested; the caller is responsible for
+// running the interactive prompt when the result is osActionPrompt.
+func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+		return osActionAlreadyCurrent
+	}
+	switch {
+	case assumeYes:
+		return osActionApply
+	case interactive:
+		return osActionPrompt
+	default:
+		return osActionReportOnly
+	}
+}
+
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
