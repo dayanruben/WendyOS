@@ -44,6 +44,8 @@ func TestMaybeCheckOSUpdateSkips(t *testing.T) {
 	}{
 		{"nil version", nil},
 		{"non-wendyos darwin", &agentpb.GetAgentVersionResponse{Os: "darwin", OsVersion: strp("14.4")}},
+		{"wendyos without mender",
+			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), DeviceType: strp("raspberry-pi-5")}},
 		{"wendyos with mender but no device type",
 			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"mender"}}},
 	}
