@@ -44,6 +44,7 @@ type deviceVersion struct {
 	NVMEOTAUpdatePath      string `json:"nvme_ota_update_path"`
 	NVMEOTAUpdateChecksum  string `json:"nvme_ota_update_checksum"`
 	NVMEOTAUpdateSizeBytes int64  `json:"nvme_ota_update_size_bytes"`
+	BmapPath               string `json:"bmap_path"`
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -61,6 +62,7 @@ type imageInfo struct {
 	DownloadURL string
 	ImageSize   int64
 	Version     string
+	BmapURL     string
 }
 
 func fetchMainManifest() (*mainManifest, error) {
@@ -151,11 +153,15 @@ func getImageInfo(dm *deviceManifest, ver string) (*imageInfo, error) {
 		return nil, fmt.Errorf("version %s not found in device manifest", ver)
 	}
 
-	return &imageInfo{
+	info := &imageInfo{
 		DownloadURL: gcsBaseURL + "/" + v.Path,
 		ImageSize:   v.SizeBytes,
 		Version:     ver,
-	}, nil
+	}
+	if v.BmapPath != "" {
+		info.BmapURL = gcsBaseURL + "/" + v.BmapPath
+	}
+	return info, nil
 }
 
 func getOTAUpdateURL(dm *deviceManifest, ver string, storageMedium string) (string, error) {
