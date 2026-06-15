@@ -45,16 +45,24 @@ func TestAppleContainerInspectHasManagedLabel(t *testing.T) {
 func TestAppleContainerListInfos(t *testing.T) {
 	got := appleContainerListInfos([]byte(`[
 		{"id":"app","image":"app:latest","state":"running"},
-		{"ID":"other","Image":"other:latest","State":"stopped","Status":"exited"}
+		{"ID":"other","Image":"other:latest","State":"stopped","Status":"exited"},
+		{
+			"id":"nested",
+			"configuration":{"image":{"reference":"nested:latest"}},
+			"status":{"state":"running"}
+		}
 	]`))
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
 	}
 	if got[0].Name != "app" || got[0].Image != "app:latest" || got[0].State != "running" {
 		t.Fatalf("first entry = %+v", got[0])
 	}
 	if got[1].Name != "other" || got[1].Status != "exited" {
 		t.Fatalf("second entry = %+v", got[1])
+	}
+	if got[2].Name != "nested" || got[2].Image != "nested:latest" || got[2].State != "running" || got[2].Status != "running" {
+		t.Fatalf("third entry = %+v", got[2])
 	}
 }
 

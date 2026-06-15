@@ -405,11 +405,31 @@ func appleContainerListInfos(data []byte) []ContainerInfo {
 		if !ok {
 			continue
 		}
+		image := firstJSONText(m, "image", "Image")
+		if image == "" {
+			if cfg := firstJSONMap(m, "configuration", "Configuration"); cfg != nil {
+				if img := firstJSONMap(cfg, "image", "Image"); img != nil {
+					image = firstJSONText(img, "reference", "Reference")
+				}
+			}
+		}
+		state := firstJSONText(m, "state", "State")
+		status := firstJSONText(m, "status", "Status")
+		if statusMap := firstJSONMap(m, "status", "Status"); statusMap != nil {
+			if nestedState := firstJSONText(statusMap, "state", "State"); nestedState != "" {
+				if state == "" {
+					state = nestedState
+				}
+				if status == "" {
+					status = nestedState
+				}
+			}
+		}
 		containers = append(containers, ContainerInfo{
 			Name:   firstJSONText(m, "id", "ID", "name", "Name"),
-			Image:  firstJSONText(m, "image", "Image"),
-			State:  firstJSONText(m, "state", "State"),
-			Status: firstJSONText(m, "status", "Status"),
+			Image:  image,
+			State:  state,
+			Status: status,
 		})
 	}
 	return containers
@@ -418,10 +438,26 @@ func appleContainerListInfos(data []byte) []ContainerInfo {
 func firstJSONText(m map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if value, ok := m[key]; ok {
-			return fmt.Sprint(value)
+			switch v := value.(type) {
+			case string:
+				return v
+			case json.Number:
+				return v.String()
+			case float64, bool:
+				return fmt.Sprint(v)
+			}
 		}
 	}
 	return ""
+}
+
+func firstJSONMap(m map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if value, ok := m[key].(map[string]any); ok {
+			return value
+		}
+	}
+	return nil
 }
 
 func (p *AppleContainerProvider) StartContainer(ctx context.Context, name string) error {
