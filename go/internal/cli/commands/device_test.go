@@ -46,12 +46,12 @@ func TestMaybeCheckOSUpdateSkips(t *testing.T) {
 		{"non-wendyos darwin", &agentpb.GetAgentVersionResponse{Os: "darwin", OsVersion: strp("14.4")}},
 		{"wendyos without mender",
 			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), DeviceType: strp("raspberry-pi-5")}},
-		{"wendyos with mender but no device type",
-			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"mender"}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// These inputs must return before any manifest/network call.
+			// These inputs must return from the cheap pre-reconnect gate, before
+			// any reconnect/manifest/network call. (WendyOS+mender devices do
+			// reconnect to re-read the version, so they're not covered here.)
 			if err := maybeCheckOSUpdate(context.Background(), tc.version, "", false, false); err != nil {
 				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)
 			}

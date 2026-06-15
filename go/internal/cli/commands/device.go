@@ -1631,11 +1631,14 @@ func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConn
 
 // maybeCheckOSUpdate runs the OS-update step for `device update` after the
 // agent has been updated. preUpdateVersion is the version queried before the
-// agent restart; its OsVersion/DeviceType/StorageMedium are unaffected by an
-// agent update, so they are valid here. The decision (already-current,
-// report-only, prompt, apply) needs no live connection; only the apply path
-// reconnects. Non-WendyOS / no-mender / unknown-device-type targets are
-// skipped silently — `device update` still succeeds as an agent-only update.
+// agent restart; it is used only for a cheap up-front gate, since whether a
+// device runs WendyOS and supports mender does not change across an agent
+// update. The device_type/storage_medium/os_version used for the actual
+// decision are re-read from the agent we just installed — a newer agent can
+// report a corrected device_type, so the pre-update snapshot may be stale.
+// Non-WendyOS / no-mender targets are skipped silently (no reconnect), and any
+// failure to re-read or look up the OS is reported but non-fatal — `device
+// update` still succeeds as an agent-only update.
 func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, host string, nightly, assumeYes bool) error {
 	if preUpdateVersion == nil {
 		return nil
@@ -1643,19 +1646,37 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	if !isWendyOSUpdateTarget(preUpdateVersion) || !agentVersionHasFeature(preUpdateVersion, "mender") {
 		return nil
 	}
-	deviceType := preUpdateVersion.GetDeviceType()
-	if deviceType == "" {
-		// No device type → cannot auto-select the GCS artifact; skip quietly.
+
+	// Re-read the version from the just-installed agent: its reported
+	// device_type is the value that must match the OTA manifest key, and a
+	// newer agent may report it correctly where an older one did not.
+	fmt.Println("Checking for OS updates...")
+	conn, err := reconnectAgentAfterRestart(ctx, host)
+	if err != nil {
+		fmt.Printf("Could not check for OS updates: %v\n", err)
 		return nil
 	}
+	defer conn.Close()
 
-	otaURL, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, preUpdateVersion.GetStorageMedium(), nightly)
+	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		fmt.Printf("Could not check for OS updates: %v\n", err)
 		return nil
 	}
 
-	currentOS := preUpdateVersion.GetOsVersion()
+	deviceType := versionResp.GetDeviceType()
+	if deviceType == "" {
+		// No device type → cannot auto-select the GCS artifact; skip quietly.
+		return nil
+	}
+
+	otaURL, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
+	if err != nil {
+		fmt.Printf("Could not check for OS updates: %v\n", err)
+		return nil
+	}
+
+	currentOS := versionResp.GetOsVersion()
 	fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
 	if fromVer == "" {
 		fromVer = "unknown"
@@ -1682,13 +1703,6 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	if !apply {
 		return nil
 	}
-
-	fmt.Println("Reconnecting to apply the OS update...")
-	conn, err := reconnectAgentAfterRestart(ctx, host)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
 
 	if err := streamOSUpdate(ctx, conn, otaURL); err != nil {
 		return err
