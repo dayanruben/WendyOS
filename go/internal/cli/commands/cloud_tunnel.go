@@ -31,6 +31,17 @@ import (
 const (
 	defaultBrokerPort = "50052"
 	maxCloudAssets    = 10_000
+
+	// cloudKeepalivePing is how often the client sends an HTTP/2 keepalive
+	// ping over the tunnel. It must stay >= the agent's MinTime enforcement
+	// policy (10s) and frequent enough to keep the tunnel/NAT warm.
+	cloudKeepalivePing = 30 * time.Second
+	// cloudKeepaliveACKTimeout is how long to wait for a keepalive ACK before
+	// declaring the connection dead. It is generous because long OS-update
+	// streams run while the device is saturated (artifact download + mender
+	// install), and a busy device can take well over the usual 10s to ACK a
+	// ping; a tighter window tears down the stream mid-install.
+	cloudKeepaliveACKTimeout = 20 * time.Second
 )
 
 type closeFunc func()
@@ -125,8 +136,8 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
+			Time:                cloudKeepalivePing,
+			Timeout:             cloudKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
@@ -248,8 +259,8 @@ func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientCon
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
+			Time:                cloudKeepalivePing,
+			Timeout:             cloudKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
@@ -471,8 +482,8 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
+			Time:                cloudKeepalivePing,
+			Timeout:             cloudKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)

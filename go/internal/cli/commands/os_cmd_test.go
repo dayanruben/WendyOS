@@ -132,3 +132,22 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestProgressLabel(t *testing.T) {
+	tests := []struct {
+		phase   string
+		percent int32
+		want    string
+	}{
+		{"installing", 42, "Installing update (42%)"},
+		{"installing", 0, "Installing update..."},
+		{"downloading", 0, "Downloading update..."},
+		{"finalizing", 100, "Finalizing (100%)"},
+		{"", 0, "Updating WendyOS..."},
+	}
+	for _, tc := range tests {
+		if got := progressLabel(tc.phase, tc.percent); got != tc.want {
+			t.Errorf("progressLabel(%q,%d) = %q, want %q", tc.phase, tc.percent, got, tc.want)
+		}
+	}
+}

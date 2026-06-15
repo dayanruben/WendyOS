@@ -315,7 +315,7 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 				return
 			}
 			if progress := resp.GetProgress(); progress != nil {
-				p.Send(tui.SpinnerUpdateMsg{Label: phaseLabel(progress.GetPhase())})
+				p.Send(tui.SpinnerUpdateMsg{Label: progressLabel(progress.GetPhase(), progress.GetPercent())})
 			}
 			if completed := resp.GetCompleted(); completed != nil {
 				p.Send(tui.SpinnerDoneMsg{})
@@ -574,7 +574,8 @@ func ipForURL(ip string) string {
 // drainOSUpdateStream reads all messages from an UpdateOS stream without a
 // TUI, printing phase label changes to stderr. Used when stdout is not a TTY.
 func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error {
-	var lastLabel string
+	var lastPhase string
+	lastDecile := int32(-1)
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -584,9 +585,14 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 			return err
 		}
 		if progress := resp.GetProgress(); progress != nil {
-			if label := phaseLabel(progress.GetPhase()); label != lastLabel {
-				fmt.Fprintln(os.Stderr, label)
-				lastLabel = label
+			phase, percent := progress.GetPhase(), progress.GetPercent()
+			// Print on every phase change, and at each 10% step within a phase,
+			// so non-interactive logs show steady progress without flooding.
+			decile := percent / 10
+			if phase != lastPhase || (percent > 0 && decile != lastDecile) {
+				fmt.Fprintln(os.Stderr, progressLabel(phase, percent))
+				lastPhase = phase
+				lastDecile = decile
 			}
 		}
 		if resp.GetCompleted() != nil {
@@ -613,6 +619,18 @@ func phaseLabel(phase string) string {
 		}
 		return "Updating WendyOS..."
 	}
+}
+
+// progressLabel renders a phase plus its percentage when the agent reports one,
+// e.g. "Installing update (42%)". A percent of 0 is treated as "unknown" and
+// the bare phase label is shown. This surfaces real progress during the long
+// download/install so the operation doesn't look hung.
+func progressLabel(phase string, percent int32) string {
+	label := phaseLabel(phase)
+	if percent > 0 {
+		return strings.TrimSuffix(label, "...") + fmt.Sprintf(" (%d%%)", percent)
+	}
+	return label
 }
 
 // ensureAgentUpToDate checks the agent version on the device against the latest
