@@ -151,8 +151,20 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	var bmapDevice, bmapFile string
+	bmapWriteCmd := &cobra.Command{
+		Use:    "__bmap-write",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBmapWrite(bmapDevice, bmapFile, cmd.InOrStdin())
+		},
+	}
+	bmapWriteCmd.Flags().StringVar(&bmapDevice, "device", "", "Raw device path to write")
+	bmapWriteCmd.Flags().StringVar(&bmapFile, "bmap", "", "Path to the .bmap file")
+
 	root.AddCommand(
 		bleCheckCmd,
+		bmapWriteCmd,
 		runCmd,
 		buildCmd,
 		initCmd,

@@ -59,6 +59,17 @@ func TestRunBmapWriteToFile(t *testing.T) {
 	}
 }
 
+func TestBmapWriteCommandIsHidden(t *testing.T) {
+	root := NewRootCmd()
+	c, _, err := root.Find([]string{"__bmap-write"})
+	if err != nil {
+		t.Fatalf("find __bmap-write: %v", err)
+	}
+	if c.Name() != "__bmap-write" || !c.Hidden {
+		t.Fatalf("__bmap-write should be a hidden command; got name=%q hidden=%v", c.Name(), c.Hidden)
+	}
+}
+
 // bmapXML renders a minimal valid bmap document for b (sha256, blocks in order).
 func bmapXML(b *Bmap) string {
 	var sb bytes.Buffer
