@@ -265,60 +265,8 @@ so the device can download it directly.`,
 				return fmt.Errorf("provide a local artifact path or --artifact-url")
 			}
 
-			stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
-				ArtifactUrl: artifactURL,
-			})
-			if err != nil {
-				return fmt.Errorf("starting OS update: %w", err)
-			}
-
-			if isInteractiveTerminal() {
-				spin := tui.NewSpinner("Downloading update...")
-				p := tea.NewProgram(spin)
-
-				go func() {
-					for {
-						resp, err := stream.Recv()
-						if err == io.EOF {
-							p.Send(tui.SpinnerDoneMsg{})
-							return
-						}
-						if err != nil {
-							p.Send(tui.SpinnerDoneMsg{Err: err})
-							return
-						}
-						if progress := resp.GetProgress(); progress != nil {
-							p.Send(tui.SpinnerUpdateMsg{Label: phaseLabel(progress.GetPhase())})
-						}
-						if completed := resp.GetCompleted(); completed != nil {
-							p.Send(tui.SpinnerDoneMsg{})
-							return
-						}
-						if failed := resp.GetFailed(); failed != nil {
-							p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
-							return
-						}
-					}
-				}()
-
-				finalModel, err := p.Run()
-				if err != nil {
-					return fmt.Errorf("TUI error: %w", err)
-				}
-				spinModel, ok := finalModel.(tui.SpinnerModel)
-				if !ok {
-					return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
-				}
-				if !spinModel.Done() {
-					return ErrUserCancelled
-				}
-				if _, spinErr := spinModel.Result(); spinErr != nil {
-					return spinErr
-				}
-			} else {
-				if err := drainOSUpdateStream(stream); err != nil {
-					return err
-				}
+			if err := streamOSUpdate(ctx, conn, artifactURL); err != nil {
+				return err
 			}
 
 			deviceHost := conn.Host
@@ -335,6 +283,66 @@ so the device can download it directly.`,
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
 
 	return cmd
+}
+
+// streamOSUpdate starts an UpdateOS stream for artifactURL on conn and reports
+// progress: a spinner when interactive, a silent drain otherwise. It does not
+// wait for the post-update reboot.
+func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artifactURL string) error {
+	stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
+		ArtifactUrl: artifactURL,
+	})
+	if err != nil {
+		return fmt.Errorf("starting OS update: %w", err)
+	}
+
+	if !isInteractiveTerminal() {
+		return drainOSUpdateStream(stream)
+	}
+
+	spin := tui.NewSpinner("Downloading update...")
+	p := tea.NewProgram(spin)
+
+	go func() {
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF {
+				p.Send(tui.SpinnerDoneMsg{})
+				return
+			}
+			if err != nil {
+				p.Send(tui.SpinnerDoneMsg{Err: err})
+				return
+			}
+			if progress := resp.GetProgress(); progress != nil {
+				p.Send(tui.SpinnerUpdateMsg{Label: phaseLabel(progress.GetPhase())})
+			}
+			if completed := resp.GetCompleted(); completed != nil {
+				p.Send(tui.SpinnerDoneMsg{})
+				return
+			}
+			if failed := resp.GetFailed(); failed != nil {
+				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
+				return
+			}
+		}
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+	spinModel, ok := finalModel.(tui.SpinnerModel)
+	if !ok {
+		return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
+	}
+	if !spinModel.Done() {
+		return ErrUserCancelled
+	}
+	if _, spinErr := spinModel.Result(); spinErr != nil {
+		return spinErr
+	}
+	return nil
 }
 
 // resolveArtifactPath resolves a local file path or directory to a .mender artifact file.
