@@ -234,6 +234,40 @@ func writeImageWithBmap(r io.Reader, totalSize int64, d drive, bmapPath string, 
 	return nil
 }
 
+// writeImageWithBmapSeekable flashes via the seekable source: it re-execs
+// `sudo wendy __bmap-write --source <zst> --bmap <bmap> --device <dev>`; the
+// helper reads the source itself and writes mapped ranges as root. progressFn
+// receives cumulative mapped bytes (scanned from the helper's stdout).
+func writeImageWithBmapSeekable(sourcePath, bmapPath string, d drive, progressFn func(int64)) error {
+	if err := unmountDisk(d.DevicePath); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating wendy binary: %w", err)
+	}
+	cmd := exec.Command("sudo", self, "__bmap-write",
+		"--device", d.RawPath, "--bmap", bmapPath, "--source", sourcePath)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting bmap helper: %w", err)
+	}
+	scanBmapProgress(stdout, progressFn)
+	if err := cmd.Wait(); err != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("bmap write failed: %w\n%s", err, stderr.String())
+		}
+		return fmt.Errorf("bmap write failed: %w", err)
+	}
+	exec.Command("sync").Run() //nolint:errcheck
+	return nil
+}
+
 func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {
 	if err := unmountDisk(d.DevicePath); err != nil {
 		return err
