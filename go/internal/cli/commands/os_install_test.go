@@ -815,8 +815,8 @@ func TestResolveDeviceNameFlagValidation(t *testing.T) {
 		in      string
 		wantErr string
 	}{
-		{"too short", "ab", "3–64 characters"},
-		{"too long", strings.Repeat("a", 65), "3–64 characters"},
+		{"too short", "ab", "3–55 characters"},
+		{"too long", strings.Repeat("a", 56), "3–55 characters"},
 		{"starts with number", "1device", "start with a lowercase letter"},
 		{"uppercase", "Wendy", "lowercase letters, digits, and hyphens"},
 		{"underscore", "wendy_pi", "lowercase letters, digits, and hyphens"},
@@ -834,6 +834,27 @@ func TestResolveDeviceNameFlagValidation(t *testing.T) {
 				t.Fatalf("error %q should contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateDeviceNameLengthBoundary pins the device-name length cap to the
+// value that keeps the agent-derived "wendyos-<name>" hostname within the
+// 63-octet RFC 1035 label limit (WDY-1518).
+func TestValidateDeviceNameLengthBoundary(t *testing.T) {
+	if maxDeviceNameLen != 55 {
+		t.Fatalf("maxDeviceNameLen = %d; want 55 so wendyos-<name> stays a valid DNS label", maxDeviceNameLen)
+	}
+
+	maxName := strings.Repeat("a", maxDeviceNameLen)
+	if err := validateDeviceName(maxName); err != nil {
+		t.Fatalf("name of max length %d should be valid: %v", maxDeviceNameLen, err)
+	}
+	if got := len("wendyos-" + maxName); got > 63 {
+		t.Fatalf("derived hostname label is %d octets; exceeds the RFC 1035 limit of 63", got)
+	}
+
+	if err := validateDeviceName(strings.Repeat("a", maxDeviceNameLen+1)); err == nil {
+		t.Fatalf("name longer than %d should be rejected", maxDeviceNameLen)
 	}
 }
 
@@ -1230,7 +1251,7 @@ func TestResolveDeviceNamePromptStatesConstraints(t *testing.T) {
 	}
 
 	// The hint must surface the naming constraints inline (WDY-1475).
-	for _, want := range []string{"a-z", "3–64", "auto-generate"} {
+	for _, want := range []string{"a-z", "3–55", "auto-generate"} {
 		if !strings.Contains(gotHint, want) {
 			t.Errorf("hint %q should mention %q", gotHint, want)
 		}

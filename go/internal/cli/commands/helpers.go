@@ -303,9 +303,17 @@ func lanAgentAddresses(dev models.LANDevice) []string {
 		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
 
+	hosts := []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)}
+	if strings.TrimSpace(dev.USB) != "" {
+		// A USB-NCM path exists. The routed Wi-Fi IP (dev.IPAddress) may be
+		// black-holed by AP isolation on residential routers, so try the
+		// link-local .local hostname (reachable over USB) first.
+		hosts = []string{strings.TrimSpace(dev.Hostname), strings.TrimSpace(dev.IPAddress)}
+	}
+
 	var addresses []string
 	seen := make(map[string]bool)
-	for _, host := range []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)} {
+	for _, host := range hosts {
 		if host == "" || seen[host] {
 			continue
 		}
@@ -892,6 +900,11 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	agentVer := resp.GetVersion()
 	// Dev CLI builds skip the update check entirely.
 	if version.Version == "dev" {
+		return conn, nil
+	}
+	// A dev agent build is running intentionally — never offer to replace it
+	// with a stable release (CompareVersions treats "dev" as always-behind).
+	if agentVer == "dev" {
 		return conn, nil
 	}
 	// Unknown agent version — skip to avoid spurious update prompts.

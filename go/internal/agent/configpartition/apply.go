@@ -238,10 +238,16 @@ func applyWendyConf(logger *zap.Logger, cfgDir string) {
 	}
 }
 
+// maxDeviceNameLen caps the device name so the hostname this package derives as
+// "wendyos-<name>" (via generate-hostname.sh in applyDeviceName) stays within the
+// 63-octet RFC 1035 label limit. The 8-character "wendyos-" prefix leaves 55
+// characters for the name; longer names produce an invalid hostname label.
+const maxDeviceNameLen = 55
+
 // validDeviceName reports whether name satisfies the WendyOS device name rules:
-// starts with a lowercase letter, followed by 2–63 lowercase letters, digits, or hyphens.
+// starts with a lowercase letter, followed by 2–54 lowercase letters, digits, or hyphens.
 func validDeviceName(name string) bool {
-	if len(name) < 3 || len(name) > 64 {
+	if len(name) < 3 || len(name) > maxDeviceNameLen {
 		return false
 	}
 	for i, c := range name {
@@ -261,7 +267,7 @@ func validDeviceName(name string) bool {
 
 func applyDeviceName(logger *zap.Logger, name string) error {
 	if !validDeviceName(name) {
-		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{2,63}$", name)
+		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{2,54}$", name)
 	}
 
 	const deviceNamePath = "/etc/wendyos/device-name"

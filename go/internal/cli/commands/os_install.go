@@ -1440,15 +1440,21 @@ func selectWifiNetworkStreaming() (wifiScanSelection, error) {
 	var mu sync.Mutex
 	go func() {
 		defer p.Send(tui.PickerDoneMsg{})
-		nets, err := scanLocalWifiNetworks()
+		// Stream the host scan: cached results paint the picker instantly, then
+		// the fresh rescan fills it in — so SSIDs trickle in rather than the
+		// picker sitting on "Scanning..." until the whole scan completes
+		// (matching the device-side picker in pickWifiNetwork).
+		hadNetworks := false
+		err := streamLocalWifiScan(func(batch []localWifiNetwork) {
+			if len(batch) > 0 {
+				hadNetworks = true
+			}
+			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
+		})
 		mu.Lock()
 		sel.ScanErr = err
-		sel.HadNetworks = len(nets) > 0
+		sel.HadNetworks = hadNetworks
 		mu.Unlock()
-		if err != nil {
-			return
-		}
-		p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
 	}()
 	fmt.Println()
 	finalModel, runErr := p.Run()
@@ -1542,9 +1548,16 @@ func nonEmptyValidator(v string) error {
 	return nil
 }
 
+// maxDeviceNameLen caps the device name so the derived hostname stays a valid
+// DNS label. The agent builds the hostname as "wendyos-<name>" (see
+// generate-hostname.sh / configpartition.applyDeviceName); with the 8-character
+// "wendyos-" prefix, a 55-character name yields a 63-octet label — the RFC 1035
+// maximum. Longer names produce an invalid hostname label on the device.
+const maxDeviceNameLen = 55
+
 func validateDeviceName(name string) error {
-	if len(name) < 3 || len(name) > 64 {
-		return fmt.Errorf("device name must be 3–64 characters")
+	if len(name) < 3 || len(name) > maxDeviceNameLen {
+		return fmt.Errorf("device name must be 3–%d characters", maxDeviceNameLen)
 	}
 	for i, c := range name {
 		switch {
@@ -1586,7 +1599,7 @@ func resolveDeviceName(flagName string) (string, error) {
 	fmt.Println()
 	name, err := promptDeviceName(
 		"Device name",
-		"(a-z, 0-9 and hyphens, starts with a letter, 3–64 chars; empty = auto-generate)",
+		fmt.Sprintf("(a-z, 0-9 and hyphens, starts with a letter, 3–%d chars; empty = auto-generate)", maxDeviceNameLen),
 		optionalDeviceNameValidator,
 	)
 	if err != nil {
