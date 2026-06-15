@@ -12,17 +12,23 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-// usbSysfsRoot is the sysfs directory that enumerates USB devices. It is a
-// variable so tests can point it at a fixture tree.
-var usbSysfsRoot = "/sys/bus/usb/devices"
+// defaultUSBSysfsRoot is the sysfs directory that enumerates USB devices.
+const defaultUSBSysfsRoot = "/sys/bus/usb/devices"
 
 // discoverUSB enumerates USB devices from sysfs and returns those that look like
 // a Wendy device (by name) or an Espressif ESP32-C6 (by VID:PID). Reading sysfs
 // directly avoids shelling out to lsusb and parsing its human-readable output.
 func discoverUSB(_ context.Context) ([]models.USBDevice, error) {
-	entries, err := os.ReadDir(usbSysfsRoot)
+	return discoverUSBAt(defaultUSBSysfsRoot)
+}
+
+// discoverUSBAt enumerates USB devices under an explicit sysfs root. The root is
+// trusted configuration (the kernel-controlled sysfs path in production); tests
+// pass a fixture tree directly rather than mutating shared state.
+func discoverUSBAt(root string) ([]models.USBDevice, error) {
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", usbSysfsRoot, err)
+		return nil, fmt.Errorf("reading %s: %w", root, err)
 	}
 
 	var devices []models.USBDevice
@@ -33,8 +39,14 @@ func discoverUSB(_ context.Context) ([]models.USBDevice, error) {
 		if strings.Contains(name, ":") {
 			continue
 		}
+		// Defensive: os.ReadDir yields base names (never "." / ".." or a name
+		// with a separator), but guard anyway so a redirected root can never be
+		// escaped via filepath.Join.
+		if name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+			continue
+		}
 
-		dir := filepath.Join(usbSysfsRoot, name)
+		dir := filepath.Join(root, name)
 		vid := readSysfsAttr(dir, "idVendor")
 		pid := readSysfsAttr(dir, "idProduct")
 		if vid == "" || pid == "" {

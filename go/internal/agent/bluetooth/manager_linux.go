@@ -202,7 +202,7 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		// BlueZ rejects pairing requests unless an authentication agent is
 		// registered. Register a headless "just works" agent on this connection;
 		// it is unregistered automatically when the connection closes.
-		if err := registerPairingAgent(conn, m.logger); err != nil {
+		if err := registerPairingAgent(conn, m.logger, devicePath); err != nil {
 			m.logger.Warn("Failed to register pairing agent", zap.Error(err))
 		}
 		if call := device.CallWithContext(ctx, deviceIface+".Pair", 0); call.Err != nil && !isAlreadyExists(call.Err) {

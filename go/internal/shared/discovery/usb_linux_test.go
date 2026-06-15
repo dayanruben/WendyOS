@@ -3,7 +3,6 @@
 package discovery
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,13 +114,9 @@ func TestDiscoverUSB_FromSysfsTree(t *testing.T) {
 	// A bus root without idVendor/idProduct — must be skipped.
 	mkdev("usb3", map[string]string{})
 
-	prev := usbSysfsRoot
-	usbSysfsRoot = root
-	defer func() { usbSysfsRoot = prev }()
-
-	devices, err := discoverUSB(context.Background())
+	devices, err := discoverUSBAt(root)
 	if err != nil {
-		t.Fatalf("discoverUSB: %v", err)
+		t.Fatalf("discoverUSBAt: %v", err)
 	}
 
 	if len(devices) != 1 {

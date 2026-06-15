@@ -24,11 +24,29 @@ const (
 // rejection lets the pairing attempt fail cleanly rather than hang.
 var errRejected = dbus.NewError("org.bluez.Error.Rejected", nil)
 
-// pairingAgent implements org.bluez.Agent1 as a headless auto-accepting agent.
-// It accepts pairing and service authorization requests without user
-// interaction, which is required for unattended pairing on an edge device.
+// pairingAgent implements org.bluez.Agent1 as a headless agent for a single
+// caller-initiated pairing. It auto-accepts pairing and service authorization
+// for the one device being paired (expected) and rejects requests from any
+// other device, so a nearby device cannot get itself bonded during the brief
+// window the agent is registered.
 type pairingAgent struct {
-	logger *zap.Logger
+	logger   *zap.Logger
+	expected dbus.ObjectPath
+}
+
+// accept auto-accepts an authorization callback when it is for the device this
+// agent was registered to pair (expected), and rejects it otherwise. Both
+// outcomes are logged at a level high enough to survive a production INFO log
+// configuration, giving an audit trail of established device relationships.
+func (a *pairingAgent) accept(device dbus.ObjectPath, action string, extra ...zap.Field) *dbus.Error {
+	fields := append([]zap.Field{zap.String("device", string(device))}, extra...)
+	if device != a.expected {
+		a.logger.Warn("Rejecting Bluetooth "+action+" from unexpected device",
+			append(fields, zap.String("expected", string(a.expected)))...)
+		return errRejected
+	}
+	a.logger.Info("Auto-accepting Bluetooth "+action, fields...)
+	return nil
 }
 
 // Release is called by BlueZ when the agent is unregistered.
@@ -53,32 +71,30 @@ func (a *pairingAgent) DisplayPasskey(device dbus.ObjectPath, passkey uint32, en
 	return nil
 }
 
-// RequestConfirmation / RequestAuthorization / AuthorizeService auto-accept,
-// completing "just works" pairing and service connections without prompting.
+// RequestConfirmation / RequestAuthorization / AuthorizeService complete "just
+// works" pairing and service connections without prompting, but only for the
+// device this agent was registered to pair (see accept).
 func (a *pairingAgent) RequestConfirmation(device dbus.ObjectPath, passkey uint32) *dbus.Error {
-	a.logger.Debug("Auto-confirming Bluetooth pairing", zap.String("device", string(device)))
-	return nil
+	return a.accept(device, "pairing confirmation", zap.Uint32("passkey", passkey))
 }
 
 func (a *pairingAgent) RequestAuthorization(device dbus.ObjectPath) *dbus.Error {
-	a.logger.Debug("Auto-authorizing Bluetooth pairing", zap.String("device", string(device)))
-	return nil
+	return a.accept(device, "pairing authorization")
 }
 
 func (a *pairingAgent) AuthorizeService(device dbus.ObjectPath, uuid string) *dbus.Error {
-	a.logger.Debug("Auto-authorizing Bluetooth service",
-		zap.String("device", string(device)), zap.String("uuid", uuid))
-	return nil
+	return a.accept(device, "service authorization", zap.String("uuid", uuid))
 }
 
 // Cancel is called by BlueZ when a request is cancelled (e.g. the remote aborts).
 func (a *pairingAgent) Cancel() *dbus.Error { return nil }
 
 // registerPairingAgent exports a headless pairing agent on conn and registers it
-// with BlueZ as the default agent. The agent stays registered for the lifetime
-// of conn; BlueZ unregisters it automatically when conn closes.
-func registerPairingAgent(conn *dbus.Conn, logger *zap.Logger) error {
-	agent := &pairingAgent{logger: logger}
+// with BlueZ as the default agent. The agent only auto-accepts pairing for
+// expected (the device being paired). It stays registered for the lifetime of
+// conn; BlueZ unregisters it automatically when conn closes.
+func registerPairingAgent(conn *dbus.Conn, logger *zap.Logger, expected dbus.ObjectPath) error {
+	agent := &pairingAgent{logger: logger, expected: expected}
 	if err := conn.Export(agent, agentObjectPath, agentIface); err != nil {
 		return fmt.Errorf("exporting pairing agent: %w", err)
 	}
