@@ -42,6 +42,7 @@ const (
 func newOSInstallCmd() *cobra.Command {
 	var nightly bool
 	var force bool
+	var noBmap bool
 	var yesOverwriteInternal bool
 	var preEnroll bool
 	var deviceType string
@@ -109,12 +110,13 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
 		},
 	}
 
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -239,7 +241,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
@@ -338,12 +340,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if device.IsESP32 {
 		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
 	}
-	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, wifi, deviceName, preOpts)
+	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, wifi, deviceName, preOpts)
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
 // nightly, flagVersion, flagDrive, and force allow skipping the corresponding interactive prompts.
-func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Authenticate elevation up front so we don't pay for the multi-hundred-MB
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
@@ -465,17 +467,42 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
+	// Step 5b: Download and validate block map for accelerated flashing.
+	var bmapPath string
+	if !noBmap && imgInfo.BmapURL != "" {
+		if cacheDir, derr := osCacheDir(); derr == nil {
+			candidate := filepath.Join(cacheDir, fmt.Sprintf("%s-%s.bmap", deviceKey, selectedVersion))
+			if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
+				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+			} else if _, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
+				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+			} else {
+				bmapPath = candidate
+			}
+		}
+	}
+
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
 	wp := tea.NewProgram(writeProg)
 
 	go func() {
-		writeErr := writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
-			if msg, ok := stream.writeProgressMsg(written); ok {
-				wp.Send(msg)
-			}
-		})
+		var writeErr error
+		if bmapPath != "" {
+			fmt.Println("Using block map for faster flashing.")
+			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, func(written int64) {
+				if msg, ok := stream.writeProgressMsg(written); ok {
+					wp.Send(msg)
+				}
+			})
+		} else {
+			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
+				if msg, ok := stream.writeProgressMsg(written); ok {
+					wp.Send(msg)
+				}
+			})
+		}
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
 	}()
 
@@ -818,6 +845,16 @@ func osCacheDir() (string, error) {
 		return "", fmt.Errorf("creating OS cache directory: %w", err)
 	}
 	return dir, nil
+}
+
+// readFileOrNil reads path, returning nil on error (used for best-effort bmap
+// validation where failure just disables the bmap fast path).
+func readFileOrNil(path string) []byte {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func osCachedImagePath(deviceKey, version string) (string, error) {
