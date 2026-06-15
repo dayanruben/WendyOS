@@ -1440,15 +1440,21 @@ func selectWifiNetworkStreaming() (wifiScanSelection, error) {
 	var mu sync.Mutex
 	go func() {
 		defer p.Send(tui.PickerDoneMsg{})
-		nets, err := scanLocalWifiNetworks()
+		// Stream the host scan: cached results paint the picker instantly, then
+		// the fresh rescan fills it in — so SSIDs trickle in rather than the
+		// picker sitting on "Scanning..." until the whole scan completes
+		// (matching the device-side picker in pickWifiNetwork).
+		hadNetworks := false
+		err := streamLocalWifiScan(func(batch []localWifiNetwork) {
+			if len(batch) > 0 {
+				hadNetworks = true
+			}
+			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
+		})
 		mu.Lock()
 		sel.ScanErr = err
-		sel.HadNetworks = len(nets) > 0
+		sel.HadNetworks = hadNetworks
 		mu.Unlock()
-		if err != nil {
-			return
-		}
-		p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
 	}()
 	fmt.Println()
 	finalModel, runErr := p.Run()
