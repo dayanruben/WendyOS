@@ -1588,7 +1588,8 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 // command is operating on, after the agent has restarted. For a direct/LAN
 // connection it re-dials the known host. For a cloud-tunnel connection it
 // re-runs connectToAgent so the broker tunnel is rebuilt (a direct host:port
-// dial would not traverse the tunnel).
+// dial would not traverse the tunnel). host is used only for the direct/LAN
+// path; it is ignored for cloud, where the target comes from the context.
 func reconnectAgentAfterRestart(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
 	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
 		return reconnectCloudAgentAfterRestart(ctx)
@@ -1597,11 +1598,13 @@ func reconnectAgentAfterRestart(ctx context.Context, host string) (*grpcclient.A
 }
 
 // reconnectCloudAgentAfterRestart retries connectToAgent through the cloud
-// tunnel until the agent answers GetAgentVersion or the deadline passes.
+// tunnel until the agent answers GetAgentVersion or the deadline passes. The
+// deadline and settling delays are longer than waitForAgentRestart's because
+// rebuilding the broker tunnel adds latency beyond a direct TCP reconnect.
 func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConnection, error) {
 	deadline := time.Now().Add(90 * time.Second)
 	time.Sleep(2 * time.Second) // give the agent a moment to begin shutdown
-	var lastErr error
+	lastErr := fmt.Errorf("agent did not come back in time")
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -1621,12 +1624,9 @@ func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConn
 		} else {
 			lastErr = err
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(2 * time.Second) // broker tunnels need more settling time than direct connections
 	}
-	if lastErr != nil {
-		return nil, fmt.Errorf("agent did not come back after update: %w", lastErr)
-	}
-	return nil, fmt.Errorf("agent did not come back after update")
+	return nil, fmt.Errorf("agent did not come back after update: %w", lastErr)
 }
 
 func newDeviceUpdateCmd() *cobra.Command {
