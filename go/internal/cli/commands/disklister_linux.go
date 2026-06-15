@@ -260,14 +260,20 @@ func writeImageWithBmap(r io.Reader, totalSize int64, d drive, bmapPath string, 
 	}()
 
 	waitErr := cmd.Wait()
+	if copyErr != nil {
+		// A failure copying the (decompressed) image into the helper is the
+		// root cause; the helper's non-zero exit is just the downstream effect
+		// of its stdin closing early. Surface the copy error first.
+		if waitErr != nil {
+			return fmt.Errorf("streaming image to bmap helper: %w (helper: %v; %s)", copyErr, waitErr, stderr.String())
+		}
+		return fmt.Errorf("streaming image to bmap helper: %w", copyErr)
+	}
 	if waitErr != nil {
 		if stderr.Len() > 0 {
 			return fmt.Errorf("bmap write failed: %w\n%s", waitErr, stderr.String())
 		}
 		return fmt.Errorf("bmap write failed: %w", waitErr)
-	}
-	if copyErr != nil {
-		return fmt.Errorf("streaming image to bmap helper: %w", copyErr)
 	}
 	_ = totalSize
 	return nil

@@ -470,15 +470,15 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// Step 5b: Download and validate block map for accelerated flashing.
 	var bmapPath string
 	if !noBmap && imgInfo.BmapURL != "" {
-		if cacheDir, derr := osCacheDir(); derr == nil {
-			candidate := filepath.Join(cacheDir, fmt.Sprintf("%s-%s.bmap", deviceKey, selectedVersion))
-			if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
-				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
-			} else if _, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
-				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
-			} else {
-				bmapPath = candidate
-			}
+		candidate, derr := osCachedBmapPath(deviceKey, selectedVersion)
+		if derr != nil {
+			fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
+		} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
+			fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+		} else if _, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
+			fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+		} else {
+			bmapPath = candidate
 		}
 	}
 
@@ -886,6 +886,21 @@ func osCachedZipPath(deviceKey, version string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, fmt.Sprintf("%s-%s.zip", safeDevice, safeVersion)), nil
+}
+
+func osCachedBmapPath(deviceKey, version string) (string, error) {
+	safeDevice := filepath.Base(deviceKey)
+	safeVersion := filepath.Base(version)
+	if safeDevice != deviceKey || safeVersion != version ||
+		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
+		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
+	}
+
+	dir, err := osCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s.bmap", safeDevice, safeVersion)), nil
 }
 
 type zipReadCloser struct {

@@ -457,12 +457,25 @@ func (hw handleWriterAt) WriteAt(p []byte, off int64) (int, error) {
 	if _, err := syscall.Seek(hw.h, off, 0 /* FILE_BEGIN */); err != nil {
 		return 0, err
 	}
-	var done uint32
-	if err := syscall.WriteFile(hw.h, p, &done, nil); err != nil {
-		return int(done), err
+	// Raw physical-drive writes must be a multiple of the sector size. Pad the
+	// final sub-sector chunk with zeros (matches writeImageToDisk's behavior).
+	const sector = 512
+	buf := p
+	if rem := len(p) % sector; rem != 0 {
+		padded := make([]byte, len(p)+(sector-rem))
+		copy(padded, p)
+		buf = padded
 	}
-	if int(done) < len(p) {
-		return int(done), fmt.Errorf("short write at offset %d: wrote %d of %d bytes", off, done, len(p))
+	var done uint32
+	if err := syscall.WriteFile(hw.h, buf, &done, nil); err != nil {
+		return 0, err
+	}
+	if int(done) < len(buf) {
+		return 0, fmt.Errorf("short write at offset %d: wrote %d of %d bytes", off, done, len(buf))
+	}
+	// Report only the caller's requested byte count, not the padding.
+	if len(p) < int(done) {
+		return len(p), nil
 	}
 	return int(done), nil
 }

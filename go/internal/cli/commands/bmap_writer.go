@@ -10,7 +10,9 @@ import (
 
 // downloadBmap fetches a (small) .bmap XML file to dst. The bmap is tiny, so a
 // single GET with a short timeout is sufficient. Any failure is the caller's
-// cue to fall back to dd.
+// cue to fall back to dd. The download is atomic: data is written to a
+// temporary file and renamed into place only on success, so an interrupted
+// download never leaves a corrupt file for a later run to parse.
 func downloadBmap(url, dst string) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(url)
@@ -21,13 +23,24 @@ func downloadBmap(url, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bmap returned status %d", resp.StatusCode)
 	}
-	f, err := os.Create(dst)
+
+	tmp := dst + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return fmt.Errorf("creating bmap file: %w", err)
 	}
-	defer f.Close()
 	if _, err := io.Copy(f, io.LimitReader(resp.Body, 64<<20)); err != nil {
+		f.Close()
+		os.Remove(tmp)
 		return fmt.Errorf("writing bmap file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("closing bmap file: %w", err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("finalizing bmap file: %w", err)
 	}
 	return nil
 }
