@@ -1548,9 +1548,16 @@ func nonEmptyValidator(v string) error {
 	return nil
 }
 
+// maxDeviceNameLen caps the device name so the derived hostname stays a valid
+// DNS label. The agent builds the hostname as "wendyos-<name>" (see
+// generate-hostname.sh / configpartition.applyDeviceName); with the 8-character
+// "wendyos-" prefix, a 55-character name yields a 63-octet label — the RFC 1035
+// maximum. Longer names produce an invalid hostname label on the device.
+const maxDeviceNameLen = 55
+
 func validateDeviceName(name string) error {
-	if len(name) < 3 || len(name) > 64 {
-		return fmt.Errorf("device name must be 3–64 characters")
+	if len(name) < 3 || len(name) > maxDeviceNameLen {
+		return fmt.Errorf("device name must be 3–%d characters", maxDeviceNameLen)
 	}
 	for i, c := range name {
 		switch {
@@ -1592,7 +1599,7 @@ func resolveDeviceName(flagName string) (string, error) {
 	fmt.Println()
 	name, err := promptDeviceName(
 		"Device name",
-		"(a-z, 0-9 and hyphens, starts with a letter, 3–64 chars; empty = auto-generate)",
+		fmt.Sprintf("(a-z, 0-9 and hyphens, starts with a letter, 3–%d chars; empty = auto-generate)", maxDeviceNameLen),
 		optionalDeviceNameValidator,
 	)
 	if err != nil {
