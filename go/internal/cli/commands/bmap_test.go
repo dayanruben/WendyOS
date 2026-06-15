@@ -134,3 +134,65 @@ func TestApplyBmapDetectsCorruption(t *testing.T) {
 		t.Fatal("expected checksum mismatch error, got nil")
 	}
 }
+
+func TestApplyBmapMultiChunkRange(t *testing.T) {
+	old := bmapChunkSize
+	bmapChunkSize = 7 // tiny, to force many inner-loop iterations per range
+	defer func() { bmapChunkSize = old }()
+
+	img, b := buildSparseImage() // blocks 0-1 and 4-5 mapped, bs=4096
+	dst := newMemWriterAt(b.ImageSize)
+	if err := applyBmap(bytes.NewReader(img), dst, b, func(int64) {}); err != nil {
+		t.Fatalf("applyBmap: %v", err)
+	}
+	const bs = 4096
+	if !bytes.Equal(dst.buf[0:bs*2], img[0:bs*2]) || !bytes.Equal(dst.buf[bs*4:bs*6], img[bs*4:bs*6]) {
+		t.Fatal("mapped ranges not reconstructed correctly across chunk boundaries")
+	}
+}
+
+func TestApplyBmapPartialFinalBlock(t *testing.T) {
+	const bs = 4096
+	const size = bs + 100 // block 0 full, block 1 only 100 bytes
+	img := make([]byte, size)
+	for i := range img {
+		img[i] = byte(i % 251)
+	}
+	b := &Bmap{
+		BlockSize: bs,
+		ImageSize: size,
+		Ranges:    []BmapRange{{First: 0, Last: 1, Checksum: blockChecksum(img[:size])}},
+	}
+	dst := newMemWriterAt(size)
+	if err := applyBmap(bytes.NewReader(img), dst, b, func(int64) {}); err != nil {
+		t.Fatalf("applyBmap: %v", err)
+	}
+	if !bytes.Equal(dst.buf, img) {
+		t.Fatal("partial final block not written correctly")
+	}
+	if dst.written[size-1] != true {
+		t.Fatal("last byte should be written")
+	}
+}
+
+func TestApplyBmapEmptyChecksumSkipsVerify(t *testing.T) {
+	img, b := buildSparseImage()
+	img[10] = 0xff            // corrupt mapped block 0
+	b.Ranges[0].Checksum = "" // but disable its verification
+	b.Ranges[1].Checksum = "" // and the other, so neither aborts
+	dst := newMemWriterAt(b.ImageSize)
+	if err := applyBmap(bytes.NewReader(img), dst, b, func(int64) {}); err != nil {
+		t.Fatalf("applyBmap with empty checksums should not verify: %v", err)
+	}
+}
+
+func TestParseBmapRejectsZeroSizes(t *testing.T) {
+	for _, x := range []string{
+		`<bmap version="2.0"><ImageSize>0</ImageSize><BlockSize>4096</BlockSize><ChecksumType>sha256</ChecksumType><BlockMap></BlockMap></bmap>`,
+		`<bmap version="2.0"><ImageSize>4096</ImageSize><BlockSize>0</BlockSize><ChecksumType>sha256</ChecksumType><BlockMap></BlockMap></bmap>`,
+	} {
+		if _, err := parseBmap([]byte(x)); err == nil {
+			t.Fatalf("expected error for zero size in %q", x)
+		}
+	}
+}

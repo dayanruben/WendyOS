@@ -68,6 +68,10 @@ func parseBmap(data []byte) (*Bmap, error) {
 	return b, nil
 }
 
+// bmapChunkSize is the read granularity within a mapped range. Package-level
+// (not const) so tests can shrink it to exercise the multi-chunk path.
+var bmapChunkSize int64 = 1 << 20
+
 // applyBmap reconstructs an image onto dst using the block map. It reads src
 // (the decompressed image) strictly sequentially — src may be a pipe — and
 // writes only mapped ranges via WriteAt, discarding bytes that fall in holes.
@@ -75,8 +79,7 @@ func parseBmap(data []byte) (*Bmap, error) {
 // progressFn is called with the cumulative number of uncompressed bytes
 // consumed from src.
 func applyBmap(src io.Reader, dst io.WriterAt, b *Bmap, progressFn func(int64)) error {
-	const chunk = 1 << 20 // 1 MiB read granularity within a range
-	buf := make([]byte, chunk)
+	buf := make([]byte, bmapChunkSize)
 	var consumed int64
 
 	pos := int64(0) // next uncompressed byte offset we will read
