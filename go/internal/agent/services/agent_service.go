@@ -289,7 +289,30 @@ func parseDeviceType(content string) (deviceType, storageMedium string) {
 	if deviceType == "" {
 		deviceType = machine
 	}
+	// Fall back to inferring the storage medium from the Yocto machine name
+	// (e.g. "...-nvme-wendyos") when the image didn't emit an explicit STORAGE
+	// line. The OTA manifest uses this to pick the storage-specific artifact;
+	// an unknown/absent medium is fine (the default artifact is used).
+	if storageMedium == "" {
+		storageMedium = inferStorageFromMachine(machine)
+	}
 	return deviceType, storageMedium
+}
+
+// inferStorageFromMachine derives a storage medium from a Yocto machine name
+// when no explicit STORAGE was provided. Only the media that need a dedicated
+// OTA artifact are recognized; everything else returns "" (the default
+// artifact applies).
+func inferStorageFromMachine(machine string) string {
+	m := strings.ToLower(machine)
+	switch {
+	case strings.Contains(m, "nvme"):
+		return "nvme"
+	case strings.Contains(m, "emmc"):
+		return "emmc"
+	default:
+		return ""
+	}
 }
 
 // RunContainer is deprecated. Clients should use WendyContainerService.RunContainer

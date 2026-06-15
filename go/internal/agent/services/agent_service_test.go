@@ -442,13 +442,26 @@ func TestParseDeviceTypePrefersBoard(t *testing.T) {
 		wantStorage string
 	}{
 		{
-			name:     "board wins over machine regardless of order",
-			content:  "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\n",
-			wantType: "jetson-orin-nano",
+			name:        "board wins over machine and storage inferred from machine",
+			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
 		},
 		{
-			name:     "board wins when listed after machine",
-			content:  "MACHINE=jetson-orin-nano-devkit-nvme-wendyos\nBOARD=jetson-orin-nano\n",
+			name:        "board wins when listed after machine",
+			content:     "MACHINE=jetson-orin-nano-devkit-nvme-wendyos\nBOARD=jetson-orin-nano\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:        "emmc inferred from machine",
+			content:     "BOARD=jetson-agx-orin-emmc\nMACHINE=jetson-agx-orin-devkit-emmc-wendyos\n",
+			wantType:    "jetson-agx-orin-emmc",
+			wantStorage: "emmc",
+		},
+		{
+			name:     "non-nvme machine infers no storage",
+			content:  "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-wendyos\n",
 			wantType: "jetson-orin-nano",
 		},
 		{
@@ -457,7 +470,13 @@ func TestParseDeviceTypePrefersBoard(t *testing.T) {
 			wantType: "raspberrypi5-wendyos",
 		},
 		{
-			name:        "storage parsed alongside board",
+			name:        "explicit storage wins over machine inference",
+			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\nSTORAGE=sd\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "sd",
+		},
+		{
+			name:        "explicit storage parsed alongside board",
 			content:     "BOARD=jetson-orin-nano\nSTORAGE=nvme\n",
 			wantType:    "jetson-orin-nano",
 			wantStorage: "nvme",
