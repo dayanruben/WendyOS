@@ -506,6 +506,33 @@ func writeImageWithBmap(r io.Reader, totalSize int64, d drive, bmapPath string, 
 	return nil
 }
 
+// writeImageWithBmapSeekable opens the seekable source and writes only mapped
+// ranges to the locked disk handle in-process (no helper on Windows).
+func writeImageWithBmapSeekable(sourcePath, bmapPath string, d drive, progressFn func(int64)) error {
+	data, err := os.ReadFile(bmapPath)
+	if err != nil {
+		return fmt.Errorf("reading bmap: %w", err)
+	}
+	b, err := parseBmap(data)
+	if err != nil {
+		return err
+	}
+	si, err := openSeekableZstd(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer si.Close()
+	if si.Size() != b.ImageSize {
+		return fmt.Errorf("seekable image size %d != bmap image size %d", si.Size(), b.ImageSize)
+	}
+	ld, err := openLockedDisk(d)
+	if err != nil {
+		return err
+	}
+	defer ld.close()
+	return applyBmapSeekable(si, handleWriterAt{h: ld.handle}, b, progressFn)
+}
+
 func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {
 	ld, err := openLockedDisk(d)
 	if err != nil {
