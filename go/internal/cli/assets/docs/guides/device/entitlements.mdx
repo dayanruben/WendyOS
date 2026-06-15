@@ -80,8 +80,8 @@ When enabled, this entitlement:
 - Injects NVIDIA Container Device Interface (CDI) specifications
 - Sets up environment variables for CUDA and GPU libraries
 
-<Callout type="warning">
-  **Jetson Only**: GPU entitlements are specifically designed for NVIDIA Jetson devices. They enable access to the integrated GPU for AI/ML workloads.
+<Callout type="info">
+  **Hardware-specific behavior**: What the `gpu` entitlement exposes depends on the device — NVIDIA GPU access on Jetson, and VideoCore board telemetry on Raspberry Pi. See [GPU Access](/docs/guides/device/hardware-gpu#raspberry-pi-board-telemetry) for the details.
 </Callout>
 
 ### Camera Entitlement
@@ -97,9 +97,9 @@ The camera entitlement provides access to video capture devices like USB cameras
 The older `{ "type": "video" }` entitlement is still accepted for compatibility, but new projects should use `camera`.
 
 When enabled, this entitlement:
-- Mounts `/dev/video0` into your container
+- Mounts `/dev` to expose all video capture devices (USB and CSI)
 - Configures device permissions for video capture
-- Enables access to V4L2 (Video4Linux2) interfaces
+- Enables access to V4L2 (Video4Linux2) and libcamera interfaces
 
 ### Audio Entitlement
 

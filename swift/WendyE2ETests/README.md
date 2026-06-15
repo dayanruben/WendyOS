@@ -101,6 +101,8 @@ The most useful environment variables are:
 | `WENDY_E2E_CLI_AUTH_CONFIG_PATH` | Dedicated Wendy CLI auth config fixture for authenticated tests. |
 | `WENDY_E2E_CLI_ADDRESS` | Optional SSH host for the CLI machine. |
 | `WENDY_E2E_AGENT_ADDRESS` | Optional SSH host for the agent/device machine. |
+| `WENDY_E2E_DEVICE_ADDRESS` | Device address used by CLI commands while the agent session still runs locally; must not include credentials. |
+| `WENDY_E2E_MANAGED_AGENT` | Build and launch a local `wendy-agent` process for the run. |
 | `WENDY_E2E_CLI_OS` / `WENDY_E2E_AGENT_OS` | Override machine OS metadata. |
 | `WENDY_E2E_ISOLATION` | Sandbox mode: `per-test`, `per-run`, or `none`. |
 | `WENDY_E2E_PARALLEL` | Enables parallel test execution when supported by the runner. |
@@ -124,23 +126,26 @@ the runner uses the current CLI user's `~/.wendy/config.json` where possible.
 ## Artifacts
 
 The E2E workflow uses two artifact layouts: attempt directories from individual
-test runs, and aggregate run directories that collect attempts by suite, test,
-target, and attempt number.
+test runs, and aggregate run directories that keep attempt-level artifacts
+separate from per-test observations.
 
 ### Attempt directory
 
 `Scripts/E2ETest.sh` writes one attempt directory under the output directory.
-Suite directories use the test file stem without the `Tests` suffix, dasherized;
-test directories use the dasherized test name.
+Attempt-level artifacts stay at the attempt root. Per-test observation
+directories use the test file stem without the `Tests` suffix, dasherized; test
+directories use the dasherized test name.
 
 ```text
 <output-dir>/<attempt-id>/
 ├── attempt.json
 ├── test-results.xml
 ├── test-results.raw.xml          # only when XML sanitization changed the file
-└── <suite>/<test>/
-    ├── recording.md
-    └── recording.sh.txt
+└── observations/
+    └── <suite>/<test>/
+        ├── recording.md
+        ├── recording.sh.txt
+        └── test.json
 ```
 
 The attempt ID has the shape:
@@ -162,21 +167,28 @@ directories into a run directory:
 
 ```text
 <output-dir>/<workflow-name>.<run-id>/
-└── <suite>/<test>/<target-name>/<attempt-number>/
-    ├── attempt.json
-    ├── test-results.xml
-    ├── test-results.raw.xml      # only when present in the source attempt
-    ├── recording.md
-    └── recording.sh.txt
+├── attempts/
+│   └── <target-name>/<attempt-number>/
+│       ├── attempt.json
+│       ├── test-results.xml
+│       └── test-results.raw.xml  # only when present in the source attempt
+└── observations/
+    └── <suite>/<test>/<target-name>/<attempt-number>/
+        ├── recording.md
+        ├── recording.sh.txt
+        └── test.json
 ```
+
+The `attempts/` tree keeps every attempt-root artifact except `observations/`,
+so preflight logs and metadata remain attached to the attempt.
 
 `make e2e-review` writes scoped AI review issue files into the aggregate run
 directory:
 
 ```text
 <run>/review.<reviewer>/<slug>.md
-<run>/<suite>/review.<reviewer>/<slug>.md
-<run>/<suite>/<test>/review.<reviewer>/<slug>.md
+<run>/observations/<suite>/review.<reviewer>/<slug>.md
+<run>/observations/<suite>/<test>/review.<reviewer>/<slug>.md
 ```
 
 `make e2e-report` writes the rendered report files at the aggregate run root:
@@ -213,14 +225,41 @@ E2E source files.
 
 ### Organization and naming
 
-Use one flattened suite per command area. The suite name is the command phrase;
-the test name completes the behavior sentence.
+Use one flattened suite per command area, and keep exactly one `@Suite` per
+source file. The suite name is the command phrase; the test name completes the
+behavior sentence. Put related aliases or deprecated command areas in their own
+test files rather than adding a second suite to an existing file. Inside
+backticked Swift suite or test identifiers, wrap command fragments, aliases, and
+flags that should render as code with single quotes. The reference extractor
+converts those quoted spans to Markdown code spans (and HTML `<code>` elements).
+Use `'... subcommand'` when referring to a related command under the same suite
+prefix.
+
+When the same behavior is specified for multiple related commands, keep the same
+suite structure, section order, and test-name wording wherever possible. Change
+only the quoted command fragment or the smallest phrase needed to distinguish the
+command path.
 
 ```swift
+// WendyDeviceInfoTests.swift
 @Suite
 struct `'wendy device info'` {
     @Test
     func `prints JSON device information`() async throws {
+        // Test body.
+    }
+
+    @Test
+    func `'--json' reports a missing device without prompting`() async throws {
+        // Test body.
+    }
+}
+
+// WendyDevicePsTests.swift
+@Suite
+struct `'wendy device ps'` {
+    @Test
+    func `aliases '... device apps list'`() async throws {
         // Test body.
     }
 }

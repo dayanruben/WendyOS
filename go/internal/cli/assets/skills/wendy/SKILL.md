@@ -66,7 +66,7 @@ This sends WiFi SSID and password to the device so it can connect to the local n
 
 ## Setup and Configuration
 
-Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, you can use `brew install wendy` to install it.
+Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.sh/cli.sh | bash`.
 
 Devices are discovered over USB or LAN. If a device is not found, ask the user to check the connection or to connect it over USB.
 If a device is not yet installed, use `wendy os install` to install the OS to an external drive. For NVIDIA Jetson devices, the OS is commonly installed to NVMe.
@@ -97,7 +97,7 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 | Entitlement | Use Case |
 |-------------|----------|
 | `network` (host mode) | Web servers, HTTP APIs, incoming connections |
-| `gpu` | ML inference, computer vision (Jetson only) |
+| `gpu` | ML inference/computer vision (Jetson), board telemetry (Raspberry Pi) |
 | `video` | Camera access, video capture |
 | `audio` | Microphone, speakers |
 | `bluetooth` | BLE devices, Bluetooth communication |
@@ -150,8 +150,8 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 |---------|----------|
 | Device not found | Check USB/LAN connection, run `wendy discover` |
 | Network access denied | Add network entitlement with host mode |
-| GPU not detected | Add gpu entitlement (Jetson only) |
-| Camera not found | Add video entitlement, verify camera at `/dev/video0` |
+| GPU not detected | Add gpu entitlement (Jetson for CUDA, Raspberry Pi for board telemetry) |
+| Camera not found | Add camera entitlement, verify camera at `/dev/video0` (for CSI cameras also check `/run/udev` is present on host) |
 | Build fails | Check Swift version compatibility, try `wendy run --verbose` |
 
 ## Reference Files

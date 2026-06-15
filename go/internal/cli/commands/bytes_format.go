@@ -1,6 +1,12 @@
 package commands
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+)
 
 // formatBytes converts a byte count to a human-readable string using SI units
 // (powers of 1000: kB, MB, GB). This is the package-level helper used by
@@ -16,4 +22,46 @@ func formatBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+func formatDiskUsage(usedBytes, totalBytes int64) string {
+	return fmt.Sprintf("%s / %s", formatGigabytes(usedBytes), formatGigabytes(totalBytes))
+}
+
+func formatGigabytes(n int64) string {
+	s := fmt.Sprintf("%.2f", float64(n)/1_000_000_000)
+	s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	return s + " GB"
+}
+
+// formatPartitionTable renders an aligned, human-readable table of per-partition
+// disk usage suitable for printing under the device info output. The returned
+// string ends with a trailing newline.
+func formatPartitionTable(partitions []*agentpb.DiskPartition) string {
+	var b strings.Builder
+	b.WriteString("Disk Usage:\n")
+
+	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  MOUNTPOINT\tFILESYSTEM\tUSED\tTOTAL\tUSE%")
+	for _, p := range partitions {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+			p.GetMountpoint(),
+			p.GetFilesystem(),
+			formatGigabytes(p.GetUsedBytes()),
+			formatGigabytes(p.GetTotalBytes()),
+			formatUsePercent(p.GetUsedBytes(), p.GetTotalBytes()),
+		)
+	}
+	tw.Flush()
+
+	return b.String()
+}
+
+// formatUsePercent returns the used fraction as a whole-number percent string
+// (e.g. "16%"), or "-" when the total is unknown.
+func formatUsePercent(used, total int64) string {
+	if total <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d%%", used*100/total)
 }

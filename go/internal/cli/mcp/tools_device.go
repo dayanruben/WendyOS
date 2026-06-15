@@ -145,6 +145,23 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	if resp.StorageMedium != nil {
 		info["storage_medium"] = resp.GetStorageMedium()
 	}
+	if resp.DiskUsedBytes != nil && resp.DiskTotalBytes != nil {
+		info["disk_used_bytes"] = resp.GetDiskUsedBytes()
+		info["disk_total_bytes"] = resp.GetDiskTotalBytes()
+	}
+	if len(resp.GetPartitions()) > 0 {
+		parts := make([]map[string]any, len(resp.GetPartitions()))
+		for i, p := range resp.GetPartitions() {
+			parts[i] = map[string]any{
+				"mountpoint":  p.GetMountpoint(),
+				"filesystem":  p.GetFilesystem(),
+				"device":      p.GetDevice(),
+				"used_bytes":  p.GetUsedBytes(),
+				"total_bytes": p.GetTotalBytes(),
+			}
+		}
+		info["partitions"] = parts
+	}
 	if resp.HasGpu != nil {
 		info["has_gpu"] = resp.GetHasGpu()
 	}

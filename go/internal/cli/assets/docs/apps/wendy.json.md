@@ -39,8 +39,26 @@ Target platform. One of:
 |-------|-------------|
 | `wendyos` | Linux edge device running WendyOS |
 | `wendy-lite` | ESP32 WASM target |
+| `darwin` | Native macOS app running through Wendy Agent for Mac |
+| `linux/arm64`, `linux/amd64`, etc. | Explicit Linux architecture target |
 
 Omit to target the default platform.
+
+Use `"darwin"` for native macOS targets managed by [Wendy Agent for Mac](/docs/installation/wendy-agent-macos). The CLI builds the app on a Mac development machine, syncs the build output to the Mac agent, and launches it as a native macOS process. Darwin apps run natively and non-containerized; they do not use the WendyOS Linux container runtime.
+
+> **Wendy Agent for Mac:** If the selected target is Wendy Agent for Mac, `wendy run` rejects any `platform` value that does not resolve to `darwin` (for example, `linux/arm64` or `wendyos`). Set `platform: "darwin"` and use a native SwiftPM or Xcode project.
+
+Minimal SwiftPM/macOS configuration:
+
+```json
+{
+  "$schema": "https://wendy.sh/schemas/wendy.json",
+  "appId": "com.example.hello-mac",
+  "version": "1.0.0",
+  "language": "swift",
+  "platform": "darwin"
+}
+```
 
 ### `language`
 
@@ -130,11 +148,19 @@ IP networking access.
 
 ### `gpu`
 
-GPU access for AI inference or general-purpose compute.
+Hardware-dependent GPU or board-telemetry access.
 
 ```json
 { "type": "gpu" }
 ```
+
+| Host hardware | Grant |
+|---------------|-------|
+| NVIDIA Jetson | NVIDIA CDI specs, CUDA env vars, `/dev/nvidia*` |
+| Raspberry Pi | `/dev/vcio` (VideoCore mailbox) for board telemetry — power, voltage/current, temperature, throttling, Pi 5 PMIC ADC |
+| Other | No hardware-specific grant |
+
+On Raspberry Pi, `/dev/vcio` is bind-mounted only when present on the host; access is `rw` (no `mknod`).
 
 ### `camera`
 

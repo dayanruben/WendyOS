@@ -2,10 +2,13 @@ package commands
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestBuildDashboardRows(t *testing.T) {
@@ -114,6 +117,22 @@ func TestAppsDashboardModel_QuitAction(t *testing.T) {
 	_ = m
 }
 
+func TestAppsDashboardModel_VolumesUnimplementedShowsCleanNotice(t *testing.T) {
+	m := newAppsDashboardModel(nil, context.Background())
+	err := status.Error(codes.Unimplemented, "Container volume management is currently not supported by Wendy Agent for Mac.")
+
+	updated, _ := m.Update(appsDashVolumesMsg{err: err})
+	m = updated.(appsDashboardModel)
+
+	want := "Poll notice: Container volume management is currently not supported by Wendy Agent for Mac."
+	if m.flash != want {
+		t.Fatalf("flash = %q, want %q", m.flash, want)
+	}
+	if strings.Contains(m.flash, "rpc error") || strings.Contains(m.flash, "code = Unimplemented") {
+		t.Fatalf("flash should not leak raw gRPC status: %q", m.flash)
+	}
+}
+
 func TestAppsDashboardModel_EnterSetsActionLogs(t *testing.T) {
 	m := newAppsDashboardModel(nil, context.Background())
 	m.cachedContainers = []*agentpb.AppContainer{
@@ -157,5 +176,12 @@ func TestFormatBytes(t *testing.T) {
 				t.Fatalf("formatBytes(%d) = %q, want %q", tt.n, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatDiskUsage(t *testing.T) {
+	got := formatDiskUsage(2_340_000_000, 120_000_000_000)
+	if got != "2.34 GB / 120 GB" {
+		t.Fatalf("formatDiskUsage() = %q, want %q", got, "2.34 GB / 120 GB")
 	}
 }

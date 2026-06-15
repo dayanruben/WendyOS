@@ -30,7 +30,7 @@ The docs-review workflow runs on every pull request targeting `main` and posts a
 **Key behaviours:**
 
 - **Structured output:** Claude returns either `NO_CHANGES_NEEDED` or JSON with up to 8 findings. Each finding includes severity, title, docs path, one-line overview, and detailed rationale or suggested content.
-- **Severity sorting:** Findings are sorted blockers-first, then concerns, then info, with ❤️, 💛, and 💙 labels in the comment.
+- **Severity sorting:** Findings are sorted blockers-first, then concerns, then info, with 🛑 Error, ⚠️ Concern, and 💡 Info labels in the comment.
 - **Inline path summaries:** Each visible finding paragraph starts with the affected docs path, followed by a colon and the overview prose.
 - **Collapsible details:** Longer rationale and suggested diffs are placed behind a workflow-owned `<details>` disclosure block.
 - **Output safety:** LLM-provided text is length-limited, angle brackets are rendered as safe Unicode characters, detail text is placed in fenced code blocks, unsafe URI schemes are neutralised, and docs paths are accepted only when they match the strict existing `docs/.../*.md` allowlist.

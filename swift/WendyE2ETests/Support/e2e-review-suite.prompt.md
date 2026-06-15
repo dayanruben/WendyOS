@@ -16,11 +16,11 @@ Guidelines:
   scope.
 - Do not write pass/OK reviews for tests or suites.
 - Use JSON `severity` to classify each issue as `info`, `concern`, or
-  `fail`. Keep those exact JSON values. If human-facing review text mentions a
-  severity label, use `🛑 Error`, `⚠️ Concern`, and `💡 Info` for `fail`,
-  `concern`, and `info`, respectively. Do not use heart emojis as severity
-  markers. Do not write prose status/severity lines such as `Status: pass`,
-  `Status: concern`, or `Status: fail`.
+  `fail`. Keep those exact JSON values. Do not include severity labels or
+  severity emoji in review titles, Markdown headings, or summary text; the
+  aggregate renderer adds the severity emoji from JSON. Do not use heart emojis
+  as severity markers. Do not write prose status/severity lines such as
+  `Status: pass`, `Status: concern`, or `Status: fail`.
 - Each review summary should be GitHub-comment-sized: one concise explanation
   plus the suggested action.
 - Put evidence, reasoning, and longer analysis under the review file's
@@ -32,6 +32,7 @@ Guidelines:
   flaked and how to investigate or stabilize it. Then consider unresolved
   `UNKNOWN` outcomes.
 - Cite concrete evidence in details: source paths, target/attempt names, result
-  details, recording paths, shell script paths, and `overview.json` outcome data.
+  details, recording paths, shell script paths, `attempts/<target>/<attempt>/attempt.log`
+  when relevant, and `overview.json` outcome data.
 - Use JSON `locations` only when the review is attributable to source lines.
 - Do not edit source code, tests, xUnit files, or recordings.

@@ -83,6 +83,11 @@ func newAuthLoginCmd() *cobra.Command {
 	return cmd
 }
 
+type loginCallbackResult struct {
+	EnrollmentToken string
+	APIKey          string
+}
+
 func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	// Step 1: Start a local HTTP server to receive the OAuth callback.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -91,8 +96,8 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	// Channel to receive the enrollment token from the callback.
-	tokenCh := make(chan string, 1)
+	// Channel to receive the enrollment token and PAT from the callback.
+	tokenCh := make(chan loginCallbackResult, 1)
 	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
@@ -102,6 +107,10 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 			http.Error(w, "missing token parameter", http.StatusBadRequest)
 			errCh <- fmt.Errorf("callback received without token")
 			return
+		}
+		apiKey := r.URL.Query().Get("api_key")
+		if !strings.HasPrefix(apiKey, "wnd_pat_") || len(apiKey) > 256 {
+			apiKey = ""
 		}
 
 		w.Header().Set("Content-Type", "text/html")
@@ -152,7 +161,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
   </div>
 </body>
 </html>`)
-		tokenCh <- token
+		tokenCh <- loginCallbackResult{EnrollmentToken: token, APIKey: apiKey}
 	})
 
 	server := &http.Server{Handler: mux}
@@ -184,10 +193,10 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 
 	fmt.Println(tui.InfoMessage("Waiting for authentication..."))
 
-	// Wait for the token.
-	var enrollmentToken string
+	// Wait for the token and PAT.
+	var result loginCallbackResult
 	select {
-	case enrollmentToken = <-tokenCh:
+	case result = <-tokenCh:
 		fmt.Println(tui.SuccessMessage("Received enrollment token."))
 	case loginErr := <-errCh:
 		return fmt.Errorf("login failed: %w", loginErr)
@@ -201,7 +210,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	commonName, err := enrollmentTokenCommonName(enrollmentToken)
+	commonName, err := enrollmentTokenCommonName(result.EnrollmentToken)
 	if err != nil {
 		return fmt.Errorf("reading enrollment token identity: %w", err)
 	}
@@ -229,7 +238,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	certClient := cloudpb.NewCertificateServiceClient(certConn)
 	issueResp, err := certClient.IssueCertificate(ctx, &cloudpb.IssueCertificateRequest{
 		PemCsr:          csrPEM,
-		EnrollmentToken: enrollmentToken,
+		EnrollmentToken: result.EnrollmentToken,
 	})
 	if err != nil {
 		return fmt.Errorf("issuing certificate: %w", err)
@@ -261,6 +270,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	authEntry := config.AuthConfig{
 		CloudDashboard: cloudDashboard,
 		CloudGRPC:      cloudGRPC,
+		APIKey:         result.APIKey,
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
 
@@ -375,6 +385,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		PemCertificateChain: cert.GetPemCertificateChain(),
 		PemPrivateKey:       privateKeyPEM,
 		OrganizationID:      int(issueResp.GetOrganizationId()),
+		AssetID:             int(issueResp.GetAssetId()),
 	}
 	authEntry := config.AuthConfig{
 		CloudGRPC:    cloudGRPC,
@@ -432,41 +443,51 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 		Short: "Refresh mTLS certificates",
 		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			if len(cfg.Auth) == 0 {
-				return fmt.Errorf("not logged in; run 'wendy auth login' first")
-			}
-
-			// Refresh certificates for each auth entry.
-			for i, auth := range cfg.Auth {
-				if len(auth.Certificates) == 0 {
-					fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
-					continue
-				}
-
-				fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
-
-				if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
-					fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
-					continue
-				}
-
-				fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
-			}
-
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
-			}
-
-			return nil
+			return refreshAllCerts(cmd.Context())
 		},
 	}
+}
+
+// refreshAllCerts re-issues certificates for every stored auth entry and
+// saves the updated config. It returns an error when not logged in or when
+// no entry could be refreshed, so callers that retry a connection afterwards
+// do not retry with the same stale certificates.
+func refreshAllCerts(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	if len(cfg.Auth) == 0 {
+		return fmt.Errorf("not logged in; run 'wendy auth login' first")
+	}
+
+	refreshed := 0
+	for i, auth := range cfg.Auth {
+		if len(auth.Certificates) == 0 {
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
+			continue
+		}
+
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
+
+		if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
+			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
+			continue
+		}
+
+		refreshed++
+		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
+	}
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	if refreshed == 0 {
+		return fmt.Errorf("no certificates were refreshed")
+	}
+	return nil
 }
 
 // certCommonName extracts the Subject CN from a PEM-encoded certificate.

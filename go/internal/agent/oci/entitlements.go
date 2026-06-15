@@ -177,6 +177,40 @@ func applyGPU(spec *Spec) {
 		"NVIDIA_VISIBLE_DEVICES=all",
 		"NVIDIA_DRIVER_CAPABILITIES=all",
 	)
+
+	// On Raspberry Pi, also expose the VideoCore mailbox device for board
+	// telemetry. The node is absent on Jetson/generic hosts, where this is
+	// skipped entirely.
+	if boardDetect().IsRaspberryPi() {
+		applyVCIO(spec)
+	}
+}
+
+// vcioDevicePath is the host VideoCore mailbox device. Behind a var so tests
+// can point it at a temp file (a real /dev/vcio only exists on a Raspberry Pi).
+var vcioDevicePath = "/dev/vcio"
+
+// applyVCIO exposes the Raspberry Pi VideoCore mailbox device so a container can
+// read board telemetry (power/voltage/current/temperature, Pi 5 PMIC ADC)
+// through the firmware property interface (e.g. vcgencmd). The node's major is
+// dynamically allocated by the firmware/mailbox driver, so it is derived from
+// the live node rather than hardcoded. Access is "rw" (no mknod): the container
+// only opens the host-created node, it never needs to create one. No-op when the
+// node is absent (e.g. vcio not enabled) so a missing bind source cannot stop
+// the container from starting.
+func applyVCIO(spec *Spec) {
+	if _, err := os.Stat(vcioDevicePath); err != nil {
+		return
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: "/dev/vcio",
+		Source:      vcioDevicePath,
+		Type:        "bind",
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
+	})
+	// /dev/vcio's major is dynamically allocated, so derive it from the live
+	// node. allowMajorsFromGlob dedups and grants the major "rw" (no mknod).
+	allowMajorsFromGlob(spec, vcioDevicePath)
 }
 
 // applyNetwork configures the network namespace.

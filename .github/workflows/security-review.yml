@@ -13,7 +13,7 @@ jobs:
   security-review:
     name: Claude Security Review
     if: github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ai-suggestion')
-    runs-on: ubuntu-latest
+    runs-on: runs-on,runner=2cpu-linux-x64
     permissions:
       contents: read
       pull-requests: write
@@ -169,7 +169,7 @@ jobs:
           print(report)
 
           severities = re.findall(
-              r'^\|\s*(CRITICAL|HIGH|MEDIUM|LOW|INFORMATIONAL)\s*\|',
+              r'^\|\s*\*{0,2}(CRITICAL|HIGH|MEDIUM|LOW|INFORMATIONAL)\*{0,2}\s*\|',
               report,
               re.MULTILINE,
           )

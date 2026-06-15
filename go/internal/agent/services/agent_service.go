@@ -88,6 +88,21 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
 
+	if usage, ok := rootDiskUsage(); ok {
+		resp.DiskUsedBytes = &usage.usedBytes
+		resp.DiskTotalBytes = &usage.totalBytes
+	}
+
+	for _, p := range listDiskPartitions() {
+		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
+			Mountpoint: p.mountpoint,
+			Filesystem: p.filesystem,
+			Device:     p.device,
+			UsedBytes:  p.usedBytes,
+			TotalBytes: p.totalBytes,
+		})
+	}
+
 	return resp, nil
 }
 
@@ -706,11 +721,17 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	phase := "downloading"
 	lastPercent := int32(0)
 
+	// Retain the tail of mender's output so a non-zero exit can report the
+	// real cause (e.g. an incompatible device type) instead of a bare
+	// "exit status 1".
+	outputTail := newLineRing(menderErrorTailLines)
+
 	scanLines := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			outputTail.push(line)
 			lower := strings.ToLower(line)
 			s.logger.Debug("mender output", zap.String("line", line))
 
@@ -760,10 +781,12 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
+		msg := formatMenderFailure(err, outputTail.tail())
+		s.logger.Error("mender install failed", zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
 		return stream.Send(&agentpb.UpdateOSResponse{
 			ResponseType: &agentpb.UpdateOSResponse_Failed_{
 				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("mender install failed: %v", err),
+					ErrorMessage: msg,
 				},
 			},
 		})

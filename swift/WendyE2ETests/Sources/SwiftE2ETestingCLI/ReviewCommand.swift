@@ -326,6 +326,7 @@ private struct RunReviewObservation {
     var durationSeconds: Double?
     var recordingPath: String?
     var shellPath: String?
+    var attemptLogPath: String?
 
     var isFailed: Bool { status.isFailed }
 }
@@ -344,6 +345,19 @@ private struct RunReviewSuite {
     var sourceURL: URL
     var tests: [RunReviewTest]
     var existingReviews: [E2EReview]
+}
+
+private struct RunReviewAttemptArtifact {
+    var target: String
+    var attempt: String
+    var exitStatus: Int?
+    var observationCount: Int
+    var files: [String]
+
+    var needsDiagnosis: Bool {
+        if let exitStatus, exitStatus != 0 { return true }
+        return observationCount == 0
+    }
 }
 
 private struct ReviewResultKey: Hashable {
@@ -703,7 +717,7 @@ private func loadRunReviewSuites(
     }
 
     var suites: [RunReviewSuite] = []
-    for suiteURL in try runReviewDirectoryChildren(of: runURL) {
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
         var suiteTests: [RunReviewTest] = []
@@ -728,8 +742,6 @@ private func loadRunReviewSuites(
                     suiteKey: suiteKey,
                     testKey: testKey,
                     observations: try runReviewObservations(
-                        suiteKey: suiteKey,
-                        testKey: testKey,
                         testURL: testURL,
                         runURL: runURL
                     ),
@@ -769,8 +781,6 @@ private struct RunReviewPathKey: Hashable {
 }
 
 private func runReviewObservations(
-    suiteKey: String,
-    testKey: String,
     testURL: URL,
     runURL: URL
 ) throws -> [RunReviewObservation] {
@@ -779,10 +789,15 @@ private func runReviewObservations(
         let targetName = targetURL.lastPathComponent
         for attemptURL in try runReviewDirectoryChildren(of: targetURL) {
             let attemptName = attemptURL.lastPathComponent
+            let metadata = try loadE2ETestMetadata(in: attemptURL)
+            let attemptArtifactsURL = e2eAttemptArtifactsURL(
+                in: runURL,
+                targetName: targetName,
+                attempt: attemptName
+            )
             let result = try runReviewObservationResult(
-                suiteKey: suiteKey,
-                testKey: testKey,
-                attemptURL: attemptURL
+                metadata: metadata,
+                attemptURL: attemptArtifactsURL
             )
             observations.append(
                 RunReviewObservation(
@@ -799,6 +814,11 @@ private func runReviewObservations(
                         fileName: "recording.sh.txt",
                         attemptURL: attemptURL,
                         runURL: runURL
+                    ),
+                    attemptLogPath: runReviewRelativeFilePath(
+                        fileName: "attempt.log",
+                        attemptURL: attemptArtifactsURL,
+                        runURL: runURL
                     )
                 )
             )
@@ -811,8 +831,7 @@ private func runReviewObservations(
 }
 
 private func runReviewObservationResult(
-    suiteKey: String,
-    testKey: String,
+    metadata: E2ETestMetadata,
     attemptURL: URL
 ) throws -> ReviewTestObservation {
     let resultURL = attemptURL.appendingPathComponent("test-results.xml")
@@ -826,20 +845,8 @@ private func runReviewObservationResult(
     guard xmlParser.parse() else {
         throw ValidationError("Could not parse Swift Testing xUnit results: \(resultURL.path)")
     }
-    if let result = parser.results.first(where: { key, _ in
-        reviewSlug(key.suite) == suiteKey && reviewSlug(key.name) == testKey
-    })?.value {
-        return result
-    }
-
-    let matchingTestNames = parser.results.filter { key, _ in
-        reviewSlug(key.name) == testKey
-    }
-    if matchingTestNames.count == 1, let result = matchingTestNames.first?.value {
-        return result
-    }
-
-    return ReviewTestObservation(status: .unknown, durationSeconds: nil)
+    return parser.results[ReviewResultKey(suite: metadata.suiteName, name: metadata.testName)]
+        ?? ReviewTestObservation(status: .unknown, durationSeconds: nil)
 }
 
 private func runReviewDirectoryChildren(of url: URL) throws -> [URL] {
@@ -891,11 +898,12 @@ private func runSuitePrompt(
     lines.append("- Suite key: `\(suite.suiteKey)`")
     lines.append("- Suite name: `\(suite.displayName)`")
     lines.append("- Source: `\(suite.sourceURL.path)`")
+    let suiteReviewURL = e2eObservationsRootURL(in: runURL)
+        .appendingPathComponent(suite.suiteKey)
+        .appendingPathComponent(reviewDirectoryName)
+    lines.append("- Suite review directory: `\(suiteReviewURL.path)`")
     lines.append(
-        "- Suite review directory: `\(runURL.appendingPathComponent(suite.suiteKey).appendingPathComponent(reviewDirectoryName).path)`"
-    )
-    lines.append(
-        "- Test review directories: `<run>/\(suite.suiteKey)/<test-key>/\(reviewDirectoryName)/`"
+        "- Test review directories: `<run>/\(e2eObservationsDirectoryName)/\(suite.suiteKey)/<test-key>/\(reviewDirectoryName)/`"
     )
     appendReviewOutputContract(
         to: &lines,
@@ -959,6 +967,7 @@ private func runReportPrompt(
     )
     lines.append("")
     appendRunOverviewReportFocus(overview, to: &lines)
+    try appendRunReviewAttemptArtifacts(runURL: runURL, to: &lines)
     lines.append("## Run summary")
     lines.append("")
     for suite in suites {
@@ -1031,7 +1040,7 @@ private func appendReviewOutputContract(
         "The file name must be the review title slug with `.md`: lowercase ASCII letters/digits, non-alphanumerics replaced by `-`, repeated dashes collapsed, and leading/trailing dashes removed. Example: `seed-cache-fixtures-before-listing.md`."
     )
     lines.append(
-        "Use JSON `severity` to classify each issue as `info`, `concern`, or `fail`. Keep those exact JSON values. If human-facing review text mentions a severity label, use `🛑 Error`, `⚠️ Concern`, and `💡 Info` for `fail`, `concern`, and `info`, respectively. Do not use heart emojis as severity markers. Do not write prose status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
+        "Use JSON `severity` to classify each issue as `info`, `concern`, or `fail`. Keep those exact JSON values. Do not include severity labels or severity emoji in review titles, Markdown headings, or summary text; the aggregate renderer adds the severity emoji from JSON. Do not use heart emojis as severity markers. Do not write prose status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
     )
     lines.append(
         "If nothing is noteworthy at a scope, leave that `\(reviewDirectoryName)/` directory absent or empty."
@@ -1060,7 +1069,7 @@ private func appendReviewOutputContract(
     lines.append("  ],")
     lines.append("  \"evidence\": [")
     lines.append(
-        "    { \"path\": \"wendy-cache-list/prints-values/ubuntu-24-04/0001/recording.md\" }"
+        "    { \"path\": \"observations/wendy-cache-list/prints-values/ubuntu-24-04/0001/recording.md\" }"
     )
     lines.append("  ]")
     lines.append("}")
@@ -1148,6 +1157,104 @@ private func appendRunOverviewReportFocus(
         issues: overview.noteworthy.unknowns,
         to: &lines
     )
+}
+
+private func appendRunReviewAttemptArtifacts(runURL: URL, to lines: inout [String]) throws {
+    let artifacts = try runReviewAttemptArtifacts(in: runURL)
+    lines.append("## Attempt-level artifacts")
+    lines.append("")
+    lines.append(
+        "Use these attempt-level artifacts when a job failed before Swift Testing produced per-test observations, or when `overview.json` is inconclusive. `attempt.log` is the full attempt setup/build/preflight/test-launch log captured by the runner."
+    )
+    lines.append("")
+
+    guard !artifacts.isEmpty else {
+        lines.append("- No attempt-level artifacts were recorded.")
+        lines.append("")
+        return
+    }
+
+    for artifact in artifacts {
+        let exitStatus = artifact.exitStatus.map(String.init) ?? "unknown"
+        let marker = artifact.needsDiagnosis ? "diagnosis-needed" : "ok"
+        lines.append(
+            "- target=`\(artifact.target)` attempt=`\(artifact.attempt)` exitStatus=`\(exitStatus)` observations=`\(artifact.observationCount)` marker=`\(marker)`"
+        )
+        if artifact.files.isEmpty {
+            lines.append("  - files: `<none>`")
+        } else {
+            lines.append("  - files: \(artifact.files.map { "`\($0)`" }.joined(separator: ", "))")
+        }
+    }
+    lines.append("")
+}
+
+private func runReviewAttemptArtifacts(in runURL: URL) throws -> [RunReviewAttemptArtifact] {
+    var artifacts: [RunReviewAttemptArtifact] = []
+    for targetURL in try runReviewDirectoryChildren(of: e2eAttemptArtifactsRootURL(in: runURL)) {
+        let target = targetURL.lastPathComponent
+        for attemptURL in try runReviewDirectoryChildren(of: targetURL) {
+            let attempt = attemptURL.lastPathComponent
+            artifacts.append(
+                RunReviewAttemptArtifact(
+                    target: target,
+                    attempt: attempt,
+                    exitStatus: runReviewAttemptExitStatus(attemptURL: attemptURL),
+                    observationCount: try runReviewObservationCount(
+                        runURL: runURL,
+                        target: target,
+                        attempt: attempt
+                    ),
+                    files: try runReviewAttemptFiles(attemptURL: attemptURL, runURL: runURL)
+                )
+            )
+        }
+    }
+    return artifacts.sorted {
+        if $0.target != $1.target { return $0.target < $1.target }
+        return $0.attempt < $1.attempt
+    }
+}
+
+private func runReviewAttemptExitStatus(attemptURL: URL) -> Int? {
+    let url = attemptURL.appendingPathComponent("attempt.json")
+    guard FileManager.default.fileExists(atPath: url.path),
+        let data = try? Data(contentsOf: url),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return nil
+    }
+    return object["exitStatus"] as? Int
+}
+
+private func runReviewAttemptFiles(attemptURL: URL, runURL: URL) throws -> [String] {
+    let urls = try FileManager.default.contentsOfDirectory(
+        at: attemptURL,
+        includingPropertiesForKeys: [.isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    )
+    return urls
+        .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        .map { reviewRelativePath($0, base: runURL) }
+}
+
+private func runReviewObservationCount(runURL: URL, target: String, attempt: String) throws -> Int {
+    var count = 0
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
+        for testURL in try runReviewDirectoryChildren(of: suiteURL) {
+            let observationURL = testURL
+                .appendingPathComponent(target, isDirectory: true)
+                .appendingPathComponent(attempt, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: observationURL.path, isDirectory: &isDirectory),
+                isDirectory.boolValue
+            {
+                count += 1
+            }
+        }
+    }
+    return count
 }
 
 private func appendRunOverviewIssues(
@@ -1288,9 +1395,11 @@ private func appendRunReviewTest(
     lines.append("### \(test.test.suite) › \(test.test.name)")
     lines.append("- Test key: `\(test.suiteKey)/\(test.testKey)`")
     lines.append("- Source: `\(test.test.sourcePath):\(test.test.funcLine)`")
-    lines.append(
-        "- Review directory: `\(runURL.appendingPathComponent(test.suiteKey).appendingPathComponent(test.testKey).appendingPathComponent(reviewDirectoryName).path)`"
-    )
+    let testReviewURL = e2eObservationsRootURL(in: runURL)
+        .appendingPathComponent(test.suiteKey)
+        .appendingPathComponent(test.testKey)
+        .appendingPathComponent(reviewDirectoryName)
+    lines.append("- Review directory: `\(testReviewURL.path)`")
     appendExistingReviews(test.existingReviews, label: "Existing reviews", to: &lines)
     if !test.test.aiComments.isEmpty {
         lines.append("- `// AI:` comments:")
@@ -1316,6 +1425,9 @@ private func appendRunReviewTest(
         }
         if let shellPath = observation.shellPath {
             lines.append("    shell: `\(shellPath)`")
+        }
+        if let attemptLogPath = observation.attemptLogPath {
+            lines.append("    attempt log: `\(attemptLogPath)`")
         }
     }
     lines.append("")
@@ -1356,7 +1468,7 @@ private func runReviewTargetOutcomeCounts(
 
 private func removeExistingRunReviews(in runURL: URL, reviewer: String) throws {
     removeRunReviews(in: runURL, reviewer: reviewer)
-    for suiteURL in try runReviewDirectoryChildren(of: runURL) {
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         guard !isE2EReviewDirectoryName(suiteURL.lastPathComponent) else { continue }
         removeRunReviews(in: suiteURL, reviewer: reviewer)
         for testURL in try runReviewDirectoryChildren(of: suiteURL) {
@@ -1374,7 +1486,7 @@ private func removeRunReviews(in directoryURL: URL, reviewer: String) {
 @discardableResult
 private func enforceRunSuiteReviewContract(in runURL: URL, reviewer: String) throws -> Int {
     var count = 0
-    for suiteURL in try runReviewDirectoryChildren(of: runURL) {
+    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         guard !isE2EReviewDirectoryName(suiteURL.lastPathComponent) else { continue }
         count += try enforceReviews(
             in: suiteURL,

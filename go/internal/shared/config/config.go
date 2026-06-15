@@ -14,6 +14,11 @@ type Config struct {
 	Analytics          *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice      string           `json:"defaultDevice,omitempty"`
 	LastCLIUpdateCheck string           `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
+	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
+	// setup`. It lets the root command detect when an upgrade should refresh
+	// the MCP server config and bundled skills. Empty means the user has never
+	// run setup, so auto-refresh stays off.
+	LastMCPSetupVersion string `json:"lastMCPSetupVersion,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
@@ -31,6 +36,7 @@ type CertificateInfo struct {
 	PemPrivateKey       string `json:"pemPrivateKey,omitempty"`
 	OrganizationID      int    `json:"organizationId"`
 	UserID              string `json:"userId,omitempty"`
+	AssetID             int    `json:"assetId,omitempty"`
 }
 
 // AnalyticsConfig holds analytics preferences.

@@ -8,6 +8,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 {
   "appId": "com.example.myapp",
   "version": "1.0.0",
+  "platform": "wendyos",
   "entitlements": [
     { "type": "network", "mode": "host" }
   ]
@@ -18,7 +19,29 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 |-------|-------------|
 | `appId` | Unique identifier (reverse domain notation recommended) |
 | `version` | Application version string |
+| `platform` | Target platform: `wendyos`, `wendy-lite`, or `darwin` |
 | `entitlements` | Array of entitlement objects specifying required permissions |
+
+## Platforms
+
+| Value | Description |
+|-------|-------------|
+| `wendyos` | Linux edge device running WendyOS; apps run in containers |
+| `wendy-lite` | ESP32 WASM target |
+| `darwin` | Native macOS execution through [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) |
+
+Use `"darwin"` for Apple Silicon Mac targets managed by Wendy Agent for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
+
+Minimal SwiftPM/macOS configuration:
+
+```json
+{
+  "appId": "com.example.hello-mac",
+  "version": "1.0.0",
+  "language": "swift",
+  "platform": "darwin"
+}
+```
 
 ## Entitlements Overview
 
@@ -46,18 +69,17 @@ Controls network access for your application.
 
 ### GPU Entitlement
 
-Enables NVIDIA GPU access on Jetson devices for ML inference, computer vision, and GPU-accelerated computing.
+Enables GPU or board-telemetry access on supported devices.
 
 ```json
 { "type": "gpu" }
 ```
 
 When enabled:
-- Adds application to the video group for GPU device access
-- Injects NVIDIA Container Device Interface (CDI) specifications
-- Sets up CUDA and GPU library environment variables
+- **NVIDIA Jetson**: Adds application to video group, injects NVIDIA CDI specs, sets CUDA env vars
+- **Raspberry Pi**: Exposes `/dev/vcio` (VideoCore mailbox) for board telemetry (power, voltage, temperature)
 
-**Note**: GPU entitlements are specifically for NVIDIA Jetson devices.
+**Note**: GPU entitlement behavior is hardware-specific.
 
 ### Video Entitlement
 
@@ -68,9 +90,9 @@ Provides access to video capture devices (USB cameras, CSI cameras).
 ```
 
 When enabled:
-- Mounts `/dev/video0` into container
+- Mounts `/dev` to expose all video capture devices
 - Configures device permissions for video capture
-- Enables V4L2 (Video4Linux2) interfaces
+- Enables V4L2 (Video4Linux2) and libcamera interfaces
 
 ### Audio Entitlement
 
@@ -197,7 +219,7 @@ wendy project entitlements list
 |---------|----------|
 | Can't access network | Add `{ "type": "network", "mode": "host" }` |
 | GPU not detected | Add `{ "type": "gpu" }` (Jetson devices only) |
-| Camera not found | Add `{ "type": "video" }`, verify camera at `/dev/video0` |
+| Camera not found | Add `{ "type": "camera" }`, verify camera at `/dev/video0` |
 | Audio permission denied | Add `{ "type": "audio" }` |
 | Bluetooth operations failing | Add `{ "type": "bluetooth", "mode": "kernel" }` or `"mode": "bluez"` |
 

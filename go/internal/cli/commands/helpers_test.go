@@ -87,12 +87,12 @@ func TestExternalProviderPickerHint(t *testing.T) {
 		{
 			name:        "docker",
 			providerKey: providers.ProviderKeyDocker,
-			want:        "Docker Desktop",
+			want:        "Docker",
 		},
 		{
 			name:        "local",
 			providerKey: providers.ProviderKeyLocal,
-			want:        "Local Machine",
+			want:        providers.LocalDisplayName(),
 		},
 		{
 			name:        "other",
@@ -112,6 +112,11 @@ func TestExternalProviderPickerHint(t *testing.T) {
 			}
 			if !strings.Contains(got, tt.want) {
 				t.Fatalf("hint = %q, want it to mention %q", got, tt.want)
+			}
+			for _, stale := range []string{"Docker Desktop", "Local Machine"} {
+				if strings.Contains(got, stale) {
+					t.Fatalf("hint = %q, want long label %q replaced", got, stale)
+				}
 			}
 		})
 	}
@@ -331,6 +336,42 @@ func TestResolveDeviceAddress_DefaultDevice(t *testing.T) {
 	}
 	if addr != "wendy-thor.local:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "wendy-thor.local:50051")
+	}
+}
+
+func TestResolveDeviceAddress_ExplicitHostPortFlag(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = "my-mac.local:50051"
+
+	addr, isDefault, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isDefault {
+		t.Fatal("expected isDefault=false when --device flag is set")
+	}
+	if addr != "my-mac.local:50051" {
+		t.Fatalf("addr = %q, want %q", addr, "my-mac.local:50051")
+	}
+}
+
+func TestResolveDeviceAddress_ExplicitHostPortDefault(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = ""
+
+	setTempConfig(t, &config.Config{DefaultDevice: "my-mac.local:50051"})
+
+	addr, isDefault, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isDefault {
+		t.Fatal("expected isDefault=true when using default device from config")
+	}
+	if addr != "my-mac.local:50051" {
+		t.Fatalf("addr = %q, want %q", addr, "my-mac.local:50051")
 	}
 }
 
@@ -658,6 +699,48 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 	t.Cleanup(func() {
 		discoverLANDevices = orig
 	})
+}
+
+func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
+	// A reachability timeout against an mTLS-advertised device should hint at
+	// both stale certs and a too-old CLI.
+	err := newProvisionedAgentUnauthorizedError(errors.New("dial tcp 192.168.1.50:50051: i/o timeout"))
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "upgrade") || !strings.Contains(msg, "wendy auth refresh-certs") {
+		t.Fatalf("message should mention upgrading the CLI and refresh-certs, got: %q", msg)
+	}
+}
+
+func TestLanAgentAddressesPrefersUSBLinkLocal(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  models.LANDevice
+		want []string
+	}{
+		{
+			name: "usb present orders link-local before routed wifi ip",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051", "192.168.1.50:50051"},
+		},
+		{
+			name: "no usb keeps ip-first ordering",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", Port: 50051},
+			want: []string{"192.168.1.50:50051", "playful-reed.local:50051"},
+		},
+		{
+			name: "usb present but no ip falls back to hostname only",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lanAgentAddresses(tt.dev)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("lanAgentAddresses() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestIsCertRejectionError(t *testing.T) {

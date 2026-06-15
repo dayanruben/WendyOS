@@ -54,6 +54,7 @@ struct ContainerServiceTests {
 
         try await deleteApp(service: service, appID: appID)
         #expect(await recorder.last() == .some([]))
+        #expect(!FileManager.default.fileExists(atPath: appDirectory.path))
     }
 
     @Test("spontaneous native exits publish a stopped app update")
@@ -347,6 +348,32 @@ struct ContainerServiceTests {
             appsBase: URL(fileURLWithPath: appsBase)
         )
 
+        #expect(await service.currentAppInfosForTesting().isEmpty)
+    }
+
+    @Test("delete removes orphaned native app directories")
+    func deleteRemovesOrphanedNativeAppDirectories() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.OrphanedAppDirectory"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try "orphaned".write(
+            to: appDirectory.appendingPathComponent("payload.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await deleteApp(service: service, appID: appID)
+
+        #expect(!FileManager.default.fileExists(atPath: appDirectory.path))
         #expect(await service.currentAppInfosForTesting().isEmpty)
     }
 
