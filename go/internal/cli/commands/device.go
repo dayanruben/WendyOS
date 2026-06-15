@@ -1633,13 +1633,15 @@ func reconnectCloudAgentAfterRestart(ctx context.Context) (*grpcclient.AgentConn
 // agent has been updated. preUpdateVersion is the version queried before the
 // agent restart; it is used only for a cheap up-front gate, since whether a
 // device runs WendyOS and supports mender does not change across an agent
-// update. The device_type/storage_medium/os_version used for the actual
-// decision are re-read from the agent we just installed — a newer agent can
-// report a corrected device_type, so the pre-update snapshot may be stale.
+// update. When artifactURLOverride is set, that exact Mender artifact is
+// applied (prompting unless assumeYes) instead of the manifest's latest;
+// otherwise the device_type/storage_medium/os_version used for the decision
+// are re-read from the agent we just installed — a newer agent can report a
+// corrected device_type, so the pre-update snapshot may be stale.
 // Non-WendyOS / no-mender targets are skipped silently (no reconnect), and any
 // failure to re-read or look up the OS is reported but non-fatal — `device
 // update` still succeeds as an agent-only update.
-func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, host string, nightly, assumeYes bool) error {
+func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, host string, nightly, assumeYes bool, artifactURLOverride string) error {
 	if preUpdateVersion == nil {
 		return nil
 	}
@@ -1647,9 +1649,10 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return nil
 	}
 
-	// Re-read the version from the just-installed agent: its reported
-	// device_type is the value that must match the OTA manifest key, and a
-	// newer agent may report it correctly where an older one did not.
+	// Any OS work needs a live connection to the just-restarted agent. This
+	// reconnect honors the cloud tunnel, so the device pulls the artifact
+	// straight from its URL (e.g. GCS) while only the control stream is
+	// tunneled.
 	fmt.Println("Checking for OS updates...")
 	conn, err := reconnectAgentAfterRestart(ctx, host)
 	if err != nil {
@@ -1658,50 +1661,65 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	defer conn.Close()
 
-	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-	if err != nil {
-		fmt.Printf("Could not check for OS updates: %v\n", err)
-		return nil
-	}
-
-	deviceType := versionResp.GetDeviceType()
-	if deviceType == "" {
-		// No device type → cannot auto-select the GCS artifact; skip quietly.
-		return nil
-	}
-
-	otaURL, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
-	if err != nil {
-		fmt.Printf("Could not check for OS updates: %v\n", err)
-		return nil
-	}
-
-	currentOS := versionResp.GetOsVersion()
-	fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
-	if fromVer == "" {
-		fromVer = "unknown"
-	}
-
-	apply := false
-	switch decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal()) {
-	case osActionAlreadyCurrent:
-		fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
-		return nil
-	case osActionReportOnly:
-		fmt.Printf("OS update available (%s). Re-run with --yes or run 'wendy os update' to apply.\n", latestVer)
-		return nil
-	case osActionApply:
-		apply = true
-	case osActionPrompt:
-		if promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
-			apply = true
-		} else {
-			fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
+	var otaURL string
+	if artifactURLOverride != "" {
+		// Explicit artifact: apply it as-is, no manifest lookup or version
+		// comparison (mirrors `os update --artifact-url`).
+		if !assumeYes {
+			if !isInteractiveTerminal() {
+				fmt.Printf("OS artifact specified (%s). Re-run with --yes to apply.\n", artifactURLOverride)
+				return nil
+			}
+			if !promptYesNoDefaultNoFn(fmt.Sprintf("Apply OS update from %s? [y/N] ", artifactURLOverride)) {
+				fmt.Println("Skipping OS update.")
+				return nil
+			}
+		}
+		otaURL = artifactURLOverride
+	} else {
+		// Re-read the version from the just-installed agent: its reported
+		// device_type is the value that must match the OTA manifest key, and a
+		// newer agent may report it correctly where an older one did not.
+		versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+		if err != nil {
+			fmt.Printf("Could not check for OS updates: %v\n", err)
 			return nil
 		}
-	}
-	if !apply {
-		return nil
+
+		deviceType := versionResp.GetDeviceType()
+		if deviceType == "" {
+			// No device type → cannot auto-select the GCS artifact; skip quietly.
+			return nil
+		}
+
+		u, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
+		if err != nil {
+			fmt.Printf("Could not check for OS updates: %v\n", err)
+			return nil
+		}
+
+		currentOS := versionResp.GetOsVersion()
+		fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
+		if fromVer == "" {
+			fromVer = "unknown"
+		}
+
+		switch decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal()) {
+		case osActionAlreadyCurrent:
+			fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
+			return nil
+		case osActionReportOnly:
+			fmt.Printf("OS update available (%s). Re-run with --yes or run 'wendy os update' to apply.\n", latestVer)
+			return nil
+		case osActionApply:
+			// fall through to apply
+		case osActionPrompt:
+			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
+				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
+				return nil
+			}
+		}
+		otaURL = u
 	}
 
 	if err := streamOSUpdate(ctx, conn, otaURL); err != nil {
@@ -1724,13 +1742,15 @@ func newDeviceUpdateCmd() *cobra.Command {
 	var binaryPath string
 	var nightly bool
 	var assumeYes bool
+	var artifactURL string
 
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update the agent binary on the target device",
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
-			"--nightly selects the nightly channel for both the agent and the OS.",
+			"--nightly selects the nightly channel for both the agent and the OS. " +
+			"--artifact-url applies a specific OS (Mender) artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -1870,7 +1890,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				return nil
 			}
 			fmt.Println("Agent updated successfully.")
-			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, deviceHost, nightly, assumeYes); err != nil {
+			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, deviceHost, nightly, assumeYes, artifactURL); err != nil {
 				return err
 			}
 			return nil
@@ -1880,6 +1900,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
+	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS (Mender) artifact URL instead of the manifest's latest")
 
 	return cmd
 }
