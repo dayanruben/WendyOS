@@ -312,12 +312,43 @@ func (ld *lockedDisk) close() {
 	flushFileBuffers := kernel32.NewProc("FlushFileBuffers")
 	flushFileBuffers.Call(uintptr(ld.handle)) //nolint:errcheck
 
-	// os.NewFile owns the HANDLE; close through diskFile to avoid double-close.
+	// Release all our locks (physical drive + volume handles) and then
+	// immediately set the disk offline. When locks are released Windows
+	// rescans the partition table and auto-assigns drive letters to every
+	// partition it finds (EFI, rootfs, recovery, etc.), flooding Explorer
+	// with phantom drives. Setting the disk offline right after prevents this.
+	//
+	// os.NewFile took ownership of the underlying Windows HANDLE (it installs
+	// a finalizer that calls CloseHandle), so we close exclusively through
+	// diskFile.Close() — calling syscall.CloseHandle separately would
+	// double-close once the finalizer ran, with undefined behavior if Windows
+	// reused the handle value.
 	if cerr := ld.diskFile.Close(); cerr != nil {
 		fmt.Fprintf(os.Stderr, "warning: closing %s: %v\n", ld.devPath, cerr)
 	}
 	ld.closeVolumeHandles()
 
+	// Remove any auto-assigned drive letters, then (for non-removable
+	// disks) take the disk offline. Set-Disk -IsOffline alone doesn't
+	// remove letters that Windows already assigned during the brief window
+	// between releasing locks and going offline.
+	//
+	// Get-Partition -ErrorAction SilentlyContinue: right after Clear-Disk the
+	// partition table re-read may not have completed and the cmdlet emits a
+	// non-terminating "no MSFT_Partition objects" error we don't want fatal.
+	// Set-Disk: no -Confirm (legacy Storage module rejects it; -IsOffline
+	// doesn't prompt) and no -ErrorAction Stop (we log exit status below).
+	//
+	// Skip Set-Disk -IsOffline for removable targets — Windows rejects it
+	// on USB / SD / MMC and on the PCIE card readers that report as SCSI
+	// but are flagged removable by looksLikeCardReader, with "Not
+	// Supported: Removable media cannot be set to offline." (WDY-1178).
+	// Gating in Go on the same drive.IsRemovable predicate used to select
+	// the install target keeps the cleanup predicate in lockstep with
+	// selection. Removing the partition access paths above is what
+	// actually prevents phantom drive letters; the offline step is only
+	// meaningful on fixed disks (where Windows would otherwise auto-mount
+	// partitions on the next rescan).
 	cleanupScript := fmt.Sprintf(
 		"Get-Partition -DiskNumber %d -ErrorAction SilentlyContinue | "+
 			"Where-Object { $_.DriveLetter } | "+
@@ -346,14 +377,24 @@ func openLockedDisk(d drive) (*lockedDisk, error) {
 		return nil, err
 	}
 
-	// Ensure the disk is online before clearing partitions.
+	// Ensure the disk is online before clearing partitions — a previous
+	// write may have left it offline. Set-Disk -IsOffline doesn't prompt, so
+	// no -Confirm switch is required (and the legacy Storage module rejects
+	// it outright).
 	onlineScript := fmt.Sprintf("Set-Disk -Number %d -IsOffline $false", diskNum)
 	_ = exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", onlineScript).Run()
 
+	// Clear all partitions on the disk first. This is necessary because
+	// disks (e.g. from a prior Jetson flash) may contain many partitions
+	// without drive letters that getVolumesForDisk cannot enumerate. Those
+	// hidden volumes stay mounted and cause "Access is denied" on write.
 	if err := clearDiskPartitions(diskNum); err != nil {
 		return nil, err
 	}
 
+	// Lock and dismount any remaining lettered volumes on this disk. We
+	// must keep the volume handles open for the entire duration of the
+	// write — closing them would release the lock and let Windows re-mount.
 	letters, err := getVolumesForDisk(diskNum)
 	if err != nil {
 		return nil, fmt.Errorf("enumerating volumes: %w", err)
@@ -374,6 +415,7 @@ func openLockedDisk(d drive) (*lockedDisk, error) {
 		ld.volumeHs = append(ld.volumeHs, h)
 	}
 
+	// Open the raw physical drive for writing.
 	devPathUTF16, err := syscall.UTF16PtrFromString(d.DevicePath)
 	if err != nil {
 		ld.closeVolumeHandles()
@@ -397,7 +439,10 @@ func openLockedDisk(d drive) (*lockedDisk, error) {
 	ld.diskFile = os.NewFile(uintptr(handle), d.DevicePath)
 
 	var bytesReturned uint32
+	// Allow writes beyond the reported partition layout. Without this,
+	// Windows may reject writes that extend past existing partitions.
 	_ = syscall.DeviceIoControl(handle, fsctlAllowExtendedDASDIO, nil, 0, nil, 0, &bytesReturned, nil)
+	// Lock the physical drive itself for exclusive access.
 	_ = syscall.DeviceIoControl(handle, fsctlLockVolume, nil, 0, nil, 0, &bytesReturned, nil)
 
 	return ld, nil
@@ -415,6 +460,9 @@ func (hw handleWriterAt) WriteAt(p []byte, off int64) (int, error) {
 	var done uint32
 	if err := syscall.WriteFile(hw.h, p, &done, nil); err != nil {
 		return int(done), err
+	}
+	if int(done) < len(p) {
+		return int(done), fmt.Errorf("short write at offset %d: wrote %d of %d bytes", off, done, len(p))
 	}
 	return int(done), nil
 }
