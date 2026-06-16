@@ -12,11 +12,19 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// fakeContainerd embeds mockContainerdClient and adds a hook for MissingChunks
-// so chunk-related tests can inject custom behaviour without touching the shared mock.
+// fakeContainerd embeds mockContainerdClient and adds hooks for MissingChunks
+// and StageChunk so chunk-related tests can inject custom behaviour without
+// touching the shared mock.
 type fakeContainerd struct {
 	mockContainerdClient
-	missingFn func(ctx context.Context, hashes [][32]byte) ([][32]byte, error)
+	missingFn    func(ctx context.Context, hashes [][32]byte) ([][32]byte, error)
+	stageChunkFn func(ctx context.Context, h [32]byte, data []byte) error
+	stagedChunks []stagedChunk
+}
+
+type stagedChunk struct {
+	hash [32]byte
+	data []byte
 }
 
 func newFakeContainerd() *fakeContainerd {
@@ -29,6 +37,15 @@ func (f *fakeContainerd) MissingChunks(ctx context.Context, hashes [][32]byte) (
 		return f.missingFn(ctx, hashes)
 	}
 	return hashes, nil
+}
+
+// StageChunk records the (hash, data) pair and delegates to stageChunkFn when set.
+func (f *fakeContainerd) StageChunk(ctx context.Context, h [32]byte, data []byte) error {
+	f.stagedChunks = append(f.stagedChunks, stagedChunk{hash: h, data: data})
+	if f.stageChunkFn != nil {
+		return f.stageChunkFn(ctx, h, data)
+	}
+	return nil
 }
 
 func TestQueryChunksReturnsMissing(t *testing.T) {
@@ -78,11 +95,15 @@ func TestWriteChunks(t *testing.T) {
 	fake := newFakeContainerd()
 	svc := NewContainerService(zap.NewNop(), fake)
 
-	h0 := bytes.Repeat([]byte{0x11}, 32)
+	var h0 [32]byte
+	copy(h0[:], bytes.Repeat([]byte{0x11}, 32))
+	data0 := []byte("hello-chunk-data")
+
+	h0bytes := h0[:]
 	stream := &writeChunksStream{
 		ctx: context.Background(),
 		msgs: []*agentpb.WriteChunksRequest{
-			{Hash: h0, Data: []byte("data")},
+			{Hash: h0bytes, Data: data0},
 		},
 	}
 	if err := svc.WriteChunks(stream); err != nil {
@@ -90,5 +111,16 @@ func TestWriteChunks(t *testing.T) {
 	}
 	if stream.sent == nil {
 		t.Fatal("SendAndClose was never called")
+	}
+
+	// Assert that the server actually staged the chunk with the correct hash and data.
+	if len(fake.stagedChunks) != 1 {
+		t.Fatalf("expected 1 staged chunk, got %d", len(fake.stagedChunks))
+	}
+	if fake.stagedChunks[0].hash != h0 {
+		t.Fatalf("staged hash mismatch: got %x, want %x", fake.stagedChunks[0].hash, h0)
+	}
+	if !bytes.Equal(fake.stagedChunks[0].data, data0) {
+		t.Fatalf("staged data mismatch: got %q, want %q", fake.stagedChunks[0].data, data0)
 	}
 }
