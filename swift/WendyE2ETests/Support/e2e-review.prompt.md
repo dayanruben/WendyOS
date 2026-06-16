@@ -28,6 +28,20 @@ Guidelines:
   explicitly without blaming the diff.
 - In full mode, review the run as a whole for actionable failures, flakes,
   regressions, infrastructure issues, or test/spec concerns.
+- Preserve the review shape used by the aggregate PR comment: a precise title,
+  then one short GitHub-comment-sized summary, then a thorough `## Details`
+  section. The aggregate renderer will hide `## Details` behind a disclosure.
+- The short summary should explain the issue and the recommended next action in
+  one or two compact paragraphs or bullets. Do not bury the action only in
+  details.
+- The `## Details` section should be human-friendly: well structured,
+  thoughtful, concise, and easy to follow. Prefer short paragraphs and bullets
+  with clear headings over raw log dumps or meandering analysis.
+- Make details self-contained enough for a human or AI coding agent to pick up
+  the issue and create a fix without redoing the whole investigation. Include
+  the relevant command/test names, target/attempt names, observed versus
+  expected behavior, likely category/root cause, confidence, inspected
+  source/diff paths, artifact paths, and concrete next steps.
 - For every issue, cite concrete evidence: source paths, target/attempt names,
   result details, recording paths, shell script paths, attempt logs, targeted Git
   diff hunks, or `overview.json` outcome data as appropriate.

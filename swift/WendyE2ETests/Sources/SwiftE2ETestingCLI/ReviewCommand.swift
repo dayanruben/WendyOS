@@ -690,11 +690,11 @@ private func appendReviewOutputContract(
     lines.append("")
     lines.append("# Seed cache fixtures before listing values")
     lines.append("")
-    lines.append("Short GitHub-comment-sized summary of the finding and suggested action.")
+    lines.append("Short GitHub-comment-sized summary of the issue and recommended next action.")
     lines.append("")
     lines.append("## Details")
     lines.append("")
-    lines.append("Full analysis, evidence, and suggested follow-up.")
+    lines.append("Human-friendly, well-structured, concise context for a human or AI coding agent to pick up the issue and create a fix: observed versus expected behavior, likely category/root cause, confidence, inspected source/diff paths, artifact paths, and concrete next steps. Prefer short paragraphs and bullets over raw log dumps.")
     lines.append("```")
     lines.append("")
     lines.append(
