@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -59,8 +60,8 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, error) {
 		case hdr.Name == "index.json":
 			indexJSON = data
 		case strings.HasPrefix(hdr.Name, "blobs/sha256/"):
-			hex := strings.TrimPrefix(hdr.Name, "blobs/sha256/")
-			blobs[hex] = data
+			blobHex := strings.TrimPrefix(hdr.Name, "blobs/sha256/")
+			blobs[blobHex] = data
 		}
 	}
 
@@ -220,7 +221,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	cacheDir := strings.ReplaceAll(userCache+"/wendy/buildx", "\\", "/")
+	cacheDir := filepath.Join(userCache, "wendy", "buildx")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -235,24 +236,27 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	if runtime.GOOS != "windows" {
 		origDockerConfig := os.Getenv("DOCKER_CONFIG")
 		if origDockerConfig == "" {
-			origDockerConfig = home + "/.docker"
+			origDockerConfig = filepath.Join(home, ".docker")
 		}
-		cleanDockerConfigDir = home + "/.cache/wendy/docker-config"
+		cleanDockerConfigDir = filepath.Join(home, ".cache", "wendy", "docker-config")
 		if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
 			return fmt.Errorf("creating clean docker config directory: %w", err)
 		}
-		cleanDockerConfigFile := cleanDockerConfigDir + "/config.json"
+		cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
 		if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
 			return fmt.Errorf("writing clean docker config: %w", err)
 		}
 		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
-			dst := cleanDockerConfigDir + "/" + subdir
+			dst := filepath.Join(cleanDockerConfigDir, subdir)
 			if _, err := os.Lstat(dst); err != nil {
-				_ = os.Symlink(origDockerConfig+"/"+subdir, dst)
+				_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
 			}
 		}
 	}
 
+	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
+	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
+	cacheDirSlash := filepath.ToSlash(cacheDir)
 	args := []string{
 		"buildx", "build",
 		"--builder", builder,
@@ -265,10 +269,10 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		}
 		args = append(args, "-f", resolvedDockerfile)
 	}
-	if _, err := os.Stat(cacheDir + "/index.json"); err == nil {
-		args = append(args, "--cache-from", "type=local,src="+cacheDir)
+	if _, err := os.Stat(filepath.Join(cacheDir, "index.json")); err == nil {
+		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
 	}
-	args = append(args, "--cache-to", "type=local,dest="+cacheDir)
+	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
 
 	// Sort build-arg keys for reproducible argument order.
 	keys := make([]string, 0, len(buildArgs))
