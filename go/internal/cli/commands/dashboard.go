@@ -204,8 +204,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case dashboardLogMsg:
-		line := formatLogLine(msg.service, msg.record)
-		m.logs = append(m.logs, line)
+		m.logs = append(m.logs, formatLogLines(msg.service, msg.record)...)
 		if m.autoScroll {
 			maxOff := len(m.logs) - m.logViewHeight()
 			if maxOff < 0 {
@@ -612,35 +611,120 @@ func extractMetricValue(m *otelpb.Metric) (string, time.Time) {
 	}
 }
 
-func formatLogLine(service string, lr *otelpb.LogRecord) string {
+// sanitizeLogText strips terminal control sequences from untrusted log content
+// so they cannot corrupt the dashboard's stdout grid. BubbleTea writes View()
+// verbatim to stdout and treats each '\n' as a row boundary it owns; a raw '\r',
+// cursor-movement/erase escape (e.g. from a `pulling manifest` spinner), or
+// other control byte embedded in a log body would otherwise move the real
+// terminal cursor and bleed across the pane separator.
+//
+// Newlines are preserved so the caller can split a multiline body into separate
+// rows. Tabs become spaces; carriage returns, ESC-introduced sequences, and all
+// other C0/C1/DEL control bytes are dropped.
+func sanitizeLogText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			// Mirror truncateVisible: an escape sequence ends at its first
+			// ASCII letter (final byte of CSI/SGR/cursor sequences).
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		switch {
+		case r == '\x1b':
+			inEscape = true
+		case r == '\n':
+			b.WriteRune('\n')
+		case r == '\t':
+			b.WriteByte(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			// C0 controls (incl. '\r'), DEL, and C1 controls: drop.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// visibleWidth counts rendered columns, skipping ANSI escape sequences.
+func visibleWidth(s string) int {
+	visible := 0
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		visible++
+	}
+	return visible
+}
+
+// formatLogLines renders one log record into one or more display rows. A
+// multiline body is split into separate rows; continuation rows are indented to
+// align under the body so the timestamp/severity prefix stays readable.
+// Attributes are appended to the final row.
+func formatLogLines(service string, lr *otelpb.LogRecord) []string {
 	ts := time.Unix(0, int64(lr.GetTimeUnixNano())).Local().Format("15:04:05")
 	label, style := severityLabel(lr.GetSeverityNumber())
 
-	var b strings.Builder
-	b.WriteString(logTimeStyle.Render(ts))
-	b.WriteByte(' ')
-	b.WriteString(style.Render(label))
+	var pb strings.Builder
+	pb.WriteString(logTimeStyle.Render(ts))
+	pb.WriteByte(' ')
+	pb.WriteString(style.Render(label))
 	if service != "" {
-		b.WriteByte(' ')
-		b.WriteString(logAppStyle.Render("[" + service + "]"))
+		pb.WriteByte(' ')
+		pb.WriteString(logAppStyle.Render("[" + service + "]"))
 	}
+	pb.WriteByte(' ')
+	prefix := pb.String()
+	indent := strings.Repeat(" ", visibleWidth(prefix))
 
-	body := lr.GetBody()
-	if body != nil {
-		b.WriteByte(' ')
-		b.WriteString(body.GetStringValue())
-	}
-
-	attrs := lr.GetAttributes()
-	if len(attrs) > 0 {
-		b.WriteByte(' ')
-		for i, kv := range attrs {
-			if i > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteString(logMetaStyle.Render(kv.GetKey() + "=" + anyValueString(kv.GetValue())))
+	var bodyLines []string
+	if body := lr.GetBody(); body != nil {
+		bodyLines = strings.Split(sanitizeLogText(body.GetStringValue()), "\n")
+		// Drop trailing blank lines (container output usually ends in '\n').
+		for len(bodyLines) > 0 && strings.TrimSpace(bodyLines[len(bodyLines)-1]) == "" {
+			bodyLines = bodyLines[:len(bodyLines)-1]
 		}
 	}
 
-	return b.String()
+	var attrStr string
+	if attrs := lr.GetAttributes(); len(attrs) > 0 {
+		var ab strings.Builder
+		for i, kv := range attrs {
+			if i > 0 {
+				ab.WriteByte(' ')
+			}
+			ab.WriteString(logMetaStyle.Render(sanitizeLogText(kv.GetKey()) + "=" + sanitizeLogText(anyValueString(kv.GetValue()))))
+		}
+		attrStr = ab.String()
+	}
+
+	var rows []string
+	for i, bl := range bodyLines {
+		if i == 0 {
+			rows = append(rows, prefix+bl)
+		} else {
+			rows = append(rows, indent+bl)
+		}
+	}
+	if len(rows) == 0 {
+		// No body: keep the prefix (trimmed of its trailing space) on its own row.
+		rows = append(rows, strings.TrimRight(prefix, " "))
+	}
+	if attrStr != "" {
+		rows[len(rows)-1] += " " + attrStr
+	}
+	return rows
 }
