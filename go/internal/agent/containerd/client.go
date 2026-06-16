@@ -1300,11 +1300,17 @@ func validateUserEnv(entries []string) error {
 }
 
 // cycloneDDSInlineConfig is the CycloneDDS configuration passed inline via
-// CYCLONEDDS_URI (not a file mount). Shared memory enables zero-copy DDS
-// transport between containers that share /dev/shm (isolation: "shared-ipc");
-// autodetermined network interfaces keep UDP discovery working as a fallback
-// (WDY-884).
-const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>true</Enable><LogLevel>warning</LogLevel></SharedMemory><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General></CycloneDDS>`
+// CYCLONEDDS_URI (not a file mount). SharedMemory (iceoryx zero-copy) is
+// DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
+// enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
+// until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
+// uses UDP over loopback, which works within the app group's shared network
+// namespace — ROS_LOCALHOST_ONLY=1 (always injected alongside) pins it to lo.
+// No <Interfaces> block: localhost-only already selects lo, and an autodetermine
+// interface on top makes it select "lo" twice ("the same interface may not be
+// selected twice"), which fails domain creation. Re-enabling zero-copy needs an
+// iox-roudi system service on the device first (WDY-884).
+const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
