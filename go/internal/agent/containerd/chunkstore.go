@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
@@ -78,8 +79,11 @@ func (c *Client) readIndexedChunk(ctx context.Context, loc chunkLoc) ([]byte, er
 	}
 	ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
 	if err != nil {
-		c.chunkIndex.Drop(loc.Blob)
-		return nil, nil
+		if errdefs.IsNotFound(err) {
+			c.chunkIndex.Drop(loc.Blob)
+			return nil, nil
+		}
+		return nil, err
 	}
 	defer ra.Close()
 	b := make([]byte, loc.Len)
