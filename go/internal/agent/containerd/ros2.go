@@ -40,8 +40,8 @@ const (
 	labelKeyROS2Sidecar = "sh.wendy/ros2.sidecar"
 
 	// labelKeyROS2AnchorID and labelKeyROS2AnchorPID record which app
-	// container's network namespace the sidecar joined. When the anchor
-	// changes (app restarted), the sidecar is stale and must be recreated.
+	// container's namespaces the sidecar joined. When the anchor changes
+	// (app restarted), the sidecar is stale and must be recreated.
 	labelKeyROS2AnchorID  = "sh.wendy/ros2.anchor.id"
 	labelKeyROS2AnchorPID = "sh.wendy/ros2.anchor.pid"
 
@@ -98,9 +98,12 @@ func (c *Client) FindROS2Containers(ctx context.Context) ([]services.ROS2Target,
 }
 
 // EnsureROS2Sidecar starts (or reuses) the ROS 2 CLI sidecar container. The
-// sidecar runs the official ros:<distro> image, joins the network namespace
-// of the first running ROS 2 app container so it sees every node in the DDS
-// domain, and idles on `sleep infinity` while commands are exec'd into it.
+// sidecar runs the official ros:<distro> image and joins the first running
+// ROS 2 app container's namespace topology — its network namespace always, and
+// for shared-ipc app groups also the IPC namespace plus the group's shared
+// /dev/shm — so it sees every node in the DDS domain over both UDP discovery
+// and the shared-memory data plane. It idles on `sleep infinity` while commands
+// are exec'd into it.
 func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -178,17 +181,43 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		Options:     []string{"rbind", "rw", "nosuid", "nodev"},
 	})
 
-	// Join the anchor's network (and uts) namespace so the sidecar shares
-	// localhost — and therefore the DDS domain — with the app's ROS 2 nodes.
-	nsAnchors, err := localoci.JoinGroupNamespaces(spec, anchor.TaskPID, "shared-network")
+	// Match the anchor app group's namespace topology so the sidecar can read
+	// the data plane, not just DDS discovery (WDY-1555). A shared-ipc group
+	// keeps FastRTPS sample data AND ros_discovery_info — the node records that
+	// back `ros2 node list`/`echo`/`graph`/`param`/`call` — in POSIX shared
+	// memory under /run/wendy/shm/<appID>, reachable only by sharing the group's
+	// IPC namespace and bind-mounting that segment. Joining only the network
+	// namespace gets UDP discovery (so `topics`/`services` list) but never the
+	// shared-memory data plane. We detect shared-ipc by the presence of the
+	// group's shm dir (created only for shared-ipc groups) and then mirror the
+	// app containers' own setup. Plain shared-network apps put everything on the
+	// shared localhost over UDP, so the network namespace alone is enough.
+	isolation := "shared-network"
+	var sidecarSHM string
+	if anchor.AppID != "" {
+		if shmPath, perr := sharedSHMPath(anchor.AppID); perr == nil {
+			if fi, statErr := os.Stat(shmPath); statErr == nil && fi.IsDir() {
+				isolation = "shared-ipc"
+				sidecarSHM = shmPath
+			}
+		}
+	}
+
+	nsAnchors, err := localoci.JoinGroupNamespaces(spec, anchor.TaskPID, isolation)
 	if err != nil {
-		return services.ROS2Sidecar{}, fmt.Errorf("joining ROS 2 app network namespace: %w", err)
+		return services.ROS2Sidecar{}, fmt.Errorf("joining ROS 2 app %s namespaces: %w", isolation, err)
 	}
 	defer func() {
 		for _, f := range nsAnchors {
 			f.Close()
 		}
 	}()
+	// For shared-ipc, replace the sidecar's private tmpfs /dev/shm with the
+	// group's shared segment so it attaches to the same FastRTPS shm pool.
+	if isolation == "shared-ipc" {
+		localoci.RemoveDefaultSHM(spec)
+		spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(sidecarSHM))
+	}
 
 	specJSON, err := json.Marshal(spec)
 	if err != nil {

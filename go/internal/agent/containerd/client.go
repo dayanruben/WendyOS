@@ -2093,13 +2093,24 @@ func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []cont
 	return result
 }
 
+// sharedSHMPath returns the host-side shared memory directory for a shared-ipc
+// app group after validating the app ID. It does NOT create the directory — use
+// ensureSharedSHM for that. Its presence on disk is the agent's signal that an
+// app group runs with shared-ipc isolation.
+func sharedSHMPath(appID string) (string, error) {
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", fmt.Errorf("sharedSHMPath: %w", err)
+	}
+	return "/run/wendy/shm/" + appID, nil
+}
+
 // ensureSharedSHM creates the host-side shared memory directory for a
 // shared-ipc app group. Returns the path so it can be bind-mounted.
 func ensureSharedSHM(appID string) (string, error) {
-	if err := appconfig.ValidateAppID(appID); err != nil {
-		return "", fmt.Errorf("ensureSharedSHM: %w", err)
+	path, err := sharedSHMPath(appID)
+	if err != nil {
+		return "", err
 	}
-	path := "/run/wendy/shm/" + appID
 	// Lock the OS thread so that the umask change below is thread-local and
 	// does not race with other goroutines on the same process (SOC2-CC6,
 	// NIST-SC-7, ISO27001-A.8). Without this, a permissive umask could widen

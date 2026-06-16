@@ -822,3 +822,22 @@ func TestBuildROS2Env_ServiceOverride(t *testing.T) {
 		t.Errorf("expected group-level ROS_DOMAIN_ID=1 for camera, got %v", got)
 	}
 }
+
+// TestSharedSHMPath verifies the shared-ipc shm path is derived from a valid
+// app ID and that an invalid app ID is rejected (the path is later stat'd to
+// detect shared-ipc topology and bind-mounted into the ROS 2 sidecar, WDY-1555).
+func TestSharedSHMPath(t *testing.T) {
+	path, err := sharedSHMPath("sh.wendy.examples.so101")
+	if err != nil {
+		t.Fatalf("sharedSHMPath valid app ID: unexpected error %v", err)
+	}
+	if want := "/run/wendy/shm/sh.wendy.examples.so101"; path != want {
+		t.Errorf("sharedSHMPath = %q, want %q", path, want)
+	}
+	if _, err := sharedSHMPath(""); err == nil {
+		t.Error("sharedSHMPath(\"\") = nil error, want validation error")
+	}
+	if _, err := sharedSHMPath("../escape"); err == nil {
+		t.Error("sharedSHMPath(\"../escape\") = nil error, want validation error")
+	}
+}
