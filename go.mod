@@ -20,6 +20,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/folbricht/desync v1.0.2
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/mdns v1.0.6
