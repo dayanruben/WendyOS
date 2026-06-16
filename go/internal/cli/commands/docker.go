@@ -193,8 +193,9 @@ var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Build-arg values are passed to exec.Command as a single KEY=VALUE argument,
 // but keep a narrow allowlist so shell-like metacharacters, whitespace,
-// digests, and flag-looking values cannot cross into builder CLIs.
-var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,-]*$`)
+// digests, embedded key separators, and flag-looking values cannot cross into
+// builder CLIs.
+var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:,-]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
@@ -1487,7 +1488,12 @@ func appleContainerTmpAlias(path string) (string, bool) {
 	if canonical != privateTmp && !strings.HasPrefix(canonical, privateTmp+"/") {
 		return "", false
 	}
-	return "/tmp" + strings.TrimPrefix(canonical, privateTmp), true
+	candidate := "/tmp" + strings.TrimPrefix(canonical, privateTmp)
+	candidateCanonical, err := filepath.EvalSymlinks(candidate)
+	if err != nil || candidateCanonical != canonical {
+		return "", false
+	}
+	return candidate, true
 }
 
 func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, err error) {

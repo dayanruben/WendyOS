@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +15,20 @@ func isContainerBuildFileName(name string) bool {
 		return false
 	}
 	return providerBuildFileNameRe.MatchString(name)
+}
+
+func validateContainerBuildFileName(name string) error {
+	cleaned := filepath.Clean(name)
+	if cleaned != filepath.Base(cleaned) {
+		return fmt.Errorf("invalid container build file name %q: path separators are not allowed", name)
+	}
+	if strings.HasSuffix(cleaned, ".dockerignore") {
+		return fmt.Errorf("invalid container build file name %q: .dockerignore files are not build files", cleaned)
+	}
+	if !providerBuildFileNameRe.MatchString(cleaned) {
+		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, or a dot/hyphen variant of either", cleaned)
+	}
+	return nil
 }
 
 func hasContainerBuildFile(projectPath string) bool {

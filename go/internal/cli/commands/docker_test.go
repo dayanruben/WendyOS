@@ -1706,7 +1706,7 @@ func TestValidateDockerfileName(t *testing.T) {
 func TestValidateBuildArgPair(t *testing.T) {
 	valid := map[string]string{
 		"WENDY_PLATFORM":    "nvidia-jetson",
-		"_PRIVATE_ARG":      "value=with=equals",
+		"_PRIVATE_ARG":      "value-without-equals",
 		"WENDY_DEVICE_TYPE": "jetson-agx-orin",
 	}
 	for k, v := range valid {
@@ -1727,6 +1727,7 @@ func TestValidateBuildArgPair(t *testing.T) {
 		"SHELL":     "$(echo bad)",
 		"DIGEST":    "image@sha256:abc",
 		"PLUS":      "v1+metadata",
+		"EQUALS":    "value=with=equals",
 	}
 	for k, v := range invalid {
 		if err := validateBuildArgPair(k, v); err == nil {

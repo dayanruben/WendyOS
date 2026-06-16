@@ -302,6 +302,20 @@ func TestConfinedProviderDockerfilePathUsesTmpAliasWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestConfinedProviderDockerfilePathRejectsSubpaths(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := confinedProviderDockerfilePath(dir, filepath.Join("sub", "Dockerfile")); err == nil {
+		t.Fatal("expected subpath Dockerfile to be rejected")
+	}
+}
+
 func TestAppleContainerStopIncludesStderr(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "commands.log")
 	oldCommand := appleContainerCommandContext

@@ -203,7 +203,12 @@ func appleContainerTmpAlias(path string) (string, bool) {
 	if canonical != privateTmp && !strings.HasPrefix(canonical, privateTmp+"/") {
 		return "", false
 	}
-	return "/tmp" + strings.TrimPrefix(canonical, privateTmp), true
+	candidate := "/tmp" + strings.TrimPrefix(canonical, privateTmp)
+	candidateCanonical, err := filepath.EvalSymlinks(candidate)
+	if err != nil || candidateCanonical != canonical {
+		return "", false
+	}
+	return candidate, true
 }
 
 func validateAppleContainerKeyValueArg(kind, key, value string) error {
@@ -234,26 +239,25 @@ func appleContainerKeyValueArg(kind, key, value string) (string, error) {
 }
 
 func confinedProviderDockerfilePath(projectPath, dockerfile string) (string, error) {
+	if err := validateContainerBuildFileName(dockerfile); err != nil {
+		return "", err
+	}
 	absProject, err := filepath.EvalSymlinks(projectPath)
 	if err != nil {
 		return "", fmt.Errorf("resolving project path: %w", err)
 	}
-	joined, err := filepath.Abs(filepath.Join(absProject, dockerfile))
-	if err != nil {
-		return "", fmt.Errorf("resolving dockerfile path: %w", err)
-	}
 	escapes := func(rel string) bool {
 		return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	}
-	rel, err := filepath.Rel(absProject, joined)
-	if err != nil || escapes(rel) {
-		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
-	}
-	resolved, err := filepath.EvalSymlinks(joined)
+	resolved, err := filepath.EvalSymlinks(filepath.Join(absProject, dockerfile))
 	if err != nil {
 		return "", fmt.Errorf("dockerfile %q: %w", dockerfile, err)
 	}
-	rel, err = filepath.Rel(absProject, resolved)
+	absProject, err = filepath.EvalSymlinks(projectPath)
+	if err != nil {
+		return "", fmt.Errorf("resolving project path: %w", err)
+	}
+	rel, err := filepath.Rel(absProject, resolved)
 	if err != nil || escapes(rel) {
 		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
 	}
