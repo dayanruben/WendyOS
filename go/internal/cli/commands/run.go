@@ -1351,12 +1351,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
-	// The fast chunk-diff (CDC) deploy path only handles the attached (default)
-	// run mode. For deploy-only (opts.deploy) or detached (opts.detach) runs,
-	// skip CDC entirely: those modes require the full startAndStreamContainer
-	// lifecycle (create-only, or create+start+readiness+postStart hooks) which
-	// the CDC path does not implement.
-	if !opts.deploy && !opts.detach {
+	// The fast chunk-diff (CDC) deploy path handles attached (default) and
+	// detached (--detach) runs. Deploy-only (--deploy) is excluded because it
+	// must create the container WITHOUT starting it, whereas RunContainer always
+	// starts; that mode stays on the registry path via startAndStreamContainer.
+	if !opts.deploy {
 		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			return nil
 		} else {
@@ -1674,7 +1673,7 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 // to the corresponding OS streams. When opts.deploy or opts.detach is set the
 // function returns as soon as the Started message is received (mirroring the
 // behaviour of startAndStreamContainer for those flags).
-func streamRunContainer(_ context.Context, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -1689,7 +1688,15 @@ func streamRunContainer(_ context.Context, stream grpc.ServerStreamingClient[age
 				return nil
 			}
 			if opts.detach {
+				// Mirror startAndStreamContainer's detach branch: the container
+				// is started; wait for readiness, fire the host post-start hook,
+				// then return without tailing logs. The container keeps running
+				// independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", appCfg.AppID)
+				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+					cliLogln("Warning: %v", err)
+				}
+				startPostStartHook(context.Background(), appCfg, conn.Host)
 				return nil
 			}
 			continue
@@ -1736,7 +1743,10 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return err
 	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
-	stream, err := conn.ContainerService.RunContainer(ctx, &agentpb.RunContainerLayersRequest{
+	// Carry the post-start agent-hook metadata so the agent runs the in-container
+	// hook on start, matching the registry path's StartContainer call.
+	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
+	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
 		ImageName:     imageName,
 		AppName:       appCfg.AppID,
 		Layers:        headers,
@@ -1748,5 +1758,5 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return err
 	}
-	return streamRunContainer(ctx, stream, appCfg, opts)
+	return streamRunContainer(ctx, conn, stream, appCfg, opts)
 }

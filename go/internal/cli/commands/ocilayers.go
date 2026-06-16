@@ -231,10 +231,10 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	}
 	defer releaseLock()
 
-	// ensureBuildxBuilder requires a registry address for mTLS configuration, but
-	// for OCI-layout export we don't push to any registry, so we pass an empty
-	// address and disable mTLS.
-	builder, _, err := ensureBuildxBuilder(ctx, "", false, stderr)
+	// Use a dedicated builder for OCI-layout export. It needs no registry
+	// config, so it is created once and reused without the per-run
+	// config-inject/restart cycle the registry builder pays.
+	builder, err := ensureOCIExportBuilder(ctx, stderr)
 	if err != nil {
 		return err
 	}
