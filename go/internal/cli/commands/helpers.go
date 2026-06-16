@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -570,11 +571,32 @@ func formatElapsedSeconds(elapsed time.Duration) string {
 	return fmt.Sprintf("%.2f %s", seconds, unit)
 }
 
-func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
-	return connectAgentAtAddressWithProvisionedHint(ctx, addr, false)
+// deferProvisionedMTLSCheck starts the "does this address advertise an
+// mTLS-only agent?" mDNS browse concurrently with the connection attempt and
+// returns a getter for its result. The browse (~0.5s) is only consulted when a
+// plaintext probe FAILS — to tell an unprovisioned device apart from a
+// provisioned one rejecting plaintext — so on the common success path the
+// getter is never called and the browse stays off the critical path. Starting
+// it now (rather than after the probe) keeps the observation tied to this
+// connection attempt, matching the original eager-snapshot intent.
+func deferProvisionedMTLSCheck(ctx context.Context, addr string) func() bool {
+	ch := make(chan bool, 1)
+	go func() { ch <- provisionedAgentAdvertisedMTLS(ctx, addr) }()
+	var (
+		once sync.Once
+		res  bool
+	)
+	return func() bool {
+		once.Do(func() { res = <-ch })
+		return res
+	}
 }
 
-func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
+func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	return connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return false })
+}
+
+func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
 	tm := phaseTimer()
 	conn, mtlsErr, err := connectWithAutoTLSDiagnostics(ctx, addr)
 	if err != nil {
@@ -591,10 +613,11 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 		tm("  ↳ plaintext probe (GetAgentVersion)")
 		if probeErr != nil {
 			conn.Close()
-			// Use only the caller's pre-connection metadata snapshot here.
-			// Running discovery after the failed probe would make the auth
-			// decision depend on a second, unrelated network observation.
-			if knownProvisionedMTLS {
+			// The provisionedMTLS observation was initiated at connection time
+			// (concurrently with this attempt); consult it now to tell an
+			// unprovisioned device apart from a provisioned one rejecting
+			// plaintext, rather than launching a second, later browse.
+			if provisionedMTLS() {
 				return nil, newProvisionedAgentUnauthorizedError(mtlsErr)
 			}
 			return nil, probeErr
@@ -604,16 +627,16 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 }
 
 func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault bool) (*grpcclient.AgentConnection, error) {
-	return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, false)
+	return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, func() bool { return false })
 }
 
-func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
+func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
 		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
-			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, knownProvisionedMTLS)
+			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
 		})
 	}
-	return connectAgentAtAddressWithProvisionedHint(ctx, addr, knownProvisionedMTLS)
+	return connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
@@ -645,15 +668,15 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
 			hostname = host
 		}
-		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
-		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, knownProvisionedMTLS)
+		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 		if connErr != nil {
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
 			if errors.Is(connErr, errProvisionedAgentUnauthorized) {
 				refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, knownProvisionedMTLS)
+					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 				})
 				if !ok {
 					return nil, connErr
@@ -1235,9 +1258,8 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			addr = hostPort(device, defaultAgentPort)
 		}
 		startedAt := time.Now()
-		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
-		rt("  ↳ provisionedAgentAdvertisedMTLS (mDNS browse)")
-		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
+		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
 		rt("  ↳ connectResolvedAgent (dial+probe)")
 		if err != nil {
 			if errors.Is(err, ErrUserCancelled) {
@@ -1245,7 +1267,7 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			}
 			if errors.Is(err, errProvisionedAgentUnauthorized) {
 				refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
-					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
+					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
 				})
 				if !ok {
 					return nil, err
@@ -1717,7 +1739,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				}
 				return nil, fmt.Errorf("selected LAN device has no usable address")
 			}
-			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, d.LAN.IsMTLS)
+			mtls := d.LAN.IsMTLS
+			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
 			if err == nil {
 				if !suppressUpdateCheck {
 					var updateErr error
