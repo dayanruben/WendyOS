@@ -114,6 +114,18 @@ func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID strin
 	return []string{appID}, nil
 }
 
+func (m *mockContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (m *mockContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (m *mockContainerdClient) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
+}
+
 // attachTestMock embeds mockContainerdClient and overrides StartContainerWithStdin
 // so tests can capture the appName and stdin reader passed by AttachContainer.
 type attachTestMock struct {

@@ -209,6 +209,57 @@ func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContai
 	})
 }
 
+// to32 converts a wire hash (raw 32 bytes) to a fixed array, rejecting bad sizes.
+func to32(b []byte) ([32]byte, error) {
+	var a [32]byte
+	if len(b) != 32 {
+		return a, status.Errorf(codes.InvalidArgument, "chunk hash must be 32 bytes, got %d", len(b))
+	}
+	copy(a[:], b)
+	return a, nil
+}
+
+func (s *ContainerService) QueryChunks(ctx context.Context, req *agentpb.QueryChunksRequest) (*agentpb.QueryChunksResponse, error) {
+	hashes := make([][32]byte, 0, len(req.GetChunkHashes()))
+	for _, b := range req.GetChunkHashes() {
+		h, err := to32(b)
+		if err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, h)
+	}
+	missing, err := s.containerd.MissingChunks(ctx, hashes)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "querying chunks: %v", err)
+	}
+	out := make([][]byte, 0, len(missing))
+	for _, h := range missing {
+		hb := h
+		out = append(out, hb[:])
+	}
+	return &agentpb.QueryChunksResponse{MissingHashes: out}, nil
+}
+
+func (s *ContainerService) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
+	ctx := stream.Context()
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			return stream.SendAndClose(&agentpb.WriteChunksResponse{})
+		}
+		if err != nil {
+			return err
+		}
+		h, err := to32(msg.GetHash())
+		if err != nil {
+			return err
+		}
+		if err := s.containerd.StageChunk(ctx, h, msg.GetData()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "staging chunk: %v", err)
+		}
+	}
+}
+
 func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
 	ctx := stream.Context()
 
@@ -218,6 +269,25 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	}
 
 	if layers := req.GetLayers(); len(layers) > 0 {
+		for _, l := range layers {
+			if hs := l.GetChunkHashes(); len(hs) > 0 {
+				order := make([][32]byte, 0, len(hs))
+				for _, b := range hs {
+					h, err := to32(b)
+					if err != nil {
+						return err
+					}
+					order = append(order, h)
+				}
+				diffID := l.GetDiffId()
+				if diffID == "" {
+					diffID = l.GetDigest()
+				}
+				if err := s.containerd.AssembleLayerFromChunks(ctx, diffID, order); err != nil {
+					return status.Errorf(codes.Internal, "reassembling layer %s: %v", diffID, err)
+				}
+			}
+		}
 		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers); err != nil {
 			return status.Errorf(codes.Internal, "failed to assemble image: %v", err)
 		}
