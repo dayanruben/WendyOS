@@ -15,8 +15,8 @@ import (
 // all other methods panic (they must not be called by pushLayersByChunks).
 type fakeContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil — satisfies interface
-	queryFn       func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse
-	chunksWritten int
+	queryFn                             func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse
+	chunksWritten                       int
 }
 
 func (f *fakeContainerClient) QueryChunks(_ context.Context, in *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
@@ -30,7 +30,7 @@ func (f *fakeContainerClient) WriteChunks(_ context.Context, _ ...grpc.CallOptio
 // fakeWriteChunksStream satisfies grpc.ClientStreamingClient via embedding.
 type fakeWriteChunksStream struct {
 	grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse] // embedded nil
-	parent *fakeContainerClient
+	parent                                                                              *fakeContainerClient
 }
 
 func (s *fakeWriteChunksStream) Send(_ *agentpb.WriteChunksRequest) error {

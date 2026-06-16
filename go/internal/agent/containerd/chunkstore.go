@@ -11,15 +11,32 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
+)
+
+const (
+	// maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
+	// chunks of at most chunk.MaxSize (256 KiB); this 4 MiB ceiling leaves ample
+	// headroom for legitimate clients while rejecting absurdly large payloads
+	// before they are buffered.
+	maxStagedChunkBytes = 4 << 20
+	// maxTotalStagedBytes caps the aggregate in-memory staging buffer. WriteChunks
+	// accepts bytes from the network into a process-lifetime map; without a cap a
+	// client could stream until the agent (running on a RAM-constrained device)
+	// exhausts its heap. 8 GiB bounds the blast radius while still admitting large
+	// base-image deploys, whose missing chunks are staged before assembly.
+	maxTotalStagedBytes = 8 << 30
 )
 
 // staging holds chunk bytes received via StageChunk until the next
 // AssembleLayerFromChunks consumes them. Process-lifetime, in-memory.
 type staging struct {
-	mu sync.Mutex
-	m  map[[32]byte][]byte
+	mu         sync.Mutex
+	m          map[[32]byte][]byte
+	totalBytes int64
 }
 
 func newStaging() *staging { return &staging{m: make(map[[32]byte][]byte)} }
@@ -59,12 +76,23 @@ func (c *Client) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte
 }
 
 func (c *Client) StageChunk(_ context.Context, h [32]byte, data []byte) error {
+	if len(data) > maxStagedChunkBytes {
+		return status.Errorf(codes.ResourceExhausted, "chunk too large: %d > %d bytes", len(data), maxStagedChunkBytes)
+	}
 	if sha256.Sum256(data) != h {
 		return fmt.Errorf("staged chunk hash mismatch")
 	}
 	c.staging.mu.Lock()
 	defer c.staging.mu.Unlock()
+	// Idempotent: a re-sent chunk must not be double-counted against the cap.
+	if _, ok := c.staging.m[h]; ok {
+		return nil
+	}
+	if c.staging.totalBytes+int64(len(data)) > maxTotalStagedBytes {
+		return status.Errorf(codes.ResourceExhausted, "staging buffer full: %d bytes staged, limit %d", c.staging.totalBytes, maxTotalStagedBytes)
+	}
 	c.staging.m[h] = data
+	c.staging.totalBytes += int64(len(data))
 	return nil
 }
 
@@ -148,7 +176,10 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 	// Release staged chunks now embedded in the blob.
 	c.staging.mu.Lock()
 	for _, h := range hashes {
-		delete(c.staging.m, h)
+		if b, ok := c.staging.m[h]; ok {
+			c.staging.totalBytes -= int64(len(b))
+			delete(c.staging.m, h)
+		}
 	}
 	c.staging.mu.Unlock()
 

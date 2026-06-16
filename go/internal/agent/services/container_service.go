@@ -255,6 +255,11 @@ func (s *ContainerService) WriteChunks(stream grpc.ClientStreamingServer[agentpb
 			return err
 		}
 		if err := s.containerd.StageChunk(ctx, h, msg.GetData()); err != nil {
+			// Preserve an explicit gRPC code from the store (e.g. ResourceExhausted
+			// when a staging limit is hit); otherwise treat it as a bad chunk.
+			if _, ok := status.FromError(err); ok {
+				return err
+			}
 			return status.Errorf(codes.InvalidArgument, "staging chunk: %v", err)
 		}
 	}

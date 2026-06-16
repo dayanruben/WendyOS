@@ -115,8 +115,8 @@ func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType
 	}
 
 	entries := map[string][]byte{
-		"oci-layout":                              []byte(`{"imageLayoutVersion":"1.0.0"}`),
-		"index.json":                              indexBytes,
+		"oci-layout": []byte(`{"imageLayoutVersion":"1.0.0"}`),
+		"index.json": indexBytes,
 		"blobs/sha256/" + sha256Hex(manifestBytes): manifestBytes,
 		"blobs/sha256/" + sha256Hex(configBytes):   configBytes,
 		"blobs/sha256/" + sha256Hex(blobData):      blobData,
@@ -193,5 +193,26 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 	// The layer digest is the COMPRESSED blob digest (the stable cache key).
 	if layers[0].Digest != "sha256:"+sha256Hex(compressedBytes) {
 		t.Fatalf("layer digest mismatch (should be sha256 of compressed blob): %s", layers[0].Digest)
+	}
+}
+
+func TestReadAllLimited(t *testing.T) {
+	// Under the limit: full content returned.
+	got, err := readAllLimited(bytes.NewReader([]byte("hello")), 10, "x")
+	if err != nil {
+		t.Fatalf("unexpected error under limit: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("got %q, want %q", got, "hello")
+	}
+
+	// Exactly at the limit is allowed (boundary).
+	if _, err := readAllLimited(bytes.NewReader([]byte("hello")), 5, "x"); err != nil {
+		t.Fatalf("content exactly at limit should be allowed: %v", err)
+	}
+
+	// One byte over the limit is rejected, not silently truncated.
+	if _, err := readAllLimited(bytes.NewReader([]byte("hello!")), 5, "x"); err == nil {
+		t.Fatal("expected error when source exceeds limit")
 	}
 }
