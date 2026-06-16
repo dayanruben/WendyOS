@@ -16,7 +16,9 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
@@ -1277,12 +1279,13 @@ func (c *chunkAwareContainerd) AssembleLayerFromChunks(_ context.Context, _ stri
 	return nil
 }
 
-// makeTar returns a deterministic ~size byte slice of pseudo-random data.
-// Using a linear congruential generator seeded with a fixed constant produces
-// data that looks random to the buzhash chunker, so it finds natural boundaries
-// rather than chunking every MaxSize bytes.  seed shifts the initial state so
-// different calls produce similar-but-not-identical blobs.
-func makeTar(size int, seed byte) []byte {
+// makeLCGData returns deterministic pseudo-random bytes (fixed seed) used as a
+// stand-in layer payload.  A linear congruential generator seeded with a fixed
+// constant produces data that looks random to the buzhash chunker, so it finds
+// natural chunk boundaries rather than chunking every MaxSize bytes.  seed
+// shifts the initial state so different calls produce similar-but-not-identical
+// blobs.
+func makeLCGData(size int, seed byte) []byte {
 	buf := make([]byte, size)
 	// LCG constants from Knuth (64-bit).
 	state := uint64(6364136223846793005) ^ uint64(seed)
@@ -1389,18 +1392,22 @@ func deployViaChunks(t *testing.T, client agentpb.WendyContainerServiceClient, l
 	if err != nil {
 		t.Fatalf("RunContainer: %v", err)
 	}
-	// Drain the response stream; we only require it finishes without error.
+	// Drain the response stream; surface unexpected errors so they don't
+	// silently mask handler panics or protocol bugs.
 	for {
 		_, err := runStream.Recv()
+		if err == nil {
+			continue
+		}
 		if err == io.EOF {
 			break
 		}
-		if err != nil {
-			// RunContainer may fail on harness internals (e.g. container already
-			// exists from a prior round). Tolerate that: the dedup assertion is
-			// on WriteChunks bytes, not on container start.
+		// AlreadyExists is expected on a re-deploy: the container image or
+		// layer is already present on the device, so the server short-circuits.
+		if status.Code(err) == codes.AlreadyExists {
 			break
 		}
+		t.Fatalf("RunContainer stream error: %v", err)
 	}
 
 	return bytesSent
@@ -1441,7 +1448,7 @@ func TestChunkDiffRedeploySendsMinimalBytes(t *testing.T) {
 	client := agentpb.NewWendyContainerServiceClient(conn)
 
 	const layerSize = 1 << 20 // ~1 MiB
-	first := makeTar(layerSize, 0)
+	first := makeLCGData(layerSize, 0)
 	second := mutateMiddle(first, 1<<10) // flip ~1 KiB in the middle
 
 	b1 := deployViaChunks(t, client, first)
@@ -1451,8 +1458,9 @@ func TestChunkDiffRedeploySendsMinimalBytes(t *testing.T) {
 	t.Logf("Round 2 (redeploy):    %d bytes sent via WriteChunks (layer size %d)", b2, len(second))
 
 	// Sanity: round 1 must have sent the majority of the layer (no prior chunks).
+	// If this fails, MissingChunks is broken and the round-2 threshold below is meaningless.
 	if b1 < len(first)/2 {
-		t.Errorf("round 1 sent only %d bytes (layer=%d); expected at least half — MissingChunks may be broken", b1, len(first))
+		t.Fatalf("round 1 sent only %d bytes (layer=%d); expected at least half — MissingChunks may be broken", b1, len(first))
 	}
 
 	// Dedup assertion: round 2 must have sent much less than 25% of layer size.
