@@ -169,13 +169,11 @@ directories into a run directory:
 The `attempts/` tree keeps every attempt-root artifact except `observations/`,
 so preflight logs and metadata remain attached to the attempt.
 
-`make e2e-review` writes scoped AI review issue files into the aggregate run
-directory:
+`make e2e-review` runs a single AI review pass and writes run-level issue files
+into the aggregate run directory:
 
 ```text
 <run>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/<test>/review.<reviewer>/<slug>.md
 ```
 
 `make e2e-report` writes the rendered report files at the aggregate run root:

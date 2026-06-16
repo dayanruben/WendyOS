@@ -106,7 +106,6 @@ private func renderE2EReviewAggregate(
 
     let wroteOutcomeSummary = appendE2EReviewAggregateOutcomeSummary(
         overview: overview,
-        issues: issues,
         to: &lines
     )
 
@@ -178,7 +177,6 @@ private func reviewAggregateIssueSort(
 @discardableResult
 private func appendE2EReviewAggregateOutcomeSummary(
     overview: E2ERunOverview?,
-    issues: [E2EReviewAggregateIssue],
     to lines: inout [String]
 ) -> Bool {
     guard let overview else { return false }
@@ -190,7 +188,7 @@ private func appendE2EReviewAggregateOutcomeSummary(
     lines.append("## Failed and flaked tests")
     lines.append("")
     lines.append(
-        "Every failed or flaked target outcome is listed here with the matching AI review evidence when one was recorded. Failed tests should identify the likely root cause and next action; flaked tests should explain why the outcome may be nondeterministic and what to do next."
+        "Failed and flaked target outcomes are listed here from deterministic run metadata. Actionable AI findings, when present, are listed below as review issues."
     )
     lines.append("")
 
@@ -199,7 +197,6 @@ private func appendE2EReviewAggregateOutcomeSummary(
             issue,
             label: "Failed",
             marker: "🛑",
-            relatedReviews: relatedReviews(for: issue, in: issues),
             to: &lines
         )
     }
@@ -208,7 +205,6 @@ private func appendE2EReviewAggregateOutcomeSummary(
             issue,
             label: "Flaked",
             marker: "⚠️",
-            relatedReviews: relatedReviews(for: issue, in: issues),
             to: &lines
         )
     }
@@ -220,26 +216,11 @@ private func appendE2EReviewAggregateOutcome(
     _ issue: E2ERunOverviewIssue,
     label: String,
     marker: String,
-    relatedReviews: [E2EReviewAggregateIssue],
     to lines: inout [String]
 ) {
     let title = "`\(issue.suite)/\(issue.test)` on `\(issue.target)` \(label.lowercased())"
     lines.append("### \(marker) \(title)")
     lines.append("")
-    if relatedReviews.isEmpty {
-        lines.append(
-            "No AI review file was recorded for this \(label.lowercased()) target outcome. Add a review that explains the likely root cause and the next action."
-        )
-    } else {
-        for reviewIssue in relatedReviews {
-            let review = reviewIssue.review
-            lines.append("- AI review: **\(reviewAggregateSingleLine(review.title))**")
-            lines.append("")
-            lines.append(reviewAggregateSummaryMarkdown(review.summaryMarkdown))
-            lines.append("")
-        }
-    }
-
     lines.append("<details>")
     lines.append("<summary>Outcome evidence</summary>")
     lines.append("")
@@ -253,12 +234,6 @@ private func appendE2EReviewAggregateOutcome(
         }
         appendE2EReviewAggregateEvidence(attempt.artifacts, to: &lines)
     }
-    if !relatedReviews.isEmpty {
-        lines.append("- Related review files:")
-        for reviewIssue in relatedReviews {
-            lines.append("  - `\(reviewIssue.review.path)`")
-        }
-    }
     lines.append("")
     lines.append("</details>")
     lines.append("")
@@ -271,23 +246,6 @@ private func reviewAggregateOverviewIssueSort(
     if lhs.suite != rhs.suite { return lhs.suite < rhs.suite }
     if lhs.test != rhs.test { return lhs.test < rhs.test }
     return lhs.target < rhs.target
-}
-
-private func relatedReviews(
-    for issue: E2ERunOverviewIssue,
-    in reviews: [E2EReviewAggregateIssue]
-) -> [E2EReviewAggregateIssue] {
-    let exact = reviews.filter { review in
-        review.scope == .test && review.suiteKey == issue.suite && review.testKey == issue.test
-    }
-    if !exact.isEmpty {
-        return exact.sorted(by: reviewAggregateIssueSort)
-    }
-
-    return reviews.filter { review in
-        review.scope == .suite && review.suiteKey == issue.suite
-    }
-    .sorted(by: reviewAggregateIssueSort)
 }
 
 private func appendE2EReviewAggregateEvidence(

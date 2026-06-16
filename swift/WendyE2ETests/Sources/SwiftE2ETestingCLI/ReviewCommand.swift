@@ -1,14 +1,10 @@
 import ArgumentParser
 import Foundation
 
-#if canImport(FoundationXML)
-    import FoundationXML
-#endif
-
 struct ReviewCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "review",
-        abstract: "Review a Swift E2E run with an AI review harness."
+        abstract: "Review a Swift E2E run with a single AI review pass."
     )
 
     @Option(name: .long, help: "Swift package directory.")
@@ -26,14 +22,8 @@ struct ReviewCommand: AsyncParsableCommand {
     @Option(name: .long, help: "AI review harness: auto, claude, or codex.")
     var harness: ReviewHarnessPreference?
 
-    @Option(name: .long, help: "Suite review prompt path.")
-    var suiteReviewPrompt: String?
-
-    @Option(name: .long, help: "Run report review prompt path.")
-    var reportReviewPrompt: String?
-
-    @Option(name: .long, help: "Run review stage: suites, report, or all.")
-    var stage: RunReviewStage = .all
+    @Option(name: .long, help: "Review prompt path.")
+    var reviewPrompt: String?
 
     @Option(
         name: .long,
@@ -77,28 +67,17 @@ extension ReviewCommand {
     ) async throws {
         let reviewMode = try ReviewMode(diff: diff)
         let context = try reviewMode.prepareContext(runURL: runURL, repoURL: repoURL)
-        let suitePromptURL = URL(
-            fileURLWithPath: suiteReviewPrompt
-                ?? packageURL.appendingPathComponent("Support/\(reviewMode.suitePromptFileName)")
-                .path
+        let promptURL = URL(
+            fileURLWithPath: reviewPrompt
+                ?? packageURL.appendingPathComponent("Support/e2e-review.prompt.md").path
         ).standardizedFileURL
-        let reportPromptURL = URL(
-            fileURLWithPath: reportReviewPrompt
-                ?? packageURL.appendingPathComponent("Support/\(reviewMode.reportPromptFileName)")
-                .path
-        ).standardizedFileURL
-        let suitePrompt = try String(contentsOf: suitePromptURL, encoding: .utf8)
-        let reportPrompt = try String(contentsOf: reportPromptURL, encoding: .utf8)
+        let basePrompt = try String(contentsOf: promptURL, encoding: .utf8)
         let reviewHarness = try makeReviewHarness(preference: harness)
         let resolvedModel = reviewHarness.modelName
         let reviewer = e2eReviewReviewer(model: resolvedModel)
         let reviewDirectoryName = e2eReviewDirectoryName(reviewer: reviewer)
         let overview = try ensureRunOverview(in: runURL)
-        let suites = try loadRunReviewSuites(
-            testsURL: testsURL,
-            runURL: runURL,
-            reviewer: reviewer
-        )
+
         print("==> Running Swift E2E run AI review")
         print("    Harness:        \(reviewHarness.harnessName)")
         print("    Command source: \(reviewHarness.commandSource)")
@@ -121,70 +100,31 @@ extension ReviewCommand {
         if let diffstatURL = context.diffstatURL {
             print("    Diff stat:      \(diffstatURL.path)")
         }
-        print("    Suites:         \(suites.count)")
-        print("    Suite prompt:   \(suitePromptURL.path)")
-        print("    Report prompt:  \(reportPromptURL.path)")
+        print("    Prompt:         \(promptURL.path)")
 
         if overwrite {
             try removeExistingRunReviews(in: runURL, reviewer: reviewer)
         }
 
-        if stage == .suites || stage == .all {
-            print("==> Running suite-scoped run AI reviews")
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                for suite in suites {
-                    group.addTask {
-                        let prompt = runSuitePrompt(
-                            basePrompt: suitePrompt,
-                            suite: suite,
-                            repoURL: repoURL,
-                            packageURL: packageURL,
-                            testsURL: testsURL,
-                            runURL: runURL,
-                            context: context,
-                            overview: overview,
-                            reviewer: reviewer,
-                            reviewDirectoryName: reviewDirectoryName,
-                            overwrite: overwrite
-                        )
-                        print("Progress: reviewing suite \(suite.suiteKey)")
-                        try reviewHarness.review(
-                            prompt: prompt,
-                            repoURL: repoURL,
-                            runURL: runURL
-                        )
-                    }
-                }
-                try await group.waitForAll()
-            }
-            let suiteFiles = try enforceRunSuiteReviewContract(in: runURL, reviewer: reviewer)
-            print("==> Suite-scoped run AI reviews complete")
-            print("    Review files: \(suiteFiles)")
-        }
-
-        if stage == .report || stage == .all {
-            print("==> Running run report AI review")
-            let prompt = try runReportPrompt(
-                basePrompt: reportPrompt,
-                suites: suites,
-                repoURL: repoURL,
-                packageURL: packageURL,
-                testsURL: testsURL,
-                runURL: runURL,
-                context: context,
-                overview: overview,
-                reviewer: reviewer,
-                reviewDirectoryName: reviewDirectoryName,
-                overwrite: overwrite
-            )
-            try reviewHarness.review(
-                prompt: prompt,
-                repoURL: repoURL,
-                runURL: runURL
-            )
-            try enforceRunReportReviewContract(in: runURL, reviewer: reviewer)
-            print("==> Run report AI review complete")
-        }
+        let prompt = try runReviewPrompt(
+            basePrompt: basePrompt,
+            repoURL: repoURL,
+            packageURL: packageURL,
+            testsURL: testsURL,
+            runURL: runURL,
+            context: context,
+            overview: overview,
+            reviewer: reviewer,
+            reviewDirectoryName: reviewDirectoryName,
+            overwrite: overwrite
+        )
+        try reviewHarness.review(
+            prompt: prompt,
+            repoURL: repoURL,
+            runURL: runURL
+        )
+        try enforceRunReportReviewContract(in: runURL, reviewer: reviewer)
+        print("==> Swift E2E run AI review complete")
 
     }
 }
@@ -216,14 +156,6 @@ private enum ReviewMode {
 
     var diffRange: String? {
         if case .diff(let range) = self { range } else { nil }
-    }
-
-    var suitePromptFileName: String {
-        "e2e-review-suite.\(name).prompt.md"
-    }
-
-    var reportPromptFileName: String {
-        "e2e-review-report.\(name).prompt.md"
     }
 
     func prepareContext(runURL: URL, repoURL: URL) throws -> ReviewContext {
@@ -261,92 +193,6 @@ private struct ReviewContext {
     var diffstatURL: URL?
 }
 
-enum RunReviewStage: String, ExpressibleByArgument {
-    case suites
-    case report
-    case all
-
-    init?(argument: String) {
-        self.init(rawValue: argument.lowercased())
-    }
-}
-
-private struct ReviewTestCase {
-    var sourcePath: String
-    var suite: String
-    var name: String
-    var funcLine: Int
-    var sourceBody: String
-    var aiComments: [String]
-}
-
-private enum ReviewTestStatus {
-    case passed
-    case failed(String?)
-    case skipped(String?)
-    case unknown
-
-    var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-
-    var statusText: String {
-        switch self {
-        case .passed:
-            "passed"
-        case .failed:
-            "failed"
-        case .skipped:
-            "skipped"
-        case .unknown:
-            "unknown"
-        }
-    }
-
-    var detail: String? {
-        switch self {
-        case .failed(let detail), .skipped(let detail):
-            detail
-        case .passed, .unknown:
-            nil
-        }
-    }
-}
-
-private struct ReviewTestObservation {
-    var status: ReviewTestStatus
-    var durationSeconds: Double?
-}
-
-private struct RunReviewObservation {
-    var target: String
-    var attempt: String
-    var status: ReviewTestStatus
-    var durationSeconds: Double?
-    var recordingPath: String?
-    var shellPath: String?
-    var attemptLogPath: String?
-
-    var isFailed: Bool { status.isFailed }
-}
-
-private struct RunReviewTest {
-    var test: ReviewTestCase
-    var suiteKey: String
-    var testKey: String
-    var observations: [RunReviewObservation]
-    var existingReviews: [E2EReview]
-}
-
-private struct RunReviewSuite {
-    var suiteKey: String
-    var displayName: String
-    var sourceURL: URL
-    var tests: [RunReviewTest]
-    var existingReviews: [E2EReview]
-}
-
 private struct RunReviewAttemptArtifact {
     var target: String
     var attempt: String
@@ -358,11 +204,6 @@ private struct RunReviewAttemptArtifact {
         if let exitStatus, exitStatus != 0 { return true }
         return observationCount == 0
     }
-}
-
-private struct ReviewResultKey: Hashable {
-    var suite: String
-    var name: String
 }
 
 private struct ShellReviewHarness: Sendable {
@@ -702,153 +543,6 @@ private func runGitDiffContext(
     }
 }
 
-private func loadRunReviewSuites(
-    testsURL: URL,
-    runURL: URL,
-    reviewer: String
-) throws -> [RunReviewSuite] {
-    let tests = try parseReviewTests(in: testsURL)
-    let testsByPathKey = Dictionary(grouping: tests) { test in
-        let sourceURL = URL(fileURLWithPath: test.sourcePath)
-        return RunReviewPathKey(
-            suiteKey: reviewRecordFileStem(sourceURL),
-            testKey: reviewSlug(test.name)
-        )
-    }
-
-    var suites: [RunReviewSuite] = []
-    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
-        let suiteKey = suiteURL.lastPathComponent
-        guard !isE2EReviewDirectoryName(suiteKey) else { continue }
-        var suiteTests: [RunReviewTest] = []
-        var sourceURL: URL?
-        var displayName = suiteKey
-
-        for testURL in try runReviewDirectoryChildren(of: suiteURL) {
-            let testKey = testURL.lastPathComponent
-            guard
-                let test = testsByPathKey[
-                    RunReviewPathKey(suiteKey: suiteKey, testKey: testKey)
-                ]?.first
-            else {
-                continue
-            }
-            let testSourceURL = URL(fileURLWithPath: test.sourcePath)
-            sourceURL = sourceURL ?? testSourceURL
-            displayName = test.suite
-            suiteTests.append(
-                RunReviewTest(
-                    test: test,
-                    suiteKey: suiteKey,
-                    testKey: testKey,
-                    observations: try runReviewObservations(
-                        testURL: testURL,
-                        runURL: runURL
-                    ),
-                    existingReviews: try loadE2EReviews(
-                        in: testURL,
-                        expectedScope: "test",
-                        expectedReviewer: reviewer,
-                        relativeTo: runURL
-                    )
-                )
-            )
-        }
-
-        if !suiteTests.isEmpty, let sourceURL {
-            suites.append(
-                RunReviewSuite(
-                    suiteKey: suiteKey,
-                    displayName: displayName,
-                    sourceURL: sourceURL,
-                    tests: suiteTests.sorted { $0.test.funcLine < $1.test.funcLine },
-                    existingReviews: try loadE2EReviews(
-                        in: suiteURL,
-                        expectedScope: "suite",
-                        expectedReviewer: reviewer,
-                        relativeTo: runURL
-                    )
-                )
-            )
-        }
-    }
-    return suites.sorted { $0.suiteKey < $1.suiteKey }
-}
-
-private struct RunReviewPathKey: Hashable {
-    var suiteKey: String
-    var testKey: String
-}
-
-private func runReviewObservations(
-    testURL: URL,
-    runURL: URL
-) throws -> [RunReviewObservation] {
-    var observations: [RunReviewObservation] = []
-    for targetURL in try runReviewDirectoryChildren(of: testURL) {
-        let targetName = targetURL.lastPathComponent
-        for attemptURL in try runReviewDirectoryChildren(of: targetURL) {
-            let attemptName = attemptURL.lastPathComponent
-            let metadata = try loadE2ETestMetadata(in: attemptURL)
-            let attemptArtifactsURL = e2eAttemptArtifactsURL(
-                in: runURL,
-                targetName: targetName,
-                attempt: attemptName
-            )
-            let result = try runReviewObservationResult(
-                metadata: metadata,
-                attemptURL: attemptArtifactsURL
-            )
-            observations.append(
-                RunReviewObservation(
-                    target: targetName,
-                    attempt: attemptName,
-                    status: result.status,
-                    durationSeconds: result.durationSeconds,
-                    recordingPath: runReviewRelativeFilePath(
-                        fileName: "recording.md",
-                        attemptURL: attemptURL,
-                        runURL: runURL
-                    ),
-                    shellPath: runReviewRelativeFilePath(
-                        fileName: "recording.sh.txt",
-                        attemptURL: attemptURL,
-                        runURL: runURL
-                    ),
-                    attemptLogPath: runReviewRelativeFilePath(
-                        fileName: "attempt.log",
-                        attemptURL: attemptArtifactsURL,
-                        runURL: runURL
-                    )
-                )
-            )
-        }
-    }
-    return observations.sorted {
-        if $0.target != $1.target { return $0.target < $1.target }
-        return $0.attempt < $1.attempt
-    }
-}
-
-private func runReviewObservationResult(
-    metadata: E2ETestMetadata,
-    attemptURL: URL
-) throws -> ReviewTestObservation {
-    let resultURL = attemptURL.appendingPathComponent("test-results.xml")
-    guard FileManager.default.fileExists(atPath: resultURL.path) else {
-        return ReviewTestObservation(status: .unknown, durationSeconds: nil)
-    }
-    let data = try Data(contentsOf: resultURL)
-    let parser = ReviewXUnitResultParser()
-    let xmlParser = XMLParser(data: data)
-    xmlParser.delegate = parser
-    guard xmlParser.parse() else {
-        throw ValidationError("Could not parse Swift Testing xUnit results: \(resultURL.path)")
-    }
-    return parser.results[ReviewResultKey(suite: metadata.suiteName, name: metadata.testName)]
-        ?? ReviewTestObservation(status: .unknown, durationSeconds: nil)
-}
-
 private func runReviewDirectoryChildren(of url: URL) throws -> [URL] {
     guard FileManager.default.fileExists(atPath: url.path) else { return [] }
     return try FileManager.default.contentsOfDirectory(
@@ -870,66 +564,8 @@ private func runReviewRelativeFilePath(
     return reviewRelativePath(url, base: runURL)
 }
 
-private func runSuitePrompt(
+private func runReviewPrompt(
     basePrompt: String,
-    suite: RunReviewSuite,
-    repoURL: URL,
-    packageURL: URL,
-    testsURL: URL,
-    runURL: URL,
-    context: ReviewContext,
-    overview: E2ERunOverview,
-    reviewer: String,
-    reviewDirectoryName: String,
-    overwrite: Bool
-) -> String {
-    var lines = runPromptHeader(
-        title: "Suite-scoped Swift E2E run review",
-        basePrompt: basePrompt,
-        repoURL: repoURL,
-        packageURL: packageURL,
-        testsURL: testsURL,
-        runURL: runURL,
-        context: context,
-        overviewURL: runOverviewURL(in: runURL)
-    )
-    lines.append("## Suite")
-    lines.append("")
-    lines.append("- Suite key: `\(suite.suiteKey)`")
-    lines.append("- Suite name: `\(suite.displayName)`")
-    lines.append("- Source: `\(suite.sourceURL.path)`")
-    let suiteReviewURL = e2eObservationsRootURL(in: runURL)
-        .appendingPathComponent(suite.suiteKey)
-        .appendingPathComponent(reviewDirectoryName)
-    lines.append("- Suite review directory: `\(suiteReviewURL.path)`")
-    lines.append(
-        "- Test review directories: `<run>/\(e2eObservationsDirectoryName)/\(suite.suiteKey)/<test-key>/\(reviewDirectoryName)/`"
-    )
-    appendReviewOutputContract(
-        to: &lines,
-        writableScopes: "suite and test",
-        reviewer: reviewer,
-        reviewDirectoryName: reviewDirectoryName,
-        overwrite: overwrite
-    )
-    lines.append("")
-    appendRunOverviewSuiteFocus(overview, suiteKey: suite.suiteKey, to: &lines)
-    lines.append("## Tests in this suite")
-    lines.append("")
-    for test in suite.tests {
-        appendRunReviewTest(
-            test,
-            to: &lines,
-            runURL: runURL,
-            reviewDirectoryName: reviewDirectoryName
-        )
-    }
-    return lines.joined(separator: "\n")
-}
-
-private func runReportPrompt(
-    basePrompt: String,
-    suites: [RunReviewSuite],
     repoURL: URL,
     packageURL: URL,
     testsURL: URL,
@@ -941,7 +577,7 @@ private func runReportPrompt(
     overwrite: Bool
 ) throws -> String {
     var lines = runPromptHeader(
-        title: "Top-level Swift E2E run review",
+        title: "Swift E2E run review",
         basePrompt: basePrompt,
         repoURL: repoURL,
         packageURL: packageURL,
@@ -950,10 +586,10 @@ private func runReportPrompt(
         context: context,
         overviewURL: runOverviewURL(in: runURL)
     )
-    lines.append("## Report scope")
+    lines.append("## Review scope")
     lines.append("")
     lines.append(
-        "- Report review directory: `\(runURL.appendingPathComponent(reviewDirectoryName).path)`"
+        "- Review directory: `\(runURL.appendingPathComponent(reviewDirectoryName).path)`"
     )
     appendReviewOutputContract(
         to: &lines,
@@ -962,32 +598,9 @@ private func runReportPrompt(
         reviewDirectoryName: reviewDirectoryName,
         overwrite: overwrite
     )
-    lines.append(
-        "For report-level reviews, create run-level or cross-suite findings. If the overview records failed or flaked target outcomes, include a top-level synthesis that covers each one and cites the lower-scope review or artifact evidence."
-    )
     lines.append("")
     appendRunOverviewReportFocus(overview, to: &lines)
     try appendRunReviewAttemptArtifacts(runURL: runURL, to: &lines)
-    lines.append("## Run summary")
-    lines.append("")
-    for suite in suites {
-        lines.append("### \(suite.displayName) (`\(suite.suiteKey)`)")
-        appendExistingReviews(suite.existingReviews, label: "Suite reviews", to: &lines)
-        for test in suite.tests {
-            let failures = test.observations.filter(\.isFailed).count
-            let flaked = runReviewTargetOutcomeCounts(test.observations).flaked
-            lines.append(
-                "- `\(test.test.name)` (`\(test.suiteKey)/\(test.testKey)`): attempt-results=\(test.observations.count), failed=\(failures), flaked-targets=\(flaked)"
-            )
-            appendExistingReviews(
-                test.existingReviews,
-                label: "Test reviews",
-                to: &lines,
-                prefix: "  "
-            )
-        }
-        lines.append("")
-    }
     return lines.joined(separator: "\n")
 }
 
@@ -1034,7 +647,7 @@ private func appendReviewOutputContract(
     lines.append("## Output contract")
     lines.append("")
     lines.append(
-        "Write one Markdown file per actionable review issue under the appropriate `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes)."
+        "Write one Markdown file per actionable review issue under the top-level `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes)."
     )
     lines.append(
         "The file name must be the review title slug with `.md`: lowercase ASCII letters/digits, non-alphanumerics replaced by `-`, repeated dashes collapsed, and leading/trailing dashes removed. Example: `seed-cache-fixtures-before-listing.md`."
@@ -1043,7 +656,7 @@ private func appendReviewOutputContract(
         "Use JSON `severity` to classify each issue as `info`, `concern`, or `fail`. Keep those exact JSON values. Do not include severity labels or severity emoji in review titles, Markdown headings, or summary text; the aggregate renderer adds the severity emoji from JSON. Do not use heart emojis as severity markers. Do not write prose status/severity lines such as `Status: pass`, `Status: concern`, or `Status: fail`."
     )
     lines.append(
-        "If nothing is noteworthy at a scope, leave that `\(reviewDirectoryName)/` directory absent or empty."
+        "If nothing is actionable, leave that `\(reviewDirectoryName)/` directory absent or empty."
     )
     if !overwrite {
         lines.append(
@@ -1058,7 +671,7 @@ private func appendReviewOutputContract(
     lines.append("{")
     lines.append("  \"schema\": \"\(e2eReviewSchemaID)\",")
     lines.append("  \"title\": \"Seed cache fixtures before listing values\",")
-    lines.append("  \"scope\": \"test\",")
+    lines.append("  \"scope\": \"report\",")
     lines.append("  \"reviewer\": \"\(reviewer)\",")
     lines.append("  \"severity\": \"concern\",")
     lines.append("  \"confidence\": \"medium\",")
@@ -1085,39 +698,10 @@ private func appendReviewOutputContract(
     lines.append("```")
     lines.append("")
     lines.append(
-        "The JSON `title` must match the Markdown `# Title`; the file name must be the slugged title; `scope` must be `report`, `suite`, or `test` matching the directory where the file is written; `reviewer` must be `\(reviewer)`."
+        "The JSON `title` must match the Markdown `# Title`; the file name must be the slugged title; `scope` must be `report`; `reviewer` must be `\(reviewer)`."
     )
     lines.append(
         "Use `locations` only when the review is attributable to code lines in the repository. Use repo-relative paths and one-based line numbers. Use `evidence` for run-relative artifact paths."
-    )
-}
-
-private func appendRunOverviewSuiteFocus(
-    _ overview: E2ERunOverview,
-    suiteKey: String,
-    to lines: inout [String]
-) {
-    lines.append("## Failure and flake evidence from `\(e2eRunOverviewFileName)`")
-    lines.append("")
-    lines.append(
-        "Prioritize deterministic `FAILED` target outcomes first, then `FLAKED` target outcomes, then unresolved `UNKNOWN` outcomes. Cite the attempt artifacts listed here when writing reviews."
-    )
-    lines.append("")
-
-    appendRunOverviewIssues(
-        title: "Deterministic failures",
-        issues: overview.noteworthy.deterministicFailures.filter { $0.suite == suiteKey },
-        to: &lines
-    )
-    appendRunOverviewIssues(
-        title: "Flakes",
-        issues: overview.noteworthy.flakes.filter { $0.suite == suiteKey },
-        to: &lines
-    )
-    appendRunOverviewIssues(
-        title: "Unknown outcomes",
-        issues: overview.noteworthy.unknowns.filter { $0.suite == suiteKey },
-        to: &lines
     )
 }
 
@@ -1330,28 +914,6 @@ private func runOverviewSingleLine(_ value: String, limit: Int) -> String {
     return String(singleLine.prefix(limit)) + "…"
 }
 
-private func appendExistingReviews(
-    _ reviews: [E2EReview],
-    label: String,
-    to lines: inout [String],
-    prefix: String = ""
-) {
-    guard !reviews.isEmpty else {
-        if prefix.isEmpty {
-            lines.append("\(prefix)- \(label): `<none>`")
-        }
-        return
-    }
-
-    lines.append("\(prefix)- \(label):")
-    for review in reviews {
-        lines.append("\(prefix)  - `\(review.path)`: \(review.title)")
-        lines.append("\(prefix)    ```md")
-        lines.append(indent(review.summaryMarkdown, prefix: "\(prefix)    "))
-        lines.append("\(prefix)    ```")
-    }
-}
-
 private func appendReviewContext(_ context: ReviewContext, to lines: inout [String]) {
     lines.append("## Review mode")
     lines.append("")
@@ -1386,86 +948,6 @@ private func appendReviewContext(_ context: ReviewContext, to lines: inout [Stri
     lines.append("")
 }
 
-private func appendRunReviewTest(
-    _ test: RunReviewTest,
-    to lines: inout [String],
-    runURL: URL,
-    reviewDirectoryName: String
-) {
-    lines.append("### \(test.test.suite) › \(test.test.name)")
-    lines.append("- Test key: `\(test.suiteKey)/\(test.testKey)`")
-    lines.append("- Source: `\(test.test.sourcePath):\(test.test.funcLine)`")
-    let testReviewURL = e2eObservationsRootURL(in: runURL)
-        .appendingPathComponent(test.suiteKey)
-        .appendingPathComponent(test.testKey)
-        .appendingPathComponent(reviewDirectoryName)
-    lines.append("- Review directory: `\(testReviewURL.path)`")
-    appendExistingReviews(test.existingReviews, label: "Existing reviews", to: &lines)
-    if !test.test.aiComments.isEmpty {
-        lines.append("- `// AI:` comments:")
-        for comment in test.test.aiComments {
-            lines.append("  - \(comment.replacingOccurrences(of: "\n", with: "\n    "))")
-        }
-    }
-    lines.append("- Source body:")
-    lines.append("  ```swift")
-    lines.append(indent(test.test.sourceBody, prefix: "  "))
-    lines.append("  ```")
-    lines.append("- Target outcomes: \(runReviewTargetOutcomeSummary(test.observations))")
-    lines.append("- Attempt results:")
-    for observation in test.observations {
-        lines.append(
-            "  - target=`\(observation.target)` attempt=`\(observation.attempt)` status=`\(observation.status.statusText)` duration=`\(observation.durationSeconds.map(formatSeconds) ?? "unknown")`"
-        )
-        if let detail = observation.status.detail, !detail.isEmpty {
-            lines.append("    detail: \(detail.replacingOccurrences(of: "\n", with: "\n      "))")
-        }
-        if let recordingPath = observation.recordingPath {
-            lines.append("    recording: `\(recordingPath)`")
-        }
-        if let shellPath = observation.shellPath {
-            lines.append("    shell: `\(shellPath)`")
-        }
-        if let attemptLogPath = observation.attemptLogPath {
-            lines.append("    attempt log: `\(attemptLogPath)`")
-        }
-    }
-    lines.append("")
-}
-
-private func runReviewTargetOutcomeSummary(
-    _ observations: [RunReviewObservation]
-) -> String {
-    let counts = runReviewTargetOutcomeCounts(observations)
-    return
-        "passed=\(counts.passed), flaked=\(counts.flaked), failed=\(counts.failed), skipped=\(counts.skipped), unknown=\(counts.unknown)"
-}
-
-private func runReviewTargetOutcomeCounts(
-    _ observations: [RunReviewObservation]
-) -> (passed: Int, flaked: Int, failed: Int, skipped: Int, unknown: Int) {
-    var counts = (passed: 0, flaked: 0, failed: 0, skipped: 0, unknown: 0)
-    for statuses in Dictionary(grouping: observations, by: \.target).values.map({ $0.map(\.status) }
-    ) {
-        let passed = statuses.contains { $0.statusText == "passed" }
-        let failed = statuses.contains { $0.statusText == "failed" }
-        let skipped = statuses.contains { $0.statusText == "skipped" }
-        let unknown = statuses.contains { $0.statusText == "unknown" }
-        if passed && failed {
-            counts.flaked += 1
-        } else if passed && !failed && !skipped && !unknown {
-            counts.passed += 1
-        } else if failed && !passed && !skipped && !unknown {
-            counts.failed += 1
-        } else if skipped && !passed && !failed && !unknown {
-            counts.skipped += 1
-        } else {
-            counts.unknown += 1
-        }
-    }
-    return counts
-}
-
 private func removeExistingRunReviews(in runURL: URL, reviewer: String) throws {
     removeRunReviews(in: runURL, reviewer: reviewer)
     for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
@@ -1481,29 +963,6 @@ private func removeRunReviews(in directoryURL: URL, reviewer: String) {
     try? FileManager.default.removeItem(
         at: directoryURL.appendingPathComponent(e2eReviewDirectoryName(reviewer: reviewer))
     )
-}
-
-@discardableResult
-private func enforceRunSuiteReviewContract(in runURL: URL, reviewer: String) throws -> Int {
-    var count = 0
-    for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
-        guard !isE2EReviewDirectoryName(suiteURL.lastPathComponent) else { continue }
-        count += try enforceReviews(
-            in: suiteURL,
-            expectedScope: "suite",
-            expectedReviewer: reviewer,
-            runURL: runURL
-        )
-        for testURL in try runReviewDirectoryChildren(of: suiteURL) {
-            count += try enforceReviews(
-                in: testURL,
-                expectedScope: "test",
-                expectedReviewer: reviewer,
-                runURL: runURL
-            )
-        }
-    }
-    return count
 }
 
 private func enforceRunReportReviewContract(in runURL: URL, reviewer: String) throws {
@@ -1560,262 +1019,6 @@ private func defaultReviewTestsDir(packageURL: URL) -> URL {
     return packageURL.appendingPathComponent("Tests")
 }
 
-private func parseReviewTests(in testsURL: URL) throws -> [ReviewTestCase] {
-    let sourceURLs = try reviewSwiftTestFiles(in: testsURL)
-    var tests: [ReviewTestCase] = []
-
-    for sourceURL in sourceURLs {
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let lines = source.components(separatedBy: .newlines)
-        var suite = sourceURL.deletingPathExtension().lastPathComponent
-        var pendingTest: (line: Int, disabled: String?)?
-        var discovered: [(suite: String, name: String, funcLine: Int, disabled: String?)] = []
-
-        for (offset, line) in lines.enumerated() {
-            let lineNumber = offset + 1
-            if let suiteName = reviewFirstMatch(#"\bstruct\s+`([^`]+)`\s*\{"#, in: line)
-                ?? reviewFirstMatch(#"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"#, in: line)
-            {
-                suite = suiteName
-            }
-            if line.contains("@Test") {
-                pendingTest = (
-                    line: lineNumber,
-                    disabled: reviewFirstMatch(#"\.disabled\("([^"]*)"\)"#, in: line)
-                )
-            }
-            if let functionName = reviewFirstMatch(#"\bfunc\s+`([^`]+)`\s*\("#, in: line)
-                ?? reviewFirstMatch(#"\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("#, in: line),
-                let test = pendingTest
-            {
-                discovered.append(
-                    (
-                        suite: suite,
-                        name: functionName,
-                        funcLine: lineNumber,
-                        disabled: test.disabled
-                    )
-                )
-                pendingTest = nil
-            }
-        }
-
-        for index in discovered.indices {
-            let test = discovered[index]
-            let nextLine =
-                index + 1 < discovered.count ? discovered[index + 1].funcLine : lines.count + 1
-            let bodyLines = Array(lines[(test.funcLine - 1)..<(nextLine - 1)])
-            let aiComments = extractReviewAIComments(from: bodyLines)
-            tests.append(
-                ReviewTestCase(
-                    sourcePath: sourceURL.path,
-                    suite: test.suite,
-                    name: test.name,
-                    funcLine: test.funcLine,
-                    sourceBody: bodyLines.joined(separator: "\n"),
-                    aiComments: aiComments
-                )
-            )
-        }
-    }
-
-    return tests
-}
-
-private func reviewSwiftTestFiles(in testsURL: URL) throws -> [URL] {
-    var isDirectory: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: testsURL.path, isDirectory: &isDirectory) else {
-        throw ValidationError("Tests directory not found: \(testsURL.path)")
-    }
-    if !isDirectory.boolValue {
-        return testsURL.lastPathComponent.hasSuffix("Tests.swift") ? [testsURL] : []
-    }
-    guard let enumerator = FileManager.default.enumerator(atPath: testsURL.path) else {
-        throw ValidationError("Tests directory cannot be read: \(testsURL.path)")
-    }
-    return enumerator.compactMap { element -> URL? in
-        guard let relativePath = element as? String, relativePath.hasSuffix("Tests.swift") else {
-            return nil
-        }
-        return testsURL.appendingPathComponent(relativePath)
-    }.sorted { $0.path < $1.path }
-}
-
-private func extractReviewAIComments(from lines: [String]) -> [String] {
-    var blocks: [String] = []
-    var currentBlock: [String] = []
-    var inAI = false
-
-    func finishBlock() {
-        let block = currentBlock.joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !block.isEmpty {
-            blocks.append(block)
-        }
-        currentBlock = []
-    }
-
-    for line in lines {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if let range = trimmed.range(of: "// AI:") {
-            if inAI {
-                finishBlock()
-            }
-            inAI = true
-            let note = trimmed[range.upperBound...]
-                .trimmingCharacters(in: .whitespaces)
-            if !note.isEmpty {
-                currentBlock.append(note)
-            }
-            continue
-        }
-
-        guard inAI else { continue }
-
-        if trimmed.hasPrefix("//") {
-            currentBlock.append(stripReviewCommentPrefix(from: trimmed))
-        } else {
-            finishBlock()
-            inAI = false
-        }
-    }
-
-    if inAI {
-        finishBlock()
-    }
-
-    return blocks
-}
-
-private func stripReviewCommentPrefix(from line: String) -> String {
-    var value = line
-    if value.hasPrefix("//") {
-        value.removeFirst(2)
-    }
-    if value.hasPrefix(" ") {
-        value.removeFirst()
-    }
-    return value
-}
-
-private final class ReviewXUnitResultParser: NSObject, XMLParserDelegate {
-    var results: [ReviewResultKey: ReviewTestObservation] = [:]
-
-    private var current: (key: ReviewResultKey, failure: String?, skipped: String?, time: Double?)?
-    private var currentElement: String?
-    private var currentText = ""
-
-    func parser(
-        _: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI _: String?,
-        qualifiedName _: String?,
-        attributes attributeDict: [String: String]
-    ) {
-        switch elementName {
-        case "testcase":
-            guard let classname = attributeDict["classname"], let name = attributeDict["name"],
-                let key = reviewTestResultKey(classname: classname, name: name)
-            else {
-                current = nil
-                return
-            }
-            current = (
-                key: key,
-                failure: nil,
-                skipped: nil,
-                time: attributeDict["time"].flatMap(Double.init)
-            )
-        case "failure", "skipped":
-            currentElement = elementName
-            currentText = ""
-            guard var current else { return }
-            if elementName == "failure" {
-                current.failure = attributeDict["message"] ?? ""
-            } else {
-                current.skipped = attributeDict["message"] ?? ""
-            }
-            self.current = current
-        default:
-            break
-        }
-    }
-
-    func parser(_: XMLParser, foundCharacters string: String) {
-        if currentElement == "failure" || currentElement == "skipped" {
-            currentText.append(string)
-        }
-    }
-
-    func parser(
-        _: XMLParser,
-        didEndElement elementName: String,
-        namespaceURI _: String?,
-        qualifiedName _: String?
-    ) {
-        switch elementName {
-        case "failure", "skipped":
-            guard var current else { return }
-            let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if elementName == "failure", current.failure?.isEmpty != false, !text.isEmpty {
-                current.failure = text
-            } else if elementName == "skipped", current.skipped?.isEmpty != false, !text.isEmpty {
-                current.skipped = text
-            }
-            self.current = current
-            currentElement = nil
-            currentText = ""
-        case "testcase":
-            guard let current else { return }
-            let status: ReviewTestStatus
-            if let skipped = current.skipped {
-                status = .skipped(skipped.isEmpty ? nil : skipped)
-            } else if let failure = current.failure {
-                status = .failed(failure.isEmpty ? nil : failure)
-            } else {
-                status = .passed
-            }
-            results[current.key] = ReviewTestObservation(
-                status: status,
-                durationSeconds: current.time
-            )
-            self.current = nil
-        default:
-            break
-        }
-    }
-}
-
-private func reviewTestResultKey(classname: String, name: String) -> ReviewResultKey? {
-    let suite = reviewNormalizedClassname(classname)
-    let testName = reviewNormalizedTestName(name)
-    guard !suite.isEmpty, !testName.isEmpty else { return nil }
-    return ReviewResultKey(suite: suite, name: testName)
-}
-
-private func reviewNormalizedClassname(_ classname: String) -> String {
-    if classname.last == "`", let start = classname.dropLast().lastIndex(of: "`") {
-        let suiteStart = classname.index(after: start)
-        return String(classname[suiteStart..<classname.index(before: classname.endIndex)])
-    }
-    return reviewStripBackticks(String(classname.split(separator: ".").last ?? ""))
-}
-
-private func reviewNormalizedTestName(_ name: String) -> String {
-    var value = name
-    if value.hasSuffix("()") {
-        value.removeLast(2)
-    }
-    return reviewStripBackticks(value)
-}
-
-private func reviewStripBackticks(_ value: String) -> String {
-    if value.first == "`", value.last == "`" {
-        return String(value.dropFirst().dropLast())
-    }
-    return value
-}
-
 private func reviewRelativePath(_ url: URL, base: URL) -> String {
     let path = url.path
     let basePath = base.path
@@ -1828,99 +1031,9 @@ private func reviewRelativePath(_ url: URL, base: URL) -> String {
     return path
 }
 
-private func reviewRecordFileStem(_ sourceURL: URL) -> String {
-    var fileName = sourceURL.deletingPathExtension().lastPathComponent
-    if fileName.hasSuffix("Tests") {
-        fileName.removeLast("Tests".count)
-    }
-    return reviewSlug(fileName)
-}
-
-private func reviewSlug(_ value: String) -> String {
-    var result = ""
-    var needsSeparator = false
-    var previousKind: ReviewSlugCharacterKind?
-    let scalars = Array(value.unicodeScalars)
-
-    for index in scalars.indices {
-        let scalar = scalars[index]
-        guard let kind = ReviewSlugCharacterKind(scalar) else {
-            needsSeparator = !result.isEmpty
-            previousKind = nil
-            continue
-        }
-        let nextKind =
-            scalars.index(after: index) < scalars.endIndex
-            ? ReviewSlugCharacterKind(scalars[scalars.index(after: index)]) : nil
-        if !result.isEmpty,
-            needsSeparator
-                || reviewNeedsCamelCaseSeparator(
-                    previousKind: previousKind,
-                    currentKind: kind,
-                    nextKind: nextKind
-                )
-        {
-            result.append("-")
-        }
-        result.append(String(scalar).lowercased())
-        needsSeparator = false
-        previousKind = kind
-    }
-    return result.isEmpty ? "unknown" : result
-}
-
-private func reviewNeedsCamelCaseSeparator(
-    previousKind: ReviewSlugCharacterKind?,
-    currentKind: ReviewSlugCharacterKind,
-    nextKind: ReviewSlugCharacterKind?
-) -> Bool {
-    switch (previousKind, currentKind, nextKind) {
-    case (.lower?, .upper, _), (.digit?, .upper, _), (.upper?, .upper, .lower?):
-        true
-    default:
-        false
-    }
-}
-
-private enum ReviewSlugCharacterKind {
-    case digit
-    case lower
-    case upper
-
-    init?(_ scalar: Unicode.Scalar) {
-        switch scalar.value {
-        case 48...57:
-            self = .digit
-        case 65...90:
-            self = .upper
-        case 97...122:
-            self = .lower
-        default:
-            return nil
-        }
-    }
-}
-
-private func reviewFirstMatch(_ pattern: String, in text: String, group: Int = 1) -> String? {
-    guard let regex = try? NSRegularExpression(pattern: pattern) else {
-        return nil
-    }
-    let range = NSRange(text.startIndex..<text.endIndex, in: text)
-    guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > group,
-        let swiftRange = Range(match.range(at: group), in: text)
-    else {
-        return nil
-    }
-    return String(text[swiftRange])
-}
-
 private func formatSeconds(_ value: Double) -> String {
     if value.rounded() == value {
         return String(Int(value))
     }
     return String(format: "%.3f", value)
-}
-
-private func indent(_ value: String, prefix: String) -> String {
-    value.components(separatedBy: .newlines).map { prefix + $0 }.joined(separator: "\n")
 }

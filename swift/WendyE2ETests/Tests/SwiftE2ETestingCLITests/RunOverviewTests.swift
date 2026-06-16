@@ -255,7 +255,7 @@ struct `run overview` {
 
         #expect(markdown.contains("## Failed and flaked tests"))
         #expect(markdown.contains("### 🛑 `wendy-device-info/prints-json-device-information`"))
-        #expect(markdown.contains("AI review: **Agent rejected CLI auth**"))
+        #expect(markdown.contains("Actionable AI findings, when present, are listed below as review issues."))
         #expect(markdown.contains("### 🛑 Agent rejected CLI auth"))
         #expect(!markdown.contains("### 🛑 Error Agent rejected CLI auth"))
         #expect(markdown.contains("The target rejected an otherwise valid authenticated request."))
