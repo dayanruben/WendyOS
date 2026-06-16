@@ -1712,10 +1712,26 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 	return nil
 }
 
+// phaseTimer returns a closure that logs the elapsed time since the previous
+// call to stderr, but only when WENDY_TIMING is set. It is a lightweight
+// diagnostic for finding where wall-clock time goes in the deploy path.
+func phaseTimer() func(label string) {
+	if os.Getenv("WENDY_TIMING") == "" {
+		return func(string) {}
+	}
+	last := time.Now()
+	return func(label string) {
+		now := time.Now()
+		fmt.Fprintf(os.Stderr, "[timing] %-26s %s\n", label, now.Sub(last).Round(time.Millisecond))
+		last = now
+	}
+}
+
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
 // calls RunContainer with the resulting layer headers.
 func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) error {
+	mark := phaseTimer()
 	tmp, err := os.MkdirTemp("", "wendy-oci-*")
 	if err != nil {
 		return err
@@ -1727,16 +1743,19 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, os.Stdout, os.Stderr); err != nil {
 		return err
 	}
+	mark("build (oci export)")
 	layers, imageConfig, err := readOCILayoutLayers(ociTar)
 	if err != nil {
 		return err
 	}
+	mark("read+decompress layers")
 
 	cliLogln("Diffing %d layer(s) against device...", len(layers))
 	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
 	if err != nil {
 		return err
 	}
+	mark("chunk+query+write")
 
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
@@ -1758,5 +1777,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return err
 	}
-	return streamRunContainer(ctx, conn, stream, appCfg, opts)
+	err = streamRunContainer(ctx, conn, stream, appCfg, opts)
+	mark("runcontainer (assemble+create+start[+readiness])")
+	return err
 }
