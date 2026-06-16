@@ -37,6 +37,12 @@ func TestSanitizeLogText(t *testing.T) {
 		{"nul and bell dropped", "a\x00\x07b", "ab"},
 		{"newline preserved", "line1\nline2", "line1\nline2"},
 		{"spinner braille preserved", "⠋⠙⠹", "⠋⠙⠹"},
+		{"osc title with bel terminator dropped", "\x1b]0;evil title\x07after", "after"},
+		{"osc title with st terminator dropped", "\x1b]0;evil title\x1b\\after", "after"},
+		{"dcs sequence dropped", "\x1bPq#payload\x1b\\done", "done"},
+		{"8-bit csi dropped", "before\x9b2Kafter", "beforeafter"},
+		{"two-char escape does not swallow following text", "x\x1b7y", "xy"},
+		{"two-char keypad escape dropped", "a\x1b=b", "ab"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,6 +124,24 @@ func TestFormatLogLinesAttributesOnLastRow(t *testing.T) {
 	}
 	if strings.Contains(stripANSI(rows[0]), "stream=stderr") {
 		t.Errorf("attributes should not appear on the first row, got %q", stripANSI(rows[0]))
+	}
+}
+
+func TestFormatLogLinesPreservesInteriorBlankLines(t *testing.T) {
+	// A body with an intentional interior blank line and a single terminating
+	// newline: the interior blank is kept, only the terminator empty is dropped.
+	lr := &otelpb.LogRecord{Body: strBody("a\n\nb\n")}
+	rows := formatLogLines("svc", lr)
+
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows (interior blank kept, terminator dropped), got %d: %#v", len(rows), rows)
+	}
+	noRowContainsControlBytes(t, rows)
+	if got := strings.TrimSpace(stripANSI(rows[1])); got != "" {
+		t.Errorf("row 1 should be the preserved blank line, got %q", got)
+	}
+	if !strings.HasSuffix(stripANSI(rows[2]), "b") {
+		t.Errorf("row 2 should carry body line b, got %q", stripANSI(rows[2]))
 	}
 }
 

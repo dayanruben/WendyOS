@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -621,30 +622,87 @@ func extractMetricValue(m *otelpb.Metric) (string, time.Time) {
 // Newlines are preserved so the caller can split a multiline body into separate
 // rows. Tabs become spaces; carriage returns, ESC-introduced sequences, and all
 // other C0/C1/DEL control bytes are dropped.
+//
+// The escape grammar is parsed by class rather than "drop until the next ASCII
+// letter", so an attacker-controlled OSC payload (e.g. `ESC ] 0 ; title BEL`,
+// as emitted by `pulling manifest` style spinners) cannot leak its tail, and a
+// two-character escape (e.g. `ESC 7`) cannot swallow the printable text that
+// follows it. Raw ESC and all control bytes are dropped unconditionally, so no
+// escape or control byte ever reaches stdout regardless of sequence shape.
 func sanitizeLogText(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
-	inEscape := false
-	for _, r := range s {
-		if inEscape {
-			// Mirror truncateVisible: an escape sequence ends at its first
-			// ASCII letter (final byte of CSI/SGR/cursor sequences).
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-			continue
+
+	const (
+		stNormal    = iota // ordinary text
+		stEscStart         // saw ESC (or an 8-bit C1 introducer); classify next rune
+		stCSI              // CSI sequence; ends at a final byte 0x40-0x7e
+		stString           // OSC/DCS/PM/APC/SOS string; ends at BEL or ST (ESC \)
+		stStringEsc        // saw ESC inside a string; ST iff the next rune is '\'
+	)
+	state := stNormal
+
+	// Decode runes explicitly rather than ranging: a raw 8-bit C1 control byte
+	// (e.g. the 0x9b CSI introducer) is not valid UTF-8, so `range` would yield
+	// RuneError and hide it. Unifying the raw byte value with the decoded rune
+	// lets the control/introducer checks see C1 controls in either form while
+	// still preserving valid multi-byte UTF-8 (e.g. braille spinner glyphs).
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			r = rune(s[i]) // invalid byte: treat by its raw value
 		}
-		switch {
-		case r == '\x1b':
-			inEscape = true
-		case r == '\n':
-			b.WriteRune('\n')
-		case r == '\t':
-			b.WriteByte(' ')
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
-			// C0 controls (incl. '\r'), DEL, and C1 controls: drop.
-		default:
-			b.WriteRune(r)
+		i += size
+
+		switch state {
+		case stEscStart:
+			switch {
+			case r == '[':
+				state = stCSI
+			case r == ']' || r == 'P' || r == 'X' || r == '^' || r == '_':
+				state = stString
+			default:
+				// Two-character escape (ESC 7, ESC =, ESC M, ...): complete.
+				state = stNormal
+			}
+		case stCSI:
+			// CSI parameter/intermediate bytes precede a final byte in 0x40-0x7e.
+			if r >= 0x40 && r <= 0x7e {
+				state = stNormal
+			}
+		case stString:
+			switch r {
+			case '\x07': // BEL terminator
+				state = stNormal
+			case '\x1b': // possible ST (ESC \)
+				state = stStringEsc
+			}
+		case stStringEsc:
+			// ST is ESC '\'; otherwise the ESC began a fresh sequence inside the
+			// string, so stay in the string and reinterpret the rune there.
+			if r == '\\' {
+				state = stNormal
+			} else {
+				state = stString
+			}
+		default: // stNormal
+			switch {
+			case r == '\x1b':
+				state = stEscStart
+			case r == 0x9b: // 8-bit CSI introducer
+				state = stCSI
+			case r == 0x9d || r == 0x90 || r == 0x9e || r == 0x9f || r == 0x98:
+				// 8-bit OSC/DCS/PM/APC/SOS introducers.
+				state = stString
+			case r == '\n':
+				b.WriteRune('\n')
+			case r == '\t':
+				b.WriteByte(' ')
+			case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+				// C0 controls (incl. '\r'), DEL, and other C1 controls: drop.
+			default:
+				b.WriteRune(r)
+			}
 		}
 	}
 	return b.String()
@@ -693,9 +751,11 @@ func formatLogLines(service string, lr *otelpb.LogRecord) []string {
 	var bodyLines []string
 	if body := lr.GetBody(); body != nil {
 		bodyLines = strings.Split(sanitizeLogText(body.GetStringValue()), "\n")
-		// Drop trailing blank lines (container output usually ends in '\n').
-		for len(bodyLines) > 0 && strings.TrimSpace(bodyLines[len(bodyLines)-1]) == "" {
-			bodyLines = bodyLines[:len(bodyLines)-1]
+		// Drop only the single empty element produced by a terminating '\n'
+		// (container output usually ends in one); intentional interior or
+		// trailing blank lines are preserved so records render in full.
+		if n := len(bodyLines); n > 0 && bodyLines[n-1] == "" {
+			bodyLines = bodyLines[:n-1]
 		}
 	}
 
