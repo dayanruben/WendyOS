@@ -23,8 +23,9 @@ var (
 )
 
 var (
-	appleContainerLabelKeyRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$`)
-	appleContainerLabelValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]*$`)
+	appleContainerContainerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	appleContainerLabelKeyRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$`)
+	appleContainerLabelValueRe    = regexp.MustCompile(`^[A-Za-z0-9_./:=,-]*$`)
 )
 
 type appleContainerBuildContext struct {
@@ -220,6 +221,20 @@ func validateAppleContainerKeyValueArg(kind, key, value string) error {
 	return nil
 }
 
+func validateAppleContainerContainerName(name string) error {
+	if !appleContainerContainerNameRe.MatchString(name) {
+		return fmt.Errorf("invalid Apple Container container name %q: must match [A-Za-z0-9][A-Za-z0-9_.-]*", name)
+	}
+	return nil
+}
+
+func appleContainerKeyValueArg(kind, key, value string) (string, error) {
+	if err := validateAppleContainerKeyValueArg(kind, key, value); err != nil {
+		return "", err
+	}
+	return key + "=" + value, nil
+}
+
 func confinedProviderDockerfilePath(projectPath, dockerfile string) (string, error) {
 	absProject, err := filepath.EvalSymlinks(projectPath)
 	if err != nil {
@@ -259,6 +274,9 @@ func (p *AppleContainerProvider) Run(ctx context.Context, app *BuiltApp, detach 
 	if !ok {
 		return fmt.Errorf("Apple Container provider: invalid build context")
 	}
+	if err := validateAppleContainerContainerName(bc.ContainerName); err != nil {
+		return err
+	}
 	if err := p.CheckRequirements(ctx); err != nil {
 		return err
 	}
@@ -266,12 +284,17 @@ func (p *AppleContainerProvider) Run(ctx context.Context, app *BuiltApp, detach 
 		return err
 	}
 
-	args := []string{"run", "--name", bc.ContainerName, "--label", "wendy.managed=true"}
+	managedLabel, err := appleContainerKeyValueArg("label", "wendy.managed", "true")
+	if err != nil {
+		return err
+	}
+	args := []string{"run", "--name", bc.ContainerName, "--label", managedLabel}
 	for k, v := range appconfig.BuildEntitlementAnnotations(app.Entitlements) {
-		if err := validateAppleContainerKeyValueArg("label", k, v); err != nil {
+		label, err := appleContainerKeyValueArg("label", k, v)
+		if err != nil {
 			return err
 		}
-		args = append(args, "--label", k+"="+v)
+		args = append(args, "--label", label)
 	}
 	if detach {
 		args = append(args, "--detach")
@@ -319,6 +342,9 @@ func (p *AppleContainerProvider) Stop(ctx context.Context, app *BuiltApp) error 
 	if !ok {
 		return fmt.Errorf("Apple Container provider: invalid build context")
 	}
+	if err := validateAppleContainerContainerName(bc.ContainerName); err != nil {
+		return err
+	}
 	cmd := appleContainerCommandContext(ctx, "container", "stop", bc.ContainerName)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("container stop: %s: %w", strings.TrimSpace(string(out)), err)
@@ -327,6 +353,9 @@ func (p *AppleContainerProvider) Stop(ctx context.Context, app *BuiltApp) error 
 }
 
 func (p *AppleContainerProvider) removeManagedContainer(ctx context.Context, name string) error {
+	if err := validateAppleContainerContainerName(name); err != nil {
+		return err
+	}
 	managed, err := p.containerHasManagedLabel(ctx, name)
 	if err != nil {
 		return err
@@ -342,6 +371,9 @@ func (p *AppleContainerProvider) removeManagedContainer(ctx context.Context, nam
 }
 
 func (p *AppleContainerProvider) containerHasManagedLabel(ctx context.Context, name string) (bool, error) {
+	if err := validateAppleContainerContainerName(name); err != nil {
+		return false, err
+	}
 	cmd := appleContainerCommandContext(ctx, "container", "inspect", name)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -490,6 +522,9 @@ func firstJSONMap(m map[string]any, keys ...string) map[string]any {
 }
 
 func (p *AppleContainerProvider) StartContainer(ctx context.Context, name string) error {
+	if err := validateAppleContainerContainerName(name); err != nil {
+		return err
+	}
 	cmd := appleContainerCommandContext(ctx, "container", "start", name)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("container start: %s: %w", strings.TrimSpace(string(out)), err)
@@ -498,6 +533,9 @@ func (p *AppleContainerProvider) StartContainer(ctx context.Context, name string
 }
 
 func (p *AppleContainerProvider) StopContainer(ctx context.Context, name string) error {
+	if err := validateAppleContainerContainerName(name); err != nil {
+		return err
+	}
 	cmd := appleContainerCommandContext(ctx, "container", "stop", name)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("container stop: %s: %w", strings.TrimSpace(string(out)), err)
@@ -506,6 +544,9 @@ func (p *AppleContainerProvider) StopContainer(ctx context.Context, name string)
 }
 
 func (p *AppleContainerProvider) RemoveContainer(ctx context.Context, name string) error {
+	if err := validateAppleContainerContainerName(name); err != nil {
+		return err
+	}
 	cmd := appleContainerCommandContext(ctx, "container", "delete", "--force", name)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("container delete: %s: %w", strings.TrimSpace(string(out)), err)

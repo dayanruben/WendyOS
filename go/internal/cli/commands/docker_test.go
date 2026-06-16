@@ -1717,6 +1717,8 @@ func TestValidateBuildArgPair(t *testing.T) {
 		"BAD\nKEY":  "value",
 		"GOOD":      "bad\nvalue",
 		"ALSO_GOOD": "bad\x00value",
+		"LEADING":   "--flag-like",
+		"SHELL":     "$(echo bad)",
 	}
 	for k, v := range invalid {
 		if err := validateBuildArgPair(k, v); err == nil {

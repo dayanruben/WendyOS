@@ -95,10 +95,24 @@ func TestValidateAppleContainerKeyValueArg(t *testing.T) {
 		"another.good": "bad\x00value",
 		"unicode.good": "snowman-☃",
 		"shell.good":   "$(echo bad)",
+		"digest.good":  "image@sha256:abc",
 	}
 	for k, v := range invalid {
 		if err := validateAppleContainerKeyValueArg("label", k, v); err == nil {
 			t.Fatalf("validateAppleContainerKeyValueArg(%q, %q) = nil, want error", k, v)
+		}
+	}
+}
+
+func TestValidateAppleContainerContainerName(t *testing.T) {
+	for _, name := range []string{"myapp", "sh.wendy.app", "App_1-prod"} {
+		if err := validateAppleContainerContainerName(name); err != nil {
+			t.Fatalf("validateAppleContainerContainerName(%q): %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "--flag", "bad/name", "bad name", "☃"} {
+		if err := validateAppleContainerContainerName(name); err == nil {
+			t.Fatalf("validateAppleContainerContainerName(%q) = nil, want error", name)
 		}
 	}
 }

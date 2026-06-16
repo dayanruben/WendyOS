@@ -184,6 +184,7 @@ func detectProjectType(dir string) (string, error) {
 // more safe characters.
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
 var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
@@ -221,8 +222,11 @@ func validateBuildArgPair(key, value string) error {
 	if !validBuildArgNameRe.MatchString(key) {
 		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
 	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("invalid build arg %q: value must not contain NUL or newline characters", key)
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("invalid build arg %q: value must not start with '-'", key)
+	}
+	if !validBuildArgValueRe.MatchString(value) {
+		return fmt.Errorf("invalid build arg %q: value must contain only safe ASCII characters", key)
 	}
 	return nil
 }
