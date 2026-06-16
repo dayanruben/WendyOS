@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -1350,48 +1351,55 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
-	// Verify auth certs are available if the device's registry requires mTLS.
-	if err := requireRegistryAuth(ctx, conn); err != nil {
-		return err
+	// Try the fast chunk-diff (CDC) deploy path first. If it fails for any
+	// reason, fall back to the traditional buildx→registry path.
+	if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err != nil {
+		cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
+
+		// Verify auth certs are available if the device's registry requires mTLS.
+		if err := requireRegistryAuth(ctx, conn); err != nil {
+			return err
+		}
+
+		// Build and push the Docker image directly to the device's registry.
+		regPort := registryPort(agentOS)
+		// For link-local addresses (USB), a TCP proxy bridges the Docker VM
+		// to the host so buildx can reach the device.
+		registryAddr, proxyCleanup, regErr := resolveRegistryForAgent(ctx, conn, regPort)
+		if regErr != nil {
+			return regErr
+		}
+		defer proxyCleanup()
+
+		repo := strings.ToLower(appCfg.AppID)
+		registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
+
+		cliLogln("Building and pushing Docker image for %s...", platform)
+		if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
+			return fmt.Errorf("building and pushing Docker image: %w", err)
+		}
+		cliLogln("Build and push completed.")
+
+		// The agent pulls from localhost:<regPort>.
+		deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
+
+		appConfigData, err := json.Marshal(appCfg)
+		if err != nil {
+			return fmt.Errorf("marshaling app config: %w", err)
+		}
+		restartPolicy := resolveRestartPolicy(opts)
+
+		createReq := &agentpb.CreateContainerRequest{
+			ImageName:     deviceImage,
+			AppName:       appCfg.AppID,
+			AppConfig:     appConfigData,
+			RestartPolicy: restartPolicy,
+			UserArgs:      opts.userArgs,
+		}
+
+		return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
 	}
-
-	// Build and push the Docker image directly to the device's registry.
-	regPort := registryPort(agentOS)
-	// For link-local addresses (USB), a TCP proxy bridges the Docker VM
-	// to the host so buildx can reach the device.
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
-		return err
-	}
-	defer proxyCleanup()
-
-	repo := strings.ToLower(appCfg.AppID)
-	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
-
-	cliLogln("Building and pushing Docker image for %s...", platform)
-	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
-		return fmt.Errorf("building and pushing Docker image: %w", err)
-	}
-	cliLogln("Build and push completed.")
-
-	// The agent pulls from localhost:<regPort>.
-	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
-
-	appConfigData, err := json.Marshal(appCfg)
-	if err != nil {
-		return fmt.Errorf("marshaling app config: %w", err)
-	}
-	restartPolicy := resolveRestartPolicy(opts)
-
-	createReq := &agentpb.CreateContainerRequest{
-		ImageName:     deviceImage,
-		AppName:       appCfg.AppID,
-		AppConfig:     appConfigData,
-		RestartPolicy: restartPolicy,
-		UserArgs:      opts.userArgs,
-	}
-
-	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
+	return nil
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
@@ -1654,4 +1662,84 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 		mode = agentpb.RestartPolicyMode_NO
 	}
 	return &agentpb.RestartPolicy{Mode: mode}
+}
+
+// streamRunContainer drains a RunContainer server stream, writing stdout/stderr
+// to the corresponding OS streams. When opts.deploy or opts.detach is set the
+// function returns as soon as the Started message is received (mirroring the
+// behaviour of startAndStreamContainer for those flags).
+func streamRunContainer(_ context.Context, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("receiving container output: %w", err)
+		}
+		if resp.GetStarted() != nil {
+			if opts.deploy {
+				cliLogln("Container %s created (not started).", appCfg.AppID)
+				return nil
+			}
+			if opts.detach {
+				cliLogln("Application %s running in detached mode.", appCfg.AppID)
+				return nil
+			}
+			continue
+		}
+		if out := resp.GetStdoutOutput(); out != nil {
+			_, _ = os.Stdout.Write(out.GetData())
+		}
+		if out := resp.GetStderrOutput(); out != nil {
+			_, _ = os.Stderr.Write(out.GetData())
+		}
+	}
+	cliLogln("\nApplication %s stopped.", appCfg.AppID)
+	return nil
+}
+
+// deployByChunkDiff builds the image to a local OCI layout tar, diffs the
+// layers against what the device already has via content-defined chunking, and
+// calls RunContainer with the resulting layer headers.
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) error {
+	tmp, err := os.MkdirTemp("", "wendy-oci-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	ociTar := filepath.Join(tmp, "image.tar")
+
+	cliLogln("Building image (OCI layout) for %s...", platform)
+	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, os.Stdout, os.Stderr); err != nil {
+		return err
+	}
+	layers, err := readOCILayoutLayers(ociTar)
+	if err != nil {
+		return err
+	}
+
+	cliLogln("Diffing %d layer(s) against device...", len(layers))
+	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
+	if err != nil {
+		return err
+	}
+
+	appConfigData, err := json.Marshal(appCfg)
+	if err != nil {
+		return err
+	}
+	imageName := strings.ToLower(appCfg.AppID) + ":latest"
+	stream, err := conn.ContainerService.RunContainer(ctx, &agentpb.RunContainerLayersRequest{
+		ImageName:     imageName,
+		AppName:       appCfg.AppID,
+		Layers:        headers,
+		AppConfig:     appConfigData,
+		RestartPolicy: resolveRestartPolicy(opts),
+		UserArgs:      opts.userArgs,
+	})
+	if err != nil {
+		return err
+	}
+	return streamRunContainer(ctx, stream, appCfg, opts)
 }
