@@ -21,17 +21,21 @@ import (
 func newWatchCmd() *cobra.Command {
 	var opts runOptions
 	var debounceMS int
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Watch the project directory and redeploy on every change",
 		Long: "Watches the current directory (or --prefix) and re-runs the build + " +
 			"deploy pipeline whenever a file changes, replacing the running container. " +
-			"Runs detached (does not stream logs); use 'wendy device logs' to tail output.",
+			"Runs detached (does not stream logs); use 'wendy device logs' to tail output. " +
+			"Build output is hidden unless a build fails; pass --verbose to always show it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The watch loop must never block on logs or prompt between cycles.
 			opts.detach = true
 			opts.yes = true
+			// Keep the loop quiet: hide build output unless a build fails.
+			opts.quietBuild = !verbose
 			return watchCommand(cmd.Context(), opts, time.Duration(debounceMS)*time.Millisecond)
 		},
 	}
@@ -46,6 +50,7 @@ func newWatchCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart the container unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart the container on failure")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Quiet period in milliseconds after the last change before redeploying")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Always show build output (default: hidden unless the build fails)")
 
 	return cmd
 }

@@ -475,6 +475,9 @@ type runOptions struct {
 	product              string
 	service              string
 	userArgs             []string
+	// quietBuild suppresses the image build (buildx) output, surfacing it only
+	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
+	quietBuild bool
 }
 
 func newRunCmd() *cobra.Command {
@@ -1751,7 +1754,19 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	ociTar := filepath.Join(tmp, "image.tar")
 
 	cliLogln("Building image (OCI layout) for %s...", platform)
-	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, os.Stdout, os.Stderr); err != nil {
+	// In quiet mode (wendy watch) capture the buildx output and surface it only
+	// if the build genuinely fails — but stay silent on a cancellation (a newer
+	// change superseded this build), which would otherwise dump a partial log.
+	var buildOut, buildErr io.Writer = os.Stdout, os.Stderr
+	var buildLog *bytes.Buffer
+	if opts.quietBuild {
+		buildLog = &bytes.Buffer{}
+		buildOut, buildErr = buildLog, buildLog
+	}
+	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, buildOut, buildErr); err != nil {
+		if buildLog != nil && ctx.Err() == nil {
+			_, _ = os.Stderr.Write(buildLog.Bytes())
+		}
 		return err
 	}
 	mark("build (oci export)")
