@@ -325,7 +325,6 @@ func pickBuildOptionWithTitle(options []BuildOption, title string) (*BuildOption
 func preferredBuildOption(options []BuildOption, interactive bool) *BuildOption {
 	hasLanguageMarker := false
 	dockerCount := 0
-	buildFile := (*BuildOption)(nil)
 	for i := range options {
 		switch {
 		case options[i].Type == "swift" || options[i].Type == "python":
@@ -334,7 +333,7 @@ func preferredBuildOption(options []BuildOption, interactive bool) *BuildOption 
 			dockerCount++
 		}
 	}
-	buildFile = preferredContainerBuildFileOption(options)
+	buildFile := preferredContainerBuildFileOption(options)
 	if !hasLanguageMarker || buildFile == nil {
 		return nil
 	}

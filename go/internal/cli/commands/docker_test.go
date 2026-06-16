@@ -1671,6 +1671,34 @@ func TestValidateDockerfileName(t *testing.T) {
 	}
 }
 
+func TestValidateBuildArgPair(t *testing.T) {
+	valid := map[string]string{
+		"WENDY_PLATFORM":    "nvidia-jetson",
+		"_PRIVATE_ARG":      "value=with=equals",
+		"WENDY_DEVICE_TYPE": "jetson-agx-orin",
+	}
+	for k, v := range valid {
+		if err := validateBuildArgPair(k, v); err != nil {
+			t.Fatalf("validateBuildArgPair(%q, %q): %v", k, v, err)
+		}
+	}
+
+	invalid := map[string]string{
+		"":          "value",
+		"BAD-NAME":  "value",
+		"1BAD":      "value",
+		"BAD=NAME":  "value",
+		"BAD\nKEY":  "value",
+		"GOOD":      "bad\nvalue",
+		"ALSO_GOOD": "bad\x00value",
+	}
+	for k, v := range invalid {
+		if err := validateBuildArgPair(k, v); err == nil {
+			t.Fatalf("validateBuildArgPair(%q, %q) = nil, want error", k, v)
+		}
+	}
+}
+
 func TestConfinedDockerfilePath_Traversal(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := confinedDockerfilePath(dir, "../../etc/passwd"); err == nil {
@@ -1697,6 +1725,39 @@ func TestConfinedDockerfilePath_Valid(t *testing.T) {
 	}
 	if got == "" {
 		t.Fatal("expected non-empty resolved path")
+	}
+}
+
+func TestAppleContainerBuildFilePathUsesTmpAliasWhenAvailable(t *testing.T) {
+	oldGOOS := imageBuilderHostGOOS
+	t.Cleanup(func() {
+		imageBuilderHostGOOS = oldGOOS
+	})
+	imageBuilderHostGOOS = func() string { return "darwin" }
+
+	dir, err := os.MkdirTemp("/tmp", "wendy-apple-buildfile.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	privateDir := "/private" + dir
+	if !sameFilePath(dir, privateDir) {
+		t.Skip("/private/tmp is not an alias for /tmp on this host")
+	}
+
+	got, err := appleContainerBuildFilePath(privateDir, "Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "Dockerfile")
+	if got != want {
+		t.Fatalf("build file path = %q, want %q", got, want)
 	}
 }
 

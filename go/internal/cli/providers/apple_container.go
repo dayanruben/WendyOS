@@ -201,6 +201,19 @@ func sameFilePath(left, right string) bool {
 	return os.SameFile(leftInfo, rightInfo)
 }
 
+func validateAppleContainerKeyValueArg(kind, key, value string) error {
+	if key == "" {
+		return fmt.Errorf("invalid %s: key is empty", kind)
+	}
+	if strings.ContainsAny(key, "=\x00\r\n") {
+		return fmt.Errorf("invalid %s key %q: must not contain '=', NUL, or newline characters", kind, key)
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("invalid %s %q: value must not contain NUL or newline characters", kind, key)
+	}
+	return nil
+}
+
 func confinedProviderDockerfilePath(projectPath, dockerfile string) (string, error) {
 	absProject, err := filepath.EvalSymlinks(projectPath)
 	if err != nil {
@@ -225,6 +238,11 @@ func confinedProviderDockerfilePath(projectPath, dockerfile string) (string, err
 	if err != nil || escapes(rel) {
 		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
 	}
+	if appleContainerHostGOOS() == "darwin" {
+		if normalized, ok := appleContainerTmpAlias(resolved); ok {
+			return normalized, nil
+		}
+	}
 	return resolved, nil
 }
 
@@ -244,6 +262,9 @@ func (p *AppleContainerProvider) Run(ctx context.Context, app *BuiltApp, detach 
 
 	args := []string{"run", "--name", bc.ContainerName, "--label", "wendy.managed=true"}
 	for k, v := range appconfig.BuildEntitlementAnnotations(app.Entitlements) {
+		if err := validateAppleContainerKeyValueArg("label", k, v); err != nil {
+			return err
+		}
 		args = append(args, "--label", k+"="+v)
 	}
 	if detach {
@@ -293,12 +314,18 @@ func (p *AppleContainerProvider) Stop(ctx context.Context, app *BuiltApp) error 
 		return fmt.Errorf("Apple Container provider: invalid build context")
 	}
 	cmd := appleContainerCommandContext(ctx, "container", "stop", bc.ContainerName)
-	return cmd.Run()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("container stop: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 func (p *AppleContainerProvider) removeManagedContainer(ctx context.Context, name string) error {
 	managed, err := p.containerHasManagedLabel(ctx, name)
-	if err != nil || !managed {
+	if err != nil {
+		return err
+	}
+	if !managed {
 		return nil
 	}
 	cmd := appleContainerCommandContext(ctx, "container", "delete", "--force", name)
@@ -310,11 +337,25 @@ func (p *AppleContainerProvider) removeManagedContainer(ctx context.Context, nam
 
 func (p *AppleContainerProvider) containerHasManagedLabel(ctx context.Context, name string) (bool, error) {
 	cmd := appleContainerCommandContext(ctx, "container", "inspect", name)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return false, err
+		msg := strings.TrimSpace(string(out))
+		if appleContainerInspectNotFound(msg) {
+			return false, nil
+		}
+		if msg != "" {
+			return false, fmt.Errorf("container inspect: %s: %w", msg, err)
+		}
+		return false, fmt.Errorf("container inspect: %w", err)
 	}
 	return appleContainerInspectHasManagedLabel(out), nil
+}
+
+func appleContainerInspectNotFound(output string) bool {
+	s := strings.ToLower(output)
+	return strings.Contains(s, "not found") ||
+		strings.Contains(s, "no such container") ||
+		strings.Contains(s, "does not exist")
 }
 
 func appleContainerInspectHasManagedLabel(data []byte) bool {

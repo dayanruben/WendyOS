@@ -66,6 +66,32 @@ func TestAppleContainerListInfos(t *testing.T) {
 	}
 }
 
+func TestValidateAppleContainerKeyValueArg(t *testing.T) {
+	valid := map[string]string{
+		"wendy.managed":                "true",
+		"sh.wendy/entitlement.network": "mode=host,ports=8080:80",
+	}
+	for k, v := range valid {
+		if err := validateAppleContainerKeyValueArg("label", k, v); err != nil {
+			t.Fatalf("validateAppleContainerKeyValueArg(%q, %q): %v", k, v, err)
+		}
+	}
+
+	invalid := map[string]string{
+		"":             "true",
+		"bad=key":      "true",
+		"bad\nkey":     "true",
+		"good.key":     "bad\nvalue",
+		"also.good":    "bad\rvalue",
+		"another.good": "bad\x00value",
+	}
+	for k, v := range invalid {
+		if err := validateAppleContainerKeyValueArg("label", k, v); err == nil {
+			t.Fatalf("validateAppleContainerKeyValueArg(%q, %q) = nil, want error", k, v)
+		}
+	}
+}
+
 func TestAppleContainerBuildWithDockerfileUsesContainerBuild(t *testing.T) {
 	restore := stubAppleContainerHost(t)
 	defer restore()
@@ -201,6 +227,84 @@ func TestAppleContainerBuildContextUsesTmpAliasWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestConfinedProviderDockerfilePathUsesTmpAliasWhenAvailable(t *testing.T) {
+	restore := stubAppleContainerHost(t)
+	defer restore()
+
+	dir, err := os.MkdirTemp("/tmp", "wendy-apple-dockerfile.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	privateDir := "/private" + dir
+	if !sameFilePath(dir, privateDir) {
+		t.Skip("/private/tmp is not an alias for /tmp on this host")
+	}
+
+	got, err := confinedProviderDockerfilePath(privateDir, "Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "Dockerfile")
+	if got != want {
+		t.Fatalf("dockerfile path = %q, want %q", got, want)
+	}
+}
+
+func TestAppleContainerStopIncludesStderr(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	oldCommand := appleContainerCommandContext
+	t.Cleanup(func() {
+		appleContainerCommandContext = oldCommand
+	})
+	t.Setenv("APPLE_CONTAINER_HELPER_STOP_ERROR", "permission denied")
+	appleContainerCommandContext = fakeAppleContainerCommandContext(logFile)
+
+	err := (&AppleContainerProvider{}).Stop(context.Background(), &BuiltApp{
+		Context: &appleContainerBuildContext{ContainerName: "myapp"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Stop error = %v, want stderr context", err)
+	}
+}
+
+func TestRemoveManagedContainerInspectErrorHandling(t *testing.T) {
+	t.Run("not found is ignored", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "commands.log")
+		oldCommand := appleContainerCommandContext
+		t.Cleanup(func() {
+			appleContainerCommandContext = oldCommand
+		})
+		t.Setenv("APPLE_CONTAINER_HELPER_INSPECT", "missing")
+		appleContainerCommandContext = fakeAppleContainerCommandContext(logFile)
+
+		if err := (&AppleContainerProvider{}).removeManagedContainer(context.Background(), "myapp"); err != nil {
+			t.Fatalf("removeManagedContainer: %v", err)
+		}
+	})
+
+	t.Run("other inspect errors are returned", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "commands.log")
+		oldCommand := appleContainerCommandContext
+		t.Cleanup(func() {
+			appleContainerCommandContext = oldCommand
+		})
+		t.Setenv("APPLE_CONTAINER_HELPER_INSPECT", "error")
+		appleContainerCommandContext = fakeAppleContainerCommandContext(logFile)
+
+		err := (&AppleContainerProvider{}).removeManagedContainer(context.Background(), "myapp")
+		if err == nil || !strings.Contains(err.Error(), "permission denied") {
+			t.Fatalf("removeManagedContainer error = %v, want inspect stderr context", err)
+		}
+	})
+}
+
 func TestAppleContainerCheckRequirementsRejectsUnsupportedHost(t *testing.T) {
 	oldGOOS := appleContainerHostGOOS
 	oldGOARCH := appleContainerHostGOARCH
@@ -268,6 +372,29 @@ func TestAppleContainerHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "container" && args[1] == "build" {
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "stop" {
+		if msg := os.Getenv("APPLE_CONTAINER_HELPER_STOP_ERROR"); msg != "" {
+			_, _ = os.Stderr.WriteString(msg + "\n")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "inspect" {
+		switch os.Getenv("APPLE_CONTAINER_HELPER_INSPECT") {
+		case "missing":
+			_, _ = os.Stderr.WriteString("container not found\n")
+			os.Exit(1)
+		case "error":
+			_, _ = os.Stderr.WriteString("permission denied\n")
+			os.Exit(1)
+		case "managed":
+			_, _ = os.Stdout.WriteString(`{"configuration":{"labels":{"wendy.managed":"true"}}}`)
+			os.Exit(0)
+		}
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "delete" {
 		os.Exit(0)
 	}
 	os.Exit(1)

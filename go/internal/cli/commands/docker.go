@@ -154,6 +154,7 @@ func detectProjectType(dir string) (string, error) {
 // "Containerfile", or either base name followed by a dot or hyphen and one or
 // more safe characters.
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
@@ -185,6 +186,28 @@ func validateDockerfileName(name string) error {
 		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, or a dot/hyphen variant of either", cleaned)
 	}
 	return nil
+}
+
+func validateBuildArgPair(key, value string) error {
+	if !validBuildArgNameRe.MatchString(key) {
+		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("invalid build arg %q: value must not contain NUL or newline characters", key)
+	}
+	return nil
+}
+
+func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
+	keys := make([]string, 0, len(buildArgs))
+	for k, v := range buildArgs {
+		if err := validateBuildArgPair(k, v); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 // validComposeDockerfileNameRe matches the broader naming convention allowed by
@@ -1222,11 +1245,10 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
 	// Sort keys so the argument order is stable across runs, which keeps
 	// build logs reproducible and avoids flakiness in tests that assert args.
-	keys := make([]string, 0, len(buildArgs))
-	for k := range buildArgs {
-		keys = append(keys, k)
+	keys, err := sortedValidatedBuildArgKeys(buildArgs)
+	if err != nil {
+		return err
 	}
-	sort.Strings(keys)
 	for _, k := range keys {
 		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
@@ -1336,17 +1358,16 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	}
 	args := []string{"build", "--platform", platform, "-t", imageName}
 	if dockerfile != "" {
-		resolvedDockerfile, err := confinedDockerfilePath(dir, dockerfile)
+		resolvedDockerfile, err := appleContainerBuildFilePath(dir, dockerfile)
 		if err != nil {
 			return err
 		}
 		args = append(args, "-f", resolvedDockerfile)
 	}
-	keys := make([]string, 0, len(buildArgs))
-	for k := range buildArgs {
-		keys = append(keys, k)
+	keys, err := sortedValidatedBuildArgKeys(buildArgs)
+	if err != nil {
+		return err
 	}
-	sort.Strings(keys)
 	for _, k := range keys {
 		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
@@ -1395,6 +1416,19 @@ func appleContainerBuildContextPath(projectPath string) (string, error) {
 		}
 	}
 	return buildContext, nil
+}
+
+func appleContainerBuildFilePath(projectPath, dockerfile string) (string, error) {
+	resolved, err := confinedDockerfilePath(projectPath, dockerfile)
+	if err != nil {
+		return "", err
+	}
+	if imageBuilderHostGOOS() == "darwin" {
+		if normalized, ok := appleContainerTmpAlias(resolved); ok {
+			return normalized, nil
+		}
+	}
+	return resolved, nil
 }
 
 func appleContainerTmpAlias(path string) (string, bool) {
