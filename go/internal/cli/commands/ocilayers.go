@@ -18,30 +18,6 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-const (
-	// maxOCIBlobBytes bounds a single raw blob read out of the OCI-layout tar.
-	// maxLayerBytes bounds a layer's decompressed size, guarding against a
-	// decompression bomb (a tiny gzip/zstd stream that expands to exhaust RAM).
-	// Both are generous relative to realistic image layers; they exist to cap
-	// pathological inputs, not to constrain legitimate builds.
-	maxOCIBlobBytes = 8 << 30  // 8 GiB
-	maxLayerBytes   = 16 << 30 // 16 GiB
-)
-
-// readAllLimited reads from r up to max bytes, returning an error if the source
-// exceeds the cap. It reads max+1 so an over-limit stream is detected rather
-// than silently truncated.
-func readAllLimited(r io.Reader, max int64, what string) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, max+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > max {
-		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes", what, max)
-	}
-	return data, nil
-}
-
 // localLayer holds a single image layer as its COMPRESSED blob plus the
 // metadata needed to address and decompress it. Decompression is deferred
 // (see decompress) so callers that can resolve a layer from the manifest cache
@@ -86,7 +62,7 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, []byte, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading OCI tar: %w", err)
 		}
-		data, err := readAllLimited(tr, maxOCIBlobBytes, fmt.Sprintf("blob %q", hdr.Name))
+		data, err := io.ReadAll(tr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading blob %q: %w", hdr.Name, err)
 		}
@@ -206,7 +182,7 @@ func decompressLayer(blobData []byte, mediaType string) ([]byte, error) {
 			return nil, fmt.Errorf("gzip reader: %w", err)
 		}
 		defer gr.Close()
-		out, err := readAllLimited(gr, maxLayerBytes, "gzip-decompressed layer")
+		out, err := io.ReadAll(gr)
 		if err != nil {
 			return nil, fmt.Errorf("gzip read: %w", err)
 		}
@@ -228,7 +204,7 @@ func decompressZstd(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("zstd reader: %w", err)
 	}
 	defer dec.Close()
-	out, err := readAllLimited(dec, maxLayerBytes, "zstd-decompressed layer")
+	out, err := io.ReadAll(dec)
 	if err != nil {
 		return nil, fmt.Errorf("zstd read: %w", err)
 	}

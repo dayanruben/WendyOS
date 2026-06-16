@@ -88,7 +88,7 @@ func TestStageChunkEnforcesTotalCapAndAccounting(t *testing.T) {
 	}
 
 	// Pretend the staging buffer is nearly full, then exceed the cap.
-	c.staging.totalBytes = maxTotalStagedBytes - 10
+	c.staging.totalBytes = c.staging.maxBytes - 10
 	err := stage(c, chunkN(3))
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("expected ResourceExhausted when over total cap, got %v", err)

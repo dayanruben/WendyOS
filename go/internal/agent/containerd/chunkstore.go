@@ -1,10 +1,14 @@
 package containerd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/containerd/errdefs"
@@ -23,23 +27,66 @@ const (
 	// headroom for legitimate clients while rejecting absurdly large payloads
 	// before they are buffered.
 	maxStagedChunkBytes = 4 << 20
-	// maxTotalStagedBytes caps the aggregate in-memory staging buffer. WriteChunks
-	// accepts bytes from the network into a process-lifetime map; without a cap a
-	// client could stream until the agent (running on a RAM-constrained device)
-	// exhausts its heap. 8 GiB bounds the blast radius while still admitting large
-	// base-image deploys, whose missing chunks are staged before assembly.
-	maxTotalStagedBytes = 8 << 30
+	// fallbackStagingBudget is used when physical RAM cannot be determined
+	// (e.g. /proc/meminfo unavailable on non-Linux dev/test hosts).
+	fallbackStagingBudget = 64 << 30
 )
 
 // staging holds chunk bytes received via StageChunk until the next
 // AssembleLayerFromChunks consumes them. Process-lifetime, in-memory.
+//
+// maxBytes caps the aggregate buffer: WriteChunks accepts bytes from an
+// (mTLS-authenticated) network peer into this process-lifetime map, so without
+// a ceiling a buggy or hostile client could stream past physical RAM and OOM
+// the agent. The ceiling is derived from the device's own RAM so it scales
+// across the hardware range — a 128 GiB Jetson AGX Thor still admits large
+// LLM-weight layers, while a 4 GiB Pi is protected — rather than imposing one
+// fixed value that is simultaneously too small for big devices and too large
+// for small ones.
 type staging struct {
 	mu         sync.Mutex
 	m          map[[32]byte][]byte
 	totalBytes int64
+	maxBytes   int64
 }
 
-func newStaging() *staging { return &staging{m: make(map[[32]byte][]byte)} }
+func newStaging() *staging {
+	return &staging{m: make(map[[32]byte][]byte), maxBytes: stagingBudget()}
+}
+
+// stagingBudget returns the aggregate staging cap as 90% of physical RAM,
+// falling back to fallbackStagingBudget when total memory is unknown.
+func stagingBudget() int64 {
+	if total := systemMemTotalBytes(); total > 0 {
+		return total / 10 * 9
+	}
+	return fallbackStagingBudget
+}
+
+// systemMemTotalBytes reads MemTotal from /proc/meminfo (Linux). Returns 0 when
+// the file is absent or unparseable so callers fall back to a fixed budget.
+func systemMemTotalBytes() int64 {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) >= 2 && fields[0] == "MemTotal:" {
+			kb, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				return 0
+			}
+			return kb * 1024
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 0
+	}
+	return 0
+}
 
 // reconstruct concatenates chunk bytes in order. fetch returns the bytes for a
 // hash (from staging or an indexed blob range). Verifies each chunk's hash.
@@ -88,8 +135,8 @@ func (c *Client) StageChunk(_ context.Context, h [32]byte, data []byte) error {
 	if _, ok := c.staging.m[h]; ok {
 		return nil
 	}
-	if c.staging.totalBytes+int64(len(data)) > maxTotalStagedBytes {
-		return status.Errorf(codes.ResourceExhausted, "staging buffer full: %d bytes staged, limit %d", c.staging.totalBytes, maxTotalStagedBytes)
+	if c.staging.totalBytes+int64(len(data)) > c.staging.maxBytes {
+		return status.Errorf(codes.ResourceExhausted, "staging buffer full: %d bytes staged, limit %d", c.staging.totalBytes, c.staging.maxBytes)
 	}
 	c.staging.m[h] = data
 	c.staging.totalBytes += int64(len(data))

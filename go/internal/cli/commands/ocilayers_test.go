@@ -195,24 +195,3 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 		t.Fatalf("layer digest mismatch (should be sha256 of compressed blob): %s", layers[0].Digest)
 	}
 }
-
-func TestReadAllLimited(t *testing.T) {
-	// Under the limit: full content returned.
-	got, err := readAllLimited(bytes.NewReader([]byte("hello")), 10, "x")
-	if err != nil {
-		t.Fatalf("unexpected error under limit: %v", err)
-	}
-	if string(got) != "hello" {
-		t.Fatalf("got %q, want %q", got, "hello")
-	}
-
-	// Exactly at the limit is allowed (boundary).
-	if _, err := readAllLimited(bytes.NewReader([]byte("hello")), 5, "x"); err != nil {
-		t.Fatalf("content exactly at limit should be allowed: %v", err)
-	}
-
-	// One byte over the limit is rejected, not silently truncated.
-	if _, err := readAllLimited(bytes.NewReader([]byte("hello!")), 5, "x"); err == nil {
-		t.Fatal("expected error when source exceeds limit")
-	}
-}
