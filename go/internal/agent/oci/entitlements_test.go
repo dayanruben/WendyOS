@@ -981,6 +981,78 @@ func TestApplyI2C_ValidDevice(t *testing.T) {
 	}
 }
 
+// TestApplySerial_ValidDevice verifies a legitimate serial tty is bind-mounted,
+// gets a cgroup allow rule for its kernel major, and adds the dialout GID.
+func TestApplySerial_ValidDevice(t *testing.T) {
+	cases := []struct {
+		device string
+		major  int64
+	}{
+		{"ttyACM0", 166},
+		{"ttyUSB0", 188},
+		{"ttyAMA0", 204},
+		{"ttyS0", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.device, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: tc.device},
+				},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			if !hasMountDest(spec, "/dev/"+tc.device) {
+				t.Errorf("serial device %q was not mounted", tc.device)
+			}
+			if !hasMajorRule(spec, tc.major) {
+				t.Errorf("serial device %q missing cgroup allow rule for major %d", tc.device, tc.major)
+			}
+			if !hasGID(spec, dialoutGroupGID) {
+				t.Errorf("serial device %q did not add dialout GID %d", tc.device, dialoutGroupGID)
+			}
+		})
+	}
+}
+
+// TestApplySerial_PathTraversal verifies a crafted device name cannot escape
+// /dev or emit an unscoped cgroup rule.
+func TestApplySerial_PathTraversal(t *testing.T) {
+	traversalCases := []string{
+		"ttyACM0/../sda",
+		"../mem",
+		"../../etc/passwd",
+		"sda",
+		"ttyACM",
+		"ttyACMx",
+	}
+	for _, device := range traversalCases {
+		t.Run(device, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: device},
+				},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			for _, m := range spec.Mounts {
+				if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" || m.Destination == "/etc/passwd" {
+					t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
+				}
+				if m.Destination == "/dev/"+device {
+					t.Errorf("unsanitized device=%q was mounted as %q", device, m.Destination)
+				}
+			}
+		})
+	}
+}
+
 // TestApplyPersist_PathTraversalDestination verifies that a crafted mount destination
 // cannot escape the container path validation (WDY-1016).
 func TestApplyPersist_PathTraversalDestination(t *testing.T) {

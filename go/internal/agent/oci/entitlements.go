@@ -25,6 +25,9 @@ const (
 	videoGroupGID uint32 = 44
 	// inputGroupGID is the standard input group GID (for /dev/input devices).
 	inputGroupGID uint32 = 105
+	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
+	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
+	dialoutGroupGID uint32 = 20
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -82,6 +85,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applySPI(spec)
 		case appconfig.EntitlementInput:
 			applyInput(spec)
+		case appconfig.EntitlementSerial:
+			applySerial(spec, ent)
 		}
 	}
 	return nil
@@ -678,6 +683,83 @@ func applyI2C(spec *Spec, ent appconfig.Entitlement) {
 		Major:  &major,
 		Access: "rwm",
 	})
+}
+
+// serialDeviceMajors maps a serial tty node-name prefix to its kernel character
+// device major. ttyACM = USB CDC-ACM (cdc_acm), ttyUSB = USB-serial bridges
+// (FTDI/CH340/CP210x via usbserial), ttyAMA = SoC PL011 UART, ttyS = legacy
+// 8250-style UARTs. Prefixes are validated upstream by appconfig.isValidSerialDevice.
+var serialDeviceMajors = map[string]int64{
+	"ttyACM": 166,
+	"ttyUSB": 188,
+	"ttyAMA": 204,
+	"ttyS":   4,
+}
+
+// serialDeviceMajor returns the cgroup device major for a serial tty node name
+// (e.g. "ttyACM0" → 166) and whether the name is a recognized, well-formed node
+// (known prefix followed by one or more digits). The full-name validation here
+// is defense-in-depth against a malformed device slipping past appconfig
+// validation: it guarantees applySerial never bind-mounts a path like
+// "ttyACM0/../sda" that filepath.Clean would resolve outside the intended node.
+func serialDeviceMajor(device string) (int64, bool) {
+	for _, prefix := range appconfig.SerialDevicePrefixes {
+		if !strings.HasPrefix(device, prefix) {
+			continue
+		}
+		suffix := device[len(prefix):]
+		if suffix == "" {
+			return 0, false
+		}
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return 0, false
+			}
+		}
+		major, ok := serialDeviceMajors[prefix]
+		return major, ok
+	}
+	return 0, false
+}
+
+// applySerial adds access to a single serial tty device (e.g. a USB-attached
+// servo bus or sensor on /dev/ttyACM0). Unlike the usb entitlement — which
+// exposes raw libusb access via /dev/bus/usb (major 189) — this grants the
+// kernel tty node that pyserial/termios open, which is a different device major
+// (166 for ttyACM, 188 for ttyUSB, etc.). The device field is a bare node name
+// validated by appconfig.isValidSerialDevice, so it cannot contain a path
+// separator or escape /dev.
+func applySerial(spec *Spec, ent appconfig.Entitlement) {
+	major, ok := serialDeviceMajor(ent.Device)
+	if !ok {
+		// Unrecognized prefix: validation should have rejected it, but never
+		// emit an allow rule we cannot scope to a known major.
+		return
+	}
+
+	// Bind-mount the specific node from the host. nosuid/noexec: a serial tty is
+	// opened for I/O, never executed and never a setuid surface.
+	devPath := filepath.Clean(fmt.Sprintf("/dev/%s", ent.Device))
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: devPath,
+		Source:      devPath,
+		Type:        "bind",
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
+	})
+
+	// Allow the device's major. "rw" (no mknod): the host creates the node and
+	// the bind mount above surfaces it; the container only opens it.
+	m := major
+	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+		Allow:  true,
+		Type:   "c",
+		Major:  &m,
+		Access: "rw",
+	})
+
+	// Serial tty nodes are group-owned by dialout on Debian/Ubuntu hosts; add the
+	// GID so a non-root container process can still open the port.
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, dialoutGroupGID)
 }
 
 // applyGPIO adds GPIO device access for specified pins.

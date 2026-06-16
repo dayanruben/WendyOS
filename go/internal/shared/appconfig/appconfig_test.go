@@ -274,12 +274,41 @@ func TestValidate_AllEntitlementTypes(t *testing.T) {
 			{Type: EntitlementI2C, Device: "i2c-1"},
 			{Type: EntitlementGPIO, Pins: []int{7}},
 			{Type: EntitlementInput},
+			{Type: EntitlementSerial, Device: "ttyACM0"},
 			{Type: EntitlementMCP, Port: 3000},
 		},
 	}
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_SerialEntitlement(t *testing.T) {
+	valid := []string{"ttyACM0", "ttyUSB0", "ttyUSB12", "ttyAMA0", "ttyS0"}
+	for _, device := range valid {
+		t.Run("valid/"+device, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementSerial, Device: device}},
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error for serial device %q: %v", device, err)
+			}
+		})
+	}
+
+	invalid := []string{"", "ttyACM", "tty", "sda", "ttyACMx", "ttyACM0/../sda", "../mem", "ttyACM-1"}
+	for _, device := range invalid {
+		t.Run("invalid/"+device, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementSerial, Device: device}},
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("Validate() expected error for serial device %q, got nil", device)
+			}
+		})
 	}
 }
 
