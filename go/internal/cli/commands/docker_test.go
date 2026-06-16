@@ -111,8 +111,13 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
 	for _, image := range []string{
 		"127.0.0.1:5000/test-app:latest",
+		"127.42.0.1:5000/test-app:latest",
 		"localhost:5000/test-app:latest",
 		"[::1]:5000/test-app:latest",
+		"[::ffff:127.0.0.1]:5000/test-app:latest",
+		"[::ffff:7f00:1]:5000/test-app:latest",
+		"0.0.0.0:5000/test-app:latest",
+		"[::]:5000/test-app:latest",
 	} {
 		scheme, err := appleContainerPushScheme(image)
 		if err != nil {
@@ -125,6 +130,7 @@ func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
 
 	for _, image := range []string{
 		"192.168.1.20:5000/test-app:latest",
+		"[::ffff:192.168.1.20]:5000/test-app:latest",
 		"my-wendy.local:5000/test-app:latest",
 		"host.docker.internal:5000/test-app:latest",
 	} {
@@ -1775,7 +1781,9 @@ func TestAppleContainerBuildFilePathUsesTmpAliasWhenAvailable(t *testing.T) {
 	}
 
 	privateDir := "/private" + dir
-	if !sameFilePath(dir, privateDir) {
+	dirCanonical, dirErr := filepath.EvalSymlinks(dir)
+	privateCanonical, privateErr := filepath.EvalSymlinks(privateDir)
+	if dirErr != nil || privateErr != nil || dirCanonical != privateCanonical {
 		t.Skip("/private/tmp is not an alias for /tmp on this host")
 	}
 

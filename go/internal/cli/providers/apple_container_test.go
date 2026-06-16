@@ -45,6 +45,16 @@ func TestAppleContainerInspectHasManagedLabel(t *testing.T) {
 	if appleContainerInspectHasManagedLabel(malformed) {
 		t.Fatal("malformed inspect output must not be treated as managed")
 	}
+
+	deepManaged := []byte(strings.Repeat(`{"nested":`, appleContainerMaxJSONDepth+2) + `{"wendy.managed":"true"}` + strings.Repeat(`}`, appleContainerMaxJSONDepth+2))
+	if appleContainerInspectHasManagedLabel(deepManaged) {
+		t.Fatal("deeply nested inspect output must not be treated as managed")
+	}
+
+	oversized := []byte(strings.Repeat(" ", appleContainerMaxJSONOutputBytes+1))
+	if appleContainerInspectHasManagedLabel(oversized) {
+		t.Fatal("oversized inspect output must not be treated as managed")
+	}
 }
 
 func TestAppleContainerListInfos(t *testing.T) {
@@ -239,7 +249,9 @@ func TestAppleContainerBuildContextUsesTmpAliasWhenAvailable(t *testing.T) {
 	})
 
 	privateDir := "/private" + dir
-	if !sameFilePath(dir, privateDir) {
+	dirCanonical, dirErr := filepath.EvalSymlinks(dir)
+	privateCanonical, privateErr := filepath.EvalSymlinks(privateDir)
+	if dirErr != nil || privateErr != nil || dirCanonical != privateCanonical {
 		t.Skip("/private/tmp is not an alias for /tmp on this host")
 	}
 
@@ -268,7 +280,9 @@ func TestConfinedProviderDockerfilePathUsesTmpAliasWhenAvailable(t *testing.T) {
 	}
 
 	privateDir := "/private" + dir
-	if !sameFilePath(dir, privateDir) {
+	dirCanonical, dirErr := filepath.EvalSymlinks(dir)
+	privateCanonical, privateErr := filepath.EvalSymlinks(privateDir)
+	if dirErr != nil || privateErr != nil || dirCanonical != privateCanonical {
 		t.Skip("/private/tmp is not an alias for /tmp on this host")
 	}
 
@@ -328,6 +342,39 @@ func TestRemoveManagedContainerInspectErrorHandling(t *testing.T) {
 			t.Fatalf("removeManagedContainer error = %v, want inspect stderr context", err)
 		}
 	})
+
+	t.Run("oversized inspect output is rejected", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "commands.log")
+		oldCommand := appleContainerCommandContext
+		t.Cleanup(func() {
+			appleContainerCommandContext = oldCommand
+		})
+		t.Setenv("APPLE_CONTAINER_HELPER_INSPECT", "large")
+		appleContainerCommandContext = fakeAppleContainerCommandContext(logFile)
+
+		err := (&AppleContainerProvider{}).removeManagedContainer(context.Background(), "myapp")
+		if err == nil || !strings.Contains(err.Error(), "output exceeds") {
+			t.Fatalf("removeManagedContainer error = %v, want output limit error", err)
+		}
+	})
+}
+
+func TestAppleContainerCombinedOutputLimitedTruncates(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestAppleContainerHelperProcess", "--", "container", "inspect", "myapp")
+	cmd.Env = append(os.Environ(),
+		"GO_WANT_APPLE_CONTAINER_HELPER_PROCESS=1",
+		"APPLE_CONTAINER_HELPER_INSPECT=large",
+	)
+	out, truncated, err := appleContainerCombinedOutputLimited(cmd, 1024)
+	if err != nil {
+		t.Fatalf("appleContainerCombinedOutputLimited error = %v", err)
+	}
+	if !truncated {
+		t.Fatalf("truncated = false, want true; len(out) = %d", len(out))
+	}
+	if len(out) != 1024 {
+		t.Fatalf("len(out) = %d, want 1024", len(out))
+	}
 }
 
 func TestAppleContainerCheckRequirementsRejectsUnsupportedHost(t *testing.T) {
@@ -416,6 +463,10 @@ func TestAppleContainerHelperProcess(t *testing.T) {
 			os.Exit(1)
 		case "managed":
 			_, _ = os.Stdout.WriteString(`{"configuration":{"labels":{"wendy.managed":"true"}}}`)
+			os.Exit(0)
+		case "large":
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", appleContainerMaxJSONOutputBytes))
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", appleContainerMaxJSONOutputBytes))
 			os.Exit(0)
 		}
 	}

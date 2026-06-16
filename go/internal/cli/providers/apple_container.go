@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,11 @@ var (
 	appleContainerContainerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	appleContainerLabelKeyRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$`)
 	appleContainerLabelValueRe    = regexp.MustCompile(`^[A-Za-z0-9_./:=,-]*$`)
+)
+
+const (
+	appleContainerMaxJSONDepth       = 32
+	appleContainerMaxJSONOutputBytes = 1 << 20
 )
 
 type appleContainerBuildContext struct {
@@ -186,26 +192,14 @@ func appleContainerBuildContextPath(projectPath string) (string, error) {
 
 func appleContainerTmpAlias(path string) (string, bool) {
 	const privateTmp = "/private/tmp"
-	if path != privateTmp && !strings.HasPrefix(path, privateTmp+"/") {
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
 		return "", false
 	}
-	candidate := "/tmp" + strings.TrimPrefix(path, privateTmp)
-	if sameFilePath(path, candidate) {
-		return candidate, true
+	if canonical != privateTmp && !strings.HasPrefix(canonical, privateTmp+"/") {
+		return "", false
 	}
-	return "", false
-}
-
-func sameFilePath(left, right string) bool {
-	leftInfo, leftErr := os.Stat(left)
-	if leftErr != nil {
-		return false
-	}
-	rightInfo, rightErr := os.Stat(right)
-	if rightErr != nil {
-		return false
-	}
-	return os.SameFile(leftInfo, rightInfo)
+	return "/tmp" + strings.TrimPrefix(canonical, privateTmp), true
 }
 
 func validateAppleContainerKeyValueArg(kind, key, value string) error {
@@ -375,7 +369,10 @@ func (p *AppleContainerProvider) containerHasManagedLabel(ctx context.Context, n
 		return false, err
 	}
 	cmd := appleContainerCommandContext(ctx, "container", "inspect", name)
-	out, err := cmd.CombinedOutput()
+	out, truncated, err := appleContainerCombinedOutputLimited(cmd, appleContainerMaxJSONOutputBytes)
+	if truncated {
+		return false, fmt.Errorf("container inspect output exceeds %d bytes", appleContainerMaxJSONOutputBytes)
+	}
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if appleContainerInspectNotFound(msg) {
@@ -397,6 +394,9 @@ func appleContainerInspectNotFound(output string) bool {
 }
 
 func appleContainerInspectHasManagedLabel(data []byte) bool {
+	if len(data) > appleContainerMaxJSONOutputBytes {
+		return false
+	}
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		return false
@@ -405,10 +405,17 @@ func appleContainerInspectHasManagedLabel(data []byte) bool {
 }
 
 func jsonContainsManagedLabel(v any) bool {
+	return jsonContainsManagedLabelDepth(v, 0)
+}
+
+func jsonContainsManagedLabelDepth(v any, depth int) bool {
+	if depth > appleContainerMaxJSONDepth {
+		return false
+	}
 	switch value := v.(type) {
 	case []any:
 		for _, item := range value {
-			if jsonContainsManagedLabel(item) {
+			if jsonContainsManagedLabelDepth(item, depth+1) {
 				return true
 			}
 		}
@@ -417,7 +424,7 @@ func jsonContainsManagedLabel(v any) bool {
 			if k == "wendy.managed" && fmt.Sprint(item) == "true" {
 				return true
 			}
-			if jsonContainsManagedLabel(item) {
+			if jsonContainsManagedLabelDepth(item, depth+1) {
 				return true
 			}
 		}
@@ -427,7 +434,10 @@ func jsonContainsManagedLabel(v any) bool {
 
 func (p *AppleContainerProvider) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 	cmd := appleContainerCommandContext(ctx, "container", "list", "--all", "--format", "json")
-	out, err := cmd.Output()
+	out, truncated, err := appleContainerOutputLimited(cmd, appleContainerMaxJSONOutputBytes)
+	if truncated {
+		return nil, fmt.Errorf("container list output exceeds %d bytes", appleContainerMaxJSONOutputBytes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("container list: %w", err)
 	}
@@ -446,6 +456,9 @@ func (p *AppleContainerProvider) ListContainers(ctx context.Context) ([]Containe
 }
 
 func appleContainerListInfos(data []byte) []ContainerInfo {
+	if len(data) > appleContainerMaxJSONOutputBytes {
+		return nil
+	}
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		return nil
@@ -494,6 +507,48 @@ func appleContainerListInfos(data []byte) []ContainerInfo {
 		})
 	}
 	return containers
+}
+
+type limitedOutputBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedOutputBuffer) Write(p []byte) (int, error) {
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if len(p) <= remaining {
+			_, _ = b.buf.Write(p)
+		} else {
+			_, _ = b.buf.Write(p[:remaining])
+			b.truncated = true
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *limitedOutputBuffer) Bytes() []byte {
+	return b.buf.Bytes()
+}
+
+func appleContainerOutputLimited(cmd *exec.Cmd, limit int) ([]byte, bool, error) {
+	var stdout limitedOutputBuffer
+	stdout.limit = limit
+	cmd.Stdout = &stdout
+	err := cmd.Run()
+	return stdout.Bytes(), stdout.truncated, err
+}
+
+func appleContainerCombinedOutputLimited(cmd *exec.Cmd, limit int) ([]byte, bool, error) {
+	var combined limitedOutputBuffer
+	combined.limit = limit
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	err := cmd.Run()
+	return combined.Bytes(), combined.truncated, err
 }
 
 func firstJSONText(m map[string]any, keys ...string) string {

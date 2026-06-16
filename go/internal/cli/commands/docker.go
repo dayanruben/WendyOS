@@ -103,7 +103,15 @@ func registryAddrUsesLoopback(registry string) bool {
 		return true
 	}
 	addr, err := netip.ParseAddr(host)
-	return err == nil && addr.IsLoopback()
+	if err != nil {
+		// Do not resolve arbitrary hostnames here; Apple Container plaintext
+		// pushes are allowed only to local addresses emitted by Wendy helpers.
+		return false
+	}
+	addr = addr.Unmap()
+	// Unspecified addresses cover local proxy bind addresses such as
+	// 0.0.0.0:PORT or [::]:PORT when Wendy controls the proxy endpoint.
+	return addr.IsLoopback() || addr.IsUnspecified()
 }
 
 func appleContainerPushScheme(registryImage string) (string, error) {
@@ -1470,26 +1478,14 @@ func appleContainerBuildFilePath(projectPath, dockerfile string) (string, error)
 
 func appleContainerTmpAlias(path string) (string, bool) {
 	const privateTmp = "/private/tmp"
-	if path != privateTmp && !strings.HasPrefix(path, privateTmp+"/") {
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
 		return "", false
 	}
-	candidate := "/tmp" + strings.TrimPrefix(path, privateTmp)
-	if sameFilePath(path, candidate) {
-		return candidate, true
+	if canonical != privateTmp && !strings.HasPrefix(canonical, privateTmp+"/") {
+		return "", false
 	}
-	return "", false
-}
-
-func sameFilePath(left, right string) bool {
-	leftInfo, leftErr := os.Stat(left)
-	if leftErr != nil {
-		return false
-	}
-	rightInfo, rightErr := os.Stat(right)
-	if rightErr != nil {
-		return false
-	}
-	return os.SameFile(leftInfo, rightInfo)
+	return "/tmp" + strings.TrimPrefix(canonical, privateTmp), true
 }
 
 func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, err error) {
