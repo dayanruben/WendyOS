@@ -81,8 +81,26 @@ func shouldAutoAttemptAppleContainerBuilder() bool {
 	return imageBuilderHostGOOS() == "darwin" && imageBuilderHostGOARCH() == "arm64"
 }
 
-func logAppleContainerFallback(w io.Writer, err error) {
-	fmt.Fprintf(w, "[apple-container] unavailable or failed; falling back to Docker: %v\n", err)
+func logAppleContainerFallback(w io.Writer, _ error) {
+	fmt.Fprintln(w, "[WARN] Apple Container unavailable or failed; falling back to Docker. Use --builder apple-container to require Apple Container.")
+}
+
+func safeCommandOutputSummary(out []byte, max int) string {
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
+	s = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
 
 func registryImageUsesLoopbackRegistry(image string) bool {
@@ -195,7 +213,7 @@ var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // but keep a narrow allowlist so shell-like metacharacters, whitespace,
 // digests, embedded key separators, and flag-looking values cannot cross into
 // builder CLIs.
-var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:,-]*$`)
+var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
@@ -1444,7 +1462,7 @@ func checkAppleContainerBuilder(ctx context.Context) error {
 	}
 	cmd := imageBuilderCommandContext(ctx, "container", "system", "status")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
+		msg := safeCommandOutputSummary(out, 256)
 		if msg != "" {
 			msg = ": " + msg
 		}

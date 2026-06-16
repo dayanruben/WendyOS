@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -137,6 +138,18 @@ func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
 		if _, err := appleContainerPushScheme(image); err == nil {
 			t.Fatalf("appleContainerPushScheme(%q) = nil, want error", image)
 		}
+	}
+}
+
+func TestLogAppleContainerFallbackOmitsRawError(t *testing.T) {
+	var buf bytes.Buffer
+	logAppleContainerFallback(&buf, errors.New("secret path /tmp/wendy/project"))
+	got := buf.String()
+	if !strings.Contains(got, "[WARN] Apple Container unavailable or failed; falling back to Docker") {
+		t.Fatalf("fallback log = %q, want warning", got)
+	}
+	if strings.Contains(got, "secret") || strings.Contains(got, "/tmp/wendy/project") {
+		t.Fatalf("fallback log leaked raw error details: %q", got)
 	}
 }
 
@@ -1728,6 +1741,10 @@ func TestValidateBuildArgPair(t *testing.T) {
 		"DIGEST":    "image@sha256:abc",
 		"PLUS":      "v1+metadata",
 		"EQUALS":    "value=with=equals",
+		"SLASH":     "linux/arm64",
+		"COLON":     "8080:80",
+		"COMMA":     "left,right",
+		"COMMAFLAG": ",--cache",
 	}
 	for k, v := range invalid {
 		if err := validateBuildArgPair(k, v); err == nil {
