@@ -257,6 +257,11 @@ func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType,
 	}
 }
 
+// maxImageConfigBytes bounds the OCI image config blob accepted over the wire.
+// A real config (Cmd/Entrypoint/Env/WorkingDir/User + metadata) is a few KiB;
+// 1 MiB is generous headroom while still rejecting an abusive payload.
+const maxImageConfigBytes = 1 << 20
+
 func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
@@ -311,10 +316,19 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 		},
 	}
 	if len(imageConfig) > 0 {
+		// A real OCI image config is small (a few KiB). Reject an oversized blob
+		// before parsing so a misbehaving client cannot force a large allocation.
+		if len(imageConfig) > maxImageConfigBytes {
+			return fmt.Errorf("image config too large: %d > %d bytes", len(imageConfig), maxImageConfigBytes)
+		}
+		// Decode into the typed OCI struct: unknown/extra JSON fields are dropped
+		// on the re-marshal below, so only well-formed config survives.
 		if err := json.Unmarshal(imageConfig, &imgConfig); err != nil {
 			return fmt.Errorf("parsing supplied image config: %w", err)
 		}
 	}
+	// Always re-derive the security-critical layer binding from the diff IDs we
+	// computed locally — never trust RootFS supplied over the wire.
 	imgConfig.RootFS = ocispec.RootFS{
 		Type:    "layers",
 		DiffIDs: diffIDs,
