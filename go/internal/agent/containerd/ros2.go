@@ -204,6 +204,7 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 	// image — the verified path that does not depend on the app image carrying
 	// the ros2 CLI (WDY-1593).
 	var image containerd.Image
+	reusedAnchorImage := false
 	if rmw == "" || rmw == rosImageDefaultRMW {
 		imageName := "docker.io/library/ros:" + anchor.Distro
 		image, err = c.client.GetImage(ctx, imageName)
@@ -226,6 +227,7 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		if err != nil {
 			return services.ROS2Sidecar{}, fmt.Errorf("resolving anchor image for %s sidecar (anchor %s): %w", rmw, anchor.ContainerID, err)
 		}
+		reusedAnchorImage = true
 		c.logger.Info("ROS 2 sidecar reusing anchor app image for non-default RMW",
 			zap.String("rmw", rmw), zap.String("image", image.Name()), zap.String("anchor", anchor.ContainerID))
 	}
@@ -323,12 +325,59 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		return services.ROS2Sidecar{}, fmt.Errorf("ROS 2 app container changed while sidecar was starting; retry: %w", err)
 	}
 
+	// A reused app image is guaranteed to carry the matching RMW (that is how
+	// the app runs it) but not necessarily the ros2 CLI. If it lacks the CLI,
+	// fail with an actionable message instead of letting every command return a
+	// bare "ros2: not found" exit 127 (WDY-1593).
+	if reusedAnchorImage {
+		if hasCLI, perr := c.sidecarHasROS2CLI(ctx, container, task, anchor.Distro); perr != nil {
+			c.logger.Warn("Could not probe reused app image for the ros2 CLI; proceeding",
+				zap.String("image", image.Name()), zap.Error(perr))
+		} else if !hasCLI {
+			_ = c.deleteROS2Sidecar(ctx, container)
+			return services.ROS2Sidecar{}, fmt.Errorf("ROS 2 app image %q runs %s but does not include the ros2 CLI, so `wendy device ros2` cannot inspect it; install the CLI in the app image (e.g. apt-get install ros-%s-ros2cli)", image.Name(), rmw, anchor.Distro)
+		}
+	}
+
 	c.logger.Info("ROS 2 CLI sidecar started",
 		zap.String("image", image.Name()),
 		zap.String("rmw", rmw),
 		zap.String("anchor", anchor.ContainerID),
 		zap.Int("domain_id", anchor.DomainID))
 	return sidecar, nil
+}
+
+// sidecarHasROS2CLI reports whether the running sidecar task can find the ros2
+// CLI on PATH after sourcing the ROS environment. Used to fail loudly when a
+// reused app image shipped the RMW but not ros2cli (WDY-1593). A probe-setup
+// error (not a clean exit code) is returned so the caller can proceed rather
+// than block on a transient containerd hiccup.
+func (c *Client) sidecarHasROS2CLI(ctx context.Context, container containerd.Container, task containerd.Task, distro string) (bool, error) {
+	spec, err := container.Spec(ctx)
+	if err != nil {
+		return false, err
+	}
+	pspec := spec.Process
+	pspec.Terminal = false
+	pspec.Args = []string{
+		"/bin/bash", "-lc",
+		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1; command -v ros2 >/dev/null 2>&1", distro),
+	}
+	execID := fmt.Sprintf("ros2-probe-%d", ros2ExecCounter.Add(1))
+	proc, err := task.Exec(ctx, execID, pspec, cio.NullIO)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _, _ = proc.Delete(ctx, containerd.WithProcessKill) }()
+	statusC, err := proc.Wait(ctx)
+	if err != nil {
+		return false, err
+	}
+	if err := proc.Start(ctx); err != nil {
+		return false, err
+	}
+	st := <-statusC
+	return st.ExitCode() == 0, st.Error()
 }
 
 // verifyROS2Anchor checks that the anchor container's task is still running
