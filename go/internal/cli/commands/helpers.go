@@ -731,7 +731,35 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 	return conn, err
 }
 
+// resolveAddrOnce resolves a host:port whose host is a DNS/mDNS name to an
+// IPv4-preferred IP:port, so the dials below target a literal IP. gRPC
+// otherwise resolves the name separately for every ClientConn we open (mTLS
+// port, mTLS port+1, plaintext), and an mDNS ".local" name that resolves to
+// both IPv6 and IPv4 can cost a multi-second IPv6 connect timeout per dial on
+// networks without IPv6 routing. Preferring IPv4 and resolving once removes
+// both costs. On any resolution failure it returns addr unchanged so gRPC's
+// own resolver remains the fallback.
+func resolveAddrOnce(ctx context.Context, addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) != nil {
+		return addr // not host:port, or already a literal IP
+	}
+	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupHost(rctx, host)
+	if err != nil || len(ips) == 0 {
+		return addr
+	}
+	for _, ip := range ips { // prefer IPv4
+		if net.ParseIP(ip).To4() != nil {
+			return net.JoinHostPort(ip, port)
+		}
+	}
+	return net.JoinHostPort(ips[0], port)
+}
+
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+	plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	allCerts := loadAllCLICerts()
 	var lastMTLSErr error
