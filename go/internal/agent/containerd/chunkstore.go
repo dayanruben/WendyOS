@@ -95,6 +95,18 @@ func (c *Client) readIndexedChunk(ctx context.Context, loc chunkLoc) ([]byte, er
 
 func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error {
 	nsCtx := c.withNamespace(ctx)
+
+	// Fast path: if the (uncompressed) layer blob already exists in the content
+	// store, it was reassembled and indexed on a previous deploy. Skip the
+	// expensive reconstruct + re-hash + re-chunk + index-save entirely — for an
+	// unchanged layer this avoids reading and re-chunking the full layer on
+	// every deploy, which dominates redeploy latency for large base images.
+	if dgst, err := digest.Parse(diffID); err == nil {
+		if _, err := c.client.ContentStore().Info(nsCtx, dgst); err == nil {
+			return nil
+		}
+	}
+
 	fetch := func(h [32]byte) ([]byte, error) {
 		c.staging.mu.Lock()
 		b, ok := c.staging.m[h]
