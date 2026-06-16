@@ -569,10 +569,12 @@ func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentC
 }
 
 func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
+	tm := phaseTimer()
 	conn, mtlsErr, err := connectWithAutoTLSDiagnostics(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
+	tm("  ↳ mTLS attempts (connectWithAutoTLSDiagnostics)")
 	if !conn.IsMTLS {
 		// gRPC plaintext connections are lazy. Probe before returning so
 		// command UIs don't surface delayed transport errors, and so provisioned
@@ -580,6 +582,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 		probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
 		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
+		tm("  ↳ plaintext probe (GetAgentVersion)")
 		if probeErr != nil {
 			conn.Close()
 			// Use only the caller's pre-connection metadata snapshot here.
@@ -1187,7 +1190,9 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			addr = hostPort(device, defaultAgentPort)
 		}
 		startedAt := time.Now()
+		tm := phaseTimer()
 		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
+		tm("  ↳ provisionedAgentAdvertisedMTLS (mDNS browse)")
 		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
 		if err != nil {
 			if errors.Is(err, ErrUserCancelled) {
