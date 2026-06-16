@@ -26,7 +26,11 @@ var (
 var (
 	appleContainerContainerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	appleContainerLabelKeyRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$`)
-	appleContainerLabelValueRe    = regexp.MustCompile(`^[A-Za-z0-9_./:=,-]*$`)
+
+	// Label values intentionally permit only the characters emitted by Wendy's
+	// entitlement annotations: alphanumerics plus _ . / : = , and -. Shell
+	// metacharacters, whitespace, @ digests, quotes, and control bytes are rejected.
+	appleContainerLabelValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,-]*$`)
 )
 
 const (

@@ -106,6 +106,12 @@ func TestValidateAppleContainerKeyValueArg(t *testing.T) {
 		"unicode.good": "snowman-☃",
 		"shell.good":   "$(echo bad)",
 		"digest.good":  "image@sha256:abc",
+		"plus.good":    "v1+metadata",
+		"pipe.good":    "left|right",
+		"semi.good":    "left;right",
+		"amp.good":     "left&right",
+		"quote.good":   `left"right`,
+		"back.good":    `left\right`,
 	}
 	for k, v := range invalid {
 		if err := validateAppleContainerKeyValueArg("label", k, v); err == nil {

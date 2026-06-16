@@ -109,9 +109,7 @@ func registryAddrUsesLoopback(registry string) bool {
 		return false
 	}
 	addr = addr.Unmap()
-	// Unspecified addresses cover local proxy bind addresses such as
-	// 0.0.0.0:PORT or [::]:PORT when Wendy controls the proxy endpoint.
-	return addr.IsLoopback() || addr.IsUnspecified()
+	return addr.IsLoopback()
 }
 
 func appleContainerPushScheme(registryImage string) (string, error) {
@@ -192,7 +190,11 @@ func detectProjectType(dir string) (string, error) {
 // more safe characters.
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
 var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]*$`)
+
+// Build-arg values are passed to exec.Command as a single KEY=VALUE argument,
+// but keep a narrow allowlist so shell-like metacharacters, whitespace,
+// digests, and flag-looking values cannot cross into builder CLIs.
+var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,-]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
