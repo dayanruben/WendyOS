@@ -17,9 +17,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// preProvisionedState is written to the config partition during imaging.
+// PreProvisionedState is written to the config partition during imaging.
 // JSON tags must match provisioningState in internal/agent/services.
-type preProvisionedState struct {
+type PreProvisionedState struct {
 	Enrolled  bool   `json:"enrolled"`
 	CloudHost string `json:"cloudHost,omitempty"`
 	OrgID     int32  `json:"orgId,omitempty"`
@@ -36,10 +36,9 @@ func defaultPreEnrollDialer(_ context.Context, addr string, opt grpc.DialOption)
 }
 
 // preEnrollDevice generates a device key pair, gets an enrollment token from
-// Wendy Cloud, issues a certificate, and returns the provisioning state as JSON
-// to be written to the config partition. deviceName is optional. Pass nil for
-// dialer to use the default.
-func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, dialer PreEnrollDialer) ([]byte, error) {
+// Wendy Cloud, issues a certificate, and returns the provisioning state.
+// deviceName is optional. Pass nil for dialer to use the default.
+func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, dialer PreEnrollDialer) (*PreProvisionedState, error) {
 	if dialer == nil {
 		dialer = defaultPreEnrollDialer
 	}
@@ -106,7 +105,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		return nil, fmt.Errorf("cloud returned empty certificate")
 	}
 
-	state := preProvisionedState{
+	state := &PreProvisionedState{
 		Enrolled:  true,
 		CloudHost: auth.CloudGRPC,
 		OrgID:     orgID,
@@ -115,7 +114,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		CertPEM:   certObj.GetPemCertificate(),
 		ChainPEM:  certObj.GetPemCertificateChain(),
 	}
-	return json.Marshal(state)
+	return state, nil
 }
 
 // psPartition is one row from the Windows partition-listing PowerShell

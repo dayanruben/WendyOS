@@ -439,9 +439,15 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			}
 			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
 		}
-		provisioningJSON, err = resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
-		if err != nil {
-			return err
+		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if provisioning != nil {
+			provisioningJSON, err = json.Marshal(provisioning)
+			if err != nil {
+				return fmt.Errorf("marshaling provisioning state: %w", err)
+			}
 		}
 	}
 
