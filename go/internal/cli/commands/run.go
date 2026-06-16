@@ -540,6 +540,7 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
+	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
@@ -648,6 +649,8 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	mark("cli setup (project/dockerfile/config)")
+
 	// Step 2: Resolve the target device.
 	if target == nil {
 		var resolveOpts []resolveOption
@@ -659,6 +662,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			return err
 		}
 	}
+	mark("resolve + connect device")
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
@@ -1233,6 +1237,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
+	mark := phaseTimer()
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
@@ -1251,6 +1256,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
+	mark("agent GetAgentVersion (in runWithAgent)")
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {
