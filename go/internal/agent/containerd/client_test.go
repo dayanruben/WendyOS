@@ -841,3 +841,19 @@ func TestSharedSHMPath(t *testing.T) {
 		t.Error("sharedSHMPath(\"../escape\") = nil error, want validation error")
 	}
 }
+
+// TestRMWFromEnv verifies the ROS 2 sidecar reads back the anchor app's
+// RMW_IMPLEMENTATION from its OCI spec env so it can match the app's DDS
+// implementation (WDY-1593).
+func TestRMWFromEnv(t *testing.T) {
+	got := rmwFromEnv([]string{"ROS_DOMAIN_ID=42", "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp", "ROS_LOCALHOST_ONLY=1"})
+	if got != "rmw_cyclonedds_cpp" {
+		t.Errorf("rmwFromEnv = %q, want rmw_cyclonedds_cpp", got)
+	}
+	if got := rmwFromEnv([]string{"ROS_DOMAIN_ID=42"}); got != "" {
+		t.Errorf("rmwFromEnv (absent) = %q, want empty", got)
+	}
+	if got := rmwFromEnv(nil); got != "" {
+		t.Errorf("rmwFromEnv(nil) = %q, want empty", got)
+	}
+}
