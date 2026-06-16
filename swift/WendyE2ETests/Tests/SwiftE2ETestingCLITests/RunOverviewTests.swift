@@ -88,6 +88,48 @@ struct `run overview` {
     }
 
     @Test
+    func `marks failed attempt artifacts without observations as failed targets`() throws {
+        let rootURL = e2eTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let attemptURL =
+            runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent("macos-jetson-orin-nano", isDirectory: true)
+            .appendingPathComponent("0001", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
+        try """
+        {
+          "exitStatus": 1
+        }
+        """.write(
+            to: attemptURL.appendingPathComponent("attempt.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let overview = try writeRunOverview(in: runURL)
+
+        #expect(overview.summary.tests == 0)
+        #expect(overview.summary.testTargets == 0)
+        #expect(overview.summary.attemptResults == 1)
+        #expect(overview.summary.failed == 1)
+        #expect(overview.summary.unknown == 0)
+        #expect(overview.targets.count == 1)
+
+        let target = try #require(overview.targets.first)
+        #expect(target.name == "macos-jetson-orin-nano")
+        #expect(target.outcome == .failed)
+        #expect(target.attempts == 1)
+        #expect(target.tests == 0)
+        #expect(target.failed == 1)
+        #expect(target.unknown == 0)
+        #expect(overview.noteworthy.deterministicFailures.isEmpty)
+    }
+
+    @Test
     func `uses test metadata to distinguish duplicate test names`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -251,7 +252,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			fmt.Printf("CLI Version: %s\n", version.Version)
 
 			warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 {
+			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
 				fmt.Println(warn.Render("\nAgent is behind the CLI — run 'wendy device update' to update."))
 			} else if cmp < 0 {
 				fmt.Println(warn.Render("\nCLI is behind the agent — consider updating the CLI."))
@@ -440,7 +441,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Printf("Unable to check agent version: %v\n", err)
 			} else {
 				fmt.Printf("Agent version: %s\n", versionResp.GetVersion())
-				if cmp := version.CompareVersions(version.Version, versionResp.GetVersion()); cmp > 0 {
+				if cmp := version.CompareVersions(version.Version, versionResp.GetVersion()); cmp > 0 && versionResp.GetVersion() != "dev" {
 					fmt.Println("Agent is behind the CLI — consider running 'wendy device update'.")
 				}
 			}
@@ -539,21 +540,44 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 }
 
+// defaultEnrollmentName derives a device name from the connected host,
+// stripping a .local suffix. Returns "" for bare IP addresses (no usable name).
+func defaultEnrollmentName(host string) string {
+	h := strings.TrimSpace(host)
+	if h == "" || net.ParseIP(h) != nil {
+		return ""
+	}
+	return strings.TrimSuffix(h, ".local")
+}
+
 func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
 	}
 
 	if name == "" {
+		defaultName := defaultEnrollmentName(conn.Host)
 		if !isInteractiveTerminal() {
-			return fmt.Errorf("device name is required; pass --name when not running interactively")
-		}
-		fmt.Print("Device name: ")
-		reader := bufio.NewReader(os.Stdin)
-		line, _ := reader.ReadString('\n')
-		name = strings.TrimSpace(line)
-		if name == "" {
-			return fmt.Errorf("device name is required")
+			if defaultName != "" {
+				name = defaultName
+			} else {
+				return fmt.Errorf("device name is required; pass --name when not running interactively")
+			}
+		} else {
+			prompt := "Device name"
+			if defaultName != "" {
+				prompt = fmt.Sprintf("Device name [%s]", defaultName)
+			}
+			fmt.Printf("%s: ", prompt)
+			reader := bufio.NewReader(os.Stdin)
+			line, _ := reader.ReadString('\n')
+			name = strings.TrimSpace(line)
+			if name == "" {
+				name = defaultName
+			}
+			if name == "" {
+				return fmt.Errorf("device name is required")
+			}
 		}
 	}
 
