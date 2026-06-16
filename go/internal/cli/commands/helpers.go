@@ -37,6 +37,12 @@ const agentMTLSPortOffset = 1
 
 const lanAddressProbeTimeout = 1500 * time.Millisecond
 const agentPlaintextProbeTimeout = 3 * time.Second
+
+// mtlsProbeTimeout bounds a single mTLS connect+probe. The dial target is
+// already an IP (resolveAddrOnce), so this only needs to cover TCP + TLS
+// handshake; keeping it tight stops an unreachable/plaintext-only mTLS port
+// from stalling the connect before the plaintext fallback.
+const mtlsProbeTimeout = 3 * time.Second
 const provisionedAgentMetadataDiscoveryTimeout = 500 * time.Millisecond
 
 const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
@@ -801,8 +807,11 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 					}
 					// grpc.NewClient is lazy — verify the connection actually
 					// works with a fast probe before committing to mTLS.
-					// 8s allows time for mDNS (.local) resolution + TCP + TLS handshake.
-					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					// The address is already resolved to an IP by resolveAddrOnce,
+					// so this only needs to cover TCP + the TLS handshake; the old
+					// 8s budget (which also covered .local mDNS resolution) made an
+					// unreachable mTLS port cost 8s before the plaintext fallback.
+					probeCtx, cancel := context.WithTimeout(ctx, mtlsProbeTimeout)
 					_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 					cancel()
 					if probeErr == nil {
@@ -1206,8 +1215,13 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 		}
 	}
 
-	// Check if the device flag matches a discovered device ID (e.g. "adb:emulator-5554").
-	if device != "" {
+	// Check if the device flag matches a discovered device ID (e.g.
+	// "adb:emulator-5554"). Skip this for anything that looks like a network
+	// address — a ".local" mDNS name, hostname, or IP all contain a "." (or
+	// "[" for IPv6) — because provider IDs are short dotless tokens and the
+	// discovery loop here spins up every provider (e.g. the adb server), costing
+	// seconds. A WendyOS agent address falls through to the gRPC connect below.
+	if device != "" && !strings.Contains(device, ".") && !strings.HasPrefix(device, "[") {
 		if sel := findDeviceByID(ctx, device); sel != nil {
 			return sel, nil
 		}
