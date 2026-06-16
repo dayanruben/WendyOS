@@ -12,8 +12,9 @@ artifact trees unless a referenced artifact makes that necessary.
 
 Guidelines:
 
-- Write one Markdown file per actionable issue in the review directory named in
-  the generated prompt.
+- Write one Markdown file per actionable issue in the absolute review directory
+  named in the generated prompt. Do not write review files in the repository
+  root.
 - Use `severity: "fail"` for deterministic failures or regressions that should
   block/require action.
 - Use `severity: "concern"` for flakes, suspicious behavior, unclear output,

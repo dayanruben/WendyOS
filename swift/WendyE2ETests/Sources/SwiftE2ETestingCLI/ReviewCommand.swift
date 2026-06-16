@@ -230,7 +230,7 @@ private struct ShellReviewHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["-lc", shellCommand]
-        process.currentDirectoryURL = repoURL
+        process.currentDirectoryURL = runURL
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
 
@@ -632,7 +632,7 @@ private func runPromptHeader(
         "",
     ]
 
-    appendReviewContext(context, to: &lines)
+    appendReviewContext(context, repoURL: repoURL, to: &lines)
     return lines
 }
 
@@ -647,7 +647,7 @@ private func appendReviewOutputContract(
     lines.append("## Output contract")
     lines.append("")
     lines.append(
-        "Write one Markdown file per actionable review issue under the top-level `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes)."
+        "Write one Markdown file per actionable review issue under the top-level `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes). Use the absolute review directory listed above; do not create review files in the repository root."
     )
     lines.append(
         "The file name must be the review title slug with `.md`: lowercase ASCII letters/digits, non-alphanumerics replaced by `-`, repeated dashes collapsed, and leading/trailing dashes removed. Example: `seed-cache-fixtures-before-listing.md`."
@@ -914,7 +914,7 @@ private func runOverviewSingleLine(_ value: String, limit: Int) -> String {
     return String(singleLine.prefix(limit)) + "…"
 }
 
-private func appendReviewContext(_ context: ReviewContext, to lines: inout [String]) {
+private func appendReviewContext(_ context: ReviewContext, repoURL: URL, to lines: inout [String]) {
     lines.append("## Review mode")
     lines.append("")
     lines.append("- Mode: `\(context.mode.name)`")
@@ -940,10 +940,11 @@ private func appendReviewContext(_ context: ReviewContext, to lines: inout [Stri
     )
     lines.append("")
     lines.append("```bash")
-    lines.append("git diff --stat \(range)")
-    lines.append("git diff --name-only \(range)")
-    lines.append("git diff \(range) -- <specific-file>")
-    lines.append("git diff \(range) -U80 -- <specific-file>")
+    let repo = shellQuoted(repoURL.path)
+    lines.append("git -C \(repo) diff --stat \(range)")
+    lines.append("git -C \(repo) diff --name-only \(range)")
+    lines.append("git -C \(repo) diff \(range) -- <specific-file>")
+    lines.append("git -C \(repo) diff \(range) -U80 -- <specific-file>")
     lines.append("```")
     lines.append("")
 }
