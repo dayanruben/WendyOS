@@ -40,6 +40,11 @@ func TestAppleContainerInspectHasManagedLabel(t *testing.T) {
 	if appleContainerInspectHasManagedLabel(unmanaged) {
 		t.Fatal("unexpected managed label")
 	}
+
+	malformed := []byte(`container wendy.managed true`)
+	if appleContainerInspectHasManagedLabel(malformed) {
+		t.Fatal("malformed inspect output must not be treated as managed")
+	}
 }
 
 func TestAppleContainerListInfos(t *testing.T) {
@@ -68,8 +73,10 @@ func TestAppleContainerListInfos(t *testing.T) {
 
 func TestValidateAppleContainerKeyValueArg(t *testing.T) {
 	valid := map[string]string{
-		"wendy.managed":                "true",
-		"sh.wendy/entitlement.network": "mode=host,ports=8080:80",
+		"wendy.managed":                  "true",
+		"sh.wendy/entitlement.network":   "mode=host,ports=8080:80",
+		"sh.wendy/entitlement.persist.0": "name=data,path=/app/data",
+		"sh.wendy/entitlement.gpu":       "",
 	}
 	for k, v := range valid {
 		if err := validateAppleContainerKeyValueArg("label", k, v); err != nil {
@@ -81,9 +88,13 @@ func TestValidateAppleContainerKeyValueArg(t *testing.T) {
 		"":             "true",
 		"bad=key":      "true",
 		"bad\nkey":     "true",
+		"bad/key/part": "true",
+		"bad key":      "true",
 		"good.key":     "bad\nvalue",
 		"also.good":    "bad\rvalue",
 		"another.good": "bad\x00value",
+		"unicode.good": "snowman-☃",
+		"shell.good":   "$(echo bad)",
 	}
 	for k, v := range invalid {
 		if err := validateAppleContainerKeyValueArg("label", k, v); err == nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -19,6 +20,11 @@ var (
 	appleContainerLookPath       = exec.LookPath
 	appleContainerHostGOOS       = func() string { return runtime.GOOS }
 	appleContainerHostGOARCH     = func() string { return runtime.GOARCH }
+)
+
+var (
+	appleContainerLabelKeyRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$`)
+	appleContainerLabelValueRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]*$`)
 )
 
 type appleContainerBuildContext struct {
@@ -205,11 +211,11 @@ func validateAppleContainerKeyValueArg(kind, key, value string) error {
 	if key == "" {
 		return fmt.Errorf("invalid %s: key is empty", kind)
 	}
-	if strings.ContainsAny(key, "=\x00\r\n") {
-		return fmt.Errorf("invalid %s key %q: must not contain '=', NUL, or newline characters", kind, key)
+	if !appleContainerLabelKeyRe.MatchString(key) {
+		return fmt.Errorf("invalid %s key %q: must contain only ASCII label characters and at most one '/' prefix separator", kind, key)
 	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("invalid %s %q: value must not contain NUL or newline characters", kind, key)
+	if !appleContainerLabelValueRe.MatchString(value) {
+		return fmt.Errorf("invalid %s %q: value must contain only safe ASCII label value characters", kind, key)
 	}
 	return nil
 }
@@ -361,8 +367,7 @@ func appleContainerInspectNotFound(output string) bool {
 func appleContainerInspectHasManagedLabel(data []byte) bool {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
-		s := string(data)
-		return strings.Contains(s, "wendy.managed") && strings.Contains(s, "true")
+		return false
 	}
 	return jsonContainsManagedLabel(v)
 }

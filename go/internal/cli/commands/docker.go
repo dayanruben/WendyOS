@@ -85,6 +85,35 @@ func logAppleContainerFallback(w io.Writer, err error) {
 	fmt.Fprintf(w, "[apple-container] unavailable or failed; falling back to Docker: %v\n", err)
 }
 
+func registryImageUsesLoopbackRegistry(image string) bool {
+	registry, _, ok := strings.Cut(image, "/")
+	if !ok || registry == "" {
+		return false
+	}
+	return registryAddrUsesLoopback(registry)
+}
+
+func registryAddrUsesLoopback(registry string) bool {
+	host := registry
+	if splitHost, _, err := net.SplitHostPort(registry); err == nil {
+		host = splitHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
+}
+
+func appleContainerPushScheme(registryImage string) (string, error) {
+	if !registryImageUsesLoopbackRegistry(registryImage) {
+		registry, _, _ := strings.Cut(registryImage, "/")
+		return "", fmt.Errorf("Apple Container builder refuses plaintext push to non-loopback registry %q; use --builder docker", registry)
+	}
+	return "http", nil
+}
+
 // requireRegistryAuth checks whether the device's registry requires mTLS
 // authentication and verifies the CLI has the necessary certs.
 // Returns an error if the device is provisioned but no CLI certs are available.
@@ -1340,7 +1369,11 @@ func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage
 		return err
 	}
 
-	args := []string{"image", "push", "--scheme", "http", "--platform", platform, registryImage}
+	scheme, err := appleContainerPushScheme(registryImage)
+	if err != nil {
+		return err
+	}
+	args := []string{"image", "push", "--scheme", scheme, "--platform", platform, registryImage}
 	fmt.Fprintf(logOutput, "[apple-container] pushing image: container %s\n", strings.Join(args, " "))
 	cmd := imageBuilderCommandContext(ctx, "container", args...)
 	cmd.Stdout = streamOutput
@@ -1465,16 +1498,7 @@ func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentC
 		registryAddr, cleanup, err = resolveRegistryForAgent(ctx, conn, port)
 		return registryAddr, cleanup, conn.IsMTLS, err
 	case imageBuilderAppleContainer:
-		var appleUseMTLS bool
-		registryAddr, appleUseMTLS, cleanup, err = resolveRegistryForSwiftAgent(ctx, conn, port)
-		if err != nil {
-			return "", nil, false, err
-		}
-		if appleUseMTLS {
-			cleanup()
-			return "", nil, false, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
-		}
-		return registryAddr, cleanup, false, nil
+		return resolveRegistryForAppleContainer(ctx, conn, port)
 	default:
 		return "", nil, false, fmt.Errorf("unsupported image builder %q", normalized)
 	}
@@ -1669,6 +1693,35 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		return "", false, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
 	}
 	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), conn.IsMTLS, proxy.Close, nil
+}
+
+func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+	if conn.RegistryDialer != nil || conn.IsMTLS {
+		registryAddr, appleUseMTLS, cleanup, err := resolveRegistryForSwiftAgent(ctx, conn, port)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if appleUseMTLS {
+			cleanup()
+			return "", nil, false, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
+		}
+		if !registryAddrUsesLoopback(registryAddr) {
+			cleanup()
+			return "", nil, false, fmt.Errorf("Apple Container builder expected loopback registry proxy, got %q", registryAddr)
+		}
+		return registryAddr, cleanup, false, nil
+	}
+
+	targetHost := resolveRegistryIP(conn.Host)
+	if isLinkLocalIP(targetHost) {
+		targetHost = conn.Host
+	}
+	target := net.JoinHostPort(targetHost, strconv.Itoa(port))
+	proxy, proxyErr := startRegistryProxy(ctx, "127.0.0.1:0", target)
+	if proxyErr != nil {
+		return "", nil, false, fmt.Errorf("starting Apple Container registry proxy: %w", proxyErr)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, nil
 }
 
 // mtlsRegistryHTTPProxy is a plain-HTTP reverse proxy that forwards requests

@@ -108,6 +108,32 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 	}
 }
 
+func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
+	for _, image := range []string{
+		"127.0.0.1:5000/test-app:latest",
+		"localhost:5000/test-app:latest",
+		"[::1]:5000/test-app:latest",
+	} {
+		scheme, err := appleContainerPushScheme(image)
+		if err != nil {
+			t.Fatalf("appleContainerPushScheme(%q): %v", image, err)
+		}
+		if scheme != "http" {
+			t.Fatalf("appleContainerPushScheme(%q) = %q, want http", image, scheme)
+		}
+	}
+
+	for _, image := range []string{
+		"192.168.1.20:5000/test-app:latest",
+		"my-wendy.local:5000/test-app:latest",
+		"host.docker.internal:5000/test-app:latest",
+	} {
+		if _, err := appleContainerPushScheme(image); err == nil {
+			t.Fatalf("appleContainerPushScheme(%q) = nil, want error", image)
+		}
+	}
+}
+
 func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *testing.T) {
 	oldCommand := imageBuilderCommandContext
 	oldLookPath := imageBuilderLookPath
