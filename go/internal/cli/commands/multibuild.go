@@ -96,11 +96,6 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, opts.builder)
-	if err != nil {
-		return err
-	}
-	defer proxyCleanup()
 
 	buildArgs := map[string]string{
 		"WENDY_PLATFORM": wendyPlatform(versionResp.GetDeviceType()),
@@ -126,7 +121,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, cwd, appCfg.AppID, services, registryAddr, platform, buildArgs, opts.builder, useMTLS); err != nil {
+	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder); err != nil {
 		return err
 	}
 
@@ -179,12 +174,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 // spinner in interactive terminals and via plain log lines otherwise.
 func buildServicesParallel(
 	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
-	registryAddr, platform string,
+	platform string,
 	buildArgs map[string]string,
 	builder string,
-	useMTLS bool,
 ) error {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -225,8 +221,8 @@ func buildServicesParallel(
 
 			start := time.Now()
 			contextDir := filepath.Join(cwd, svc.Context)
-			imageName := fmt.Sprintf("%s/%s-%s:latest",
-				registryAddr, strings.ToLower(appID), strings.ToLower(name))
+			repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+			dockerfile, dockerfileErr := resolveDockerfile(contextDir, "", false)
 
 			var buildOut io.Writer
 			var logBuf bytes.Buffer
@@ -241,7 +237,10 @@ func buildServicesParallel(
 			if prog == nil {
 				logOut = os.Stderr
 			}
-			err := buildAndPushImageWithBuilder(ctx, builder, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
+			err := dockerfileErr
+			if err == nil {
+				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, buildOut, logOut)
+			}
 			dur := time.Since(start)
 
 			if prog != nil {

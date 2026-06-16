@@ -27,8 +27,8 @@ type appleContainerBuildContext struct {
 	cmd           *exec.Cmd
 }
 
-// AppleContainerProvider builds and runs Dockerfile projects with Apple's
-// container CLI on Apple silicon Macs.
+// AppleContainerProvider builds and runs Dockerfile/Containerfile projects
+// with Apple's container CLI on Apple silicon Macs.
 type AppleContainerProvider struct{}
 
 func (p *AppleContainerProvider) Key() string         { return ProviderKeyAppleContainer }
@@ -100,27 +100,7 @@ func (p *AppleContainerProvider) SupportedBuildTypes() []string {
 }
 
 func (p *AppleContainerProvider) CanBuild(projectPath string) bool {
-	return hasDockerfile(projectPath)
-}
-
-func hasDockerfile(projectPath string) bool {
-	entries, err := os.ReadDir(projectPath)
-	if err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if (name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
-				return true
-			}
-		}
-		return false
-	}
-	if _, statErr := os.Stat(filepath.Join(projectPath, "Dockerfile")); statErr == nil {
-		return true
-	}
-	return false
+	return hasContainerBuildFile(projectPath)
 }
 
 func (p *AppleContainerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
@@ -135,7 +115,7 @@ func (p *AppleContainerProvider) BuildWithDockerfile(ctx context.Context, device
 	switch strings.TrimSpace(strings.ToLower(buildType)) {
 	case "", "docker":
 	default:
-		return nil, fmt.Errorf("Apple Container supports Dockerfile builds only, not %s", buildType)
+		return nil, fmt.Errorf("Apple Container supports Dockerfile/Containerfile builds only, not %s", buildType)
 	}
 	if err := p.CheckRequirements(ctx); err != nil {
 		return nil, err
@@ -152,6 +132,9 @@ func (p *AppleContainerProvider) BuildWithDockerfile(ctx context.Context, device
 		platform = "linux/" + device.CPUArchitecture
 	}
 	args := []string{"build", "--platform", platform, "-t", imageName}
+	if dockerfile == "" {
+		dockerfile = defaultContainerBuildFile(projectPath)
+	}
 	if dockerfile != "" {
 		resolved, err := confinedProviderDockerfilePath(projectPath, dockerfile)
 		if err != nil {

@@ -81,8 +81,8 @@ type TypedBuilder interface {
 }
 
 // DockerfileBuilder is optionally implemented by providers that support
-// building from a specific Dockerfile (e.g. Dockerfile.prod). When dockerfile
-// is empty, the provider uses its default Dockerfile resolution.
+// building from a specific Dockerfile/Containerfile (e.g. Dockerfile.prod).
+// When dockerfile is empty, the provider uses its default build-file resolution.
 type DockerfileBuilder interface {
 	BuildWithDockerfile(ctx context.Context, device models.ExternalDevice, projectPath, product, buildType, dockerfile string, debug bool) (*BuiltApp, error)
 }

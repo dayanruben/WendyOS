@@ -108,6 +108,110 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 	}
 }
 
+func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		buildDockerProjectWithDocker = oldDockerBuild
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		t.Fatal("Docker fallback should not run when Apple Container succeeds")
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Containerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+
+	resolvedBuildFile, err := confinedDockerfilePath(dir, "Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "container\x00build\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("command log missing %q in:\n%s", want, string(data))
+	}
+}
+
+func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerFails(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		buildDockerProjectWithDocker = oldDockerBuild
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("IMAGE_BUILDER_FAIL_CONTAINER_BUILD", "1")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+
+	var dockerFallbackCalled bool
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		dockerFallbackCalled = true
+		if imageName != "test-app:latest" || platform != "linux/arm64" || dockerfile != "Dockerfile" {
+			t.Fatalf("fallback args = (%q, %q, %q), want image/platform/Dockerfile", imageName, platform, dockerfile)
+		}
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Dockerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+	if !dockerFallbackCalled {
+		t.Fatal("Docker fallback was not called")
+	}
+}
+
 func fakeImageBuilderCommandContext(logFile string) func(context.Context, string, ...string) *exec.Cmd {
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		cmdArgs := []string{"-test.run=TestImageBuilderHelperProcess", "--", name}
@@ -147,6 +251,9 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "container" && args[1] == "build" {
+		if os.Getenv("IMAGE_BUILDER_FAIL_CONTAINER_BUILD") == "1" {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if len(args) >= 3 && args[0] == "container" && args[1] == "image" && args[2] == "push" {
@@ -378,6 +485,16 @@ func TestDetectProjectType_Dockerfile(t *testing.T) {
 	}
 }
 
+func TestDetectProjectType_Containerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM alpine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustDetectProjectType(t, dir); got != "docker" {
+		t.Errorf("detectProjectType = %q; want %q", got, "docker")
+	}
+}
+
 func TestDetectProjectType_PackageSwift(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Package.swift"), []byte("// swift"), 0o644); err != nil {
@@ -505,6 +622,21 @@ func TestResolveDetectedBuildOption_PrefersDockerfileOverSwift(t *testing.T) {
 	}
 }
 
+func TestResolveDetectedBuildOption_PrefersContainerfileOverPython(t *testing.T) {
+	options := []BuildOption{
+		{Label: "Containerfile", Type: "docker", File: "Containerfile"},
+		{Label: "requirements.txt (Python)", Type: "python", File: "requirements.txt"},
+	}
+
+	got, err := resolveDetectedBuildOption(options, "", "")
+	if err != nil {
+		t.Fatalf("resolveDetectedBuildOption: %v", err)
+	}
+	if got == nil || got.Type != "docker" || got.File != "Containerfile" {
+		t.Fatalf("got %+v, want Containerfile docker option", got)
+	}
+}
+
 func TestResolveDetectedBuildOption_PrefersDockerfileOverPython(t *testing.T) {
 	options := []BuildOption{
 		{Label: "Dockerfile", Type: "docker", File: "Dockerfile"},
@@ -555,6 +687,7 @@ func TestBuildOptionForType_DockerUsesExactDockerfile(t *testing.T) {
 
 func TestResolveDetectedBuildOption_NonInteractiveMultipleDockerfilesPrefersBase(t *testing.T) {
 	options := []BuildOption{
+		{Label: "Containerfile", Type: "docker", File: "Containerfile"},
 		{Label: "Dockerfile", Type: "docker", File: "Dockerfile"},
 		{Label: "Dockerfile.dev", Type: "docker", File: "Dockerfile.dev"},
 		{Label: "Dockerfile.prod", Type: "docker", File: "Dockerfile.prod"},
@@ -566,6 +699,21 @@ func TestResolveDetectedBuildOption_NonInteractiveMultipleDockerfilesPrefersBase
 	}
 	if got == nil || got.File != "Dockerfile" {
 		t.Fatalf("got %+v, want base Dockerfile", got)
+	}
+}
+
+func TestResolveDetectedBuildOption_NonInteractiveContainerfileBase(t *testing.T) {
+	options := []BuildOption{
+		{Label: "Containerfile.dev", Type: "docker", File: "Containerfile.dev"},
+		{Label: "Containerfile", Type: "docker", File: "Containerfile"},
+	}
+
+	got, err := resolveDetectedBuildOption(options, "", "")
+	if err != nil {
+		t.Fatalf("resolveDetectedBuildOption: %v", err)
+	}
+	if got == nil || got.File != "Containerfile" {
+		t.Fatalf("got %+v, want base Containerfile", got)
 	}
 }
 
@@ -1462,9 +1610,23 @@ func TestResolveDockerfile_SingleVariant(t *testing.T) {
 	}
 }
 
+func TestResolveDockerfile_Containerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveDockerfile(dir, "", false)
+	if err != nil {
+		t.Fatalf("resolveDockerfile: %v", err)
+	}
+	if got != "Containerfile" {
+		t.Fatalf("got %q, want Containerfile", got)
+	}
+}
+
 func TestResolveDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"Dockerfile", "Dockerfile.prod", "Dockerfile.dev"} {
+	for _, name := range []string{"Containerfile", "Dockerfile", "Dockerfile.prod", "Dockerfile.dev"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("FROM scratch"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1495,13 +1657,13 @@ func TestResolveDockerfile_MultipleNonInteractiveVariantOnlyPrefersFirst(t *test
 }
 
 func TestValidateDockerfileName(t *testing.T) {
-	valid := []string{"Dockerfile", "Dockerfile.prod", "Dockerfile.dev", "Dockerfile-prod", "Dockerfile.my.variant", "./Dockerfile.prod"}
+	valid := []string{"Dockerfile", "Dockerfile.prod", "Dockerfile.dev", "Dockerfile-prod", "Dockerfile.my.variant", "./Dockerfile.prod", "Containerfile", "Containerfile.prod", "Containerfile-dev"}
 	for _, name := range valid {
 		if err := validateDockerfileName(name); err != nil {
 			t.Errorf("validateDockerfileName(%q) unexpected error: %v", name, err)
 		}
 	}
-	invalid := []string{"-flag", "dockerfile", "DOCKERFILE", "not-a-dockerfile", "Dockerfile/evil", "subdir/Dockerfile.prod", "../Dockerfile", ".hidden", "Dockerfile.dockerignore", "Dockerfile.prod.dockerignore", "Dockerfile.-prod", "Dockerfile..hidden", "Dockerfile-.prod"}
+	invalid := []string{"-flag", "dockerfile", "containerfile", "DOCKERFILE", "CONTAINERFILE", "not-a-dockerfile", "Dockerfile/evil", "subdir/Dockerfile.prod", "../Dockerfile", ".hidden", "Dockerfile.dockerignore", "Dockerfile.prod.dockerignore", "Containerfile.dockerignore", "Dockerfile.-prod", "Dockerfile..hidden", "Dockerfile-.prod", "Containerfile.-prod"}
 	for _, name := range invalid {
 		if err := validateDockerfileName(name); err == nil {
 			t.Errorf("validateDockerfileName(%q) expected error, got nil", name)

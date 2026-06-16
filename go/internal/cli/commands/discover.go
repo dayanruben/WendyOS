@@ -1071,7 +1071,7 @@ func externalProviderAddress(providerKey, id string) string {
 func externalProviderPickerHint(providerKey string) string {
 	switch providerKey {
 	case providers.ProviderKeyAppleContainer:
-		return "Hint: Use Apple Container for local Dockerfile runs on Apple silicon Macs. Compose projects still require Docker."
+		return "Hint: Use Apple Container for local Dockerfile/Containerfile runs on Apple silicon Macs. Compose projects still require Docker."
 	case providers.ProviderKeyDocker:
 		return "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
 	case providers.ProviderKeyLocal:

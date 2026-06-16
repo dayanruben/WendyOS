@@ -124,6 +124,57 @@ func TestAppleContainerBuildWithDockerfileUsesContainerBuild(t *testing.T) {
 	}
 }
 
+func TestAppleContainerBuildWithContainerfileUsesContainerBuild(t *testing.T) {
+	restore := stubAppleContainerHost(t)
+	defer restore()
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	oldCommand := appleContainerCommandContext
+	oldLookPath := appleContainerLookPath
+	t.Cleanup(func() {
+		appleContainerCommandContext = oldCommand
+		appleContainerLookPath = oldLookPath
+	})
+	appleContainerCommandContext = fakeAppleContainerCommandContext(logFile)
+	appleContainerLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+
+	dir := t.TempDir()
+	containerfile := filepath.Join(dir, "Containerfile")
+	if err := os.WriteFile(containerfile, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedContainerfile, err := filepath.EvalSymlinks(containerfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &AppleContainerProvider{}
+	if !p.CanBuild(dir) {
+		t.Fatal("CanBuild = false, want true for Containerfile")
+	}
+	if _, err := p.Build(context.Background(), models.ExternalDevice{CPUArchitecture: "arm64"}, dir, "MyApp", false); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "container\x00build\x00--platform\x00linux/arm64\x00-t\x00myapp:latest\x00-f\x00" + resolvedContainerfile + "\x00" + buildContext + "\n"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("command log missing %q in:\n%s", want, string(data))
+	}
+}
+
 func TestAppleContainerBuildContextUsesTmpAliasWhenAvailable(t *testing.T) {
 	restore := stubAppleContainerHost(t)
 	defer restore()

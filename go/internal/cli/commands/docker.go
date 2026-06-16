@@ -49,6 +49,8 @@ const (
 	imageBuilderAppleContainer = "apple-container"
 )
 
+var buildDockerProjectWithDocker = buildDockerProject
+
 func normalizeImageBuilder(builder string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(builder)) {
 	case "":
@@ -71,6 +73,18 @@ func imageBuilderDisplayName(builder string) string {
 	}
 }
 
+func imageBuilderWasExplicit(builder string) bool {
+	return strings.TrimSpace(builder) != ""
+}
+
+func shouldAutoAttemptAppleContainerBuilder() bool {
+	return imageBuilderHostGOOS() == "darwin" && imageBuilderHostGOARCH() == "arm64"
+}
+
+func logAppleContainerFallback(w io.Writer, err error) {
+	fmt.Fprintf(w, "[apple-container] unavailable or failed; falling back to Docker: %v\n", err)
+}
+
 // requireRegistryAuth checks whether the device's registry requires mTLS
 // authentication and verifies the CLI has the necessary certs.
 // Returns an error if the device is provisioned but no CLI certs are available.
@@ -89,7 +103,7 @@ func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 // detectProjectType determines the project type from the directory contents.
 //
-// Precedence: compose > Dockerfile > Package.swift > *.xcodeproj > Python markers.
+// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers.
 // Returns an error only when multiple .xcodeproj directories are found.
 func detectProjectType(dir string) (string, error) {
 	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
@@ -97,9 +111,11 @@ func detectProjectType(dir string) (string, error) {
 			return "compose", nil
 		}
 	}
-	// Check base Dockerfile first (fast path), then any Dockerfile.* / Dockerfile-* variant.
-	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
-		return "docker", nil
+	// Check base build files first (fast path), then any variant.
+	for _, name := range []string{"Dockerfile", "Containerfile"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return "docker", nil
+		}
 	}
 	if entries, readErr := os.ReadDir(dir); readErr == nil {
 		for _, e := range entries {
@@ -107,7 +123,7 @@ func detectProjectType(dir string) (string, error) {
 				continue
 			}
 			name := e.Name()
-			if (strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+			if isContainerBuildFileName(name) {
 				return "docker", nil
 			}
 		}
@@ -134,20 +150,39 @@ func detectProjectType(dir string) (string, error) {
 	return "unknown", nil
 }
 
-// validDockerfileNameRe matches valid Dockerfile names: "Dockerfile" or
-// "Dockerfile" followed by a dot or hyphen and one or more safe characters.
-var validDockerfileNameRe = regexp.MustCompile(`^Dockerfile([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+// validDockerfileNameRe matches valid container build file names: "Dockerfile",
+// "Containerfile", or either base name followed by a dot or hyphen and one or
+// more safe characters.
+var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+
+func isContainerBuildFileName(name string) bool {
+	if strings.HasSuffix(name, ".dockerignore") {
+		return false
+	}
+	return validDockerfileNameRe.MatchString(name)
+}
+
+func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
+	for _, preferred := range []string{"Dockerfile", "Containerfile"} {
+		for i := range options {
+			if options[i].Type == "docker" && options[i].File == preferred {
+				return &options[i]
+			}
+		}
+	}
+	return nil
+}
 
 func validateDockerfileName(name string) error {
 	cleaned := filepath.Clean(name)
 	if cleaned != filepath.Base(cleaned) {
-		return fmt.Errorf("invalid Dockerfile name %q: path separators are not allowed", name)
+		return fmt.Errorf("invalid container build file name %q: path separators are not allowed", name)
 	}
 	if strings.HasSuffix(cleaned, ".dockerignore") {
-		return fmt.Errorf("invalid Dockerfile name %q: .dockerignore files are not Dockerfiles", cleaned)
+		return fmt.Errorf("invalid container build file name %q: .dockerignore files are not build files", cleaned)
 	}
 	if !validDockerfileNameRe.MatchString(cleaned) {
-		return fmt.Errorf("invalid Dockerfile name %q: must be Dockerfile, Dockerfile.<variant>, or Dockerfile-<variant>", cleaned)
+		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, or a dot/hyphen variant of either", cleaned)
 	}
 	return nil
 }
@@ -262,25 +297,23 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 	}
 
 	if !interactive {
-		for _, opt := range dockerfiles {
-			if opt.File == "Dockerfile" {
-				file, err := confine(opt.File)
-				if err != nil {
-					return "", err
-				}
-				cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
-				return file, nil
+		if preferred := preferredContainerBuildFileOption(dockerfiles); preferred != nil {
+			file, err := confine(preferred.File)
+			if err != nil {
+				return "", err
 			}
+			cliNotice("multiple container build files detected; using %q. Use --dockerfile to select explicitly.", file)
+			return file, nil
 		}
 		file, err := confine(dockerfiles[0].File)
 		if err != nil {
 			return "", err
 		}
-		cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
+		cliNotice("multiple container build files detected; using %q. Use --dockerfile to select explicitly.", file)
 		return file, nil
 	}
 
-	picked, err := pickBuildOptionWithTitle(dockerfiles, "Select a Dockerfile")
+	picked, err := pickBuildOptionWithTitle(dockerfiles, "Select a container build file")
 	if err != nil {
 		return "", err
 	}
@@ -296,7 +329,7 @@ type BuildOption struct {
 
 // detectBuildOptions finds all buildable project markers in the given directory.
 // Unlike detectProjectType, this returns ALL options rather than the first match,
-// including multiple Dockerfiles (Dockerfile, Dockerfile.*, Dockerfile-*).
+// including multiple container build files (Dockerfile, Containerfile, and variants).
 func detectBuildOptions(dir string) []BuildOption {
 	var options []BuildOption
 
@@ -312,7 +345,7 @@ func detectBuildOptions(dir string) []BuildOption {
 		}
 	}
 
-	// Find all Dockerfiles.
+	// Find all container build files.
 	entries, err := os.ReadDir(dir)
 	if err == nil {
 		for _, e := range entries {
@@ -320,7 +353,7 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
-			if (name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+			if isContainerBuildFileName(name) {
 				options = append(options, BuildOption{
 					Label: name,
 					Type:  "docker",
@@ -1239,6 +1272,39 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	default:
 		return fmt.Errorf("unsupported image builder %q", normalized)
 	}
+}
+
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+	if _, err := normalizeImageBuilder(builder); err != nil {
+		return err
+	}
+	if imageBuilderWasExplicit(builder) {
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+	}
+	if shouldAutoAttemptAppleContainerBuilder() {
+		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput); err == nil {
+			return nil
+		} else {
+			logAppleContainerFallback(logOutput, err)
+		}
+	}
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+}
+
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	registryAddr, cleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
+	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
