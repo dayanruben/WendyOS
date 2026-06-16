@@ -92,6 +92,35 @@ Most USB HID devices (scanners, keyboards) should use `input`. You only need `us
 
 The USB entitlement allows the container to access USB devices.
 
+## Serial
+
+The serial entitlement grants a container access to a serial tty node so it can `open()` a port such as `/dev/ttyACM0` or `/dev/ttyUSB0`. The motivating case is USB-serial peripherals — for example the LeRobot SO-101 arm, whose Feetech bus servos are driven over a USB-serial adapter via `pyserial`.
+
+```json
+{
+    "type": "serial",
+    "device": "ttyACM0"
+}
+```
+
+- **device**: A bare tty node name (not a path), matching `^(ttyACM|ttyUSB|ttyAMA|ttyS)[0-9]+$` — e.g. `ttyACM0`, `ttyUSB0`, `ttyAMA0`, `ttyS0`. A device that does not match this pattern is rejected at validation.
+
+The container receives:
+- A bind mount of the named node `/dev/<device>` (e.g. `/dev/ttyACM0`)
+- A cgroup device rule allowing the node's kernel major with `rw` access — `ttyACM` = 166, `ttyUSB` = 188, `ttyAMA` = 204, `ttyS` = 4
+- Membership in the `dialout` group (GID 20), which owns serial tty nodes on Debian/Ubuntu hosts
+
+### When to use serial vs USB
+
+| Entitlement | Access | Use case |
+|-------------|--------|----------|
+| `serial` | The kernel tty node (`/dev/ttyACM*`, `/dev/ttyUSB*`, …) | Serial ports — USB-serial adapters, microcontrollers, servo buses, GPS modules; anything `pyserial`/termios opens |
+| `usb` | `/dev/bus/usb` (raw libusb, major 189) | Low-level USB protocols — custom protocols, firmware updates, libusb |
+
+Use `serial` for serial ports and `usb` for raw USB protocols — they expose different device majors. The SO-101's `/dev/ttyACM0` is reached with `serial`, not `usb`.
+
+> **Security note:** a serial entitlement opens the whole kernel major, so the container can reach *every* serial device of that type on the host (e.g. all `ttyACM*` nodes), not just one adapter. This is the same major-level trade-off the `camera` and `i2c` entitlements make, because hotplugging re-mints the minor numbers.
+
 ## Persist
 
 The persist entitlement allows the container to persist data across restarts. Data is stored on the host filesystem and mounted into the container at the specified path.
