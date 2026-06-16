@@ -262,6 +262,13 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 	cs := c.client.ContentStore()
 	is := c.client.ImageService()
 
+	// Store the image under the SAME normalized name that
+	// CreateContainerWithProgress uses for its GetImage lookup. Without this,
+	// a short ref like "app:latest" is stored verbatim here but looked up as
+	// "docker.io/library/app:latest" at create time, missing the local store
+	// and falling through to a (failing) registry pull.
+	imageName = normalizeImageName(imageName)
+
 	// Build OCI layer descriptors and diff IDs.
 	var layerDescs []ocispec.Descriptor
 	var diffIDs []digest.Digest
