@@ -86,6 +86,18 @@ func (f *fakeContainerd) GetContainerRestartPolicyLabel(ctx context.Context, app
 	return "", nil
 }
 
+func (f *fakeContainerd) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (f *fakeContainerd) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (f *fakeContainerd) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
+}
+
 func newMonitorWithClient(c services.ContainerdClient) *ContainerMonitor {
 	return NewContainerMonitor(zap.NewNop(), c, nil, time.Second)
 }

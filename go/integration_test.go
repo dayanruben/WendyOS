@@ -226,6 +226,18 @@ func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID s
 	return ids, nil
 }
 
+func (m *statefulContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (m *statefulContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (m *statefulContainerdClient) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
+}
+
 // getLayerData returns the data stored for a given digest, for test assertions.
 func (m *statefulContainerdClient) getLayerData(digest string) ([]byte, bool) {
 	m.mu.Lock()
