@@ -78,6 +78,12 @@ type Client struct {
 	// Checked by CreateContainerWithProgress to reject concurrent create/stop races
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
+
+	// chunkIndex maps CDC chunk hashes to byte ranges in uncompressed layer
+	// blobs (Model B). staging holds chunks received this session until the
+	// following AssembleLayerFromChunks consumes them.
+	chunkIndex *ChunkIndex
+	staging    *staging
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -90,6 +96,12 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		return nil, fmt.Errorf("connecting to containerd at %s: %w", address, err)
 	}
 
+	chunkIndexPath := "/var/lib/wendy/chunk-index.json"
+	idx, err := NewChunkIndex(chunkIndexPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading chunk index: %w", err)
+	}
+
 	return &Client{
 		client:       c,
 		logger:       logger,
@@ -100,6 +112,8 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		appIsolation: make(map[string]string),
 		serviceIPs:   make(map[string]map[string]string),
 		appStopping:  make(map[string]bool),
+		chunkIndex:   idx,
+		staging:      newStaging(),
 	}, nil
 }
 
