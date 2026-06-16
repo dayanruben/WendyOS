@@ -1364,6 +1364,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if !opts.deploy {
 		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			return nil
+		} else if ctx.Err() != nil {
+			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
+			// newer change, or the user hit Ctrl-C). Don't fall back to a full
+			// registry push — just surface the cancellation.
+			return err
 		} else {
 			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
 		}
