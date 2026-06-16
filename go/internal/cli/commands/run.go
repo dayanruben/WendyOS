@@ -1351,55 +1351,61 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
-	// Try the fast chunk-diff (CDC) deploy path first. If it fails for any
-	// reason, fall back to the traditional buildx→registry path.
-	if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err != nil {
-		cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
-
-		// Verify auth certs are available if the device's registry requires mTLS.
-		if err := requireRegistryAuth(ctx, conn); err != nil {
-			return err
+	// The fast chunk-diff (CDC) deploy path only handles the attached (default)
+	// run mode. For deploy-only (opts.deploy) or detached (opts.detach) runs,
+	// skip CDC entirely: those modes require the full startAndStreamContainer
+	// lifecycle (create-only, or create+start+readiness+postStart hooks) which
+	// the CDC path does not implement.
+	if !opts.deploy && !opts.detach {
+		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+			return nil
+		} else {
+			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
 		}
-
-		// Build and push the Docker image directly to the device's registry.
-		regPort := registryPort(agentOS)
-		// For link-local addresses (USB), a TCP proxy bridges the Docker VM
-		// to the host so buildx can reach the device.
-		registryAddr, proxyCleanup, regErr := resolveRegistryForAgent(ctx, conn, regPort)
-		if regErr != nil {
-			return regErr
-		}
-		defer proxyCleanup()
-
-		repo := strings.ToLower(appCfg.AppID)
-		registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
-
-		cliLogln("Building and pushing Docker image for %s...", platform)
-		if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
-			return fmt.Errorf("building and pushing Docker image: %w", err)
-		}
-		cliLogln("Build and push completed.")
-
-		// The agent pulls from localhost:<regPort>.
-		deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
-
-		appConfigData, err := json.Marshal(appCfg)
-		if err != nil {
-			return fmt.Errorf("marshaling app config: %w", err)
-		}
-		restartPolicy := resolveRestartPolicy(opts)
-
-		createReq := &agentpb.CreateContainerRequest{
-			ImageName:     deviceImage,
-			AppName:       appCfg.AppID,
-			AppConfig:     appConfigData,
-			RestartPolicy: restartPolicy,
-			UserArgs:      opts.userArgs,
-		}
-
-		return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
 	}
-	return nil
+
+	// Verify auth certs are available if the device's registry requires mTLS.
+	if err := requireRegistryAuth(ctx, conn); err != nil {
+		return err
+	}
+
+	// Build and push the Docker image directly to the device's registry.
+	regPort := registryPort(agentOS)
+	// For link-local addresses (USB), a TCP proxy bridges the Docker VM
+	// to the host so buildx can reach the device.
+	registryAddr, proxyCleanup, regErr := resolveRegistryForAgent(ctx, conn, regPort)
+	if regErr != nil {
+		return regErr
+	}
+	defer proxyCleanup()
+
+	repo := strings.ToLower(appCfg.AppID)
+	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
+
+	cliLogln("Building and pushing Docker image for %s...", platform)
+	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
+		return fmt.Errorf("building and pushing Docker image: %w", err)
+	}
+	cliLogln("Build and push completed.")
+
+	// The agent pulls from localhost:<regPort>.
+	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
+
+	appConfigData, err := json.Marshal(appCfg)
+	if err != nil {
+		return fmt.Errorf("marshaling app config: %w", err)
+	}
+	restartPolicy := resolveRestartPolicy(opts)
+
+	createReq := &agentpb.CreateContainerRequest{
+		ImageName:     deviceImage,
+		AppName:       appCfg.AppID,
+		AppConfig:     appConfigData,
+		RestartPolicy: restartPolicy,
+		UserArgs:      opts.userArgs,
+	}
+
+	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
