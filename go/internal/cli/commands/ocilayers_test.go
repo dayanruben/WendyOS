@@ -137,11 +137,15 @@ func TestReadOCILayoutLayersUncompressed(t *testing.T) {
 	if len(layers) != 1 {
 		t.Fatalf("expected 1 layer, got %d", len(layers))
 	}
-	if !bytes.Equal(layers[0].Tar, want) {
-		t.Fatalf("layer bytes mismatch: got %q, want %q", layers[0].Tar, want)
+	got, err := layers[0].decompress()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if layers[0].DiffID != "sha256:"+sha256Hex(want) {
-		t.Fatalf("diff id mismatch: %s", layers[0].DiffID)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("layer bytes mismatch: got %q, want %q", got, want)
+	}
+	if layers[0].Digest != "sha256:"+sha256Hex(want) {
+		t.Fatalf("layer digest mismatch: %s", layers[0].Digest)
 	}
 	// The image config blob must be returned and carry the runtime config
 	// (Cmd/WorkingDir); otherwise the assembled container would have no command
@@ -179,10 +183,15 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 	if len(layers) != 1 {
 		t.Fatalf("expected 1 layer, got %d", len(layers))
 	}
-	if !bytes.Equal(layers[0].Tar, want) {
+	got, err := layers[0].decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
 		t.Fatalf("layer bytes mismatch after gzip decompression")
 	}
-	if layers[0].DiffID != "sha256:"+sha256Hex(want) {
-		t.Fatalf("diff id mismatch (should be sha256 of UNcompressed): %s", layers[0].DiffID)
+	// The layer digest is the COMPRESSED blob digest (the stable cache key).
+	if layers[0].Digest != "sha256:"+sha256Hex(compressedBytes) {
+		t.Fatalf("layer digest mismatch (should be sha256 of compressed blob): %s", layers[0].Digest)
 	}
 }

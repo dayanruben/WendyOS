@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,11 +18,19 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// localLayer holds a single image layer with its uncompressed tar bytes and
-// content-addressable DiffID (sha256 of the uncompressed tar).
+// localLayer holds a single image layer as its COMPRESSED blob plus the
+// metadata needed to address and decompress it. Decompression is deferred
+// (see decompress) so callers that can resolve a layer from the manifest cache
+// never pay to decompress it.
 type localLayer struct {
-	DiffID string // "sha256:<hex>" of the uncompressed layer tar
-	Tar    []byte // raw (uncompressed) layer tar bytes
+	Digest    string // compressed OCI layer blob digest ("sha256:<hex>") — stable cache key
+	MediaType string // OCI/Docker layer media type (drives decompression)
+	Blob      []byte // compressed layer bytes
+}
+
+// decompress returns the raw (uncompressed) tar bytes for the layer.
+func (l localLayer) decompress() ([]byte, error) {
+	return decompressLayer(l.Blob, l.MediaType)
 }
 
 // readOCILayoutLayers opens an OCI-layout tar at ociTarPath, walks the
@@ -152,15 +158,9 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, []byte, error) {
 		if !ok {
 			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
 		}
-
-		rawTar, err := decompressLayer(blobData, desc.MediaType)
-		if err != nil {
-			return nil, nil, fmt.Errorf("layer %d decompression: %w", i, err)
-		}
-
-		h := sha256.Sum256(rawTar)
-		diffID := "sha256:" + hex.EncodeToString(h[:])
-		layers = append(layers, localLayer{DiffID: diffID, Tar: rawTar})
+		// Keep the compressed blob; decompression is deferred to pushLayersByChunks
+		// so unchanged layers resolved from the manifest cache are never decompressed.
+		layers = append(layers, localLayer{Digest: desc.Digest, MediaType: desc.MediaType, Blob: blobData})
 	}
 	return layers, imageConfig, nil
 }

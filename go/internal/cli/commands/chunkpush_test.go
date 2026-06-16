@@ -43,6 +43,11 @@ func (s *fakeWriteChunksStream) CloseAndRecv() (*agentpb.WriteChunksResponse, er
 }
 
 func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
+	// Isolate the manifest cache so the test neither reads nor pollutes the
+	// real user cache (and starts from a guaranteed cache miss).
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
 	layerTar := bytes.Repeat([]byte("abc"), 300_000) // multi-chunk
 	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
 	if err != nil {
@@ -70,8 +75,12 @@ func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
 			return &agentpb.QueryChunksResponse{MissingHashes: missing}
 		},
 	}
+	// An uncompressed layer: the blob bytes are the raw tar, so decompress()
+	// returns them as-is. Digest is the (compressed==uncompressed) blob digest.
 	headers, err := pushLayersByChunks(context.Background(), fake, []localLayer{{
-		DiffID: "sha256:" + sha256Hex(layerTar), Tar: layerTar,
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
 	}})
 	if err != nil {
 		t.Fatal(err)
