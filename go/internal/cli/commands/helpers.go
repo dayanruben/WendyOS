@@ -1187,6 +1187,8 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 		isDefault = device != ""
 	}
 
+	rt := phaseTimer()
+
 	// Check if the device flag matches a known provider key.
 	if device != "" {
 		if p := providers.ProviderForKey(device); p != nil {
@@ -1210,6 +1212,7 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			return sel, nil
 		}
 	}
+	rt("  ↳ findDeviceByID (provider discovery)")
 
 	// If a device hostname was given, connect via gRPC (with mTLS if authenticated).
 	if device != "" {
@@ -1218,10 +1221,10 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			addr = hostPort(device, defaultAgentPort)
 		}
 		startedAt := time.Now()
-		tm := phaseTimer()
 		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
-		tm("  ↳ provisionedAgentAdvertisedMTLS (mDNS browse)")
+		rt("  ↳ provisionedAgentAdvertisedMTLS (mDNS browse)")
 		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
+		rt("  ↳ connectResolvedAgent (dial+probe)")
 		if err != nil {
 			if errors.Is(err, ErrUserCancelled) {
 				return nil, err
@@ -1248,6 +1251,7 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 				return nil, updateErr
 			}
 		}
+		rt("  ↳ checkAndOfferUpdate")
 		return &SelectedDevice{Agent: conn}, nil
 	}
 
