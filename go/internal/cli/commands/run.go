@@ -736,7 +736,7 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 
 	if target.External != nil && target.Provider != nil {
 		if opts.builder != "" {
-			return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
+			return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker for local Compose runs")
 		}
 		// External providers handle local compose support themselves.
 		// Compose projects have no wendy.json, so entitlements are nil.

@@ -31,6 +31,10 @@ type buildOptions struct {
 	builder    string
 }
 
+var appleContainerLocalProviderHintSupported = func() bool {
+	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+}
+
 func newBuildCmd() *cobra.Command {
 	var opts buildOptions
 
@@ -423,7 +427,7 @@ func ensureProviderSupportsProjectType(provider providers.DeviceProvider, projec
 
 	if provider.Key() == providers.ProviderKeyLocal && (projectType == "docker" || projectType == "compose") {
 		containerTargets := "Docker with --device docker"
-		if runtime.GOOS == "darwin" {
+		if projectType == "docker" && appleContainerLocalProviderHintSupported() {
 			containerTargets += " or Apple Container with --device apple-container"
 		}
 		return fmt.Errorf("%s runs host-native apps and does not support %s projects; choose %s for local container runs", providerName, projectType, containerTargets)

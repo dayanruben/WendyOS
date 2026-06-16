@@ -379,6 +379,22 @@ func TestRemoveManagedContainerInspectErrorHandling(t *testing.T) {
 	})
 }
 
+func TestAppleContainerListContainersReturnsInspectErrors(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	oldCommand := appleContainerCommandContext
+	t.Cleanup(func() {
+		appleContainerCommandContext = oldCommand
+	})
+	t.Setenv("APPLE_CONTAINER_HELPER_LIST", "one")
+	t.Setenv("APPLE_CONTAINER_HELPER_INSPECT", "error")
+	appleContainerCommandContext = fakeAppleContainerCommandContext(logFile)
+
+	_, err := (&AppleContainerProvider{}).ListContainers(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("ListContainers error = %v, want inspect stderr context", err)
+	}
+}
+
 func TestAppleContainerCombinedOutputLimitedTruncates(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=TestAppleContainerHelperProcess", "--", "container", "inspect", "myapp")
 	cmd.Env = append(os.Environ(),
@@ -487,6 +503,13 @@ func TestAppleContainerHelperProcess(t *testing.T) {
 		case "large":
 			_, _ = os.Stdout.WriteString(strings.Repeat("x", appleContainerMaxJSONOutputBytes))
 			_, _ = os.Stdout.WriteString(strings.Repeat("x", appleContainerMaxJSONOutputBytes))
+			os.Exit(0)
+		}
+	}
+	if len(args) >= 5 && args[0] == "container" && args[1] == "list" {
+		switch os.Getenv("APPLE_CONTAINER_HELPER_LIST") {
+		case "one":
+			_, _ = os.Stdout.WriteString(`[{"id":"myapp","image":"myapp:latest","state":"running"}]`)
 			os.Exit(0)
 		}
 	}

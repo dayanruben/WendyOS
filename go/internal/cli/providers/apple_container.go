@@ -455,7 +455,10 @@ func (p *AppleContainerProvider) ListContainers(ctx context.Context) ([]Containe
 		if info.Name == "" {
 			continue
 		}
-		managed, _ := p.containerHasManagedLabel(ctx, info.Name)
+		managed, err := p.containerHasManagedLabel(ctx, info.Name)
+		if err != nil {
+			return nil, err
+		}
 		if managed {
 			containers = append(containers, info)
 		}

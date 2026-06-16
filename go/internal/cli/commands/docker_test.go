@@ -825,6 +825,12 @@ func TestFilterBuildOptions_LocalProviderKeepsNativeOnly(t *testing.T) {
 }
 
 func TestEnsureProviderSupportsProjectType_LocalRejectsContainerProjects(t *testing.T) {
+	oldHintSupported := appleContainerLocalProviderHintSupported
+	t.Cleanup(func() {
+		appleContainerLocalProviderHintSupported = oldHintSupported
+	})
+	appleContainerLocalProviderHintSupported = func() bool { return true }
+
 	for _, projectType := range []string{"docker", "compose"} {
 		t.Run(projectType, func(t *testing.T) {
 			err := ensureProviderSupportsProjectType(&providers.LocalProvider{}, projectType, t.TempDir())
@@ -837,7 +843,29 @@ func TestEnsureProviderSupportsProjectType_LocalRejectsContainerProjects(t *test
 					t.Fatalf("error = %q, want substring %q", msg, want)
 				}
 			}
+			if projectType == "docker" && !strings.Contains(msg, "--device apple-container") {
+				t.Fatalf("docker error = %q, want Apple Container hint on supported hosts", msg)
+			}
+			if projectType == "compose" && strings.Contains(msg, "apple-container") {
+				t.Fatalf("compose error = %q, must not suggest Apple Container", msg)
+			}
 		})
+	}
+}
+
+func TestEnsureProviderSupportsProjectType_LocalOmitsAppleContainerHintWhenUnsupported(t *testing.T) {
+	oldHintSupported := appleContainerLocalProviderHintSupported
+	t.Cleanup(func() {
+		appleContainerLocalProviderHintSupported = oldHintSupported
+	})
+	appleContainerLocalProviderHintSupported = func() bool { return false }
+
+	err := ensureProviderSupportsProjectType(&providers.LocalProvider{}, "docker", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "apple-container") {
+		t.Fatalf("error = %q, must not suggest Apple Container on unsupported hosts", err)
 	}
 }
 
