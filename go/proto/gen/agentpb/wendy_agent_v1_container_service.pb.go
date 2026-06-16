@@ -575,7 +575,12 @@ type RunContainerLayersRequest struct {
 	RestartPolicy *RestartPolicy `protobuf:"bytes,6,opt,name=restart_policy,json=restartPolicy,proto3,oneof" json:"restart_policy,omitempty"`
 	WorkingDir    string         `protobuf:"bytes,7,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
 	// User-provided runtime arguments to append to the container entrypoint.
-	UserArgs      []string `protobuf:"bytes,8,rep,name=user_args,json=userArgs,proto3" json:"user_args,omitempty"`
+	UserArgs []string `protobuf:"bytes,8,rep,name=user_args,json=userArgs,proto3" json:"user_args,omitempty"`
+	// OCI image config JSON (the config blob produced by the image builder),
+	// carrying Cmd/Entrypoint/Env/WorkingDir/User. Required by the chunk-diff
+	// path so the assembled image preserves the original runtime config; when
+	// empty the agent synthesises a minimal config (legacy behaviour).
+	ImageConfig   []byte `protobuf:"bytes,9,opt,name=image_config,json=imageConfig,proto3" json:"image_config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -662,6 +667,13 @@ func (x *RunContainerLayersRequest) GetWorkingDir() string {
 func (x *RunContainerLayersRequest) GetUserArgs() []string {
 	if x != nil {
 		return x.UserArgs
+	}
+	return nil
+}
+
+func (x *RunContainerLayersRequest) GetImageConfig() []byte {
+	if x != nil {
+		return x.ImageConfig
 	}
 	return nil
 }
@@ -1993,7 +2005,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\x13WriteChunksResponse\"9\n" +
 	"\vLayerHeader\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12\x12\n" +
-	"\x04size\x18\x02 \x01(\x03R\x04size\"\xdd\x02\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\"\x80\x03\n" +
 	"\x19RunContainerLayersRequest\x12\x1d\n" +
 	"\n" +
 	"image_name\x18\x01 \x01(\tR\timageName\x12\x19\n" +
@@ -2005,7 +2017,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\x0erestart_policy\x18\x06 \x01(\v2\x0e.RestartPolicyH\x00R\rrestartPolicy\x88\x01\x01\x12\x1f\n" +
 	"\vworking_dir\x18\a \x01(\tR\n" +
 	"workingDir\x12\x1b\n" +
-	"\tuser_args\x18\b \x03(\tR\buserArgsB\x11\n" +
+	"\tuser_args\x18\b \x03(\tR\buserArgs\x12!\n" +
+	"\fimage_config\x18\t \x01(\fR\vimageConfigB\x11\n" +
 	"\x0f_restart_policy\"\xa2\x02\n" +
 	"\x16CreateContainerRequest\x12\x1d\n" +
 	"\n" +

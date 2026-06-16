@@ -54,7 +54,7 @@ func (f *fakeContainerd) ListLayers(ctx context.Context) ([]*agentpb.LayerHeader
 func (f *fakeContainerd) WriteLayer(ctx context.Context, digest string, reader io.Reader, size int64) error {
 	return nil
 }
-func (f *fakeContainerd) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error {
+func (f *fakeContainerd) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	return nil
 }
 func (f *fakeContainerd) CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error {

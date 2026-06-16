@@ -162,7 +162,7 @@ func (m *statefulContainerdClient) WriteLayer(_ context.Context, digest string, 
 	return nil
 }
 
-func (m *statefulContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader) error {
+func (m *statefulContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader, _ []byte) error {
 	return nil
 }
 

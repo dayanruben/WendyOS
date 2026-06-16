@@ -85,6 +85,12 @@ message RunContainerLayersRequest {
 
     // User-provided runtime arguments to append to the container entrypoint.
     repeated string user_args = 8;
+
+    // OCI image config JSON (the config blob produced by the image builder),
+    // carrying Cmd/Entrypoint/Env/WorkingDir/User. Required by the chunk-diff
+    // path so the assembled image preserves the original runtime config; when
+    // empty the agent synthesises a minimal config (legacy behaviour).
+    bytes image_config = 9;
 }
 
 message CreateContainerRequest {

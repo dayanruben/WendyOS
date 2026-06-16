@@ -32,10 +32,14 @@ type localLayer struct {
 // raw tar (by media type), and returns layers in manifest order with
 //
 //	DiffID = "sha256:" + hex(sha256(rawTar))
-func readOCILayoutLayers(ociTarPath string) ([]localLayer, error) {
+//
+// It also returns the raw OCI image config blob (the JSON carrying
+// Cmd/Entrypoint/Env/WorkingDir/User) so the agent can preserve the original
+// runtime config when assembling the image from chunks.
+func readOCILayoutLayers(ociTarPath string) ([]localLayer, []byte, error) {
 	f, err := os.Open(ociTarPath)
 	if err != nil {
-		return nil, fmt.Errorf("open OCI tar: %w", err)
+		return nil, nil, fmt.Errorf("open OCI tar: %w", err)
 	}
 	defer f.Close()
 
@@ -50,11 +54,11 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading OCI tar: %w", err)
+			return nil, nil, fmt.Errorf("reading OCI tar: %w", err)
 		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
-			return nil, fmt.Errorf("reading blob %q: %w", hdr.Name, err)
+			return nil, nil, fmt.Errorf("reading blob %q: %w", hdr.Name, err)
 		}
 		switch {
 		case hdr.Name == "index.json":
@@ -66,7 +70,7 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, error) {
 	}
 
 	if indexJSON == nil {
-		return nil, fmt.Errorf("OCI tar missing index.json")
+		return nil, nil, fmt.Errorf("OCI tar missing index.json")
 	}
 
 	// Parse index.json to find the image manifest descriptor.
@@ -77,10 +81,10 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, error) {
 		} `json:"manifests"`
 	}
 	if err := json.Unmarshal(indexJSON, &index); err != nil {
-		return nil, fmt.Errorf("parsing index.json: %w", err)
+		return nil, nil, fmt.Errorf("parsing index.json: %w", err)
 	}
 	if len(index.Manifests) == 0 {
-		return nil, fmt.Errorf("index.json has no manifests")
+		return nil, nil, fmt.Errorf("index.json has no manifests")
 	}
 
 	// Pick the first image manifest (skip manifest-list entries without
@@ -97,50 +101,68 @@ func readOCILayoutLayers(ociTarPath string) ([]localLayer, error) {
 		}
 	}
 	if manifestDigest == "" {
-		return nil, fmt.Errorf("no image manifest found in index.json")
+		return nil, nil, fmt.Errorf("no image manifest found in index.json")
 	}
 
 	manifestHex, err := digestToHex(manifestDigest)
 	if err != nil {
-		return nil, fmt.Errorf("invalid manifest digest %q: %w", manifestDigest, err)
+		return nil, nil, fmt.Errorf("invalid manifest digest %q: %w", manifestDigest, err)
 	}
 	manifestData, ok := blobs[manifestHex]
 	if !ok {
-		return nil, fmt.Errorf("manifest blob %s not found in OCI tar", manifestDigest)
+		return nil, nil, fmt.Errorf("manifest blob %s not found in OCI tar", manifestDigest)
 	}
 
-	// Parse the manifest to get layer descriptors.
+	// Parse the manifest to get the config descriptor and layer descriptors.
 	var manifest struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
 		Layers []struct {
 			MediaType string `json:"mediaType"`
 			Digest    string `json:"digest"`
 		} `json:"layers"`
 	}
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, fmt.Errorf("parsing manifest: %w", err)
+		return nil, nil, fmt.Errorf("parsing manifest: %w", err)
+	}
+
+	// Fetch the image config blob so the runtime config (Cmd/Entrypoint/Env/
+	// WorkingDir/User) survives reassembly on the device.
+	var imageConfig []byte
+	if manifest.Config.Digest != "" {
+		configHex, err := digestToHex(manifest.Config.Digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid config digest %q: %w", manifest.Config.Digest, err)
+		}
+		cfg, ok := blobs[configHex]
+		if !ok {
+			return nil, nil, fmt.Errorf("config blob %s not found in OCI tar", manifest.Config.Digest)
+		}
+		imageConfig = cfg
 	}
 
 	layers := make([]localLayer, 0, len(manifest.Layers))
 	for i, desc := range manifest.Layers {
 		layerHex, err := digestToHex(desc.Digest)
 		if err != nil {
-			return nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
+			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
 		}
 		blobData, ok := blobs[layerHex]
 		if !ok {
-			return nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
+			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
 		}
 
 		rawTar, err := decompressLayer(blobData, desc.MediaType)
 		if err != nil {
-			return nil, fmt.Errorf("layer %d decompression: %w", i, err)
+			return nil, nil, fmt.Errorf("layer %d decompression: %w", i, err)
 		}
 
 		h := sha256.Sum256(rawTar)
 		diffID := "sha256:" + hex.EncodeToString(h[:])
 		layers = append(layers, localLayer{DiffID: diffID, Tar: rawTar})
 	}
-	return layers, nil
+	return layers, imageConfig, nil
 }
 
 // decompressLayer decompresses blobData according to the OCI/Docker layer

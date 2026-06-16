@@ -1720,7 +1720,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, os.Stdout, os.Stderr); err != nil {
 		return err
 	}
-	layers, err := readOCILayoutLayers(ociTar)
+	layers, imageConfig, err := readOCILayoutLayers(ociTar)
 	if err != nil {
 		return err
 	}
@@ -1741,6 +1741,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		AppName:       appCfg.AppID,
 		Layers:        headers,
 		AppConfig:     appConfigData,
+		ImageConfig:   imageConfig,
 		RestartPolicy: resolveRestartPolicy(opts),
 		UserArgs:      opts.userArgs,
 	})

@@ -288,7 +288,7 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 				}
 			}
 		}
-		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers); err != nil {
+		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers, req.GetImageConfig()); err != nil {
 			return status.Errorf(codes.Internal, "failed to assemble image: %v", err)
 		}
 	}

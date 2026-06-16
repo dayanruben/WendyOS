@@ -73,7 +73,7 @@ func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType
 	diffID := "sha256:" + sha256Hex(diffIDBytes)
 	layerDigest := "sha256:" + sha256Hex(blobData)
 
-	configBytes := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["` + diffID + `"]}}`)
+	configBytes := []byte(`{"architecture":"amd64","os":"linux","config":{"Cmd":["python","app.py"],"WorkingDir":"/app"},"rootfs":{"type":"layers","diff_ids":["` + diffID + `"]}}`)
 	configDigest := "sha256:" + sha256Hex(configBytes)
 
 	manifest := map[string]any{
@@ -130,7 +130,7 @@ func TestReadOCILayoutLayersUncompressed(t *testing.T) {
 	want := []byte("hello-tar-bytes")
 	writeMinimalOCILayout(t, ociTar, want, "application/vnd.oci.image.layer.v1.tar", want)
 
-	layers, err := readOCILayoutLayers(ociTar)
+	layers, imageConfig, err := readOCILayoutLayers(ociTar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +142,15 @@ func TestReadOCILayoutLayersUncompressed(t *testing.T) {
 	}
 	if layers[0].DiffID != "sha256:"+sha256Hex(want) {
 		t.Fatalf("diff id mismatch: %s", layers[0].DiffID)
+	}
+	// The image config blob must be returned and carry the runtime config
+	// (Cmd/WorkingDir); otherwise the assembled container would have no command
+	// and exit immediately.
+	if len(imageConfig) == 0 {
+		t.Fatal("expected non-empty image config blob")
+	}
+	if !bytes.Contains(imageConfig, []byte(`"app.py"`)) || !bytes.Contains(imageConfig, []byte(`/app`)) {
+		t.Fatalf("image config missing Cmd/WorkingDir: %s", imageConfig)
 	}
 }
 
@@ -163,7 +172,7 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 
 	writeMinimalOCILayout(t, ociTar, compressedBytes, "application/vnd.oci.image.layer.v1.tar+gzip", want)
 
-	layers, err := readOCILayoutLayers(ociTar)
+	layers, _, err := readOCILayoutLayers(ociTar)
 	if err != nil {
 		t.Fatal(err)
 	}

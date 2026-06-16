@@ -257,7 +257,7 @@ func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType,
 	}
 }
 
-func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error {
+func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
 	is := c.client.ImageService()
@@ -297,16 +297,27 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 		diffIDs = append(diffIDs, did)
 	}
 
-	// Build OCI image config.
+	// Build the OCI image config. When the caller supplies the original config
+	// blob (chunk-diff path), preserve it so the runtime config — Cmd,
+	// Entrypoint, Env, WorkingDir, User — survives reassembly; otherwise a
+	// container created from this image would have no command and exit
+	// immediately. We override RootFS.DiffIDs with the diff IDs we just computed
+	// so the config always matches the layers in this manifest. When no config
+	// is supplied we fall back to a minimal synthesized config (legacy callers).
 	imgConfig := ocispec.Image{
 		Platform: ocispec.Platform{
 			Architecture: "arm64",
 			OS:           "linux",
 		},
-		RootFS: ocispec.RootFS{
-			Type:    "layers",
-			DiffIDs: diffIDs,
-		},
+	}
+	if len(imageConfig) > 0 {
+		if err := json.Unmarshal(imageConfig, &imgConfig); err != nil {
+			return fmt.Errorf("parsing supplied image config: %w", err)
+		}
+	}
+	imgConfig.RootFS = ocispec.RootFS{
+		Type:    "layers",
+		DiffIDs: diffIDs,
 	}
 	configData, err := json.Marshal(imgConfig)
 	if err != nil {
