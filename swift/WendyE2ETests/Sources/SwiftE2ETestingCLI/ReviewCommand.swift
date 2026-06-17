@@ -123,8 +123,9 @@ extension ReviewCommand {
             repoURL: repoURL,
             runURL: runURL
         )
-        try enforceRunReportReviewContract(in: runURL, reviewer: reviewer)
+        let reviewFiles = try enforceRunReportReviewContract(in: runURL, reviewer: reviewer)
         print("==> Swift E2E run AI review complete")
+        print("    Review files:   \(reviewFiles)")
 
     }
 }
@@ -595,6 +596,7 @@ private func runReviewPrompt(
         to: &lines,
         writableScopes: "report",
         reviewer: reviewer,
+        reviewDirectoryURL: runURL.appendingPathComponent(reviewDirectoryName, isDirectory: true),
         reviewDirectoryName: reviewDirectoryName,
         overwrite: overwrite
     )
@@ -640,14 +642,19 @@ private func appendReviewOutputContract(
     to lines: inout [String],
     writableScopes: String,
     reviewer: String,
+    reviewDirectoryURL: URL,
     reviewDirectoryName: String,
     overwrite: Bool
 ) {
     lines.append("")
     lines.append("## Output contract")
     lines.append("")
+    lines.append("Review files must be written under this exact absolute directory:")
+    lines.append("")
+    lines.append("`\(reviewDirectoryURL.path)`")
+    lines.append("")
     lines.append(
-        "Write one Markdown file per actionable review issue under the top-level `\(reviewDirectoryName)/` directory. Writable scopes for this prompt: \(writableScopes). Use the absolute review directory listed above; do not create review files in the repository root."
+        "Create that directory if needed, then write each review file with an absolute path inside it, for example `\(reviewDirectoryURL.appendingPathComponent("seed-cache-fixtures-before-listing.md").path)`. Writable scopes for this prompt: \(writableScopes). Do not write review files under the repository checkout, package directory, current working directory, or any relative `\(reviewDirectoryName)/` path."
     )
     lines.append(
         "The file name must be the review title slug with `.md`: lowercase ASCII letters/digits, non-alphanumerics replaced by `-`, repeated dashes collapsed, and leading/trailing dashes removed. Example: `seed-cache-fixtures-before-listing.md`."
@@ -966,8 +973,9 @@ private func removeRunReviews(in directoryURL: URL, reviewer: String) {
     )
 }
 
-private func enforceRunReportReviewContract(in runURL: URL, reviewer: String) throws {
-    _ = try enforceReviews(
+@discardableResult
+private func enforceRunReportReviewContract(in runURL: URL, reviewer: String) throws -> Int {
+    try enforceReviews(
         in: runURL,
         expectedScope: "report",
         expectedReviewer: reviewer,
