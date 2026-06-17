@@ -107,8 +107,10 @@ The serial entitlement grants a container access to a serial tty node so it can 
 
 The container receives:
 - A bind mount of the named node `/dev/<device>` (e.g. `/dev/ttyACM0`)
-- A cgroup device rule allowing the node's kernel major with `rw` access — `ttyACM` = 166, `ttyUSB` = 188, `ttyAMA` = 204, `ttyS` = 4
+- A cgroup device rule scoped to **exactly that device's** `major:minor` with `rw` access (no `mknod`). The node is resolved by `stat()` on the host at deploy time, so the rule grants access to that one device only — not the whole kernel major. (Expected majors: `ttyACM` = 166, `ttyUSB` = 188, `ttyAMA` = 204, `ttyS` = 4.)
 - Membership in the `dialout` group (GID 20), which owns serial tty nodes on Debian/Ubuntu hosts
+
+> The device must be connected when you deploy: Wendy resolves its `major:minor` at container creation and fails fast with a clear error if `/dev/<device>` is absent.
 
 ### When to use serial vs USB
 
@@ -119,7 +121,7 @@ The container receives:
 
 Use `serial` for serial ports and `usb` for raw USB protocols — they expose different device majors. The SO-101's `/dev/ttyACM0` is reached with `serial`, not `usb`.
 
-> **Security note:** a serial entitlement opens the whole kernel major, so the container can reach *every* serial device of that type on the host (e.g. all `ttyACM*` nodes), not just one adapter. This is the same major-level trade-off the `camera` and `i2c` entitlements make, because hotplugging re-mints the minor numbers.
+> **Security note:** the cgroup rule is scoped to the named device's exact `major:minor`, so — unlike a whole-major grant — it never exposes other devices that share the major (e.g. other `ttyACM*` adapters, or, for `ttyS`/major 4, the virtual consoles `/dev/tty0..63`). If the device is unplugged and reconnects with a different `minor`, redeploy the app so Wendy re-resolves it.
 
 ## Persist
 
