@@ -78,25 +78,103 @@ func TestSanitizeLogs_TruncatesBodyAndScrubsAttrs(t *testing.T) {
 }
 
 func TestSanitizeMetrics_ScrubsDataPointAttrs(t *testing.T) {
-	req := &otelpb.ExportMetricsServiceRequest{
-		ResourceMetrics: []*otelpb.ResourceMetrics{{
-			ScopeMetrics: []*otelpb.ScopeMetrics{{
-				Metrics: []*otelpb.Metric{{
-					Name: "m",
-					Data: &otelpb.Metric_Gauge{Gauge: &otelpb.Gauge{
-						DataPoints: []*otelpb.NumberDataPoint{{
-							Attributes: []*otelpb.KeyValue{kv("api_key", "k"), kv("region", "us")},
-						}},
+	denyAttr := kv("api_key", "k")
+	safeAttr := kv("region", "us")
+
+	tests := []struct {
+		name   string
+		metric *otelpb.Metric
+		getDP  func(m *otelpb.Metric) []*otelpb.KeyValue
+	}{
+		{
+			name: "Gauge",
+			metric: &otelpb.Metric{
+				Name: "gauge",
+				Data: &otelpb.Metric_Gauge{Gauge: &otelpb.Gauge{
+					DataPoints: []*otelpb.NumberDataPoint{{
+						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
 					}},
 				}},
-			}},
-		}},
+			},
+			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+				return m.GetGauge().GetDataPoints()[0].GetAttributes()
+			},
+		},
+		{
+			name: "Sum",
+			metric: &otelpb.Metric{
+				Name: "sum",
+				Data: &otelpb.Metric_Sum{Sum: &otelpb.Sum{
+					DataPoints: []*otelpb.NumberDataPoint{{
+						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+					}},
+				}},
+			},
+			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+				return m.GetSum().GetDataPoints()[0].GetAttributes()
+			},
+		},
+		{
+			name: "Histogram",
+			metric: &otelpb.Metric{
+				Name: "histogram",
+				Data: &otelpb.Metric_Histogram{Histogram: &otelpb.Histogram{
+					DataPoints: []*otelpb.HistogramDataPoint{{
+						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+					}},
+				}},
+			},
+			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+				return m.GetHistogram().GetDataPoints()[0].GetAttributes()
+			},
+		},
+		{
+			name: "ExponentialHistogram",
+			metric: &otelpb.Metric{
+				Name: "exp_histogram",
+				Data: &otelpb.Metric_ExponentialHistogram{ExponentialHistogram: &otelpb.ExponentialHistogram{
+					DataPoints: []*otelpb.ExponentialHistogramDataPoint{{
+						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+					}},
+				}},
+			},
+			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+				return m.GetExponentialHistogram().GetDataPoints()[0].GetAttributes()
+			},
+		},
+		{
+			name: "Summary",
+			metric: &otelpb.Metric{
+				Name: "summary",
+				Data: &otelpb.Metric_Summary{Summary: &otelpb.Summary{
+					DataPoints: []*otelpb.SummaryDataPoint{{
+						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+					}},
+				}},
+			},
+			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+				return m.GetSummary().GetDataPoints()[0].GetAttributes()
+			},
+		},
 	}
-	sanitizeMetrics(req)
 
-	dp := req.GetResourceMetrics()[0].GetScopeMetrics()[0].GetMetrics()[0].GetGauge().GetDataPoints()[0]
-	if len(dp.GetAttributes()) != 1 || dp.GetAttributes()[0].GetKey() != "region" {
-		t.Errorf("datapoint attrs not scrubbed: %+v", dp.GetAttributes())
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &otelpb.ExportMetricsServiceRequest{
+				ResourceMetrics: []*otelpb.ResourceMetrics{{
+					ScopeMetrics: []*otelpb.ScopeMetrics{{
+						Metrics: []*otelpb.Metric{tc.metric},
+					}},
+				}},
+			}
+			sanitizeMetrics(req)
+
+			m := req.GetResourceMetrics()[0].GetScopeMetrics()[0].GetMetrics()[0]
+			attrs := tc.getDP(m)
+			if len(attrs) != 1 || attrs[0].GetKey() != "region" {
+				t.Errorf("datapoint attrs not scrubbed correctly: %+v", attrs)
+			}
+		})
 	}
 }
 
@@ -107,6 +185,13 @@ func TestSanitizeTraces_ScrubsSpanAttrs(t *testing.T) {
 				Spans: []*otelpb.Span{{
 					Name:       "s",
 					Attributes: []*otelpb.KeyValue{kv("credential", "c"), kv("route", "/x")},
+					Events: []*otelpb.Span_Event{{
+						Name:       "e",
+						Attributes: []*otelpb.KeyValue{kv("api_key", "secret"), kv("event_type", "click")},
+					}},
+					Links: []*otelpb.Span_Link{{
+						Attributes: []*otelpb.KeyValue{kv("token", "t"), kv("link_kind", "parent")},
+					}},
 				}},
 			}},
 		}},
@@ -116,5 +201,13 @@ func TestSanitizeTraces_ScrubsSpanAttrs(t *testing.T) {
 	sp := req.GetResourceSpans()[0].GetScopeSpans()[0].GetSpans()[0]
 	if len(sp.GetAttributes()) != 1 || sp.GetAttributes()[0].GetKey() != "route" {
 		t.Errorf("span attrs not scrubbed: %+v", sp.GetAttributes())
+	}
+	evAttrs := sp.GetEvents()[0].GetAttributes()
+	if len(evAttrs) != 1 || evAttrs[0].GetKey() != "event_type" {
+		t.Errorf("event attrs not scrubbed: %+v", evAttrs)
+	}
+	lnAttrs := sp.GetLinks()[0].GetAttributes()
+	if len(lnAttrs) != 1 || lnAttrs[0].GetKey() != "link_kind" {
+		t.Errorf("link attrs not scrubbed: %+v", lnAttrs)
 	}
 }

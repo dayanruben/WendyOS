@@ -42,18 +42,18 @@ func sanitizeAttributes(attrs []*otelpb.KeyValue) []*otelpb.KeyValue {
 		return attrs
 	}
 	out := make([]*otelpb.KeyValue, 0, min(len(attrs), maxLabels))
-	for _, kv := range attrs {
+	for _, attr := range attrs {
 		if len(out) >= maxLabels {
 			break
 		}
-		k := kv.GetKey()
+		k := attr.GetKey()
 		if isSensitiveLabelKey(k) {
 			continue
 		}
 		if len(k) > maxLabelKeyLen {
 			k = k[:maxLabelKeyLen]
 		}
-		v := kv.GetValue()
+		v := attr.GetValue()
 		if s := v.GetStringValue(); len(s) > maxLabelValLen {
 			v = &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: s[:maxLabelValLen]}}
 		}
