@@ -24,6 +24,10 @@ Guidelines:
 - Avoid `severity: "info"` unless the note is genuinely useful and actionable.
 - Do not write pass/OK reviews, status summaries, or files that only restate
   counts already present in the report.
+- Treat generated `// AI:` review requests from test source as explicit requests
+  for qualitative review, even when the matching tests pass. Inspect the
+  relevant source and run artifacts, then write an issue only when there is an
+  actionable concern.
 - If there are no actionable failures or concerns, write no review files.
 - In diff mode, prefer issues plausibly related to the supplied diff. Changed or
   newly added E2E specs/tests are in scope. If a setup, infrastructure, auth,

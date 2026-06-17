@@ -603,6 +603,7 @@ private func runReviewPrompt(
     lines.append("")
     appendRunOverviewReportFocus(overview, to: &lines)
     try appendRunReviewAttemptArtifacts(runURL: runURL, to: &lines)
+    try appendRunReviewAIRequests(testsURL: testsURL, repoURL: repoURL, to: &lines)
     return lines.joined(separator: "\n")
 }
 
@@ -1018,6 +1019,118 @@ private func enforceReviews(
         }
     }
     return count
+}
+
+private struct RunReviewAIRequest {
+    var path: String
+    var line: Int
+    var text: String
+}
+
+private func appendRunReviewAIRequests(
+    testsURL: URL,
+    repoURL: URL,
+    to lines: inout [String]
+) throws {
+    let requests = try loadRunReviewAIRequests(testsURL: testsURL, repoURL: repoURL)
+    lines.append("## Explicit AI review requests from test source")
+    lines.append("")
+    lines.append(
+        "These `// AI:` comments are intentional qualitative review requests from the E2E specs. Treat them as in scope even when the matching tests pass; inspect the referenced test source and run artifacts before deciding whether an actionable issue exists."
+    )
+    lines.append("")
+
+    guard !requests.isEmpty else {
+        lines.append("- None recorded.")
+        lines.append("")
+        return
+    }
+
+    for request in requests {
+        lines.append("- `\(request.path):\(request.line)`: \(request.text)")
+    }
+    lines.append("")
+}
+
+private func loadRunReviewAIRequests(testsURL: URL, repoURL: URL) throws -> [RunReviewAIRequest] {
+    var requests: [RunReviewAIRequest] = []
+    for sourceURL in try reviewTestSourceFiles(in: testsURL) {
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let lines = source.components(separatedBy: .newlines)
+        var index = 0
+        while index < lines.count {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            guard let range = trimmed.range(of: "// AI:") else {
+                index += 1
+                continue
+            }
+
+            var block: [String] = []
+            let firstLine = trimmed[range.upperBound...]
+                .trimmingCharacters(in: .whitespaces)
+            if !firstLine.isEmpty {
+                block.append(firstLine)
+            }
+
+            var nextIndex = index + 1
+            while nextIndex < lines.count {
+                let next = lines[nextIndex].trimmingCharacters(in: .whitespaces)
+                guard next.hasPrefix("//"), !next.contains("// AI:") else { break }
+                let continuation = stripReviewCommentPrefix(from: next)
+                if !continuation.isEmpty {
+                    block.append(continuation)
+                }
+                nextIndex += 1
+            }
+
+            let text = block.joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                requests.append(
+                    RunReviewAIRequest(
+                        path: reviewRelativePath(sourceURL, base: repoURL),
+                        line: index + 1,
+                        text: text
+                    )
+                )
+            }
+            index = nextIndex
+        }
+    }
+    return requests.sorted {
+        if $0.path != $1.path { return $0.path < $1.path }
+        return $0.line < $1.line
+    }
+}
+
+private func reviewTestSourceFiles(in testsURL: URL) throws -> [URL] {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: testsURL.path, isDirectory: &isDirectory) else {
+        throw ValidationError("Tests directory not found: \(testsURL.path)")
+    }
+    if !isDirectory.boolValue {
+        return testsURL.pathExtension == "swift" ? [testsURL] : []
+    }
+    guard let enumerator = FileManager.default.enumerator(atPath: testsURL.path) else {
+        throw ValidationError("Tests directory cannot be read: \(testsURL.path)")
+    }
+    return enumerator.compactMap { element -> URL? in
+        guard let relativePath = element as? String, relativePath.hasSuffix(".swift") else {
+            return nil
+        }
+        return testsURL.appendingPathComponent(relativePath)
+    }.sorted { $0.path < $1.path }
+}
+
+private func stripReviewCommentPrefix(from line: String) -> String {
+    var value = line
+    if value.hasPrefix("//") {
+        value.removeFirst(2)
+    }
+    if value.hasPrefix(" ") {
+        value.removeFirst()
+    }
+    return value.trimmingCharacters(in: .whitespaces)
 }
 
 private func defaultReviewTestsDir(packageURL: URL) -> URL {
