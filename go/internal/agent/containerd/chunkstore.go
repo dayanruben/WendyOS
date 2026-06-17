@@ -1,15 +1,14 @@
 package containerd
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
-	"strconv"
-	"strings"
-	"sync"
+	"path/filepath"
 
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
@@ -21,101 +20,141 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
 
-const (
-	// maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
-	// chunks of at most chunk.MaxSize (256 KiB); this 4 MiB ceiling leaves ample
-	// headroom for legitimate clients while rejecting absurdly large payloads
-	// before they are buffered.
-	maxStagedChunkBytes = 4 << 20
-	// fallbackStagingBudget is used when physical RAM cannot be determined
-	// (e.g. /proc/meminfo unavailable on non-Linux dev/test hosts).
-	fallbackStagingBudget = 64 << 30
-)
+// maxStagedChunkBytes bounds a single staged chunk. The CDC chunker emits
+// chunks of at most chunk.MaxSize (256 KiB); this 4 MiB ceiling leaves ample
+// headroom for legitimate clients while rejecting absurdly large payloads.
+const maxStagedChunkBytes = 4 << 20
 
-// staging holds chunk bytes received via StageChunk until the next
-// AssembleLayerFromChunks consumes them. Process-lifetime, in-memory.
-//
-// maxBytes caps the aggregate buffer: WriteChunks accepts bytes from an
-// (mTLS-authenticated) network peer into this process-lifetime map, so without
-// a ceiling a buggy or hostile client could stream past physical RAM and OOM
-// the agent. The ceiling is derived from the device's own RAM so it scales
-// across the hardware range — a 128 GiB Jetson AGX Thor still admits large
-// LLM-weight layers, while a 4 GiB Pi is protected — rather than imposing one
-// fixed value that is simultaneously too small for big devices and too large
-// for small ones.
+// defaultChunkStagingDir is where chunks received via WriteChunks are buffered
+// until AssembleLayerFromChunks consumes them. It is deliberately disk-backed
+// (not an in-memory map) so reassembling a multi-GiB layer — e.g. LLM weights
+// on a Jetson AGX Thor — does not consume device RAM that belongs to the apps.
+const defaultChunkStagingDir = "/var/lib/wendy/chunk-staging"
+
+// staging persists chunk bytes received via StageChunk to disk, keyed by hash,
+// until the next AssembleLayerFromChunks streams them into the content store.
+// Disk — not the agent heap — is the staging budget, so peak memory during a
+// deploy is one chunk rather than the whole uncompressed layer (×2 with the old
+// reconstruct buffer). Distinct chunks map to distinct files, so concurrent
+// deploys staging different content do not collide.
 type staging struct {
-	mu         sync.Mutex
-	m          map[[32]byte][]byte
-	totalBytes int64
-	maxBytes   int64
+	dir string
 }
 
-func newStaging() *staging {
-	return &staging{m: make(map[[32]byte][]byte), maxBytes: stagingBudget()}
+func newStaging(dir string) *staging { return &staging{dir: dir} }
+
+// path returns the on-disk location for a chunk hash.
+func (s *staging) path(h [32]byte) string {
+	return filepath.Join(s.dir, hex.EncodeToString(h[:]))
 }
 
-// stagingBudget returns the aggregate staging cap as 90% of physical RAM,
-// falling back to fallbackStagingBudget when total memory is unknown.
-func stagingBudget() int64 {
-	if total := systemMemTotalBytes(); total > 0 {
-		return total / 10 * 9
-	}
-	return fallbackStagingBudget
+// has reports whether the chunk is already staged on disk.
+func (s *staging) has(h [32]byte) bool {
+	_, err := os.Stat(s.path(h))
+	return err == nil
 }
 
-// systemMemTotalBytes reads MemTotal from /proc/meminfo (Linux). Returns 0 when
-// the file is absent or unparseable so callers fall back to a fixed budget.
-func systemMemTotalBytes() int64 {
-	f, err := os.Open("/proc/meminfo")
+// read returns the staged chunk bytes, or an os.IsNotExist error if absent.
+func (s *staging) read(h [32]byte) ([]byte, error) {
+	return os.ReadFile(s.path(h))
+}
+
+// statLen returns the staged chunk's size without reading it, false if absent.
+func (s *staging) statLen(h [32]byte) (int64, bool) {
+	fi, err := os.Stat(s.path(h))
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) >= 2 && fields[0] == "MemTotal:" {
-			kb, err := strconv.ParseInt(fields[1], 10, 64)
-			if err != nil {
-				return 0
-			}
-			return kb * 1024
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return 0
-	}
-	return 0
+	return fi.Size(), true
 }
 
-// reconstruct concatenates chunk bytes in order. fetch returns the bytes for a
-// hash (from staging or an indexed blob range). Verifies each chunk's hash.
-func reconstruct(order [][32]byte, fetch func([32]byte) ([]byte, error)) ([]byte, error) {
-	var buf bytes.Buffer
-	for i, h := range order {
-		b, err := fetch(h)
+// write stores data for hash h atomically (temp file + rename), creating the
+// staging directory on demand. It is idempotent: a chunk already on disk is
+// left untouched. Files are written 0600 — readable only by the agent user.
+func (s *staging) write(h [32]byte, data []byte) error {
+	if s.has(h) {
+		return nil
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(s.dir, "stage-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, s.path(h)); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// remove deletes a staged chunk, ignoring a missing file.
+func (s *staging) remove(h [32]byte) {
+	_ = os.Remove(s.path(h))
+}
+
+// chunkSource resolves a chunk hash to its raw bytes, returning (nil, nil) when
+// the chunk is available from no source so the caller can report it as missing.
+type chunkSource func(h [32]byte) ([]byte, error)
+
+// chunkStream is an io.Reader that yields the chunks named by order in sequence,
+// holding at most one chunk in memory at a time and verifying each chunk's
+// SHA-256 as it is served. Feeding it to content.WriteBlob reassembles a layer
+// without ever buffering the whole layer in RAM; WriteBlob independently
+// verifies the overall layer digest as it streams.
+type chunkStream struct {
+	order [][32]byte
+	src   chunkSource
+	idx   int
+	cur   *bytes.Reader
+}
+
+func (s *chunkStream) Read(p []byte) (int, error) {
+	for {
+		if s.cur != nil {
+			n, err := s.cur.Read(p)
+			if err == io.EOF {
+				s.cur = nil
+				continue
+			}
+			return n, err
+		}
+		if s.idx >= len(s.order) {
+			return 0, io.EOF
+		}
+		h := s.order[s.idx]
+		s.idx++
+		b, err := s.src(h)
 		if err != nil {
-			return nil, fmt.Errorf("chunk %d: %w", i, err)
+			return 0, fmt.Errorf("chunk %d: %w", s.idx-1, err)
 		}
 		if b == nil {
-			return nil, fmt.Errorf("chunk %d (%x) unavailable", i, h)
+			return 0, fmt.Errorf("chunk %d (%x) unavailable", s.idx-1, h)
 		}
 		if sha256.Sum256(b) != h {
-			return nil, fmt.Errorf("chunk %d hash mismatch", i)
+			return 0, fmt.Errorf("chunk %d hash mismatch", s.idx-1)
 		}
-		buf.Write(b)
+		s.cur = bytes.NewReader(b)
 	}
-	return buf.Bytes(), nil
 }
 
 func (c *Client) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
 	missing := c.chunkIndex.Missing(hashes)
-	// Exclude any already staged this session.
-	c.staging.mu.Lock()
-	defer c.staging.mu.Unlock()
+	// Exclude any already staged on disk (possibly from an earlier session).
 	var out [][32]byte
 	for _, h := range missing {
-		if _, ok := c.staging.m[h]; !ok {
+		if !c.staging.has(h) {
 			out = append(out, h)
 		}
 	}
@@ -129,17 +168,9 @@ func (c *Client) StageChunk(_ context.Context, h [32]byte, data []byte) error {
 	if sha256.Sum256(data) != h {
 		return fmt.Errorf("staged chunk hash mismatch")
 	}
-	c.staging.mu.Lock()
-	defer c.staging.mu.Unlock()
-	// Idempotent: a re-sent chunk must not be double-counted against the cap.
-	if _, ok := c.staging.m[h]; ok {
-		return nil
+	if err := c.staging.write(h, data); err != nil {
+		return fmt.Errorf("staging chunk to disk: %w", err)
 	}
-	if c.staging.totalBytes+int64(len(data)) > c.staging.maxBytes {
-		return status.Errorf(codes.ResourceExhausted, "staging buffer full: %d bytes staged, limit %d", c.staging.totalBytes, c.staging.maxBytes)
-	}
-	c.staging.m[h] = data
-	c.staging.totalBytes += int64(len(data))
 	return nil
 }
 
@@ -168,50 +199,91 @@ func (c *Client) readIndexedChunk(ctx context.Context, loc chunkLoc) ([]byte, er
 	return b, nil
 }
 
+// chunkLen returns a chunk's length from its staged file or its indexed blob
+// range, without reading the bytes. ok is false when the chunk is unavailable.
+func (c *Client) chunkLen(h [32]byte) (int64, bool) {
+	if n, ok := c.staging.statLen(h); ok {
+		return n, true
+	}
+	if loc, ok := c.chunkIndex.Has(h); ok {
+		return int64(loc.Len), true
+	}
+	return 0, false
+}
+
 func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error {
 	nsCtx := c.withNamespace(ctx)
 
 	// Fast path: if the (uncompressed) layer blob already exists in the content
 	// store, it was reassembled and indexed on a previous deploy. Skip the
-	// expensive reconstruct + re-hash + re-chunk + index-save entirely — for an
-	// unchanged layer this avoids reading and re-chunking the full layer on
-	// every deploy, which dominates redeploy latency for large base images.
+	// expensive reconstruct + re-chunk + index-save entirely — for an unchanged
+	// layer this avoids reading and re-chunking the full layer on every deploy,
+	// which dominates redeploy latency for large base images.
 	if dgst, err := digest.Parse(diffID); err == nil {
 		if _, err := c.client.ContentStore().Info(nsCtx, dgst); err == nil {
 			return nil
 		}
 	}
 
-	fetch := func(h [32]byte) ([]byte, error) {
-		c.staging.mu.Lock()
-		b, ok := c.staging.m[h]
-		c.staging.mu.Unlock()
-		if ok {
+	// Total layer size is the sum of the chunk lengths, resolved without reading
+	// any bytes. content.WriteBlob needs the size up front to commit the blob.
+	var total int64
+	for i, h := range hashes {
+		n, ok := c.chunkLen(h)
+		if !ok {
+			return fmt.Errorf("chunk %d (%x) unavailable", i, h)
+		}
+		total += n
+	}
+
+	// Stream the chunks straight into the content store. WriteBlob verifies the
+	// reassembled bytes hash to diffID as it writes (so a corrupt or forged
+	// stream fails the commit), which subsumes the old whole-buffer digest check.
+	src := func(h [32]byte) ([]byte, error) {
+		if b, err := c.staging.read(h); err == nil {
 			return b, nil
+		} else if !os.IsNotExist(err) {
+			return nil, err
 		}
 		if loc, ok := c.chunkIndex.Has(h); ok {
 			return c.readIndexedChunk(nsCtx, loc)
 		}
 		return nil, nil
 	}
+	stream := &chunkStream{order: hashes, src: src}
+	if err := c.WriteLayer(nsCtx, diffID, stream, total); err != nil {
+		return err
+	}
 
-	full, err := reconstruct(hashes, fetch)
+	// Re-chunk the freshly written blob by streaming it back out of the content
+	// store, so the index references this blob (offsets relative to it) without
+	// holding the layer in memory.
+	if err := c.indexLayerBlob(nsCtx, diffID); err != nil {
+		c.logger.Warn("failed to index reassembled layer", zap.String("diff_id", diffID), zap.Error(err))
+	}
+
+	// Release the staged chunks now embedded in the blob.
+	for _, h := range hashes {
+		c.staging.remove(h)
+	}
+
+	return nil
+}
+
+// indexLayerBlob re-chunks the layer blob identified by diffID by streaming it
+// from the content store, and records the chunk ranges in the persistent index.
+func (c *Client) indexLayerBlob(ctx context.Context, diffID string) error {
+	dgst, err := digest.Parse(diffID)
 	if err != nil {
 		return err
 	}
-
-	// digest == diff_id for uncompressed layers; verify before writing.
-	if got := digest.FromBytes(full).String(); got != diffID {
-		return fmt.Errorf("reassembled layer digest %s != diff_id %s", got, diffID)
-	}
-
-	if err := c.WriteLayer(nsCtx, diffID, bytes.NewReader(full), int64(len(full))); err != nil {
+	ra, err := c.client.ContentStore().ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
+	if err != nil {
 		return err
 	}
+	defer ra.Close()
 
-	// Re-chunk the canonical bytes so the index references the freshly written
-	// blob (offsets are relative to this blob).
-	refs, err := chunk.Chunk(bytes.NewReader(full))
+	refs, err := chunk.Chunk(io.NewSectionReader(ra, 0, ra.Size()))
 	if err != nil {
 		return err
 	}
@@ -219,16 +291,5 @@ func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, has
 	if err := c.chunkIndex.Save(); err != nil {
 		c.logger.Warn("failed to persist chunk index", zap.Error(err))
 	}
-
-	// Release staged chunks now embedded in the blob.
-	c.staging.mu.Lock()
-	for _, h := range hashes {
-		if b, ok := c.staging.m[h]; ok {
-			c.staging.totalBytes -= int64(len(b))
-			delete(c.staging.m, h)
-		}
-	}
-	c.staging.mu.Unlock()
-
 	return nil
 }
