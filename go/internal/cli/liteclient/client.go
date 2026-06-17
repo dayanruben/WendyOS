@@ -37,7 +37,7 @@ func NewWendyLiteClient() *WendyLiteClient {
 	return &WendyLiteClient{}
 }
 
-func (c *WendyLiteClient) Connect(address string) error {
+func (c *WendyLiteClient) ConnectInsecure(address string) error {
 	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec — device uses self-signed certs
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -52,16 +52,14 @@ func (c *WendyLiteClient) Connect(address string) error {
 	return nil
 }
 
-func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs *x509.CertPool) error {
+func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs x509.CertPool) error {
+	// Verify the certificate chain against our root CAs but skip hostname
+	// checking — devices on a local network don't have SANs.
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-	if rootCAs != nil {
-		// Verify the certificate chain against our root CAs but skip hostname
-		// checking — devices on a local network don't have SANs.
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec
-		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		Certificates:       []tls.Certificate{cert},
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true, //nolint:gosec
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, len(rawCerts))
 			for i, raw := range rawCerts {
 				c, err := x509.ParseCertificate(raw)
@@ -71,7 +69,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 				certs[i] = c
 			}
 			opts := x509.VerifyOptions{
-				Roots:         rootCAs,
+				Roots:         &rootCAs,
 				Intermediates: x509.NewCertPool(),
 				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny}, // Temporary workaround
 			}
@@ -82,9 +80,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 				return fmt.Errorf("server certificate verification failed: %w", err)
 			}
 			return nil
-		}
-	} else {
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec — device uses self-signed certs
+		},
 	}
 	conn, err := tls.Dial("tcp", address, tlsCfg)
 	if err != nil {

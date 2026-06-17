@@ -183,12 +183,11 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 			if err != nil {
 				return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
 			}
-			var rootCAs *x509.CertPool
+			rootCAs := x509.NewCertPool()
 			if certInfo.PemCertificateChain != "" {
-				rootCAs = x509.NewCertPool()
 				rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
 			}
-			if err := client.ConnectWithMutualAuthentication(addr, cert, rootCAs); err != nil {
+			if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
 				connectErrs = append(connectErrs, err)
 			} else {
 				connected = true
@@ -208,7 +207,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 			return errors.New(b.String())
 		}
 	} else {
-		if err := client.Connect(addr); err != nil {
+		if err := client.ConnectInsecure(addr); err != nil {
 			return fmt.Errorf("connect to device: %w", err)
 		}
 	}
