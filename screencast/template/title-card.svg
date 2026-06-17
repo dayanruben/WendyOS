@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1728" height="1118" viewBox="0 0 1728 1118">
+  <rect width="1728" height="1118" fill="#FFFFFF"/>
+  <rect x="96" y="96" width="1536" height="926" fill="#FFFFFF" stroke="#E5E5E5" stroke-width="2"/>
+
+  <g transform="translate(128 128)">
+    <rect x="0" y="0" width="96" height="96" fill="#000000" transform="rotate(45 48 48)"/>
+    <rect x="31" y="31" width="34" height="34" fill="#FFFFFF" transform="rotate(45 48 48)"/>
+  </g>
+
+  <text x="128" y="310" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="96" font-weight="700" fill="#000000">{{TITLE}}</text>
+
+  <g transform="translate(128 350)">
+    <rect x="0" y="0" width="116" height="48" fill="#F99C00"/>
+    <text x="58" y="32" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#000000" letter-spacing="2">BETA</text>
+  </g>
+
+  <text x="128" y="500" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="48" font-weight="500" fill="#171717">{{SUBTITLE}}</text>
+
+  <line x1="128" y1="606" x2="1600" y2="606" stroke="#E5E5E5" stroke-width="2"/>
+
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="32" fill="#737373">
+    <text x="128" y="700">{{METADATA_LINE_1}}</text>
+    <text x="128" y="758">{{METADATA_LINE_2}}</text>
+    <text x="128" y="816">{{METADATA_LINE_3}}</text>
+  </g>
+
+  <rect x="128" y="898" width="274" height="54" fill="#9FE2BF"/>
+  <text x="265" y="934" text-anchor="middle" font-family="IBM Plex Mono, SF Mono, Menlo, monospace" font-size="24" font-weight="600" fill="#000000">{{BADGE}}</text>
+</svg>
