@@ -260,6 +260,37 @@ func validateBuildArgPair(key, value string) error {
 	return nil
 }
 
+// applyDeviceBuildArgHints injects the optional device/GPU build-arg hints the
+// agent reports (WENDY_DEVICE_TYPE, WENDY_HAS_GPU, WENDY_GPU_VENDOR,
+// WENDY_JETPACK_VERSION, WENDY_CUDA_VERSION) into buildArgs. Each hint is only
+// set when the agent reports it, so Dockerfiles keep their own ARG defaults on
+// older agents. These values are device-reported and feed straight into a
+// builder CLI, so any hint that fails build-arg validation is skipped with a
+// warning rather than failing the whole deploy — e.g. a Jetson running an L4T
+// release the agent's JetPack table doesn't map reports a fallback like
+// "L4T 38.2.0", whose space is rejected by validBuildArgValueRe.
+func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.GetAgentVersionResponse) {
+	setHint := func(key, value string) {
+		if value == "" {
+			return
+		}
+		if err := validateBuildArgPair(key, value); err != nil {
+			cliLogln("Warning: ignoring device-reported build arg %s=%q: %v", key, value, err)
+			return
+		}
+		buildArgs[key] = value
+	}
+	setHint("WENDY_DEVICE_TYPE", versionResp.GetDeviceType())
+	// WENDY_HAS_GPU is a formatted bool, always allowlist-safe; only set it when
+	// the optional field is present so older agents preserve the ARG default.
+	if versionResp.HasGpu != nil {
+		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
+	}
+	setHint("WENDY_GPU_VENDOR", versionResp.GetGpuVendor())
+	setHint("WENDY_JETPACK_VERSION", versionResp.GetJetpackVersion())
+	setHint("WENDY_CUDA_VERSION", versionResp.GetCudaVersion())
+}
+
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
 	keys := make([]string, 0, len(buildArgs))
 	for k, v := range buildArgs {
@@ -1517,6 +1548,15 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 }
 
 func checkAppleContainerBuilder(ctx context.Context) error {
+	if err := checkAppleContainerCLI(ctx); err != nil {
+		return err
+	}
+	return appleContainerSystemStatus(ctx)
+}
+
+// checkAppleContainerCLI verifies the host can run the Apple Container CLI:
+// Apple silicon, the `container` binary on PATH, and a usable `--version`.
+func checkAppleContainerCLI(ctx context.Context) error {
 	if imageBuilderHostGOOS() != "darwin" || imageBuilderHostGOARCH() != "arm64" {
 		return fmt.Errorf("Apple Container builder requires an Apple silicon Mac")
 	}
@@ -1526,6 +1566,12 @@ func checkAppleContainerBuilder(ctx context.Context) error {
 	if err := imageBuilderCommandContext(ctx, "container", "--version").Run(); err != nil {
 		return fmt.Errorf("container CLI is not usable: %w", err)
 	}
+	return nil
+}
+
+// appleContainerSystemStatus reports whether the Apple Container system
+// (apiserver) is running, returning a descriptive error when it is not.
+func appleContainerSystemStatus(ctx context.Context) error {
 	cmd := imageBuilderCommandContext(ctx, "container", "system", "status")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		msg := safeCommandOutputSummary(out, 256)
@@ -1535,6 +1581,88 @@ func checkAppleContainerBuilder(ctx context.Context) error {
 		return fmt.Errorf("Apple Container system is not running%s. Run 'container system start' and try again: %w", msg, err)
 	}
 	return nil
+}
+
+// appleContainerStartTimeout bounds how long we wait for the Apple Container
+// system to become ready after `container system start`.
+// appleContainerStatusPollInterval is how often readiness is re-checked.
+// Both are vars so tests can shrink them.
+var (
+	appleContainerStartTimeout       = 60 * time.Second
+	appleContainerStatusPollInterval = 2 * time.Second
+)
+
+// ensureAppleContainerSystem verifies the Apple Container system is running and
+// offers to start it when it is not. It is called only on explicit
+// `--builder apple-container` paths; the silent auto-attempt paths keep using
+// checkAppleContainerBuilder so they fall back to Docker without side effects.
+//
+// When the system is not running and we are attached to an interactive terminal,
+// the user is prompted before starting. assumeYes (from --yes, and implicitly
+// `wendy watch`) skips the prompt and starts automatically, as does a
+// non-interactive invocation.
+func ensureAppleContainerSystem(ctx context.Context, assumeYes bool) error {
+	if err := checkAppleContainerCLI(ctx); err != nil {
+		return err
+	}
+	if appleContainerSystemStatus(ctx) == nil {
+		return nil
+	}
+
+	if isInteractiveTerminalFn() && !assumeYes {
+		if !promptYesNoFn("Apple Container system is not running. Start it now? [Y/n] ") {
+			return appleContainerSystemStatus(ctx)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "[apple-container] Starting Apple Container system...")
+	startCmd := imageBuilderCommandContext(ctx, "container", "system", "start", "--timeout", "60")
+	startOut, startErr := startCmd.CombinedOutput()
+
+	deadline := time.Now().Add(appleContainerStartTimeout)
+	for {
+		if appleContainerSystemStatus(ctx) == nil {
+			fmt.Fprintln(os.Stderr, "[apple-container] Apple Container system is ready")
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(appleContainerStatusPollInterval):
+		}
+	}
+
+	msg := safeCommandOutputSummary(startOut, 256)
+	if msg != "" {
+		msg = ": " + msg
+	}
+	if startErr != nil {
+		return fmt.Errorf("could not start Apple Container system%s: %w", msg, startErr)
+	}
+	return fmt.Errorf("Apple Container system did not become ready within %s%s; run 'container system start' manually and check 'container system status'", appleContainerStartTimeout, msg)
+}
+
+// ensureAppleContainerSystemForBuilder runs ensureAppleContainerSystem only when
+// the builder was explicitly set to apple-container. The silent auto-attempt
+// selection (no --builder, on Apple silicon) is intentionally left to
+// checkAppleContainerBuilder so it can fall back to Docker without prompting or
+// starting the system. Safe to call from any build path: it no-ops unless the
+// builder is explicit apple-container.
+func ensureAppleContainerSystemForBuilder(ctx context.Context, builder string, assumeYes bool) error {
+	if !imageBuilderWasExplicit(builder) {
+		return nil
+	}
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	if normalized != imageBuilderAppleContainer {
+		return nil
+	}
+	return ensureAppleContainerSystem(ctx, assumeYes)
 }
 
 func appleContainerBuildContextPath(projectPath string) (string, error) {
@@ -1853,7 +1981,8 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 				Certificates: []tls.Certificate{cert},
 				// Skip hostname verification: device registry certs are signed by
 				// the Wendy CA but may not include the mDNS hostname as a SAN.
-				// VerifyConnection performs full chain + EKU validation instead.
+				// VerifyConnection performs full chain validation against the Wendy
+				// CA instead.
 				InsecureSkipVerify: true, //nolint:gosec
 				MinVersion:         tls.VersionTLS12,
 				VerifyConnection: func(cs tls.ConnectionState) error {
@@ -1864,10 +1993,18 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 					for _, c := range cs.PeerCertificates[1:] {
 						intermediates.AddCert(c)
 					}
+					// Accept any EKU: Wendy device certs are mutual-auth identity
+					// certs that chain to the Wendy CA but are not issued with a
+					// serverAuth EKU, so requiring serverAuth here rejects an
+					// otherwise-trusted device registry cert. This matches the
+					// gRPC client (which does not EKU-check the device server cert)
+					// and the agent-side verifier (which accepts clientAuth or
+					// unrestricted certs). Chain validation against caPool is
+					// retained.
 					opts := x509.VerifyOptions{
 						Roots:         caPool,
 						Intermediates: intermediates,
-						KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+						KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 					}
 					_, err := cs.PeerCertificates[0].Verify(opts)
 					return err

@@ -581,7 +581,7 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 	}
 
 	cliLogln("Building Apple Container image %s for %s...", imageName, platform)
-	if err := checkAppleContainerBuilder(ctx); err != nil {
+	if err := ensureAppleContainerSystem(ctx, false); err != nil {
 		return err
 	}
 	if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err != nil {

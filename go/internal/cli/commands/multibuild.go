@@ -104,20 +104,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		cliLogln("Warning: building with WENDY_DEBUG=true — do not deploy to production.")
 		buildArgs["WENDY_DEBUG"] = "true"
 	}
-	if dt := versionResp.GetDeviceType(); dt != "" {
-		buildArgs["WENDY_DEVICE_TYPE"] = dt
-	}
-	if versionResp.HasGpu != nil {
-		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-	}
-	if v := versionResp.GetGpuVendor(); v != "" {
-		buildArgs["WENDY_GPU_VENDOR"] = v
-	}
-	if jv := versionResp.GetJetpackVersion(); jv != "" {
-		buildArgs["WENDY_JETPACK_VERSION"] = jv
-	}
-	if cv := versionResp.GetCudaVersion(); cv != "" {
-		buildArgs["WENDY_CUDA_VERSION"] = cv
+	applyDeviceBuildArgHints(buildArgs, versionResp)
+
+	// Ensure the Apple Container system is up once, before the parallel builds,
+	// so an explicit --builder apple-container prompts/starts a single time
+	// rather than racing across service goroutines.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
+		return err
 	}
 
 	// Build all service images in parallel, then create and start containers.

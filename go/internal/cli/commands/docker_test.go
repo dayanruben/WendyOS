@@ -109,6 +109,46 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 	}
 }
 
+func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	t.Cleanup(func() { imageBuilderCommandContext = oldCommand })
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "wendy-oci-123", "image.tar")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Route through the apple-container branch of the fast OCI-layout build.
+	err := buildImageToOCILayout(context.Background(), cwd, "Dockerfile", "linux/arm64",
+		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("buildImageToOCILayout(apple-container): %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	// Builds into the image store under a unique tag, exports via image save,
+	// then removes the temporary tag.
+	for _, want := range []string{
+		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00wendy-oci-build:wendy-oci-123",
+		"container\x00image\x00save\x00wendy-oci-build:wendy-oci-123\x00--platform\x00linux/arm64\x00-o\x00" + dest,
+		"container\x00image\x00rm\x00wendy-oci-build:wendy-oci-123",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("command log missing %q in:\n%s", want, log)
+		}
+	}
+}
+
 func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
 	for _, image := range []string{
 		"127.0.0.1:5000/test-app:latest",
@@ -292,7 +332,31 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.WriteString("container 1.0.0\n")
 		os.Exit(0)
 	}
+	if len(args) >= 4 && args[0] == "container" && args[1] == "system" && args[2] == "start" {
+		// When a readiness-file is configured, "start" makes the system ready by
+		// creating it (unless told to fail). This models the real start/poll loop.
+		if os.Getenv("IMAGE_BUILDER_FAIL_START") == "1" {
+			_, _ = os.Stderr.WriteString("failed to decode apiServerBuild in health check\n")
+			os.Exit(1)
+		}
+		if rf := os.Getenv("IMAGE_BUILDER_STATUS_READY_FILE"); rf != "" {
+			_ = os.WriteFile(rf, []byte("ready"), 0o644)
+		}
+		os.Exit(0)
+	}
 	if len(args) >= 3 && args[0] == "container" && args[1] == "system" && args[2] == "status" {
+		// A readiness-file gate models a system that is down until "start" runs.
+		if rf := os.Getenv("IMAGE_BUILDER_STATUS_READY_FILE"); rf != "" {
+			if _, err := os.Stat(rf); err != nil {
+				_, _ = os.Stderr.WriteString("apiserver is not running\n")
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+		if os.Getenv("IMAGE_BUILDER_FAIL_STATUS") == "1" {
+			_, _ = os.Stderr.WriteString("apiserver is not running\n")
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "container" && args[1] == "build" {
@@ -304,7 +368,130 @@ func TestImageBuilderHelperProcess(t *testing.T) {
 	if len(args) >= 3 && args[0] == "container" && args[1] == "image" && args[2] == "push" {
 		os.Exit(0)
 	}
+	if len(args) >= 5 && args[0] == "container" && args[1] == "image" && args[2] == "save" {
+		// Emit a placeholder file at the -o dest so the host-side file exists.
+		for i := 3; i < len(args)-1; i++ {
+			if args[i] == "-o" {
+				_ = os.WriteFile(args[i+1], []byte("oci-tar"), 0o644)
+			}
+		}
+		os.Exit(0)
+	}
+	if len(args) >= 4 && args[0] == "container" && args[1] == "image" && args[2] == "rm" {
+		os.Exit(0)
+	}
 	os.Exit(1)
+}
+
+// setupAppleContainerEnsureSeams installs the fakes ensureAppleContainerSystem
+// depends on (Apple silicon host, container CLI on PATH, fast timeouts) and
+// returns the path to the recorded command log.
+func setupAppleContainerEnsureSeams(t *testing.T) string {
+	t.Helper()
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldInteractive := isInteractiveTerminalFn
+	oldPrompt := promptYesNoFn
+	oldTimeout := appleContainerStartTimeout
+	oldPoll := appleContainerStatusPollInterval
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		isInteractiveTerminalFn = oldInteractive
+		promptYesNoFn = oldPrompt
+		appleContainerStartTimeout = oldTimeout
+		appleContainerStatusPollInterval = oldPoll
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	appleContainerStartTimeout = 300 * time.Millisecond
+	appleContainerStatusPollInterval = 20 * time.Millisecond
+	return logFile
+}
+
+func TestEnsureAppleContainerSystem_AlreadyRunning(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+
+	if err := ensureAppleContainerSystem(context.Background(), false); err != nil {
+		t.Fatalf("ensureAppleContainerSystem: %v", err)
+	}
+
+	data, _ := os.ReadFile(logFile)
+	if strings.Contains(string(data), "system\x00start") {
+		t.Fatalf("did not expect 'system start' when already running:\n%s", data)
+	}
+}
+
+func TestEnsureAppleContainerSystem_AutoStartsWhenAssumeYes(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+	promptYesNoFn = func(string) bool { t.Fatal("must not prompt when assumeYes"); return false }
+	// System is down until "container system start" creates the readiness file.
+	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
+
+	if err := ensureAppleContainerSystem(context.Background(), true); err != nil {
+		t.Fatalf("ensureAppleContainerSystem: %v", err)
+	}
+
+	data, _ := os.ReadFile(logFile)
+	if !strings.Contains(string(data), "container\x00system\x00start\x00--timeout\x0060") {
+		t.Fatalf("expected 'container system start --timeout 60' to be invoked:\n%s", data)
+	}
+}
+
+func TestEnsureAppleContainerSystem_InteractiveDeclined(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
+	isInteractiveTerminalFn = func() bool { return true }
+	promptYesNoFn = func(string) bool { return false }
+
+	err := ensureAppleContainerSystem(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected error when the user declines to start the system")
+	}
+
+	data, _ := os.ReadFile(logFile)
+	if strings.Contains(string(data), "system\x00start") {
+		t.Fatalf("did not expect 'system start' after the user declined:\n%s", data)
+	}
+}
+
+func TestEnsureAppleContainerSystem_StartFailsSurfacesOutput(t *testing.T) {
+	setupAppleContainerEnsureSeams(t)
+	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
+	t.Setenv("IMAGE_BUILDER_FAIL_START", "1")
+	isInteractiveTerminalFn = func() bool { return false }
+
+	err := ensureAppleContainerSystem(context.Background(), true)
+	if err == nil {
+		t.Fatal("expected error when the system cannot start")
+	}
+	if !strings.Contains(err.Error(), "could not start Apple Container system") {
+		t.Fatalf("error = %v, want 'could not start Apple Container system'", err)
+	}
+	if !strings.Contains(err.Error(), "failed to decode apiServerBuild in health check") {
+		t.Fatalf("error = %v, want the start output summary surfaced", err)
+	}
+}
+
+func TestWatchCommandHasBuilderFlag(t *testing.T) {
+	if f := newWatchCmd().Flags().Lookup("builder"); f == nil {
+		t.Fatal("wendy watch is missing the --builder flag")
+	}
 }
 
 func TestEnsureDockerDaemon_DarwinUsesBundledCLIWhenRuntimeInstalledButDockerMissingFromPath(t *testing.T) {
@@ -1598,6 +1785,39 @@ func TestStartMTLSRegistryHTTPProxy_WrongCA(t *testing.T) {
 
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("expected non-200 when server cert is signed by untrusted CA, got 200")
+	}
+}
+
+func TestStartMTLSRegistryHTTPProxy_ClientAuthOnlyServerCert(t *testing.T) {
+	// Wendy device registry certs are mutual-auth identity certs that chain to
+	// the Wendy CA but may be issued with only a clientAuth EKU (no serverAuth).
+	// The proxy must accept them via chain validation rather than rejecting on
+	// EKU — otherwise the Apple Container push 502s with "incompatible key usage".
+	ca := generateTestCA(t)
+	serverLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	addr := startTestTLSServer(t, serverTLSCert, ca)
+
+	proxy, err := startMTLSRegistryHTTPProxy(addr, clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxy: %v", err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port())))
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (clientAuth-only server cert should be accepted via chain validation)", resp.StatusCode)
 	}
 }
 

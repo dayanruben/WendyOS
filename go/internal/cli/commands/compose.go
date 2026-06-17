@@ -624,6 +624,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	regPort := registryPort(agentOS)
 
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
+		return err
+	}
+
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
 
@@ -643,21 +647,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		// Mirror the single-container build path so compose-built Dockerfiles
 		// see the same WendyOS device hints (e.g. for GPU base-image selection).
-		if deviceType := versionResp.GetDeviceType(); deviceType != "" {
-			allBuildArgs["WENDY_DEVICE_TYPE"] = deviceType
-		}
-		if versionResp.HasGpu != nil {
-			allBuildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-		}
-		if vendor := versionResp.GetGpuVendor(); vendor != "" {
-			allBuildArgs["WENDY_GPU_VENDOR"] = vendor
-		}
-		if jv := versionResp.GetJetpackVersion(); jv != "" {
-			allBuildArgs["WENDY_JETPACK_VERSION"] = jv
-		}
-		if cv := versionResp.GetCudaVersion(); cv != "" {
-			allBuildArgs["WENDY_CUDA_VERSION"] = cv
-		}
+		applyDeviceBuildArgHints(allBuildArgs, versionResp)
 		for k, v := range buildArgs {
 			allBuildArgs[k] = v
 		}

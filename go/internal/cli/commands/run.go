@@ -1359,25 +1359,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
 	}
 	// Only set WENDY_DEVICE_TYPE / GPU args when the agent reports them so
-	// Dockerfiles can apply their own defaults on older agents.
-	if deviceType != "" {
-		buildArgs["WENDY_DEVICE_TYPE"] = deviceType
-	}
-	// WENDY_HAS_GPU is only set when the optional field is present; omitting it
-	// on older agents preserves any Dockerfile ARG default.
-	if versionResp.HasGpu != nil {
-		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-	}
-	// Remaining GPU build args — only set when the agent reports them.
-	if vendor := versionResp.GetGpuVendor(); vendor != "" {
-		buildArgs["WENDY_GPU_VENDOR"] = vendor
-	}
-	if jv := versionResp.GetJetpackVersion(); jv != "" {
-		buildArgs["WENDY_JETPACK_VERSION"] = jv
-	}
-	if cv := versionResp.GetCudaVersion(); cv != "" {
-		buildArgs["WENDY_CUDA_VERSION"] = cv
-	}
+	// Dockerfiles can apply their own defaults on older agents; device-reported
+	// values that fail build-arg validation are skipped rather than fatal.
+	applyDeviceBuildArgHints(buildArgs, versionResp)
 
 	// Detached fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
@@ -1391,6 +1375,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			mark("fast-path (skipped build)")
 			return nil
 		}
+	}
+
+	// A build will run below (the no-build fast path returned above), so make
+	// sure the Apple Container system is up when --builder apple-container is
+	// explicit. This covers both the chunk-diff and the registry-push build.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
+		return err
 	}
 
 	// The fast chunk-diff (CDC) deploy path handles attached (default) and
@@ -1794,14 +1785,14 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		buildLog = &bytes.Buffer{}
 		buildOut, buildErr = buildLog, buildLog
 	}
-	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, buildOut, buildErr); err != nil {
+	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, buildOut, buildErr); err != nil {
 		if buildLog != nil && ctx.Err() == nil {
 			_, _ = os.Stderr.Write(buildLog.Bytes())
 		}
 		return err
 	}
 	mark("build (oci export)")
-	layers, imageConfig, err := readOCILayoutLayers(ociTar)
+	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
 	if err != nil {
 		return err
 	}
