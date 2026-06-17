@@ -76,6 +76,50 @@ func TestListV4L2Devices_TwoDevices(t *testing.T) {
 	}
 }
 
+func TestListV4L2Devices_ExcludesNonCameraDrivers(t *testing.T) {
+	// On Raspberry Pi 3/4 the bcm2835-isp and bcm2835-codec m2m nodes advertise
+	// VIDEO_CAPTURE and would otherwise pollute `camera list` as fake cameras.
+	// Only the real unicam capture node should be listed.
+	svc := newTestVideoService(
+		func() ([]string, error) {
+			return []string{"/dev/video0", "/dev/video10", "/dev/video14", "/dev/video15"}, nil
+		},
+		func(base string) (string, error) {
+			names := map[string]string{
+				"video0":  "unicam",
+				"video10": "bcm2835-codec-decode",
+				"video14": "bcm2835-isp-capture0",
+				"video15": "bcm2835-isp-capture1",
+			}
+			return names[base], nil
+		},
+	)
+	svc.classifyTransport = func(base string) (camera.Transport, string) {
+		drivers := map[string]string{
+			"video0":  "bcm2835-unicam",
+			"video10": "bcm2835-codec",
+			"video14": "bcm2835-isp",
+			"video15": "bcm2835-isp",
+		}
+		drv := drivers[base]
+		if camera.IsNonCameraDriver(drv) {
+			return camera.TransportUnknown, drv
+		}
+		return camera.TransportCSI, drv
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected only the unicam node, got %d: %v", len(devices), devices)
+	}
+	if devices[0].GetPath() != "/dev/video0" || devices[0].GetName() != "unicam" {
+		t.Errorf("expected /dev/video0 unicam, got path=%q name=%q", devices[0].GetPath(), devices[0].GetName())
+	}
+}
+
 func TestListV4L2Devices_NoDevices(t *testing.T) {
 	svc := newTestVideoService(
 		func() ([]string, error) { return nil, nil },

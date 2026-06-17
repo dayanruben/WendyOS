@@ -347,6 +347,11 @@ func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDev
 			name = base
 		}
 		transport, driver := s.classifyTransport(base)
+		// Skip non-camera m2m nodes (Pi 0-4 bcm2835-isp/codec) that advertise
+		// VIDEO_CAPTURE but are not capture sources (WDY-1603).
+		if camera.IsNonCameraDriver(driver) {
+			continue
+		}
 		dev := &agentpb.VideoDevice{
 			Id:        uint32(id),
 			Name:      name,
