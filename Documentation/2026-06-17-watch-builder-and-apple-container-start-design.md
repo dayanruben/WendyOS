@@ -132,10 +132,22 @@ This requirement is inconsistent with the rest of the CLI/agent trust model:
   carry `clientAuth`/`anyExtendedKeyUsage`.
 
 Fix: in `startMTLSRegistryHTTPProxy`, change the verify options to
-`KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}`. This keeps full chain validation against the
-Wendy CA (the security property the proxy cares about, given hostname verification is already
-skipped) but stops demanding a `serverAuth` EKU the device certs do not carry. Update the adjacent
-comment to say "chain validation" rather than "chain + EKU validation".
+`KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}`. This keeps
+full chain validation against the Wendy CA and still requires an *authentication* cert (rejecting
+e.g. codeSigning/emailProtection leaves), but accepts the device's `clientAuth` identity cert
+instead of demanding a `serverAuth` EKU it does not carry. Accepting `clientAuth` is required because
+Wendy issues one identity cert per principal for bidirectional mTLS; the residual exposure (a
+clientAuth identity-cert holder MITMing the loopback proxy's connection to the device) matches the
+gRPC channel's trust model, and the long-term fix is issuing device registry certs with a
+`serverAuth` EKU at the PKI layer. (Avoid `ExtKeyUsageAny` — it would also accept non-auth certs and
+weakens peer-auth semantics.)
+
+### Build-arg redaction in command logs
+
+The builder command lines are echoed to stderr and, under `--quiet`/`wendy watch`, buffered to disk;
+they include `--build-arg KEY=VALUE`, which can carry secrets. `redactBuildArgsForLog` masks every
+build-arg value (keeping the key) and is applied to all four build-command log sites (buildx + Apple
+Container, OCI-export + registry). The real command run against the builder is unchanged.
 
 Out of scope: ML-DSA-signed registry certs. The reported device cert is RSA/ECDSA (it reached the
 EKU check under Go's standard verifier). Standard `Verify` cannot check ML-DSA signatures; if a

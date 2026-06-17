@@ -149,6 +149,28 @@ func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
 	}
 }
 
+func TestRedactBuildArgsForLog(t *testing.T) {
+	in := []string{
+		"build", "--platform", "linux/arm64", "-t", "img:latest",
+		"--build-arg", "API_TOKEN=s3cr3t",
+		"--build-arg", "WENDY_DEBUG=false",
+		".",
+	}
+	got := strings.Join(redactBuildArgsForLog(in), " ")
+	if strings.Contains(got, "s3cr3t") {
+		t.Fatalf("redacted command still contains secret value: %s", got)
+	}
+	for _, want := range []string{"API_TOKEN=<redacted>", "WENDY_DEBUG=<redacted>", "-t img:latest"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("redacted command missing %q: %s", want, got)
+		}
+	}
+	// The input slice must not be mutated (it is used to run the real command).
+	if in[6] != "API_TOKEN=s3cr3t" {
+		t.Fatalf("redactBuildArgsForLog mutated its input: %q", in[6])
+	}
+}
+
 func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
 	for _, image := range []string{
 		"127.0.0.1:5000/test-app:latest",
@@ -1818,6 +1840,38 @@ func TestStartMTLSRegistryHTTPProxy_ClientAuthOnlyServerCert(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (clientAuth-only server cert should be accepted via chain validation)", resp.StatusCode)
+	}
+}
+
+func TestStartMTLSRegistryHTTPProxy_RejectsNonAuthCert(t *testing.T) {
+	// A leaf signed by the trusted CA but carrying a non-authentication EKU
+	// (codeSigning) must be rejected: the proxy accepts only serverAuth/clientAuth
+	// identity certs, so it cannot be abused to impersonate the registry.
+	ca := generateTestCA(t)
+	serverLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageCodeSigning)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	// Don't require client certs so we isolate the proxy's server-cert check.
+	addr := startTestTLSServer(t, serverTLSCert, nil)
+
+	proxy, err := startMTLSRegistryHTTPProxy(addr, clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxy: %v", err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port())))
+	if err != nil {
+		return // TLS rejection surfaced as a connection error — acceptable
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("expected non-200 for a non-authentication (codeSigning) server cert, got 200")
 	}
 }
 

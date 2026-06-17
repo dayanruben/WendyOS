@@ -400,7 +400,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 
 	submark("  build: setup (cache/env)")
 
-	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(args, " "))
+	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = cwd
 	cmd.Stdout = stdout
@@ -472,7 +472,7 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	args = append(args, buildContext)
 	submark("  build: setup")
 
-	fmt.Fprintf(stderr, "[apple-container] building OCI image: container %s\n", strings.Join(args, " "))
+	fmt.Fprintf(stderr, "[apple-container] building OCI image: container %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	buildCmd := imageBuilderCommandContext(ctx, "container", args...)
 	buildCmd.Dir = buildContext
 	buildCmd.Stdout = stdout

@@ -103,6 +103,24 @@ func safeCommandOutputSummary(out []byte, max int) string {
 	return s
 }
 
+// redactBuildArgsForLog returns a copy of a builder command's args with every
+// --build-arg value masked (the key is kept for debugging). Build-arg values
+// can carry secrets, and these command lines are written to stderr and, under
+// --quiet/`wendy watch`, buffered to disk — so they must never contain raw
+// values.
+func redactBuildArgsForLog(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := 0; i < len(out)-1; i++ {
+		if out[i] == "--build-arg" {
+			if k, _, ok := strings.Cut(out[i+1], "="); ok && k != "" {
+				out[i+1] = k + "=<redacted>"
+			}
+		}
+	}
+	return out
+}
+
 func registryImageUsesLoopbackRegistry(image string) bool {
 	registry, _, ok := strings.Cut(image, "/")
 	if !ok || registry == "" {
@@ -1416,7 +1434,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	)
 
-	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
+	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout = streamOutput
@@ -1536,7 +1554,7 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	}
 	args = append(args, buildContext)
 
-	fmt.Fprintf(logOutput, "[apple-container] starting build: container %s\n", strings.Join(args, " "))
+	fmt.Fprintf(logOutput, "[apple-container] starting build: container %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	cmd := imageBuilderCommandContext(ctx, "container", args...)
 	cmd.Dir = buildContext
 	cmd.Stdout = streamOutput
@@ -1993,18 +2011,27 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 					for _, c := range cs.PeerCertificates[1:] {
 						intermediates.AddCert(c)
 					}
-					// Accept any EKU: Wendy device certs are mutual-auth identity
-					// certs that chain to the Wendy CA but are not issued with a
-					// serverAuth EKU, so requiring serverAuth here rejects an
-					// otherwise-trusted device registry cert. This matches the
-					// gRPC client (which does not EKU-check the device server cert)
-					// and the agent-side verifier (which accepts clientAuth or
-					// unrestricted certs). Chain validation against caPool is
-					// retained.
+					// Wendy issues a single mutual-auth identity cert per principal,
+					// used for mTLS in both directions; when a device serves its
+					// registry it presents that identity cert, which carries
+					// clientAuth (mirrored by the agent-side verifier in
+					// agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
+					// rejects a legitimately trusted device cert, so we accept either
+					// authentication EKU — but still require an authentication cert
+					// (rejecting e.g. codeSigning/emailProtection leaves) and full
+					// chain validation against the Wendy CA. The residual exposure
+					// (a clientAuth identity-cert holder impersonating the registry)
+					// requires MITM of the loopback-only proxy's connection to the
+					// device and is identical to the gRPC channel's trust model; the
+					// long-term fix is issuing device registry certs with a
+					// serverAuth EKU at the PKI layer.
 					opts := x509.VerifyOptions{
 						Roots:         caPool,
 						Intermediates: intermediates,
-						KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+						KeyUsages: []x509.ExtKeyUsage{
+							x509.ExtKeyUsageServerAuth,
+							x509.ExtKeyUsageClientAuth,
+						},
 					}
 					_, err := cs.PeerCertificates[0].Verify(opts)
 					return err
