@@ -9,7 +9,6 @@ import (
 	"math"
 	"net"
 	"sort"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -36,33 +35,7 @@ const (
 	cloudFlusherDefaultApp       = "device"
 	cloudFlusherCollector        = "wendy-agent"
 	cloudFlusherMaxEntriesPerApp = 5000 // per-RPC cap to stay under gRPC message size limits
-
-	// PII / payload size guards applied in convertLogRecord before cloud upload.
-	maxLogBodyBytes = 65536 // 64 KiB — prevents oversized payloads
-	maxLabelKeyLen  = 256
-	maxLabelValLen  = 1024
-	maxLabels       = 64
 )
-
-// sensitiveLabelDenyList contains substrings that, when found in a label key
-// (case-insensitive), indicate the value may contain credentials or PII.
-// Such labels are dropped before upload to prevent accidental exposure.
-var sensitiveLabelDenyList = []string{
-	"password", "passwd", "secret", "token", "authorization",
-	"api_key", "apikey", "private_key", "credential", "auth",
-	"cookie", "session",
-}
-
-// isSensitiveLabelKey reports whether key contains a deny-listed substring.
-func isSensitiveLabelKey(key string) bool {
-	lower := strings.ToLower(key)
-	for _, denied := range sensitiveLabelDenyList {
-		if strings.Contains(lower, denied) {
-			return true
-		}
-	}
-	return false
-}
 
 // CloudFlusher reads log segments from TelemetryBuffer via ReadFromCursor,
 // converts OTLP LogRecords to cloud LogEntry values, and calls WriteLogEntries.
