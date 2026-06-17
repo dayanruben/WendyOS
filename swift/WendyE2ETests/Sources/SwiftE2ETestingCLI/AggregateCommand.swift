@@ -13,6 +13,12 @@ struct AggregateCommand: ParsableCommand {
     )
     var outputDir: String?
 
+    @Option(
+        name: .long,
+        help: "Swift package directory used to resolve test source paths. Defaults to the current directory."
+    )
+    var packageDir: String?
+
     @Argument(help: "Swift E2E attempt directories to aggregate.")
     var attemptDirs: [String] = []
 
@@ -25,6 +31,10 @@ struct AggregateCommand: ParsableCommand {
             URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL
         }
         let firstAttemptURL = attemptURLs[0]
+        let packageURL = URL(
+            fileURLWithPath: packageDir ?? FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        ).standardizedFileURL
         let outputURL = URL(
             fileURLWithPath: outputDir ?? firstAttemptURL.deletingLastPathComponent().path,
             isDirectory: true
@@ -49,12 +59,14 @@ struct AggregateCommand: ParsableCommand {
             try mapAttempt(
                 attemptURL: attemptURL,
                 components: components,
-                runURL: runURL
+                runURL: runURL,
+                packageURL: packageURL
             )
         }
 
         for root in runURLs.sorted(by: { $0.path < $1.path }) {
             _ = try writeRunOverview(in: root)
+            try writeRunSourceIndex(in: root)
             print("==> Wrote Swift E2E run: \(root.path)")
             print("    Overview: \(runOverviewURL(in: root).path)")
         }
@@ -63,7 +75,8 @@ struct AggregateCommand: ParsableCommand {
     private func mapAttempt(
         attemptURL: URL,
         components: AttemptID,
-        runURL: URL
+        runURL: URL,
+        packageURL: URL
     ) throws {
         guard FileManager.default.fileExists(atPath: attemptURL.path) else {
             throw ValidationError("Attempt directory does not exist: \(attemptURL.path)")
@@ -100,7 +113,8 @@ struct AggregateCommand: ParsableCommand {
             try copyItem(at: testDirectory, to: destinationURL)
             try copyTestMetadataIfPresent(
                 from: testDirectory,
-                to: destinationURL.deletingLastPathComponent().deletingLastPathComponent()
+                to: destinationURL.deletingLastPathComponent().deletingLastPathComponent(),
+                packageURL: packageURL
             )
         }
     }
@@ -165,10 +179,116 @@ private func isDirectory(_ url: URL) throws -> Bool {
     try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
 }
 
-private func copyTestMetadataIfPresent(from testDirectoryURL: URL, to testRootURL: URL) throws {
+private func copyTestMetadataIfPresent(
+    from testDirectoryURL: URL,
+    to testRootURL: URL,
+    packageURL: URL
+) throws {
     let sourceURL = testDirectoryURL.appendingPathComponent(e2eTestMetadataFileName)
     guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
     try copyItem(at: sourceURL, to: testRootURL.appendingPathComponent(e2eTestMetadataFileName))
+    try writeTestSourceArtifactIfPossible(testRootURL: testRootURL, packageURL: packageURL)
+}
+
+private func writeTestSourceArtifactIfPossible(testRootURL: URL, packageURL: URL) throws {
+    let metadata = try loadE2ETestMetadata(in: testRootURL)
+    guard let startLine = metadata.sourceStartLine,
+        let endLine = metadata.sourceEndLine,
+        startLine <= endLine
+    else {
+        return
+    }
+
+    let sourceURL = packageURL.appendingPathComponent(metadata.sourceFilePath, isDirectory: false)
+    guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let lines = source.components(separatedBy: .newlines)
+    guard startLine <= lines.count else { return }
+    let end = min(endLine, lines.count)
+    let chunk = lines[(startLine - 1)..<end].joined(separator: "\n")
+
+    let declarationLine = metadata.declarationLine.map(String.init) ?? "unknown"
+    let contents = """
+        # Wendy E2E test source
+
+        - Source: `\(metadata.sourceFilePath):\(startLine)-\(end)`
+        - Suite: `\(metadata.suiteName)`
+        - Test: `\(metadata.testName)`
+        - Function: `\(metadata.functionName)`
+        - Declaration line: `\(declarationLine)`
+
+        ```swift
+        \(chunk)
+        ```
+
+        """
+    try contents.write(
+        to: testRootURL.appendingPathComponent(e2eSourceArtifactFileName),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
+private func writeRunSourceIndex(in runURL: URL) throws {
+    var entries: [String] = []
+    for suiteURL in try aggregateDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
+        for testURL in try aggregateDirectoryChildren(of: suiteURL) {
+            let sourceURL = testURL.appendingPathComponent(e2eSourceArtifactFileName)
+            guard FileManager.default.fileExists(atPath: sourceURL.path),
+                let metadata = try? loadE2ETestMetadata(in: testURL)
+            else {
+                continue
+            }
+
+            let startLine = metadata.sourceStartLine.map(String.init) ?? "?"
+            let endLine = metadata.sourceEndLine.map(String.init) ?? "?"
+            let sourceArtifactPath = aggregateRelativePath(sourceURL, base: runURL)
+            let sourceRange = "\(metadata.sourceFilePath):\(startLine)-\(endLine)"
+            entries.append(
+                "- `\(sourceArtifactPath)` — `\(sourceRange)` — `\(metadata.suiteName)` / `\(metadata.testName)`"
+            )
+        }
+    }
+
+    let body: String
+    if entries.isEmpty {
+        body = "- No test source artifacts were recorded.\n"
+    } else {
+        body = entries.sorted().joined(separator: "\n") + "\n"
+    }
+
+    let contents = """
+        # Wendy E2E test source index
+
+        Each entry points to the extracted test source, including the DocC/spec comment above the `@Test` declaration when present.
+
+        \(body)
+        """
+    try contents.write(
+        to: runURL.appendingPathComponent(e2eSourceIndexFileName),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
+private func aggregateDirectoryChildren(of url: URL) throws -> [URL] {
+    guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+    return try FileManager.default.contentsOfDirectory(
+        at: url,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    )
+    .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+    .sorted { $0.path < $1.path }
+}
+
+private func aggregateRelativePath(_ url: URL, base: URL) -> String {
+    let path = url.path
+    let basePath = base.path
+    if path.hasPrefix(basePath + "/") {
+        return String(path.dropFirst(basePath.count + 1))
+    }
+    return path
 }
 
 private func copyAttemptLevelArtifacts(from attemptURL: URL, to destinationURL: URL) throws {

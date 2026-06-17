@@ -5,10 +5,11 @@ files over low-value files.
 
 Use the context and artifacts available to you, including `overview.json`, xUnit
 results, recordings, shell transcripts, attempt logs, Swift E2E specs, source
-files, targeted Git diffs, and Git history. Start with `overview.json`, then
-inspect only the artifacts or source files needed to explain actionable failures
-or concerns. Do not perform broad recursive scans of copied sandboxes or large
-artifact trees unless a referenced artifact makes that necessary.
+files, targeted Git diffs, and Git history. Start with `overview.json` and the
+source index when present. In full mode, inspect the extracted E2E test source
+broadly; in diff mode, inspect changed or plausibly related source artifacts.
+Do not perform broad recursive scans of copied sandboxes or large artifact trees
+unless a referenced artifact makes that necessary.
 
 Guidelines:
 

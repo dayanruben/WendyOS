@@ -603,6 +603,7 @@ private func runReviewPrompt(
     lines.append("")
     appendRunOverviewReportFocus(overview, to: &lines)
     try appendRunReviewAttemptArtifacts(runURL: runURL, to: &lines)
+    appendRunReviewSourceArtifacts(runURL: runURL, context: context, to: &lines)
     try appendRunReviewAIRequests(testsURL: testsURL, repoURL: repoURL, to: &lines)
     return lines.joined(separator: "\n")
 }
@@ -777,6 +778,35 @@ private func appendRunReviewAttemptArtifacts(runURL: URL, to lines: inout [Strin
         } else {
             lines.append("  - files: \(artifact.files.map { "`\($0)`" }.joined(separator: ", "))")
         }
+    }
+    lines.append("")
+}
+
+private func appendRunReviewSourceArtifacts(
+    runURL: URL,
+    context: ReviewContext,
+    to lines: inout [String]
+) {
+    let sourceIndexURL = runURL.appendingPathComponent(e2eSourceIndexFileName)
+    lines.append("## Test source artifacts")
+    lines.append("")
+    if FileManager.default.fileExists(atPath: sourceIndexURL.path) {
+        lines.append("- Source index: `\(sourceIndexURL.path)`")
+    } else {
+        lines.append("- Source index: `<missing>`")
+    }
+    lines.append(
+        "Each `observations/<suite>/<test>/source.md` artifact contains the extracted Swift E2E test source, including the DocC/spec comment above the `@Test` declaration when present. Use source artifacts together with recordings; do not review runtime output without checking the spec/test source that defines the expectation."
+    )
+    switch context.mode {
+    case .full:
+        lines.append(
+            "For full review, inspect the source index and review test source broadly, even when the run is green and no `// AI:` request is present. Report only actionable concerns."
+        )
+    case .diff:
+        lines.append(
+            "For diff review, inspect changed E2E source artifacts directly and use the source index to find source for tests plausibly related to changed product behavior. Keep findings scoped to the diff unless failures/flakes show the diff exposed the issue."
+        )
     }
     lines.append("")
 }
