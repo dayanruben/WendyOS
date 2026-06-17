@@ -45,7 +45,8 @@ type CloudFlusher struct {
 
 // NewCloudFlusher creates a CloudFlusher for tests. The explicit org/asset ID
 // parameters are preserved for compatibility with existing callers, but the
-// flusher does not store them on the struct.
+// flusher does not store them on the struct. They are ignored entirely because
+// device identity is derived from the mTLS client certificate.
 func NewCloudFlusher(logger *zap.Logger, buffer *TelemetryBuffer, orgID, assetID int32) *CloudFlusher {
 	return &CloudFlusher{
 		logger: logger,
@@ -197,7 +198,7 @@ func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClien
 	if f.buffer == nil {
 		return nil
 	}
-	if err := f.flushSignal(ctx, SignalLogs, func(msg proto.Message) error {
+	if err := f.flushSignal(SignalLogs, func(msg proto.Message) error {
 		req := msg.(*otelpb.ExportLogsServiceRequest)
 		sanitizeLogs(req)
 		_, err := logs.Export(ctx, req)
@@ -205,7 +206,7 @@ func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClien
 	}); err != nil {
 		return err
 	}
-	if err := f.flushSignal(ctx, SignalMetrics, func(msg proto.Message) error {
+	if err := f.flushSignal(SignalMetrics, func(msg proto.Message) error {
 		req := msg.(*otelpb.ExportMetricsServiceRequest)
 		sanitizeMetrics(req)
 		_, err := metrics.Export(ctx, req)
@@ -213,7 +214,7 @@ func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClien
 	}); err != nil {
 		return err
 	}
-	return f.flushSignal(ctx, SignalTraces, func(msg proto.Message) error {
+	return f.flushSignal(SignalTraces, func(msg proto.Message) error {
 		req := msg.(*otelpb.ExportTraceServiceRequest)
 		sanitizeTraces(req)
 		_, err := traces.Export(ctx, req)
@@ -225,7 +226,10 @@ func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClien
 // provided callback, and advances the signal's cursor only if all exports
 // succeed. On any export error the cursor is left untouched so the batch is
 // retried (already-exported frames may be re-sent).
-func (f *CloudFlusher) flushSignal(ctx context.Context, sig SignalType, export func(proto.Message) error) error {
+func (f *CloudFlusher) flushSignal(sig SignalType, export func(proto.Message) error) error {
+	if f.buffer == nil {
+		return nil
+	}
 	cursor := f.buffer.LoadCursor(sig)
 	msgs, next, err := f.buffer.ReadFromCursor(sig, cursor, cloudFlusherFramesPerPass)
 	if err != nil {

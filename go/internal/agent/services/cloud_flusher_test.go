@@ -150,6 +150,10 @@ func TestCloudFlusher_RetryOnError(t *testing.T) {
 	if logs.count() != 1 {
 		t.Errorf("want 1 export after retry, got %d", logs.count())
 	}
+	got := logs.calls[0].GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0].GetBody().GetStringValue()
+	if got != "retry-me" {
+		t.Errorf("re-sent frame body: want %q, got %q", "retry-me", got)
+	}
 }
 
 func TestCloudFlusher_EmptyBuffer(t *testing.T) {
