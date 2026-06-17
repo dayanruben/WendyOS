@@ -1360,12 +1360,29 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
+	// Detached fast path: when nothing that affects the image has changed since
+	// the last successful deploy to this device, skip the build entirely and
+	// just ensure the existing container is running. Best-effort — a missing or
+	// mismatched fingerprint, a missing app, or any RPC error falls through to
+	// the normal deploy below, so it can never deploy stale code.
+	deviceKey := deviceFingerprintKey(versionResp)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
+	if opts.detach && !opts.deploy && hashErr == nil {
+		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
+			mark("fast-path (skipped build)")
+			return nil
+		}
+	}
+
 	// The fast chunk-diff (CDC) deploy path handles attached (default) and
 	// detached (--detach) runs. Deploy-only (--deploy) is excluded because it
 	// must create the container WITHOUT starting it, whereas RunContainer always
 	// starts; that mode stays on the registry path via startAndStreamContainer.
 	if !opts.deploy {
 		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+			if hashErr == nil {
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version})
+			}
 			return nil
 		} else if ctx.Err() != nil {
 			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
