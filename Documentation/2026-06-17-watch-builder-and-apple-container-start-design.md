@@ -108,6 +108,70 @@ The auto-attempt paths (`buildDockerProjectWithBuilder` auto branch, `buildAndPu
 `shouldAutoAttemptAppleContainerBuilder` branch) do **not** call `ensureAppleContainerSystem`;
 they keep calling `checkAppleContainerBuilder` and silently fall back to Docker.
 
+### Part 3 — Apple Container push to provisioned LAN devices
+
+Symptom (after the system is started, build succeeds):
+
+```
+[apple-container] pushing image: container image push --scheme http --platform linux/arm64 127.0.0.1:PORT/...
+http: proxy error: x509: certificate specifies an incompatible key usage
+Error: HTTP request to http://127.0.0.1:PORT/v2/.../blobs/... failed with response: 502 Bad Gateway
+✗ building service api: container image push failed: exit status 1
+```
+
+Root cause: for a provisioned LAN device the push goes through `startMTLSRegistryHTTPProxy`, whose
+`VerifyConnection` validates the device registry's server cert with
+`KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}`. Wendy device certs are mutual-auth
+*identity* certs that chain to the Wendy CA but are not issued with a `serverAuth` EKU, so the
+chain validates but the EKU check fails (`incompatible key usage`) → 502.
+
+This requirement is inconsistent with the rest of the CLI/agent trust model:
+- the gRPC client (`grpcclient/client.go`) connects with `InsecureSkipVerify: true` and does not
+  EKU-check the device server cert at all;
+- the agent-side verifier (`mtls/mldsa_verify.go`) accepts device certs that are unrestricted or
+  carry `clientAuth`/`anyExtendedKeyUsage`.
+
+Fix: in `startMTLSRegistryHTTPProxy`, change the verify options to
+`KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}`. This keeps full chain validation against the
+Wendy CA (the security property the proxy cares about, given hostname verification is already
+skipped) but stops demanding a `serverAuth` EKU the device certs do not carry. Update the adjacent
+comment to say "chain validation" rather than "chain + EKU validation".
+
+Out of scope: ML-DSA-signed registry certs. The reported device cert is RSA/ECDSA (it reached the
+EKU check under Go's standard verifier). Standard `Verify` cannot check ML-DSA signatures; if a
+future device presents an ML-DSA registry cert the proxy would need the same fallback the agent
+uses. Not handled here — noted as a follow-up.
+
+### Part 4 — Layer-diffing (fast path) with Apple Container
+
+The fast chunk-diff deploy (`deployByChunkDiff` → `buildImageToOCILayout`) was hard-wired to
+`docker buildx --output type=oci`, so `--builder apple-container` was a no-op on the path used for
+every `run`/`watch` deploy — Docker Desktop was still required. This wires Apple Container into the
+fast path so the whole flow runs without Docker on Apple silicon.
+
+Two changes, both verified end-to-end against `container` v1.0.0:
+
+1. **Build step** (`buildImageToOCILayout`, now takes a `builder` arg): when the builder is
+   `apple-container`, route to `buildImageToOCILayoutWithAppleContainer`. Apple Container cannot
+   stream an OCI tar from `build` (`-o type=oci,dest=` writes inside the build VM and never reaches
+   the host — confirmed), so it builds into the image store under a unique temporary tag
+   (`wendy-oci-build:<tempdir-name>`), exports with `container image save … -o <dest>` (which does
+   write to the host, including `/var/folders` temp dirs), then removes the tag. No
+   `--cache-from/to` (no local-cache-export equivalent); Apple Container reuses its own build cache.
+   The builder remains explicit-only — an empty `--builder` still uses buildx.
+
+2. **Parser** (`readOCILayoutLayers`, now takes a `platform` arg): Apple Container's `image save`
+   wraps the image in nested image-indexes (`index.json → image-index → image-manifest`), whereas
+   buildx emits `index.json → image-manifest` directly. `resolveOCIImageManifest` follows index
+   descriptors (`vnd.oci.image.index.v1+json` / docker `manifest.list.v2+json`) down to the
+   manifest matching the target platform, with a nesting-depth guard. `pickOCIDescriptor` prefers
+   an exact os/arch match (also fixing multi-arch/attestation selection), falling back to the first
+   image manifest/index — so existing buildx single-image layouts are unaffected.
+
+The system-ensure call (Part 2) moved to run *before* the chunk-diff build (after the no-build fast
+path returns), so it covers both the chunk-diff and registry-push builds and never starts the
+system on a no-op redeploy.
+
 ## Error handling
 
 - Declining the prompt → today's "system is not running" error, unchanged.
@@ -132,10 +196,19 @@ injectable interactive-terminal seam for the prompt:
 Plus a CLI-surface test that `wendy watch --builder apple-container` parses and routes through
 `normalizeImageBuilder` (alongside the existing builder flag tests).
 
+For Part 3: a test that builds an mTLS proxy backed by a TLS server whose leaf cert carries only
+`ExtKeyUsageClientAuth` (chaining to a test CA) and asserts the proxy forwards the request rather
+than 502-ing — i.e. the relaxed `KeyUsageAny` accepts an identity cert without `serverAuth`.
+
 ## Files touched
 
 - `go/internal/cli/commands/watch.go` — register `--builder`.
 - `go/internal/cli/commands/docker.go` — `ensureAppleContainerSystem`, shared CLI-presence helper,
-  call sites in `buildAndPushImageForAgent` and `buildDockerProjectWithBuilder`.
+  call sites in `buildAndPushImageForAgent` and `buildDockerProjectWithBuilder`; relax
+  `startMTLSRegistryHTTPProxy` verify EKU to `ExtKeyUsageAny`.
 - `go/internal/cli/commands/multibuild.go` — single ensure call in `buildServicesParallel`.
-- `go/internal/cli/commands/docker_test.go` — unit tests.
+- `go/internal/cli/commands/run.go` — ensure call before the chunk-diff build; thread `builder`
+  and `platform` into the fast-path build/parse.
+- `go/internal/cli/commands/ocilayers.go` — `buildImageToOCILayout` builder branch +
+  `buildImageToOCILayoutWithAppleContainer`; nested-index resolution in `readOCILayoutLayers`.
+- `go/internal/cli/commands/docker_test.go`, `ocilayers_test.go` — unit tests.
