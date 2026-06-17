@@ -788,15 +788,28 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
-	if err := ensureDockerDaemon(ctx); err != nil {
-		return "", err
-	}
-
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
 	}
 	builderName := base + "-oci"
+
+	// Fast path: if the builder's buildkit container is already running, then the
+	// daemon is up, the builder exists, and it is bootstrapped — so we can skip
+	// the `docker version` check and both `docker buildx inspect` calls, which
+	// together cost ~200-280ms of pure verification overhead on every build. The
+	// docker-container driver names the container buildx_buildkit_<name>0; a plain
+	// `docker inspect` is far cheaper than `docker buildx inspect` (no buildx
+	// plugin load, no buildkit gRPC handshake). On any miss we fall through to the
+	// full robust path below.
+	containerName := "buildx_buildkit_" + builderName + "0"
+	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+		return builderName, nil
+	}
+
+	if err := ensureDockerDaemon(ctx); err != nil {
+		return "", err
+	}
 
 	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
 	if !exists {

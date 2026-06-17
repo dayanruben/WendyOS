@@ -224,12 +224,18 @@ func digestToHex(digest string) (string, error) {
 // to dest via `--output type=oci,dest=<dest>`. It mirrors the flag/cache/env
 // setup of buildAndPushImage but skips registry push entirely.
 func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, stdout, stderr io.Writer) error {
+	// Sub-phase timing (gated on WENDY_TIMING) to split the "build (oci export)"
+	// phase into lock acquisition, builder verification (the buildx inspect
+	// calls), and the actual buildx solve.
+	submark := phaseTimer()
+
 	// Re-use the shared buildx builder (without mTLS; we don't push to a registry).
 	releaseLock, err := buildLock.acquire(ctx, stderr)
 	if err != nil {
 		return err
 	}
 	defer releaseLock()
+	submark("  build: acquire lock")
 
 	// Use a dedicated builder for OCI-layout export. It needs no registry
 	// config, so it is created once and reused without the per-run
@@ -238,6 +244,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	if err != nil {
 		return err
 	}
+	submark("  build: ensure builder (inspects)")
 
 	userCache, err := os.UserCacheDir()
 	if err != nil {
@@ -311,6 +318,8 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		"--output", "type=oci,dest="+dest,
 		".",
 	)
+
+	submark("  build: setup (cache/env)")
 
 	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
