@@ -1634,9 +1634,15 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 // Dockerfile base stage selection. Adding a new device only requires adding
 // a case here; templates need no changes until a new platform tier is introduced.
 // Unknown device types fall back to "generic" (CPU-only).
+//
+// jetson-agx-thor (tegra264 / JetPack 7 / CUDA 13) shares the "nvidia-jetson"
+// tier with the Orin boards (tegra234 / JetPack 6 / CUDA 12). The tier only says
+// "NVIDIA Jetson"; templates that ship a JetPack-pinned base image should branch
+// on the WENDY_JETPACK_VERSION / WENDY_CUDA_VERSION build args (also injected by
+// `wendy run`) to pick a Thor-compatible image where the JetPack 6 image differs.
 func wendyPlatform(deviceType string) string {
 	switch deviceType {
-	case "jetson-agx-orin", "jetson-orin-nano":
+	case "jetson-agx-orin", "jetson-orin-nano", "jetson-agx-thor":
 		return "nvidia-jetson"
 	default:
 		return "generic"
