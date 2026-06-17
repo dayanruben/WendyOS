@@ -113,7 +113,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		serviceIPs:   make(map[string]map[string]string),
 		appStopping:  make(map[string]bool),
 		chunkIndex:   idx,
-		staging:      newStaging(),
+		staging:      newStaging(defaultChunkStagingDir),
 	}, nil
 }
 
