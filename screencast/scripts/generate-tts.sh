@@ -9,8 +9,37 @@ OUT_DIR="$PROJECT_DIR/voiceover/mp3"
 MODEL="${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}"
 VOICE="${OPENAI_TTS_VOICE:-alloy}"
 INSTRUCTIONS="${OPENAI_TTS_INSTRUCTIONS:-Professional technical screencast narration. Calm, confident, concise, neutral English. Avoid hype; sound like an experienced engineer explaining status and tradeoffs.}"
+DRY_RUN=0
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+usage() {
+  cat <<'EOF'
+usage: generate-tts.sh [--dry-run]
+
+Reads voiceover/text/*.txt and writes matching MP3 files to voiceover/mp3/.
+Set OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, or OPENAI_TTS_INSTRUCTIONS to override
+TTS defaults.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$DRY_RUN" -eq 0 && -z "${OPENAI_API_KEY:-}" ]]; then
   echo "error: OPENAI_API_KEY is required" >&2
   exit 1
 fi
@@ -21,6 +50,22 @@ for txt in "$TEXT_DIR"/*.txt; do
   [[ -e "$txt" ]] || continue
   base="$(basename "$txt" .txt)"
   out="$OUT_DIR/$base.mp3"
+  estimate="$(python3 - "$txt" <<'PY'
+import re
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding='utf-8').strip()
+words = len(re.findall(r"\b[\w'-]+\b", text))
+seconds = max(1.0, words / 155 * 60)
+print(f"{words} words, ~{seconds:.1f}s")
+PY
+)"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "would generate $out ($estimate)"
+    continue
+  fi
+
   payload="$(mktemp)"
   python3 - "$txt" "$MODEL" "$VOICE" "$INSTRUCTIONS" > "$payload" <<'PY'
 import json, sys
@@ -51,5 +96,5 @@ PY
 
   mv "$tmp" "$out"
   duration="$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 "$out" 2>/dev/null || true)"
-  echo "generated $out ${duration:+($duration s)}"
+  echo "generated $out (${estimate}${duration:+, actual $duration s})"
 done

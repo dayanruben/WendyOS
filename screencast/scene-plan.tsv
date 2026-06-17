@@ -1,4 +1,7 @@
-00	recordings/00-title-card.mp4	2.0	
+# scene_id	video_path	min_seconds	voiceover_path	final_seconds
+# Leave final_seconds empty to use max(min_seconds, voiceover duration).
+00	recordings/00-title-card.mp4	2.0
 01	recordings/01-terminal-example.mp4	12.0	voiceover/mp3/01-terminal-example.mp3
 02	recordings/02-ui-example.mov	15.0	voiceover/mp3/02-ui-example.mp3
 03	recordings/03-docs-example.mp4	10.0	voiceover/mp3/03-docs-example.mp3
+99	recordings/99-closing-card.mp4	4.0

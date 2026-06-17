@@ -21,8 +21,8 @@ if (!chromium) {
   console.error('error: set CHROMIUM_PATH to a Chrome or Chromium executable');
   process.exit(2);
 }
-const width = Number(process.env.DOCS_RECORD_WIDTH ?? 1728);
-const height = Number(process.env.DOCS_RECORD_HEIGHT ?? 1118);
+const width = Number(process.env.DOCS_RECORD_WIDTH ?? 1440);
+const height = Number(process.env.DOCS_RECORD_HEIGHT ?? 900);
 const fps = Number(process.env.DOCS_RECORD_FPS ?? 10);
 const seconds = Number(process.env.DOCS_RECORD_SECONDS ?? 24);
 const totalFrames = fps * seconds;
