@@ -231,7 +231,7 @@ private struct ShellReviewHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["-lc", shellCommand]
-        process.currentDirectoryURL = runURL
+        process.currentDirectoryURL = repoURL
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
 
@@ -1139,13 +1139,15 @@ private func reviewTestSourceFiles(in testsURL: URL) throws -> [URL] {
         throw ValidationError("Tests directory not found: \(testsURL.path)")
     }
     if !isDirectory.boolValue {
-        return testsURL.pathExtension == "swift" ? [testsURL] : []
+        return testsURL.lastPathComponent.hasSuffix("Tests.swift") ? [testsURL] : []
     }
     guard let enumerator = FileManager.default.enumerator(atPath: testsURL.path) else {
         throw ValidationError("Tests directory cannot be read: \(testsURL.path)")
     }
     return enumerator.compactMap { element -> URL? in
-        guard let relativePath = element as? String, relativePath.hasSuffix(".swift") else {
+        guard let relativePath = element as? String,
+            URL(fileURLWithPath: relativePath).lastPathComponent.hasSuffix("Tests.swift")
+        else {
             return nil
         }
         return testsURL.appendingPathComponent(relativePath)

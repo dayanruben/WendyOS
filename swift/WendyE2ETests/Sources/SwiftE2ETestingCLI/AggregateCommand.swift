@@ -1,6 +1,8 @@
 import ArgumentParser
 import Foundation
 
+private let e2eSourceArtifactMaxLines = 500
+
 struct AggregateCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "aggregate",
@@ -199,23 +201,29 @@ private func writeTestSourceArtifactIfPossible(testRootURL: URL, packageURL: URL
         return
     }
 
-    let sourceURL = packageURL.appendingPathComponent(metadata.sourceFilePath, isDirectory: false)
-    guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+    guard let sourceURL = resolvedTestSourceURL(
+        packageURL: packageURL,
+        sourceFilePath: metadata.sourceFilePath
+    ), FileManager.default.fileExists(atPath: sourceURL.path)
+    else { return }
+
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let lines = source.components(separatedBy: .newlines)
     guard startLine <= lines.count else { return }
-    let end = min(endLine, lines.count)
-    let chunk = lines[(startLine - 1)..<end].joined(separator: "\n")
+    let cappedEndLine = min(endLine, lines.count, startLine + e2eSourceArtifactMaxLines - 1)
+    let chunk = lines[(startLine - 1)..<cappedEndLine].joined(separator: "\n")
+    let truncated = cappedEndLine < endLine ? "yes" : "no"
 
     let declarationLine = metadata.declarationLine.map(String.init) ?? "unknown"
     let contents = """
         # Wendy E2E test source
 
-        - Source: `\(metadata.sourceFilePath):\(startLine)-\(end)`
+        - Source: `\(metadata.sourceFilePath):\(startLine)-\(cappedEndLine)`
         - Suite: `\(metadata.suiteName)`
         - Test: `\(metadata.testName)`
         - Function: `\(metadata.functionName)`
         - Declaration line: `\(declarationLine)`
+        - Truncated: `\(truncated)`
 
         ```swift
         \(chunk)
@@ -289,6 +297,21 @@ private func aggregateRelativePath(_ url: URL, base: URL) -> String {
         return String(path.dropFirst(basePath.count + 1))
     }
     return path
+}
+
+private func resolvedTestSourceURL(packageURL: URL, sourceFilePath: String) -> URL? {
+    guard !sourceFilePath.hasPrefix("/"),
+        !sourceFilePath.split(separator: "/").contains("..")
+    else {
+        return nil
+    }
+
+    let packageURL = packageURL.standardizedFileURL
+    let sourceURL = packageURL.appendingPathComponent(sourceFilePath, isDirectory: false)
+        .standardizedFileURL
+    let packagePath = packageURL.path.hasSuffix("/") ? packageURL.path : packageURL.path + "/"
+    guard sourceURL.path.hasPrefix(packagePath) else { return nil }
+    return sourceURL
 }
 
 private func copyAttemptLevelArtifacts(from attemptURL: URL, to destinationURL: URL) throws {

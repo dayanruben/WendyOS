@@ -458,7 +458,7 @@ public struct WendyE2ERecorder: Sendable {
         var depth = 0
         var sawOpeningBrace = false
         for offset in declarationOffset..<lines.count {
-            for character in lines[offset] {
+            for character in Self.sourceLineForBraceCounting(lines[offset]) {
                 switch character {
                 case "{":
                     depth += 1
@@ -474,6 +474,45 @@ public struct WendyE2ERecorder: Sendable {
             }
         }
         return declarationOffset + 1
+    }
+
+    private static func sourceLineForBraceCounting(_ line: String) -> String {
+        let characters = Array(line)
+        var result = ""
+        var index = 0
+        var inString = false
+        var escaped = false
+
+        while index < characters.count {
+            let character = characters[index]
+            if !inString, character == "/", index + 1 < characters.count,
+                characters[index + 1] == "/"
+            {
+                break
+            }
+
+            if character == "\"" {
+                if inString {
+                    if !escaped { inString = false }
+                } else {
+                    inString = true
+                }
+                escaped = false
+                index += 1
+                continue
+            }
+
+            if inString {
+                escaped = character == "\\" && !escaped
+                if character != "\\" { escaped = false }
+                index += 1
+                continue
+            }
+
+            result.append(character)
+            index += 1
+        }
+        return result
     }
 
     private static func testDeclaration(
