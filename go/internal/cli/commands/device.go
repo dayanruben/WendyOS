@@ -1828,7 +1828,7 @@ type agentRestartWaitOptions struct {
 const (
 	defaultAgentRestartInitialDelay = time.Second
 	defaultAgentRestartTimeout      = 20 * time.Second
-	defaultAgentRestartPollInterval = 250 * time.Millisecond
+	defaultAgentRestartPollInterval = time.Second
 )
 
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
