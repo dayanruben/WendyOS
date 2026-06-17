@@ -211,6 +211,7 @@ private func writeTestSourceArtifactIfPossible(testRootURL: URL, packageURL: URL
     guard try sourceFileSize(sourceURL) <= e2eSourceArtifactMaxBytes else { return }
 
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    guard source.utf8.count <= e2eSourceArtifactMaxBytes else { return }
     let lines = source.components(separatedBy: .newlines)
     guard startLine <= lines.count else { return }
     let cappedEndLine = min(endLine, lines.count, startLine + e2eSourceArtifactMaxLines - 1)
@@ -304,14 +305,18 @@ private func aggregateRelativePath(_ url: URL, base: URL) -> String {
     return path
 }
 
-private func resolvedTestSourceURL(packageURL: URL, sourceFilePath: String) -> URL? {
+private func resolvedTestSourceURL(packageURL: URL, sourceFilePath rawSourceFilePath: String) -> URL? {
+    let sourceFilePath = rawSourceFilePath.precomposedStringWithCanonicalMapping
     let lowercasedPath = sourceFilePath.lowercased()
+    let sourcePathComponents = sourceFilePath.split(separator: "/", omittingEmptySubsequences: false)
     guard !sourceFilePath.hasPrefix("/"),
         !sourceFilePath.contains("\0"),
         !sourceFilePath.contains("\\"),
         !lowercasedPath.contains("%2f"),
         !lowercasedPath.contains("%5c"),
-        !sourceFilePath.split(separator: "/").contains("..")
+        !sourcePathComponents.contains(""),
+        !sourcePathComponents.contains("."),
+        !sourcePathComponents.contains("..")
     else {
         return nil
     }
@@ -320,9 +325,14 @@ private func resolvedTestSourceURL(packageURL: URL, sourceFilePath: String) -> U
     let sourceURL = packageURL.appendingPathComponent(sourceFilePath, isDirectory: false)
         .resolvingSymlinksInPath()
         .standardizedFileURL
-    let packagePath = packageURL.path.hasSuffix("/") ? packageURL.path : packageURL.path + "/"
-    guard sourceURL.path.hasPrefix(packagePath) else { return nil }
+    guard pathComponents(of: sourceURL).starts(with: pathComponents(of: packageURL)) else {
+        return nil
+    }
     return sourceURL
+}
+
+private func pathComponents(of url: URL) -> [String] {
+    url.standardizedFileURL.pathComponents.map { $0.precomposedStringWithCanonicalMapping }
 }
 
 private func sourceFileSize(_ sourceURL: URL) throws -> Int {
