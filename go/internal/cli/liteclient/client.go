@@ -104,7 +104,9 @@ func (c *WendyLiteClient) Close() error {
 }
 
 func (c *WendyLiteClient) Ping() error {
+	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_Ping{
 			Ping: &wendypb.WendyComPingParams{},
 		},
@@ -119,7 +121,9 @@ func (c *WendyLiteClient) Ping() error {
 }
 
 func (c *WendyLiteClient) ResetTargetDevice() error {
+	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_Reboot{
 			Reboot: &wendypb.WendyComRebootParams{},
 		},
@@ -149,7 +153,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	}
 	size := uint32(info.Size())
 
+	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_AppPushBegin{
 			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size},
 		},
@@ -166,7 +172,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	for {
 		n, err := f.Read(buf)
 		if n > 0 {
+			c.requestIdGen++
 			resp, serr := c.sendCommand(&wendypb.WendyComCommand{
+				RequestId: c.requestIdGen,
 				Params: &wendypb.WendyComCommand_AppPushData{
 					AppPushData: &wendypb.WendyComAppPushDataParams{
 						Offset: offset,
@@ -193,7 +201,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		}
 	}
 
+	c.requestIdGen++
 	resp, err = c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_AppPushEnd{
 			AppPushEnd: &wendypb.WendyComAppPushEndParams{},
 		},
