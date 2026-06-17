@@ -121,3 +121,18 @@ func TestParseROS2Annotation_Malformed(t *testing.T) {
 		}
 	}
 }
+
+func TestIsValidRMWImplementation(t *testing.T) {
+	valid := []string{"rmw_cyclonedds_cpp", "rmw_fastrtps_cpp", "rmw_connextdds", "rmw_gurumdds_cpp"}
+	for _, s := range valid {
+		if !IsValidRMWImplementation(s) {
+			t.Errorf("IsValidRMWImplementation(%q) = false, want true", s)
+		}
+	}
+	invalid := []string{"", "cyclonedds", "fastrtps", "rmw_fastrtps", "rmw_evil_cpp; rm -rf", "RMW_FASTRTPS_CPP"}
+	for _, s := range invalid {
+		if IsValidRMWImplementation(s) {
+			t.Errorf("IsValidRMWImplementation(%q) = true, want false", s)
+		}
+	}
+}
