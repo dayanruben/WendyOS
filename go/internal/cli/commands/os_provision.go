@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,14 +13,15 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// preProvisionedState is written to the config partition during imaging.
+// PreProvisionedState is written to the config partition during imaging.
 // JSON tags must match provisioningState in internal/agent/services.
-type preProvisionedState struct {
+type PreProvisionedState struct {
 	Enrolled  bool   `json:"enrolled"`
 	CloudHost string `json:"cloudHost,omitempty"`
 	OrgID     int32  `json:"orgId,omitempty"`
@@ -36,10 +38,9 @@ func defaultPreEnrollDialer(_ context.Context, addr string, opt grpc.DialOption)
 }
 
 // preEnrollDevice generates a device key pair, gets an enrollment token from
-// Wendy Cloud, issues a certificate, and returns the provisioning state as JSON
-// to be written to the config partition. deviceName is optional. Pass nil for
-// dialer to use the default.
-func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, dialer PreEnrollDialer) ([]byte, error) {
+// Wendy Cloud, issues a certificate, and returns the provisioning state.
+// deviceName is optional. Pass nil for dialer to use the default.
+func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, dialer PreEnrollDialer) (*PreProvisionedState, error) {
 	if dialer == nil {
 		dialer = defaultPreEnrollDialer
 	}
@@ -106,7 +107,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		return nil, fmt.Errorf("cloud returned empty certificate")
 	}
 
-	state := preProvisionedState{
+	state := &PreProvisionedState{
 		Enrolled:  true,
 		CloudHost: auth.CloudGRPC,
 		OrgID:     orgID,
@@ -115,7 +116,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		CertPEM:   certObj.GetPemCertificate(),
 		ChainPEM:  certObj.GetPemCertificateChain(),
 	}
-	return json.Marshal(state)
+	return state, nil
 }
 
 // psPartition is one row from the Windows partition-listing PowerShell
@@ -217,4 +218,98 @@ func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.W
 	}
 
 	return nil
+}
+
+func buildWendyConf(creds []wendyconf.WifiCredential, deviceName string, state *PreProvisionedState) (*litepb.WendyConf, error) {
+	conf := &litepb.WendyConf{}
+
+	if deviceName != "" {
+		conf.DeviceName = &deviceName
+	}
+
+	if len(creds) > 0 {
+		networks := make([]*litepb.WendyConfWifiNetwork, len(creds))
+		for i, c := range creds {
+			networks[i] = &litepb.WendyConfWifiNetwork{
+				Ssid:     c.SSID,
+				Password: c.Password,
+				Priority: c.Priority,
+				Hidden:   c.Hidden,
+				Security: wifiSecurityToProto(c.Security),
+			}
+		}
+		conf.Wifi = &litepb.WendyConfWifi{Networks: networks}
+	}
+
+	if state != nil {
+		keyDER, err := pemBlockToDER(state.KeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("converting key PEM to DER: %w", err)
+		}
+		certDER, err := pemBlockToDER(state.CertPEM)
+		if err != nil {
+			return nil, fmt.Errorf("converting cert PEM to DER: %w", err)
+		}
+		chainDER, err := pemChainToDER(state.ChainPEM)
+		if err != nil {
+			return nil, fmt.Errorf("converting chain PEM to DER: %w", err)
+		}
+		conf.Provisioning = &litepb.WendyConfCloudProvisioning{
+			Enrolled:  state.Enrolled,
+			CloudHost: state.CloudHost,
+			OrgId:     state.OrgID,
+			AssetId:   state.AssetID,
+			Key:       keyDER,
+			Cert:      certDER,
+			Chain:     chainDER,
+		}
+	}
+
+	return conf, nil
+}
+
+// pemBlockToDER decodes the first PEM block from s and returns its raw DER bytes.
+func pemBlockToDER(s string) ([]byte, error) {
+	if s == "" {
+		return nil, nil
+	}
+	block, _ := pem.Decode([]byte(s))
+	if block == nil {
+		return nil, fmt.Errorf("invalid PEM data")
+	}
+	return block.Bytes, nil
+}
+
+// pemChainToDER decodes all PEM blocks from s and concatenates their DER bytes.
+func pemChainToDER(s string) ([]byte, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var der []byte
+	rest := []byte(s)
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		der = append(der, block.Bytes...)
+	}
+	if len(der) == 0 {
+		return nil, fmt.Errorf("invalid PEM chain data")
+	}
+	return der, nil
+}
+
+func wifiSecurityToProto(s string) litepb.WendyConfWifiSecurity {
+	switch s {
+	case "open":
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_OPEN
+	case "wpa2":
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_WPA2
+	case "wpa3":
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_WPA3
+	default:
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_UNSPECIFIED
+	}
 }
