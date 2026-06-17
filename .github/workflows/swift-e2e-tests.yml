@@ -540,10 +540,11 @@ jobs:
           fi
 
       - name: Perform Swift E2E AI Review
+        timeout-minutes: 15
         working-directory: swift
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
         run: |
           set -euo pipefail

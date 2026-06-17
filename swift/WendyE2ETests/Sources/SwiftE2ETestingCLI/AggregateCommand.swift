@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 
 private let e2eSourceArtifactMaxLines = 500
+private let e2eSourceArtifactMaxBytes = 1_048_576
 
 struct AggregateCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -207,6 +208,8 @@ private func writeTestSourceArtifactIfPossible(testRootURL: URL, packageURL: URL
     ), FileManager.default.fileExists(atPath: sourceURL.path)
     else { return }
 
+    guard try sourceFileSize(sourceURL) <= e2eSourceArtifactMaxBytes else { return }
+
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let lines = source.components(separatedBy: .newlines)
     guard startLine <= lines.count else { return }
@@ -218,10 +221,10 @@ private func writeTestSourceArtifactIfPossible(testRootURL: URL, packageURL: URL
     let contents = """
         # Wendy E2E test source
 
-        - Source: `\(metadata.sourceFilePath):\(startLine)-\(cappedEndLine)`
-        - Suite: `\(metadata.suiteName)`
-        - Test: `\(metadata.testName)`
-        - Function: `\(metadata.functionName)`
+        - Source: `\(aggregateMarkdownInline(metadata.sourceFilePath)):\(startLine)-\(cappedEndLine)`
+        - Suite: `\(aggregateMarkdownInline(metadata.suiteName))`
+        - Test: `\(aggregateMarkdownInline(metadata.testName))`
+        - Function: `\(aggregateMarkdownInline(metadata.functionName))`
         - Declaration line: `\(declarationLine)`
         - Truncated: `\(truncated)`
 
@@ -251,9 +254,11 @@ private func writeRunSourceIndex(in runURL: URL) throws {
             let startLine = metadata.sourceStartLine.map(String.init) ?? "?"
             let endLine = metadata.sourceEndLine.map(String.init) ?? "?"
             let sourceArtifactPath = aggregateRelativePath(sourceURL, base: runURL)
-            let sourceRange = "\(metadata.sourceFilePath):\(startLine)-\(endLine)"
+            let sourceRange = "\(aggregateMarkdownInline(metadata.sourceFilePath)):\(startLine)-\(endLine)"
+            let suiteName = aggregateMarkdownInline(metadata.suiteName)
+            let testName = aggregateMarkdownInline(metadata.testName)
             entries.append(
-                "- `\(sourceArtifactPath)` — `\(sourceRange)` — `\(metadata.suiteName)` / `\(metadata.testName)`"
+                "- `\(sourceArtifactPath)` — `\(sourceRange)` — `\(suiteName)` / `\(testName)`"
             )
         }
     }
@@ -300,18 +305,41 @@ private func aggregateRelativePath(_ url: URL, base: URL) -> String {
 }
 
 private func resolvedTestSourceURL(packageURL: URL, sourceFilePath: String) -> URL? {
+    let lowercasedPath = sourceFilePath.lowercased()
     guard !sourceFilePath.hasPrefix("/"),
+        !sourceFilePath.contains("\0"),
+        !sourceFilePath.contains("\\"),
+        !lowercasedPath.contains("%2f"),
+        !lowercasedPath.contains("%5c"),
         !sourceFilePath.split(separator: "/").contains("..")
     else {
         return nil
     }
 
-    let packageURL = packageURL.standardizedFileURL
+    let packageURL = packageURL.resolvingSymlinksInPath().standardizedFileURL
     let sourceURL = packageURL.appendingPathComponent(sourceFilePath, isDirectory: false)
+        .resolvingSymlinksInPath()
         .standardizedFileURL
     let packagePath = packageURL.path.hasSuffix("/") ? packageURL.path : packageURL.path + "/"
     guard sourceURL.path.hasPrefix(packagePath) else { return nil }
     return sourceURL
+}
+
+private func sourceFileSize(_ sourceURL: URL) throws -> Int {
+    try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+}
+
+private func aggregateMarkdownInline(_ value: String) -> String {
+    let withoutControlCharacters = String(
+        value.unicodeScalars.map { scalar in
+            CharacterSet.controlCharacters.contains(scalar) ? " " : Character(scalar)
+        }
+    )
+    return withoutControlCharacters
+        .replacingOccurrences(of: "`", with: "'")
+        .components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
 }
 
 private func copyAttemptLevelArtifacts(from attemptURL: URL, to destinationURL: URL) throws {

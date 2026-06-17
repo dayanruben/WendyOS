@@ -1,6 +1,8 @@
 import ArgumentParser
 import Foundation
 
+private let e2eAIReviewRequestMaxCharacters = 8_000
+
 struct ReviewCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "review",
@@ -1077,7 +1079,9 @@ private func appendRunReviewAIRequests(
     }
 
     for request in requests {
-        lines.append("- `\(request.path):\(request.line)`: \(request.text)")
+        lines.append(
+            "- `\(promptSafeInline(request.path, maxLength: 512)):\(request.line)`: \(request.text)"
+        )
     }
     lines.append("")
 }
@@ -1113,12 +1117,17 @@ private func loadRunReviewAIRequests(testsURL: URL, repoURL: URL) throws -> [Run
                 nextIndex += 1
             }
 
-            let text = block.joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = promptSafeInline(
+                block.joined(separator: " "),
+                maxLength: e2eAIReviewRequestMaxCharacters
+            )
             if !text.isEmpty {
                 requests.append(
                     RunReviewAIRequest(
-                        path: reviewRelativePath(sourceURL, base: repoURL),
+                        path: promptSafeInline(
+                            reviewRelativePath(sourceURL, base: repoURL),
+                            maxLength: 512
+                        ),
                         line: index + 1,
                         text: text
                     )
@@ -1163,6 +1172,21 @@ private func stripReviewCommentPrefix(from line: String) -> String {
         value.removeFirst()
     }
     return value.trimmingCharacters(in: .whitespaces)
+}
+
+private func promptSafeInline(_ value: String, maxLength: Int) -> String {
+    let withoutControlCharacters = String(
+        value.unicodeScalars.map { scalar in
+            CharacterSet.controlCharacters.contains(scalar) ? " " : Character(scalar)
+        }
+    )
+    let singleLine = withoutControlCharacters
+        .replacingOccurrences(of: "`", with: "'")
+        .components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+    guard singleLine.count > maxLength else { return singleLine }
+    return String(singleLine.prefix(maxLength)) + "…"
 }
 
 private func defaultReviewTestsDir(packageURL: URL) -> URL {

@@ -451,6 +451,9 @@ public struct WendyE2ERecorder: Sendable {
         return start + 1
     }
 
+    // Best-effort source range extraction for review artifacts. This is not a
+    // Swift parser or a security boundary; it only keeps source.md focused on
+    // the declaring test body for the E2E test styles used in this package.
     private static func testSourceEndLine(
         fromDeclarationAt declarationOffset: Int,
         in lines: [String]
