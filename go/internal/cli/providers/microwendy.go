@@ -213,8 +213,6 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 	defer client.Close()
 
-	output <- RunOutput{Type: RunOutputStarted}
-
 	if err := client.StopApp(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
 	}
@@ -256,7 +254,8 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("app start: %w", err)
 	}
 
-	fmt.Println("App started.")
+	output <- RunOutput{Type: RunOutputStarted}
+
 	return nil
 }
 
