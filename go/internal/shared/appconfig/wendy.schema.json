@@ -61,6 +61,12 @@
       "items": {
         "$ref": "#/$defs/fileSyncEntry"
       }
+    },
+    "brewfile": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\.\\./|.*\\/\\.\\.$|^\\.\\.$)",
+      "description": "Optional Homebrew Bundle manifest for native Darwin deployments, relative to wendy.json. If omitted, a project-root Brewfile is auto-detected for native Mac runs."
     }
   },
   "$defs": {

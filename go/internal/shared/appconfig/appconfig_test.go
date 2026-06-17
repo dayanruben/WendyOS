@@ -971,6 +971,45 @@ func TestFiles_RoundTripJSON(t *testing.T) {
 	}
 }
 
+func TestValidate_Brewfile_Valid(t *testing.T) {
+	cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: "ops/Brewfile"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_Brewfile_AbsolutePath(t *testing.T) {
+	cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: "/tmp/Brewfile"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for absolute brewfile path")
+	}
+}
+
+func TestValidate_Brewfile_DotDot(t *testing.T) {
+	cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: "../Brewfile"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for dotdot brewfile path")
+	}
+}
+
+func TestBrewfile_RoundTripJSON(t *testing.T) {
+	original := &AppConfig{AppID: "sh.wendy.MyApp", Brewfile: "ops/Brewfile"}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var decoded AppConfig
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if decoded.Brewfile != original.Brewfile {
+		t.Errorf("Brewfile = %q, want %q", decoded.Brewfile, original.Brewfile)
+	}
+}
+
 func TestValidateJSON_UnknownKeys(t *testing.T) {
 	data := []byte(`{
 		"appId": "com.example.app",

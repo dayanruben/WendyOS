@@ -591,6 +591,73 @@ struct ContainerServiceTests {
         #expect(stats.first?.memoryBytes == 0)
         #expect(stats.first?.storageBytes == 0)
     }
+
+    @Test("Brewfile command uses brew bundle with explicit file")
+    func brewfileCommandUsesBrewBundleWithExplicitFile() {
+        let args = ContainerService.brewBundleArguments(brewfilePath: "/tmp/app/Brewfile")
+        #expect(args == ["bundle", "--file", "/tmp/app/Brewfile"])
+    }
+
+    @Test("Homebrew lookup prefers PATH before default install locations")
+    func homebrewLookupPrefersPathBeforeDefaultInstallLocations() {
+        let found = ContainerService.findBrewExecutable(
+            environment: ["PATH": "/tmp/fake:/opt/homebrew/bin"],
+            fileExists: { $0 == "/tmp/fake/brew" || $0 == "/opt/homebrew/bin/brew" }
+        )
+        #expect(found == "/tmp/fake/brew")
+    }
+
+    @Test("Brewfile failure messages include exit status and output")
+    func brewfileFailureMessagesIncludeExitStatusAndOutput() {
+        let message = ContainerService.brewBundleFailureMessage(
+            brewfile: "ops/Brewfile",
+            status: 17,
+            output: "No available formula with the name jqx"
+        )
+        #expect(message.contains("ops/Brewfile"))
+        #expect(message.contains("exit code 17"))
+        #expect(message.contains("No available formula"))
+    }
+
+    @Test("invalid Brewfile paths are rejected before launching Homebrew")
+    func invalidBrewfilePathsAreRejectedBeforeLaunchingHomebrew() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.BadBrewfile"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writePrintPWDScript(to: appDirectory.appendingPathComponent("printpwd.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.cmd = "printpwd.sh"
+        request.appConfig = try JSONEncoder().encode(
+            WendyAppConfig(
+                appId: appID,
+                platform: "darwin",
+                entitlements: nil,
+                brewfile: "../Brewfile"
+            )
+        )
+
+        do {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+            Issue.record("Expected createContainer to reject unsafe Brewfile path")
+        } catch let error as RPCError {
+            #expect(error.code == .invalidArgument)
+            #expect("\(error)".contains("brewfile path must be relative"))
+        }
+    }
 }
 
 // MARK: - Helpers
