@@ -68,6 +68,19 @@ Project language, e.g. `"swift"` or `"python"`. Used by the CLI to select the ap
 
 Set to `true` to enable debug mode (default `false`). Injects debug tooling into the container via the `WENDY_DEBUG` build arg.
 
+### `brewfile`
+
+Optional Homebrew Bundle manifest for native macOS (`platform: "darwin"`) deployments. The path is relative to `wendy.json`; absolute paths and `..` components are not allowed.
+
+```json
+{
+  "platform": "darwin",
+  "brewfile": "Brewfile"
+}
+```
+
+If `brewfile` is omitted and a `Brewfile` exists at the project root, `wendy run` auto-detects it for native SwiftPM and Xcode Mac deployments. The CLI syncs the Brewfile to the target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>` before starting the app. Homebrew must already be installed on the target Mac; Wendy does not install Homebrew automatically. Linux/WendyOS container deployments ignore Brewfiles.
+
 ### `entitlements`
 
 Array of capabilities the app requires. See [Entitlements](#entitlements-1) below.

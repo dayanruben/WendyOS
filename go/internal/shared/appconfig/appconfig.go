@@ -147,6 +147,10 @@ type AppConfig struct {
 	Python       *PythonConfig    `json:"python,omitempty"`
 	Debug        bool             `json:"debug,omitempty"`
 	Files        []FileSyncEntry  `json:"files,omitempty"`
+	// Brewfile is an optional Homebrew Bundle manifest path for native Darwin
+	// deployments. It is relative to wendy.json and synced to the target Mac
+	// before the agent runs `brew bundle --file`.
+	Brewfile string `json:"brewfile,omitempty"`
 	// Isolation sets the namespace isolation mode for multi-container deployments
 	// (e.g. "shared-ipc"). Enforced by the agent at container creation time.
 	Isolation string `json:"isolation,omitempty"`
@@ -408,6 +412,15 @@ func (c *AppConfig) Validate() error {
 			if containsDotDot(f.To) {
 				return fmt.Errorf("files[%d]: to must not contain '..' components", i)
 			}
+		}
+	}
+
+	if c.Brewfile != "" {
+		if strings.HasPrefix(c.Brewfile, "/") {
+			return fmt.Errorf("brewfile path must not be absolute")
+		}
+		if containsDotDot(c.Brewfile) {
+			return fmt.Errorf("brewfile path must not contain '..' components")
 		}
 	}
 

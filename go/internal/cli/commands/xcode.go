@@ -230,7 +230,7 @@ func assembleXcodeSyncEntries(productPath string, isApp bool, cwd string, appCfg
 		})
 	}
 
-	return entries, nil
+	return appendNativeBrewfileSyncEntry(entries, cwd, appCfg)
 }
 
 // xcodeEntrypoint derives the container Cmd string from the build product. For

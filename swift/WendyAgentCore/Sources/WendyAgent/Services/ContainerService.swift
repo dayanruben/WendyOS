@@ -407,6 +407,138 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         _ = Darwin.kill(process.processIdentifier, SIGKILL)
     }
 
+    nonisolated static func findBrewExecutable(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
+        var candidates: [String] = []
+        if let path = environment["PATH"] {
+            candidates += path.split(separator: ":").map { "\($0)/brew" }
+        }
+        candidates += ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+
+        var seen = Set<String>()
+        for candidate in candidates where seen.insert(candidate).inserted {
+            if fileExists(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    nonisolated static func brewBundleArguments(brewfilePath: String) -> [String] {
+        ["bundle", "--file", brewfilePath]
+    }
+
+    nonisolated static func brewBundleFailureMessage(
+        brewfile: String,
+        status: Int32,
+        output: String
+    ) -> String {
+        let suffix = output.isEmpty ? "" : ": \(output)"
+        return "brew bundle failed for Brewfile \(brewfile) with exit code \(status)\(suffix)"
+    }
+
+    nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
+        guard !path.isEmpty, !path.hasPrefix("/") else { return false }
+        for component in path.split(separator: "/", omittingEmptySubsequences: false) {
+            if component == "" || component == "." || component == ".." {
+                return false
+            }
+        }
+        return true
+    }
+
+    nonisolated private static func runBrewBundle(
+        brewExecutable: String,
+        brewfilePath: String,
+        appDirectory: String
+    ) async throws -> (status: Int32, output: String) {
+        try await Task.detached(priority: .utility) {
+            let process = Foundation.Process()
+            process.executableURL = URL(fileURLWithPath: brewExecutable)
+            process.arguments = Self.brewBundleArguments(brewfilePath: brewfilePath)
+            process.currentDirectoryURL = URL(fileURLWithPath: appDirectory)
+            process.environment = ProcessInfo.processInfo.environment
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+
+            return (
+                process.terminationStatus,
+                String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }.value
+    }
+
+    private func applyBrewfileIfNeeded(_ brewfile: String?, appDirectory: String) async throws {
+        guard let brewfile = brewfile?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !brewfile.isEmpty
+        else { return }
+
+        guard Self.isSafeRelativeBrewfilePath(brewfile) else {
+            throw RPCError(
+                code: .invalidArgument,
+                message: "brewfile path must be relative and must not contain '.', '..', or empty components"
+            )
+        }
+
+        let brewfilePath = URL(fileURLWithPath: appDirectory)
+            .appendingPathComponent(brewfile)
+            .path
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: brewfilePath, isDirectory: &isDirectory),
+            !isDirectory.boolValue
+        else {
+            throw RPCError(
+                code: .notFound,
+                message: "Brewfile declared in wendy.json was not found at \(brewfilePath)"
+            )
+        }
+
+        guard let brewExecutable = Self.findBrewExecutable() else {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "Homebrew is required to apply Brewfile \(brewfile) on the target Mac, but brew was not found in PATH, /opt/homebrew/bin/brew, or /usr/local/bin/brew. Install Homebrew on the target Mac: https://brew.sh/"
+            )
+        }
+
+        logger.info(
+            "Applying Brewfile",
+            metadata: ["brewfile": "\(brewfilePath)", "brew": "\(brewExecutable)"]
+        )
+
+        let result: (status: Int32, output: String)
+        do {
+            result = try await Self.runBrewBundle(
+                brewExecutable: brewExecutable,
+                brewfilePath: brewfilePath,
+                appDirectory: appDirectory
+            )
+        } catch {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "Failed to run brew bundle for Brewfile \(brewfile): \(error)"
+            )
+        }
+
+        guard result.status == 0 else {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: Self.brewBundleFailureMessage(
+                    brewfile: brewfile,
+                    status: result.status,
+                    output: result.output
+                )
+            )
+        }
+    }
+
     // MARK: - Implemented
 
     func createContainer(
@@ -538,6 +670,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
+        try await self.applyBrewfileIfNeeded(appConfig?.brewfile, appDirectory: nativeLaunchInfo.directory)
         try await self.registerApp(id: appName, kind: .native, native: nativeLaunchInfo)
         return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
     }

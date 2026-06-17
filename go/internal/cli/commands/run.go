@@ -794,9 +794,24 @@ func resolveRunWorkingDir(opts runOptions) (string, error) {
 // from a container that was deployed via file sync (not an OCI image pull).
 // It is shared by both the SwiftPM and Xcode macOS run paths.
 func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
+	if len(createReq.AppConfig) == 0 {
+		appConfigData, err := json.Marshal(appCfg)
+		if err != nil {
+			return fmt.Errorf("marshaling app config: %w", err)
+		}
+		createReq.AppConfig = appConfigData
+	}
+
+	if appCfg.Brewfile != "" {
+		cliLogln("Applying Brewfile %s on target Mac...", appCfg.Brewfile)
+	}
+
 	if opts.deploy {
 		if _, err := conn.ContainerService.CreateContainer(ctx, createReq); err != nil {
 			return fmt.Errorf("creating container: %w", err)
+		}
+		if appCfg.Brewfile != "" {
+			cliLogln("Brewfile applied.")
 		}
 		cliLogln("Container %s created (not started).", appCfg.AppID)
 		return nil
@@ -804,6 +819,9 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	if _, err := conn.ContainerService.CreateContainer(ctx, createReq); err != nil {
 		return fmt.Errorf("creating container: %w", err)
+	}
+	if appCfg.Brewfile != "" {
+		cliLogln("Brewfile applied.")
 	}
 	cliLogln("Container %s created.", appCfg.AppID)
 
@@ -1062,7 +1080,7 @@ func assembleSwiftPMSyncEntries(binaryPath, cwd string, appCfg *appconfig.AppCon
 		})
 	}
 
-	return entries, nil
+	return appendNativeBrewfileSyncEntry(entries, cwd, appCfg)
 }
 
 func resolveRunProjectType(dir, requestedType string) (string, error) {

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"os/exec"
@@ -149,6 +150,9 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Package.swift"), []byte("// test package\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile Package.swift: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "Brewfile"), []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
 
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -198,6 +202,13 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if len(got.UserArgs) != 2 || got.UserArgs[0] != "--port" || got.UserArgs[1] != "8080" {
 		t.Fatalf("UserArgs = %v, want %v", got.UserArgs, appCfg.Run.Args)
 	}
+	var sentConfig appconfig.AppConfig
+	if err := json.Unmarshal(got.AppConfig, &sentConfig); err != nil {
+		t.Fatalf("unmarshal AppConfig: %v", err)
+	}
+	if sentConfig.Brewfile != "Brewfile" {
+		t.Fatalf("AppConfig Brewfile = %q, want Brewfile", sentConfig.Brewfile)
+	}
 
 	acked := make(map[string]bool)
 	for _, path := range state.ackedPaths {
@@ -211,6 +222,9 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	}
 	if !acked["MySwiftApp.resources/config.json"] {
 		t.Fatalf("missing ack for MySwiftApp.resources/config.json; got %v", state.ackedPaths)
+	}
+	if !acked["Brewfile"] {
+		t.Fatalf("missing ack for Brewfile; got %v", state.ackedPaths)
 	}
 }
 
