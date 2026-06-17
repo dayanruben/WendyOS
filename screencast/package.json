@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "slidev deck/slides.md --host 127.0.0.1",
+    "present": "slidev deck/slides.md",
+    "export": "slidev export deck/slides.md --output output/deck.pdf"
+  },
+  "devDependencies": {
+    "@slidev/cli": "latest",
+    "@slidev/theme-default": "latest"
+  }
+}

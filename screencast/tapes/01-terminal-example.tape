@@ -1,4 +1,4 @@
-Output recordings/01-terminal-example.mp4
+Output deck/public/videos/01-terminal-example.mp4
 Set Width 1440
 Set Height 900
 Set FontSize 20

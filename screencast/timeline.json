@@ -1,0 +1,51 @@
+{
+  "$schema": "./timeline.schema.json",
+  "engine": "slidev",
+  "deck": "deck/slides.md",
+  "size": {
+    "width": 1440,
+    "height": 900,
+    "fps": 10
+  },
+  "steps": [
+    {
+      "id": "intro",
+      "target": "1",
+      "minSeconds": 4.0,
+      "voiceover": null
+    },
+    {
+      "id": "terminal-demo",
+      "target": "3",
+      "minSeconds": 12.0,
+      "voiceover": "voiceover/mp3/01-terminal-example.mp3",
+      "media": "deck/public/videos/01-terminal-example.mp4"
+    },
+    {
+      "id": "ui-demo",
+      "target": "5",
+      "minSeconds": 15.0,
+      "voiceover": "voiceover/mp3/02-ui-example.mp3",
+      "media": "deck/public/videos/02-ui-example.mp4"
+    },
+    {
+      "id": "docs-demo",
+      "target": "7",
+      "minSeconds": 10.0,
+      "voiceover": "voiceover/mp3/03-docs-example.mp3",
+      "media": "deck/public/videos/03-docs-example.mp4"
+    },
+    {
+      "id": "code-reveal",
+      "target": "8",
+      "minSeconds": 8.0,
+      "voiceover": null
+    },
+    {
+      "id": "closing",
+      "target": "9",
+      "minSeconds": 4.0,
+      "voiceover": null
+    }
+  ]
+}

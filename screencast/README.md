@@ -1,112 +1,71 @@
 # Screencast production
 
-Reusable workflow for producing engineering screencasts with terminal clips,
-optional UI/docs clips, generated voiceover, and a deterministic final render.
+Reusable workflow for producing engineering screencasts as interactive Slidev
+presentations that can also be rendered into narrated videos.
 
-This directory is the reusable screencast scaffold. Copy the whole
-`screencast/` directory when starting a new screencast, or edit it in place for a
-single project-specific video.
+The presentation deck is the source of truth. Generated media such as VHS clips,
+screen recordings, browser captures, voiceover MP3s, and final renders are build
+artifacts and should not be committed.
 
-## Asset model
+## Structure
 
-- `tapes/*.tape` — VHS terminal recordings.
-- `recordings/` — generated or manually captured video clips (`.mp4`, `.mov`).
-- `voiceover/text/*.txt` — voiceover scripts, one file per narrated scene.
-- `voiceover/mp3/*.mp3` — generated TTS audio. Ignored by git.
-- `scene-plan.tsv` — ordered scene list used by the planning/reporting/render scripts.
-- `title-card.svg` / `title-card.env` — editable intro-card source and metadata.
-- `closing-card.svg` / `closing-card.env` — editable closing-card source and metadata.
-- `stitch/output/` — final rendered video. Ignored by git.
+```text
+screencast/
+  deck/
+    slides.md              # Slidev deck; manually presentable
+    style.css              # shared visual style
+    public/
+      videos/              # generated/recorded footage embedded by slides
+      images/              # images and generated stills embedded by slides
+  tapes/                   # VHS terminal recordings
+  voiceover/
+    text/                  # narration scripts, one file per narrated beat
+    mp3/                   # generated OpenAI TTS audio; ignored by git
+  output/                  # final renders/exports; ignored by git
+  timeline.json            # engine-neutral playback/sync plan
+  package.json             # Slidev commands and dependencies
+  scripts/                 # helper scripts
+```
 
-Generated media is intentionally not committed. Keep the scripts, scene plan,
-title card sources, text scripts, and tape sources in git; regenerate clips when
-needed.
+## Presentation engine
 
-## Building blocks
+Use **Slidev** as the authoring layer.
 
-A screencast is assembled from ordered scenes. Useful scene types include:
+Why Slidev:
 
-- **Slides/cards** — static or lightly animated SVG/PNG cards for intros,
-  section breaks, diagrams, summary points, and closing/contact details.
-- **VHS terminal tapes** — deterministic terminal recordings from `tapes/*.tape`.
-  Use these for commands, logs, CLIs, REPLs, and repeatable developer flows.
-- **Screen recordings** — captured application, desktop, or device UI footage.
-  Use these when the real interface matters more than deterministic replay.
-- **Live coding** — editor-centric footage where code is written, refactored,
-  or debugged in real time. This is useful when the thought process matters;
-  keep edits focused and consider speeding up repetitive typing.
-- **Browsing** — website or web-app navigation captured as a user would
-  experience it. Use this for product pages, docs exploration, dashboards,
-  account flows, and hosted demos.
-- **B-roll footage** — supplemental real-world or atmospheric footage, such as
-  devices, hardware, people working, lab/office shots, or product context. This
-  is the common video-production name for general supporting footage.
-- **Scripted browser/docs captures** — reproducible browser recordings for docs
-  pages, dashboards, changelogs, or web apps. These are a structured variant of
-  browsing/screen recording when repeatability matters.
-- **Overlays** — callouts, captions, arrows, highlights, lower thirds, or labels
-  composited over another scene during editing/rendering.
-- **Audio-only beats** — silence, room tone, music stings, or narration-only
-  pauses used to control pacing between visual scenes.
+- Markdown-first decks are easy for humans and AI agents to edit.
+- It is designed for developer talks: code, themes, components, presenter mode,
+  and embedded media are first-class.
+- The same `deck/slides.md` can be presented manually or driven by automation.
+- Videos from VHS, screen recordings, browsing, and b-roll can be embedded as
+  normal slide media.
 
-Every scene still resolves to a video file in `recordings/` plus optional
-voiceover audio in `voiceover/mp3/` before final rendering.
+Install dependencies:
 
-## Automation approach
+```sh
+cd screencast
+npm install
+```
 
-This scaffold is designed so an AI agent can assemble a screencast from a small
-set of declarative inputs rather than hand-editing a timeline. The agent should
-produce or update:
+Present manually:
 
-1. A short narrative outline: audience, goal, key beats, and call to action.
-2. A scene list that chooses one building block per beat.
-3. Source assets for each scene: slide metadata, VHS tapes, capture URLs,
-   code-reveal snippets, screen-recording notes, or b-roll placeholders.
-4. Voiceover text files, one per narrated scene.
-5. `scene-plan.tsv`, using minimum useful durations first and letting the
-   planner expand scenes to fit generated voiceover.
-6. A duration report and final render.
+```sh
+npm run present
+```
 
-Prefer generated/reproducible sources where possible. Commit plans, scripts,
-tape files, SVG/card metadata, and voiceover text; do not commit generated media.
+Develop with the local Slidev server:
 
-### Scripted code reveal
+```sh
+npm run dev
+```
 
-For live-coding-like segments, prefer a **scripted code reveal** over recording
-an editor session by hand. The source of truth can be a patch, a before/after
-file pair, or a sequence of small snippets. The generated footage should reveal
-code progressively in an editor-like frame, optionally with highlights or pauses
-at important lines.
-
-This keeps the segment deterministic while preserving the feel of live coding.
-It also avoids fragile typing timing, autocomplete popovers, local editor state,
-and accidental secrets. VS Code styling is a good visual target, but the exact
-implementation is intentionally left for later: HTML/SVG/browser rendering,
-editor automation, or a dedicated recorder are all possible.
-
-### AI-assisted production workflow
-
-A good agent loop is:
-
-1. **Plan** — write a scene outline with building block, purpose, target length,
-   and voiceover intent for each scene.
-2. **Draft sources** — create or update card metadata, VHS tapes, code-reveal
-   snippets, browser-capture notes, and voiceover text.
-3. **Generate media** — render cards, record VHS/browser/code scenes, and create
-   TTS voiceover. Keep generated files ignored by git.
-4. **Plan durations** — run the duration planner and adjust minimum durations or
-   voiceover text when pacing feels off.
-5. **Render** — assemble the final video with `scripts/render.sh`.
-6. **Review** — watch the output, check the duration report, then iterate on the
-   smallest source asset that fixes the issue.
-
-The agent should treat generated footage as disposable build output. If a scene
-needs correction, change the declarative source and regenerate it rather than
-manually editing the rendered video.
+Exporting/rendering the synchronized narrated video is intentionally modeled in
+`timeline.json`; the hardened deck-rendering script can be added later without
+changing the deck format.
 
 ## Standard format
 
-Use the display's logical aspect ratio, with encoder-safe even dimensions:
+Use a 16:10 canvas close to a non-Retina MacBook-sized presentation:
 
 ```text
 1440 × 900, 10 fps
@@ -123,73 +82,85 @@ Set Framerate 10
 Set CursorBlink false
 ```
 
-The title card uses the same terminal-style defaults: JetBrains Mono
-when available, a `#171717` background matching VHS's default terminal
-background, and light monospace text. The fallback stack also includes common
-JetBrains Mono Nerd Font family names for setups that install the patched font.
-Install the font locally before recording if you want exact typography;
-otherwise VHS/SVG rendering will use a monospace fallback.
+The deck and VHS clips use a terminal-style visual baseline: JetBrains Mono when
+available, `#171717` as the default dark background, and light monospace text.
+Disable cursor blinking for terminal clips so a padded/frozen final frame does
+not look like a stuck blink state.
 
-Disable cursor blinking for terminal clips. The renderer may freeze the final
-frame when a scene needs padding; a non-blinking cursor makes that freeze look
-intentional instead of like a stuck blink state.
+## Building blocks
 
-`1440 × 900` is exact 16:10, close to a non-Retina MacBook-sized canvas, and
-uses encoder-safe even dimensions. Override the defaults with
-`SCREENCAST_WIDTH`, `SCREENCAST_HEIGHT`, and `SCREENCAST_FPS` if your project
-needs another format.
+A screencast is assembled from ordered presentation beats. Useful building
+blocks include:
 
-## Scene plan
+- **Slides/cards** — normal Slidev slides for intros, section breaks, diagrams,
+  summary points, and closing/contact details.
+- **VHS terminal tapes** — deterministic terminal recordings from `tapes/*.tape`.
+  Render these to `deck/public/videos/` and embed them in the deck.
+- **Screen recordings** — captured application, desktop, or device UI footage.
+  Use these when the real interface matters more than deterministic replay.
+- **Live coding** — editor-centric footage where code is written, refactored, or
+  debugged in real time.
+- **Scripted code reveal** — preferred over ad-hoc live coding when possible.
+  Reveal code progressively from patches, before/after files, or curated
+  snippets in an editor-like slide. VS Code styling is a good visual target, but
+  implementation details can come later.
+- **Browsing** — website or web-app navigation captured as a user would
+  experience it: product pages, docs exploration, dashboards, account flows, and
+  hosted demos.
+- **Scripted browser/docs captures** — reproducible browser recordings for docs
+  pages, dashboards, changelogs, or web apps.
+- **B-roll footage** — supplemental real-world or atmospheric footage, such as
+  devices, hardware, people working, lab/office shots, or product context.
+- **Overlays** — callouts, captions, arrows, highlights, lower thirds, or labels
+  implemented as slide content/fragments or composited later.
+- **Audio-only beats** — silence, room tone, music stings, or narration-only
+  pauses used to control pacing.
 
-`scene-plan.tsv` columns:
+## VHS in the deck model
+
+Keep VHS as a deterministic terminal-video generator:
+
+1. Write or update a tape in `tapes/`.
+2. Render it with `vhs`.
+3. Put the generated MP4/WebM under `deck/public/videos/`.
+4. Embed the video in `deck/slides.md`.
+5. Reference the same media file from `timeline.json` for automated playback.
+
+This keeps terminal demos repeatable while making them ordinary presentation
+media. Later, terminal playback could move to asciinema or xterm.js without
+changing the high-level deck/timeline model.
+
+## Timeline and voiceover
+
+`timeline.json` maps deck positions to optional voiceover and media assets. The
+intended rendering rule remains:
 
 ```text
-scene_id    video_path    min_seconds    voiceover_path    final_seconds
+beat duration = max(minimum useful visual duration, voiceover duration)
 ```
 
-Paths are relative to this screencast directory. Leave `voiceover_path`
-empty for silent scenes. Leave `final_seconds` empty for automatic planning.
+Example timeline step:
 
-Duration rule:
-
-```text
-render duration = final_seconds ?? max(min_seconds, voiceover duration)
+```json
+{
+  "id": "terminal-demo",
+  "target": "3",
+  "minSeconds": 12.0,
+  "voiceover": "voiceover/mp3/01-terminal-example.mp3",
+  "media": "deck/public/videos/01-terminal-example.mp4"
+}
 ```
 
-If voiceover is shorter than the render duration, the renderer pads with
-silence. If voiceover is longer than `min_seconds`, the render duration expands
-to fit the voiceover. If the source video is shorter than the render duration,
-the renderer freezes the final frame.
-
-Use `final_seconds` only when you need a fixed duration. Rendering fails if an
-explicit final duration is shorter than the minimum or shorter than the
-voiceover.
-
-## Create intro and closing cards
-
-Edit `title-card.env` for title, subtitle, author, place, and date, then run:
-
-```sh
-scripts/create-title-card.sh
-```
-
-This substitutes metadata into `title-card.svg`, rasterizes it, and writes
-`recordings/00-title-card.mp4`.
-
-Edit `closing-card.env` for title, subtitle, website, contact details, author,
-place, and date, then run:
-
-```sh
-scripts/create-closing-card.sh
-```
-
-This writes `recordings/99-closing-card.mp4`. The scaffold keeps the website
-generic; set `WEBSITE` to your project or talk URL in a copied screencast
-folder.
+The `target` value is intentionally engine-neutral. For Slidev it can represent
+a slide or future slide/fragment address. A later renderer should open the deck,
+navigate to each target, play embedded media as needed, and mux/pad audio so the
+beat duration follows the rule above.
 
 ## Generate voiceover
 
-Requires `OPENAI_API_KEY`.
+Requires `OPENAI_API_KEY`. The workflow intentionally fails hard when the key is
+missing; do not use local fallback voices such as `say` because inconsistent
+narration quality makes renders harder to review and reproduce.
 
 ```sh
 scripts/generate-tts.sh --dry-run
@@ -198,41 +169,37 @@ scripts/generate-tts.sh
 
 This reads `voiceover/text/*.txt` and writes matching `.mp3` files under
 `voiceover/mp3/`. Dry-run mode prints word counts and rough duration estimates
-without calling the API.
+without calling the API or requiring an API key.
 
-## Plan durations
-
-After recording clips and generating voiceover, compute planned render lengths:
-
-```sh
-scripts/plan-durations.py scene-plan.tsv
-scripts/plan-durations.py scene-plan.tsv --format markdown
-```
-
-The report includes source video length, voiceover length, recommended final
-length, padding, and blocking issues such as missing media or an explicit final
-duration that is too short.
-
-## Record docs page
+## Record docs/browser footage
 
 ```sh
 scripts/record-docs-page.mjs \
   https://docs.example.com/page \
-  recordings/10-docs-page.mp4
+  deck/public/videos/03-docs-example.mp4
 ```
 
-## Render final video
+## AI-assisted production workflow
 
-```sh
-scripts/render.sh
-```
+A good agent loop is:
 
-Output:
+1. **Plan** — write a narrative outline with audience, goal, key beats, and call
+   to action.
+2. **Choose building blocks** — pick slides, VHS, screen recording, browsing,
+   scripted code reveal, b-roll, or overlays for each beat.
+3. **Draft the deck** — update `deck/slides.md` and `deck/style.css` so the talk
+   can be presented manually.
+4. **Draft sources** — create/update VHS tapes, capture notes, code-reveal
+   snippets, and voiceover text.
+5. **Generate media** — render VHS/browser/screen assets into
+   `deck/public/videos/` and generate OpenAI TTS into `voiceover/mp3/`.
+6. **Update timeline** — map deck targets to voiceover/media in `timeline.json`.
+7. **Render/review** — once the deck renderer exists, produce the final video,
+   watch it, and iterate on the smallest source asset that fixes the issue.
 
-```text
-stitch/output/screencast.mp4
-stitch/duration-report.tsv
-```
+The agent should treat generated footage as disposable build output. If a scene
+needs correction, change the declarative source and regenerate it rather than
+manually editing rendered media.
 
 ## Validation
 
@@ -240,10 +207,4 @@ Run syntax and generated-media checks:
 
 ```sh
 scripts/check.sh
-```
-
-Run a strict planning pass before render:
-
-```sh
-scripts/plan-durations.py scene-plan.tsv --strict
 ```

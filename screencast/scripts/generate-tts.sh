@@ -16,6 +16,8 @@ usage() {
 usage: generate-tts.sh [--dry-run]
 
 Reads voiceover/text/*.txt and writes matching MP3 files to voiceover/mp3/.
+Requires OPENAI_API_KEY unless --dry-run is used. There is intentionally no
+local fallback voice generator.
 Set OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, or OPENAI_TTS_INSTRUCTIONS to override
 TTS defaults.
 EOF
@@ -40,7 +42,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$DRY_RUN" -eq 0 && -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "error: OPENAI_API_KEY is required" >&2
+  echo "error: OPENAI_API_KEY is required; no local TTS fallback is supported" >&2
   exit 1
 fi
 
