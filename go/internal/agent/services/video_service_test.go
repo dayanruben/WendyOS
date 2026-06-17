@@ -345,6 +345,19 @@ func TestBuildGStreamerArgs_V4L2HardwareEncoder(t *testing.T) {
 	}
 }
 
+func TestBuildGStreamerArgs_V4L2PinsH264Level(t *testing.T) {
+	// On the Raspberry Pi bcm2835-codec, a bare v4l2h264enc (even with a
+	// profile-only capsfilter) negotiates an H.264 level the driver then rejects
+	// at QBUF time ("Failed to process frame"). Pinning an explicit level in the
+	// output caps is required for the encoder to run (verified on a Pi 4, WDY-1603).
+	req := &agentpb.StreamVideoRequest{}
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "level=(string)4") {
+		t.Errorf("v4l2h264enc output caps must pin an H.264 level: %v", args)
+	}
+}
+
 func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 	req := &agentpb.StreamVideoRequest{}
 	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "nvv4l2h264enc", true)
