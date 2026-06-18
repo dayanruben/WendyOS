@@ -619,6 +619,30 @@ struct ContainerServiceTests {
         #expect(message.contains("No available formula"))
     }
 
+    @Test("Brewfile command environment omits credentials")
+    func brewfileCommandEnvironmentOmitsCredentials() {
+        let environment = ContainerService.brewBundleEnvironment(
+            source: [
+                "HOME": "/Users/wendy",
+                "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+                "TMPDIR": "/tmp",
+                "USER": "wendy",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "GITHUB_TOKEN": "token",
+                "DATABASE_PASSWORD": "secret",
+            ]
+        )
+
+        #expect(environment["HOME"] == "/Users/wendy")
+        #expect(environment["PATH"] == "/opt/homebrew/bin:/usr/bin:/bin")
+        #expect(environment["TMPDIR"] == "/tmp")
+        #expect(environment["USER"] == "wendy")
+        #expect(environment["HOMEBREW_NO_ANALYTICS"] == "1")
+        #expect(environment["AWS_SECRET_ACCESS_KEY"] == nil)
+        #expect(environment["GITHUB_TOKEN"] == nil)
+        #expect(environment["DATABASE_PASSWORD"] == nil)
+    }
+
     @Test("invalid Brewfile paths are rejected before launching Homebrew")
     func invalidBrewfilePathsAreRejectedBeforeLaunchingHomebrew() async throws {
         let appsBase = try makeTempDir()
