@@ -127,17 +127,22 @@ func (s *ROS2Service) runMerged(ctx context.Context, scs []ros2SC, args ...strin
 	return outs, nil
 }
 
-// pickSidecarForTopic routes a topic-targeted command (echo/hz/info) to the
-// sidecar whose graph carries the topic — a topic lives in exactly one RMW
-// graph. Falls back to the first sidecar when ownership can't be determined.
-func (s *ROS2Service) pickSidecarForTopic(ctx context.Context, scs []ros2SC, topic string) ros2SC {
+// pickSidecarOwning routes a target-specific command to the sidecar whose graph
+// carries `target`, found by matching a line of `ros2 <listKind> list` (a
+// topic/node/service lives in exactly one RMW graph). This avoids running the
+// command in the wrong sidecar — where a node/service-targeted call (param get,
+// service call) would block on DDS discovery until timeout before failing.
+// Falls back to the first sidecar when ownership can't be determined; if the
+// same name exists in more than one RMW graph (genuinely ambiguous), the
+// first-running RMW deterministically wins.
+func (s *ROS2Service) pickSidecarOwning(ctx context.Context, scs []ros2SC, listKind, target string) ros2SC {
 	for _, sc := range scs {
-		out, err := s.runIn(ctx, sc, "topic", "list")
+		out, err := s.runIn(ctx, sc, listKind, "list")
 		if err != nil {
 			continue
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.TrimSpace(line) == topic {
+			if strings.TrimSpace(line) == target {
 				return sc
 			}
 		}
@@ -145,22 +150,16 @@ func (s *ROS2Service) pickSidecarForTopic(ctx context.Context, scs []ros2SC, top
 	return scs[0]
 }
 
-// runFirst runs args in each sidecar and returns the first successful output —
-// used for node/service-targeted commands whose target lives in exactly one RMW
-// graph (the others error cleanly). Returns the last error if all fail.
-func (s *ROS2Service) runFirst(ctx context.Context, scs []ros2SC, args ...string) (string, error) {
-	var lastErr error
-	for _, sc := range scs {
-		out, err := s.runIn(ctx, sc, args...)
-		if err == nil {
-			return out, nil
-		}
-		lastErr = err
-	}
-	if lastErr == nil {
-		lastErr = status.Error(codes.Internal, "no ROS 2 sidecar available")
-	}
-	return "", lastErr
+func (s *ROS2Service) pickSidecarForTopic(ctx context.Context, scs []ros2SC, topic string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "topic", topic)
+}
+
+func (s *ROS2Service) pickSidecarForNode(ctx context.Context, scs []ros2SC, node string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "node", node)
+}
+
+func (s *ROS2Service) pickSidecarForService(ctx context.Context, scs []ros2SC, service string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "service", service)
 }
 
 func (s *ROS2Service) ListNodes(ctx context.Context, req *agentpbv2.ListROS2NodesRequest) (*agentpbv2.ListROS2NodesResponse, error) {
@@ -277,8 +276,9 @@ func (s *ROS2Service) ListParams(ctx context.Context, req *agentpbv2.ListROS2Par
 	}
 	resp := &agentpbv2.ListROS2ParamsResponse{}
 	if req.GetNode() != "" {
-		// Node-targeted: it lives in one RMW graph; use the sidecar that has it.
-		out, err := s.runFirst(ctx, scs, args...)
+		// Node-targeted: it lives in one RMW graph; route to the sidecar that has it.
+		sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+		out, err := s.runIn(ctx, sc, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -307,7 +307,8 @@ func (s *ROS2Service) GetParam(ctx context.Context, req *agentpbv2.GetROS2ParamR
 	if err := validateROS2ParamName(req.GetParam()); err != nil {
 		return nil, err
 	}
-	out, err := s.runFirst(ctx, scs, "param", "get", req.GetNode(), req.GetParam())
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "param", "get", req.GetNode(), req.GetParam())
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +326,8 @@ func (s *ROS2Service) SetParam(ctx context.Context, req *agentpbv2.SetROS2ParamR
 	if err := validateROS2ParamName(req.GetParam()); err != nil {
 		return nil, err
 	}
-	out, err := s.runFirst(ctx, scs, "param", "set", req.GetNode(), req.GetParam(), req.GetValue())
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "param", "set", req.GetNode(), req.GetParam(), req.GetValue())
 	if err != nil {
 		// `ros2 param set` reports failures both via exit code and text.
 		return &agentpbv2.SetROS2ParamResponse{Success: false, Message: err.Error()}, nil
@@ -345,7 +347,8 @@ func (s *ROS2Service) CallService(ctx context.Context, req *agentpbv2.CallROS2Se
 	if req.GetRequest() != "" {
 		args = append(args, req.GetRequest())
 	}
-	out, err := s.runFirst(ctx, scs, args...)
+	sc := s.pickSidecarForService(ctx, scs, req.GetService())
+	out, err := s.runIn(ctx, sc, args...)
 	if err != nil {
 		return &agentpbv2.CallROS2ServiceResponse{Success: false, Response: err.Error()}, nil
 	}
@@ -397,14 +400,20 @@ func (s *ROS2Service) Doctor(ctx context.Context, req *agentpbv2.ROS2DoctorReque
 	}
 	// One report per RMW graph, each headed by its RMW when more than one runs.
 	var sb strings.Builder
+	var lastErr error
+	any := false
 	for _, sc := range scs {
 		// `ros2 doctor` exits non-zero when checks fail, but the report is still
-		// the useful output — capture both streams and return whatever we got.
+		// the useful output — capture both streams and return whatever we got. A
+		// sidecar whose exec genuinely fails is skipped so one broken RMW graph
+		// doesn't hide the others (matches the other merge commands).
 		var stdout, stderr bytes.Buffer
 		_, execErr := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: sc.domainID, Args: []string{"doctor", "--report"}, SidecarName: sc.name}, &stdout, &stderr)
 		if execErr != nil {
-			return nil, status.Errorf(codes.Internal, "ros2 doctor: %v", execErr)
+			lastErr = status.Errorf(codes.Internal, "ros2 doctor: %v", execErr)
+			continue
 		}
+		any = true
 		report := stdout.String()
 		if strings.TrimSpace(report) == "" {
 			report = stderr.String()
@@ -420,6 +429,9 @@ func (s *ROS2Service) Doctor(ctx context.Context, req *agentpbv2.ROS2DoctorReque
 		if !strings.HasSuffix(report, "\n") {
 			sb.WriteString("\n")
 		}
+	}
+	if !any && lastErr != nil {
+		return nil, lastErr
 	}
 	return &agentpbv2.ROS2DoctorResponse{Report: sb.String()}, nil
 }
@@ -590,6 +602,14 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 		sc = s.pickSidecarForTopic(ctx, scs, start.GetTopics()[0])
 	}
 
+	// A rosbag can't span DDS implementations: on a mixed-RMW device, `-a`
+	// records only this sidecar's RMW graph. Warn so missing topics from other
+	// RMWs aren't a surprise (WDY-1594).
+	var startMsg string
+	if len(start.GetTopics()) == 0 && len(scs) > 1 {
+		startMsg = fmt.Sprintf("recording the %s graph only; -a does not span RMWs (this device also runs other RMWs)", sc.rmw)
+	}
+
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -607,6 +627,7 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 	if err := stream.Send(&agentpbv2.RecordROS2BagResponse{
 		State:   agentpbv2.RecordROS2BagResponse_STATE_RECORDING,
 		BagName: bagName,
+		Message: startMsg,
 	}); err != nil {
 		cancel()
 		<-execDone

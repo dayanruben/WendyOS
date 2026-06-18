@@ -124,6 +124,73 @@ func TestROS2Service_ListNodes_MergesPerRMW(t *testing.T) {
 	}
 }
 
+// twoSidecarRuntime is a fake with one CycloneDDS and one FastRTPS sidecar.
+func twoSidecarRuntime(execFn func(context.Context, ROS2ExecOptions, io.Writer, io.Writer) (int, error)) *fakeROS2Runtime {
+	return &fakeROS2Runtime{
+		sidecars: []ROS2Sidecar{
+			{Name: "sc-cyc", Distro: "humble", DomainID: 42, RMW: "rmw_cyclonedds_cpp"},
+			{Name: "sc-fast", Distro: "humble", DomainID: 42, RMW: "rmw_fastrtps_cpp"},
+		},
+		execFn: execFn,
+	}
+}
+
+// TestROS2Service_GetParam_RoutesToOwningRMW verifies a node-targeted command
+// runs only in the sidecar whose graph has the node (found via `node list`),
+// never in the wrong RMW where it would block on discovery (WDY-1594).
+func TestROS2Service_GetParam_RoutesToOwningRMW(t *testing.T) {
+	rt := twoSidecarRuntime(func(_ context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+		key := strings.Join(opts.Args, " ")
+		switch {
+		case key == "node list" && opts.SidecarName == "sc-cyc":
+			io.WriteString(stdout, "/other\n") // /talker is NOT here
+			return 0, nil
+		case key == "node list" && opts.SidecarName == "sc-fast":
+			io.WriteString(stdout, "/talker\n")
+			return 0, nil
+		case strings.HasPrefix(key, "param get") && opts.SidecarName == "sc-fast":
+			io.WriteString(stdout, "Boolean value is: True\n")
+			return 0, nil
+		default:
+			fmt.Fprint(stderr, "node not found") // param get in the wrong sidecar
+			return 1, nil
+		}
+	})
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	got, err := svc.GetParam(context.Background(), &agentpbv2.GetROS2ParamRequest{Node: "/talker", Param: "use_sim_time"})
+	if err != nil {
+		t.Fatalf("GetParam: %v", err)
+	}
+	if got.GetValue() != "Boolean value is: True" {
+		t.Errorf("value = %q", got.GetValue())
+	}
+	for _, c := range rt.calls {
+		if strings.HasPrefix(strings.Join(c.Args, " "), "param get") && c.SidecarName != "sc-fast" {
+			t.Errorf("param get ran in %q; must route to the owning sidecar sc-fast", c.SidecarName)
+		}
+	}
+}
+
+// TestROS2Service_Doctor_SkipsFailedSidecar verifies one sidecar's exec failure
+// doesn't hide the others' reports (WDY-1594).
+func TestROS2Service_Doctor_SkipsFailedSidecar(t *testing.T) {
+	rt := twoSidecarRuntime(func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+		if opts.SidecarName == "sc-cyc" {
+			return 0, errors.New("exec failed") // genuine exec error, not a check failure
+		}
+		io.WriteString(stdout, "FASTRTPS REPORT OK\n")
+		return 0, nil
+	})
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.Doctor(context.Background(), &agentpbv2.ROS2DoctorRequest{})
+	if err != nil {
+		t.Fatalf("Doctor should skip the failing sidecar, got error: %v", err)
+	}
+	if !strings.Contains(resp.GetReport(), "FASTRTPS REPORT OK") {
+		t.Errorf("report missing the healthy sidecar's output: %q", resp.GetReport())
+	}
+}
+
 func TestROS2Service_DomainOverride(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 7},

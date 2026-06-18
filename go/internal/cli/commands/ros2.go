@@ -743,6 +743,9 @@ func newROS2BagRecordCmd() *cobra.Command {
 				topicsDesc = strings.Join(args, ", ")
 			}
 			cliLogln("Recording %s to bag %q on the device. Press ctrl-c to stop.", topicsDesc, first.GetBagName())
+			if m := first.GetMessage(); m != "" {
+				cliLogln("Note: %s", m)
+			}
 
 			// Wait for ctrl-c or an unsolicited terminal message (recorder error).
 			recvCh := make(chan *agentpbv2.RecordROS2BagResponse, 1)
