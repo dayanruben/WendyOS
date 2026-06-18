@@ -3,16 +3,19 @@ import Testing
 @Suite
 struct `'wendy run' native Mac Brewfile support` {
     /**
-     A native SwiftPM project targeting `platform: "darwin"` with a
-     project-root `Brewfile.wendy` syncs that file to the selected Wendy Agent
-     for Mac target and applies it on the target before the app process starts.
+     Copies the native Mac app's Brewfile to the selected Wendy Agent for Mac
+     target and runs `brew bundle --file <synced Brewfile>` on that target
+     before starting the app.
 
-     The test fixture should use a harmless target-side Brewfile and an app that
-     prints evidence that the dependency is available at runtime. The developer
-     machine must not run `brew bundle` as part of this flow.
+     The fixture is a SwiftPM project with `platform: "darwin"` and a
+     project-root `Brewfile.wendy`. The command builds locally, syncs the app
+     and `Brewfile.wendy`, applies the synced Brewfile on the agent machine,
+     and only then starts the app. The app prints evidence that the dependency
+     is available at runtime. The developer machine must not run `brew bundle`
+     as part of this flow.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `auto-detects Brewfile dot wendy for SwiftPM Mac apps and applies it on the target`() async throws {
+    func `syncs the Brewfile and runs brew bundle on the target before starting the app`() async throws {
         // TODO: implement.
     }
 
