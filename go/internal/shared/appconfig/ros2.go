@@ -45,6 +45,21 @@ var ros2RMWAliases = map[string]string{
 	"rmw_gurumdds_cpp":   "rmw_gurumdds_cpp",
 }
 
+// IsValidRMWImplementation reports whether s is a full RMW implementation
+// identifier this codebase recognizes (the values ros2RMWAliases maps to).
+// Callers validate an RMW string read back from a container environment or
+// label before injecting it into another container's environment, so a
+// tampered or malformed value can never reach the sidecar's env
+// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+func IsValidRMWImplementation(s string) bool {
+	switch s {
+	case "rmw_cyclonedds_cpp", "rmw_fastrtps_cpp", "rmw_connextdds", "rmw_gurumdds_cpp":
+		return true
+	default:
+		return false
+	}
+}
+
 // ROS2AutoDomainID derives a stable ROS_DOMAIN_ID from the appId so the
 // domain does not change between restarts (WDY-884). The result is always in
 // [ROS2DomainIDMin, ROS2DomainIDMax].

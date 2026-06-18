@@ -822,3 +822,38 @@ func TestBuildROS2Env_ServiceOverride(t *testing.T) {
 		t.Errorf("expected group-level ROS_DOMAIN_ID=1 for camera, got %v", got)
 	}
 }
+
+// TestSharedSHMPath verifies the shared-ipc shm path is derived from a valid
+// app ID and that an invalid app ID is rejected (the path is later stat'd to
+// detect shared-ipc topology and bind-mounted into the ROS 2 sidecar, WDY-1555).
+func TestSharedSHMPath(t *testing.T) {
+	path, err := sharedSHMPath("sh.wendy.examples.so101")
+	if err != nil {
+		t.Fatalf("sharedSHMPath valid app ID: unexpected error %v", err)
+	}
+	if want := "/run/wendy/shm/sh.wendy.examples.so101"; path != want {
+		t.Errorf("sharedSHMPath = %q, want %q", path, want)
+	}
+	if _, err := sharedSHMPath(""); err == nil {
+		t.Error("sharedSHMPath(\"\") = nil error, want validation error")
+	}
+	if _, err := sharedSHMPath("../escape"); err == nil {
+		t.Error("sharedSHMPath(\"../escape\") = nil error, want validation error")
+	}
+}
+
+// TestRMWFromEnv verifies the ROS 2 sidecar reads back the anchor app's
+// RMW_IMPLEMENTATION from its OCI spec env so it can match the app's DDS
+// implementation (WDY-1593).
+func TestRMWFromEnv(t *testing.T) {
+	got := rmwFromEnv([]string{"ROS_DOMAIN_ID=42", "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp", "ROS_LOCALHOST_ONLY=1"})
+	if got != "rmw_cyclonedds_cpp" {
+		t.Errorf("rmwFromEnv = %q, want rmw_cyclonedds_cpp", got)
+	}
+	if got := rmwFromEnv([]string{"ROS_DOMAIN_ID=42"}); got != "" {
+		t.Errorf("rmwFromEnv (absent) = %q, want empty", got)
+	}
+	if got := rmwFromEnv(nil); got != "" {
+		t.Errorf("rmwFromEnv(nil) = %q, want empty", got)
+	}
+}

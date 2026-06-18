@@ -1300,11 +1300,17 @@ func validateUserEnv(entries []string) error {
 }
 
 // cycloneDDSInlineConfig is the CycloneDDS configuration passed inline via
-// CYCLONEDDS_URI (not a file mount). Shared memory enables zero-copy DDS
-// transport between containers that share /dev/shm (isolation: "shared-ipc");
-// autodetermined network interfaces keep UDP discovery working as a fallback
-// (WDY-884).
-const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>true</Enable><LogLevel>warning</LogLevel></SharedMemory><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General></CycloneDDS>`
+// CYCLONEDDS_URI (not a file mount). SharedMemory (iceoryx zero-copy) is
+// DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
+// enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
+// until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
+// uses UDP over loopback, which works within the app group's shared network
+// namespace — ROS_LOCALHOST_ONLY=1 (always injected alongside) pins it to lo.
+// No <Interfaces> block: localhost-only already selects lo, and an autodetermine
+// interface on top makes it select "lo" twice ("the same interface may not be
+// selected twice"), which fails domain creation. Re-enabling zero-copy needs an
+// iox-roudi system service on the device first (WDY-884).
+const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
@@ -2093,13 +2099,24 @@ func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []cont
 	return result
 }
 
+// sharedSHMPath returns the host-side shared memory directory for a shared-ipc
+// app group after validating the app ID. It does NOT create the directory — use
+// ensureSharedSHM for that. Its presence on disk is the agent's signal that an
+// app group runs with shared-ipc isolation.
+func sharedSHMPath(appID string) (string, error) {
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", fmt.Errorf("sharedSHMPath: %w", err)
+	}
+	return "/run/wendy/shm/" + appID, nil
+}
+
 // ensureSharedSHM creates the host-side shared memory directory for a
 // shared-ipc app group. Returns the path so it can be bind-mounted.
 func ensureSharedSHM(appID string) (string, error) {
-	if err := appconfig.ValidateAppID(appID); err != nil {
-		return "", fmt.Errorf("ensureSharedSHM: %w", err)
+	path, err := sharedSHMPath(appID)
+	if err != nil {
+		return "", err
 	}
-	path := "/run/wendy/shm/" + appID
 	// Lock the OS thread so that the umask change below is thread-local and
 	// does not race with other goroutines on the same process (SOC2-CC6,
 	// NIST-SC-7, ISO27001-A.8). Without this, a permissive umask could widen

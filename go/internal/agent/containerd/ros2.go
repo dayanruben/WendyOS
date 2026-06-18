@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -40,10 +41,22 @@ const (
 	labelKeyROS2Sidecar = "sh.wendy/ros2.sidecar"
 
 	// labelKeyROS2AnchorID and labelKeyROS2AnchorPID record which app
-	// container's network namespace the sidecar joined. When the anchor
-	// changes (app restarted), the sidecar is stale and must be recreated.
+	// container's namespaces the sidecar joined. When the anchor changes
+	// (app restarted), the sidecar is stale and must be recreated.
 	labelKeyROS2AnchorID  = "sh.wendy/ros2.anchor.id"
 	labelKeyROS2AnchorPID = "sh.wendy/ros2.anchor.pid"
+
+	// labelKeyROS2RMW records the anchor app's RMW implementation so each
+	// ExecROS2 can set RMW_IMPLEMENTATION to match — without it the sidecar's
+	// ros2 CLI falls to the image default and can't see apps on another RMW
+	// (WDY-1593). Empty means "use the image default" (FastRTPS).
+	labelKeyROS2RMW = "sh.wendy/ros2.rmw"
+
+	// rosImageDefaultRMW is the only RMW the stock docker.io/library/ros:<distro>
+	// image ships (verified: it contains librmw_fastrtps_cpp and the
+	// rmw-fastrtps-cpp packages, no CycloneDDS). An anchor app on any other RMW
+	// therefore needs a sidecar built from the app's own image (WDY-1593).
+	rosImageDefaultRMW = "rmw_fastrtps_cpp"
 
 	// ros2ExecStopGrace is how long ExecROS2 waits after SIGINT before
 	// escalating to SIGKILL. `ros2 bag record` needs the grace period to
@@ -97,10 +110,25 @@ func (c *Client) FindROS2Containers(ctx context.Context) ([]services.ROS2Target,
 	return targets, nil
 }
 
+// rmwFromEnv returns the value of RMW_IMPLEMENTATION in a container's OCI spec
+// env, or "" when absent. Wendy injects it into ROS 2 app containers
+// (buildROS2Env); the sidecar reads it back to match the app's DDS impl.
+func rmwFromEnv(env []string) string {
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, "RMW_IMPLEMENTATION="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // EnsureROS2Sidecar starts (or reuses) the ROS 2 CLI sidecar container. The
-// sidecar runs the official ros:<distro> image, joins the network namespace
-// of the first running ROS 2 app container so it sees every node in the DDS
-// domain, and idles on `sleep infinity` while commands are exec'd into it.
+// sidecar runs the official ros:<distro> image and joins the first running
+// ROS 2 app container's namespace topology — its network namespace always, and
+// for shared-ipc app groups also the IPC namespace plus the group's shared
+// /dev/shm — so it sees every node in the DDS domain over both UDP discovery
+// and the shared-memory data plane. It idles on `sleep infinity` while commands
+// are exec'd into it.
 func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -150,19 +178,58 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		}
 	}
 
-	imageName := "docker.io/library/ros:" + anchor.Distro
-	image, err := c.client.GetImage(ctx, imageName)
+	// Read the RMW the anchor app actually runs (Wendy injects RMW_IMPLEMENTATION
+	// into the app's env via buildROS2Env) so the sidecar's ros2 CLI speaks the
+	// same DDS implementation (WDY-1593). An unrecognized value is dropped so a
+	// tampered env can never reach the sidecar's environment.
+	anchorCtr, err := c.client.LoadContainer(ctx, anchor.ContainerID)
 	if err != nil {
-		c.logger.Info("Pulling ROS 2 sidecar image", zap.String("image", imageName))
-		image, err = c.client.Pull(ctx, imageName, containerd.WithPullUnpack)
-		if err != nil {
-			return services.ROS2Sidecar{}, fmt.Errorf("pulling ROS 2 sidecar image %q: %w", imageName, err)
-		}
+		return services.ROS2Sidecar{}, fmt.Errorf("loading ROS 2 anchor container %q: %w", anchor.ContainerID, err)
 	}
-	if unpacked, uerr := image.IsUnpacked(ctx, ""); uerr == nil && !unpacked {
-		if uerr := c.UnpackImage(ctx, image, nil); uerr != nil {
-			return services.ROS2Sidecar{}, fmt.Errorf("unpacking ROS 2 sidecar image: %w", uerr)
+	anchorSpec, err := anchorCtr.Spec(ctx)
+	if err != nil {
+		return services.ROS2Sidecar{}, fmt.Errorf("reading ROS 2 anchor spec: %w", err)
+	}
+	rmw := rmwFromEnv(anchorSpec.Process.Env)
+	if rmw != "" && !appconfig.IsValidRMWImplementation(rmw) {
+		c.logger.Warn("Anchor has unrecognized RMW_IMPLEMENTATION; sidecar will use the image default",
+			zap.String("rmw", rmw), zap.String("anchor", anchor.ContainerID))
+		rmw = ""
+	}
+
+	// Pick the sidecar image. Stock ros:<distro> ships only FastRTPS, so for any
+	// other RMW (e.g. CycloneDDS, the Wendy default) reuse the anchor app's own
+	// image: it already has the matching RMW + ros2 CLI and is already pulled and
+	// unpacked on the device. FastRTPS (and empty/unknown) stay on the stock
+	// image — the verified path that does not depend on the app image carrying
+	// the ros2 CLI (WDY-1593).
+	var image containerd.Image
+	reusedAnchorImage := false
+	if rmw == "" || rmw == rosImageDefaultRMW {
+		imageName := "docker.io/library/ros:" + anchor.Distro
+		image, err = c.client.GetImage(ctx, imageName)
+		if err != nil {
+			c.logger.Info("Pulling ROS 2 sidecar image", zap.String("image", imageName))
+			image, err = c.client.Pull(ctx, imageName, containerd.WithPullUnpack)
+			if err != nil {
+				return services.ROS2Sidecar{}, fmt.Errorf("pulling ROS 2 sidecar image %q: %w", imageName, err)
+			}
 		}
+		if unpacked, uerr := image.IsUnpacked(ctx, ""); uerr == nil && !unpacked {
+			if uerr := c.UnpackImage(ctx, image, nil); uerr != nil {
+				return services.ROS2Sidecar{}, fmt.Errorf("unpacking ROS 2 sidecar image: %w", uerr)
+			}
+		}
+	} else {
+		// The anchor image is already pulled/unpacked (the anchor is running), so
+		// skip the pull/unpack dance entirely.
+		image, err = anchorCtr.Image(ctx)
+		if err != nil {
+			return services.ROS2Sidecar{}, fmt.Errorf("resolving anchor image for %s sidecar (anchor %s): %w", rmw, anchor.ContainerID, err)
+		}
+		reusedAnchorImage = true
+		c.logger.Info("ROS 2 sidecar reusing anchor app image for non-default RMW",
+			zap.String("rmw", rmw), zap.String("image", image.Name()), zap.String("anchor", anchor.ContainerID))
 	}
 
 	if err := os.MkdirAll(ROS2BagDir, 0o755); err != nil {
@@ -178,17 +245,43 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		Options:     []string{"rbind", "rw", "nosuid", "nodev"},
 	})
 
-	// Join the anchor's network (and uts) namespace so the sidecar shares
-	// localhost — and therefore the DDS domain — with the app's ROS 2 nodes.
-	nsAnchors, err := localoci.JoinGroupNamespaces(spec, anchor.TaskPID, "shared-network")
+	// Match the anchor app group's namespace topology so the sidecar can read
+	// the data plane, not just DDS discovery (WDY-1555). A shared-ipc group
+	// keeps FastRTPS sample data AND ros_discovery_info — the node records that
+	// back `ros2 node list`/`echo`/`graph`/`param`/`call` — in POSIX shared
+	// memory under /run/wendy/shm/<appID>, reachable only by sharing the group's
+	// IPC namespace and bind-mounting that segment. Joining only the network
+	// namespace gets UDP discovery (so `topics`/`services` list) but never the
+	// shared-memory data plane. We detect shared-ipc by the presence of the
+	// group's shm dir (created only for shared-ipc groups) and then mirror the
+	// app containers' own setup. Plain shared-network apps put everything on the
+	// shared localhost over UDP, so the network namespace alone is enough.
+	isolation := "shared-network"
+	var sidecarSHM string
+	if anchor.AppID != "" {
+		if shmPath, perr := sharedSHMPath(anchor.AppID); perr == nil {
+			if fi, statErr := os.Stat(shmPath); statErr == nil && fi.IsDir() {
+				isolation = "shared-ipc"
+				sidecarSHM = shmPath
+			}
+		}
+	}
+
+	nsAnchors, err := localoci.JoinGroupNamespaces(spec, anchor.TaskPID, isolation)
 	if err != nil {
-		return services.ROS2Sidecar{}, fmt.Errorf("joining ROS 2 app network namespace: %w", err)
+		return services.ROS2Sidecar{}, fmt.Errorf("joining ROS 2 app %s namespaces: %w", isolation, err)
 	}
 	defer func() {
 		for _, f := range nsAnchors {
 			f.Close()
 		}
 	}()
+	// For shared-ipc, replace the sidecar's private tmpfs /dev/shm with the
+	// group's shared segment so it attaches to the same FastRTPS shm pool.
+	if isolation == "shared-ipc" {
+		localoci.RemoveDefaultSHM(spec)
+		spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(sidecarSHM))
+	}
 
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
@@ -199,6 +292,7 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		labelKeyROS2Sidecar:   anchor.Distro,
 		labelKeyROS2AnchorID:  anchor.ContainerID,
 		labelKeyROS2AnchorPID: strconv.FormatUint(uint64(anchor.TaskPID), 10),
+		labelKeyROS2RMW:       rmw,
 	}
 	container, err := c.client.NewContainer(ctx, ros2SidecarName,
 		containerd.WithImage(image),
@@ -231,11 +325,59 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		return services.ROS2Sidecar{}, fmt.Errorf("ROS 2 app container changed while sidecar was starting; retry: %w", err)
 	}
 
+	// A reused app image is guaranteed to carry the matching RMW (that is how
+	// the app runs it) but not necessarily the ros2 CLI. If it lacks the CLI,
+	// fail with an actionable message instead of letting every command return a
+	// bare "ros2: not found" exit 127 (WDY-1593).
+	if reusedAnchorImage {
+		if hasCLI, perr := c.sidecarHasROS2CLI(ctx, container, task, anchor.Distro); perr != nil {
+			c.logger.Warn("Could not probe reused app image for the ros2 CLI; proceeding",
+				zap.String("image", image.Name()), zap.Error(perr))
+		} else if !hasCLI {
+			_ = c.deleteROS2Sidecar(ctx, container)
+			return services.ROS2Sidecar{}, fmt.Errorf("ROS 2 app image %q runs %s but does not include the ros2 CLI, so `wendy device ros2` cannot inspect it; install the CLI in the app image (e.g. apt-get install ros-%s-ros2cli)", image.Name(), rmw, anchor.Distro)
+		}
+	}
+
 	c.logger.Info("ROS 2 CLI sidecar started",
-		zap.String("image", imageName),
+		zap.String("image", image.Name()),
+		zap.String("rmw", rmw),
 		zap.String("anchor", anchor.ContainerID),
 		zap.Int("domain_id", anchor.DomainID))
 	return sidecar, nil
+}
+
+// sidecarHasROS2CLI reports whether the running sidecar task can find the ros2
+// CLI on PATH after sourcing the ROS environment. Used to fail loudly when a
+// reused app image shipped the RMW but not ros2cli (WDY-1593). A probe-setup
+// error (not a clean exit code) is returned so the caller can proceed rather
+// than block on a transient containerd hiccup.
+func (c *Client) sidecarHasROS2CLI(ctx context.Context, container containerd.Container, task containerd.Task, distro string) (bool, error) {
+	spec, err := container.Spec(ctx)
+	if err != nil {
+		return false, err
+	}
+	pspec := spec.Process
+	pspec.Terminal = false
+	pspec.Args = []string{
+		"/bin/bash", "-lc",
+		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1; command -v ros2 >/dev/null 2>&1", distro),
+	}
+	execID := fmt.Sprintf("ros2-probe-%d", ros2ExecCounter.Add(1))
+	proc, err := task.Exec(ctx, execID, pspec, cio.NullIO)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _, _ = proc.Delete(ctx, containerd.WithProcessKill) }()
+	statusC, err := proc.Wait(ctx)
+	if err != nil {
+		return false, err
+	}
+	if err := proc.Start(ctx); err != nil {
+		return false, err
+	}
+	st := <-statusC
+	return st.ExitCode() == 0, st.Error()
 }
 
 // verifyROS2Anchor checks that the anchor container's task is still running
@@ -360,6 +502,16 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 		"ROS_DOMAIN_ID="+strconv.Itoa(opts.DomainID),
 		"ROS_LOCALHOST_ONLY=1",
 	)
+	// Match the anchor app's RMW so the CLI speaks the same DDS implementation;
+	// otherwise it falls to the image default and sees nothing on another RMW
+	// (WDY-1593). The label is written validated, but re-check before injecting
+	// into the environment as defense-in-depth (SOC2-CC6, NIST-SI-10).
+	if rmw := labels[labelKeyROS2RMW]; appconfig.IsValidRMWImplementation(rmw) {
+		pspec.Env = append(pspec.Env, "RMW_IMPLEMENTATION="+rmw)
+		if rmw == appconfig.ROS2DefaultRMW {
+			pspec.Env = append(pspec.Env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
+		}
+	}
 
 	execID := fmt.Sprintf("ros2-exec-%d-%d", time.Now().UnixNano(), ros2ExecCounter.Add(1))
 	proc, err := task.Exec(nctx, execID, pspec, cio.NewCreator(cio.WithStreams(nil, stdout, stderr)))
