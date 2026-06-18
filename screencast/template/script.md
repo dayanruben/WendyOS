@@ -115,8 +115,14 @@ Feature Name
 
 ### Say
 
-End with the simplest pitch and the next step for the viewer.
+End with the simplest pitch and the next step for the viewer. Point viewers to
+the contact person, pull request, and linked issues.
 
 ### Show (slide)
 
-A short call to action or contact note.
+A short call to action with:
+
+- person of contact
+- pull request link
+- related issue links
+- review or demo notes

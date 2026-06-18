@@ -1,1 +1,1 @@
-Thanks for watching. See the pull request for implementation details and review notes.
+Thanks for watching. For follow-up, use the contact, pull request, and linked issues shown here.
