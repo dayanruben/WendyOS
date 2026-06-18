@@ -3,8 +3,9 @@ import Testing
 @Suite
 struct `'wendy run' with native Mac Brewfiles` {
     /**
-     Copies the native Mac app's Brewfile to the selected Wendy Agent for Mac
-     target and runs Homebrew Bundle on that target before starting the app.
+     Copies the native Mac app's `Brewfile.wendy` to the selected Wendy Agent
+     for Mac target and runs `brew bundle` on that target before starting the
+     app.
 
      The fixture is a SwiftPM project with `platform: "darwin"`, a project-root
      `Brewfile.wendy`, and an app that can prove the bundled dependency is
@@ -20,16 +21,17 @@ struct `'wendy run' with native Mac Brewfiles` {
     }
 
     /**
-     Applies the same target-side Brewfile behavior for native Xcode projects.
+     Applies the same target-side `Brewfile.wendy` and `brew bundle` behavior
+     for native Xcode projects.
 
      The fixture is an Xcode project with `platform: "darwin"` and a
      project-root `Brewfile.wendy`. `wendy run --json --device <mac-agent>
      --prefix <project>` builds with `xcodebuild`, syncs the build product and
      `Brewfile.wendy`, runs `brew bundle --file <synced Brewfile>` on the Mac
-     agent, and starts the built product only after Homebrew Bundle succeeds.
+     agent, and starts the built product only after `brew bundle` succeeds.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `applies the same target Brewfile flow for Xcode apps`() async throws {
+    func `syncs 'Brewfile.wendy' and runs 'brew bundle' for Xcode apps`() async throws {
         // TODO: implement.
     }
 
@@ -40,10 +42,10 @@ struct `'wendy run' with native Mac Brewfiles` {
      The fixture contains `Brewfile` but no `Brewfile.wendy` and no `brewfile`
      field in `wendy.json`. `wendy run --json --device <mac-agent>` starts the
      native Mac app without syncing that `Brewfile` as a target dependency file
-     and without invoking target-side Homebrew Bundle.
+     and without invoking target-side `brew bundle`.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `does not auto-apply a plain project root Brewfile`() async throws {
+    func `does not auto-apply a plain project root 'Brewfile'`() async throws {
         // TODO: implement.
     }
 
@@ -58,12 +60,12 @@ struct `'wendy run' with native Mac Brewfiles` {
      succeeded on the target Mac.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `uses the explicit brewfile path instead of auto detection`() async throws {
+    func `uses the explicit 'brewfile' path instead of 'Brewfile.wendy' auto detection`() async throws {
         // TODO: implement.
     }
 
     /**
-     Fails before app start when Homebrew is missing on the target Mac.
+     Fails before app start when `brew` is missing on the target Mac.
 
      The fixture has a valid native Mac app and target Brewfile, but the Mac
      agent cannot resolve `brew` from `PATH`, `/opt/homebrew/bin/brew`, or
@@ -72,12 +74,12 @@ struct `'wendy run' with native Mac Brewfiles` {
      emits no interactive prompts, and leaves the app stopped.
      */
     @Test(.disabled("SPEC STUB: requires target without Homebrew or controllable brew path"))
-    func `reports missing Homebrew on the target without starting the app`() async throws {
+    func `reports missing 'brew' on the target without starting the app`() async throws {
         // TODO: implement.
     }
 
     /**
-     Fails before app start when target-side Homebrew Bundle fails.
+     Fails before app start when target-side `brew bundle` fails.
 
      The fixture uses a Brewfile that makes `brew bundle --file <synced
      Brewfile>` exit non-zero on the Mac agent. `wendy run --json --device
@@ -86,7 +88,7 @@ struct `'wendy run' with native Mac Brewfiles` {
      message, and leaves the app stopped.
      */
     @Test(.disabled("SPEC STUB: requires controllable failing target-side brew bundle"))
-    func `reports Homebrew Bundle failures without starting the app`() async throws {
+    func `reports 'brew bundle' failures without starting the app`() async throws {
         // TODO: implement.
     }
 
@@ -100,7 +102,7 @@ struct `'wendy run' with native Mac Brewfiles` {
      and starts the app after the target-side bundle check succeeds.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `is idempotent when dependencies are already installed`() async throws {
+    func `is idempotent when 'brew bundle' dependencies are already installed`() async throws {
         // TODO: implement.
     }
 
@@ -112,11 +114,11 @@ struct `'wendy run' with native Mac Brewfiles` {
      "dev/Brewfile", "to": "ops/Brewfile"`. `wendy run --json --device
      <mac-agent>` fails during local project validation, explains that the
      Brewfile destination conflicts with another synced file, syncs no app
-     files, invokes no target-side Homebrew Bundle, and leaves any existing app
+     files, invokes no target-side `brew bundle`, and leaves any existing app
      state unchanged.
      */
     @Test(.disabled("SPEC STUB: can run with fake or real Mac target once E2E harness exists"))
-    func `rejects files entries that conflict with the Brewfile destination`() async throws {
+    func `rejects 'files' entries that conflict with the 'brewfile' destination`() async throws {
         // TODO: implement.
     }
 }
