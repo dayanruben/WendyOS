@@ -71,7 +71,6 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 			opts := x509.VerifyOptions{
 				Roots:         &rootCAs,
 				Intermediates: x509.NewCertPool(),
-				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny}, // Temporary workaround
 			}
 			for _, c := range certs[1:] {
 				opts.Intermediates.AddCert(c)
