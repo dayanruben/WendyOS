@@ -150,8 +150,8 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Package.swift"), []byte("// test package\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile Package.swift: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Brewfile"), []byte("brew \"jq\"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile Brewfile: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "Brewfile.wendy"), []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile.wendy: %v", err)
 	}
 
 	binDir := filepath.Join(dir, "bin")
@@ -206,8 +206,8 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if err := json.Unmarshal(got.AppConfig, &sentConfig); err != nil {
 		t.Fatalf("unmarshal AppConfig: %v", err)
 	}
-	if sentConfig.Brewfile != "Brewfile" {
-		t.Fatalf("AppConfig Brewfile = %q, want Brewfile", sentConfig.Brewfile)
+	if sentConfig.Brewfile != "Brewfile.wendy" {
+		t.Fatalf("AppConfig Brewfile = %q, want Brewfile.wendy", sentConfig.Brewfile)
 	}
 
 	acked := make(map[string]bool)
@@ -223,8 +223,27 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if !acked["MySwiftApp.resources/config.json"] {
 		t.Fatalf("missing ack for MySwiftApp.resources/config.json; got %v", state.ackedPaths)
 	}
-	if !acked["Brewfile"] {
-		t.Fatalf("missing ack for Brewfile; got %v", state.ackedPaths)
+	if !acked["Brewfile.wendy"] {
+		t.Fatalf("missing ack for Brewfile.wendy; got %v", state.ackedPaths)
+	}
+}
+
+func TestResolveNativeBrewfileSyncEntry_IgnoresProjectRootBrewfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Brewfile"), []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp"}
+	entry, err := resolveNativeBrewfileSyncEntry(dir, cfg)
+	if err != nil {
+		t.Fatalf("resolveNativeBrewfileSyncEntry: %v", err)
+	}
+	if entry != nil {
+		t.Fatalf("entry = %+v, want nil for project-root Brewfile", entry)
+	}
+	if cfg.Brewfile != "" {
+		t.Fatalf("cfg.Brewfile = %q, want empty", cfg.Brewfile)
 	}
 }
 

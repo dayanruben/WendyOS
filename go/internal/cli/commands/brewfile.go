@@ -9,7 +9,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
-const defaultNativeBrewfile = "Brewfile"
+const defaultNativeBrewfile = "Brewfile.wendy"
 
 func appendNativeBrewfileSyncEntry(entries []fileSyncEntry, cwd string, appCfg *appconfig.AppConfig) ([]fileSyncEntry, error) {
 	entry, err := resolveNativeBrewfileSyncEntry(cwd, appCfg)
@@ -39,10 +39,10 @@ func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*f
 			if os.IsNotExist(err) {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("checking Brewfile: %w", err)
+			return nil, fmt.Errorf("checking %s: %w", defaultNativeBrewfile, err)
 		}
 		if info.IsDir() {
-			return nil, fmt.Errorf("Brewfile must be a file, got directory %s", localPath)
+			return nil, fmt.Errorf("%s must be a file, got directory %s", defaultNativeBrewfile, localPath)
 		}
 		appCfg.Brewfile = defaultNativeBrewfile
 		return &fileSyncEntry{localPath: localPath, remotePath: defaultNativeBrewfile}, nil

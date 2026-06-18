@@ -20,7 +20,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 | `appId` | Unique identifier (reverse domain notation recommended) |
 | `version` | Application version string |
 | `platform` | Target platform: `wendyos`, `wendy-lite`, or `darwin` |
-| `brewfile` | Optional relative Brewfile path for native Darwin deployments; project-root `Brewfile` is auto-detected |
+| `brewfile` | Optional relative Brewfile path for native Darwin deployments; project-root `Brewfile.wendy` is auto-detected |
 | `entitlements` | Array of entitlement objects specifying required permissions |
 
 ## Platforms
@@ -45,10 +45,11 @@ Minimal SwiftPM/macOS configuration:
 ```
 
 Native SwiftPM and Xcode Mac apps can use Homebrew dependencies with Brew Bundle.
-Place `Brewfile` at the project root for auto-detection, or set `"brewfile":
-"ops/Brewfile"` to use a relative path. `wendy run` syncs the Brewfile to the
-target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>` before
-starting the app. Homebrew must already be installed on the target Mac.
+Place `Brewfile.wendy` at the project root for auto-detection, or set `"brewfile":
+"ops/Brewfile"` to use a relative path. A plain project-root `Brewfile` is left
+for developer-machine setup unless explicitly referenced. `wendy run` syncs the
+Wendy Brewfile to the target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>`
+before starting the app. Homebrew must already be installed on the target Mac.
 
 ## Entitlements Overview
 
