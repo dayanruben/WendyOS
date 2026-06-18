@@ -1,1 +1,0 @@
-The mental model stays simple. The CLI stays on your development machine, Wendy Agent runs on the Mac target as a menu bar app, and the deployable workload is a native Swift app rather than a Linux container.

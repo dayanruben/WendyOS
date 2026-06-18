@@ -1,4 +1,4 @@
-Output scenes/03-demo/video.mp4
+Output vhs.tape.mp4
 Set Shell zsh
 Set Width 1440
 Set Height 900

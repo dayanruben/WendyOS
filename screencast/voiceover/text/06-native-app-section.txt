@@ -1,1 +1,0 @@
-Now let's look at what makes a project a native Mac app for this beta: a Darwin target, a native Swift project shape, and no container markers.

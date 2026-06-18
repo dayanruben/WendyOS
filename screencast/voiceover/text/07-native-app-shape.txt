@@ -1,1 +1,0 @@
-For the CLI to treat this as a native Mac app, the target must be a Darwin agent, and the project should resolve to platform darwin. I like to put that explicitly in wendy.json so the intent is clear. The beta supports two native Swift project shapes: SwiftPM projects with Package.swift, and Xcode projects with an xcodeproj.

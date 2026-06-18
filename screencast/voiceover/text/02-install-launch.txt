@@ -1,1 +1,0 @@
-We start by installing Wendy Agent on the Mac mini with Homebrew, then launch it like a normal macOS app. There is no WendyOS image to flash here. The Mac is still macOS; Wendy Agent is the service that lets the Wendy CLI target it.

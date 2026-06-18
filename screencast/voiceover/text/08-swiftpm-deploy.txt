@@ -1,1 +1,0 @@
-Here is the SwiftPM path. wendy run builds the Swift package, syncs it to Wendy Agent for Mac, and launches it as a native macOS process on the Mac mini. No desktop interaction is needed for deploys after the agent is configured.

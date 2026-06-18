@@ -2,12 +2,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "slidev deck/slides.md",
-    "present": "slidev deck/slides.md",
-    "build:scenes": "scripts/build-scenes.mjs",
-    "render": "scripts/render-deck.mjs",
-    "render:tapes": "scripts/render-tapes.sh",
-    "export": "slidev export deck/slides.md --output output/deck.pdf"
+    "render": "scripts/stitch",
+    "render:slide": "scripts/render-slide",
+    "render:tape": "scripts/render-tape",
+    "render:voice": "scripts/render-voice",
+    "check": "scripts/check.sh"
   },
   "devDependencies": {
     "@slidev/cli": "latest",

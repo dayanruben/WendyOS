@@ -1,1 +1,0 @@
-I can verify the connection with the usual device info command. The key Mac-specific bits are darwin for the operating system and arm64 for Apple Silicon.

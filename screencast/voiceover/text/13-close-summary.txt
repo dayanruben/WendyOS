@@ -1,1 +1,0 @@
-The takeaway is simple: install and configure Wendy Agent once, then deploy native SwiftPM or Xcode apps headlessly with the same Wendy CLI workflow. Next up after the beta are production candidates like Linux or WendyOS container deployment support, mTLS and provisioning, Wendy Cloud integration, and broader production hardening.

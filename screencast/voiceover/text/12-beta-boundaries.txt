@@ -1,1 +1,0 @@
-The beta supports native Swift apps on Apple Silicon Macs. It does not yet support Linux or WendyOS container deployment to Mac. It also does not yet include production mTLS, provisioning, or Wendy Cloud support. Treat this as a development preview for trusted networks and controlled environments.

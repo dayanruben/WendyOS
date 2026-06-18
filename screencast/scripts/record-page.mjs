@@ -7,11 +7,11 @@ import { join, resolve } from 'node:path';
 
 const url = process.argv[2];
 if (!url) {
-  console.error('usage: record-docs-page.mjs <url> [output.mp4]');
+  console.error('usage: record-page.mjs <url> [output.mp4]');
   process.exit(2);
 }
 
-const output = resolve(process.argv[3] ?? 'deck/public/videos/docs-page.mp4');
+const output = resolve(process.argv[3] ?? 'page.capture.mp4');
 const chromium = process.env.CHROMIUM_PATH ?? [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',

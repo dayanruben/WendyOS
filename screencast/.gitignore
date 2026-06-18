@@ -2,28 +2,19 @@
 node_modules/
 .slidev/
 dist/
-
-# Generated or captured media embedded by the deck
-deck/public/videos/*
-!deck/public/videos/.gitkeep
-deck/public/images/*
-!deck/public/images/.gitkeep
-deck/public/scenes/*
-template/deck/public/scenes/*
+.render-slide-*.md
 
 # Generated scene-local media/audio
 scenes/*/*.mp4
 scenes/*/*.webm
 scenes/*/*.gif
-scenes/*/voice.mp3
+scenes/*/*.mp3
+scenes/*/.render-slide.md
 template/scenes/*/*.mp4
 template/scenes/*/*.webm
 template/scenes/*/*.gif
-template/scenes/*/voice.mp3
-
-# Generated voiceover audio
-voiceover/mp3/*
-!voiceover/mp3/.gitkeep
+template/scenes/*/*.mp3
+template/scenes/*/.render-slide.md
 
 # Final renders and temporary build outputs
 output/*

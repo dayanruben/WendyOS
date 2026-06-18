@@ -4,4 +4,4 @@ One sentence describing what changed and why it matters.
 
 - Audience: engineering peers
 - Goal: explain the feature workflow
-- Output: narrated MP4 and manually presentable deck
+- Output: narrated MP4

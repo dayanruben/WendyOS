@@ -1,1 +1,0 @@
-Discovery and default device selection work like other Wendy targets. For a headless Mac mini, I can use the hostname or IP address and save it as the default target.

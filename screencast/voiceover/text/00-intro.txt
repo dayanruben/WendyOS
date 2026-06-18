@@ -1,1 +1,0 @@
-This is Wendy Agent for Mac Beta, running on an Apple Silicon Mac. If you already know the WendyOS workflow, the model is familiar: the Wendy CLI talks to an agent on a target device. The difference is that this target is macOS, and the beta focuses on native Swift apps.
