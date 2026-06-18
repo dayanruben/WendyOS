@@ -58,7 +58,7 @@ There is no aggregate deck and no timeline file.
 scripts/render-slide <scene-dir|slide.md|scene-prefix>
 scripts/render-tape  <scene-dir|tape-file|scene-prefix>
 scripts/render-voice <scene-dir|voice.md|scene-prefix>
-scripts/stitch [root]
+scripts/stitch [scene-dir ...] [--output output.mp4]
 ```
 
 Examples:
@@ -68,7 +68,7 @@ scripts/render-slide scenes/01-intro
 scripts/render-voice /path/to/screencast/scenes/01-intro/voice.md
 scripts/render-tape 01
 scripts/render-tape x/y/blah.vhs
-scripts/stitch
+scripts/stitch scenes/* --output output/feature-name.mp4
 ```
 
 A short prefix such as `01` expands to the unique matching folder under
@@ -96,16 +96,33 @@ A short prefix such as `01` expands to the unique matching folder under
    scripts/render-tape --with-hooks 02
    ```
 
-5. Stitch everything:
+5. Stitch everything. Prefer naming the final file as a dasherized slug of the
+   title in `script.md`:
 
    ```sh
-   scripts/stitch
+   scripts/stitch scenes/* --output output/feature-name.mp4
    ```
 
-The final video is written to:
+`stitch` accepts scene folders in the order they should appear, so you can pass a
+shell glob or list scenes individually:
+
+```sh
+scripts/stitch scenes/* --output output/feature-name.mp4
+scripts/stitch scenes/01-intro scenes/02-demo --output output/feature-name.mp4
+```
+
+If no scene folders are provided, `scripts/stitch` reads `scenes/*`. If no output
+path is provided, the final video is written to:
 
 ```text
 output/screencast.mp4
+```
+
+Agents should prefer passing an explicit output path named as a dasherized slug
+of the title in `script.md`; for example `# Wendy File Sync` should use:
+
+```sh
+scripts/stitch scenes/* --output output/wendy-file-sync.mp4
 ```
 
 ## Script format
@@ -119,7 +136,7 @@ and `### Show (<role>)` for visual direction. Common show roles are `slide`,
 `terminal`, `UI`, `screen recording`, `code`, and `diagram`.
 
 ````md
-# Presentation Script: Feature Name
+# Feature Name
 
 Audience: Edge app developers.
 Goal: Explain the feature and the workflow it enables.
@@ -166,7 +183,7 @@ Default output format:
 Override with environment variables:
 
 ```sh
-SCREENCAST_WIDTH=1440 SCREENCAST_HEIGHT=900 SCREENCAST_FPS=10 scripts/stitch
+SCREENCAST_WIDTH=1440 SCREENCAST_HEIGHT=900 SCREENCAST_FPS=10 scripts/stitch scenes/* --output output/feature-name.mp4
 ```
 
 For VHS clips, use:
@@ -221,8 +238,12 @@ Optional overrides:
 ```sh
 OPENAI_TTS_MODEL=gpt-4o-mini-tts \
 OPENAI_TTS_VOICE=alloy \
+OPENAI_TTS_SPEED=1.2 \
 scripts/render-voice 01
 ```
+
+`OPENAI_TTS_SPEED` accepts `0.25` through `4.0`; the default is `1.25` for a
+slightly tighter screencast pace.
 
 ## Tape hooks
 

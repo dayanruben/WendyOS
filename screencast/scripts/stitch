@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { resolveRoot, sceneDirectories, screencastRoot } from './lib/scene-paths.mjs';
+import { screencastRoot } from './lib/scene-paths.mjs';
 
 const width = Number(process.env.SCREENCAST_WIDTH ?? 1440);
 const height = Number(process.env.SCREENCAST_HEIGHT ?? 900);
@@ -13,18 +13,18 @@ const crf = process.env.SCREENCAST_CRF ?? '18';
 const defaultSceneSeconds = Number(process.env.SCREENCAST_DEFAULT_SCENE_SECONDS ?? 5);
 
 function usage() {
-  console.log('usage: stitch [root] [--out output.mp4]');
+  console.log('usage: stitch [scene-dir ...] [--output output.mp4]');
 }
 
-let rootArg;
+const sceneArgs = [];
 let outArg;
 for (let i = 2; i < process.argv.length; i += 1) {
   const item = process.argv[i];
-  if (item === '--out') outArg = process.argv[++i];
+  if (item === '--output') outArg = process.argv[++i];
   else if (item === '-h' || item === '--help') { usage(); process.exit(0); }
-  else if (!rootArg) rootArg = item;
-  else { console.error(`error: unexpected argument: ${item}`); process.exit(2); }
+  else sceneArgs.push(item);
 }
+
 
 for (const tool of ['ffmpeg', 'ffprobe']) {
   if (spawnSync('which', [tool], { stdio: 'ignore' }).status !== 0) {
@@ -44,6 +44,53 @@ function ffprobeDuration(path) {
   return result.status === 0 ? Number(result.stdout.trim()) || 0 : 0;
 }
 function concatLine(path) { return `file '${resolve(path).replaceAll("'", "'\\''")}'\n`; }
+function regexForGlob(value) {
+  const escaped = value.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replaceAll('*', '.*')}$`);
+}
+
+async function sceneDirectoriesFromParent(parentDir) {
+  if (!existsSync(parentDir)) throw new Error(`no scenes directory: ${parentDir}`);
+  const entries = await readdir(parentDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => join(parentDir, entry.name))
+    .sort();
+}
+
+async function expandSceneArg(arg) {
+  if (arg.includes('*')) {
+    const absolutePattern = resolve(arg);
+    const parentDir = dirname(absolutePattern);
+    const matcher = regexForGlob(basename(absolutePattern));
+    const entries = await readdir(parentDir, { withFileTypes: true });
+    const matches = entries
+      .filter((entry) => entry.isDirectory() && matcher.test(entry.name))
+      .map((entry) => join(parentDir, entry.name))
+      .sort();
+    if (matches.length === 0) throw new Error(`no scene directories match: ${arg}`);
+    return matches;
+  }
+
+  const sceneDir = resolve(arg);
+  if (!existsSync(sceneDir)) throw new Error(`scene directory not found: ${arg}`);
+  const info = await stat(sceneDir);
+  if (!info.isDirectory()) throw new Error(`scene path is not a directory: ${arg}`);
+  return [sceneDir];
+}
+
+async function selectedSceneDirectories() {
+  if (sceneArgs.length === 0) return sceneDirectoriesFromParent(resolve('scenes'));
+  const groups = await Promise.all(sceneArgs.map(expandSceneArg));
+  return groups.flat();
+}
+
+function rootForScenes(scenes) {
+  if (scenes.length === 0) return process.cwd();
+  const sceneParent = dirname(scenes[0]);
+  return basename(sceneParent) === 'scenes' ? dirname(sceneParent) : sceneParent;
+}
+
 function commandArg(sceneDir) {
   const rel = relative(screencastRoot, sceneDir);
   return rel.startsWith('..') ? sceneDir : posix(rel);
@@ -105,9 +152,9 @@ function renderAudio(voicePath, seconds, output) {
 }
 
 async function main() {
-  const root = resolveRoot(rootArg);
-  const outFile = resolve(outArg ?? process.env.OUT_FILE ?? join(root, 'output/screencast.mp4'));
-  const scenes = await sceneDirectories(root);
+  const scenes = await selectedSceneDirectories();
+  const root = rootForScenes(scenes);
+  const outFile = resolve(outArg ?? 'output/screencast.mp4');
   const workdir = await mkdtemp(join(tmpdir(), 'screencast-stitch-'));
   const videoDir = join(workdir, 'video');
   const audioDir = join(workdir, 'audio');
@@ -145,8 +192,8 @@ async function main() {
 
     await writeFile(join(workdir, 'video-list.txt'), videoList.map(concatLine).join(''));
     await writeFile(join(workdir, 'audio-list.txt'), audioList.map(concatLine).join(''));
-    await mkdir(join(root, 'output'), { recursive: true });
-    await writeFile(join(root, 'output/duration-report.tsv'), `${report.join('\n')}\n`);
+    await mkdir(dirname(outFile), { recursive: true });
+    await writeFile(join(dirname(outFile), 'duration-report.tsv'), `${report.join('\n')}\n`);
 
     const videoFull = join(workdir, 'video-full.mp4');
     const audioFull = join(workdir, 'audio-full.wav');

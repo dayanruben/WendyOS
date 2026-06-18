@@ -1,4 +1,4 @@
-# Presentation Script: Feature Name
+# Feature Name
 
 Audience: Engineering peers who want to understand the feature and how it changes
 their workflow.
