@@ -4,6 +4,9 @@
   "scripts": {
     "dev": "slidev deck/slides.md",
     "present": "slidev deck/slides.md",
+    "build:scenes": "scripts/build-scenes.mjs",
+    "render": "scripts/render-deck.mjs",
+    "render:tapes": "scripts/render-tapes.sh",
     "export": "slidev export deck/slides.md --output output/deck.pdf"
   },
   "devDependencies": {

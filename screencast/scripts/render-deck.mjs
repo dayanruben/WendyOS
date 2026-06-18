@@ -1,18 +1,83 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 const projectDir = resolve(new URL('..', import.meta.url).pathname);
-const timelinePath = resolve(process.argv[2] ?? join(projectDir, 'timeline.json'));
-const timeline = JSON.parse(await (await import('node:fs/promises')).readFile(timelinePath, 'utf8'));
+const inputArg = process.argv[2] ? resolve(projectDir, process.argv[2]) : null;
+
+function posix(path) {
+  return path.split('/').join('/');
+}
+
+async function sceneNames(root) {
+  const scenesDir = join(root, 'scenes');
+  if (!existsSync(scenesDir)) return [];
+  const entries = await readdir(scenesDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+async function timelineFromScenes(root) {
+  const names = await sceneNames(root);
+  if (names.length === 0) return null;
+  return {
+    engine: 'slidev',
+    deck: posix(relative(projectDir, join(root, 'deck/slides.md'))),
+    size: { width: 1440, height: 900, fps: 10 },
+    steps: names.map((name, index) => {
+      const sceneDir = join(root, 'scenes', name);
+      const step = {
+        id: name,
+        target: String(index + 1),
+        voiceover: posix(relative(root, join(sceneDir, 'voice.mp3'))),
+      };
+      for (const filename of ['video.mp4', 'video.webm', 'video.gif']) {
+        if (existsSync(join(sceneDir, filename))) {
+          step.media = posix(relative(root, join(sceneDir, filename)));
+          step.visualKind = 'video';
+          return step;
+        }
+      }
+      if (existsSync(join(sceneDir, 'vhs.tape'))) {
+        step.visualKind = 'vhs';
+        step.vhs = posix(relative(root, join(sceneDir, 'vhs.tape')));
+      } else {
+        step.visualKind = 'slide';
+      }
+      return step;
+    }),
+  };
+}
+
+async function loadTimeline() {
+  if (inputArg && existsSync(inputArg) && statSync(inputArg).isDirectory()) {
+    const timeline = await timelineFromScenes(inputArg);
+    if (!timeline) throw new Error(`no scenes found in ${inputArg}`);
+    return { timeline, sourceRoot: inputArg };
+  }
+
+  if (!inputArg) {
+    const sceneTimeline = await timelineFromScenes(projectDir);
+    if (sceneTimeline) return { timeline: sceneTimeline, sourceRoot: projectDir };
+  }
+
+  const timelinePath = inputArg ?? join(projectDir, 'timeline.json');
+  const timeline = JSON.parse(await readFile(timelinePath, 'utf8'));
+  return { timeline, sourceRoot: projectDir };
+}
+
+const { timeline, sourceRoot } = await loadTimeline();
 const width = Number(process.env.SCREENCAST_WIDTH ?? timeline.size?.width ?? 1440);
 const height = Number(process.env.SCREENCAST_HEIGHT ?? timeline.size?.height ?? 900);
 const fps = Number(process.env.SCREENCAST_FPS ?? timeline.size?.fps ?? 10);
 const crf = process.env.SCREENCAST_CRF ?? '18';
-const outFile = resolve(process.env.OUT_FILE ?? join(projectDir, 'output/screencast.mp4'));
+const defaultSceneSeconds = Number(process.env.SCREENCAST_DEFAULT_SCENE_SECONDS ?? 5);
+const outFile = resolve(process.env.OUT_FILE ?? join(sourceRoot, 'output/screencast.mp4'));
 const chromePath = process.env.CHROMIUM_PATH ?? [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -237,15 +302,18 @@ async function main() {
 
     for (const [index, step] of timeline.steps.entries()) {
       const n = String(index + 1).padStart(3, '0');
-      const voicePath = step.voiceover ? resolve(projectDir, step.voiceover) : null;
-      const mediaPath = step.media ? resolve(projectDir, step.media) : null;
+      const voicePath = step.voiceover ? resolve(sourceRoot, step.voiceover) : null;
+      const mediaPath = step.media ? resolve(sourceRoot, step.media) : null;
       const voiceSeconds = ffprobeDuration(voicePath);
       const mediaSeconds = ffprobeDuration(mediaPath);
-      const seconds = Math.max(Number(step.minSeconds ?? 0), voiceSeconds, mediaSeconds);
+      const seconds = Math.max(Number(step.minSeconds ?? 0), voiceSeconds, mediaSeconds, voiceSeconds === 0 && mediaSeconds === 0 ? defaultSceneSeconds : 0);
       const videoOut = join(videoDir, `${n}-${step.id}.mp4`);
       const audioOut = join(audioDir, `${n}-${step.id}.wav`);
       if (mediaPath && !existsSync(mediaPath)) {
         throw new Error(`timeline media is missing for ${step.id}: ${step.media}`);
+      }
+      if (!mediaPath && step.visualKind === 'vhs') {
+        throw new Error(`scene ${step.id} has ${step.vhs} but no rendered video. Run scripts/render-tapes.sh first.`);
       }
       const hasMedia = Boolean(mediaPath);
       const visualSource = hasMedia ? step.media : `slide:${step.target}`;
@@ -266,7 +334,7 @@ async function main() {
 
     await writeFile(join(workdir, 'video-list.txt'), videoList.map(concatLine).join(''));
     await writeFile(join(workdir, 'audio-list.txt'), audioList.map(concatLine).join(''));
-    await writeFile(join(projectDir, 'output/duration-report.tsv'), `${report.join('\n')}\n`);
+    await writeFile(join(sourceRoot, 'output/duration-report.tsv'), `${report.join('\n')}\n`);
 
     const videoFull = join(workdir, 'video-full.mp4');
     const audioFull = join(workdir, 'audio-full.wav');

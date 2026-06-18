@@ -12,20 +12,24 @@ Agent for Mac Beta example that exercises the basic building blocks.
 
 ```text
 screencast/
+  scenes/                  # preferred source layout: one folder per scene
+    01-intro/
+      slide.md             # Slidev Markdown for this scene
+      voice.md        # narration source for this scene
+      vhs.tape            # optional VHS source for this scene
+      video.mp4            # generated scene media; ignored by git
   deck/
-    slides.md              # Slidev deck; manually presentable
-    style.css              # intentionally empty unless a project needs custom styling
-    public/
-      videos/              # generated/recorded footage embedded by slides
-      images/              # images and generated stills embedded by slides
-  tapes/                   # VHS terminal recordings
-  voiceover/
-    text/                  # narration scripts, one file per narrated beat
-    mp3/                   # generated OpenAI TTS audio; ignored by git
+    slides.md              # generated or hand-authored Slidev deck
+    style.css              # intentionally empty unless custom styling is needed
+    public/                # generated presentation media mirrors; ignored by git
+  tapes/                   # legacy/global VHS terminal recordings
+  hooks/                   # optional preflight/setup/teardown hooks for tape rendering
+  voiceover/               # legacy/global narration layout
   output/                  # final renders/exports; ignored by git
-  timeline.json            # engine-neutral playback/sync plan
+  timeline.json            # legacy/hand-authored playback plan; optional for scene-first decks
   package.json             # Slidev commands and dependencies
-  scripts/                 # helper scripts
+  scripts/                 # reusable helper scripts
+  template/                # neutral scene-first scaffold for new feature screencasts
 ```
 
 ## Presentation engine
@@ -60,11 +64,70 @@ Develop with the local Slidev server:
 npm run dev
 ```
 
-Render the synchronized narrated video from `timeline.json`:
+Render the synchronized narrated video from scene folders or, for legacy decks,
+from `timeline.json`:
 
 ```sh
 scripts/render-deck.mjs
 ```
+
+## Starting a new feature screencast
+
+This directory is both a working screencast and a reusable framework. For a new
+feature branch, start from the neutral scaffold in `template/` and keep the
+shared framework files in `scripts/` and `package.json`.
+
+Agent prompt:
+
+```text
+Read screencast/README.md. Create a deck-first screencast for this feature
+branch. Use screencast/template/ as the starting point. Keep generated media out
+of git. Use hooks for any setup/teardown. The result must be manually
+presentable with Slidev and renderable with the scene renderer.
+```
+
+Human workflow:
+
+1. Copy or adapt `template/scenes/` into `scenes/`. Keep one scene's slide,
+   narration, tape, and generated media in that scene folder. The folder name is
+   the scene id.
+2. Rebuild the aggregate Slidev deck from scenes:
+
+   ```sh
+   scripts/build-scenes.mjs
+   ```
+
+3. Present manually while drafting:
+
+   ```sh
+   npm run present
+   ```
+
+4. Check shell/JSON/JS syntax:
+
+   ```sh
+   scripts/check.sh
+   ```
+
+5. Dry-run tape rendering before executing real commands:
+
+   ```sh
+   scripts/render-tapes.sh --dry-run --with-hooks
+   ```
+
+6. Render tapes only after reviewing the commands they execute:
+
+   ```sh
+   scripts/render-tapes.sh --with-hooks
+   scripts/build-scenes.mjs
+   ```
+
+7. Generate voiceover and render the final video:
+
+   ```sh
+   scripts/generate-tts.sh
+   scripts/render-deck.mjs
+   ```
 
 ## Standard format
 
@@ -96,8 +159,36 @@ state.
 
 ## Building blocks
 
-A screencast is assembled from ordered presentation beats. Useful building
-blocks include:
+A screencast is assembled from ordered presentation beats. Prefer one folder per
+scene:
+
+```text
+scenes/03-demo/
+  slide.md
+  voice.md
+  vhs.tape      # optional
+  video.mp4      # generated, ignored
+```
+
+The scene folder name is the scene id. Scene order is lexicographic; use numeric
+prefixes such as `01-intro`, `02-problem`, and `03-demo`.
+
+Run `scripts/build-scenes.mjs` after editing scene folders. It writes the
+aggregate `deck/slides.md` and mirrors existing scene media into
+`deck/public/scenes/` for manual Slidev presentation. The renderer derives scene
+order, voiceover, and media from the scene folders; no `timeline.json` is needed
+for scene-first screencasts.
+
+Visual source priority is intentionally conventional:
+
+1. If the scene has `video.mp4`, `video.webm`, or `video.gif`, that rendered
+   video is used.
+2. Otherwise, if the scene has `vhs.tape`, the scene expects a generated video;
+   run `scripts/render-tapes.sh` first. The renderer fails rather than silently
+   falling back to the slide.
+3. Otherwise, the scene's `slide.md` is rendered as a still slide.
+
+Useful building blocks include:
 
 - **Slides/cards** — normal Slidev slides for intros, section breaks, diagrams,
   summary points, and closing/contact details.
@@ -105,8 +196,8 @@ blocks include:
   Render these to `deck/public/videos/` and embed them in the deck.
 - **Screen recordings** — captured application, desktop, or device UI footage.
   Use these when the real interface matters more than deterministic replay.
-  Keep raw recordings outside git, transcode them into `deck/public/videos/`, and
-  reference the generated MP4 from `timeline.json`.
+  Keep raw recordings outside git, transcode them into the relevant scene folder,
+  and embed the generated MP4 from that scene's `slide.md`.
 - **Live coding** — editor-centric footage where code is written, refactored, or
   debugged in real time.
 - **Scripted code reveal** — preferred over ad-hoc live coding when possible.
@@ -129,11 +220,20 @@ blocks include:
 
 Keep VHS as a deterministic terminal-video generator:
 
-1. Write or update a tape in `tapes/`.
-2. Render it with `vhs`.
-3. Put the generated MP4/WebM under `deck/public/videos/`.
-4. Embed the video in `deck/slides.md`.
-5. Reference the same media file from `timeline.json` for automated playback.
+1. Write or update a scene-local tape such as `scenes/03-demo/vhs.tape`.
+2. Make the tape output scene-local generated media, for example
+   `Output scenes/03-demo/video.mp4`.
+3. Embed the public mirror in `scenes/03-demo/slide.md`:
+
+   ```html
+   <video :src="'/scenes/03-demo/video.mp4'" controls muted width="100%"></video>
+   ```
+
+4. Run `scripts/build-scenes.mjs` after rendering to mirror the generated video
+   into `deck/public/scenes/` for manual presentation.
+
+The older `tapes/` directory is still supported for existing screencasts, but
+new feature screencasts should prefer scene-local tapes.
 
 In Slidev Markdown, use a Vue-bound `src` for files under `deck/public/` so Vite
 will serve the asset without trying to import it from the filesystem:
@@ -142,41 +242,58 @@ will serve the asset without trying to import it from the filesystem:
 <video :src="'/videos/mac-beta/01-install-launch.mp4'" controls muted width="100%"></video>
 ```
 
-Render all checked-in Mac beta tapes with:
+Render checked-in tapes through the hardened wrapper instead of invoking `vhs`
+directly:
 
 ```sh
-for tape in tapes/*.tape; do vhs "$tape"; done
+scripts/render-tapes.sh --dry-run
+scripts/render-tapes.sh
 ```
+
+For stateful screencasts, add project hooks under `hooks/` and render with:
+
+```sh
+scripts/render-tapes.sh --with-hooks
+```
+
+The hook contract is intentionally small:
+
+- `hooks/preflight.sh` runs non-destructive checks by default.
+- `hooks/setup.sh` runs only when requested, for destructive setup/reset work.
+- `hooks/teardown.sh` runs only when requested, for cleanup after rendering.
+- Hooks receive `SCREENCAST_ROOT`, `SCREENCAST_YES`, and `SCREENCAST_DRY_RUN`.
+
+Hooks are project-local: keep `scripts/render-tapes.sh` generic, and put any
+screencast-specific reset or cleanup logic in `hooks/*.sh`. A template can ship
+empty/no-op hooks; a concrete screencast can replace them with target-specific
+setup.
 
 This keeps terminal demos repeatable while making them ordinary presentation
 media. Later, terminal playback could move to asciinema or xterm.js without
 changing the high-level deck/timeline model.
 
-## Timeline and voiceover
+## Scene timing and voiceover
 
-`timeline.json` maps deck positions to optional voiceover and media assets. The
-intended rendering rule remains:
+For scene-first screencasts, timing is derived from files in each scene folder:
+
+- folder name -> scene id
+- sorted folder order -> slide order
+- `voice.mp3` -> narration duration
+- `video.mp4`, `video.webm`, or `video.gif` -> media duration
+
+The renderer uses this rule:
 
 ```text
-beat duration = max(minimum useful visual duration, voiceover duration)
+scene duration = max(voiceover duration, media duration)
 ```
 
-Example timeline step:
+If the voiceover is longer than the video, the video freezes on the last frame.
+If the video is longer than the voiceover, the audio is extended with silence.
+Silent slide-only scenes use a small fallback duration, configurable with
+`SCREENCAST_DEFAULT_SCENE_SECONDS`.
 
-```json
-{
-  "id": "terminal-demo",
-  "target": "3",
-  "minSeconds": 12.0,
-  "voiceover": "voiceover/mp3/02-install-launch.mp3",
-  "media": "deck/public/videos/mac-beta/01-install-launch.mp4"
-}
-```
-
-The `target` value is intentionally engine-neutral. For Slidev it can represent
-a slide or future slide/fragment address. A later renderer should open the deck,
-navigate to each target, play embedded media as needed, and mux/pad audio so the
-beat duration follows the rule above.
+Existing hand-authored `timeline.json` files are still supported for older decks,
+but new feature screencasts should not need one.
 
 ## Generate voiceover
 
@@ -189,9 +306,10 @@ scripts/generate-tts.sh --dry-run
 scripts/generate-tts.sh
 ```
 
-This reads `voiceover/text/*.txt` and writes matching `.mp3` files under
-`voiceover/mp3/`. Dry-run mode prints word counts and rough duration estimates
-without calling the API or requiring an API key.
+This reads both scene-local `scenes/*/voice.md` files and the legacy
+`voiceover/text/*.txt` layout. Scene-local audio is written as
+`scenes/*/voice.mp3`. Dry-run mode prints word counts and rough duration
+estimates without calling the API or requiring an API key.
 
 ## Record screen/docs/browser footage
 
@@ -223,12 +341,14 @@ A good agent loop is:
 3. **Draft the deck** — update `deck/slides.md` so the talk can be presented
    manually. Keep `deck/style.css` empty unless custom styling is explicitly
    needed.
-4. **Draft sources** — create/update VHS tapes, capture notes, code-reveal
-   snippets, and voiceover text.
-5. **Generate media** — render VHS/browser/screen assets into
-   `deck/public/videos/` and generate OpenAI TTS into `voiceover/mp3/`.
-6. **Update timeline** — map deck targets to voiceover/media in `timeline.json`.
-7. **Render/review** — produce the final video, watch it, and iterate on the
+4. **Draft sources** — create/update scene folders with slides, VHS tapes,
+   capture notes, code-reveal snippets, and voiceover text.
+5. **Prepare hooks** — for stateful recordings, put checks in `hooks/preflight.sh`,
+   destructive setup in `hooks/setup.sh`, and cleanup in `hooks/teardown.sh`.
+6. **Generate media** — render VHS/browser/screen assets into their scene folders,
+   then run `scripts/build-scenes.mjs` to refresh the deck.
+7. **Generate voiceover** — create scene-local `voice.mp3` files.
+8. **Render/review** — produce the final video, watch it, and iterate on the
    smallest source asset that fixes the issue.
 
 The agent should treat generated footage as disposable build output. If a scene

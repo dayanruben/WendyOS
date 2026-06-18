@@ -8,6 +8,18 @@ deck/public/videos/*
 !deck/public/videos/.gitkeep
 deck/public/images/*
 !deck/public/images/.gitkeep
+deck/public/scenes/*
+template/deck/public/scenes/*
+
+# Generated scene-local media/audio
+scenes/*/*.mp4
+scenes/*/*.webm
+scenes/*/*.gif
+scenes/*/voice.mp3
+template/scenes/*/*.mp4
+template/scenes/*/*.webm
+template/scenes/*/*.gif
+template/scenes/*/voice.mp3
 
 # Generated voiceover audio
 voiceover/mp3/*
@@ -16,6 +28,8 @@ voiceover/mp3/*
 # Final renders and temporary build outputs
 output/*
 !output/.gitkeep
+template/output/*
+!template/output/.gitkeep
 build/
 
 # Local bytecode and OS metadata

@@ -17,6 +17,14 @@ require_tool python3
 for script in "$SCRIPT_DIR"/*.sh; do
   bash -n "$script"
 done
+for hook_dir in "$PROJECT_DIR/hooks" "$PROJECT_DIR/template/hooks"; do
+  if [[ -d "$hook_dir" ]]; then
+    for hook in "$hook_dir"/*.sh; do
+      [[ -e "$hook" ]] || continue
+      bash -n "$hook"
+    done
+  fi
+done
 
 shopt -s nullglob
 python_files=("$SCRIPT_DIR"/*.py)
@@ -43,19 +51,31 @@ import json
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
-for rel in ["package.json", "timeline.json", "timeline.schema.json"]:
+for rel in ["package.json", "timeline.schema.json"]:
     json.loads((root / rel).read_text(encoding="utf-8"))
-for rel in ["deck/slides.md", "deck/style.css", "deck/public/videos/.gitkeep", "deck/public/images/.gitkeep", "tapes/01-install-launch.tape"]:
+if (root / "timeline.json").exists():
+    json.loads((root / "timeline.json").read_text(encoding="utf-8"))
+for rel in ["deck/slides.md", "deck/style.css", "deck/public/videos/.gitkeep", "deck/public/images/.gitkeep"]:
     path = root / rel
     if not path.exists():
         raise SystemExit(f"missing required source: {rel}")
-timeline = json.loads((root / "timeline.json").read_text(encoding="utf-8"))
-deck = root / timeline["deck"]
-if not deck.exists():
-    raise SystemExit(f"timeline deck does not exist: {timeline['deck']}")
-for step in timeline["steps"]:
-    if "id" not in step or "target" not in step or "minSeconds" not in step:
-        raise SystemExit(f"invalid timeline step: {step!r}")
+if not (root / "scenes").exists() and not (root / "tapes").exists() and not (root / "timeline.json").exists():
+    raise SystemExit("missing scene, tape, or timeline source")
+
+def check_timeline(path: Path, base: Path) -> None:
+    timeline = json.loads(path.read_text(encoding="utf-8"))
+    deck = base / timeline["deck"]
+    if not deck.exists():
+        raise SystemExit(f"timeline deck does not exist: {path}: {timeline['deck']}")
+    for step in timeline["steps"]:
+        if "id" not in step or "target" not in step or "minSeconds" not in step:
+            raise SystemExit(f"invalid timeline step in {path}: {step!r}")
+
+if (root / "timeline.json").exists():
+    check_timeline(root / "timeline.json", root)
+template_timeline = root / "template" / "timeline.json"
+if template_timeline.exists():
+    check_timeline(template_timeline, template_timeline.parent)
 PY
 
 if command -v git >/dev/null 2>&1 && git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

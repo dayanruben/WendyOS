@@ -15,7 +15,11 @@ usage() {
   cat <<'EOF'
 usage: generate-tts.sh [--dry-run]
 
-Reads voiceover/text/*.txt and writes matching MP3 files to voiceover/mp3/.
+Generates MP3 narration from both supported layouts:
+
+  voiceover/text/*.txt        -> voiceover/mp3/*.mp3
+  scenes/*/voice.md          -> scenes/*/voice.mp3
+
 Requires OPENAI_API_KEY unless --dry-run is used. There is intentionally no
 local fallback voice generator.
 Set OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, or OPENAI_TTS_INSTRUCTIONS to override
@@ -46,12 +50,41 @@ if [[ "$DRY_RUN" -eq 0 && -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-mkdir -p "$OUT_DIR"
-
+shopt -s nullglob
+inputs=()
 for txt in "$TEXT_DIR"/*.txt; do
-  [[ -e "$txt" ]] || continue
-  base="$(basename "$txt" .txt)"
-  out="$OUT_DIR/$base.mp3"
+  [[ -e "$txt" ]] && inputs+=("$txt")
+done
+for txt in "$PROJECT_DIR"/scenes/*/voice.md; do
+  [[ -e "$txt" ]] && inputs+=("$txt")
+done
+
+if [[ "${#inputs[@]}" -eq 0 ]]; then
+  echo "warning: no voiceover text files found" >&2
+  exit 0
+fi
+
+output_for() {
+  local txt="$1"
+  case "$txt" in
+    "$TEXT_DIR"/*.txt)
+      mkdir -p "$OUT_DIR"
+      local base
+      base="$(basename "$txt" .txt)"
+      printf '%s/%s.mp3\n' "$OUT_DIR" "$base"
+      ;;
+    */scenes/*/voice.md)
+      printf '%s/voice.mp3\n' "$(dirname "$txt")"
+      ;;
+    *)
+      echo "error: unsupported voiceover source: $txt" >&2
+      return 1
+      ;;
+  esac
+}
+
+for txt in "${inputs[@]}"; do
+  out="$(output_for "$txt")"
   estimate="$(python3 - "$txt" <<'PY'
 import re
 import sys
@@ -90,7 +123,7 @@ PY
   rm -f "$payload"
 
   if [[ "$code" != "200" ]]; then
-    echo "error: TTS failed for $base (HTTP $code)" >&2
+    echo "error: TTS failed for $txt (HTTP $code)" >&2
     cat "$tmp" >&2 || true
     rm -f "$tmp"
     exit 1
