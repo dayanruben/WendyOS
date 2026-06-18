@@ -954,16 +954,14 @@ func pickInitLanguage(target string) (string, error) {
 }
 
 var askEntitlementQuestions = func(target, language string) ([]appconfig.Entitlement, error) {
-	// Always include network for WendyOS/Wendy Lite apps and native macOS
-	// services. On Wendy Agent for Mac this requests host networking so local
-	// HTTP APIs are reachable from the developer machine or Open WebUI.
-	entitlements := []appconfig.Entitlement{
-		{Type: appconfig.EntitlementNetwork},
+	if target == targetDarwin {
+		cliLogln("Native macOS apps do not use WendyOS container entitlements.")
+		return nil, nil
 	}
 
-	if target == targetDarwin {
-		cliLogln("Native macOS apps use host networking by default.")
-		return entitlements, nil
+	// Always include network for WendyOS/Wendy Lite containerized targets.
+	entitlements := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork},
 	}
 
 	if target == targetWendyLite {
@@ -1006,6 +1004,13 @@ func initEntitlementsProvided(opts initOptions) bool {
 }
 
 func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfig.Entitlement, error) {
+	if target == targetDarwin {
+		if opts.entitlementsSet || opts.allEntitlements || opts.gpioPinsSet || opts.i2cDeviceSet || opts.persistNameSet || opts.persistPathSet {
+			return nil, fmt.Errorf("%s apps do not support WendyOS container entitlements", targetDarwin)
+		}
+		return nil, nil
+	}
+
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}
 	seen := map[string]bool{appconfig.EntitlementNetwork: true}
 
@@ -1058,9 +1063,6 @@ func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfi
 		}
 		if target == targetWendyLite && entType != appconfig.EntitlementNetwork {
 			return nil, fmt.Errorf("%s does not support the %q entitlement", targetWendyLite, entType)
-		}
-		if target == targetDarwin && entType != appconfig.EntitlementNetwork {
-			return nil, fmt.Errorf("%s does not support the %q entitlement", targetDarwin, entType)
 		}
 		if seen[entType] {
 			continue
