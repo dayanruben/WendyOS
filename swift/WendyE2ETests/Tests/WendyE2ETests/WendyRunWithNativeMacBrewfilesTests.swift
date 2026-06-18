@@ -15,7 +15,7 @@ struct `'wendy run' with native Mac Brewfiles` {
      evidence show that `brew bundle` did not run on the developer machine.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `syncs the Brewfile and runs Homebrew Bundle on the target before starting`() async throws {
+    func `syncs the 'Brewfile.wendy' and runs 'brew bundle' on the target before starting`() async throws {
         // TODO: implement.
     }
 
