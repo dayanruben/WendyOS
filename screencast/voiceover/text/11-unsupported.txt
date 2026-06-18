@@ -1,0 +1,1 @@
+The beta is intentionally narrow, but unsupported paths should fail clearly. If I use a command or project type that is not supported by Wendy Agent for Mac yet, the CLI should give a Mac-specific unsupported message instead of a generic agent-version or build failure.

@@ -1,0 +1,1 @@
+Xcode projects are also supported. This is especially important for MLX and VLMMLX-style apps. Because of current SwiftPM limitations, that kind of workload may need to build through Xcode and run inside an app bundle with the Metal toolchain installed.

@@ -1,0 +1,1 @@
+Once the app is running, lifecycle commands use the familiar Wendy CLI surface. I can list, stop, and remove apps from the Mac target just like other Wendy devices.

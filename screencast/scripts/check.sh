@@ -45,7 +45,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 for rel in ["package.json", "timeline.json", "timeline.schema.json"]:
     json.loads((root / rel).read_text(encoding="utf-8"))
-for rel in ["deck/slides.md", "deck/style.css", "tapes/01-terminal-example.tape"]:
+for rel in ["deck/slides.md", "deck/style.css", "deck/public/videos/.gitkeep", "deck/public/images/.gitkeep", "tapes/01-install-launch.tape"]:
     path = root / rel
     if not path.exists():
         raise SystemExit(f"missing required source: {rel}")

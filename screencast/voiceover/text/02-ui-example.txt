@@ -1,1 +1,0 @@
-This is a placeholder voiceover for a user interface scene. Explain what the viewer is seeing, what setup or permission is being validated, and any relevant product boundary.

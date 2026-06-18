@@ -11,41 +11,102 @@
     {
       "id": "intro",
       "target": "1",
-      "minSeconds": 4.0,
-      "voiceover": null
-    },
-    {
-      "id": "terminal-demo",
-      "target": "3",
       "minSeconds": 12.0,
-      "voiceover": "voiceover/mp3/01-terminal-example.mp3",
-      "media": "deck/public/videos/01-terminal-example.mp4"
+      "voiceover": "voiceover/mp3/00-intro.mp3"
     },
     {
-      "id": "ui-demo",
+      "id": "framing",
+      "target": "2",
+      "minSeconds": 12.0,
+      "voiceover": "voiceover/mp3/01-framing.mp3"
+    },
+    {
+      "id": "install-launch",
+      "target": "3",
+      "minSeconds": 25.0,
+      "voiceover": "voiceover/mp3/02-install-launch.mp3",
+      "media": "deck/public/videos/mac-beta/01-install-launch.mp4"
+    },
+    {
+      "id": "permissions",
+      "target": "4",
+      "minSeconds": 20.0,
+      "voiceover": "voiceover/mp3/03-permissions.mp3",
+      "media": "deck/public/videos/mac-beta/ui-agent-menu-permissions.mp4"
+    },
+    {
+      "id": "verify-target",
       "target": "5",
-      "minSeconds": 15.0,
-      "voiceover": "voiceover/mp3/02-ui-example.mp3",
-      "media": "deck/public/videos/02-ui-example.mp4"
+      "minSeconds": 18.0,
+      "voiceover": "voiceover/mp3/04-verify-target.mp3",
+      "media": "deck/public/videos/mac-beta/02-device-info.mp4"
     },
     {
-      "id": "docs-demo",
+      "id": "discovery-default",
+      "target": "6",
+      "minSeconds": 18.0,
+      "voiceover": "voiceover/mp3/05-discovery-default.mp3",
+      "media": "deck/public/videos/mac-beta/03-discovery-default.mp4"
+    },
+    {
+      "id": "native-app-section",
       "target": "7",
-      "minSeconds": 10.0,
-      "voiceover": "voiceover/mp3/03-docs-example.mp3",
-      "media": "deck/public/videos/03-docs-example.mp4"
-    },
-    {
-      "id": "code-reveal",
-      "target": "8",
       "minSeconds": 8.0,
-      "voiceover": null
+      "voiceover": "voiceover/mp3/06-native-app-section.mp3"
     },
     {
-      "id": "closing",
+      "id": "native-app-shape",
+      "target": "8",
+      "minSeconds": 28.0,
+      "voiceover": "voiceover/mp3/07-native-app-shape.mp3",
+      "media": "deck/public/videos/mac-beta/04-native-app-shape.mp4"
+    },
+    {
+      "id": "swiftpm-deploy",
       "target": "9",
-      "minSeconds": 4.0,
-      "voiceover": null
+      "minSeconds": 25.0,
+      "voiceover": "voiceover/mp3/08-swiftpm-deploy.mp3",
+      "media": "deck/public/videos/mac-beta/05-run-swiftpm.mp4"
+    },
+    {
+      "id": "xcode-deploy",
+      "target": "10",
+      "minSeconds": 28.0,
+      "voiceover": "voiceover/mp3/09-xcode-deploy.mp3",
+      "media": "deck/public/videos/mac-beta/06-run-xcode.mp4"
+    },
+    {
+      "id": "app-lifecycle",
+      "target": "11",
+      "minSeconds": 22.0,
+      "voiceover": "voiceover/mp3/10-app-lifecycle.mp3",
+      "media": "deck/public/videos/mac-beta/07-app-lifecycle.mp4"
+    },
+    {
+      "id": "unsupported",
+      "target": "12",
+      "minSeconds": 24.0,
+      "voiceover": "voiceover/mp3/11-unsupported.mp3",
+      "media": "deck/public/videos/mac-beta/08-unsupported.mp4"
+    },
+    {
+      "id": "beta-boundaries",
+      "target": "13",
+      "minSeconds": 20.0,
+      "voiceover": "voiceover/mp3/12-beta-boundaries.mp3"
+    },
+    {
+      "id": "close-summary",
+      "target": "14",
+      "minSeconds": 22.0,
+      "voiceover": "voiceover/mp3/13-close-summary.mp3",
+      "media": "deck/public/videos/mac-beta/09-final-list.mp4"
+    },
+    {
+      "id": "thanks",
+      "target": "15",
+      "minSeconds": 6.0,
+      "voiceover": "voiceover/mp3/14-thanks.mp3"
     }
   ]
 }

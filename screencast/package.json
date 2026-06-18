@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "slidev deck/slides.md --host 127.0.0.1",
+    "dev": "slidev deck/slides.md",
     "present": "slidev deck/slides.md",
     "export": "slidev export deck/slides.md --output output/deck.pdf"
   },

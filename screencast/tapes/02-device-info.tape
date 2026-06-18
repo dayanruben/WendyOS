@@ -1,4 +1,5 @@
-Output deck/public/videos/01-terminal-example.mp4
+Output deck/public/videos/mac-beta/02-device-info.mp4
+Set Shell zsh
 Set Width 1440
 Set Height 900
 Set FontSize 20
@@ -8,6 +9,6 @@ Set CursorBlink false
 
 Sleep 1s
 
-Type "echo Replace this with a real command"
+Type "wendy --device mac-mini.local:50051 device info --json"
 Enter
-Sleep 5s
+Sleep 15s

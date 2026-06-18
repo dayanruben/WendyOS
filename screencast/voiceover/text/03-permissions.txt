@@ -1,0 +1,1 @@
+This setup only needs to happen once. During setup, macOS may ask for permissions like microphone, camera, Bluetooth, and later more system capabilities. Those permissions are granted to Wendy Agent as the broker. After the agent is installed, launched, and configured, app deploys are headless from the CLI.
