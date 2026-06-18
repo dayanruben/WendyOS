@@ -48,29 +48,46 @@ func NewROS2Service(logger *zap.Logger, runtime ROS2Runtime, bagDir string) *ROS
 	return &ROS2Service{logger: logger, runtime: runtime, bagDir: bagDir}
 }
 
-// resolveDomain ensures the sidecar is running and returns the effective DDS
-// domain: the request override when present, otherwise the domain from the
-// app container's ros2 label.
-func (s *ROS2Service) resolveDomain(ctx context.Context, override *int32) (int, error) {
-	sidecar, err := s.runtime.EnsureROS2Sidecar(ctx)
-	if err != nil {
-		return 0, status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if override == nil {
-		return sidecar.DomainID, nil
-	}
-	id := int(*override)
-	if id < appconfig.ROS2DomainIDMin || id > appconfig.ROS2DomainIDMax {
-		return 0, status.Errorf(codes.InvalidArgument, "domain ID %d out of range [%d,%d]", id, appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
-	}
-	return id, nil
+// ros2SC is a resolved per-RMW sidecar plus the DDS domain to use for a call.
+type ros2SC struct {
+	name     string
+	rmw      string
+	domainID int
 }
 
-// run executes `ros2 <args>` in the sidecar and returns its stdout. A
+// resolveSidecars ensures one sidecar per running RMW (WDY-1594) and returns
+// them with the effective domain: the --domain override when set, else each
+// sidecar's own default. Discovery commands run in all and merge; targeted
+// commands route to one.
+func (s *ROS2Service) resolveSidecars(ctx context.Context, override *int32) ([]ros2SC, error) {
+	sidecars, err := s.runtime.EnsureROS2Sidecars(ctx)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	ovr := -1
+	if override != nil {
+		id := int(*override)
+		if id < appconfig.ROS2DomainIDMin || id > appconfig.ROS2DomainIDMax {
+			return nil, status.Errorf(codes.InvalidArgument, "domain ID %d out of range [%d,%d]", id, appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
+		}
+		ovr = id
+	}
+	out := make([]ros2SC, 0, len(sidecars))
+	for _, sc := range sidecars {
+		d := sc.DomainID
+		if ovr >= 0 {
+			d = ovr
+		}
+		out = append(out, ros2SC{name: sc.Name, rmw: sc.RMW, domainID: d})
+	}
+	return out, nil
+}
+
+// runIn executes `ros2 <args>` in a specific sidecar and returns its stdout. A
 // non-zero exit code is reported as an error carrying stderr.
-func (s *ROS2Service) run(ctx context.Context, domainID int, args ...string) (string, error) {
+func (s *ROS2Service) runIn(ctx context.Context, sc ros2SC, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
-	code, err := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: domainID, Args: args}, &stdout, &stderr)
+	code, err := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: sc.domainID, Args: args, SidecarName: sc.name}, &stdout, &stderr)
 	if err != nil {
 		return "", status.Errorf(codes.Internal, "ros2 %s: %v", strings.Join(args, " "), err)
 	}
@@ -84,51 +101,129 @@ func (s *ROS2Service) run(ctx context.Context, domainID int, args ...string) (st
 	return stdout.String(), nil
 }
 
+// ros2Out is one sidecar's stdout for a merged command, tagged with its RMW.
+type ros2Out struct {
+	rmw string
+	out string
+}
+
+// runMerged runs args in every sidecar and returns each one's tagged output.
+// A sidecar that errors is skipped so one broken RMW graph doesn't hide the
+// others; if every sidecar errors, the last error is returned.
+func (s *ROS2Service) runMerged(ctx context.Context, scs []ros2SC, args ...string) ([]ros2Out, error) {
+	var outs []ros2Out
+	var lastErr error
+	for _, sc := range scs {
+		out, err := s.runIn(ctx, sc, args...)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		outs = append(outs, ros2Out{rmw: sc.rmw, out: out})
+	}
+	if len(outs) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+	return outs, nil
+}
+
+// pickSidecarOwning routes a target-specific command to the sidecar whose graph
+// carries `target`, found by matching a line of `ros2 <listKind> list` (a
+// topic/node/service lives in exactly one RMW graph). This avoids running the
+// command in the wrong sidecar — where a node/service-targeted call (param get,
+// service call) would block on DDS discovery until timeout before failing.
+// Falls back to the first sidecar when ownership can't be determined; if the
+// same name exists in more than one RMW graph (genuinely ambiguous), the
+// first-running RMW deterministically wins.
+func (s *ROS2Service) pickSidecarOwning(ctx context.Context, scs []ros2SC, listKind, target string) ros2SC {
+	for _, sc := range scs {
+		out, err := s.runIn(ctx, sc, listKind, "list")
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == target {
+				return sc
+			}
+		}
+	}
+	return scs[0]
+}
+
+func (s *ROS2Service) pickSidecarForTopic(ctx context.Context, scs []ros2SC, topic string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "topic", topic)
+}
+
+func (s *ROS2Service) pickSidecarForNode(ctx context.Context, scs []ros2SC, node string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "node", node)
+}
+
+func (s *ROS2Service) pickSidecarForService(ctx context.Context, scs []ros2SC, service string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "service", service)
+}
+
 func (s *ROS2Service) ListNodes(ctx context.Context, req *agentpbv2.ListROS2NodesRequest) (*agentpbv2.ListROS2NodesResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "node", "list")
+	outs, err := s.runMerged(ctx, scs, "node", "list")
 	if err != nil {
 		return nil, err
 	}
-	return &agentpbv2.ListROS2NodesResponse{Nodes: parseROS2NodeList(out)}, nil
+	resp := &agentpbv2.ListROS2NodesResponse{}
+	for _, o := range outs {
+		for _, n := range parseROS2NodeList(o.out) {
+			n.Rmw = o.rmw
+			resp.Nodes = append(resp.Nodes, n)
+		}
+	}
+	return resp, nil
 }
 
 func (s *ROS2Service) ListTopics(ctx context.Context, req *agentpbv2.ListROS2TopicsRequest) (*agentpbv2.ListROS2TopicsResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "topic", "list", "-t")
-	if err != nil {
-		return nil, err
-	}
-	topics := parseROS2TopicList(out)
-	if req.GetIncludeCounts() {
-		for _, t := range topics {
-			info, ierr := s.run(ctx, domainID, "topic", "info", t.GetName())
-			if ierr != nil {
-				continue // topic may have disappeared between list and info
+	resp := &agentpbv2.ListROS2TopicsResponse{}
+	var lastErr error
+	any := false
+	for _, sc := range scs {
+		out, rerr := s.runIn(ctx, sc, "topic", "list", "-t")
+		if rerr != nil {
+			lastErr = rerr
+			continue
+		}
+		any = true
+		for _, t := range parseROS2TopicList(out) {
+			t.Rmw = sc.rmw
+			if req.GetIncludeCounts() {
+				if info, ierr := s.runIn(ctx, sc, "topic", "info", t.GetName()); ierr == nil {
+					_, pubs, subs := parseROS2TopicInfo(info)
+					t.PublisherCount = pubs
+					t.SubscriberCount = subs
+				}
 			}
-			_, pubs, subs := parseROS2TopicInfo(info)
-			t.PublisherCount = pubs
-			t.SubscriberCount = subs
+			resp.Topics = append(resp.Topics, t)
 		}
 	}
-	return &agentpbv2.ListROS2TopicsResponse{Topics: topics}, nil
+	if !any && lastErr != nil {
+		return nil, lastErr
+	}
+	return resp, nil
 }
 
 func (s *ROS2Service) GetTopicInfo(ctx context.Context, req *agentpbv2.GetROS2TopicInfoRequest) (*agentpbv2.GetROS2TopicInfoResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateROS2GraphName(req.GetTopic()); err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "topic", "info", "-v", req.GetTopic())
+	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
+	out, err := s.runIn(ctx, sc, "topic", "info", "-v", req.GetTopic())
 	if err != nil {
 		return nil, err
 	}
@@ -139,32 +234,36 @@ func (s *ROS2Service) GetTopicInfo(ctx context.Context, req *agentpbv2.GetROS2To
 			Types:           types,
 			PublisherCount:  pubs,
 			SubscriberCount: subs,
+			Rmw:             sc.rmw,
 		},
 		Verbose: out,
 	}, nil
 }
 
 func (s *ROS2Service) ListServices(ctx context.Context, req *agentpbv2.ListROS2ServicesRequest) (*agentpbv2.ListROS2ServicesResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "service", "list", "-t")
+	outs, err := s.runMerged(ctx, scs, "service", "list", "-t")
 	if err != nil {
 		return nil, err
 	}
 	resp := &agentpbv2.ListROS2ServicesResponse{}
-	for _, t := range parseROS2TopicList(out) {
-		resp.Services = append(resp.Services, &agentpbv2.ListROS2ServicesResponse_Service{
-			Name:  t.GetName(),
-			Types: t.GetTypes(),
-		})
+	for _, o := range outs {
+		for _, t := range parseROS2TopicList(o.out) {
+			resp.Services = append(resp.Services, &agentpbv2.ListROS2ServicesResponse_Service{
+				Name:  t.GetName(),
+				Types: t.GetTypes(),
+				Rmw:   o.rmw,
+			})
+		}
 	}
 	return resp, nil
 }
 
 func (s *ROS2Service) ListParams(ctx context.Context, req *agentpbv2.ListROS2ParamsRequest) (*agentpbv2.ListROS2ParamsResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
@@ -175,15 +274,30 @@ func (s *ROS2Service) ListParams(ctx context.Context, req *agentpbv2.ListROS2Par
 		}
 		args = append(args, req.GetNode())
 	}
-	out, err := s.run(ctx, domainID, args...)
+	resp := &agentpbv2.ListROS2ParamsResponse{}
+	if req.GetNode() != "" {
+		// Node-targeted: it lives in one RMW graph; route to the sidecar that has it.
+		sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+		out, err := s.runIn(ctx, sc, args...)
+		if err != nil {
+			return nil, err
+		}
+		resp.Nodes = parseROS2ParamList(out, req.GetNode())
+		return resp, nil
+	}
+	// All-nodes: merge across every RMW graph.
+	outs, err := s.runMerged(ctx, scs, args...)
 	if err != nil {
 		return nil, err
 	}
-	return &agentpbv2.ListROS2ParamsResponse{Nodes: parseROS2ParamList(out, req.GetNode())}, nil
+	for _, o := range outs {
+		resp.Nodes = append(resp.Nodes, parseROS2ParamList(o.out, "")...)
+	}
+	return resp, nil
 }
 
 func (s *ROS2Service) GetParam(ctx context.Context, req *agentpbv2.GetROS2ParamRequest) (*agentpbv2.GetROS2ParamResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +307,8 @@ func (s *ROS2Service) GetParam(ctx context.Context, req *agentpbv2.GetROS2ParamR
 	if err := validateROS2ParamName(req.GetParam()); err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "param", "get", req.GetNode(), req.GetParam())
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "param", "get", req.GetNode(), req.GetParam())
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +316,7 @@ func (s *ROS2Service) GetParam(ctx context.Context, req *agentpbv2.GetROS2ParamR
 }
 
 func (s *ROS2Service) SetParam(ctx context.Context, req *agentpbv2.SetROS2ParamRequest) (*agentpbv2.SetROS2ParamResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +326,8 @@ func (s *ROS2Service) SetParam(ctx context.Context, req *agentpbv2.SetROS2ParamR
 	if err := validateROS2ParamName(req.GetParam()); err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "param", "set", req.GetNode(), req.GetParam(), req.GetValue())
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "param", "set", req.GetNode(), req.GetParam(), req.GetValue())
 	if err != nil {
 		// `ros2 param set` reports failures both via exit code and text.
 		return &agentpbv2.SetROS2ParamResponse{Success: false, Message: err.Error()}, nil
@@ -220,7 +336,7 @@ func (s *ROS2Service) SetParam(ctx context.Context, req *agentpbv2.SetROS2ParamR
 }
 
 func (s *ROS2Service) CallService(ctx context.Context, req *agentpbv2.CallROS2ServiceRequest) (*agentpbv2.CallROS2ServiceResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +347,8 @@ func (s *ROS2Service) CallService(ctx context.Context, req *agentpbv2.CallROS2Se
 	if req.GetRequest() != "" {
 		args = append(args, req.GetRequest())
 	}
-	out, err := s.run(ctx, domainID, args...)
+	sc := s.pickSidecarForService(ctx, scs, req.GetService())
+	out, err := s.runIn(ctx, sc, args...)
 	if err != nil {
 		return &agentpbv2.CallROS2ServiceResponse{Success: false, Response: err.Error()}, nil
 	}
@@ -239,60 +356,96 @@ func (s *ROS2Service) CallService(ctx context.Context, req *agentpbv2.CallROS2Se
 }
 
 func (s *ROS2Service) GetGraph(ctx context.Context, req *agentpbv2.GetROS2GraphRequest) (*agentpbv2.GetROS2GraphResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, domainID, "node", "list")
-	if err != nil {
-		return nil, err
+	resp := &agentpbv2.GetROS2GraphResponse{}
+	var lastErr error
+	any := false
+	for _, sc := range scs {
+		out, rerr := s.runIn(ctx, sc, "node", "list")
+		if rerr != nil {
+			lastErr = rerr
+			continue
+		}
+		any = true
+		for _, node := range parseROS2NodeList(out) {
+			node.Rmw = sc.rmw
+			resp.Nodes = append(resp.Nodes, node)
+			fqn := ros2NodeFQN(node)
+			info, ierr := s.runIn(ctx, sc, "node", "info", fqn)
+			if ierr != nil {
+				continue // node may have exited between list and info
+			}
+			publishes, subscribes := parseROS2NodeInfo(info)
+			for _, topic := range publishes {
+				resp.Publishes = append(resp.Publishes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+			}
+			for _, topic := range subscribes {
+				resp.Subscribes = append(resp.Subscribes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+			}
+		}
 	}
-	resp := &agentpbv2.GetROS2GraphResponse{Nodes: parseROS2NodeList(out)}
-	for _, node := range resp.Nodes {
-		fqn := ros2NodeFQN(node)
-		info, ierr := s.run(ctx, domainID, "node", "info", fqn)
-		if ierr != nil {
-			continue // node may have exited between list and info
-		}
-		publishes, subscribes := parseROS2NodeInfo(info)
-		for _, topic := range publishes {
-			resp.Publishes = append(resp.Publishes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic})
-		}
-		for _, topic := range subscribes {
-			resp.Subscribes = append(resp.Subscribes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic})
-		}
+	if !any && lastErr != nil {
+		return nil, lastErr
 	}
 	return resp, nil
 }
 
 func (s *ROS2Service) Doctor(ctx context.Context, req *agentpbv2.ROS2DoctorRequest) (*agentpbv2.ROS2DoctorResponse, error) {
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
-	// `ros2 doctor` exits non-zero when checks fail, but the report is still
-	// the useful output — capture both streams and return whatever we got.
-	var stdout, stderr bytes.Buffer
-	_, execErr := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: domainID, Args: []string{"doctor", "--report"}}, &stdout, &stderr)
-	if execErr != nil {
-		return nil, status.Errorf(codes.Internal, "ros2 doctor: %v", execErr)
+	// One report per RMW graph, each headed by its RMW when more than one runs.
+	var sb strings.Builder
+	var lastErr error
+	any := false
+	for _, sc := range scs {
+		// `ros2 doctor` exits non-zero when checks fail, but the report is still
+		// the useful output — capture both streams and return whatever we got. A
+		// sidecar whose exec genuinely fails is skipped so one broken RMW graph
+		// doesn't hide the others (matches the other merge commands).
+		var stdout, stderr bytes.Buffer
+		_, execErr := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: sc.domainID, Args: []string{"doctor", "--report"}, SidecarName: sc.name}, &stdout, &stderr)
+		if execErr != nil {
+			lastErr = status.Errorf(codes.Internal, "ros2 doctor: %v", execErr)
+			continue
+		}
+		any = true
+		report := stdout.String()
+		if strings.TrimSpace(report) == "" {
+			report = stderr.String()
+		}
+		if len(scs) > 1 {
+			label := sc.rmw
+			if label == "" {
+				label = "default"
+			}
+			sb.WriteString("=== RMW: " + label + " ===\n")
+		}
+		sb.WriteString(report)
+		if !strings.HasSuffix(report, "\n") {
+			sb.WriteString("\n")
+		}
 	}
-	report := stdout.String()
-	if strings.TrimSpace(report) == "" {
-		report = stderr.String()
+	if !any && lastErr != nil {
+		return nil, lastErr
 	}
-	return &agentpbv2.ROS2DoctorResponse{Report: report}, nil
+	return &agentpbv2.ROS2DoctorResponse{Report: sb.String()}, nil
 }
 
 func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2Message]) error {
 	ctx := stream.Context()
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return err
 	}
 	if err := validateROS2GraphName(req.GetTopic()); err != nil {
 		return err
 	}
+	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
 
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -301,8 +454,9 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 	execDone := make(chan error, 1)
 	go func() {
 		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
-			DomainID: domainID,
-			Args:     []string{"topic", "echo", req.GetTopic()},
+			DomainID:    sc.domainID,
+			SidecarName: sc.name,
+			Args:        []string{"topic", "echo", req.GetTopic()},
 		}, pw, pw)
 		pw.CloseWithError(execErr)
 		execDone <- execErr
@@ -348,13 +502,14 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 
 func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2HzSample]) error {
 	ctx := stream.Context()
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return err
 	}
 	if err := validateROS2GraphName(req.GetTopic()); err != nil {
 		return err
 	}
+	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
 
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -363,8 +518,9 @@ func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc
 	execDone := make(chan error, 1)
 	go func() {
 		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
-			DomainID: domainID,
-			Args:     []string{"topic", "hz", req.GetTopic()},
+			DomainID:    sc.domainID,
+			SidecarName: sc.name,
+			Args:        []string{"topic", "hz", req.GetTopic()},
 		}, pw, pw)
 		pw.CloseWithError(execErr)
 		execDone <- execErr
@@ -414,7 +570,7 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 		return status.Error(codes.InvalidArgument, "first RecordBag message must be a start command")
 	}
 
-	domainID, err := s.resolveDomain(ctx, start.DomainId)
+	scs, err := s.resolveSidecars(ctx, start.DomainId)
 	if err != nil {
 		return err
 	}
@@ -439,6 +595,21 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 		args = append(args, "-a")
 	}
 
+	// Recording captures a single RMW graph; route to the sidecar that owns the
+	// first requested topic, else the first sidecar.
+	sc := scs[0]
+	if len(start.GetTopics()) > 0 {
+		sc = s.pickSidecarForTopic(ctx, scs, start.GetTopics()[0])
+	}
+
+	// A rosbag can't span DDS implementations: on a mixed-RMW device, `-a`
+	// records only this sidecar's RMW graph. Warn so missing topics from other
+	// RMWs aren't a surprise (WDY-1594).
+	var startMsg string
+	if len(start.GetTopics()) == 0 && len(scs) > 1 {
+		startMsg = fmt.Sprintf("recording the %s graph only; -a does not span RMWs (this device also runs other RMWs)", sc.rmw)
+	}
+
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -449,13 +620,14 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 	var output bytes.Buffer
 	execDone := make(chan execResult, 1)
 	go func() {
-		code, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{DomainID: domainID, Args: args}, &output, &output)
+		code, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{DomainID: sc.domainID, SidecarName: sc.name, Args: args}, &output, &output)
 		execDone <- execResult{code: code, err: execErr}
 	}()
 
 	if err := stream.Send(&agentpbv2.RecordROS2BagResponse{
 		State:   agentpbv2.RecordROS2BagResponse_STATE_RECORDING,
 		BagName: bagName,
+		Message: startMsg,
 	}); err != nil {
 		cancel()
 		<-execDone
@@ -681,7 +853,7 @@ func (w *ros2ChunkWriter) send(data []byte) error {
 
 func (s *ROS2Service) Exec(req *agentpbv2.ROS2ExecRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2ExecOutput]) error {
 	ctx := stream.Context()
-	domainID, err := s.resolveDomain(ctx, req.DomainId)
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
 		return err
 	}
@@ -689,9 +861,12 @@ func (s *ROS2Service) Exec(req *agentpbv2.ROS2ExecRequest, stream grpc.ServerStr
 		return status.Error(codes.InvalidArgument, "ros2 exec requires at least one argument")
 	}
 
+	// Raw passthrough can't be RMW-routed (the args are opaque); run it in the
+	// first sidecar. Use `--rmw`-aware commands for per-graph inspection.
+	sc := scs[0]
 	stdout := &ros2ExecStreamWriter{stream: stream, stderr: false}
 	stderr := &ros2ExecStreamWriter{stream: stream, stderr: true}
-	code, execErr := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: domainID, Args: req.GetArgs()}, stdout, stderr)
+	code, execErr := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: sc.domainID, SidecarName: sc.name, Args: req.GetArgs()}, stdout, stderr)
 	if ctx.Err() != nil {
 		return nil
 	}

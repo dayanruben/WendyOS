@@ -23,6 +23,7 @@ import (
 // fakeROS2Runtime scripts ExecROS2 responses keyed by the joined args.
 type fakeROS2Runtime struct {
 	sidecar   ROS2Sidecar
+	sidecars  []ROS2Sidecar // when set, EnsureROS2Sidecars returns these (mixed-RMW tests)
 	ensureErr error
 	verifyErr error
 	// outputs maps "node list" → stdout. Missing keys exit 1.
@@ -36,11 +37,14 @@ func (f *fakeROS2Runtime) FindROS2Containers(context.Context) ([]ROS2Target, err
 	return nil, nil
 }
 
-func (f *fakeROS2Runtime) EnsureROS2Sidecar(context.Context) (ROS2Sidecar, error) {
+func (f *fakeROS2Runtime) EnsureROS2Sidecars(context.Context) ([]ROS2Sidecar, error) {
 	if f.ensureErr != nil {
-		return ROS2Sidecar{}, f.ensureErr
+		return nil, f.ensureErr
 	}
-	return f.sidecar, nil
+	if len(f.sidecars) > 0 {
+		return f.sidecars, nil
+	}
+	return []ROS2Sidecar{f.sidecar}, nil
 }
 
 func (f *fakeROS2Runtime) StopROS2Sidecar(context.Context) error { return nil }
@@ -82,6 +86,108 @@ func TestROS2Service_ListNodes(t *testing.T) {
 	}
 	if rt.calls[0].DomainID != 7 {
 		t.Errorf("exec domain = %d, want sidecar default 7", rt.calls[0].DomainID)
+	}
+}
+
+// TestROS2Service_ListNodes_MergesPerRMW verifies a mixed-RMW device merges the
+// nodes from every RMW sidecar and tags each with its RMW (WDY-1594).
+func TestROS2Service_ListNodes_MergesPerRMW(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecars: []ROS2Sidecar{
+			{Name: "sc-cyc", Distro: "humble", DomainID: 42, RMW: "rmw_cyclonedds_cpp"},
+			{Name: "sc-fast", Distro: "humble", DomainID: 42, RMW: "rmw_fastrtps_cpp"},
+		},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			switch opts.SidecarName {
+			case "sc-cyc":
+				io.WriteString(stdout, "/talker\n")
+			case "sc-fast":
+				io.WriteString(stdout, "/listener\n")
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.ListNodes(context.Background(), &agentpbv2.ListROS2NodesRequest{})
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(resp.GetNodes()) != 2 {
+		t.Fatalf("got %d nodes, want 2 (merged across RMWs)", len(resp.GetNodes()))
+	}
+	byRMW := map[string]string{}
+	for _, n := range resp.GetNodes() {
+		byRMW[n.GetRmw()] = n.GetName()
+	}
+	if byRMW["rmw_cyclonedds_cpp"] != "talker" || byRMW["rmw_fastrtps_cpp"] != "listener" {
+		t.Errorf("merged nodes not tagged by RMW: %+v", byRMW)
+	}
+}
+
+// twoSidecarRuntime is a fake with one CycloneDDS and one FastRTPS sidecar.
+func twoSidecarRuntime(execFn func(context.Context, ROS2ExecOptions, io.Writer, io.Writer) (int, error)) *fakeROS2Runtime {
+	return &fakeROS2Runtime{
+		sidecars: []ROS2Sidecar{
+			{Name: "sc-cyc", Distro: "humble", DomainID: 42, RMW: "rmw_cyclonedds_cpp"},
+			{Name: "sc-fast", Distro: "humble", DomainID: 42, RMW: "rmw_fastrtps_cpp"},
+		},
+		execFn: execFn,
+	}
+}
+
+// TestROS2Service_GetParam_RoutesToOwningRMW verifies a node-targeted command
+// runs only in the sidecar whose graph has the node (found via `node list`),
+// never in the wrong RMW where it would block on discovery (WDY-1594).
+func TestROS2Service_GetParam_RoutesToOwningRMW(t *testing.T) {
+	rt := twoSidecarRuntime(func(_ context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+		key := strings.Join(opts.Args, " ")
+		switch {
+		case key == "node list" && opts.SidecarName == "sc-cyc":
+			io.WriteString(stdout, "/other\n") // /talker is NOT here
+			return 0, nil
+		case key == "node list" && opts.SidecarName == "sc-fast":
+			io.WriteString(stdout, "/talker\n")
+			return 0, nil
+		case strings.HasPrefix(key, "param get") && opts.SidecarName == "sc-fast":
+			io.WriteString(stdout, "Boolean value is: True\n")
+			return 0, nil
+		default:
+			fmt.Fprint(stderr, "node not found") // param get in the wrong sidecar
+			return 1, nil
+		}
+	})
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	got, err := svc.GetParam(context.Background(), &agentpbv2.GetROS2ParamRequest{Node: "/talker", Param: "use_sim_time"})
+	if err != nil {
+		t.Fatalf("GetParam: %v", err)
+	}
+	if got.GetValue() != "Boolean value is: True" {
+		t.Errorf("value = %q", got.GetValue())
+	}
+	for _, c := range rt.calls {
+		if strings.HasPrefix(strings.Join(c.Args, " "), "param get") && c.SidecarName != "sc-fast" {
+			t.Errorf("param get ran in %q; must route to the owning sidecar sc-fast", c.SidecarName)
+		}
+	}
+}
+
+// TestROS2Service_Doctor_SkipsFailedSidecar verifies one sidecar's exec failure
+// doesn't hide the others' reports (WDY-1594).
+func TestROS2Service_Doctor_SkipsFailedSidecar(t *testing.T) {
+	rt := twoSidecarRuntime(func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+		if opts.SidecarName == "sc-cyc" {
+			return 0, errors.New("exec failed") // genuine exec error, not a check failure
+		}
+		io.WriteString(stdout, "FASTRTPS REPORT OK\n")
+		return 0, nil
+	})
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.Doctor(context.Background(), &agentpbv2.ROS2DoctorRequest{})
+	if err != nil {
+		t.Fatalf("Doctor should skip the failing sidecar, got error: %v", err)
+	}
+	if !strings.Contains(resp.GetReport(), "FASTRTPS REPORT OK") {
+		t.Errorf("report missing the healthy sidecar's output: %q", resp.GetReport())
 	}
 }
 

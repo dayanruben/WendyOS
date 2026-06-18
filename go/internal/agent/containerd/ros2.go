@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	// ros2SidecarName is the fixed containerd ID of the ROS 2 CLI sidecar.
-	// A single well-known name makes the sidecar idempotent: every
-	// `wendy device ros2` command reuses the same container (WDY-1332).
-	ros2SidecarName = "wendy-ros2-cli-sidecar"
+	// ros2SidecarPrefix is the containerd ID prefix of the ROS 2 CLI sidecars.
+	// A device runs one sidecar per distinct RMW (WDY-1594), each named
+	// "<prefix>-<rmw-suffix>" by ros2SidecarName, so commands can reach the
+	// right DDS graph. Listing by this prefix enumerates them all.
+	ros2SidecarPrefix = "wendy-ros2-cli-sidecar"
 
 	// ROS2BagDir is the host directory where rosbag2 recordings are stored.
 	// It is bind-mounted into the sidecar at the same path so the agent can
@@ -99,6 +100,16 @@ func (c *Client) FindROS2Containers(ctx context.Context) ([]services.ROS2Target,
 			Distro:      distro,
 			DomainID:    domainID,
 		}
+		// Resolve the RMW the app actually runs (Wendy injects RMW_IMPLEMENTATION
+		// via buildROS2Env) so callers can group apps by RMW — a device runs one
+		// sidecar per RMW (WDY-1593, WDY-1594). Drop an unrecognized value to ""
+		// (the image default) so it can never reach a sidecar environment and so
+		// naming/grouping stays consistent.
+		if spec, serr := ctr.Spec(ctx); serr == nil && spec.Process != nil {
+			if rmw := rmwFromEnv(spec.Process.Env); rmw == "" || appconfig.IsValidRMWImplementation(rmw) {
+				target.RMW = rmw
+			}
+		}
 		if task, terr := ctr.Task(ctx, nil); terr == nil {
 			if st, serr := task.Status(ctx); serr == nil && st.Status == containerd.Running {
 				target.Running = true
@@ -122,44 +133,112 @@ func rmwFromEnv(env []string) string {
 	return ""
 }
 
-// EnsureROS2Sidecar starts (or reuses) the ROS 2 CLI sidecar container. The
-// sidecar runs the official ros:<distro> image and joins the first running
-// ROS 2 app container's namespace topology — its network namespace always, and
-// for shared-ipc app groups also the IPC namespace plus the group's shared
-// /dev/shm — so it sees every node in the DDS domain over both UDP discovery
-// and the shared-memory data plane. It idles on `sleep infinity` while commands
-// are exec'd into it.
-func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, error) {
+// ros2SidecarSuffix maps an RMW to a short, containerd-ID-safe sidecar name
+// suffix (e.g. "rmw_cyclonedds_cpp" -> "cyclonedds"). Unknown/empty RMW -> the
+// stock-image default. One sidecar per suffix means one per distinct RMW.
+func ros2SidecarSuffix(rmw string) string {
+	switch rmw {
+	case "rmw_cyclonedds_cpp":
+		return "cyclonedds"
+	case "rmw_fastrtps_cpp", "":
+		return "fastrtps"
+	case "rmw_connextdds":
+		return "connext"
+	case "rmw_gurumdds_cpp":
+		return "gurum"
+	default:
+		return "default"
+	}
+}
+
+// ros2SidecarName is the containerd ID of the sidecar for a given RMW.
+func ros2SidecarName(rmw string) string {
+	return ros2SidecarPrefix + "-" + ros2SidecarSuffix(rmw)
+}
+
+// listROS2Sidecars returns all sidecar containers (those carrying the sidecar
+// label), across every RMW. ctx must already be namespaced.
+func (c *Client) listROS2Sidecars(ctx context.Context) ([]containerd.Container, error) {
+	return c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyROS2Sidecar))
+}
+
+// EnsureROS2Sidecars starts or reuses one CLI sidecar per distinct RMW used by
+// the running ROS 2 apps, tears down sidecars whose RMW is gone, and returns one
+// entry per live RMW graph (WDY-1594). Each sidecar runs an RMW-matched image
+// and joins its anchor app's namespace topology (network always; for shared-ipc
+// groups also the IPC namespace + shared /dev/shm — WDY-1555/1593), idling on
+// `sleep infinity` while commands are exec'd into it.
+func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ctx = c.withNamespace(ctx)
 
 	targets, err := c.FindROS2Containers(ctx)
 	if err != nil {
-		return services.ROS2Sidecar{}, err
+		return nil, err
 	}
-	var anchor *services.ROS2Target
+	// One anchor per distinct RMW (first running wins), in stable listing order.
+	var order []string // sidecar names, deduped, first-seen order
+	anchorByName := map[string]*services.ROS2Target{}
 	for i := range targets {
-		if targets[i].Running {
-			anchor = &targets[i]
-			break
+		t := &targets[i]
+		if !t.Running {
+			continue
+		}
+		name := ros2SidecarName(t.RMW)
+		if _, dup := anchorByName[name]; dup {
+			continue
+		}
+		anchorByName[name] = t
+		order = append(order, name)
+	}
+	if len(order) == 0 {
+		// No running ROS 2 apps: tear down every leftover sidecar and fail.
+		c.teardownAllROS2SidecarsLocked(ctx)
+		return nil, fmt.Errorf("no running ROS 2 containers found; deploy an app with a frameworks.ros2 config first")
+	}
+
+	// Tear down sidecars whose RMW is no longer running.
+	if existing, lerr := c.listROS2Sidecars(ctx); lerr == nil {
+		for _, ctr := range existing {
+			if _, want := anchorByName[ctr.ID()]; !want {
+				_ = c.deleteROS2Sidecar(ctx, ctr)
+			}
 		}
 	}
-	if anchor == nil {
-		// Lazily satisfy the "sidecar stops when all ROS2 containers stop"
-		// lifecycle: tear down any leftover sidecar before failing.
-		_ = c.stopROS2SidecarLocked(ctx)
-		return services.ROS2Sidecar{}, fmt.Errorf("no running ROS 2 containers found; deploy an app with a frameworks.ros2 config first")
+
+	sidecars := make([]services.ROS2Sidecar, 0, len(order))
+	for _, name := range order {
+		sc, eerr := c.ensureOneROS2Sidecar(ctx, anchorByName[name], name)
+		if eerr != nil {
+			return nil, eerr
+		}
+		sidecars = append(sidecars, sc)
 	}
+	return sidecars, nil
+}
+
+// ensureOneROS2Sidecar starts or reuses the sidecar container named `name`,
+// anchored to `anchor` and matching anchor.RMW. Caller holds c.mu and passes a
+// namespaced ctx.
+func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2Target, name string) (services.ROS2Sidecar, error) {
 	if !ros2DistroPattern.MatchString(anchor.Distro) {
 		return services.ROS2Sidecar{}, fmt.Errorf("invalid ROS 2 distro %q in container label", anchor.Distro)
 	}
+	// anchor.RMW is already validated to a known identifier or "" by
+	// FindROS2Containers, so it's safe to inject and to use for naming.
+	rmw := anchor.RMW
 
-	sidecar := services.ROS2Sidecar{Distro: anchor.Distro, DomainID: anchor.DomainID}
+	sidecar := services.ROS2Sidecar{
+		Name:     name,
+		Distro:   anchor.Distro,
+		DomainID: anchor.DomainID,
+		RMW:      rmw,
+	}
 
-	// Reuse the existing sidecar when it is running and still anchored to the
-	// current network namespace of a live ROS 2 container.
-	if existing, lerr := c.client.LoadContainer(ctx, ros2SidecarName); lerr == nil {
+	// Reuse the existing sidecar when it is running and still anchored to this
+	// RMW's live ROS 2 container.
+	if existing, lerr := c.client.LoadContainer(ctx, name); lerr == nil {
 		labels, _ := existing.Labels(ctx)
 		anchorAlive := labels[labelKeyROS2AnchorID] == anchor.ContainerID &&
 			labels[labelKeyROS2AnchorPID] == strconv.FormatUint(uint64(anchor.TaskPID), 10) &&
@@ -172,29 +251,16 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 			}
 		}
 		c.logger.Info("Recreating stale ROS 2 sidecar",
-			zap.String("anchor", anchor.ContainerID), zap.Bool("anchor_alive", anchorAlive))
+			zap.String("sidecar", name), zap.String("anchor", anchor.ContainerID), zap.Bool("anchor_alive", anchorAlive))
 		if derr := c.deleteROS2Sidecar(ctx, existing); derr != nil {
 			return services.ROS2Sidecar{}, fmt.Errorf("removing stale ROS 2 sidecar: %w", derr)
 		}
 	}
 
-	// Read the RMW the anchor app actually runs (Wendy injects RMW_IMPLEMENTATION
-	// into the app's env via buildROS2Env) so the sidecar's ros2 CLI speaks the
-	// same DDS implementation (WDY-1593). An unrecognized value is dropped so a
-	// tampered env can never reach the sidecar's environment.
+	// Load the anchor container for the anchor-image reuse path below.
 	anchorCtr, err := c.client.LoadContainer(ctx, anchor.ContainerID)
 	if err != nil {
 		return services.ROS2Sidecar{}, fmt.Errorf("loading ROS 2 anchor container %q: %w", anchor.ContainerID, err)
-	}
-	anchorSpec, err := anchorCtr.Spec(ctx)
-	if err != nil {
-		return services.ROS2Sidecar{}, fmt.Errorf("reading ROS 2 anchor spec: %w", err)
-	}
-	rmw := rmwFromEnv(anchorSpec.Process.Env)
-	if rmw != "" && !appconfig.IsValidRMWImplementation(rmw) {
-		c.logger.Warn("Anchor has unrecognized RMW_IMPLEMENTATION; sidecar will use the image default",
-			zap.String("rmw", rmw), zap.String("anchor", anchor.ContainerID))
-		rmw = ""
 	}
 
 	// Pick the sidecar image. Stock ros:<distro> ships only FastRTPS, so for any
@@ -294,9 +360,9 @@ func (c *Client) EnsureROS2Sidecar(ctx context.Context) (services.ROS2Sidecar, e
 		labelKeyROS2AnchorPID: strconv.FormatUint(uint64(anchor.TaskPID), 10),
 		labelKeyROS2RMW:       rmw,
 	}
-	container, err := c.client.NewContainer(ctx, ros2SidecarName,
+	container, err := c.client.NewContainer(ctx, name,
 		containerd.WithImage(image),
-		containerd.WithNewSnapshot(ros2SidecarName, image),
+		containerd.WithNewSnapshot(name, image),
 		containerd.WithContainerLabels(labels),
 		containerd.WithNewSpec(oci.WithSpecFromBytes(specJSON)),
 	)
@@ -400,48 +466,56 @@ func (c *Client) verifyROS2Anchor(ctx context.Context, anchor *services.ROS2Targ
 	return nil
 }
 
-// VerifyROS2Sidecar reports whether the sidecar is still anchored to a live
-// ROS 2 app container. A stopped or replaced anchor (app redeploy) tears
-// down the network namespace the sidecar joined, invalidating any in-flight
-// command — most visibly a bag recording session.
+// VerifyROS2Sidecar reports whether every running sidecar is still anchored to a
+// live ROS 2 app container. A stopped or replaced anchor (app redeploy) tears
+// down the namespace the sidecar joined, invalidating any in-flight command —
+// most visibly a bag recording session.
 func (c *Client) VerifyROS2Sidecar(ctx context.Context) error {
 	ctx = c.withNamespace(ctx)
-	sidecar, err := c.client.LoadContainer(ctx, ros2SidecarName)
+	sidecars, err := c.listROS2Sidecars(ctx)
 	if err != nil {
-		return fmt.Errorf("sidecar not found: %w", err)
+		return fmt.Errorf("listing ROS 2 sidecars: %w", err)
 	}
-	labels, err := sidecar.Labels(ctx)
-	if err != nil {
-		return fmt.Errorf("reading sidecar labels: %w", err)
+	if len(sidecars) == 0 {
+		return fmt.Errorf("sidecar not found")
 	}
-	anchorPID, err := strconv.ParseUint(labels[labelKeyROS2AnchorPID], 10, 32)
-	if err != nil {
-		return fmt.Errorf("sidecar has no valid anchor PID label")
+	for _, sc := range sidecars {
+		labels, lerr := sc.Labels(ctx)
+		if lerr != nil {
+			return fmt.Errorf("reading sidecar labels: %w", lerr)
+		}
+		anchorPID, perr := strconv.ParseUint(labels[labelKeyROS2AnchorPID], 10, 32)
+		if perr != nil {
+			return fmt.Errorf("sidecar %s has no valid anchor PID label", sc.ID())
+		}
+		if verr := c.verifyROS2Anchor(ctx, &services.ROS2Target{
+			ContainerID: labels[labelKeyROS2AnchorID],
+			TaskPID:     uint32(anchorPID),
+		}); verr != nil {
+			return verr
+		}
 	}
-	return c.verifyROS2Anchor(ctx, &services.ROS2Target{
-		ContainerID: labels[labelKeyROS2AnchorID],
-		TaskPID:     uint32(anchorPID),
-	})
+	return nil
 }
 
-// StopROS2Sidecar stops and removes the ROS 2 CLI sidecar if present.
+// StopROS2Sidecar stops and removes all ROS 2 CLI sidecars if present.
 func (c *Client) StopROS2Sidecar(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.stopROS2SidecarLocked(c.withNamespace(ctx))
+	c.teardownAllROS2SidecarsLocked(c.withNamespace(ctx))
+	return nil
 }
 
-// stopROS2SidecarLocked removes the sidecar. Caller must hold c.mu and pass a
-// namespaced ctx.
-func (c *Client) stopROS2SidecarLocked(ctx context.Context) error {
-	container, err := c.client.LoadContainer(ctx, ros2SidecarName)
+// teardownAllROS2SidecarsLocked removes every sidecar container. Caller must
+// hold c.mu and pass a namespaced ctx.
+func (c *Client) teardownAllROS2SidecarsLocked(ctx context.Context) {
+	sidecars, err := c.listROS2Sidecars(ctx)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("loading ROS 2 sidecar: %w", err)
+		return
 	}
-	return c.deleteROS2Sidecar(ctx, container)
+	for _, ctr := range sidecars {
+		_ = c.deleteROS2Sidecar(ctx, ctr)
+	}
 }
 
 func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Container) error {
@@ -463,7 +537,16 @@ func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Con
 func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
 	nctx := c.withNamespace(context.WithoutCancel(ctx))
 
-	container, err := c.client.LoadContainer(nctx, ros2SidecarName)
+	name := opts.SidecarName
+	if name == "" {
+		// No specific sidecar requested: use any running one (single-RMW case).
+		if scs, lerr := c.listROS2Sidecars(nctx); lerr == nil && len(scs) > 0 {
+			name = scs[0].ID()
+		} else {
+			name = ros2SidecarName("")
+		}
+	}
+	container, err := c.client.LoadContainer(nctx, name)
 	if err != nil {
 		return -1, fmt.Errorf("ROS 2 sidecar not available: %w", err)
 	}

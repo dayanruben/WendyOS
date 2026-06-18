@@ -74,9 +74,12 @@ func (RecordROS2BagResponse_State) EnumDescriptor() ([]byte, []int) {
 }
 
 type ROS2Node struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Namespace     string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Namespace string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// rmw identifies which RMW graph this node came from when a device runs
+	// apps on more than one RMW (WDY-1594). Empty on single-RMW devices.
+	Rmw           string `protobuf:"bytes,3,opt,name=rmw,proto3" json:"rmw,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -125,14 +128,24 @@ func (x *ROS2Node) GetNamespace() string {
 	return ""
 }
 
+func (x *ROS2Node) GetRmw() string {
+	if x != nil {
+		return x.Rmw
+	}
+	return ""
+}
+
 type ROS2Topic struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Name            string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Types           []string               `protobuf:"bytes,2,rep,name=types,proto3" json:"types,omitempty"` // a topic can have multiple publisher types
 	PublisherCount  int32                  `protobuf:"varint,3,opt,name=publisher_count,json=publisherCount,proto3" json:"publisher_count,omitempty"`
 	SubscriberCount int32                  `protobuf:"varint,4,opt,name=subscriber_count,json=subscriberCount,proto3" json:"subscriber_count,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// rmw identifies which RMW graph this topic came from (WDY-1594). Empty on
+	// single-RMW devices.
+	Rmw           string `protobuf:"bytes,5,opt,name=rmw,proto3" json:"rmw,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ROS2Topic) Reset() {
@@ -191,6 +204,13 @@ func (x *ROS2Topic) GetSubscriberCount() int32 {
 		return x.SubscriberCount
 	}
 	return 0
+}
+
+func (x *ROS2Topic) GetRmw() string {
+	if x != nil {
+		return x.Rmw
+	}
+	return ""
 }
 
 type ListROS2NodesRequest struct {
@@ -1867,9 +1887,11 @@ func (x *ROS2ExecOutput) GetExitCode() int32 {
 }
 
 type ListROS2ServicesResponse_Service struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Types         []string               `protobuf:"bytes,2,rep,name=types,proto3" json:"types,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Types []string               `protobuf:"bytes,2,rep,name=types,proto3" json:"types,omitempty"`
+	// rmw identifies which RMW graph this service came from (WDY-1594).
+	Rmw           string `protobuf:"bytes,3,opt,name=rmw,proto3" json:"rmw,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1916,6 +1938,13 @@ func (x *ListROS2ServicesResponse_Service) GetTypes() []string {
 		return x.Types
 	}
 	return nil
+}
+
+func (x *ListROS2ServicesResponse_Service) GetRmw() string {
+	if x != nil {
+		return x.Rmw
+	}
+	return ""
 }
 
 type ListROS2ParamsResponse_NodeParams struct {
@@ -1974,6 +2003,7 @@ type GetROS2GraphResponse_Edge struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"` // fully-qualified node name
 	Topic         string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	Rmw           string                 `protobuf:"bytes,3,opt,name=rmw,proto3" json:"rmw,omitempty"` // RMW graph this edge belongs to (WDY-1594); "" single-RMW
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2018,6 +2048,13 @@ func (x *GetROS2GraphResponse_Edge) GetNode() string {
 func (x *GetROS2GraphResponse_Edge) GetTopic() string {
 	if x != nil {
 		return x.Topic
+	}
+	return ""
+}
+
+func (x *GetROS2GraphResponse_Edge) GetRmw() string {
+	if x != nil {
+		return x.Rmw
 	}
 	return ""
 }
@@ -2190,15 +2227,17 @@ var File_wendy_agent_services_v2_ros2_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_ros2_service_proto_rawDesc = "" +
 	"\n" +
-	"*wendy/agent/services/v2/ros2_service.proto\x12\x17wendy.agent.services.v2\"<\n" +
+	"*wendy/agent/services/v2/ros2_service.proto\x12\x17wendy.agent.services.v2\"N\n" +
 	"\bROS2Node\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
-	"\tnamespace\x18\x02 \x01(\tR\tnamespace\"\x89\x01\n" +
+	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03rmw\x18\x03 \x01(\tR\x03rmw\"\x9b\x01\n" +
 	"\tROS2Topic\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05types\x18\x02 \x03(\tR\x05types\x12'\n" +
 	"\x0fpublisher_count\x18\x03 \x01(\x05R\x0epublisherCount\x12)\n" +
-	"\x10subscriber_count\x18\x04 \x01(\x05R\x0fsubscriberCount\"F\n" +
+	"\x10subscriber_count\x18\x04 \x01(\x05R\x0fsubscriberCount\x12\x10\n" +
+	"\x03rmw\x18\x05 \x01(\tR\x03rmw\"F\n" +
 	"\x14ListROS2NodesRequest\x12 \n" +
 	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01B\f\n" +
 	"\n" +
@@ -2223,12 +2262,13 @@ const file_wendy_agent_services_v2_ros2_service_proto_rawDesc = "" +
 	"\x17ListROS2ServicesRequest\x12 \n" +
 	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01B\f\n" +
 	"\n" +
-	"_domain_id\"\xa6\x01\n" +
+	"_domain_id\"\xb8\x01\n" +
 	"\x18ListROS2ServicesResponse\x12U\n" +
-	"\bservices\x18\x01 \x03(\v29.wendy.agent.services.v2.ListROS2ServicesResponse.ServiceR\bservices\x1a3\n" +
+	"\bservices\x18\x01 \x03(\v29.wendy.agent.services.v2.ListROS2ServicesResponse.ServiceR\bservices\x1aE\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05types\x18\x02 \x03(\tR\x05types\"[\n" +
+	"\x05types\x18\x02 \x03(\tR\x05types\x12\x10\n" +
+	"\x03rmw\x18\x03 \x01(\tR\x03rmw\"[\n" +
 	"\x15ListROS2ParamsRequest\x12 \n" +
 	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01\x12\x12\n" +
 	"\x04node\x18\x02 \x01(\tR\x04nodeB\f\n" +
@@ -2271,16 +2311,17 @@ const file_wendy_agent_services_v2_ros2_service_proto_rawDesc = "" +
 	"\x13GetROS2GraphRequest\x12 \n" +
 	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01B\f\n" +
 	"\n" +
-	"_domain_id\"\xa7\x02\n" +
+	"_domain_id\"\xb9\x02\n" +
 	"\x14GetROS2GraphResponse\x127\n" +
 	"\x05nodes\x18\x01 \x03(\v2!.wendy.agent.services.v2.ROS2NodeR\x05nodes\x12P\n" +
 	"\tpublishes\x18\x02 \x03(\v22.wendy.agent.services.v2.GetROS2GraphResponse.EdgeR\tpublishes\x12R\n" +
 	"\n" +
 	"subscribes\x18\x03 \x03(\v22.wendy.agent.services.v2.GetROS2GraphResponse.EdgeR\n" +
-	"subscribes\x1a0\n" +
+	"subscribes\x1aB\n" +
 	"\x04Edge\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x14\n" +
-	"\x05topic\x18\x02 \x01(\tR\x05topic\"C\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x10\n" +
+	"\x03rmw\x18\x03 \x01(\tR\x03rmw\"C\n" +
 	"\x11ROS2DoctorRequest\x12 \n" +
 	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01B\f\n" +
 	"\n" +
