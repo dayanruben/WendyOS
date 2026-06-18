@@ -1,6 +1,9 @@
 import Testing
+import WendyE2ETesting
 
-@Suite
+private typealias Machine = WendyE2EMachine
+
+@Suite(.enabled(if: Machine.agent.os == .macOS, "requires a macOS agent"))
 struct `'wendy run' with native Mac Brewfiles` {
     /**
      Copies the native Mac app's `Brewfile.wendy` to the selected Wendy Agent
@@ -8,12 +11,15 @@ struct `'wendy run' with native Mac Brewfiles` {
      app.
 
      The fixture is a SwiftPM project with `platform: "darwin"`, a project-root
-     `Brewfile.wendy`, and an app that can prove the bundled dependency is
-     available at runtime. The command runs as `wendy run --json --device
-     <mac-agent> --prefix <project>`. It builds locally, syncs the app and
-     `Brewfile.wendy`, invokes `brew bundle --file <synced Brewfile>` on the
-     agent machine, then starts the app. The command recording and target-side
-     evidence show that `brew bundle` did not run on the developer machine.
+     `Brewfile.wendy` that installs a small formula such as `figlet`, and an app
+     that proves the formula is available at runtime. Before running, the test
+     removes the formula from the CI Mac target to prove `brew bundle` installs
+     it; after running, it uninstalls the formula to restore the target. The
+     command runs as `wendy run --json --device <mac-agent> --prefix <project>`.
+     It builds locally, syncs the app and `Brewfile.wendy`, invokes `brew bundle
+     --file <synced Brewfile>` on the agent machine, then starts the app. The
+     command recording and target-side evidence show that `brew bundle` did not
+     run on the developer machine.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
     func `syncs the 'Brewfile.wendy' and runs 'brew bundle' on the target before starting`() async throws {
@@ -25,8 +31,10 @@ struct `'wendy run' with native Mac Brewfiles` {
      for native Xcode projects.
 
      The fixture is an Xcode project with `platform: "darwin"` and a
-     project-root `Brewfile.wendy`. `wendy run --json --device <mac-agent>
-     --prefix <project>` builds with `xcodebuild`, syncs the build product and
+     project-root `Brewfile.wendy` that installs the same small formula used by
+     the SwiftPM coverage. The test uninstalls the formula before the run and
+     again during teardown. `wendy run --json --device <mac-agent> --prefix
+     <project>` builds with `xcodebuild`, syncs the build product and
      `Brewfile.wendy`, runs `brew bundle --file <synced Brewfile>` on the Mac
      agent, and starts the built product only after `brew bundle` succeeds.
      */
@@ -54,10 +62,11 @@ struct `'wendy run' with native Mac Brewfiles` {
      overriding project-root auto-detection.
 
      The fixture contains both `Brewfile.wendy` and `ops/Brewfile`, while
-     `wendy.json` sets `"brewfile": "ops/Brewfile"`. `wendy run --json
-     --device <mac-agent>` syncs and applies `ops/Brewfile`, does not apply
-     `Brewfile.wendy`, and starts the app only after the explicit Brewfile has
-     succeeded on the target Mac.
+     `wendy.json` sets `"brewfile": "ops/Brewfile"`. The explicit Brewfile
+     installs a small formula that the test uninstalls before the run and during
+     teardown. `wendy run --json --device <mac-agent>` syncs and applies
+     `ops/Brewfile`, does not apply `Brewfile.wendy`, and starts the app only
+     after the explicit Brewfile has succeeded on the target Mac.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
     func `uses the explicit 'wendy.json' > 'brewfile' path instead of 'Brewfile.wendy' auto detection`() async throws {
@@ -95,11 +104,13 @@ struct `'wendy run' with native Mac Brewfiles` {
     /**
      Remains idempotent when the target already satisfies the Brewfile.
 
-     The fixture runs the same native Mac app with the same target Brewfile
-     twice against the same Mac agent. The second `wendy run --json --device
-     <mac-agent>` succeeds, does not reinstall already-satisfied dependencies in
-     a noisy loop, reports normal file-sync up-to-date behavior where possible,
-     and starts the app after the target-side bundle check succeeds.
+     The fixture first uninstalls the small formula from the CI Mac target, then
+     runs the same native Mac app with the same target Brewfile twice against
+     the same Mac agent. The first run installs the formula; the second `wendy
+     run --json --device <mac-agent>` succeeds, does not reinstall
+     already-satisfied dependencies in a noisy loop, reports normal file-sync
+     up-to-date behavior where possible, and starts the app after the
+     target-side bundle check succeeds. Teardown uninstalls the formula again.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
     func `is idempotent when 'brew bundle' dependencies are already installed`() async throws {
