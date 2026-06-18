@@ -441,23 +441,34 @@ func TestInitCommand_NonInteractiveDarwinCreatesNativeSwiftProject(t *testing.T)
 	if cfg.Language != langSwift {
 		t.Fatalf("Language = %q, want %q", cfg.Language, langSwift)
 	}
-	if len(cfg.Entitlements) != 0 {
-		t.Fatalf("Entitlements = %+v, want none for native macOS", cfg.Entitlements)
+	if len(cfg.Entitlements) != 1 || cfg.Entitlements[0].Type != appconfig.EntitlementNetwork {
+		t.Fatalf("Entitlements = %+v, want network for native macOS", cfg.Entitlements)
 	}
 	if _, err := os.Stat(filepath.Join(tempDir, "Package.swift")); err != nil {
 		t.Fatalf("expected Package.swift: %v", err)
 	}
 }
 
-func TestBuildInitEntitlementsFromFlags_RejectsDarwinEntitlements(t *testing.T) {
-	_, err := buildInitEntitlementsFromFlags(targetDarwin, initOptions{
+func TestBuildInitEntitlementsFromFlags_DarwinAllowsNetworkOnly(t *testing.T) {
+	entitlements, err := buildInitEntitlementsFromFlags(targetDarwin, initOptions{
 		entitlementsSet: true,
 		entitlements:    []string{"network"},
 	})
-	if err == nil {
-		t.Fatal("expected Darwin entitlements to fail")
+	if err != nil {
+		t.Fatalf("buildInitEntitlementsFromFlags: %v", err)
 	}
-	if got, want := err.Error(), `darwin apps do not support WendyOS container entitlements`; got != want {
+	if len(entitlements) != 1 || entitlements[0].Type != appconfig.EntitlementNetwork {
+		t.Fatalf("Entitlements = %+v, want network", entitlements)
+	}
+
+	_, err = buildInitEntitlementsFromFlags(targetDarwin, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"gpu"},
+	})
+	if err == nil {
+		t.Fatal("expected Darwin gpu entitlement to fail")
+	}
+	if got, want := err.Error(), `darwin does not support the "gpu" entitlement`; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
