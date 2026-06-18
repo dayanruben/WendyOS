@@ -15,19 +15,43 @@ var ros2HiddenGraphTopics = map[string]bool{
 	"/parameter_events": true,
 }
 
+// graphSpansMultipleRMWs reports whether the graph carries nodes from more than
+// one RMW, so node labels are RMW-tagged only on mixed-RMW devices (WDY-1594).
+func graphSpansMultipleRMWs(graph *agentpbv2.GetROS2GraphResponse) bool {
+	seen := map[string]struct{}{}
+	for _, n := range graph.GetNodes() {
+		if n.GetRmw() != "" {
+			seen[n.GetRmw()] = struct{}{}
+		}
+	}
+	return len(seen) > 1
+}
+
+// ros2GraphNodeLabel renders a node label, appending its RMW tag when the graph
+// spans multiple RMWs so identically-named nodes in different graphs are
+// distinguishable.
+func ros2GraphNodeLabel(node, rmw string, tagged bool) string {
+	if tagged && rmw != "" {
+		return node + " [" + ros2RMWShort(rmw) + "]"
+	}
+	return node
+}
+
 // ros2GraphEdges builds topic → publishers and topic → subscribers maps from
-// a graph response, skipping hidden infrastructure topics.
+// a graph response, skipping hidden infrastructure topics. Node labels carry an
+// RMW tag when the graph spans multiple RMWs.
 func ros2GraphEdges(graph *agentpbv2.GetROS2GraphResponse) (pubs, subs map[string][]string) {
+	tagged := graphSpansMultipleRMWs(graph)
 	pubs = make(map[string][]string)
 	subs = make(map[string][]string)
 	for _, e := range graph.GetPublishes() {
 		if !ros2HiddenGraphTopics[e.GetTopic()] {
-			pubs[e.GetTopic()] = append(pubs[e.GetTopic()], e.GetNode())
+			pubs[e.GetTopic()] = append(pubs[e.GetTopic()], ros2GraphNodeLabel(e.GetNode(), e.GetRmw(), tagged))
 		}
 	}
 	for _, e := range graph.GetSubscribes() {
 		if !ros2HiddenGraphTopics[e.GetTopic()] {
-			subs[e.GetTopic()] = append(subs[e.GetTopic()], e.GetNode())
+			subs[e.GetTopic()] = append(subs[e.GetTopic()], ros2GraphNodeLabel(e.GetNode(), e.GetRmw(), tagged))
 		}
 	}
 	return pubs, subs
@@ -62,11 +86,12 @@ func renderROS2GraphASCII(graph *agentpbv2.GetROS2GraphResponse) string {
 		}
 	}
 
+	tagged := graphSpansMultipleRMWs(graph)
 	var isolated []string
 	for _, node := range graph.GetNodes() {
-		fqn := ros2GraphNodeFQN(node)
-		if !connected[fqn] {
-			isolated = append(isolated, fqn)
+		label := ros2GraphNodeLabel(ros2GraphNodeFQN(node), node.GetRmw(), tagged)
+		if !connected[label] {
+			isolated = append(isolated, label)
 		}
 	}
 	sort.Strings(isolated)
@@ -94,8 +119,9 @@ func renderROS2GraphDOT(graph *agentpbv2.GetROS2GraphResponse) string {
 	b.WriteString("digraph ros2 {\n")
 	b.WriteString("  rankdir=LR;\n")
 	b.WriteString("  node [shape=box];\n")
+	tagged := graphSpansMultipleRMWs(graph)
 	for _, node := range graph.GetNodes() {
-		fmt.Fprintf(&b, "  %q;\n", ros2GraphNodeFQN(node))
+		fmt.Fprintf(&b, "  %q;\n", ros2GraphNodeLabel(ros2GraphNodeFQN(node), node.GetRmw(), tagged))
 	}
 	topics := make([]string, 0, len(pubs))
 	for topic := range pubs {

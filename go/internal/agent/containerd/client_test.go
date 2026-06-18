@@ -12,6 +12,29 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
+// TestROS2SidecarName maps each RMW to a distinct, prefix-scoped sidecar name
+// and collapses unknown/empty RMW to the stock-image (FastRTPS) default — the
+// basis for one persistent sidecar per RMW (WDY-1594).
+func TestROS2SidecarName(t *testing.T) {
+	cyc := ros2SidecarName("rmw_cyclonedds_cpp")
+	fast := ros2SidecarName("rmw_fastrtps_cpp")
+	def := ros2SidecarName("")
+	if cyc == fast {
+		t.Errorf("distinct RMWs must map to distinct sidecars: %q == %q", cyc, fast)
+	}
+	if fast != def {
+		t.Errorf("empty RMW should map to the FastRTPS (image-default) sidecar: %q vs %q", def, fast)
+	}
+	if got := ros2SidecarName("rmw_bogus"); got != ros2SidecarPrefix+"-default" {
+		t.Errorf("unknown RMW = %q, want %q", got, ros2SidecarPrefix+"-default")
+	}
+	for _, n := range []string{cyc, fast, def} {
+		if !strings.HasPrefix(n, ros2SidecarPrefix+"-") {
+			t.Errorf("sidecar name %q lacks the expected prefix", n)
+		}
+	}
+}
+
 func TestCreateContainerProgressMappingUsesApplyPhase(t *testing.T) {
 	progress := UnpackProgress{
 		Phase:       "layer",

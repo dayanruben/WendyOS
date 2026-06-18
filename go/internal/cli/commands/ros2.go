@@ -110,6 +110,25 @@ func printROS2JSON(v any) error {
 
 // ── inspection commands ─────────────────────────────────────────────
 
+// ros2RMWShort renders an RMW identifier compactly for display, e.g.
+// "rmw_cyclonedds_cpp" -> "cyclonedds".
+func ros2RMWShort(rmw string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(rmw, "rmw_"), "_cpp")
+}
+
+// ros2ShowRMWTags reports whether the results span more than one RMW, so the
+// per-result "[rmw]" tag is shown only on mixed-RMW devices and never clutters
+// the common single-RMW case (WDY-1594).
+func ros2ShowRMWTags(rmws ...string) bool {
+	seen := map[string]struct{}{}
+	for _, r := range rmws {
+		if r != "" {
+			seen[r] = struct{}{}
+		}
+	}
+	return len(seen) > 1
+}
+
 func newROS2NodesCmd() *cobra.Command {
 	var domain int32
 	cmd := &cobra.Command{
@@ -131,10 +150,11 @@ func newROS2NodesCmd() *cobra.Command {
 				type node struct {
 					Name      string `json:"name"`
 					Namespace string `json:"namespace"`
+					RMW       string `json:"rmw,omitempty"`
 				}
 				nodes := make([]node, 0, len(resp.GetNodes()))
 				for _, n := range resp.GetNodes() {
-					nodes = append(nodes, node{Name: n.GetName(), Namespace: n.GetNamespace()})
+					nodes = append(nodes, node{Name: n.GetName(), Namespace: n.GetNamespace(), RMW: n.GetRmw()})
 				}
 				return printROS2JSON(nodes)
 			}
@@ -142,8 +162,17 @@ func newROS2NodesCmd() *cobra.Command {
 				cliLogln("No ROS 2 nodes found.")
 				return nil
 			}
+			rmws := make([]string, 0, len(resp.GetNodes()))
 			for _, n := range resp.GetNodes() {
-				fmt.Println(ros2GraphNodeFQN(n))
+				rmws = append(rmws, n.GetRmw())
+			}
+			showTags := ros2ShowRMWTags(rmws...)
+			for _, n := range resp.GetNodes() {
+				line := ros2GraphNodeFQN(n)
+				if showTags && n.GetRmw() != "" {
+					line += "  [" + ros2RMWShort(n.GetRmw()) + "]"
+				}
+				fmt.Println(line)
 			}
 			return nil
 		},
@@ -179,6 +208,7 @@ func newROS2TopicsCmd() *cobra.Command {
 					Types       []string `json:"types"`
 					Publishers  int32    `json:"publishers,omitempty"`
 					Subscribers int32    `json:"subscribers,omitempty"`
+					RMW         string   `json:"rmw,omitempty"`
 				}
 				topics := make([]topic, 0, len(resp.GetTopics()))
 				for _, t := range resp.GetTopics() {
@@ -187,6 +217,7 @@ func newROS2TopicsCmd() *cobra.Command {
 						Types:       t.GetTypes(),
 						Publishers:  t.GetPublisherCount(),
 						Subscribers: t.GetSubscriberCount(),
+						RMW:         t.GetRmw(),
 					})
 				}
 				return printROS2JSON(topics)
@@ -195,13 +226,29 @@ func newROS2TopicsCmd() *cobra.Command {
 				cliLogln("No ROS 2 topics found.")
 				return nil
 			}
+			rmws := make([]string, 0, len(resp.GetTopics()))
+			for _, t := range resp.GetTopics() {
+				rmws = append(rmws, t.GetRmw())
+			}
+			rmwCol := ros2ShowRMWTags(rmws...)
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			if all {
+			switch {
+			case all && rmwCol:
+				fmt.Fprintln(w, "TOPIC\tTYPE\tPUBS\tSUBS\tRMW")
+				for _, t := range resp.GetTopics() {
+					fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\n", t.GetName(), strings.Join(t.GetTypes(), ", "), t.GetPublisherCount(), t.GetSubscriberCount(), ros2RMWShort(t.GetRmw()))
+				}
+			case all:
 				fmt.Fprintln(w, "TOPIC\tTYPE\tPUBS\tSUBS")
 				for _, t := range resp.GetTopics() {
 					fmt.Fprintf(w, "%s\t%s\t%d\t%d\n", t.GetName(), strings.Join(t.GetTypes(), ", "), t.GetPublisherCount(), t.GetSubscriberCount())
 				}
-			} else {
+			case rmwCol:
+				fmt.Fprintln(w, "TOPIC\tTYPE\tRMW")
+				for _, t := range resp.GetTopics() {
+					fmt.Fprintf(w, "%s\t%s\t%s\n", t.GetName(), strings.Join(t.GetTypes(), ", "), ros2RMWShort(t.GetRmw()))
+				}
+			default:
 				fmt.Fprintln(w, "TOPIC\tTYPE")
 				for _, t := range resp.GetTopics() {
 					fmt.Fprintf(w, "%s\t%s\n", t.GetName(), strings.Join(t.GetTypes(), ", "))
@@ -278,10 +325,11 @@ func newROS2ServicesCmd() *cobra.Command {
 				type svc struct {
 					Name  string   `json:"name"`
 					Types []string `json:"types"`
+					RMW   string   `json:"rmw,omitempty"`
 				}
 				svcs := make([]svc, 0, len(resp.GetServices()))
 				for _, s := range resp.GetServices() {
-					svcs = append(svcs, svc{Name: s.GetName(), Types: s.GetTypes()})
+					svcs = append(svcs, svc{Name: s.GetName(), Types: s.GetTypes(), RMW: s.GetRmw()})
 				}
 				return printROS2JSON(svcs)
 			}
@@ -289,10 +337,22 @@ func newROS2ServicesCmd() *cobra.Command {
 				cliLogln("No ROS 2 services found.")
 				return nil
 			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "SERVICE\tTYPE")
+			rmws := make([]string, 0, len(resp.GetServices()))
 			for _, s := range resp.GetServices() {
-				fmt.Fprintf(w, "%s\t%s\n", s.GetName(), strings.Join(s.GetTypes(), ", "))
+				rmws = append(rmws, s.GetRmw())
+			}
+			rmwCol := ros2ShowRMWTags(rmws...)
+			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			if rmwCol {
+				fmt.Fprintln(w, "SERVICE\tTYPE\tRMW")
+				for _, s := range resp.GetServices() {
+					fmt.Fprintf(w, "%s\t%s\t%s\n", s.GetName(), strings.Join(s.GetTypes(), ", "), ros2RMWShort(s.GetRmw()))
+				}
+			} else {
+				fmt.Fprintln(w, "SERVICE\tTYPE")
+				for _, s := range resp.GetServices() {
+					fmt.Fprintf(w, "%s\t%s\n", s.GetName(), strings.Join(s.GetTypes(), ", "))
+				}
 			}
 			return w.Flush()
 		},

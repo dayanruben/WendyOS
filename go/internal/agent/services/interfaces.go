@@ -132,20 +132,26 @@ type ROS2Target struct {
 	AppID       string
 	Distro      string // e.g. "humble"
 	DomainID    int    // resolved ROS_DOMAIN_ID
+	RMW         string // resolved RMW_IMPLEMENTATION (e.g. "rmw_cyclonedds_cpp"); "" if unset
 	Running     bool
 	TaskPID     uint32 // pid of the container's init process; 0 when not running
 }
 
-// ROS2Sidecar describes the running ROS 2 CLI sidecar container.
+// ROS2Sidecar describes one running ROS 2 CLI sidecar container. A device with
+// apps on multiple RMWs runs one sidecar per RMW (WDY-1594); each inspects the
+// graph of its own RMW.
 type ROS2Sidecar struct {
+	Name     string // sidecar container ID (per-RMW)
 	Distro   string
-	DomainID int // default DDS domain, taken from the anchor app container
+	DomainID int    // default DDS domain, taken from the anchor app container
+	RMW      string // the RMW this sidecar speaks (e.g. "rmw_cyclonedds_cpp"); "" = image default
 }
 
 // ROS2ExecOptions configures a single `ros2` invocation inside the sidecar.
 type ROS2ExecOptions struct {
-	DomainID int      // ROS_DOMAIN_ID for this invocation
-	Args     []string // arguments after `ros2`, passed without shell interpretation
+	DomainID    int      // ROS_DOMAIN_ID for this invocation
+	Args        []string // arguments after `ros2`, passed without shell interpretation
+	SidecarName string   // which per-RMW sidecar to exec in; empty = the default/first
 }
 
 // ROS2Runtime abstracts the containerd-side ROS 2 sidecar plumbing used by
@@ -153,9 +159,11 @@ type ROS2ExecOptions struct {
 type ROS2Runtime interface {
 	// FindROS2Containers returns all containers labelled with a ros2 config.
 	FindROS2Containers(ctx context.Context) ([]ROS2Target, error)
-	// EnsureROS2Sidecar starts or reuses the CLI sidecar and returns its
-	// distro and the default DDS domain.
-	EnsureROS2Sidecar(ctx context.Context) (ROS2Sidecar, error)
+	// EnsureROS2Sidecars starts or reuses one CLI sidecar per distinct RMW in
+	// use by the running ROS 2 apps, and tears down sidecars whose RMW is no
+	// longer present. Returns one entry per live RMW graph (WDY-1594). Returns
+	// an error when no ROS 2 app is running.
+	EnsureROS2Sidecars(ctx context.Context) ([]ROS2Sidecar, error)
 	// StopROS2Sidecar stops and removes the sidecar if present.
 	StopROS2Sidecar(ctx context.Context) error
 	// VerifyROS2Sidecar reports whether the sidecar is still anchored to a

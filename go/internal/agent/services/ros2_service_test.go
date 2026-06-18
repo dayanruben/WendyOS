@@ -23,6 +23,7 @@ import (
 // fakeROS2Runtime scripts ExecROS2 responses keyed by the joined args.
 type fakeROS2Runtime struct {
 	sidecar   ROS2Sidecar
+	sidecars  []ROS2Sidecar // when set, EnsureROS2Sidecars returns these (mixed-RMW tests)
 	ensureErr error
 	verifyErr error
 	// outputs maps "node list" → stdout. Missing keys exit 1.
@@ -36,11 +37,14 @@ func (f *fakeROS2Runtime) FindROS2Containers(context.Context) ([]ROS2Target, err
 	return nil, nil
 }
 
-func (f *fakeROS2Runtime) EnsureROS2Sidecar(context.Context) (ROS2Sidecar, error) {
+func (f *fakeROS2Runtime) EnsureROS2Sidecars(context.Context) ([]ROS2Sidecar, error) {
 	if f.ensureErr != nil {
-		return ROS2Sidecar{}, f.ensureErr
+		return nil, f.ensureErr
 	}
-	return f.sidecar, nil
+	if len(f.sidecars) > 0 {
+		return f.sidecars, nil
+	}
+	return []ROS2Sidecar{f.sidecar}, nil
 }
 
 func (f *fakeROS2Runtime) StopROS2Sidecar(context.Context) error { return nil }
@@ -82,6 +86,41 @@ func TestROS2Service_ListNodes(t *testing.T) {
 	}
 	if rt.calls[0].DomainID != 7 {
 		t.Errorf("exec domain = %d, want sidecar default 7", rt.calls[0].DomainID)
+	}
+}
+
+// TestROS2Service_ListNodes_MergesPerRMW verifies a mixed-RMW device merges the
+// nodes from every RMW sidecar and tags each with its RMW (WDY-1594).
+func TestROS2Service_ListNodes_MergesPerRMW(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecars: []ROS2Sidecar{
+			{Name: "sc-cyc", Distro: "humble", DomainID: 42, RMW: "rmw_cyclonedds_cpp"},
+			{Name: "sc-fast", Distro: "humble", DomainID: 42, RMW: "rmw_fastrtps_cpp"},
+		},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			switch opts.SidecarName {
+			case "sc-cyc":
+				io.WriteString(stdout, "/talker\n")
+			case "sc-fast":
+				io.WriteString(stdout, "/listener\n")
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.ListNodes(context.Background(), &agentpbv2.ListROS2NodesRequest{})
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(resp.GetNodes()) != 2 {
+		t.Fatalf("got %d nodes, want 2 (merged across RMWs)", len(resp.GetNodes()))
+	}
+	byRMW := map[string]string{}
+	for _, n := range resp.GetNodes() {
+		byRMW[n.GetRmw()] = n.GetName()
+	}
+	if byRMW["rmw_cyclonedds_cpp"] != "talker" || byRMW["rmw_fastrtps_cpp"] != "listener" {
+		t.Errorf("merged nodes not tagged by RMW: %+v", byRMW)
 	}
 }
 

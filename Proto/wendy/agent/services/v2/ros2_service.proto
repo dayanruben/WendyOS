@@ -39,6 +39,9 @@ service ROS2Service {
 message ROS2Node {
     string name = 1;
     string namespace = 2;
+    // rmw identifies which RMW graph this node came from when a device runs
+    // apps on more than one RMW (WDY-1594). Empty on single-RMW devices.
+    string rmw = 3;
 }
 
 message ROS2Topic {
@@ -46,6 +49,9 @@ message ROS2Topic {
     repeated string types = 2; // a topic can have multiple publisher types
     int32 publisher_count = 3;
     int32 subscriber_count = 4;
+    // rmw identifies which RMW graph this topic came from (WDY-1594). Empty on
+    // single-RMW devices.
+    string rmw = 5;
 }
 
 message ListROS2NodesRequest {
@@ -86,6 +92,8 @@ message ListROS2ServicesResponse {
     message Service {
         string name = 1;
         repeated string types = 2;
+        // rmw identifies which RMW graph this service came from (WDY-1594).
+        string rmw = 3;
     }
     repeated Service services = 1;
 }
@@ -145,6 +153,7 @@ message GetROS2GraphResponse {
     message Edge {
         string node = 1;  // fully-qualified node name
         string topic = 2;
+        string rmw = 3;   // RMW graph this edge belongs to (WDY-1594); "" single-RMW
     }
     repeated ROS2Node nodes = 1;
     repeated Edge publishes = 2;  // node publishes to topic
