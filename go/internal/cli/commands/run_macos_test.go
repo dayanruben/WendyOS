@@ -247,6 +247,100 @@ func TestResolveNativeBrewfileSyncEntry_IgnoresProjectRootBrewfile(t *testing.T)
 	}
 }
 
+func TestAppendNativeBrewfileSyncEntry_DeduplicatesSameSource(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: brewfilePath, remotePath: "ops/Brewfile"}}
+	got, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err != nil {
+		t.Fatalf("appendNativeBrewfileSyncEntry: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries count = %d, want 1", len(got))
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_RejectsConflictingFilesMapping(t *testing.T) {
+	dir := t.TempDir()
+	appBrewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	devBrewfilePath := filepath.Join(dir, "dev", "Brewfile")
+	for _, path := range []string{appBrewfilePath, devBrewfilePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	if err := os.WriteFile(appBrewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile app Brewfile: %v", err)
+	}
+	if err := os.WriteFile(devBrewfilePath, []byte("brew \"mas\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile dev Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: devBrewfilePath, remotePath: "ops/Brewfile"}}
+	_, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+	if !strings.Contains(err.Error(), "conflicts with another synced file") {
+		t.Fatalf("error = %q, want conflict message", err.Error())
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_DeduplicatesDirectoryCoveringSameSource(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: filepath.Join(dir, "ops"), remotePath: "ops"}}
+	got, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err != nil {
+		t.Fatalf("appendNativeBrewfileSyncEntry: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries count = %d, want 1", len(got))
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_AppendsWhenDirectoryDoesNotContainBrewfile(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll ops: %v", err)
+	}
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll assets: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: assetsDir, remotePath: "ops"}}
+	got, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err != nil {
+		t.Fatalf("appendNativeBrewfileSyncEntry: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries count = %d, want 2", len(got))
+	}
+}
+
 func TestAssembleSwiftPMSyncEntries_IncludesSiblingResourceDirectories(t *testing.T) {
 	binDir := t.TempDir()
 	binaryPath := filepath.Join(binDir, "MySwiftApp")
