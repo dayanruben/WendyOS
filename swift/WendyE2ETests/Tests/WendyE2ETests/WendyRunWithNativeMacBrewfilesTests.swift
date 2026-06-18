@@ -50,7 +50,7 @@ struct `'wendy run' with native Mac Brewfiles` {
     }
 
     /**
-     Uses an explicit `wendy.json` `brewfile` path as the target Brewfile,
+     Uses an explicit `wendy.json` > `brewfile` path as the target Brewfile,
      overriding project-root auto-detection.
 
      The fixture contains both `Brewfile.wendy` and `ops/Brewfile`, while
@@ -60,7 +60,7 @@ struct `'wendy run' with native Mac Brewfiles` {
      succeeded on the target Mac.
      */
     @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `uses the explicit 'brewfile' path instead of 'Brewfile.wendy' auto detection`() async throws {
+    func `uses the explicit 'wendy.json' > 'brewfile' path instead of 'Brewfile.wendy' auto detection`() async throws {
         // TODO: implement.
     }
 
@@ -109,16 +109,16 @@ struct `'wendy run' with native Mac Brewfiles` {
     /**
      Rejects ambiguous sync configuration before deployment starts.
 
-     The fixture sets `"brewfile": "ops/Brewfile"` while `files` maps a
-     different local file to the same target path, for example `"path":
-     "dev/Brewfile", "to": "ops/Brewfile"`. `wendy run --json --device
-     <mac-agent>` fails during local project validation, explains that the
-     Brewfile destination conflicts with another synced file, syncs no app
-     files, invokes no target-side `brew bundle`, and leaves any existing app
-     state unchanged.
+     The fixture sets `wendy.json` > `brewfile` to `ops/Brewfile` while
+     `wendy.json` > `files` maps a different local file to the same target
+     path, for example `"path": "dev/Brewfile", "to": "ops/Brewfile"`.
+     `wendy run --json --device <mac-agent>` fails during local project
+     validation, explains that the `wendy.json` > `brewfile` destination
+     conflicts with another synced file, syncs no app files, invokes no
+     target-side `brew bundle`, and leaves any existing app state unchanged.
      */
     @Test(.disabled("SPEC STUB: can run with fake or real Mac target once E2E harness exists"))
-    func `rejects 'files' entries that conflict with the 'brewfile' destination`() async throws {
+    func `rejects 'wendy.json' 'files' entries that conflict with the 'wendy.json' > 'brewfile' destination`() async throws {
         // TODO: implement.
     }
 }
