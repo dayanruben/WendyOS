@@ -18,9 +18,21 @@ func appendNativeBrewfileSyncEntry(entries []fileSyncEntry, cwd string, appCfg *
 	}
 
 	for _, existing := range entries {
-		if existing.remotePath == entry.remotePath {
+		covered, sameSource, err := syncEntryCoversBrewfile(existing, *entry)
+		if err != nil {
+			return entries, err
+		}
+		if !covered {
+			continue
+		}
+		if sameSource {
 			return entries, nil
 		}
+		return entries, fmt.Errorf(
+			"brewfile %q conflicts with another synced file at %q; remove the duplicate files entry or point brewfile at the same source",
+			appCfg.Brewfile,
+			entry.remotePath,
+		)
 	}
 
 	return append(entries, *entry), nil
@@ -63,4 +75,69 @@ func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*f
 	remotePath := effectiveRemotePath(configured, "")
 	appCfg.Brewfile = remotePath
 	return &fileSyncEntry{localPath: localPath, remotePath: remotePath}, nil
+}
+
+func syncEntryCoversBrewfile(existing, brewfile fileSyncEntry) (bool, bool, error) {
+	info, err := os.Stat(existing.localPath)
+	if err != nil {
+		return false, false, fmt.Errorf("checking synced file %s: %w", existing.localPath, err)
+	}
+
+	if !info.IsDir() {
+		if existing.remotePath != brewfile.remotePath {
+			return false, false, nil
+		}
+		same, err := sameLocalFile(existing.localPath, brewfile.localPath)
+		if err != nil {
+			return true, false, err
+		}
+		return true, same, nil
+	}
+
+	rel, ok := remotePathRelativeToPrefix(brewfile.remotePath, existing.remotePath)
+	if !ok {
+		return false, false, nil
+	}
+
+	candidate := filepath.Join(existing.localPath, rel)
+	if _, err := os.Stat(candidate); err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return true, false, fmt.Errorf("checking synced brewfile source %s: %w", candidate, err)
+	}
+
+	same, err := sameLocalFile(candidate, brewfile.localPath)
+	if err != nil {
+		return true, false, err
+	}
+	return true, same, nil
+}
+
+func remotePathRelativeToPrefix(remotePath, prefix string) (string, bool) {
+	remotePath = strings.TrimPrefix(remotePath, "./")
+	prefix = strings.TrimPrefix(prefix, "./")
+	if prefix == "" {
+		return remotePath, remotePath != ""
+	}
+	if remotePath == prefix {
+		return "", false
+	}
+	prefixWithSlash := prefix + "/"
+	if !strings.HasPrefix(remotePath, prefixWithSlash) {
+		return "", false
+	}
+	return strings.TrimPrefix(remotePath, prefixWithSlash), true
+}
+
+func sameLocalFile(a, b string) (bool, error) {
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		return false, fmt.Errorf("checking synced brewfile source %s: %w", a, err)
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		return false, fmt.Errorf("checking brewfile source %s: %w", b, err)
+	}
+	return os.SameFile(aInfo, bInfo), nil
 }
