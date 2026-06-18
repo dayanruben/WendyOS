@@ -3,7 +3,7 @@ import WendyE2ETesting
 
 private typealias Machine = WendyE2EMachine
 
-@Suite(.enabled(if: Machine.agent.os == .macOS, "requires a macOS agent"))
+@Suite(.enabled(if: Machine.agent.os == .macOS, "Specs only valid for macOS agent"))
 struct `'wendy run' with native Mac Brewfiles` {
     /**
      Copies the native Mac app's `Brewfile.wendy` to the selected Wendy Agent
