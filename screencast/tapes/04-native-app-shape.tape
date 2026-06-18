@@ -7,33 +7,40 @@ Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrain
 Set Framerate 10
 Set CursorBlink false
 
+Hide
+Type "cd $(git rev-parse --show-toplevel)"
+Enter
+Ctrl+L
+Show
+
 Sleep 1s
 
-Type "cd $(git rev-parse --show-toplevel)/Examples/HelloMac"
+Type "cd Examples/HelloMac"
 Enter
 Sleep 500ms
 
-Type "pwd"
+Type "ls"
 Enter
-Sleep 500ms
+Sleep 1s
 
 Type "cat wendy.json"
 Enter
 Sleep 2s
 
-Type "ls Package.swift"
-Enter
-Sleep 1s
+Ctrl+L
+Sleep 500ms
 
-Type "ls Dockerfile docker-compose.yml compose.yml 2>/dev/null || echo 'No container manifests in this native Mac project.'"
+Hide
+Type "cd $(git rev-parse --show-toplevel)"
 Enter
-Sleep 2s
+Ctrl+L
+Show
 
-Type "cd ../HelloXcode"
+Type "cd Examples/HelloXcode"
 Enter
 Sleep 500ms
 
-Type "ls -d HelloXcode.xcodeproj"
+Type "ls"
 Enter
 Sleep 1s
 

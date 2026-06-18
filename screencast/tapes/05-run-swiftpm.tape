@@ -7,16 +7,18 @@ Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrain
 Set Framerate 10
 Set CursorBlink false
 
+Hide
+Type "cd $(git rev-parse --show-toplevel)"
+Enter
+Ctrl+L
+Show
+
 Sleep 1s
 
-Type "export WENDY_MAC_TARGET=mac-mini.local:50051"
+Type "cd Examples/HelloMac"
 Enter
 Sleep 500ms
 
-Type "cd $(git rev-parse --show-toplevel)/Examples/HelloMac"
+Type "wendy run --device mac-mini.local:50051 --detach"
 Enter
-Sleep 500ms
-
-Type "wendy run --device $WENDY_MAC_TARGET --build-type swift"
-Enter
-Sleep 12s
+Sleep 8s

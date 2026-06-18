@@ -7,8 +7,9 @@ Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrain
 Set Framerate 10
 Set CursorBlink false
 
+
 Sleep 1s
 
 Type "wendy --device mac-mini.local:50051 device info --json"
 Enter
-Sleep 15s
+Sleep 8s

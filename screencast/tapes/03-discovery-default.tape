@@ -7,6 +7,7 @@ Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrain
 Set Framerate 10
 Set CursorBlink false
 
+
 Sleep 1s
 
 Type "wendy discover"

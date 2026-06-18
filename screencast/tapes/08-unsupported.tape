@@ -9,13 +9,12 @@ Set CursorBlink false
 
 Sleep 1s
 
-Type "export WENDY_MAC_TARGET=mac-mini.local:50051"
-Enter
-Sleep 500ms
-
-Type "wendy --device $WENDY_MAC_TARGET device hardware list"
+Type "wendy --device mac-mini.local:50051 device hardware list"
 Enter
 Sleep 4s
+
+Ctrl+L
+Sleep 500ms
 
 Type "mkdir -p /tmp/wendy-mac-beta-container-demo && cd /tmp/wendy-mac-beta-container-demo"
 Enter
@@ -31,6 +30,6 @@ Type "EOF"
 Enter
 Sleep 500ms
 
-Type "wendy run --device $WENDY_MAC_TARGET"
+Type "wendy run --device mac-mini.local:50051"
 Enter
 Sleep 5s

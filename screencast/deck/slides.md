@@ -1,5 +1,6 @@
 ---
 theme: default
+colorSchema: dark
 title: Wendy Agent for Mac Beta
 info: |
   Slidev source deck for the Wendy Agent for Mac Beta screencast.
@@ -70,6 +71,7 @@ VHS: tapes/01-install-launch.tape
 Wendy Agent is configured once on the Mac.
 
 - Grant macOS permissions to Wendy Agent during setup.
+- The menu item lists all apps managed by Wendy Agent.
 - Later deploys run from the CLI without desktop interaction.
 - Permissions prepare the broker; they do not imply every app-level hardware API is complete in beta.
 
@@ -261,12 +263,9 @@ Next up:
 - Wendy Cloud integration
 - production hardening
 
-<video :src="'/videos/mac-beta/09-final-list.mp4'" controls muted width="100%"></video>
-
 <!--
 Timeline id: close-summary
 Voiceover: voiceover/text/13-close-summary.txt
-VHS: tapes/09-final-list.tape
 -->
 
 ---

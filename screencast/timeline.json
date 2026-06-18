@@ -99,8 +99,7 @@
       "id": "close-summary",
       "target": "14",
       "minSeconds": 22.0,
-      "voiceover": "voiceover/mp3/13-close-summary.mp3",
-      "media": "deck/public/videos/mac-beta/09-final-list.mp4"
+      "voiceover": "voiceover/mp3/13-close-summary.mp3"
     },
     {
       "id": "thanks",

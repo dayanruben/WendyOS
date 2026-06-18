@@ -9,26 +9,22 @@ Set CursorBlink false
 
 Sleep 1s
 
-Type "export WENDY_MAC_TARGET=mac-mini.local:50051"
+Type "wendy --device mac-mini.local:50051 device apps list"
 Enter
+Sleep 5s
+Type "q"
 Sleep 500ms
 
-Type "export WENDY_APP_ID=sh.wendy.examples.HelloMac"
+Type "wendy --device mac-mini.local:50051 device apps stop sh.wendy.examples.HelloMac"
 Enter
+Sleep 3s
+
+Type "wendy --device mac-mini.local:50051 device apps remove --force sh.wendy.examples.HelloMac"
+Enter
+Sleep 3s
+
+Type "wendy --device mac-mini.local:50051 device apps list"
+Enter
+Sleep 5s
+Type "q"
 Sleep 500ms
-
-Type "wendy --device $WENDY_MAC_TARGET device apps list"
-Enter
-Sleep 3s
-
-Type "wendy --device $WENDY_MAC_TARGET device apps stop $WENDY_APP_ID"
-Enter
-Sleep 3s
-
-Type "wendy --device $WENDY_MAC_TARGET device apps remove --force $WENDY_APP_ID"
-Enter
-Sleep 3s
-
-Type "wendy --device $WENDY_MAC_TARGET device apps list"
-Enter
-Sleep 3s

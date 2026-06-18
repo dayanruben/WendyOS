@@ -86,12 +86,11 @@ Set Framerate 10
 Set CursorBlink false
 ```
 
-Use `zsh` and do not override `PS1`; the colored chevron prompt is part of the
-standard screencast look. Avoid switching tapes to `bash` or setting a plain
-prompt unless the screencast explicitly calls for it.
+Use `zsh` and avoid switching tapes to `bash` unless the screencast explicitly
+calls for it.
 
-The deck uses the default Slidev theme and fonts. VHS clips keep a terminal-style
-visual baseline with JetBrains Mono when available. Disable cursor blinking for
+The deck uses the default Slidev theme and fonts. VHS clips use the default VHS
+terminal theme and JetBrains Mono when available. Disable cursor blinking for
 terminal clips so a padded/frozen final frame does not look like a stuck blink
 state.
 
