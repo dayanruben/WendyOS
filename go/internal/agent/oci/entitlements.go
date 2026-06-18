@@ -777,14 +777,15 @@ func applySerial(spec *Spec, ent appconfig.Entitlement) error {
 		return fmt.Errorf("serial device %s has unexpected major %d (want %d for %q); refusing", devPath, major, wantMajor, ent.Device)
 	}
 
-	// Bind-mount the specific node from the host. nosuid/noexec/nodev: a serial
-	// tty is opened for I/O, never executed, never a setuid surface, and the only
-	// device node the container should reach here is the bound tty itself.
+	// Bind-mount the specific node from the host. nosuid/noexec: a serial tty is
+	// opened for I/O, never executed and never a setuid surface. NOTE: do not add
+	// "nodev" here — the destination *is* a character device node, and nodev makes
+	// the kernel refuse to interpret it as a device, so open() fails with EACCES.
 	spec.Mounts = append(spec.Mounts, Mount{
 		Destination: devPath,
 		Source:      devPath,
 		Type:        "bind",
-		Options:     []string{"rbind", "rw", "nosuid", "noexec", "nodev"},
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
 	})
 
 	// Allow exactly this device's major:minor. "rw" (no mknod): the host owns
