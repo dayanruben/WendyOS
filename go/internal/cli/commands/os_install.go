@@ -570,7 +570,53 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	writeModel := writeFinal.(tui.ProgressModel)
 	if writeModel.Err() != nil {
-		return fmt.Errorf("writing image: %w", writeModel.Err())
+		// Bmap write failed (typically a checksum mismatch between the published
+		// bmap and the actual image). Fall back to a full sequential dd write.
+		// For the seekable-zstd path the .zst is already on disk — open it as a
+		// sequential reader to avoid re-downloading the full image. For the regular
+		// bmap path the zip is also already cached.
+		var fallbackReader io.Reader
+		var fallbackSize int64
+		var fallbackCloser io.Closer
+		switch {
+		case seekableZst != "":
+			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
+			si, ferr := openSeekableZstd(seekableZst)
+			if ferr != nil {
+				return fmt.Errorf("writing image: %w", writeModel.Err())
+			}
+			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
+		case bmapPath != "":
+			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
+			fs, ferr := openOSImageStream(deviceKey, imgInfo)
+			if ferr != nil {
+				return fmt.Errorf("writing image: %w", writeModel.Err())
+			}
+			fallbackReader, fallbackSize, fallbackCloser = fs, fs.uncompressedSize, fs
+		default:
+			return fmt.Errorf("writing image: %w", writeModel.Err())
+		}
+		defer fallbackCloser.Close()
+		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
+		fp := tea.NewProgram(fallbackProg)
+		go func() {
+			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
+				if fallbackSize > 0 {
+					fp.Send(tui.ProgressUpdateMsg{
+						Percent: float64(written) / float64(fallbackSize),
+						Written: written,
+						Total:   fallbackSize,
+					})
+				}
+			})})
+		}()
+		fallbackFinal, ferr := fp.Run()
+		if ferr != nil {
+			return fmt.Errorf("progress TUI: %w", ferr)
+		}
+		if fm := fallbackFinal.(tui.ProgressModel); fm.Err() != nil {
+			return fmt.Errorf("writing image: %w", fm.Err())
+		}
 	}
 
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
