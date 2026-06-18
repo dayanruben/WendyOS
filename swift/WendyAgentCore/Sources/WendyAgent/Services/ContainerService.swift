@@ -430,6 +430,25 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         ["bundle", "--file", brewfilePath]
     }
 
+    nonisolated static func brewBundleEnvironment(
+        source: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var environment: [String: String] = [:]
+        for key in ["HOME", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE"] {
+            if let value = source[key], !value.isEmpty {
+                environment[key] = value
+            }
+        }
+        if environment["HOME"] == nil {
+            environment["HOME"] = NSHomeDirectory()
+        }
+        environment["PATH"] =
+            source["PATH"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["HOMEBREW_NO_ANALYTICS"] = "1"
+        return environment
+    }
+
     nonisolated static func brewBundleFailureMessage(
         brewfile: String,
         status: Int32,
@@ -449,6 +468,25 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         return true
     }
 
+    nonisolated private static func brewfileURL(
+        appDirectory: String,
+        brewfile: String
+    ) throws -> URL {
+        let appDirectoryURL = URL(fileURLWithPath: appDirectory, isDirectory: true)
+            .standardizedFileURL
+        let brewfileURL = appDirectoryURL.appendingPathComponent(brewfile)
+            .standardizedFileURL
+        let appDirectoryPath = appDirectoryURL.path
+        let brewfilePath = brewfileURL.path
+        guard brewfilePath.hasPrefix(appDirectoryPath + "/") else {
+            throw RPCError(
+                code: .invalidArgument,
+                message: "brewfile path must stay within the app directory"
+            )
+        }
+        return brewfileURL
+    }
+
     nonisolated private static func runBrewBundle(
         brewExecutable: String,
         brewfilePath: String,
@@ -459,7 +497,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             process.executableURL = URL(fileURLWithPath: brewExecutable)
             process.arguments = Self.brewBundleArguments(brewfilePath: brewfilePath)
             process.currentDirectoryURL = URL(fileURLWithPath: appDirectory)
-            process.environment = ProcessInfo.processInfo.environment
+            process.environment = Self.brewBundleEnvironment()
 
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -471,7 +509,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
             return (
                 process.terminationStatus,
-                String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                String(decoding: data, as: UTF8.self).trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
             )
         }.value
     }
@@ -484,27 +524,28 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         guard Self.isSafeRelativeBrewfilePath(brewfile) else {
             throw RPCError(
                 code: .invalidArgument,
-                message: "brewfile path must be relative and must not contain '.', '..', or empty components"
+                message:
+                    "brewfile path must be relative and must not contain '.', '..', or empty components"
             )
         }
 
-        let brewfilePath = URL(fileURLWithPath: appDirectory)
-            .appendingPathComponent(brewfile)
-            .path
+        let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
+        let brewfilePath = brewfileURL.path
         var isDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: brewfilePath, isDirectory: &isDirectory),
             !isDirectory.boolValue
         else {
             throw RPCError(
                 code: .notFound,
-                message: "Brewfile declared in wendy.json was not found at \(brewfilePath)"
+                message: "Brewfile \(brewfile) declared in wendy.json was not found after sync"
             )
         }
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
                 code: .failedPrecondition,
-                message: "Homebrew is required to apply Brewfile \(brewfile) on the target Mac, but brew was not found in PATH, /opt/homebrew/bin/brew, or /usr/local/bin/brew. Install Homebrew on the target Mac: https://brew.sh/"
+                message:
+                    "Homebrew is required to apply Brewfile \(brewfile) on the target Mac, but brew was not found. Install Homebrew on the target Mac: https://brew.sh/"
             )
         }
 
@@ -528,14 +569,20 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         guard result.status == 0 else {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: Self.brewBundleFailureMessage(
-                    brewfile: brewfile,
-                    status: result.status,
-                    output: result.output
-                )
+            let message = Self.brewBundleFailureMessage(
+                brewfile: brewfile,
+                status: result.status,
+                output: result.output
             )
+            logger.error(
+                "brew bundle failed",
+                metadata: [
+                    "brewfile": "\(brewfile)",
+                    "exit_code": "\(result.status)",
+                    "output": "\(result.output)",
+                ]
+            )
+            throw RPCError(code: .failedPrecondition, message: message)
         }
     }
 
@@ -670,7 +717,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        try await self.applyBrewfileIfNeeded(appConfig?.brewfile, appDirectory: nativeLaunchInfo.directory)
+        try await self.applyBrewfileIfNeeded(
+            appConfig?.brewfile,
+            appDirectory: nativeLaunchInfo.directory
+        )
         try await self.registerApp(id: appName, kind: .native, native: nativeLaunchInfo)
         return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
     }

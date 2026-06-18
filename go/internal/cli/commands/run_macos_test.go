@@ -522,6 +522,38 @@ func TestRunComposeWithAgent_RejectsMacAgentBeforeRegistrySetup(t *testing.T) {
 	}
 }
 
+func TestRunMacOSNativeContainer_OverwritesPrepopulatedAppConfig(t *testing.T) {
+	state := &fakeMacRunState{}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+
+	appCfg := &appconfig.AppConfig{
+		AppID:    "sh.wendy.MySwiftApp",
+		Platform: appconfig.PlatformDarwin,
+		Brewfile: "Brewfile.wendy",
+	}
+	createReq := &agentpb.CreateContainerRequest{
+		AppName:   appCfg.AppID,
+		Cmd:       "MySwiftApp",
+		AppConfig: []byte(`{"appId":"sh.wendy.MySwiftApp","brewfile":"stale/Brewfile"}`),
+	}
+
+	if err := runMacOSNativeContainer(context.Background(), conn, appCfg, createReq, runOptions{deploy: true}); err != nil {
+		t.Fatalf("runMacOSNativeContainer: %v", err)
+	}
+
+	if len(state.createReqs) != 1 {
+		t.Fatalf("CreateContainer calls = %d, want 1", len(state.createReqs))
+	}
+	var sentConfig appconfig.AppConfig
+	if err := json.Unmarshal(state.createReqs[0].AppConfig, &sentConfig); err != nil {
+		t.Fatalf("unmarshal AppConfig: %v", err)
+	}
+	if sentConfig.Brewfile != "Brewfile.wendy" {
+		t.Fatalf("AppConfig Brewfile = %q, want Brewfile.wendy", sentConfig.Brewfile)
+	}
+}
+
 func TestStartAndStreamContainer_FallsBackWhenCreateProgressIsUnimplemented(t *testing.T) {
 	origInteractive := isInteractiveTerminalFn
 	t.Cleanup(func() { isInteractiveTerminalFn = origInteractive })
