@@ -10,6 +10,7 @@ scenes/
   02-terminal-demo/
     voice.md
     vhs.tape
+    vhs.sh      # optional command verifier
   03-ui-demo/
     slide.md   # placeholder until real video exists
     voice.md

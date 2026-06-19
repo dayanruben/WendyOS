@@ -57,6 +57,9 @@ for hook_dir in "$PROJECT_DIR/hooks" "$PROJECT_DIR/template/hooks"; do
     done
   fi
 done
+while IFS= read -r verify_script; do
+  bash -n "$verify_script"
+done < <(find "$PROJECT_DIR" \( -path "$PROJECT_DIR/scenes/*/vhs.sh" -o -path "$PROJECT_DIR/template/scenes/*/vhs.sh" \) -type f -print)
 
 if command -v node >/dev/null 2>&1; then
   while IFS= read -r script; do

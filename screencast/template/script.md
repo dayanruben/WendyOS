@@ -104,6 +104,7 @@ scenes/
   02-terminal-demo/
     voice.md
     vhs.tape
+    vhs.sh         # optional command verifier
   03-ui-demo/
     slide.md        # placeholder until user provides video
     voice.md
@@ -117,7 +118,7 @@ scenes/
 
 Under the hood, the workflow is mechanical.
 
-Each scene is rendered independently. A slide scene becomes `slide.md.mp4`. A terminal scene becomes `vhs.tape.mp4`. Narration becomes `voice.md.mp3`.
+Each scene is rendered independently. A slide scene becomes `slide.md.mp4`. A terminal scene becomes `vhs.tape.mp4`. If the scene includes `vhs.sh`, that verifier runs before recording so path mistakes and command failures are caught before VHS captures the terminal. Narration becomes `voice.md.mp3`.
 
 After each scene has visual media and optional audio, the stitcher reads the scene folders in order and creates the final MP4. This is the same pipeline whether a human runs it manually or an AI agent runs it autonomously.
 
@@ -130,7 +131,7 @@ scripts/render-slide 01
 scripts/render-voice 01
 
 scripts/render-tape --dry-run --with-hooks 02
-scripts/render-tape --with-hooks 02
+scripts/render-tape --with-hooks 02   # runs scenes/02-*/vhs.sh first, if present
 scripts/render-voice 02
 
 scripts/stitch scenes/* --output output/feature-name.mp4

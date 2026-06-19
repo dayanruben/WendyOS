@@ -32,6 +32,7 @@ screencast/
       slide.md
       voice.md
       vhs.tape             # optional terminal recording source
+      vhs.sh               # optional pre-record command verifier
       vhs.tape.mp4         # generated terminal movie; ignored by git
   hooks/                   # optional preflight/setup/teardown hooks for tapes
   output/                  # final renders; ignored by git
@@ -82,6 +83,37 @@ scripts/stitch scenes/* --output output/feature-name.mp4
 A short prefix such as `01` expands to the unique matching folder under
 `scenes/`, for example `scenes/01-intro`. Ambiguous prefixes fail.
 
+## Tape verification
+
+VHS validates tape syntax, but a tape often types commands into an interactive
+shell. A command such as `cd screencast` can fail inside that shell without VHS
+knowing the demo is semantically wrong.
+
+For any scene with `vhs.tape`, add `vhs.sh` alongside it when there are commands
+to verify:
+
+```text
+scenes/02-demo/
+  vhs.tape
+  vhs.sh
+```
+
+`render-tape` runs `vhs.sh` before recording when the file exists. The script
+should execute the same setup-sensitive commands, or safe dry-run equivalents,
+with `set -euo pipefail` so failures abort before VHS records the tape.
+
+Available environment variables:
+
+```text
+SCREENCAST_DIR        # screencast/ directory
+SCREENCAST_SCENE_DIR  # current scene directory
+SCREENCAST_TAPE       # tape file being rendered
+```
+
+Keep `vhs.sh` quick, deterministic, and non-destructive. Use it to catch working
+directory mistakes, missing tools, bad paths, and commands that would fail during
+the demo.
+
 ## Typical workflow
 
 1. Human and agent collaborate on `script.md`. It should describe the story,
@@ -94,7 +126,8 @@ A short prefix such as `01` expands to the unique matching folder under
    scenes/02-demo/vhs.tape
    ```
 
-3. Add `vhs.tape` only for scenes that need terminal automation.
+3. Add `vhs.tape` only for scenes that need terminal automation. Add
+   `vhs.sh` alongside it when commands should be verified before recording.
 4. Render generated scene artifacts:
 
    ```sh

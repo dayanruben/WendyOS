@@ -25,7 +25,7 @@ Options:
   --skip-preflight  Do not run hooks/preflight.sh.
   --yes, -y         Skip confirmation prompts.
   --force-ci-hooks  Allow hooks in CI. Requires --yes and is refused for dry-run.
-  --dry-run         Print what would run without executing hooks or vhs.`);
+  --dry-run         Print what would run without executing hooks, vhs.sh, or vhs.`);
 }
 
 for (const item of process.argv.slice(2)) {
@@ -98,7 +98,7 @@ function runHook(name, hookRoot) {
 
 function confirm(tapePath, output) {
   if (yes || dryRun) return;
-  console.log(`This will render a VHS tape and execute its commands.\n\nTape:   ${tapePath}\nOutput: ${output}\n`);
+  console.log(`This will render a VHS tape and execute its commands. If ${join(dirname(tapePath), 'vhs.sh')} exists, it will be run first as a command verification step.\n\nTape:   ${tapePath}\nOutput: ${output}\n`);
   process.stdout.write('Continue? [y/N] ');
   const buffer = Buffer.alloc(1024);
   const length = readSync(0, buffer, 0, buffer.length, null);
@@ -114,6 +114,20 @@ function renderedTapeContent(tapePath, outputName) {
   const line = `Output ${outputName}`;
   if (/^Output\s+.*$/m.test(text)) return text.replace(/^Output\s+.*$/m, line);
   return `${line}\n${text}`;
+}
+
+function runVerificationScript(tapePath, sceneDir) {
+  const verifyScript = join(dirname(tapePath), 'vhs.sh');
+  if (!existsSync(verifyScript)) return;
+  const env = {
+    ...process.env,
+    SCREENCAST_DIR: screencastRoot,
+    SCREENCAST_SCENE_DIR: sceneDir,
+    SCREENCAST_TAPE: tapePath,
+    SCREENCAST_DRY_RUN: dryRun ? '1' : '0',
+  };
+  if (dryRun) console.log(`dry-run: (cd ${sceneDir} && bash ${verifyScript})`);
+  else run('bash', [verifyScript], { cwd: sceneDir, env });
 }
 
 async function main() {
@@ -132,6 +146,7 @@ async function main() {
   confirm(tapePath, output);
   if (runPreflight) runHook('preflight', hookRoot);
   if (runSetup) runHook('setup', hookRoot);
+  runVerificationScript(tapePath, sceneDir);
 
   try {
     const content = renderedTapeContent(tapePath, outputName);
