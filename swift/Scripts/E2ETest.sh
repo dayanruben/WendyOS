@@ -62,6 +62,7 @@ DEVICE_ADDRESS="${WENDY_E2E_DEVICE_ADDRESS:-}"
 AGENT_OS="${WENDY_E2E_AGENT_OS:-}"
 TRANSPORT="${WENDY_E2E_TRANSPORT:-}"
 MANAGED_AGENT="${WENDY_E2E_MANAGED_AGENT:-false}"
+MANAGED_AGENT_IMPLEMENTATION=""
 AGENT_INFO_JSON=""
 ISOLATION="${WENDY_E2E_ISOLATION:-per-test}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
@@ -98,6 +99,27 @@ normalize_isolation() {
     *)
       echo "ERROR: WENDY_E2E_ISOLATION must be none, per-run, or per-test." >&2
       exit 64
+      ;;
+  esac
+}
+
+normalized_agent_os() {
+  local value="${AGENT_OS:-}"
+  if [[ -z "$value" ]]; then
+    value="$(uname -s)"
+  fi
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+resolve_managed_agent_implementation() {
+  case "$(normalized_agent_os)" in
+    macos|mac|darwin)
+      # Native macOS E2Es must exercise the Swift Mac agent implementation.
+      # Linux/WendyOS managed agents continue to use the Go daemon below.
+      printf 'swift-mac'
+      ;;
+    *)
+      printf 'go'
       ;;
   esac
 }
@@ -365,6 +387,13 @@ if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
   echo "Use --device-address for the local device address instead." >&2
   exit 64
 fi
+if [[ "$MANAGED_AGENT" == "true" ]]; then
+  MANAGED_AGENT_IMPLEMENTATION="$(resolve_managed_agent_implementation)"
+  if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac" && "$(uname -s)" != "Darwin" ]]; then
+    echo "ERROR: Swift Mac managed agents can only run on macOS runners." >&2
+    exit 64
+  fi
+fi
 
 if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
   echo "ERROR: invalid --device-address." >&2
@@ -612,23 +641,59 @@ EOF
   echo "    Version: $version"
 }
 
+managed_agent_path() {
+  case "$MANAGED_AGENT_IMPLEMENTATION" in
+    swift-mac)
+      printf '%s/wendy-agent-swift' "$AGENT_BIN_DIR"
+      ;;
+    *)
+      printf '%s/wendy-agent' "$AGENT_BIN_DIR"
+      ;;
+  esac
+}
+
 build_managed_agent() {
-  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local agent_path
+  agent_path="$(managed_agent_path)"
 
   echo "==> Building managed wendy-agent"
+  echo "    Implementation: ${MANAGED_AGENT_IMPLEMENTATION:-go}"
   echo "    Output: $agent_path"
 
   mkdir -p "$AGENT_BIN_DIR"
-  (
-    cd "$REPO_DIR/go"
-    go build -o "$agent_path" ./cmd/wendy-agent
-  )
+  case "$MANAGED_AGENT_IMPLEMENTATION" in
+    swift-mac)
+      local scratch_path="$REPO_DIR/swift/Build/SwiftPM"
+      local built_bin_path
+      (
+        cd "$REPO_DIR/swift/WendyAgentCore"
+        swift build \
+          -c debug \
+          --product wendy-agent-swift \
+          --scratch-path "$scratch_path"
+        built_bin_path="$(swift build \
+          -c debug \
+          --product wendy-agent-swift \
+          --scratch-path "$scratch_path" \
+          --show-bin-path)/wendy-agent-swift"
+        cp "$built_bin_path" "$agent_path"
+      )
+      chmod +x "$agent_path"
+      ;;
+    *)
+      (
+        cd "$REPO_DIR/go"
+        go build -o "$agent_path" ./cmd/wendy-agent
+      )
+      ;;
+  esac
 
-  "$agent_path" --version
+  WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-dev}" "$agent_path" --version
 }
 
 start_managed_agent() {
-  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local agent_path
+  agent_path="$(managed_agent_path)"
   local managed_dir="$RUN_DIR/managed-agent"
   local config_dir="$managed_dir/config"
   local stdout_path="$managed_dir/stdout.log"
@@ -651,17 +716,19 @@ start_managed_agent() {
   echo "    Config:  $config_dir"
   echo "    Logs:    $stdout_path, $stderr_path"
 
-  mkdir -p "$config_dir/home" "$config_dir/xdg-config" "$config_dir/xdg-data"
+  mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
   env -i \
     HOME="$config_dir/home" \
     LOGNAME="wendy-e2e-agent" \
-    PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     TMPDIR="${TMPDIR:-/tmp}" \
     USER="wendy-e2e-agent" \
     WENDY_CONFIG_PATH="$config_dir" \
     XDG_CONFIG_HOME="$config_dir/xdg-config" \
     XDG_DATA_HOME="$config_dir/xdg-data" \
     WENDY_AGENT_PORT="$port" \
+    WENDY_AGENT_STATE_DIR="$config_dir/state" \
+    WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-dev}" \
     WENDY_OTEL_PORT=0 \
     WENDY_OTEL_HTTP_PORT=0 \
     WENDY_REGISTRY_ADDR=127.0.0.1:0 \
@@ -849,7 +916,8 @@ write_attempt_info() {
     printf '    "filters": '; json_string_array "${TEST_FILTERS[@]}"; echo ","
     printf '    "isolation": '; json_string "$ISOLATION"; echo ","
     printf '    "parallel": '; json_bool "$PARALLEL"; echo ","
-    printf '    "managedAgent": '; json_bool "$MANAGED_AGENT"; echo
+    printf '    "managedAgent": '; json_bool "$MANAGED_AGENT"; echo ","
+    printf '    "managedAgentImplementation": '; json_string_or_null "$MANAGED_AGENT_IMPLEMENTATION"; echo
     echo '  },'
     echo '  "tools": {'
     printf '    "swift": '; json_string_or_null "$swift_version"; echo ","
@@ -954,6 +1022,9 @@ fi
 echo "    Agent OS: ${AGENT_OS:-<current>}"
 echo "    Transport: ${TRANSPORT:-<none>}"
 echo "    Managed agent: $MANAGED_AGENT"
+if [[ "$MANAGED_AGENT" == "true" ]]; then
+  echo "    Managed agent implementation: ${MANAGED_AGENT_IMPLEMENTATION:-go}"
+fi
 
 set +e
 (

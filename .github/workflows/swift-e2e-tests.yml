@@ -57,6 +57,8 @@ permissions:
   pull-requests: write
 
 jobs:
+  # macOS managed-agent routes start the Swift Mac agent, not the Go daemon,
+  # so native Mac file sync and app lifecycle E2Es exercise the production path.
   swift-e2e-local-macos:
     name: 'Local: macOS 26'
     if: ${{ inputs.target_group == '' || inputs.target_group == 'all' || inputs.target_group == 'local' }}
