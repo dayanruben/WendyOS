@@ -1001,8 +1001,15 @@ func newROS2ExecCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exec [args...]",
 		Short: "Run a raw ros2 CLI command on the device",
-		Long:  "Run a raw ros2 CLI command inside the device's ROS 2 sidecar, e.g.\n  wendy device ros2 exec topic bw /scan",
-		Args:  cobra.MinimumNArgs(1),
+		Long: `Run a raw ros2 CLI command inside the device's ROS 2 sidecar.
+
+Everything after the ros2 command word is forwarded verbatim, so --flags
+work without escaping. Any wendy flags (--device, --domain) must come before
+the ros2 command; use -- to force the rest of the line through unparsed.`,
+		Example: `  wendy device ros2 exec topic echo /chatter --once
+  wendy device ros2 exec topic pub /cmd_vel geometry_msgs/msg/Twist --rate 10
+  wendy device ros2 exec --domain 5 node list`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -1041,5 +1048,9 @@ func newROS2ExecCmd() *cobra.Command {
 		},
 	}
 	ros2DomainFlag(cmd, &domain)
+	// Stop flag parsing at the first positional (the ros2 command word) so that
+	// --flags meant for ros2 (e.g. `topic echo /chatter --once`) forward verbatim
+	// instead of being rejected as unknown flags of this command (WDY-1553).
+	cmd.Flags().SetInterspersed(false)
 	return cmd
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -121,5 +122,32 @@ func TestROS2DomainPtr(t *testing.T) {
 	}
 	if got := ros2DomainPtr(42); got == nil || *got != 42 {
 		t.Errorf("ros2DomainPtr(42) = %v", got)
+	}
+}
+
+// TestROS2ExecForwardsFlags guards WDY-1553: the raw escape hatch must forward
+// --flags meant for ros2 verbatim instead of rejecting them as unknown flags,
+// while still parsing wendy's own flags when they precede the ros2 command.
+func TestROS2ExecForwardsFlags(t *testing.T) {
+	// --once belongs to ros2 and must survive as a positional, not error out.
+	cmd := newROS2ExecCmd()
+	args := []string{"topic", "echo", "/chatter", "--once"}
+	if err := cmd.ParseFlags(args); err != nil {
+		t.Fatalf("ParseFlags(%v) = %v, want nil (ros2 flags must forward verbatim)", args, err)
+	}
+	if got := cmd.Flags().Args(); !reflect.DeepEqual(got, args) {
+		t.Errorf("forwarded args = %v, want %v", got, args)
+	}
+
+	// A leading --domain is wendy's own flag: parse it, forward the rest verbatim.
+	cmd = newROS2ExecCmd()
+	if err := cmd.ParseFlags([]string{"--domain", "5", "topic", "echo", "--once"}); err != nil {
+		t.Fatalf("ParseFlags with leading --domain = %v, want nil", err)
+	}
+	if got, _ := cmd.Flags().GetInt32("domain"); got != 5 {
+		t.Errorf("--domain = %d, want 5", got)
+	}
+	if got, want := cmd.Flags().Args(), []string{"topic", "echo", "--once"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("forwarded args = %v, want %v", got, want)
 	}
 }
