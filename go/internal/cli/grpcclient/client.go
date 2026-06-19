@@ -33,9 +33,9 @@ const (
 	grpcWriteBufferSize     = 256 * 1024
 
 	// Keep direct-agent pings conservative. macOS agents may close long-running
-	// build/deploy/log streams when clients ping more frequently than the
-	// server's HTTP/2 keepalive policy allows.
-	grpcKeepaliveTime    = 5 * time.Minute
+	// build/deploy/log streams with ENHANCE_YOUR_CALM/too_many_pings when
+	// clients ping near the server's HTTP/2 keepalive policy floor.
+	grpcKeepaliveTime    = 15 * time.Minute
 	grpcKeepaliveTimeout = 10 * time.Second
 )
 
