@@ -177,19 +177,24 @@ extension WendyAgentConfiguration {
     fileprivate static var environment: Self {
         #if DEBUG
             let environment = ProcessInfo.processInfo.environment
+            guard environment["WENDY_AGENT_E2E_ROOT"]?.isEmpty == false else {
+                return Self()
+            }
             return Self(
-                port: Self.intValue(
+                port: Self.portValue(
                     named: "WENDY_AGENT_PORT",
                     in: environment,
-                    default: 50051
+                    default: 50051,
+                    allowsZero: false
                 ),
-                otelPort: Self.intValue(
+                otelPort: Self.portValue(
                     named: "WENDY_OTEL_PORT",
                     in: environment,
-                    default: 4317
+                    default: 4317,
+                    allowsZero: true
                 ),
-                appPath: environment["WENDY_AGENT_APP_PATH"] ?? "",
-                sandboxProfile: environment["WENDY_AGENT_SANDBOX_PROFILE"] ?? ""
+                appPath: "",
+                sandboxProfile: ""
             )
         #else
             return Self()
@@ -197,12 +202,17 @@ extension WendyAgentConfiguration {
     }
 
     #if DEBUG
-        fileprivate static func intValue(
+        fileprivate static func portValue(
             named name: String,
             in environment: [String: String],
-            default defaultValue: Int
+            default defaultValue: Int,
+            allowsZero: Bool
         ) -> Int {
             guard let value = environment[name], let intValue = Int(value) else {
+                return defaultValue
+            }
+            let lowerBound = allowsZero ? 0 : 1
+            guard (lowerBound...65535).contains(intValue) else {
                 return defaultValue
             }
             return intValue

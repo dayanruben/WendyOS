@@ -130,6 +130,11 @@ validate_port() {
   (( 10#$port >= 1 && 10#$port <= 65535 ))
 }
 
+safe_managed_env_path() {
+  local path="$1"
+  [[ "$path" =~ ^/[-._/+A-Za-z0-9]+$ ]]
+}
+
 valid_device_address() {
   local value="$1" port=""
   [[ "$value" != *@* ]] || return 1
@@ -698,6 +703,10 @@ build_managed_agent() {
           ditto \
             "$REPO_DIR/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app" \
             "$agent_path"
+          [[ -x "$agent_path/Contents/MacOS/WendyAgentMac" ]] || {
+            echo "ERROR: built WendyAgentMac executable is missing." >&2
+            exit 1
+          }
         fi
       )
       /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
@@ -740,12 +749,21 @@ start_managed_agent() {
   echo "    Logs:    $stdout_path, $stderr_path"
 
   mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+  (umask 077; : > "$pid_path")
   if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
     while old_pid="$(find_managed_mac_app_pid)" && [[ -n "$old_pid" ]]; do
       kill "$old_pid" 2>/dev/null || true
       sleep 1
     done
+    if ! validate_port "$port" \
+      || [[ "$config_dir" != "$RUN_DIR/"* ]] \
+      || ! safe_managed_env_path "$RUN_DIR" \
+      || ! safe_managed_env_path "$config_dir"
+    then
+      echo "ERROR: invalid managed WendyAgentMac E2E launch configuration." >&2
+      return 64
+    fi
     : >"$stdout_path"
     : >"$stderr_path"
     open \
@@ -755,6 +773,7 @@ start_managed_agent() {
       --stderr "$stderr_path" \
       --env "WENDY_AGENT_PORT=$port" \
       --env "WENDY_AGENT_STATE_DIR=$config_dir/state" \
+      --env "WENDY_AGENT_E2E_ROOT=$RUN_DIR" \
       --env "WENDY_OTEL_PORT=0" \
       "$(managed_agent_path)"
   else
@@ -810,7 +829,10 @@ start_managed_agent() {
 
 stop_managed_agent() {
   if [[ "${MANAGED_AGENT_IMPLEMENTATION:-}" == "swift-mac-app" ]]; then
-    "$REPO_DIR/swift/Scripts/Quit.sh" >/dev/null 2>&1 || true
+    local quit_log="$RUN_DIR/managed-agent/quit.log"
+    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >>"$quit_log" 2>&1; then
+      echo "WARN: WendyAgentMac quit script reported an error; see $quit_log" >&2
+    fi
     local pid="${MANAGED_AGENT_PID:-}"
     if [[ -z "$pid" ]]; then
       pid="$(find_managed_mac_app_pid)"
