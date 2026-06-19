@@ -634,7 +634,9 @@ struct ContainerServiceTests {
         )
 
         #expect(environment["HOME"] == "/Users/wendy")
-        #expect(environment["PATH"] == "/opt/homebrew/bin:/usr/bin:/bin")
+        #expect(
+            environment["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        )
         #expect(environment["TMPDIR"] == "/tmp")
         #expect(environment["USER"] == "wendy")
         #expect(environment["HOMEBREW_NO_ANALYTICS"] == "1")

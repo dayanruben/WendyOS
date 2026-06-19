@@ -3,16 +3,8 @@ import Testing
 import WendyE2ETesting
 
 private typealias Machine = WendyE2EMachine
-private let nativeMacBrewfileE2EEnabled =
-    ProcessInfo.processInfo.environment["WENDY_E2E_ENABLE_NATIVE_MAC_BREWFILE_TESTS"] == "1"
 
-@Suite(
-    .serialized,
-    .enabled(
-        if: Machine.agent.os == .macOS && nativeMacBrewfileE2EEnabled,
-        "Specs require a real Wendy Agent for Mac target with Homebrew; set WENDY_E2E_ENABLE_NATIVE_MAC_BREWFILE_TESTS=1 to run"
-    )
-)
+@Suite(.enabled(if: Machine.agent.os == .macOS, "Specs only valid for macOS agent"))
 struct `'wendy run' with native Mac Brewfiles` {
     /**
      Auto-detects `Brewfile.wendy`, syncs it to the target Mac, and runs
@@ -239,14 +231,11 @@ struct `'wendy run' with native Mac Brewfiles` {
         filesJSON: String = "[]",
         extraFiles: [String: String] = [:]
     ) async throws -> String {
-        let project = try await Self.makeProjectDirectory(cli, name: name)
+        let project = try Self.makeProjectDirectory(cli, name: name)
         let brewfileLine = brewfile.map { ",\n  \"brewfile\": \"\($0)\"" } ?? ""
-        try await cli.sh(
-            posix: """
-                set -euo pipefail
-                project=\(Self.shQuote(project))
-                /bin/mkdir -p "$project/Sources/BrewfileE2E"
-                /bin/cat > "$project/Package.swift" <<'EOF'
+        try Self.writeFile(
+            at: "\(project)/Package.swift",
+            contents: """
                 // swift-tools-version: 6.0
                 import PackageDescription
 
@@ -256,11 +245,12 @@ struct `'wendy run' with native Mac Brewfiles` {
                     products: [.executable(name: "BrewfileE2E", targets: ["BrewfileE2E"])],
                     targets: [.executableTarget(name: "BrewfileE2E")]
                 )
-                EOF
-                /bin/cat > "$project/Sources/BrewfileE2E/main.swift" <<'EOF'
-                \(appSource)
-                EOF
-                /bin/cat > "$project/wendy.json" <<'EOF'
+                """
+        )
+        try Self.writeFile(at: "\(project)/Sources/BrewfileE2E/main.swift", contents: appSource)
+        try Self.writeFile(
+            at: "\(project)/wendy.json",
+            contents: """
                 {
                   "appId": "\(appID)",
                   "version": "1.0.0",
@@ -268,11 +258,9 @@ struct `'wendy run' with native Mac Brewfiles` {
                   "platform": "darwin",
                   "files": \(filesJSON)\(brewfileLine)
                 }
-                EOF
-                """,
-            power: "throw 'unsupported'"
+                """
         )
-        try await Self.writeExtraFiles(cli, project: project, files: extraFiles)
+        try Self.writeExtraFiles(project: project, files: extraFiles)
         return project
     }
 
@@ -282,13 +270,14 @@ struct `'wendy run' with native Mac Brewfiles` {
         appID: String,
         extraFiles: [String: String]
     ) async throws -> String {
-        let project = try await Self.makeProjectDirectory(cli, name: name)
-        try await cli.sh(
-            posix: """
-                set -euo pipefail
-                project=\(Self.shQuote(project))
-                /bin/mkdir -p "$project/BrewfileXcode.xcodeproj"
-                /bin/cat > "$project/wendy.json" <<'EOF'
+        let project = try Self.makeProjectDirectory(cli, name: name)
+        try FileManager.default.createDirectory(
+            atPath: "\(project)/BrewfileXcode.xcodeproj",
+            withIntermediateDirectories: true
+        )
+        try Self.writeFile(
+            at: "\(project)/wendy.json",
+            contents: """
                 {
                   "appId": "\(appID)",
                   "version": "1.0.0",
@@ -296,63 +285,60 @@ struct `'wendy run' with native Mac Brewfiles` {
                   "platform": "darwin",
                   "xcode": { "scheme": "BrewfileXcode" }
                 }
-                EOF
-                """,
-            power: "throw 'unsupported'"
+                """
         )
-        try await Self.writeExtraFiles(cli, project: project, files: extraFiles)
+        try Self.writeExtraFiles(project: project, files: extraFiles)
         return project
     }
 
-    private static func makeProjectDirectory(
-        _ cli: WendyE2ESession,
-        name: String
-    ) async throws
-        -> String
+    private static func makeProjectDirectory(_ cli: WendyE2ESession, name: String) throws -> String
     {
-        try await cli.sh(
-            posix: """
-                set -euo pipefail
-                project="$PWD/\(name)"
-                /bin/rm -rf "$project"
-                /bin/mkdir -p "$project"
-                printf '%s\n' "$project"
-                """,
-            power: "throw 'unsupported'"
-        ) { result in
-            try result.requireSuccess()
-            return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let workingDirectory = cli.workingDirectory else {
+            throw NSError(
+                domain: "WendyRunWithNativeMacBrewfilesTests",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "CLI session must have a local working directory"
+                ]
+            )
+        }
+        let project = "\(workingDirectory)/\(name)"
+        try? FileManager.default.removeItem(atPath: project)
+        try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+        return project
+    }
+
+    private static func writeExtraFiles(project: String, files: [String: String]) throws {
+        for (relativePath, content) in files {
+            try Self.writeFile(at: "\(project)/\(relativePath)", contents: content)
         }
     }
 
-    private static func writeExtraFiles(
-        _ cli: WendyE2ESession,
-        project: String,
-        files: [String: String]
-    ) async throws {
-        for (relativePath, content) in files {
-            try await cli.sh(
-                posix: """
-                    set -euo pipefail
-                    path=\(Self.shQuote("\(project)/\(relativePath)"))
-                    /bin/mkdir -p "${path%/*}"
-                    printf %s \(Self.shQuote(content)) > "$path"
-                    """,
-                power: "throw 'unsupported'"
-            )
-        }
+    private static func writeFile(at path: String, contents: String) throws {
+        try FileManager.default.createDirectory(
+            atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path,
+            withIntermediateDirectories: true
+        )
+        try contents.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     private static func installFakeXcodebuild(
         _ cli: WendyE2ESession,
         scheme: String
     ) async throws {
-        try await cli.sh(
-            posix: """
-                set -euo pipefail
-                bin_dir="${PATH%%:*}"
-                /bin/mkdir -p "$bin_dir"
-                /bin/cat > "$bin_dir/xcodebuild" <<'EOF'
+        guard let binDirectory = cli.env["PATH"]?.split(separator: ":").first else {
+            throw NSError(
+                domain: "WendyRunWithNativeMacBrewfilesTests",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "CLI session PATH must include a bin directory"
+                ]
+            )
+        }
+        let scriptPath = "\(binDirectory)/xcodebuild"
+        try Self.writeFile(
+            at: scriptPath,
+            contents: """
                 #!/bin/sh
                 set -eu
                 for arg in "$@"; do
@@ -377,10 +363,11 @@ struct `'wendy run' with native Mac Brewfiles` {
                 exit 42
                 APP
                 /bin/chmod +x "$product"
-                EOF
-                /bin/chmod +x "$bin_dir/xcodebuild"
-                """,
-            power: "throw 'unsupported'"
+                """
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptPath
         )
     }
 

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // appIDPattern restricts appId to characters that are safe to embed in
@@ -416,7 +417,7 @@ func (c *AppConfig) Validate() error {
 	}
 
 	if c.Brewfile != "" {
-		if !isSafeRelativeBrewfilePath(c.Brewfile) {
+		if !IsSafeRelativeBrewfilePath(c.Brewfile) {
 			return fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
 		}
 	}
@@ -469,9 +470,14 @@ func containsDotDot(p string) bool {
 	return false
 }
 
-func isSafeRelativeBrewfilePath(p string) bool {
-	if p == "" || strings.HasPrefix(p, "/") {
+func IsSafeRelativeBrewfilePath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") || strings.Contains(p, "\x00") {
 		return false
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			return false
+		}
 	}
 	for _, component := range strings.Split(p, "/") {
 		if component == "" || component == "." || component == ".." {

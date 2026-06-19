@@ -68,6 +68,9 @@ func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*f
 	}
 
 	remotePath := effectiveRemotePath(configured, "")
+	if !appconfig.IsSafeRelativeBrewfilePath(remotePath) {
+		return nil, fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
+	}
 	appCfg.Brewfile = remotePath
 	return &fileSyncEntry{localPath: localPath, remotePath: remotePath}, nil
 }
@@ -111,11 +114,15 @@ func syncEntryCoversBrewfile(existing, brewfile fileSyncEntry) (brewfileCoverage
 	}
 
 	candidate := filepath.Join(existing.localPath, rel)
-	if _, err := os.Stat(candidate); err != nil {
+	candidateInfo, err := os.Lstat(candidate)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return brewfileCoverage{}, nil
 		}
 		return brewfileCoverage{}, fmt.Errorf("checking synced brewfile source %s: %w", candidate, err)
+	}
+	if !candidateInfo.Mode().IsRegular() {
+		return brewfileCoverage{}, nil
 	}
 
 	same, err := sameLocalFile(candidate, brewfile.localPath)

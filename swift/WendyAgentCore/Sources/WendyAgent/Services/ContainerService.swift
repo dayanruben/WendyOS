@@ -434,9 +434,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         if environment["HOME"] == nil {
             environment["HOME"] = NSHomeDirectory()
         }
-        environment["PATH"] =
-            source["PATH"].flatMap { $0.isEmpty ? nil : $0 }
-            ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
         return environment
     }
@@ -458,23 +456,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         return true
     }
 
-    nonisolated private static func unresolvedBrewfileURL(
-        appDirectory: String,
-        brewfile: String
-    ) -> URL {
-        URL(fileURLWithPath: appDirectory, isDirectory: true)
-            .appendingPathComponent(brewfile)
-            .standardizedFileURL
-    }
-
     nonisolated private static func brewfileURL(
         appDirectory: String,
         brewfile: String
     ) throws -> URL {
         let appDirectoryURL = URL(fileURLWithPath: appDirectory, isDirectory: true)
-            .resolvingSymlinksInPath()
-        let brewfileURL = Self.unresolvedBrewfileURL(appDirectory: appDirectory, brewfile: brewfile)
-            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let brewfileURL = appDirectoryURL.appendingPathComponent(brewfile)
+            .standardizedFileURL
         let appComponents = appDirectoryURL.pathComponents
         let brewfileComponents = brewfileURL.pathComponents
         guard brewfileComponents.starts(with: appComponents),
@@ -503,32 +492,77 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
     }
 
+    nonisolated private static func validatedBrewfileContents(
+        atPath path: String
+    ) throws -> (data: Data, formulas: [String]) {
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            throw RPCError(code: .failedPrecondition, message: "Unable to read Brewfile after sync")
+        }
+        guard data.count <= 64 * 1024 else {
+            throw RPCError(code: .invalidArgument, message: "Brewfile is too large")
+        }
+        let allowedNameCharacters = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-"
+        )
+        let text = String(decoding: data, as: UTF8.self)
+        var formulas: [String] = []
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty || line.hasPrefix("#") {
+                continue
+            }
+            let name: String?
+            if line.hasPrefix("brew \"") && line.hasSuffix("\"") {
+                name = String(line.dropFirst(6).dropLast())
+            } else if line.hasPrefix("brew '") && line.hasSuffix("'") {
+                name = String(line.dropFirst(6).dropLast())
+            } else {
+                name = nil
+            }
+            guard let name, (1...64).contains(name.count),
+                name.unicodeScalars.allSatisfy({ allowedNameCharacters.contains($0) })
+            else {
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "Brewfile supports simple brew formula entries only"
+                )
+            }
+            formulas.append(name)
+            guard formulas.count <= 50 else {
+                throw RPCError(code: .invalidArgument, message: "Brewfile has too many entries")
+            }
+        }
+        return (data, formulas)
+    }
+
     nonisolated private static func runBrewBundle(
         brewExecutable: String,
         brewfilePath: String,
         appDirectory: String
-    ) async throws -> (status: Int32, output: String) {
+    ) async throws -> Int32 {
         try await Task.detached(priority: .utility) {
             let process = Foundation.Process()
             process.executableURL = URL(fileURLWithPath: brewExecutable)
             process.arguments = Self.brewBundleArguments(brewfilePath: brewfilePath)
             process.currentDirectoryURL = URL(fileURLWithPath: appDirectory)
             process.environment = Self.brewBundleEnvironment()
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
 
             try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-
-            return (
-                process.terminationStatus,
-                String(decoding: data, as: UTF8.self).trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-            )
+            let deadline = Date().addingTimeInterval(5 * 60)
+            while process.isRunning {
+                if Date() >= deadline {
+                    process.terminate()
+                    process.waitUntilExit()
+                    return 124
+                }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            return process.terminationStatus
         }.value
     }
 
@@ -551,25 +585,33 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
-        let unresolvedBrewfilePath = Self.unresolvedBrewfileURL(
-            appDirectory: appDirectory,
-            brewfile: brewfile
-        ).path
-        var isDirectory = ObjCBool(false)
-        guard
-            FileManager.default.fileExists(
-                atPath: unresolvedBrewfilePath,
-                isDirectory: &isDirectory
-            ),
-            !isDirectory.boolValue
-        else {
-            throw RPCError(
-                code: .notFound,
-                message: "Brewfile \(brewfile) declared in wendy.json was not found after sync"
-            )
-        }
-        try Self.ensureRegularBrewfile(atPath: unresolvedBrewfilePath)
         try Self.ensureRegularBrewfile(atPath: brewfilePath)
+        let validatedBrewfile = try Self.validatedBrewfileContents(atPath: brewfilePath)
+        let sanitizedBrewfile =
+            validatedBrewfile.formulas
+            .map { "brew \"\($0)\"\n" }
+            .joined()
+            .data(using: .utf8) ?? Data()
+        let bundleBaseDirectory = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let bundleDirectory =
+            bundleBaseDirectory
+            .appendingPathComponent(
+                "WendyAgent/BrewBundles/\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: bundleDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: bundleDirectory) }
+        let bundleURL = bundleDirectory.appendingPathComponent("Brewfile")
+        try sanitizedBrewfile.write(to: bundleURL, options: .withoutOverwriting)
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
@@ -588,32 +630,31 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             ]
         )
 
-        let result: (status: Int32, output: String)
+        let status: Int32
         do {
-            result = try await Self.runBrewBundle(
+            status = try await Self.runBrewBundle(
                 brewExecutable: brewExecutable,
-                brewfilePath: brewfilePath,
+                brewfilePath: bundleURL.path,
                 appDirectory: appDirectory
             )
         } catch {
             throw RPCError(
                 code: .failedPrecondition,
-                message: "Failed to run brew bundle for Brewfile \(brewfile): \(error)"
+                message: "Failed to launch brew bundle for Brewfile \(brewfile)"
             )
         }
 
-        guard result.status == 0 else {
+        guard status == 0 else {
             let message = Self.brewBundleFailureMessage(
                 brewfile: brewfile,
-                status: result.status
+                status: status
             )
             logger.error(
                 "brew bundle failed",
                 metadata: [
                     "app_name": "\(appName)",
                     "brewfile": "\(brewfile)",
-                    "exit_code": "\(result.status)",
-                    "output_bytes": "\(result.output.utf8.count)",
+                    "exit_code": "\(status)",
                 ]
             )
             throw RPCError(code: .failedPrecondition, message: message)
