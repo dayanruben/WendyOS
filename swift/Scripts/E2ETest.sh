@@ -668,10 +668,6 @@ managed_agent_executable_path() {
   esac
 }
 
-find_managed_mac_app_pid() {
-  pgrep -f -- "$(managed_agent_executable_path)" | head -n 1 || true
-}
-
 build_managed_agent() {
   local agent_path
   agent_path="$(managed_agent_path)"
@@ -752,14 +748,12 @@ start_managed_agent() {
   (umask 077; : > "$pid_path")
   if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
-    while old_pid="$(find_managed_mac_app_pid)" && [[ -n "$old_pid" ]]; do
-      kill "$old_pid" 2>/dev/null || true
-      sleep 1
-    done
     if ! validate_port "$port" \
       || [[ "$config_dir" != "$RUN_DIR/"* ]] \
       || ! safe_managed_env_path "$RUN_DIR" \
-      || ! safe_managed_env_path "$config_dir"
+      || ! safe_managed_env_path "$config_dir" \
+      || ! safe_managed_env_path "$config_dir/state" \
+      || ! safe_managed_env_path "$pid_path"
     then
       echo "ERROR: invalid managed WendyAgentMac E2E launch configuration." >&2
       return 64
@@ -773,7 +767,9 @@ start_managed_agent() {
       --stderr "$stderr_path" \
       --env "WENDY_AGENT_PORT=$port" \
       --env "WENDY_AGENT_STATE_DIR=$config_dir/state" \
+      --env "WENDY_AGENT_E2E=1" \
       --env "WENDY_AGENT_E2E_ROOT=$RUN_DIR" \
+      --env "WENDY_AGENT_E2E_PID_FILE=$pid_path" \
       --env "WENDY_OTEL_PORT=0" \
       "$(managed_agent_path)"
   else
@@ -803,12 +799,14 @@ start_managed_agent() {
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
-      if [[ -z "$MANAGED_AGENT_PID" ]]; then
-        MANAGED_AGENT_PID="$(find_managed_mac_app_pid)"
-        if [[ -n "$MANAGED_AGENT_PID" ]]; then
-          (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
-        fi
-      elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+      if [[ -z "$MANAGED_AGENT_PID" && -s "$pid_path" ]]; then
+        MANAGED_AGENT_PID="$(head -n 1 "$pid_path")"
+      fi
+      if [[ -n "$MANAGED_AGENT_PID" && ! "$MANAGED_AGENT_PID" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: managed WendyAgentMac wrote an invalid PID; see $stderr_path in the E2E artifact." >&2
+        return 1
+      fi
+      if [[ -n "$MANAGED_AGENT_PID" ]] && ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
         echo "ERROR: managed WendyAgentMac exited before becoming ready; see $stderr_path in the E2E artifact." >&2
         return 1
       fi
@@ -834,10 +832,10 @@ stop_managed_agent() {
       echo "WARN: WendyAgentMac quit script reported an error; see $quit_log" >&2
     fi
     local pid="${MANAGED_AGENT_PID:-}"
-    if [[ -z "$pid" ]]; then
-      pid="$(find_managed_mac_app_pid)"
+    if [[ -z "$pid" && -s "$RUN_DIR/managed-agent/pid" ]]; then
+      pid="$(head -n 1 "$RUN_DIR/managed-agent/pid")"
     fi
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       local deadline=$((SECONDS + 10))
       while (( SECONDS < deadline )); do
@@ -847,6 +845,7 @@ stop_managed_agent() {
         sleep 1
       done
       if kill -0 "$pid" 2>/dev/null; then
+        echo "WARN: WendyAgentMac PID $pid did not exit gracefully; sending SIGKILL." | tee -a "$quit_log" >&2
         kill -9 "$pid" 2>/dev/null || true
       fi
     fi

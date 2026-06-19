@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
+        #if DEBUG
+            self.writeE2EPIDFileIfRequested()
+        #endif
 
         self.statusMenuController = StatusMenuController(
             wendyAgent: self.wendyAgent,
@@ -83,6 +86,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         self.welcomeAndPermissionsPresentationTask = nil
         self.welcomeAndPermissionsWindow = nil
     }
+
+    #if DEBUG
+        private func writeE2EPIDFileIfRequested() {
+            let environment = ProcessInfo.processInfo.environment
+            guard environment["WENDY_AGENT_E2E"] == "1",
+                let e2eRoot = environment["WENDY_AGENT_E2E_ROOT"],
+                let pidFile = environment["WENDY_AGENT_E2E_PID_FILE"],
+                !e2eRoot.isEmpty,
+                !pidFile.isEmpty
+            else {
+                return
+            }
+
+            let rootURL = URL(fileURLWithPath: e2eRoot, isDirectory: true)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            let pidURL = URL(fileURLWithPath: pidFile, isDirectory: false)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            guard pidURL.path == rootURL.path || pidURL.path.hasPrefix(rootURL.path + "/") else {
+                return
+            }
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: pidURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try "\(ProcessInfo.processInfo.processIdentifier)\n".write(
+                    to: pidURL,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            } catch {
+                self.logger.error(
+                    "Failed to write E2E PID file: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+    #endif
 
     private func makeWelcomeAndPermissionsWindow() -> NSWindow {
         let rootView = WelcomeAndPermissionsView(
@@ -177,7 +220,9 @@ extension WendyAgentConfiguration {
     fileprivate static var environment: Self {
         #if DEBUG
             let environment = ProcessInfo.processInfo.environment
-            guard environment["WENDY_AGENT_E2E_ROOT"]?.isEmpty == false else {
+            guard environment["WENDY_AGENT_E2E"] == "1",
+                environment["WENDY_AGENT_E2E_ROOT"]?.isEmpty == false
+            else {
                 return Self()
             }
             return Self(

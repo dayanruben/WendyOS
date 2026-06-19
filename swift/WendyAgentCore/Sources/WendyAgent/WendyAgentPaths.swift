@@ -3,7 +3,8 @@ import Foundation
 enum WendyAgentPaths {
     static var stateDirectory: URL {
         #if DEBUG
-            if let stateDirectory = ProcessInfo.processInfo.environment["WENDY_AGENT_STATE_DIR"],
+            if ProcessInfo.processInfo.environment["WENDY_AGENT_E2E"] == "1",
+                let stateDirectory = ProcessInfo.processInfo.environment["WENDY_AGENT_STATE_DIR"],
                 let e2eRoot = ProcessInfo.processInfo.environment["WENDY_AGENT_E2E_ROOT"],
                 !stateDirectory.isEmpty,
                 !e2eRoot.isEmpty
