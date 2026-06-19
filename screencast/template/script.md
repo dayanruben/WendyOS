@@ -261,3 +261,23 @@ Second pass:
 Source of truth:
   screencast/README.md
 ```
+
+---
+
+## 11 Thanks
+
+### Say
+
+Thanks for watching. For questions or follow-up, contact Konstantin at konstantin at wendy dot dev, or see the pull request linked on screen.
+
+### Show (slide)
+
+```text
+Thanks for watching
+
+Contact:
+  konstantin@wendy.dev
+
+PR:
+  https://github.com/wendylabsinc/WendyOS/pull/1082
+```
