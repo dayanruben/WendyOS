@@ -108,8 +108,17 @@ type RunConfig struct {
 
 // ROS2Config holds ROS 2 runtime configuration for a container.
 type ROS2Config struct {
-	DomainID int    `json:"domainId,omitempty"`
-	RMW      string `json:"rmw,omitempty"`
+	// DomainID is the explicit ROS_DOMAIN_ID. When nil, a stable hash of
+	// the appId in the range 0–101 is injected instead (WDY-884).
+	DomainID *int `json:"domainId,omitempty"`
+	// RMW selects the ROS middleware implementation. Accepts short names
+	// ("cyclonedds", "fastrtps") or full identifiers ("rmw_cyclonedds_cpp").
+	// Defaults to CycloneDDS.
+	RMW string `json:"rmw,omitempty"`
+	// Distro is the ROS 2 distribution the app targets (e.g. "humble",
+	// "jazzy"). The agent uses it to pick the matching CLI sidecar image.
+	// Defaults to "humble".
+	Distro string `json:"distro,omitempty"`
 }
 
 // FrameworksConfig holds optional framework-level configuration (e.g. ROS 2).
