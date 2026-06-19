@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -10,6 +12,7 @@ if (!url) {
   console.error('usage: record-page.mjs <url> [output.mp4]');
   process.exit(2);
 }
+const allowUnsafeURLs = process.env.SCREENCAST_ALLOW_UNSAFE_URLS === '1';
 
 const output = resolve(process.argv[3] ?? 'page.capture.mp4');
 const chromium = process.env.CHROMIUM_PATH ?? [
@@ -82,7 +85,78 @@ function easeInOut(t) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
+function normalizeHostname(hostname) {
+  return hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase();
+}
+
+function isBlockedIPv4(address) {
+  const parts = address.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b, c] = parts;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && (b === 168 || (b === 0 && (c === 0 || c === 2)) || (b === 88 && c === 99)))
+    || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100)))
+    || (a === 203 && b === 0 && c === 113)
+    || a >= 224;
+}
+
+function isBlockedIPv6(address) {
+  const normalized = address.toLowerCase();
+  if (normalized === '::' || normalized === '::1') return true;
+  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
+  if (normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('ff')) return true;
+  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  return mapped ? isBlockedIPv4(mapped[1]) : false;
+}
+
+function isBlockedIP(address) {
+  const version = isIP(address);
+  if (version === 4) return isBlockedIPv4(address);
+  if (version === 6) return isBlockedIPv6(address);
+  return true;
+}
+
+async function validateURL(input) {
+  let parsed;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new Error(`invalid URL: ${input}`);
+  }
+
+  if (allowUnsafeURLs) return parsed.href;
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('record-page only allows https URLs by default; set SCREENCAST_ALLOW_UNSAFE_URLS=1 for trusted local captures');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('record-page URLs must not include embedded credentials');
+  }
+
+  const hostname = normalizeHostname(parsed.hostname);
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    throw new Error('record-page refuses localhost URLs by default');
+  }
+
+  if (isIP(hostname)) {
+    if (isBlockedIP(hostname)) throw new Error(`record-page refuses private or reserved address: ${hostname}`);
+    return parsed.href;
+  }
+
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (addresses.length === 0) throw new Error(`record-page could not resolve hostname: ${hostname}`);
+  const blocked = addresses.find((entry) => isBlockedIP(entry.address));
+  if (blocked) throw new Error(`record-page refuses hostname that resolves to private or reserved address: ${hostname} -> ${blocked.address}`);
+  return parsed.href;
+}
+
 async function main() {
+  const safeURL = await validateURL(url);
   const workdir = await mkdtemp(join(tmpdir(), 'screencast-docs-record-'));
   const userDataDir = join(workdir, 'profile');
   const framesDir = join(workdir, 'frames');
@@ -109,9 +183,9 @@ async function main() {
 
   try {
     await waitForJSON(`http://127.0.0.1:${port}/json/version`);
-    await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
+    await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(safeURL)}`, { method: 'PUT' });
     const targets = await waitForJSON(`http://127.0.0.1:${port}/json/list`);
-    const target = targets.find((t) => t.type === 'page' && t.url === url)
+    const target = targets.find((t) => t.type === 'page' && t.url === safeURL)
       ?? targets.find((t) => t.type === 'page' && t.url !== 'about:blank')
       ?? targets.find((t) => t.type === 'page');
     if (!target?.webSocketDebuggerUrl) throw new Error('Could not find page target');
@@ -188,6 +262,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error(error.message ?? error);
   process.exit(1);
 });

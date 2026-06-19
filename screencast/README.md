@@ -46,8 +46,12 @@ screencast/
 
 ```sh
 cd screencast
-npm install
+npm ci
 ```
+
+Use `npm ci` so installs use the committed lock file without mutating it. When
+updating dependencies, pin exact versions in `package.json`, regenerate the lock
+file intentionally, and run `npm audit --audit-level=high` before opening a PR.
 
 `render-slide` uses Slidev under the hood to render one `slide.md` at a time.
 There is no aggregate deck and no timeline file.
@@ -226,7 +230,10 @@ than narration, audio is padded with silence. Silent scenes use
 ## Voiceover
 
 `render-voice` requires `OPENAI_API_KEY`. There is intentionally no local voice
-fallback.
+fallback. Treat this as a secret: prefer a secrets manager such as 1Password CLI,
+macOS Keychain, or a CI secret variable; do not hard-code it in scripts or commit
+it in `.env` files. Local `.env` files are ignored by git, but should still be
+kept out of shared artifacts and rotated if exposed.
 
 ```sh
 scripts/render-voice --dry-run 01
@@ -260,6 +267,10 @@ Hook contract:
 - `hooks/setup.sh` runs only with `--setup` or `--with-hooks`.
 - `hooks/teardown.sh` runs only with `--teardown` or `--with-hooks`.
 - Hooks receive `SCREENCAST_ROOT`, `SCREENCAST_YES`, and `SCREENCAST_DRY_RUN`.
+- Review hook scripts before running them; they execute with your local user
+  privileges and may also call connected devices.
+- Do not auto-run hooks in CI unless the workflow requires explicit human
+  approval or runs in a sandboxed container, VM, or restricted user account.
 
 ## Screen/browser footage
 
@@ -277,6 +288,18 @@ For scripted browser captures:
 ```sh
 scripts/record-page.mjs https://docs.example.com/page scenes/03-docs/page.capture.mp4
 ```
+
+`record-page.mjs` only opens public `https:` URLs by default and rejects
+localhost, private, link-local, and metadata-service addresses. For trusted local
+captures, set `SCREENCAST_ALLOW_UNSAFE_URLS=1` explicitly and avoid doing that in
+CI or agent-driven workflows.
+
+## Operational logging
+
+The scripts write render progress and command metadata to stdout/stderr. Keep CI
+logs for review, and retain `output/duration-report.tsv` with final renders when
+you need scene timing provenance. `render-voice` logs model, voice, scene output,
+and duration metadata, but not the narration text or API key.
 
 ## Validation
 

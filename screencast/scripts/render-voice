@@ -54,7 +54,7 @@ async function main() {
   const stats = estimate(text);
 
   if (dryRun) {
-    console.log(`would generate ${output} (${stats})`);
+    console.log(`would generate ${output} (${stats}, model ${model}, voice ${voice})`);
     return;
   }
 
@@ -71,7 +71,7 @@ async function main() {
   }
   await writeFile(output, Buffer.from(await response.arrayBuffer()));
   const actual = duration(output);
-  console.log(`generated ${output} (${stats}${actual ? `, actual ${actual}s` : ''})`);
+  console.log(`generated ${output} (${stats}${actual ? `, actual ${actual}s` : ''}, model ${model}, voice ${voice})`);
 }
 
 main().catch((error) => {

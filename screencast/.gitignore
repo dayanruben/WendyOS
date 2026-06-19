@@ -23,6 +23,12 @@ template/output/*
 !template/output/.gitkeep
 build/
 
+# Local secrets and environment
+.env
+*.env
+.env.*
+!.env.example
+
 # Local bytecode and OS metadata
 __pycache__/
 *.pyc
