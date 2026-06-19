@@ -76,10 +76,6 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	if err := requireRegistryAuth(ctx, conn); err != nil {
-		return err
-	}
-
 	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
@@ -91,13 +87,15 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		architecture = "arm64"
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject("multi-service", platform)
+	}
 
-	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
+	if err := requireRegistryAuth(ctx, conn); err != nil {
 		return err
 	}
-	defer proxyCleanup()
+
+	regPort := registryPort(agentOS)
 
 	buildArgs := map[string]string{
 		"WENDY_PLATFORM": wendyPlatform(versionResp.GetDeviceType()),
@@ -106,24 +104,17 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		cliLogln("Warning: building with WENDY_DEBUG=true — do not deploy to production.")
 		buildArgs["WENDY_DEBUG"] = "true"
 	}
-	if dt := versionResp.GetDeviceType(); dt != "" {
-		buildArgs["WENDY_DEVICE_TYPE"] = dt
-	}
-	if versionResp.HasGpu != nil {
-		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-	}
-	if v := versionResp.GetGpuVendor(); v != "" {
-		buildArgs["WENDY_GPU_VENDOR"] = v
-	}
-	if jv := versionResp.GetJetpackVersion(); jv != "" {
-		buildArgs["WENDY_JETPACK_VERSION"] = jv
-	}
-	if cv := versionResp.GetCudaVersion(); cv != "" {
-		buildArgs["WENDY_CUDA_VERSION"] = cv
+	applyDeviceBuildArgHints(buildArgs, versionResp)
+
+	// Ensure the Apple Container system is up once, before the parallel builds,
+	// so an explicit --builder apple-container prompts/starts a single time
+	// rather than racing across service goroutines.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
+		return err
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, cwd, appCfg.AppID, services, registryAddr, platform, buildArgs, conn.IsMTLS); err != nil {
+	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder); err != nil {
 		return err
 	}
 
@@ -187,11 +178,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 // spinner in interactive terminals and via plain log lines otherwise.
 func buildServicesParallel(
 	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
-	registryAddr, platform string,
+	platform string,
 	buildArgs map[string]string,
-	useMTLS bool,
+	builder string,
 ) error {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -232,8 +225,8 @@ func buildServicesParallel(
 
 			start := time.Now()
 			contextDir := filepath.Join(cwd, svc.Context)
-			imageName := fmt.Sprintf("%s/%s-%s:latest",
-				registryAddr, strings.ToLower(appID), strings.ToLower(name))
+			repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+			dockerfile, dockerfileErr := resolveDockerfile(contextDir, "", false)
 
 			var buildOut io.Writer
 			var logBuf bytes.Buffer
@@ -248,7 +241,10 @@ func buildServicesParallel(
 			if prog == nil {
 				logOut = os.Stderr
 			}
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
+			err := dockerfileErr
+			if err == nil {
+				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, buildOut, logOut)
+			}
 			dur := time.Since(start)
 
 			if prog != nil {

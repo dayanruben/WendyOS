@@ -131,7 +131,8 @@ directories use the dasherized test name.
 └── observations/
     └── <suite>/<test>/
         ├── recording.md
-        └── recording.sh.txt
+        ├── recording.sh.txt
+        └── test.json
 ```
 
 The attempt ID has the shape:
@@ -158,22 +159,28 @@ directories into a run directory:
 │       ├── attempt.json
 │       ├── test-results.xml
 │       └── test-results.raw.xml  # only when present in the source attempt
+├── source-index.md
 └── observations/
-    └── <suite>/<test>/<target-name>/<attempt-number>/
-        ├── recording.md
-        └── recording.sh.txt
+    └── <suite>/<test>/
+        ├── source.md
+        ├── test.json
+        └── <target-name>/<attempt-number>/
+            ├── recording.md
+            ├── recording.sh.txt
+            └── test.json
 ```
 
 The `attempts/` tree keeps every attempt-root artifact except `observations/`,
-so preflight logs and metadata remain attached to the attempt.
+so preflight logs and metadata remain attached to the attempt. Aggregate runs
+also copy `test.json` to the test root and write `source.md`, which contains the
+extracted test source range including the DocC/spec comment above `@Test` when
+present. `source-index.md` lists those source artifacts for AI and human review.
 
-`make e2e-review` writes scoped AI review issue files into the aggregate run
-directory:
+`make e2e-review` runs a single AI review pass and writes run-level issue files
+into the aggregate run directory:
 
 ```text
 <run>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/<test>/review.<reviewer>/<slug>.md
 ```
 
 `make e2e-report` writes the rendered report files at the aggregate run root:
@@ -185,7 +192,9 @@ directory:
 ```
 
 `recording.md` is the human-readable command log. `recording.sh.txt` replays the
-captured `sh()` calls in order for manual debugging.
+captured `sh()` calls in order for manual debugging. `source.md` is kept
+separate from recordings so runtime transcripts stay focused while review still
+has the spec/test source that produced them.
 
 AI review files are Markdown. Top-level `review.md` is the compact aggregate
 that can be posted as a CI comment. Attempt, overview, and AI review JSON
@@ -210,14 +219,41 @@ E2E source files.
 
 ### Organization and naming
 
-Use one flattened suite per command area. The suite name is the command phrase;
-the test name completes the behavior sentence.
+Use one flattened suite per command area, and keep exactly one `@Suite` per
+source file. The suite name is the command phrase; the test name completes the
+behavior sentence. Put related aliases or deprecated command areas in their own
+test files rather than adding a second suite to an existing file. Inside
+backticked Swift suite or test identifiers, wrap command fragments, aliases, and
+flags that should render as code with single quotes. The reference extractor
+converts those quoted spans to Markdown code spans (and HTML `<code>` elements).
+Use `'... subcommand'` when referring to a related command under the same suite
+prefix.
+
+When the same behavior is specified for multiple related commands, keep the same
+suite structure, section order, and test-name wording wherever possible. Change
+only the quoted command fragment or the smallest phrase needed to distinguish the
+command path.
 
 ```swift
+// WendyDeviceInfoTests.swift
 @Suite
 struct `'wendy device info'` {
     @Test
     func `prints JSON device information`() async throws {
+        // Test body.
+    }
+
+    @Test
+    func `'--json' reports a missing device without prompting`() async throws {
+        // Test body.
+    }
+}
+
+// WendyDevicePsTests.swift
+@Suite
+struct `'wendy device ps'` {
+    @Test
+    func `aliases '... device apps list'`() async throws {
         // Test body.
     }
 }
@@ -281,7 +317,21 @@ struct `'wendy device info'` {
 
 `CLIAndAgentScenario` creates CLI and agent sessions, attaches the recorder,
 installs the managed CLI on `PATH`, configures isolated `HOME` and `TMPDIR`, and
-copies the auth fixture for authenticated tests.
+copies the auth fixture for authenticated tests. For scenario-specific target
+setup or cleanup, pass `before` and/or `after` hooks to the scenario initializer;
+`after` runs even when setup or the test body fails, and the original failure is
+preserved unless cleanup is the only failure.
+
+```swift
+let scenario = CLIAndAgentScenario(
+    before: { _, agent in
+        try await agent.sh("brew uninstall --force hello || true")
+    },
+    after: { _, agent in
+        try await agent.sh("brew uninstall --force hello || true")
+    }
+)
+```
 
 ### Specification prose
 

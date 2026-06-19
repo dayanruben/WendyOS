@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -587,7 +589,7 @@ func TestConnectResolvedAgent_NoAuthProvisionedAgentRequiresLogin(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, func() bool { return knownProvisionedMTLS })
 	if conn != nil {
 		conn.Close()
 		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
@@ -629,7 +631,7 @@ func TestConnectResolvedAgent_ProvisionedAgentPreservesMTLSError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, func() bool { return knownProvisionedMTLS })
 	if conn != nil {
 		conn.Close()
 		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
@@ -701,6 +703,48 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 	})
 }
 
+func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
+	// A reachability timeout against an mTLS-advertised device should hint at
+	// both stale certs and a too-old CLI.
+	err := newProvisionedAgentUnauthorizedError(errors.New("dial tcp 192.168.1.50:50051: i/o timeout"))
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "upgrade") || !strings.Contains(msg, "wendy auth refresh-certs") {
+		t.Fatalf("message should mention upgrading the CLI and refresh-certs, got: %q", msg)
+	}
+}
+
+func TestLanAgentAddressesPrefersUSBLinkLocal(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  models.LANDevice
+		want []string
+	}{
+		{
+			name: "usb present orders link-local before routed wifi ip",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051", "192.168.1.50:50051"},
+		},
+		{
+			name: "no usb keeps ip-first ordering",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", Port: 50051},
+			want: []string{"192.168.1.50:50051", "playful-reed.local:50051"},
+		},
+		{
+			name: "usb present but no ip falls back to hostname only",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lanAgentAddresses(tt.dev)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("lanAgentAddresses() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsCertRejectionError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -740,5 +784,41 @@ func TestIsCertRejectionError(t *testing.T) {
 				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateCheckTTLCache(t *testing.T) {
+	tmp := t.TempDir()
+	// Redirect os.UserCacheDir() on both darwin ($HOME/Library/Caches) and
+	// linux ($XDG_CACHE_HOME or $HOME/.cache) into the temp dir.
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+
+	const host = "device.local"
+
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("cold: expected no recent pass before any check")
+	}
+
+	markUpdateCheckPassed(host)
+	if !updateCheckRecentlyPassed(host) {
+		t.Fatal("warm: expected recent pass after marking")
+	}
+
+	if updateCheckRecentlyPassed("other.local") {
+		t.Fatal("marker must be per-host")
+	}
+
+	// Backdate the marker beyond the TTL: it must no longer count as recent.
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		t.Fatal("expected a non-empty marker path")
+	}
+	old := time.Now().Add(-updateCheckTTL - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("stale: expected marker older than TTL to fail the check")
 	}
 }

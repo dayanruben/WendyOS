@@ -290,23 +290,34 @@ func (m *ContainerMonitor) drainOutput(name string, outputCh <-chan services.Con
 // container list and returns the names of containers that should be restarted,
 // advancing their FailureCount/LastRestart as a side effect.
 func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []string {
-	// Build the set of currently-running monitored names. Multi-service apps
-	// are monitored per service under the full container name
-	// "{appID}_{serviceName}", so the per-service running state is
-	// authoritative: the aggregate AppContainer state is RUNNING when ANY
-	// service runs, and keying on the bare appID would never match a full-name
-	// state entry — making the monitor treat every member as stopped and
-	// force-restart healthy containers on every tick.
+	// Build the set of running container identities, keyed the same way the
+	// monitor registers state. Services-map apps are monitored per service under
+	// the "{appID}_{serviceName}" container name (see containerd.ContainerName /
+	// AppConfig.ContainerName), so key each service by that name using its own
+	// running state. Apps with no services (legacy single-container apps) are
+	// monitored under the bare appID. Keying only by bare appID — as before —
+	// meant running["{appID}_{serviceName}"] was never true, so the monitor
+	// force-restarted healthy services-map apps every tick (WDY-1552).
 	running := make(map[string]bool)
 	for _, c := range containers {
-		if svcs := c.GetServices(); len(svcs) > 0 {
-			for _, svc := range svcs {
-				if svc.GetRunningState() == agentpb.AppRunningState_RUNNING {
-					running[c.GetAppName()+"_"+svc.GetName()] = true
-				}
+		svcs := c.GetServices()
+		if len(svcs) == 0 {
+			if c.GetRunningState() == agentpb.AppRunningState_RUNNING {
+				running[c.GetAppName()] = true
 			}
-		} else if c.GetRunningState() == agentpb.AppRunningState_RUNNING {
-			running[c.GetAppName()] = true
+			continue
+		}
+		for _, s := range svcs {
+			if s.GetRunningState() != agentpb.AppRunningState_RUNNING {
+				continue
+			}
+			if s.GetName() == "" {
+				// Defensive: a serviceless entry maps to the bare appID.
+				running[c.GetAppName()] = true
+				continue
+			}
+			// Keep in sync with containerd.ContainerName.
+			running[c.GetAppName()+"_"+s.GetName()] = true
 		}
 	}
 
