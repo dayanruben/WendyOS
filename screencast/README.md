@@ -52,6 +52,9 @@ npm ci
 Use `npm ci` so installs use the committed lock file without mutating it. When
 updating dependencies, pin exact versions in `package.json`, regenerate the lock
 file intentionally, and run `npm audit --audit-level=high` before opening a PR.
+The `Screencast` GitHub Actions workflow enforces `npm ci`, high-severity audit
+checks, dependency sanity checks, and script validation for changes under
+`screencast/`.
 
 `render-slide` uses Slidev under the hood to render one `slide.md` at a time.
 There is no aggregate deck and no timeline file.
@@ -233,7 +236,9 @@ than narration, audio is padded with silence. Silent scenes use
 fallback. Treat this as a secret: prefer a secrets manager such as 1Password CLI,
 macOS Keychain, or a CI secret variable; do not hard-code it in scripts or commit
 it in `.env` files. Local `.env` files are ignored by git, but should still be
-kept out of shared artifacts and rotated if exposed.
+kept out of shared artifacts and rotated if exposed. Copy `.env.example` for the
+supported variable names, and leave `OPENAI_API_KEY` empty until you inject it
+from a local secrets manager or CI secret.
 
 ```sh
 scripts/render-voice --dry-run 01
@@ -269,8 +274,9 @@ Hook contract:
 - Hooks receive `SCREENCAST_ROOT`, `SCREENCAST_YES`, and `SCREENCAST_DRY_RUN`.
 - Review hook scripts before running them; they execute with your local user
   privileges and may also call connected devices.
-- Do not auto-run hooks in CI unless the workflow requires explicit human
-  approval or runs in a sandboxed container, VM, or restricted user account.
+- Hooks are refused in CI by default. Use `--force-ci-hooks --yes` only in a
+  reviewed workflow that has explicit human approval or runs in a sandboxed
+  container, VM, or restricted user account.
 
 ## Screen/browser footage
 
@@ -291,15 +297,19 @@ scripts/record-page.mjs https://docs.example.com/page scenes/03-docs/page.captur
 
 `record-page.mjs` only opens public `https:` URLs by default and rejects
 localhost, private, link-local, and metadata-service addresses. For trusted local
-captures, set `SCREENCAST_ALLOW_UNSAFE_URLS=1` explicitly and avoid doing that in
-CI or agent-driven workflows.
+captures, pass `--allow-unsafe-urls` explicitly. The flag is refused in CI, and
+`SCREENCAST_ALLOW_UNSAFE_URLS` is obsolete; `scripts/check.sh` fails if that
+environment variable is present.
 
 ## Operational logging
 
 The scripts write render progress and command metadata to stdout/stderr. Keep CI
-logs for review, and retain `output/duration-report.tsv` with final renders when
-you need scene timing provenance. `render-voice` logs model, voice, scene output,
-and duration metadata, but not the narration text or API key.
+logs for at least 90 days when this workflow is run in automation, and archive
+`output/duration-report.tsv` with final renders when you need scene timing
+provenance. `render-voice` logs model, voice, scene output, and duration
+metadata, but not the narration text or API key. For audit-sensitive renders,
+pipe command output to a retained JSONL or CI log artifact owned by the workflow
+runner rather than committing generated logs to git.
 
 ## Validation
 

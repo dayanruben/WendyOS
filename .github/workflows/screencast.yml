@@ -1,0 +1,43 @@
+name: Screencast
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'screencast/**'
+      - '.github/workflows/screencast.yml'
+      - '.github/dependabot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screencast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check screencast tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: screencast/package-lock.json
+
+      - name: Install screencast dependencies
+        working-directory: screencast
+        run: npm ci --ignore-scripts
+
+      - name: Audit screencast dependencies
+        working-directory: screencast
+        run: npm audit --audit-level=high
+
+      - name: Validate screencast workflow
+        working-directory: screencast
+        run: scripts/check.sh

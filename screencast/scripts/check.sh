@@ -14,6 +14,11 @@ require_tool() {
 require_tool bash
 require_tool python3
 
+if [[ -n "${SCREENCAST_ALLOW_UNSAFE_URLS:-}" ]]; then
+  echo "error: SCREENCAST_ALLOW_UNSAFE_URLS is obsolete and must not be set" >&2
+  exit 1
+fi
+
 for script in "$SCRIPT_DIR"/*.sh; do
   [[ -e "$script" ]] || continue
   bash -n "$script"
@@ -35,6 +40,15 @@ else
   echo "warning: node not found; skipped JavaScript syntax checks" >&2
 fi
 
+if command -v npm >/dev/null 2>&1 && [[ -f "$PROJECT_DIR/package-lock.json" ]]; then
+  (cd "$PROJECT_DIR" && npm audit --audit-level=high >/dev/null)
+  if [[ -d "$PROJECT_DIR/node_modules" ]]; then
+    (cd "$PROJECT_DIR" && npm ls devframe >/dev/null)
+  fi
+else
+  echo "warning: npm not found; skipped npm audit and dependency checks" >&2
+fi
+
 python3 - "$PROJECT_DIR" <<'PY'
 import json
 import sys
@@ -54,6 +68,13 @@ if command -v git >/dev/null 2>&1 && git -C "$PROJECT_DIR" rev-parse --is-inside
   if [[ -n "$tracked_generated" ]]; then
     echo "error: generated media/build outputs are tracked:" >&2
     echo "$tracked_generated" >&2
+    exit 1
+  fi
+
+  secret_hits="$(git -C "$PROJECT_DIR" grep -n -E 'sk-(proj-)?[A-Za-z0-9_-]{20,}' -- . 2>/dev/null || true)"
+  if [[ -n "$secret_hits" ]]; then
+    echo "error: possible OpenAI API key found in tracked screencast files:" >&2
+    echo "$secret_hits" >&2
     exit 1
   fi
 fi

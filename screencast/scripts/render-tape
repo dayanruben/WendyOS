@@ -9,6 +9,7 @@ let runSetup = false;
 let runTeardown = false;
 let dryRun = false;
 let yes = false;
+let forceCIHooks = false;
 let arg;
 
 function usage() {
@@ -22,6 +23,7 @@ Options:
   --teardown        Run hooks/teardown.sh after rendering.
   --skip-preflight  Do not run hooks/preflight.sh.
   --yes, -y         Skip confirmation prompts.
+  --force-ci-hooks  Allow hooks in CI. Requires --yes and is refused for dry-run.
   --dry-run         Print what would run without executing hooks or vhs.`);
 }
 
@@ -31,12 +33,17 @@ for (const item of process.argv.slice(2)) {
   else if (item === '--teardown') runTeardown = true;
   else if (item === '--skip-preflight') runPreflight = false;
   else if (item === '--yes' || item === '-y') yes = true;
+  else if (item === '--force-ci-hooks') forceCIHooks = true;
   else if (item === '--dry-run') dryRun = true;
   else if (item === '--help' || item === '-h') { usage(); process.exit(0); }
   else if (!arg) arg = item;
   else { console.error(`error: unexpected argument: ${item}`); process.exit(2); }
 }
 if (!arg) { usage(); process.exit(2); }
+if (forceCIHooks && dryRun) {
+  console.error('error: --force-ci-hooks is not meaningful with --dry-run');
+  process.exit(2);
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: 'inherit', ...options });
@@ -48,9 +55,25 @@ function hookRootFor(source) {
   return source.startsWith(`${templateRoot}/`) ? templateRoot : screencastRoot;
 }
 
+function hookPath(name, hookRoot) {
+  return join(hookRoot, 'hooks', `${name}.sh`);
+}
+
+function assertHookAllowed(name, hookRoot) {
+  const hook = hookPath(name, hookRoot);
+  if (!existsSync(hook) || dryRun) return;
+  if (process.env.CI === 'true' && !forceCIHooks) {
+    throw new Error(`refusing to run ${name} hook in CI without --force-ci-hooks --yes`);
+  }
+  if (forceCIHooks && !yes) {
+    throw new Error('--force-ci-hooks requires --yes');
+  }
+}
+
 function runHook(name, hookRoot) {
-  const hook = join(hookRoot, 'hooks', `${name}.sh`);
+  const hook = hookPath(name, hookRoot);
   if (!existsSync(hook)) return;
+  assertHookAllowed(name, hookRoot);
   const env = { ...process.env, SCREENCAST_ROOT: hookRoot, SCREENCAST_YES: yes ? '1' : '0', SCREENCAST_DRY_RUN: dryRun ? '1' : '0' };
   if (dryRun) console.log(`dry-run: ${hook}`);
   else run(hook, [], { env });

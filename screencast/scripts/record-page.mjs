@@ -7,14 +7,33 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const url = process.argv[2];
+function usage() {
+  console.error(`usage: record-page.mjs [--allow-unsafe-urls] <url> [output.mp4]
+
+Options:
+  --allow-unsafe-urls  Allow trusted local/private captures. Refused in CI.`);
+}
+
+let allowUnsafeURLs = false;
+let url;
+let outputArg;
+for (const item of process.argv.slice(2)) {
+  if (item === '--allow-unsafe-urls') allowUnsafeURLs = true;
+  else if (item === '--help' || item === '-h') { usage(); process.exit(0); }
+  else if (!url) url = item;
+  else if (!outputArg) outputArg = item;
+  else { console.error(`error: unexpected argument: ${item}`); process.exit(2); }
+}
 if (!url) {
-  console.error('usage: record-page.mjs <url> [output.mp4]');
+  usage();
   process.exit(2);
 }
-const allowUnsafeURLs = process.env.SCREENCAST_ALLOW_UNSAFE_URLS === '1';
+if (allowUnsafeURLs && process.env.CI === 'true') {
+  console.error('error: --allow-unsafe-urls is refused in CI');
+  process.exit(2);
+}
 
-const output = resolve(process.argv[3] ?? 'page.capture.mp4');
+const output = resolve(outputArg ?? 'page.capture.mp4');
 const chromium = process.env.CHROMIUM_PATH ?? [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -132,7 +151,7 @@ async function validateURL(input) {
   if (allowUnsafeURLs) return parsed.href;
 
   if (parsed.protocol !== 'https:') {
-    throw new Error('record-page only allows https URLs by default; set SCREENCAST_ALLOW_UNSAFE_URLS=1 for trusted local captures');
+    throw new Error('record-page only allows https URLs by default; pass --allow-unsafe-urls for trusted local captures');
   }
   if (parsed.username || parsed.password) {
     throw new Error('record-page URLs must not include embedded credentials');
