@@ -283,7 +283,8 @@ Hook contract:
   reviewed workflow that has explicit human approval or runs in an ephemeral,
   network-isolated sandbox.
 - Hooks must match `hooks/CHECKSUMS.sha256`; update that manifest in the same
-  reviewed change when hook contents intentionally change.
+  reviewed change when hook contents intentionally change. `scripts/check.sh`
+  verifies hook checksum manifests in CI.
 
 ## Screen/browser footage
 

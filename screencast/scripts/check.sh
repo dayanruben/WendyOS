@@ -23,6 +23,20 @@ require_tool() {
 require_tool bash
 require_tool python3
 
+check_sha256_manifest() {
+  local manifest="$1"
+  local dir
+  dir="$(dirname "$manifest")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$dir" && sha256sum --check "$(basename "$manifest")" >/dev/null)
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$dir" && shasum -a 256 -c "$(basename "$manifest")" >/dev/null)
+  else
+    echo "error: required tool not found: sha256sum or shasum" >&2
+    exit 2
+  fi
+}
+
 if [[ -n "${SCREENCAST_ALLOW_UNSAFE_URLS:-}" ]]; then
   echo "error: SCREENCAST_ALLOW_UNSAFE_URLS is obsolete and must not be set" >&2
   exit 1
@@ -34,6 +48,9 @@ for script in "$SCRIPT_DIR"/*.sh; do
 done
 for hook_dir in "$PROJECT_DIR/hooks" "$PROJECT_DIR/template/hooks"; do
   if [[ -d "$hook_dir" ]]; then
+    if [[ -f "$hook_dir/CHECKSUMS.sha256" ]]; then
+      check_sha256_manifest "$hook_dir/CHECKSUMS.sha256"
+    fi
     for hook in "$hook_dir"/*.sh; do
       [[ -e "$hook" ]] || continue
       bash -n "$hook"
