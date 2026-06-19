@@ -310,15 +310,17 @@ environment variable is present.
 
 ## Operational logging
 
-The scripts write render progress and command metadata to stdout/stderr. Keep CI
-logs for at least 90 days when this workflow is run in automation, and archive
+The scripts write render progress and command metadata to stdout/stderr. Archive
 `output/duration-report.tsv` with final renders when you need scene timing
 provenance. `scripts/check.sh` writes `output/check.jsonl`, and the `Screencast`
-workflow uploads JSONL audit logs with 90-day retention. `render-voice` logs
-model, voice, scene output, and duration metadata, but not the narration text or
-API key. For audit-sensitive renders, pipe command output to a retained JSONL or
-CI log artifact owned by the workflow runner rather than committing generated
-logs to git.
+workflow uploads JSONL audit logs with 30-day retention.
+
+Treat JSONL audit logs as internal operational metadata. They must not contain
+API keys or narration text, but may include timestamps, script names, exit
+statuses, and scene or output paths. Avoid putting PII or sensitive project names
+in scene folder names when logs will be uploaded from CI. For audit-sensitive
+renders, pipe command output to a retained JSONL or CI log artifact owned by the
+workflow runner rather than committing generated logs to git.
 
 ## Validation
 

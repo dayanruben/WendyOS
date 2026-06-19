@@ -55,4 +55,4 @@ jobs:
           name: screencast-audit-logs
           path: screencast/output/*.jsonl
           if-no-files-found: ignore
-          retention-days: 90
+          retention-days: 30
