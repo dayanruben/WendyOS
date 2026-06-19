@@ -598,39 +598,25 @@ struct ContainerServiceTests {
         #expect(args == ["bundle", "--file", "/tmp/app/Brewfile"])
     }
 
-    @Test("Homebrew lookup prefers default install locations before PATH")
-    func homebrewLookupPrefersDefaultInstallLocationsBeforePath() {
+    @Test("Homebrew lookup uses default install locations only")
+    func homebrewLookupUsesDefaultInstallLocationsOnly() {
         let found = ContainerService.findBrewExecutable(
-            environment: ["PATH": "/tmp/fake:/opt/homebrew/bin"],
             fileExists: { $0 == "/tmp/fake/brew" || $0 == "/opt/homebrew/bin/brew" }
         )
         #expect(found == "/opt/homebrew/bin/brew")
     }
 
-    @Test("Homebrew lookup falls back to PATH")
-    func homebrewLookupFallsBackToPath() {
-        let found = ContainerService.findBrewExecutable(
-            environment: ["PATH": "/tmp/fake:/usr/bin"],
-            fileExists: { $0 == "/tmp/fake/brew" }
-        )
-        #expect(found == "/tmp/fake/brew")
-    }
-
-    @Test("Brewfile failure messages include exit status and redacted output")
-    func brewfileFailureMessagesIncludeExitStatusAndRedactedOutput() {
+    @Test("Brewfile failure messages include exit status but not process output")
+    func brewfileFailureMessagesIncludeExitStatusButNotProcessOutput() {
         let message = ContainerService.brewBundleFailureMessage(
             brewfile: "ops/Brewfile",
-            status: 17,
-            output:
-                "No available formula with GITHUB_TOKEN=ghp_secret from https://user:pass@example.com/tap"
+            status: 17
         )
         #expect(message.contains("ops/Brewfile"))
         #expect(message.contains("exit code 17"))
-        #expect(message.contains("No available formula"))
-        #expect(message.contains("GITHUB_TOKEN=<redacted>"))
-        #expect(message.contains("https://<redacted>@example.com/tap"))
+        #expect(message.contains("agent logs"))
+        #expect(!message.contains("No available formula"))
         #expect(!message.contains("ghp_secret"))
-        #expect(!message.contains("user:pass"))
     }
 
     @Test("Brewfile command environment omits credentials")

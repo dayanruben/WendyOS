@@ -416,11 +416,8 @@ func (c *AppConfig) Validate() error {
 	}
 
 	if c.Brewfile != "" {
-		if strings.HasPrefix(c.Brewfile, "/") {
-			return fmt.Errorf("brewfile path must not be absolute")
-		}
-		if containsDotDot(c.Brewfile) {
-			return fmt.Errorf("brewfile path must not contain '..' components")
+		if !isSafeRelativeBrewfilePath(c.Brewfile) {
+			return fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
 		}
 	}
 
@@ -470,6 +467,18 @@ func containsDotDot(p string) bool {
 		}
 	}
 	return false
+}
+
+func isSafeRelativeBrewfilePath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") {
+		return false
+	}
+	for _, component := range strings.Split(p, "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadComposeCompanion looks for a wendy.json alongside a docker-compose file

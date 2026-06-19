@@ -408,16 +408,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     nonisolated static func findBrewExecutable(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> String? {
-        var candidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        if let path = environment["PATH"] {
-            candidates += path.split(separator: ":").map { "\($0)/brew" }
-        }
-
-        var seen = Set<String>()
-        for candidate in candidates where seen.insert(candidate).inserted {
+        for candidate in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] {
             if fileExists(candidate) {
                 return candidate
             }
@@ -448,32 +441,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         return environment
     }
 
-    nonisolated static func redactedBrewBundleOutput(_ output: String) -> String {
-        let redacted =
-            output
-            .replacingOccurrences(
-                of: #"(?i)(https?://)[^\s/@]+(:[^\s/@]*)?@"#,
-                with: "$1<redacted>@",
-                options: .regularExpression
-            )
-            .replacingOccurrences(
-                of: #"(?i)\b([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET)[A-Z0-9_]*)=([^\s]+)"#,
-                with: "$1=<redacted>",
-                options: .regularExpression
-            )
-        let maxCharacters = 500
-        guard redacted.count > maxCharacters else { return redacted }
-        return "\(redacted.prefix(maxCharacters))… [truncated]"
-    }
-
     nonisolated static func brewBundleFailureMessage(
         brewfile: String,
-        status: Int32,
-        output: String
+        status: Int32
     ) -> String {
-        let redactedOutput = Self.redactedBrewBundleOutput(output)
-        let suffix = redactedOutput.isEmpty ? "" : ": \(redactedOutput)"
-        return "brew bundle failed for Brewfile \(brewfile) with exit code \(status)\(suffix)"
+        "brew bundle failed for Brewfile \(brewfile) with exit code \(status). Check agent logs for details."
     }
 
     nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
@@ -486,23 +458,49 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         return true
     }
 
+    nonisolated private static func unresolvedBrewfileURL(
+        appDirectory: String,
+        brewfile: String
+    ) -> URL {
+        URL(fileURLWithPath: appDirectory, isDirectory: true)
+            .appendingPathComponent(brewfile)
+            .standardizedFileURL
+    }
+
     nonisolated private static func brewfileURL(
         appDirectory: String,
         brewfile: String
     ) throws -> URL {
         let appDirectoryURL = URL(fileURLWithPath: appDirectory, isDirectory: true)
             .resolvingSymlinksInPath()
-        let brewfileURL = appDirectoryURL.appendingPathComponent(brewfile)
+        let brewfileURL = Self.unresolvedBrewfileURL(appDirectory: appDirectory, brewfile: brewfile)
             .resolvingSymlinksInPath()
-        let appDirectoryPath = appDirectoryURL.path
-        let brewfilePath = brewfileURL.path
-        guard brewfilePath.hasPrefix(appDirectoryPath + "/") else {
+        let appComponents = appDirectoryURL.pathComponents
+        let brewfileComponents = brewfileURL.pathComponents
+        guard brewfileComponents.starts(with: appComponents),
+            brewfileComponents.count > appComponents.count
+        else {
             throw RPCError(
                 code: .invalidArgument,
                 message: "brewfile path must stay within the app directory"
             )
         }
         return brewfileURL
+    }
+
+    nonisolated private static func ensureRegularBrewfile(atPath path: String) throws {
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "Unable to inspect Brewfile after sync"
+            )
+        }
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw RPCError(code: .invalidArgument, message: "Brewfile must be a regular file")
+        }
     }
 
     nonisolated private static func runBrewBundle(
@@ -553,8 +551,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
+        let unresolvedBrewfilePath = Self.unresolvedBrewfileURL(
+            appDirectory: appDirectory,
+            brewfile: brewfile
+        ).path
         var isDirectory = ObjCBool(false)
-        guard FileManager.default.fileExists(atPath: brewfilePath, isDirectory: &isDirectory),
+        guard
+            FileManager.default.fileExists(
+                atPath: unresolvedBrewfilePath,
+                isDirectory: &isDirectory
+            ),
             !isDirectory.boolValue
         else {
             throw RPCError(
@@ -562,6 +568,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 message: "Brewfile \(brewfile) declared in wendy.json was not found after sync"
             )
         }
+        try Self.ensureRegularBrewfile(atPath: unresolvedBrewfilePath)
+        try Self.ensureRegularBrewfile(atPath: brewfilePath)
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
@@ -597,8 +605,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         guard result.status == 0 else {
             let message = Self.brewBundleFailureMessage(
                 brewfile: brewfile,
-                status: result.status,
-                output: result.output
+                status: result.status
             )
             logger.error(
                 "brew bundle failed",
@@ -606,7 +613,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     "app_name": "\(appName)",
                     "brewfile": "\(brewfile)",
                     "exit_code": "\(result.status)",
-                    "output": "\(Self.redactedBrewBundleOutput(result.output))",
+                    "output_bytes": "\(result.output.utf8.count)",
                 ]
             )
             throw RPCError(code: .failedPrecondition, message: message)
