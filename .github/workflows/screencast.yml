@@ -35,11 +35,18 @@ jobs:
 
       - name: Audit screencast dependencies
         working-directory: screencast
-        run: scripts/audit-npm.mjs
+        run: |
+          # Hard gate: fail on any high or critical npm advisory.
+          npm audit --audit-level=high
+          # Policy gate: fail on unallowlisted low/moderate advisories.
+          scripts/audit-npm.mjs
 
       - name: Validate screencast workflow
         working-directory: screencast
-        run: scripts/check.sh
+        run: |
+          # Validates script syntax, secret scanning, SSRF guards, hook checks,
+          # and generated-media hygiene.
+          scripts/check.sh
 
       - name: Upload screencast audit logs
         if: always()
