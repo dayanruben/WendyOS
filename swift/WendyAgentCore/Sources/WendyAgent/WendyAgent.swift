@@ -9,22 +9,17 @@ import WendyAgentGRPC
 public final class WendyAgent {
     private typealias PosixGRPCServer = GRPCServer<HTTP2ServerTransport.Posix>
 
-    /// The Wendy Agent version reported by the running bundle or headless process.
+    /// The Wendy Agent version from the main bundle Info.plist.
     public nonisolated static let version: String = {
-        if let version = Bundle.main.object(forInfoDictionaryKey: "WLWendyAgentVersion")
-            as? String,
+        guard
+            let version = Bundle.main.object(forInfoDictionaryKey: "WLWendyAgentVersion")
+                as? String,
             !version.isEmpty
-        {
-            return version
+        else {
+            fatalError("Missing WLWendyAgentVersion in the main bundle Info.plist")
         }
 
-        if let version = ProcessInfo.processInfo.environment["WENDY_AGENT_VERSION"],
-            !version.isEmpty
-        {
-            return version
-        }
-
-        return "dev"
+        return version
     }()
 
     public let configuration: WendyAgentConfiguration

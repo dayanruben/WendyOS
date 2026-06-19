@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         subsystem: Bundle.main.bundleIdentifier!,
         category: "AppDelegate"
     )
-    private let wendyAgent = WendyAgent()
+    private let wendyAgent = WendyAgent(configuration: .environment)
     private let welcomeAndPermissions = WelcomeAndPermissions()
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?
@@ -170,5 +170,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             guard let self else { return }
             self.welcomeAndPermissionsPresentationTask = nil
         }
+    }
+}
+
+extension WendyAgentConfiguration {
+    fileprivate static var environment: Self {
+        let environment = ProcessInfo.processInfo.environment
+        return Self(
+            port: Self.intValue(
+                named: "WENDY_AGENT_PORT",
+                in: environment,
+                default: 50051
+            ),
+            otelPort: Self.intValue(
+                named: "WENDY_OTEL_PORT",
+                in: environment,
+                default: 4317
+            ),
+            appPath: environment["WENDY_AGENT_APP_PATH"] ?? "",
+            sandboxProfile: environment["WENDY_AGENT_SANDBOX_PROFILE"] ?? ""
+        )
+    }
+
+    fileprivate static func intValue(
+        named name: String,
+        in environment: [String: String],
+        default defaultValue: Int
+    ) -> Int {
+        guard let value = environment[name], let intValue = Int(value) else {
+            return defaultValue
+        }
+        return intValue
     }
 }

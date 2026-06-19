@@ -22,7 +22,6 @@ let package = Package(
     ],
     products: [
         .library(name: "WendyAgentCore", targets: ["WendyAgentCore"]),
-        .executable(name: "wendy-agent-swift", targets: ["WendyAgentHeadless"]),
     ],
     dependencies: [
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.2.1"),
@@ -34,13 +33,6 @@ let package = Package(
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.9.1"),
     ],
     targets: [
-        .executableTarget(
-            name: "WendyAgentHeadless",
-            dependencies: [
-                .target(name: "WendyAgentCore")
-            ],
-            swiftSettings: swiftSettings
-        ),
         .testTarget(
             name: "WendyAgentCoreTests",
             dependencies: [
