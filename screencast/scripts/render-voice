@@ -4,10 +4,15 @@ import { writeFile } from 'node:fs/promises';
 import { resolveSceneFile } from './lib/scene-paths.mjs';
 
 const model = process.env.OPENAI_TTS_MODEL ?? 'gpt-4o-mini-tts';
+const allowedModels = new Set((process.env.OPENAI_TTS_ALLOWED_MODELS ?? 'gpt-4o-mini-tts').split(',').map((item) => item.trim()).filter(Boolean));
 const voice = process.env.OPENAI_TTS_VOICE ?? 'alloy';
 const speed = Number(process.env.OPENAI_TTS_SPEED ?? '1.25');
 const instructions = process.env.OPENAI_TTS_INSTRUCTIONS ?? 'Professional technical screencast narration. Calm, confident, concise, neutral English. Avoid hype; sound like an experienced engineer explaining status and tradeoffs.';
 
+if (!allowedModels.has(model)) {
+  console.error(`error: OPENAI_TTS_MODEL must be one of: ${Array.from(allowedModels).join(', ')}`);
+  process.exit(2);
+}
 if (!Number.isFinite(speed) || speed < 0.25 || speed > 4.0) {
   console.error('error: OPENAI_TTS_SPEED must be a number between 0.25 and 4.0');
   process.exit(2);

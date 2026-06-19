@@ -34,15 +34,12 @@ if (allowUnsafeURLs && process.env.CI === 'true') {
 }
 
 const output = resolve(outputArg ?? 'page.capture.mp4');
-const chromium = process.env.CHROMIUM_PATH ?? [
+const chromeCandidates = [
+  process.env.CHROMIUM_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   `${process.env.HOME}/.cache/rod/browser/chromium-1321438/Chromium.app/Contents/MacOS/Chromium`,
-].find((candidate) => candidate && existsSync(candidate));
-if (!chromium) {
-  console.error('error: set CHROMIUM_PATH to a Chrome or Chromium executable');
-  process.exit(2);
-}
+];
 const width = Number(process.env.DOCS_RECORD_WIDTH ?? 1440);
 const height = Number(process.env.DOCS_RECORD_HEIGHT ?? 900);
 const fps = Number(process.env.DOCS_RECORD_FPS ?? 10);
@@ -176,6 +173,9 @@ async function validateURL(input) {
 
 async function main() {
   const safeURL = await validateURL(url);
+  const chromium = chromeCandidates.find((candidate) => candidate && existsSync(candidate));
+  if (!chromium) throw new Error('set CHROMIUM_PATH to a Chrome or Chromium executable');
+
   const workdir = await mkdtemp(join(tmpdir(), 'screencast-docs-record-'));
   const userDataDir = join(workdir, 'profile');
   const framesDir = join(workdir, 'frames');

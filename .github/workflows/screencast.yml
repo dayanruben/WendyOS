@@ -7,7 +7,6 @@ on:
       - 'screencast/**'
       - '.github/workflows/screencast.yml'
       - '.github/dependabot.yml'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -36,8 +35,17 @@ jobs:
 
       - name: Audit screencast dependencies
         working-directory: screencast
-        run: npm audit --audit-level=high
+        run: scripts/audit-npm.mjs
 
       - name: Validate screencast workflow
         working-directory: screencast
         run: scripts/check.sh
+
+      - name: Upload screencast audit logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: screencast-audit-logs
+          path: screencast/output/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 90

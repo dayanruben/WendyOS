@@ -52,8 +52,9 @@ npm ci
 Use `npm ci` so installs use the committed lock file without mutating it. When
 updating dependencies, pin exact versions in `package.json`, regenerate the lock
 file intentionally, and run `npm audit --audit-level=high` before opening a PR.
-The `Screencast` GitHub Actions workflow enforces `npm ci`, high-severity audit
-checks, dependency sanity checks, and script validation for changes under
+The `Screencast` GitHub Actions workflow enforces `npm ci`, npm audit checks
+with an explicit allowlist for currently known low/moderate Slidev editor
+advisories, dependency sanity checks, and script validation for changes under
 `screencast/`.
 
 `render-slide` uses Slidev under the hood to render one `slide.md` at a time.
@@ -238,7 +239,9 @@ macOS Keychain, or a CI secret variable; do not hard-code it in scripts or commi
 it in `.env` files. Local `.env` files are ignored by git, but should still be
 kept out of shared artifacts and rotated if exposed. Copy `.env.example` for the
 supported variable names, and leave `OPENAI_API_KEY` empty until you inject it
-from a local secrets manager or CI secret.
+from a local secrets manager or CI secret. If a key is exposed, revoke it in the
+OpenAI dashboard, create a replacement with the narrowest available permissions,
+and re-render affected voiceover files.
 
 ```sh
 scripts/render-voice --dry-run 01
@@ -249,13 +252,15 @@ Optional overrides:
 
 ```sh
 OPENAI_TTS_MODEL=gpt-4o-mini-tts \
+OPENAI_TTS_ALLOWED_MODELS=gpt-4o-mini-tts \
 OPENAI_TTS_VOICE=alloy \
 OPENAI_TTS_SPEED=1.2 \
 scripts/render-voice 01
 ```
 
 `OPENAI_TTS_SPEED` accepts `0.25` through `4.0`; the default is `1.25` for a
-slightly tighter screencast pace.
+slightly tighter screencast pace. `render-voice` refuses models outside
+`OPENAI_TTS_ALLOWED_MODELS`, whose default is `gpt-4o-mini-tts`.
 
 ## Tape hooks
 
@@ -275,8 +280,10 @@ Hook contract:
 - Review hook scripts before running them; they execute with your local user
   privileges and may also call connected devices.
 - Hooks are refused in CI by default. Use `--force-ci-hooks --yes` only in a
-  reviewed workflow that has explicit human approval or runs in a sandboxed
-  container, VM, or restricted user account.
+  reviewed workflow that has explicit human approval or runs in an ephemeral,
+  network-isolated sandbox.
+- Hooks must match `hooks/CHECKSUMS.sha256`; update that manifest in the same
+  reviewed change when hook contents intentionally change.
 
 ## Screen/browser footage
 
@@ -306,10 +313,12 @@ environment variable is present.
 The scripts write render progress and command metadata to stdout/stderr. Keep CI
 logs for at least 90 days when this workflow is run in automation, and archive
 `output/duration-report.tsv` with final renders when you need scene timing
-provenance. `render-voice` logs model, voice, scene output, and duration
-metadata, but not the narration text or API key. For audit-sensitive renders,
-pipe command output to a retained JSONL or CI log artifact owned by the workflow
-runner rather than committing generated logs to git.
+provenance. `scripts/check.sh` writes `output/check.jsonl`, and the `Screencast`
+workflow uploads JSONL audit logs with 90-day retention. `render-voice` logs
+model, voice, scene output, and duration metadata, but not the narration text or
+API key. For audit-sensitive renders, pipe command output to a retained JSONL or
+CI log artifact owned by the workflow runner rather than committing generated
+logs to git.
 
 ## Validation
 

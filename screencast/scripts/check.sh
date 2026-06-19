@@ -3,6 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_FILE="${SCREENCAST_LOG_FILE:-$PROJECT_DIR/output/check.jsonl}"
+
+log_event() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+  printf '{"timestamp":"%s","script":"check.sh","event":"%s","status":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$LOG_FILE"
+}
+trap 'status=$?; log_event finish "$status"; exit "$status"' EXIT
+log_event start 0
 
 require_tool() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -41,12 +50,31 @@ else
 fi
 
 if command -v npm >/dev/null 2>&1 && [[ -f "$PROJECT_DIR/package-lock.json" ]]; then
-  (cd "$PROJECT_DIR" && npm audit --audit-level=high >/dev/null)
+  (cd "$PROJECT_DIR" && scripts/audit-npm.mjs >/dev/null)
   if [[ -d "$PROJECT_DIR/node_modules" ]]; then
     (cd "$PROJECT_DIR" && npm ls devframe >/dev/null)
+    if (cd "$PROJECT_DIR" && npm ls --all 2>&1 | grep -Eiq 'missing:|invalid:'); then
+      echo "error: npm dependency tree contains missing or invalid packages" >&2
+      exit 1
+    fi
   fi
 else
   echo "warning: npm not found; skipped npm audit and dependency checks" >&2
+fi
+
+if command -v node >/dev/null 2>&1; then
+  ssrf_output="$(node "$SCRIPT_DIR/record-page.mjs" http://127.0.0.1/ /tmp/screencast-blocked.mp4 2>&1 || true)"
+  if ! grep -q 'only allows https URLs' <<<"$ssrf_output"; then
+    echo "error: record-page did not reject an unsafe http URL" >&2
+    echo "$ssrf_output" >&2
+    exit 1
+  fi
+  ci_ssrf_output="$(CI=true node "$SCRIPT_DIR/record-page.mjs" --allow-unsafe-urls http://127.0.0.1/ /tmp/screencast-blocked.mp4 2>&1 || true)"
+  if ! grep -q 'refused in CI' <<<"$ci_ssrf_output"; then
+    echo "error: record-page did not refuse --allow-unsafe-urls in CI" >&2
+    echo "$ci_ssrf_output" >&2
+    exit 1
+  fi
 fi
 
 python3 - "$PROJECT_DIR" <<'PY'
