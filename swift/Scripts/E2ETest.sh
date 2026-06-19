@@ -663,6 +663,10 @@ managed_agent_executable_path() {
   esac
 }
 
+find_managed_mac_app_pid() {
+  pgrep -f -- "$(managed_agent_executable_path)" | head -n 1 || true
+}
+
 build_managed_agent() {
   local agent_path
   agent_path="$(managed_agent_path)"
@@ -676,7 +680,25 @@ build_managed_agent() {
       (
         cd "$REPO_DIR/swift"
         make agent-stop
-        OUTPUT_DIR="$REPO_DIR/swift/Build" make agent-build
+        if ! OUTPUT_DIR="$REPO_DIR/swift/Build" make agent-build; then
+          # Hosted E2E runners do not have an Apple Development identity.
+          # Build the same app bundle without signing so the harness still
+          # exercises WendyAgentMac.app instead of a parallel executable.
+          xcodebuild build \
+            -workspace WendyAgent.xcworkspace \
+            -scheme WendyAgentMac \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$REPO_DIR/swift/Build/Xcode" \
+            WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-0000.00.00-000000-dev}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            -skipMacroValidation
+          rm -rf "$agent_path"
+          ditto \
+            "$REPO_DIR/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app" \
+            "$agent_path"
+        fi
       )
       /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
         "$agent_path/Contents/Info.plist" 2>/dev/null || true
@@ -720,18 +742,26 @@ start_managed_agent() {
   mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
   if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
+    while old_pid="$(find_managed_mac_app_pid)" && [[ -n "$old_pid" ]]; do
+      kill "$old_pid" 2>/dev/null || true
+      sleep 1
+    done
     : >"$stdout_path"
-    printf 'WendyAgentMac was launched through LaunchServices; use macOS unified logging for app logs.\n' >"$stderr_path"
-    launchctl setenv WENDY_AGENT_PORT "$port"
-    launchctl setenv WENDY_AGENT_STATE_DIR "$config_dir/state"
-    launchctl setenv WENDY_OTEL_PORT 0
-    open "$(managed_agent_path)"
-    pgrep -x WendyAgentMac | head -n 1 > "$pid_path" || true
+    : >"$stderr_path"
+    open \
+      -n \
+      -g \
+      --stdout "$stdout_path" \
+      --stderr "$stderr_path" \
+      --env "WENDY_AGENT_PORT=$port" \
+      --env "WENDY_AGENT_STATE_DIR=$config_dir/state" \
+      --env "WENDY_OTEL_PORT=0" \
+      "$(managed_agent_path)"
   else
     env -i \
       HOME="$config_dir/home" \
       LOGNAME="wendy-e2e-agent" \
-      PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
       TMPDIR="${TMPDIR:-/tmp}" \
       USER="wendy-e2e-agent" \
       WENDY_CONFIG_PATH="$config_dir" \
@@ -753,12 +783,18 @@ start_managed_agent() {
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if [[ "$MANAGED_AGENT_IMPLEMENTATION" != "swift-mac-app" ]] && ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+    if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
+      if [[ -z "$MANAGED_AGENT_PID" ]]; then
+        MANAGED_AGENT_PID="$(find_managed_mac_app_pid)"
+        if [[ -n "$MANAGED_AGENT_PID" ]]; then
+          (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
+        fi
+      elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+        echo "ERROR: managed WendyAgentMac exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+        return 1
+      fi
+    elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
       echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
-      return 1
-    fi
-    if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]] && ! pgrep -x WendyAgentMac >/dev/null 2>&1; then
-      echo "ERROR: managed WendyAgentMac exited before becoming ready." >&2
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
@@ -775,9 +811,24 @@ start_managed_agent() {
 stop_managed_agent() {
   if [[ "${MANAGED_AGENT_IMPLEMENTATION:-}" == "swift-mac-app" ]]; then
     "$REPO_DIR/swift/Scripts/Quit.sh" >/dev/null 2>&1 || true
-    launchctl unsetenv WENDY_AGENT_PORT >/dev/null 2>&1 || true
-    launchctl unsetenv WENDY_AGENT_STATE_DIR >/dev/null 2>&1 || true
-    launchctl unsetenv WENDY_OTEL_PORT >/dev/null 2>&1 || true
+    local pid="${MANAGED_AGENT_PID:-}"
+    if [[ -z "$pid" ]]; then
+      pid="$(find_managed_mac_app_pid)"
+    fi
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      local deadline=$((SECONDS + 10))
+      while (( SECONDS < deadline )); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    fi
+    MANAGED_AGENT_PID=""
     return
   fi
   if [[ -z "${MANAGED_AGENT_PID:-}" ]]; then
