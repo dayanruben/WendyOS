@@ -801,7 +801,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	createReq.AppConfig = appConfigData
 
 	if appCfg.Brewfile != "" {
-		cliLogln("Applying Brewfile %s on target Mac...", appCfg.Brewfile)
+		cliLogln("Will apply Brewfile %s on target Mac.", appCfg.Brewfile)
 	}
 
 	if opts.deploy {
