@@ -982,7 +982,9 @@ func extractROS2BagArchive(r io.Reader, dest string) error {
 				return err
 			}
 			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
+				if closeErr := f.Close(); closeErr != nil {
+					return errors.Join(err, closeErr)
+				}
 				return err
 			}
 			if err := f.Close(); err != nil {
