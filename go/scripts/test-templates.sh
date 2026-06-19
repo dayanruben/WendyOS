@@ -33,7 +33,7 @@ Examples:
   $(basename "$0") --skip-run                              # generate + validate only
   $(basename "$0") --skip-run --language python             # filter to one language
   $(basename "$0") --skip-run --template simple-api         # filter to one template
-  $(basename "$0") --skip-run --target darwin --template llm --language swift
+  $(basename "$0") --skip-run --target darwin --template mac-llm --language swift
   $(basename "$0") -h wendyos-merry-aurora                  # full run with device
   $(basename "$0") --templates-dir ../WendyTemplates        # use local templates
 EOF

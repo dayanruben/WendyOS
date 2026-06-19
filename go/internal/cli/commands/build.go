@@ -632,6 +632,8 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 		"-scheme", scheme,
 		"-configuration", "Release",
 		"-derivedDataPath", ".xcode/",
+		"-skipMacroValidation",
+		"-skipPackagePluginValidation",
 	); err != nil {
 		return err
 	}

@@ -285,7 +285,9 @@ func runMacOSXcodeWithAgent(ctx context.Context, conn *grpcclient.AgentConnectio
 		}
 	}
 
-	// Build with xcodebuild -configuration Release.
+	// Build with xcodebuild -configuration Release. Package macro/plugin
+	// validation prompts cannot be answered in headless CLI deploys, so skip
+	// them and trust the package graph committed by the app project.
 	derivedDataPath := filepath.Join(cwd, ".xcode")
 	cliLogln("Building Xcode project %s (scheme: %s)...", xp, scheme)
 	if err := runXcodebuild(ctx, cwd,
@@ -293,6 +295,8 @@ func runMacOSXcodeWithAgent(ctx context.Context, conn *grpcclient.AgentConnectio
 		"-scheme", scheme,
 		"-configuration", "Release",
 		"-derivedDataPath", ".xcode/",
+		"-skipMacroValidation",
+		"-skipPackagePluginValidation",
 	); err != nil {
 		return fmt.Errorf("xcodebuild failed: %w", err)
 	}

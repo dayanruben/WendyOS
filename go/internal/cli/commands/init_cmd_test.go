@@ -239,7 +239,7 @@ func TestTemplateTargetMatch_DefaultsToWendyOSOnly(t *testing.T) {
 }
 
 func TestTemplateTargetMatch_AcceptsExplicitDarwinTarget(t *testing.T) {
-	tmpl := repoMetaTemplate{Name: "llm", Targets: []string{targetDarwin}}
+	tmpl := repoMetaTemplate{Name: "mac-llm", Targets: []string{targetDarwin}}
 	if !templateTargetMatch(tmpl, targetDarwin) {
 		t.Fatal("template with darwin target should match Darwin")
 	}
@@ -251,7 +251,7 @@ func TestTemplateTargetMatch_AcceptsExplicitDarwinTarget(t *testing.T) {
 func TestResolveTemplateLanguage_DarwinRequiresSwift(t *testing.T) {
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{
-			{Name: "llm", Languages: []string{langSwift}, Targets: []string{targetDarwin}},
+			{Name: "mac-llm", Languages: []string{langSwift}, Targets: []string{targetDarwin}},
 		},
 		Languages: []repoMetaLanguage{
 			{Key: langPython, Name: "Python"},
@@ -259,7 +259,7 @@ func TestResolveTemplateLanguage_DarwinRequiresSwift(t *testing.T) {
 		},
 	}
 
-	language, err := resolveTemplateLanguage(targetDarwin, "llm", meta, initOptions{})
+	language, err := resolveTemplateLanguage(targetDarwin, "mac-llm", meta, initOptions{})
 	if err != nil {
 		t.Fatalf("resolveTemplateLanguage: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestResolveTemplateLanguage_DarwinRequiresSwift(t *testing.T) {
 		t.Fatalf("language = %q, want %q", language, langSwift)
 	}
 
-	_, err = resolveTemplateLanguage(targetDarwin, "llm", meta, initOptions{
+	_, err = resolveTemplateLanguage(targetDarwin, "mac-llm", meta, initOptions{
 		language:    langPython,
 		languageSet: true,
 	})

@@ -164,7 +164,7 @@ func newInitCmd() *cobra.Command {
     --app-id mac-llm \
     --target darwin \
     --language swift \
-    --template llm \
+    --template mac-llm \
     --assistant skip
 
   # Enable all entitlements at once
