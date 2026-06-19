@@ -53,9 +53,9 @@ Use `npm ci` so installs use the committed lock file without mutating it. When
 updating dependencies, pin exact versions in `package.json`, regenerate the lock
 file intentionally, and run `npm audit --audit-level=high` before opening a PR.
 The `Screencast` GitHub Actions workflow enforces `npm ci`, npm audit checks
-with an explicit allowlist for currently known low/moderate Slidev editor
-advisories, dependency sanity checks, and script validation for changes under
-`screencast/`.
+with an explicit advisory-URL allowlist for currently known low/moderate Slidev
+editor advisories, dependency sanity checks, and script validation for changes
+under `screencast/`.
 
 `render-slide` uses Slidev under the hood to render one `slide.md` at a time.
 There is no aggregate deck and no timeline file.
