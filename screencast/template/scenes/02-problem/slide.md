@@ -1,3 +1,14 @@
-# Problem
+# Why this exists
 
-What was hard, slow, risky, or confusing before this change?
+Without structure, screencasts drift:
+
+```text
+script
+slides
+terminal recording
+screen capture
+voiceover
+final edit
+```
+
+A repeatable pipeline gives agents and humans the same source of truth.
