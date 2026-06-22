@@ -687,8 +687,8 @@ build_managed_agent() {
     swift-mac-app)
       (
         cd "$REPO_DIR/swift"
-        make agent-stop
-        if ! OUTPUT_DIR="$REPO_DIR/swift/Build" make agent-build; then
+        ./Scripts/Quit.sh
+        if ! OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev; then
           # Hosted E2E runners do not have an Apple Development identity.
           # Build the same app bundle without signing so the harness still
           # exercises WendyAgentMac.app instead of a parallel executable.
