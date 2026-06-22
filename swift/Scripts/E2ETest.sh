@@ -113,7 +113,7 @@ normalized_agent_os() {
 
 resolve_managed_agent_implementation() {
   case "$(normalized_agent_os)" in
-    macos|mac|darwin)
+    macos|darwin)
       # Native macOS E2Es must exercise the real Swift Mac app.
       # Linux/WendyOS managed agents continue to use the Go daemon below.
       printf 'swift-mac-app'
@@ -132,8 +132,16 @@ validate_port() {
 
 safe_managed_env_path() {
   local path="$1"
-  [[ "$path" =~ ^/[-._/A-Za-z0-9]+$ ]] \
+  local path_regex='^/[-._/@ A-Za-z0-9]+$'
+  [[ "$path" =~ $path_regex ]] \
     && [[ "$path" != */../* && "$path" != */.. && "$path" != /.. ]]
+}
+
+write_e2e_config_entry() {
+  local key="$1" value="$2"
+  [[ "$key" =~ ^[A-Z0-9_]+$ ]] || return 1
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
+  printf '%s=%s\n' "$key" "$value"
 }
 
 is_managed_mac_app_pid() {
@@ -505,6 +513,7 @@ if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
 mkdir -p "$RUN_DIR"
+chmod 700 "$RUN_DIR" 2>/dev/null || true
 
 if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
   DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
@@ -775,6 +784,7 @@ start_managed_agent() {
   echo "    Logs:    $stdout_path, $stderr_path"
 
   mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+  chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data" 2>/dev/null || true
   (umask 077; : > "$pid_path")
   if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
@@ -789,17 +799,19 @@ start_managed_agent() {
       echo "ERROR: invalid managed WendyAgentMac E2E launch configuration." >&2
       return 64
     fi
-    (umask 077; cat >"$e2e_config_path" <<EOF
-WENDY_AGENT_E2E=1
-WENDY_AGENT_PORT=$port
-WENDY_AGENT_STATE_DIR=$config_dir/state
-WENDY_AGENT_E2E_ROOT=$RUN_DIR
-WENDY_AGENT_E2E_PID_FILE=$pid_path
-WENDY_OTEL_PORT=0
-EOF
+    (
+      umask 077
+      {
+        write_e2e_config_entry WENDY_AGENT_E2E 1
+        write_e2e_config_entry WENDY_AGENT_PORT "$port"
+        write_e2e_config_entry WENDY_AGENT_STATE_DIR "$config_dir/state"
+        write_e2e_config_entry WENDY_AGENT_E2E_ROOT "$RUN_DIR"
+        write_e2e_config_entry WENDY_AGENT_E2E_PID_FILE "$pid_path"
+        write_e2e_config_entry WENDY_OTEL_PORT 0
+      } >"$e2e_config_path"
     )
-    : >"$stdout_path"
-    : >"$stderr_path"
+    chmod 600 "$e2e_config_path" 2>/dev/null || true
+    (umask 077; : >"$stdout_path"; : >"$stderr_path")
     open \
       -n \
       -g \
@@ -877,8 +889,12 @@ stop_managed_agent() {
         sleep 1
       done
       if kill -0 "$pid" 2>/dev/null; then
-        echo "WARN: WendyAgentMac PID $pid did not exit gracefully; sending SIGKILL." | tee -a "$quit_log" >&2
-        kill -9 "$pid" 2>/dev/null || true
+        if is_managed_mac_app_pid "$pid"; then
+          echo "WARN: WendyAgentMac PID $pid did not exit gracefully; sending SIGKILL." | tee -a "$quit_log" >&2
+          kill -9 "$pid" 2>/dev/null || true
+        else
+          echo "WARN: PID $pid no longer belongs to WendyAgentMac; skipping SIGKILL." | tee -a "$quit_log" >&2
+        fi
       fi
     fi
     MANAGED_AGENT_PID=""
