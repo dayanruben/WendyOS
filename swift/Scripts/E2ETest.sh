@@ -62,7 +62,6 @@ DEVICE_ADDRESS="${WENDY_E2E_DEVICE_ADDRESS:-}"
 AGENT_OS="${WENDY_E2E_AGENT_OS:-}"
 TRANSPORT="${WENDY_E2E_TRANSPORT:-}"
 MANAGED_AGENT="${WENDY_E2E_MANAGED_AGENT:-false}"
-MANAGED_AGENT_IMPLEMENTATION=""
 AGENT_INFO_JSON=""
 ISOLATION="${WENDY_E2E_ISOLATION:-per-test}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
@@ -111,15 +110,13 @@ normalized_agent_os() {
   printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
 }
 
-resolve_managed_agent_implementation() {
+managed_agent_is_macos() {
   case "$(normalized_agent_os)" in
     macos|darwin)
-      # Native macOS E2Es must exercise the real Swift Mac app.
-      # Linux/WendyOS managed agents continue to use the Go daemon below.
-      printf 'swift-mac-app'
+      return 0
       ;;
     *)
-      printf 'go'
+      return 1
       ;;
   esac
 }
@@ -407,12 +404,9 @@ if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
   echo "Use --device-address for the local device address instead." >&2
   exit 64
 fi
-if [[ "$MANAGED_AGENT" == "true" ]]; then
-  MANAGED_AGENT_IMPLEMENTATION="$(resolve_managed_agent_implementation)"
-  if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" && "$(uname -s)" != "Darwin" ]]; then
-    echo "ERROR: Swift Mac managed agents can only run on macOS runners." >&2
-    exit 64
-  fi
+if [[ "$MANAGED_AGENT" == "true" ]] && managed_agent_is_macos && [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "ERROR: macOS managed agents can only run on macOS runners." >&2
+  exit 64
 fi
 
 if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
@@ -663,25 +657,19 @@ EOF
 }
 
 managed_agent_path() {
-  case "$MANAGED_AGENT_IMPLEMENTATION" in
-    swift-mac-app)
-      printf '%s/swift/Build/WendyAgentMac.app' "$REPO_DIR"
-      ;;
-    *)
-      printf '%s/wendy-agent' "$AGENT_BIN_DIR"
-      ;;
-  esac
+  if managed_agent_is_macos; then
+    printf '%s/swift/Build/WendyAgentMac.app' "$REPO_DIR"
+  else
+    printf '%s/wendy-agent' "$AGENT_BIN_DIR"
+  fi
 }
 
 managed_agent_executable_path() {
-  case "$MANAGED_AGENT_IMPLEMENTATION" in
-    swift-mac-app)
-      printf '%s/Contents/MacOS/WendyAgentMac' "$(managed_agent_path)"
-      ;;
-    *)
-      managed_agent_path
-      ;;
-  esac
+  if managed_agent_is_macos; then
+    printf '%s/Contents/MacOS/WendyAgentMac' "$(managed_agent_path)"
+  else
+    managed_agent_path
+  fi
 }
 
 has_mac_development_signing_identity() {
@@ -729,32 +717,29 @@ build_managed_agent() {
   agent_path="$(managed_agent_path)"
 
   echo "==> Building managed wendy-agent"
-  echo "    Implementation: ${MANAGED_AGENT_IMPLEMENTATION:-go}"
+  echo "    Agent OS: $(normalized_agent_os)"
   echo "    Output: $agent_path"
 
-  case "$MANAGED_AGENT_IMPLEMENTATION" in
-    swift-mac-app)
-      (
-        cd "$REPO_DIR/swift"
-        ./Scripts/Quit.sh
-        if has_mac_development_signing_identity; then
-          OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev
-        else
-          build_unsigned_managed_mac_app
-        fi
-      )
-      /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
-        "$agent_path/Contents/Info.plist" 2>/dev/null || true
-      ;;
-    *)
-      mkdir -p "$AGENT_BIN_DIR"
-      (
-        cd "$REPO_DIR/go"
-        go build -o "$agent_path" ./cmd/wendy-agent
-      )
-      "$agent_path" --version
-      ;;
-  esac
+  if managed_agent_is_macos; then
+    (
+      cd "$REPO_DIR/swift"
+      ./Scripts/Quit.sh
+      if has_mac_development_signing_identity; then
+        OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev
+      else
+        build_unsigned_managed_mac_app
+      fi
+    )
+    /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
+      "$agent_path/Contents/Info.plist" 2>/dev/null || true
+  else
+    mkdir -p "$AGENT_BIN_DIR"
+    (
+      cd "$REPO_DIR/go"
+      go build -o "$agent_path" ./cmd/wendy-agent
+    )
+    "$agent_path" --version
+  fi
 }
 
 start_managed_agent() {
@@ -786,7 +771,7 @@ start_managed_agent() {
   mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
   chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data" 2>/dev/null || true
   (umask 077; : > "$pid_path")
-  if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
+  if managed_agent_is_macos; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
     if ! validate_port "$port" \
       || [[ "$config_dir" != "$RUN_DIR/"* ]] \
@@ -846,7 +831,7 @@ start_managed_agent() {
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if [[ "$MANAGED_AGENT_IMPLEMENTATION" == "swift-mac-app" ]]; then
+    if managed_agent_is_macos; then
       if [[ -z "$MANAGED_AGENT_PID" && -s "$pid_path" ]]; then
         MANAGED_AGENT_PID="$(head -n 1 "$pid_path")"
       fi
@@ -870,7 +855,7 @@ start_managed_agent() {
 }
 
 stop_managed_agent() {
-  if [[ "${MANAGED_AGENT_IMPLEMENTATION:-}" == "swift-mac-app" ]]; then
+  if managed_agent_is_macos; then
     local quit_log="$RUN_DIR/managed-agent/quit.log"
     if ! "$REPO_DIR/swift/Scripts/Quit.sh" >>"$quit_log" 2>&1; then
       echo "WARN: WendyAgentMac quit script reported an error; see $quit_log" >&2
@@ -1057,8 +1042,7 @@ write_attempt_info() {
     printf '    "filters": '; json_string_array "${TEST_FILTERS[@]}"; echo ","
     printf '    "isolation": '; json_string "$ISOLATION"; echo ","
     printf '    "parallel": '; json_bool "$PARALLEL"; echo ","
-    printf '    "managedAgent": '; json_bool "$MANAGED_AGENT"; echo ","
-    printf '    "managedAgentImplementation": '; json_string_or_null "$MANAGED_AGENT_IMPLEMENTATION"; echo
+    printf '    "managedAgent": '; json_bool "$MANAGED_AGENT"; echo
     echo '  },'
     echo '  "tools": {'
     printf '    "swift": '; json_string_or_null "$swift_version"; echo ","
@@ -1163,9 +1147,6 @@ fi
 echo "    Agent OS: ${AGENT_OS:-<current>}"
 echo "    Transport: ${TRANSPORT:-<none>}"
 echo "    Managed agent: $MANAGED_AGENT"
-if [[ "$MANAGED_AGENT" == "true" ]]; then
-  echo "    Managed agent implementation: ${MANAGED_AGENT_IMPLEMENTATION:-go}"
-fi
 
 set +e
 (
