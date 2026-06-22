@@ -675,6 +675,46 @@ managed_agent_executable_path() {
   esac
 }
 
+has_mac_development_signing_identity() {
+  if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
+    return 0
+  fi
+
+  local security_command=(security find-identity -v -p codesigning)
+  if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+    security_command+=("$KEYCHAIN_PATH")
+  fi
+  "${security_command[@]}" 2>/dev/null | grep -q '"Apple Development'
+}
+
+build_unsigned_managed_mac_app() {
+  local agent_path
+  agent_path="$(managed_agent_path)"
+
+  echo "==> No Apple Development signing identity; building unsigned WendyAgentMac Debug app"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::warning::No Apple Development signing identity available; Swift macOS E2Es will use an unsigned Debug WendyAgentMac.app."
+  fi
+  xcodebuild build \
+    -workspace WendyAgent.xcworkspace \
+    -scheme WendyAgentMac \
+    -configuration Debug \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$REPO_DIR/swift/Build/Xcode" \
+    WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-0000.00.00-000000-dev}" \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    -skipMacroValidation
+  rm -rf "$agent_path"
+  ditto \
+    "$REPO_DIR/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app" \
+    "$agent_path"
+  [[ -x "$agent_path/Contents/MacOS/WendyAgentMac" ]] || {
+    echo "ERROR: built WendyAgentMac executable is missing." >&2
+    exit 1
+  }
+}
+
 build_managed_agent() {
   local agent_path
   agent_path="$(managed_agent_path)"
@@ -688,28 +728,10 @@ build_managed_agent() {
       (
         cd "$REPO_DIR/swift"
         ./Scripts/Quit.sh
-        if ! OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev; then
-          # Hosted E2E runners do not have an Apple Development identity.
-          # Build the same app bundle without signing so the harness still
-          # exercises WendyAgentMac.app instead of a parallel executable.
-          xcodebuild build \
-            -workspace WendyAgent.xcworkspace \
-            -scheme WendyAgentMac \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$REPO_DIR/swift/Build/Xcode" \
-            WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-0000.00.00-000000-dev}" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            -skipMacroValidation
-          rm -rf "$agent_path"
-          ditto \
-            "$REPO_DIR/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app" \
-            "$agent_path"
-          [[ -x "$agent_path/Contents/MacOS/WendyAgentMac" ]] || {
-            echo "ERROR: built WendyAgentMac executable is missing." >&2
-            exit 1
-          }
+        if has_mac_development_signing_identity; then
+          OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev
+        else
+          build_unsigned_managed_mac_app
         fi
       )
       /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
