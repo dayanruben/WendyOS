@@ -89,31 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     #if DEBUG
         private func writeE2EPIDFileIfRequested() {
-            let environment = ProcessInfo.processInfo.environment
-            guard environment["WENDY_AGENT_E2E"] == "1",
-                let e2eRoot = environment["WENDY_AGENT_E2E_ROOT"],
-                let pidFile = environment["WENDY_AGENT_E2E_PID_FILE"],
-                !e2eRoot.isEmpty,
-                !pidFile.isEmpty
+            guard
+                let pidURL = WendyAgentE2EConfiguration.current?.urlInsideRoot(
+                    for: "WENDY_AGENT_E2E_PID_FILE",
+                    isDirectory: false
+                )
             else {
                 return
             }
 
-            let rootURL = URL(fileURLWithPath: e2eRoot, isDirectory: true)
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-            let pidURL = URL(fileURLWithPath: pidFile, isDirectory: false)
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-            guard pidURL.path == rootURL.path || pidURL.path.hasPrefix(rootURL.path + "/") else {
-                return
-            }
-
             do {
-                try FileManager.default.createDirectory(
-                    at: pidURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
                 try "\(ProcessInfo.processInfo.processIdentifier)\n".write(
                     to: pidURL,
                     atomically: true,
@@ -219,22 +204,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 extension WendyAgentConfiguration {
     fileprivate static var environment: Self {
         #if DEBUG
-            let environment = ProcessInfo.processInfo.environment
-            guard environment["WENDY_AGENT_E2E"] == "1",
-                environment["WENDY_AGENT_E2E_ROOT"]?.isEmpty == false
-            else {
+            guard let e2eConfiguration = WendyAgentE2EConfiguration.current else {
                 return Self()
             }
             return Self(
                 port: Self.portValue(
                     named: "WENDY_AGENT_PORT",
-                    in: environment,
+                    in: e2eConfiguration,
                     default: 50051,
                     allowsZero: false
                 ),
                 otelPort: Self.portValue(
                     named: "WENDY_OTEL_PORT",
-                    in: environment,
+                    in: e2eConfiguration,
                     default: 4317,
                     allowsZero: true
                 ),
@@ -249,11 +231,11 @@ extension WendyAgentConfiguration {
     #if DEBUG
         fileprivate static func portValue(
             named name: String,
-            in environment: [String: String],
+            in e2eConfiguration: WendyAgentE2EConfiguration,
             default defaultValue: Int,
             allowsZero: Bool
         ) -> Int {
-            guard let value = environment[name], let intValue = Int(value) else {
+            guard let value = e2eConfiguration[name], let intValue = Int(value) else {
                 return defaultValue
             }
             let lowerBound = allowsZero ? 0 : 1
