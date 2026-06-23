@@ -434,8 +434,11 @@ message ForgetBluetoothPeripheralResponse {}
 
 // Request message for updating the OS
 message UpdateOSRequest {
-    // URL to download the Mender artifact from
+    // URL to download the OS update artifact from (a .wendy or .mender artifact)
     string artifact_url = 1;
+    // Updater backend to use: "" or "auto" prefers the in-house wendyos-update
+    // engine and falls back to mender; "wendyos-update" or "mender" force one.
+    string updater_backend = 2;
 }
 
 // Response message for OS update progress

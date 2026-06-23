@@ -44,7 +44,7 @@ func newOSCmd() *cobra.Command {
 const (
 	osUpdateUnsupportedMessage      = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 	linuxOSUpdateUnsupportedMessage = "This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution’s package manager, such as apt, dnf, or pacman, to update this machine."
-	wendyOSMissingMenderMessage     = "This WendyOS image does not support OTA updates because mender-update was not found. Reinstall or upgrade to a WendyOS image with OTA support."
+	wendyOSMissingUpdaterMessage    = "This WendyOS image does not support OTA updates because no update backend (wendyos-update or mender) was found. Reinstall or upgrade to a WendyOS image with OTA support."
 )
 
 func validateOSUpdateIdentity(versionResp *agentpb.GetAgentVersionResponse) error {
@@ -61,8 +61,10 @@ func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error 
 	if err := validateOSUpdateIdentity(versionResp); err != nil {
 		return err
 	}
-	if !agentVersionHasFeature(versionResp, "mender") {
-		return errors.New(wendyOSMissingMenderMessage)
+	// Either OS update backend qualifies: the in-house wendyos-update engine or
+	// mender. The agent picks one per the request's --updater value.
+	if !agentVersionHasFeature(versionResp, "wendyos-update") && !agentVersionHasFeature(versionResp, "mender") {
+		return errors.New(wendyOSMissingUpdaterMessage)
 	}
 	return nil
 }
@@ -84,18 +86,26 @@ func agentVersionHasFeature(versionResp *agentpb.GetAgentVersionResponse, featur
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
+	var updaterBackend string
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
 		Short: "Update WendyOS on the target device",
-		Long: `Update WendyOS using a Mender artifact. Provide a local file path or directory
-as a positional argument, or use --artifact-url for a remote URL.
+		Long: `Update WendyOS using an OS update artifact. Provide a local file path or
+directory as a positional argument, or use --artifact-url for a remote URL.
 
 When a local file is provided, the CLI serves it via a temporary HTTP server
-so the device can download it directly.`,
+so the device can download it directly.
+
+By default the device uses the in-house wendyos-update engine when it supports
+the board, falling back to mender. Use --updater to force a backend.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			if err := validateUpdaterBackend(updaterBackend); err != nil {
+				return err
+			}
 
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
@@ -236,7 +246,8 @@ so the device can download it directly.`,
 			}
 
 			stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
-				ArtifactUrl: artifactURL,
+				ArtifactUrl:    artifactURL,
+				UpdaterBackend: updaterBackend,
 			})
 			if err != nil {
 				return fmt.Errorf("starting OS update: %w", err)
@@ -301,13 +312,29 @@ so the device can download it directly.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Mender artifact URL (remote)")
+	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().StringVar(&updaterBackend, "updater", "auto",
+		"OS update backend: auto (prefer wendyos-update, fall back to mender), wendyos, or mender")
 
 	return cmd
 }
 
-// resolveArtifactPath resolves a local file path or directory to a .mender artifact file.
+// validateUpdaterBackend rejects an unknown --updater value before contacting
+// the device. The accepted set mirrors the agent's selectUpdater.
+func validateUpdaterBackend(updater string) error {
+	switch updater {
+	case "", "auto", "wendyos", "wendyos-update", "mender":
+		return nil
+	default:
+		return fmt.Errorf("invalid --updater %q (expected auto, wendyos, or mender)", updater)
+	}
+}
+
+// resolveArtifactPath resolves a local file path or directory to an OS update
+// artifact. A direct file path is returned as-is (any extension). A directory
+// is searched for an artifact the device can install: a .wendy artifact (the
+// in-house engine) or a .mender artifact (the fallback).
 func resolveArtifactPath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -323,7 +350,6 @@ func resolveArtifactPath(path string) (string, error) {
 		return absPath, nil
 	}
 
-	// Search directory for a .mender file.
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
 		return "", fmt.Errorf("reading directory: %w", err)
@@ -331,13 +357,14 @@ func resolveArtifactPath(path string) (string, error) {
 
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasSuffix(name, ".mender") || strings.HasSuffix(name, ".mender.xz") {
+		if strings.HasSuffix(name, ".wendy") ||
+			strings.HasSuffix(name, ".mender") || strings.HasSuffix(name, ".mender.xz") {
 			fmt.Printf("Found artifact: %s\n", name)
 			return filepath.Join(absPath, name), nil
 		}
 	}
 
-	return "", fmt.Errorf("no .mender file found in directory: %s", absPath)
+	return "", fmt.Errorf("no .wendy or .mender artifact found in directory: %s", absPath)
 }
 
 // artifactURLPath generates a short hash prefix for the URL path.

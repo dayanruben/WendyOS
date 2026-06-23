@@ -14,6 +14,7 @@ func TestPendingMarkerRoundTrip(t *testing.T) {
 		OldOSVersion: "WendyOS-0.10.4",
 		ArtifactURL:  "http://192.168.1.10:8080/artifact.mender",
 		AgentVersion: "1.2.3",
+		Backend:      "wendyos-update",
 	}
 	if err := WritePendingMarker(dir, m); err != nil {
 		t.Fatalf("WritePendingMarker: %v", err)
@@ -29,7 +30,7 @@ func TestPendingMarkerRoundTrip(t *testing.T) {
 	if !got.CreatedAt.Equal(m.CreatedAt) {
 		t.Errorf("CreatedAt = %v, want %v", got.CreatedAt, m.CreatedAt)
 	}
-	if got.OldOSVersion != m.OldOSVersion || got.ArtifactURL != m.ArtifactURL || got.AgentVersion != m.AgentVersion {
+	if got.OldOSVersion != m.OldOSVersion || got.ArtifactURL != m.ArtifactURL || got.AgentVersion != m.AgentVersion || got.Backend != m.Backend {
 		t.Errorf("round trip mismatch: got %+v, want %+v", got, m)
 	}
 }

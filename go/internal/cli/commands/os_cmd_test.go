@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,13 +55,17 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			want: linuxOSUpdateUnsupportedMessage,
 		},
 		{
-			name: "WendyOS without mender is unsupported",
+			name: "WendyOS without an update backend is unsupported",
 			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4")},
-			want: wendyOSMissingMenderMessage,
+			want: wendyOSMissingUpdaterMessage,
 		},
 		{
 			name: "WendyOS version with mender is supported",
 			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"mender"}},
+		},
+		{
+			name: "WendyOS version with wendyos-update is supported",
+			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"wendyos-update"}},
 		},
 		{
 			name: "WendyOS device type with mender is supported",
@@ -83,6 +89,67 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 				t.Fatalf("validateOSUpdateTarget() error = %q, want %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveArtifactPath(t *testing.T) {
+	t.Run("direct file is returned regardless of extension", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "update.wendy")
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveArtifactPath(f)
+		if err != nil {
+			t.Fatalf("resolveArtifactPath(%q) error = %v", f, err)
+		}
+		if got != f {
+			t.Fatalf("resolveArtifactPath(%q) = %q, want %q", f, got, f)
+		}
+	})
+
+	t.Run("directory search finds a .wendy artifact", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "image.wendy")
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveArtifactPath(dir)
+		if err != nil {
+			t.Fatalf("resolveArtifactPath(%q) error = %v", dir, err)
+		}
+		if got != f {
+			t.Fatalf("resolveArtifactPath(%q) = %q, want %q", dir, got, f)
+		}
+	})
+
+	t.Run("directory search still finds a .mender artifact", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "image.mender")
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveArtifactPath(dir)
+		if err != nil {
+			t.Fatalf("resolveArtifactPath(%q) error = %v", dir, err)
+		}
+		if got != f {
+			t.Fatalf("resolveArtifactPath(%q) = %q, want %q", dir, got, f)
+		}
+	})
+}
+
+func TestValidateUpdaterBackend(t *testing.T) {
+	valid := []string{"", "auto", "wendyos", "wendyos-update", "mender"}
+	for _, v := range valid {
+		if err := validateUpdaterBackend(v); err != nil {
+			t.Errorf("validateUpdaterBackend(%q) = %v, want nil", v, err)
+		}
+	}
+	for _, v := range []string{"bogus", "Mender", "wendy", "none"} {
+		if err := validateUpdaterBackend(v); err == nil {
+			t.Errorf("validateUpdaterBackend(%q) = nil, want error", v)
+		}
 	}
 }
 

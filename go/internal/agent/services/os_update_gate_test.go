@@ -13,7 +13,7 @@ import (
 func TestRecordPendingOSUpdateRedactsURLCredentials(t *testing.T) {
 	dir := t.TempDir()
 
-	recordPendingOSUpdate(zap.NewNop(), dir, "https://user:hunter2@artifacts.example.com/os.mender")
+	recordPendingOSUpdate(zap.NewNop(), dir, "https://user:hunter2@artifacts.example.com/os.mender", updaterNameMender)
 
 	marker, found, err := oshealth.ReadPendingMarker(dir)
 	if err != nil || !found {
@@ -90,7 +90,7 @@ func TestRecordPendingOSUpdateClearsPreviousResult(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recordPendingOSUpdate(zap.NewNop(), dir, "http://example/artifact.mender")
+	recordPendingOSUpdate(zap.NewNop(), dir, "http://example/artifact.mender", updaterNameWendyOS)
 
 	if _, found, err := oshealth.ReadUpdateResult(dir); err != nil || found {
 		t.Errorf("previous update result must be cleared so it cannot be mistaken for this attempt's outcome (found=%v err=%v)", found, err)
@@ -101,5 +101,8 @@ func TestRecordPendingOSUpdateClearsPreviousResult(t *testing.T) {
 	}
 	if marker.ArtifactURL != "http://example/artifact.mender" {
 		t.Errorf("ArtifactURL = %q", marker.ArtifactURL)
+	}
+	if marker.Backend != updaterNameWendyOS {
+		t.Errorf("marker.Backend = %q, want %q so the next boot commits with the same backend", marker.Backend, updaterNameWendyOS)
 	}
 }
