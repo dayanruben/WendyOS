@@ -186,6 +186,12 @@ func main() {
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
+	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
+	// service is only registered when containerd connected (WDY-1332).
+	var ros2Svc *services.ROS2Service
+	if ctrdClient != nil {
+		ros2Svc = services.NewROS2Service(logger, ctrdClient, agentcontainerd.ROS2BagDir)
+	}
 
 	// OTEL receivers.
 	otelLogReceiver := services.NewOTELLogsReceiver(telemetryBuf)
@@ -366,6 +372,9 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		if ros2Svc != nil {
+			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
+		}
 	}
 
 	startMTLSServer := func(certPEM, chainPEM, keyPEM string) {
@@ -520,6 +529,16 @@ func main() {
 		if runtime.GOOS == "linux" && ctrdErr == nil {
 			go startRegistry(registryTLSConfig(certPEM, chainPEM, keyPEM))
 		}
+	}
+
+	// Set up the unprovisioning callback: revert the mDNS advertisement to the
+	// plaintext port and exit so systemd restarts the agent into unprovisioned
+	// mode. A clean restart is simpler and more reliable than tearing down the
+	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
+	provisioningSvc.OnUnprovisioned = func() {
+		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
+		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
+		os.Exit(0)
 	}
 
 	otelPort := defaultOTELPort

@@ -157,6 +157,98 @@ func TestApplyEntitlements_GPU(t *testing.T) {
 	if !hasEnv(spec, "NVIDIA_VISIBLE_DEVICES") {
 		t.Error("GPU entitlement did not set NVIDIA_VISIBLE_DEVICES")
 	}
+
+	// On a generic (non-Pi) host, the GPU entitlement must not expose the
+	// Raspberry Pi VideoCore mailbox device.
+	if hasMountDest(spec, "/dev/vcio") {
+		t.Error("GPU entitlement must not mount /dev/vcio on a non-Raspberry-Pi host")
+	}
+}
+
+// installFakeVCIO points vcioDevicePath at a temp file, makes statMajor report
+// the given major for it, and reports the host as a Raspberry Pi — so the
+// vcio branch of applyGPU can be exercised without a real /dev/vcio (which only
+// exists on a Pi and whose major needs root/mknod to fake). Restored on cleanup.
+func installFakeVCIO(t *testing.T, major int64) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "vcio")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+
+	origPath := vcioDevicePath
+	origStat := statMajor
+	origBoard := boardDetect
+	t.Cleanup(func() {
+		vcioDevicePath = origPath
+		statMajor = origStat
+		boardDetect = origBoard
+	})
+
+	vcioDevicePath = p
+	statMajor = func(q string) (int64, error) {
+		if q == p {
+			return major, nil
+		}
+		return 0, os.ErrNotExist
+	}
+	boardDetect = func() board.Info { return board.Info{Kind: board.RaspberryPi} }
+	return p
+}
+
+func TestApplyGPU_RaspberryPiExposesVCIO(t *testing.T) {
+	source := installFakeVCIO(t, 249)
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// /dev/vcio must be bind-mounted from the host node.
+	m, ok := mountForDest(spec, "/dev/vcio")
+	if !ok {
+		t.Fatal("GPU entitlement did not mount /dev/vcio on a Raspberry Pi")
+	}
+	if m.Type != "bind" || m.Source != source {
+		t.Errorf("/dev/vcio mount = {Type:%q Source:%q}, want bind from %q", m.Type, m.Source, source)
+	}
+
+	// The dynamic major must be allowed, exactly once, with "rw" (no mknod).
+	if !hasMajorRule(spec, 249) {
+		t.Error("GPU entitlement did not allow the /dev/vcio major on a Raspberry Pi")
+	}
+	if got := countMajorRule(spec, 249); got != 1 {
+		t.Errorf("vcio major rule should be deduplicated, got %d entries", got)
+	}
+	if acc, _ := majorRuleAccess(spec, 249); acc != "rw" {
+		t.Errorf("vcio major Access = %q, want %q (mknod must be withheld)", acc, "rw")
+	}
+}
+
+func TestApplyGPU_RaspberryPiSkipsVCIOWhenAbsent(t *testing.T) {
+	// Report a Pi, but leave vcioDevicePath at its default (/dev/vcio), which
+	// does not exist on the test host: the bind mount must be skipped so a
+	// missing source cannot stop the container from starting.
+	origBoard := boardDetect
+	t.Cleanup(func() { boardDetect = origBoard })
+	boardDetect = func() board.Info { return board.Info{Kind: board.RaspberryPi} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if hasMountDest(spec, "/dev/vcio") {
+		t.Error("GPU entitlement mounted /dev/vcio even though the host node is absent")
+	}
 }
 
 func TestApplyEntitlements_Network_Host(t *testing.T) {
@@ -370,7 +462,7 @@ func TestApplyEntitlements_Bluetooth_NoProxy(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxyAvailable: false}); err != nil {
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxySocketDir: ""}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -398,7 +490,12 @@ func TestApplyEntitlements_Bluetooth_Proxy(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxyAvailable: true}); err != nil {
+	// The caller (containerd client) passes the exact directory the proxy
+	// created, keyed by container name. Here a multi-service container name is
+	// used to guard against the regression where the mount source was rebuilt
+	// from the bare app ID and dropped the service suffix (WDY-1688).
+	const proxyDir = "/run/wendy/dbus-proxy/bt-app_btscan"
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxySocketDir: proxyDir}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -412,12 +509,11 @@ func TestApplyEntitlements_Bluetooth_Proxy(t *testing.T) {
 		t.Error("bluetooth proxy should not add /run/dbus mount")
 	}
 
-	// Verify source points to proxy directory.
+	// Verify source points to the exact directory the caller supplied.
 	for _, m := range spec.Mounts {
 		if m.Destination == "/var/run/dbus" {
-			expected := "/run/wendy/dbus-proxy/bt-app"
-			if m.Source != expected {
-				t.Errorf("proxy /var/run/dbus source = %q, want %q", m.Source, expected)
+			if m.Source != proxyDir {
+				t.Errorf("proxy /var/run/dbus source = %q, want %q", m.Source, proxyDir)
 			}
 		}
 	}
@@ -889,6 +985,134 @@ func TestApplyI2C_ValidDevice(t *testing.T) {
 	}
 }
 
+// TestApplySerial_ValidDevice verifies a legitimate serial tty is bind-mounted,
+// gets a cgroup allow rule scoped to the device's exact major:minor (never the
+// whole major), and adds the dialout GID.
+func TestApplySerial_ValidDevice(t *testing.T) {
+	cases := []struct {
+		device string
+		major  int64
+	}{
+		{"ttyACM0", 166},
+		{"ttyUSB0", 188},
+	}
+	// Inject a fake stat so the test needs no real device nodes (which require
+	// root + mknod). Returns the device's expected major and a fixed minor.
+	const fakeMinor int64 = 7
+	origStat := statSerialDevice
+	defer func() { statSerialDevice = origStat }()
+
+	for _, tc := range cases {
+		t.Run(tc.device, func(t *testing.T) {
+			statSerialDevice = func(string) (int64, int64, error) { return tc.major, fakeMinor, nil }
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: tc.device},
+				},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			if !hasMountDest(spec, "/dev/"+tc.device) {
+				t.Errorf("serial device %q was not mounted", tc.device)
+			}
+			if !hasMajorMinorRule(spec, tc.major, fakeMinor) {
+				t.Errorf("serial device %q missing scoped cgroup allow rule for %d:%d", tc.device, tc.major, fakeMinor)
+			}
+			if hasWholeMajorRule(spec, tc.major) {
+				t.Errorf("serial device %q emitted a whole-major rule (no minor) — must be device-scoped", tc.device)
+			}
+			if !hasGID(spec, dialoutGroupGID) {
+				t.Errorf("serial device %q did not add dialout GID %d", tc.device, dialoutGroupGID)
+			}
+		})
+	}
+}
+
+// TestApplySerial_DeviceAbsent verifies a clear error (and no spec mutation)
+// when the declared serial device is not present on the host.
+func TestApplySerial_DeviceAbsent(t *testing.T) {
+	origStat := statSerialDevice
+	defer func() { statSerialDevice = origStat }()
+	statSerialDevice = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementSerial, Device: "ttyACM0"}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+		t.Fatal("ApplyEntitlements() = nil error for absent serial device, want error")
+	}
+	if hasMountDest(spec, "/dev/ttyACM0") {
+		t.Error("absent serial device should not be mounted")
+	}
+}
+
+// TestStatSerialDevice_RejectsSymlink verifies the real resolver refuses a
+// symlinked node (runc can't follow symlinks through a bind mount, and a
+// symlink would let the validated node differ from the bound one).
+func TestStatSerialDevice_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := statSerialDevice(link); err == nil {
+		t.Error("statSerialDevice followed a symlink; want rejection")
+	}
+}
+
+// TestApplySerial_PathTraversal verifies a crafted device name cannot escape
+// /dev or emit an unscoped cgroup rule.
+func TestApplySerial_PathTraversal(t *testing.T) {
+	traversalCases := []string{
+		"ttyACM0/../sda",
+		"../mem",
+		"../../etc/passwd",
+		"sda",
+		"ttyACM",
+		"ttyACMx",
+	}
+	// A real device node never gets stat'd for these — they're rejected by name
+	// before the stat — but inject a permissive stat so a regression that skips
+	// the name check would still be caught by the mount assertions below.
+	origStat := statSerialDevice
+	defer func() { statSerialDevice = origStat }()
+	statSerialDevice = func(string) (int64, int64, error) { return 166, 0, nil }
+
+	for _, device := range traversalCases {
+		t.Run(device, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: device},
+				},
+			}
+			// A crafted name must be rejected with an error; either way it must
+			// never produce a mount escaping /dev or the named bad path.
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+				t.Errorf("crafted device=%q was accepted; want rejection", device)
+			}
+			for _, m := range spec.Mounts {
+				if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" || m.Destination == "/etc/passwd" {
+					t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
+				}
+				if m.Destination == "/dev/"+device {
+					t.Errorf("unsanitized device=%q was mounted as %q", device, m.Destination)
+				}
+			}
+		})
+	}
+}
+
 // TestApplyPersist_PathTraversalDestination verifies that a crafted mount destination
 // cannot escape the container path validation (WDY-1016).
 func TestApplyPersist_PathTraversalDestination(t *testing.T) {
@@ -1000,6 +1224,25 @@ func installFakeCameraGlobs(t *testing.T, files map[string]int64) {
 		}
 		return 0, os.ErrNotExist
 	}
+}
+
+func hasMajorMinorRule(spec *Spec, major, minor int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == major && d.Minor != nil && *d.Minor == minor {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWholeMajorRule reports an allow rule for a whole major (no minor scope).
+func hasWholeMajorRule(spec *Spec, major int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == major && d.Minor == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMajorRule(spec *Spec, want int64) bool {

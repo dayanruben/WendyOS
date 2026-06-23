@@ -28,9 +28,9 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 |-------|-------------|
 | `wendyos` | Linux edge device running WendyOS; apps run in containers |
 | `wendy-lite` | ESP32 WASM target |
-| `darwin` | Native macOS execution through [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) |
+| `darwin` | Native macOS execution through [Wendy for Mac](/docs/installation/wendy-agent-macos) |
 
-Use `"darwin"` for Apple Silicon Mac targets managed by Wendy Agent for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
+Use `"darwin"` for Apple Silicon Mac targets managed by Wendy for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
 
 Minimal SwiftPM/macOS configuration:
 
@@ -69,18 +69,17 @@ Controls network access for your application.
 
 ### GPU Entitlement
 
-Enables NVIDIA GPU access on Jetson devices for ML inference, computer vision, and GPU-accelerated computing.
+Enables GPU or board-telemetry access on supported devices.
 
 ```json
 { "type": "gpu" }
 ```
 
 When enabled:
-- Adds application to the video group for GPU device access
-- Injects NVIDIA Container Device Interface (CDI) specifications
-- Sets up CUDA and GPU library environment variables
+- **NVIDIA Jetson**: Adds application to video group, injects NVIDIA CDI specs, sets CUDA env vars
+- **Raspberry Pi**: Exposes `/dev/vcio` (VideoCore mailbox) for board telemetry (power, voltage, temperature)
 
-**Note**: GPU entitlements are specifically for NVIDIA Jetson devices.
+**Note**: GPU entitlement behavior is hardware-specific.
 
 ### Video Entitlement
 

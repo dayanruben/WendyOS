@@ -41,9 +41,17 @@ mDNS and BLE discover nearby [WendyOS](../../wendyos/),
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
 
-Wendy Agent for Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
+Wendy for Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
 as a LAN device when local discovery is allowed by the network and macOS Local
 Network permissions.
+
+The picker table shows the same columns as
+[`wendy discover`](./commands/discover.md#interactive-table). The leading
+marker column displays provisioned state (`●`/`○`) for LAN devices alongside
+the `✦` default marker. When the highlighted device is provisioned but this
+CLI cannot read its agent details (unprovisioned CLI, or logged in with
+credentials that don't have access), a footer hint explains why the version is
+blank and suggests `wendy auth login`.
 
 In scripts, CI, SSH sessions without a TTY, or any other non-interactive
 context, no picker is shown. Pass `--device`, or configure a default with
@@ -57,10 +65,10 @@ context, no picker is shown. Pass `--device`, or configure a default with
 The picker can also show local provider targets when the host supports them.
 These are not WendyOS devices.
 
-### Docker Desktop
+### Docker
 
-Use Docker Desktop for local container runs. Dockerfile and Compose projects run
-through the local Docker daemon. On macOS and Windows, Docker Desktop runs Linux
+Use Docker for local container runs. Dockerfile, Containerfile, and Compose projects run
+through the local Docker daemon. On macOS and Windows, Docker runs Linux
 containers inside Docker's Linux environment rather than as native macOS or
 Windows processes.
 
@@ -74,16 +82,40 @@ You can select it directly with:
 wendy run --device docker
 ```
 
-### Local Machine
+### Apple Container
 
-Use Local Machine for host-native apps. The app runs directly on the computer
+On Apple silicon Macs, Wendy can use Apple's `container` CLI for local
+Dockerfile and Containerfile runs without Docker Desktop:
+
+```sh
+container system start
+wendy run --device apple-container
+```
+
+Use this target when you want to build and run a single Dockerfile or
+Containerfile project with Apple's lightweight Linux container runtime. Compose
+projects still require the Docker target.
+
+To deploy to a WendyOS device while using Apple Container only as the image
+builder, keep `--device` pointed at the WendyOS device. On Apple silicon Macs,
+Apple Container is tried first by default when it is installed and running, then
+Docker is used as a fallback. Set `--builder apple-container` to require Apple
+Container, or `--builder docker` to force Docker:
+
+```sh
+wendy --device my-wendy.local run --builder apple-container
+```
+
+### Local
+
+Use the local target for host-native apps. The app runs directly on the computer
 that is running the `wendy` CLI:
 
 - On macOS, it runs as a macOS process.
 - On Windows, it runs as a Windows process.
 - On Linux, it runs as a Linux process.
 
-Local Machine is intended for native Swift, Go, and Python projects. It does not
+The local target is intended for native Swift, Go, and Python projects. It does not
 run inside Docker's Linux environment, does not emulate WendyOS, and does not
 provide WendyOS container semantics, hardware entitlements, or device filesystem
 layout.

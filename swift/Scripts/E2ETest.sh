@@ -48,7 +48,8 @@ OUTPUT_DIR="${WENDY_E2E_OUTPUT_DIR:-}"
 CLI_ROOT_DIR="${WENDY_E2E_CLI_ROOT_DIR:-}"
 CLI_REPO_DIR="${WENDY_E2E_CLI_REPO_DIR:-}"
 CLI_BIN_DIR="${WENDY_E2E_CLI_BIN_DIR:-}"
-CLI_AUTH_CONFIG_PATH="${WENDY_E2E_CLI_AUTH_CONFIG_PATH:-}"
+CLI_AUTH_CONFIG_EXPLICIT="${WENDY_E2E_CLI_AUTH_CONFIG_PATH:-}"
+CLI_AUTH_CONFIG_PATH="$CLI_AUTH_CONFIG_EXPLICIT"
 CLI_USER="${WENDY_E2E_CLI_USER:-}"
 CLI_ADDRESS="${WENDY_E2E_CLI_ADDRESS:-}"
 CLI_OS="${WENDY_E2E_CLI_OS:-}"
@@ -57,8 +58,10 @@ AGENT_REPO_DIR="${WENDY_E2E_AGENT_REPO_DIR:-}"
 AGENT_BIN_DIR="${WENDY_E2E_AGENT_BIN_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
+DEVICE_ADDRESS="${WENDY_E2E_DEVICE_ADDRESS:-}"
 AGENT_OS="${WENDY_E2E_AGENT_OS:-}"
 TRANSPORT="${WENDY_E2E_TRANSPORT:-}"
+MANAGED_AGENT="${WENDY_E2E_MANAGED_AGENT:-false}"
 AGENT_INFO_JSON=""
 ISOLATION="${WENDY_E2E_ISOLATION:-per-test}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
@@ -99,6 +102,32 @@ normalize_isolation() {
   esac
 }
 
+validate_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( 10#$port >= 1 && 10#$port <= 65535 ))
+}
+
+valid_device_address() {
+  local value="$1" port=""
+  [[ "$value" != *@* ]] || return 1
+  if [[ "$value" =~ ^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$ ]]; then
+    port="${BASH_REMATCH[2]:-}"
+  elif [[ "$value" =~ ^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$ ]]; then
+    port="${BASH_REMATCH[2]:-}"
+  else
+    return 1
+  fi
+  [[ -z "$port" ]] || validate_port "$port"
+}
+
+validate_test_filter() {
+  local filter="$1"
+  [[ -n "$filter" && ${#filter} -le 200 ]] || return 1
+  [[ "$filter" != -* ]] || return 1
+  [[ "$filter" =~ ^[A-Za-z0-9][A-Za-z0-9\ \._:/\|\(\),_-]*$ ]]
+}
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -123,8 +152,12 @@ Options:
   --agent-repo-dir DIR  wendy-agent repo root on the agent machine.
   --agent-bin-dir DIR   Optional directory prepended to PATH on the agent machine.
   --agent-user USER     Optional SSH user for the agent machine.
-  --agent-address HOST  Optional address for the agent machine; defaults to hostname.
+  --agent-address HOST  Optional SSH address for the agent machine; defaults to local.
+  --device-address ADDRESS
+                        Optional Wendy device address while commands run locally.
   --agent-os OS         Optional OS override for the agent machine.
+  --managed-agent       Build and launch a local wendy-agent for this run.
+  --no-managed-agent    Do not launch a managed local wendy-agent.
   --isolation MODE      Sandbox isolation: none, per-run, or per-test; defaults to per-test.
   --parallel            Allow SwiftPM to run tests in parallel. Only valid when
                         both CLI and agent machines use local transport.
@@ -149,8 +182,10 @@ Environment:
   WENDY_E2E_AGENT_REPO_DIR            wendy-agent repo root on the agent machine.
   WENDY_E2E_AGENT_BIN_DIR             Optional directory prepended to PATH on the agent machine.
   WENDY_E2E_AGENT_USER                Optional SSH user for the agent machine.
-  WENDY_E2E_AGENT_ADDRESS             Optional address for the agent machine.
+  WENDY_E2E_AGENT_ADDRESS             Optional SSH address for the agent machine.
+  WENDY_E2E_DEVICE_ADDRESS           Optional Wendy device address while commands run locally.
   WENDY_E2E_AGENT_OS                  Optional OS override for the agent machine.
+  WENDY_E2E_MANAGED_AGENT             Boolean; build and launch a local wendy-agent.
   WENDY_E2E_TRANSPORT                 Optional transport label for report metadata.
   WENDY_E2E_ISOLATION                 none, per-run, or per-test; defaults to per-test.
   WENDY_E2E_PARALLEL                  Boolean; enables SwiftPM parallel tests.
@@ -222,9 +257,21 @@ while [[ $# -gt 0 ]]; do
       AGENT_ADDRESS="$2"
       shift 2
       ;;
+    --device-address)
+      DEVICE_ADDRESS="$2"
+      shift 2
+      ;;
     --agent-os)
       AGENT_OS="$2"
       shift 2
+      ;;
+    --managed-agent)
+      MANAGED_AGENT="true"
+      shift
+      ;;
+    --no-managed-agent)
+      MANAGED_AGENT="false"
+      shift
       ;;
     --isolation)
       ISOLATION="$2"
@@ -261,7 +308,8 @@ done
 if [[ ${#TEST_FILTERS[@]} -eq 0 && -n "${WENDY_E2E_TEST_FILTERS:-}" ]]; then
   IFS=',' read -ra RAW_FILTERS <<< "${WENDY_E2E_TEST_FILTERS}"
   for filter in "${RAW_FILTERS[@]}"; do
-    filter="$(echo "$filter" | xargs)"
+    filter="${filter#${filter%%[![:space:]]*}}"
+    filter="${filter%${filter##*[![:space:]]}}"
     [[ -n "$filter" ]] && TEST_FILTERS+=("$filter")
   done
 fi
@@ -294,6 +342,7 @@ fi
 ISOLATION="$(normalize_isolation "$ISOLATION")"
 PARALLEL="$(normalize_bool "WENDY_E2E_PARALLEL" "$PARALLEL")"
 VERBOSE="$(normalize_bool "WENDY_E2E_VERBOSE" "$VERBOSE")"
+MANAGED_AGENT="$(normalize_bool "WENDY_E2E_MANAGED_AGENT" "$MANAGED_AGENT")"
 
 if [[ "$PARALLEL" == "true" && "$ISOLATION" != "per-test" ]]; then
   echo "ERROR: --parallel requires --isolation per-test." >&2
@@ -308,6 +357,27 @@ fi
 
 if [[ -n "$CLI_ADDRESS" && -z "$CLI_REPO_DIR" ]]; then
   echo "ERROR: --cli-repo-dir is required when --cli-address is set." >&2
+  exit 64
+fi
+
+if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
+  echo "ERROR: --managed-agent cannot be combined with --agent-address." >&2
+  echo "Use --device-address for the local device address instead." >&2
+  exit 64
+fi
+
+if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
+  echo "ERROR: invalid --device-address." >&2
+  exit 64
+fi
+for filter in "${TEST_FILTERS[@]}"; do
+  if ! validate_test_filter "$filter"; then
+    echo "ERROR: invalid SwiftPM test filter: $filter" >&2
+    exit 64
+  fi
+done
+if [[ -n "$TRANSPORT" && ! "$TRANSPORT" =~ ^[A-Za-z0-9._-]{1,40}$ ]]; then
+  echo "ERROR: WENDY_E2E_TRANSPORT contains invalid characters." >&2
   exit 64
 fi
 
@@ -374,6 +444,9 @@ fi
 if [[ -z "$CLI_ADDRESS" ]]; then
   CLI_BIN_DIR="$(absolute_dir_path "$CLI_BIN_DIR")"
 fi
+if [[ "$MANAGED_AGENT" == "true" && -z "$AGENT_BIN_DIR" ]]; then
+  AGENT_BIN_DIR="${AGENT_REPO_DIR%/}/go/bin"
+fi
 if [[ -n "$AGENT_BIN_DIR" && -z "$AGENT_ADDRESS" ]]; then
   AGENT_BIN_DIR="$(absolute_dir_path "$AGENT_BIN_DIR")"
 fi
@@ -382,12 +455,23 @@ RUN_DIR="$OUTPUT_DIR/$RUN_ID"
 CLI_RUN_DIR="$CLI_ROOT_DIR/$RUN_ID/cli"
 AGENT_RUN_DIR="$AGENT_ROOT_DIR/$RUN_ID/agent"
 TEST_RESULTS_OUTPUT_PATH="$RUN_DIR/test-results.xml"
+ATTEMPT_LOG_PATH="$RUN_DIR/attempt.log"
+ATTEMPT_INFO_WRITTEN="false"
+MANAGED_AGENT_PID=""
 
 rm -rf "$RUN_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
 mkdir -p "$RUN_DIR"
+
+if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
+  DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
+fi
+if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
+  echo "ERROR: invalid --device-address." >&2
+  exit 64
+fi
 
 ssh_target() {
   local user="$1"
@@ -528,6 +612,118 @@ EOF
   echo "    Version: $version"
 }
 
+build_managed_agent() {
+  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+
+  echo "==> Building managed wendy-agent"
+  echo "    Output: $agent_path"
+
+  mkdir -p "$AGENT_BIN_DIR"
+  (
+    cd "$REPO_DIR/go"
+    go build -o "$agent_path" ./cmd/wendy-agent
+  )
+
+  "$agent_path" --version
+}
+
+start_managed_agent() {
+  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local managed_dir="$RUN_DIR/managed-agent"
+  local config_dir="$managed_dir/config"
+  local stdout_path="$managed_dir/stdout.log"
+  local stderr_path="$managed_dir/stderr.log"
+  local pid_path="$managed_dir/pid"
+  local port="50051"
+
+  if [[ "$DEVICE_ADDRESS" =~ ^[A-Za-z0-9._-]{1,253}:([0-9]{1,5})$ ]]; then
+    port="${BASH_REMATCH[1]}"
+  elif [[ "$DEVICE_ADDRESS" =~ ^\[[0-9A-Fa-f:]+\]:([0-9]{1,5})$ ]]; then
+    port="${BASH_REMATCH[1]}"
+  fi
+  if ! validate_port "$port"; then
+    echo "ERROR: invalid managed agent port in --device-address: $port" >&2
+    return 64
+  fi
+
+  echo "==> Starting managed wendy-agent"
+  echo "    Address: ${DEVICE_ADDRESS##*@}"
+  echo "    Config:  $config_dir"
+  echo "    Logs:    $stdout_path, $stderr_path"
+
+  mkdir -p "$config_dir/home" "$config_dir/xdg-config" "$config_dir/xdg-data"
+  env -i \
+    HOME="$config_dir/home" \
+    LOGNAME="wendy-e2e-agent" \
+    PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    USER="wendy-e2e-agent" \
+    WENDY_CONFIG_PATH="$config_dir" \
+    XDG_CONFIG_HOME="$config_dir/xdg-config" \
+    XDG_DATA_HOME="$config_dir/xdg-data" \
+    WENDY_AGENT_PORT="$port" \
+    WENDY_OTEL_PORT=0 \
+    WENDY_OTEL_HTTP_PORT=0 \
+    WENDY_REGISTRY_ADDR=127.0.0.1:0 \
+    "$agent_path" >"$stdout_path" 2>"$stderr_path" &
+  MANAGED_AGENT_PID=$!
+  (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
+
+  if ! valid_device_address "$DEVICE_ADDRESS"; then
+    echo "ERROR: invalid --device-address." >&2
+    return 64
+  fi
+
+  local attempt max_attempts=30
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+      echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+      return 1
+    fi
+    if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
+      echo "    Ready"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see $stderr_path in the E2E artifact." >&2
+  return 1
+}
+
+stop_managed_agent() {
+  if [[ -z "${MANAGED_AGENT_PID:-}" ]]; then
+    return
+  fi
+  if kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+    kill "$MANAGED_AGENT_PID" 2>/dev/null || true
+    local deadline=$((SECONDS + 10))
+    while (( SECONDS < deadline )); do
+      if ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+      kill -9 "$MANAGED_AGENT_PID" 2>/dev/null || true
+    fi
+  fi
+  wait "$MANAGED_AGENT_PID" 2>/dev/null || true
+  MANAGED_AGENT_PID=""
+}
+
+prepare_managed_agent_auth_fixture() {
+  if [[ "$MANAGED_AGENT" != "true" || -n "$CLI_AUTH_CONFIG_EXPLICIT" ]]; then
+    return
+  fi
+
+  local auth_dir="$RUN_DIR/managed-agent/cli-auth"
+  mkdir -p "$auth_dir"
+  CLI_AUTH_CONFIG_PATH="$auth_dir/config.json"
+  printf '{}\n' > "$CLI_AUTH_CONFIG_PATH"
+  chmod 600 "$CLI_AUTH_CONFIG_PATH" 2>/dev/null || true
+}
+
 json_escape() {
   local value="${1:-}"
   value="${value//\\/\\\\}"
@@ -629,7 +825,6 @@ write_attempt_info() {
     printf '    "runID": '; json_string_or_null "${GITHUB_RUN_ID:-}"; echo ","
     printf '    "runAttempt": '; json_string_or_null "${GITHUB_RUN_ATTEMPT:-}"; echo ","
     printf '    "job": '; json_string_or_null "${GITHUB_JOB:-}"; echo ","
-    printf '    "actor": '; json_string_or_null "${GITHUB_ACTOR:-}"; echo ","
     printf '    "sha": '; json_string_or_null "$github_sha"; echo
     echo '  },'
     echo '  "target": {'
@@ -653,7 +848,8 @@ write_attempt_info() {
     echo '  "test": {'
     printf '    "filters": '; json_string_array "${TEST_FILTERS[@]}"; echo ","
     printf '    "isolation": '; json_string "$ISOLATION"; echo ","
-    printf '    "parallel": '; json_bool "$PARALLEL"; echo
+    printf '    "parallel": '; json_bool "$PARALLEL"; echo ","
+    printf '    "managedAgent": '; json_bool "$MANAGED_AGENT"; echo
     echo '  },'
     echo '  "tools": {'
     printf '    "swift": '; json_string_or_null "$swift_version"; echo ","
@@ -663,9 +859,29 @@ write_attempt_info() {
     echo '  }'
     echo "}"
   } > "$info_path"
+  ATTEMPT_INFO_WRITTEN="true"
 
   echo "==> Wrote Swift E2E attempt info: $info_path"
 }
+
+finalize_attempt() {
+  local status=$?
+  trap - EXIT
+  set +e
+  stop_managed_agent
+  if [[ "$ATTEMPT_INFO_WRITTEN" != "true" ]]; then
+    write_attempt_info "$status"
+  fi
+  exit "$status"
+}
+
+# Capture the full attempt lifecycle in the attempt artifact so aggregate/review
+# can diagnose setup, preflight, and test-launch failures that happen before
+# Swift Testing writes per-test recordings.
+exec > >(tee "$ATTEMPT_LOG_PATH") 2>&1
+trap finalize_attempt EXIT
+
+echo "==> Capturing Swift E2E attempt log: $ATTEMPT_LOG_PATH"
 
 SWIFT_TEST_ARGS=("test")
 if [[ "$PARALLEL" != "true" ]]; then
@@ -682,8 +898,13 @@ CLI_AUTH_CONFIG_PATH="$(resolve_cli_auth_config_path)"
 if [[ -z "$CLI_ADDRESS" ]]; then
   CLI_AUTH_CONFIG_PATH="$(expand_local_path "$CLI_AUTH_CONFIG_PATH")"
 fi
+prepare_managed_agent_auth_fixture
 
 build_cli
+if [[ "$MANAGED_AGENT" == "true" ]]; then
+  build_managed_agent
+  start_managed_agent
+fi
 preflight_cli_auth_fixture
 
 SWIFT_TEST_ENV=(
@@ -700,6 +921,7 @@ SWIFT_TEST_ENV=(
   "WENDY_E2E_AGENT_BIN_DIR=$AGENT_BIN_DIR"
   "WENDY_E2E_AGENT_USER=$AGENT_USER"
   "WENDY_E2E_AGENT_ADDRESS=$AGENT_ADDRESS"
+  "WENDY_E2E_DEVICE_ADDRESS=$DEVICE_ADDRESS"
   "WENDY_E2E_CLI_OS=$CLI_OS"
   "WENDY_E2E_AGENT_OS=$AGENT_OS"
   "WENDY_E2E_ISOLATION=$ISOLATION"
@@ -726,8 +948,12 @@ if [[ -n "$AGENT_ADDRESS" ]]; then
 else
   echo "    Agent:   <local>:${AGENT_REPO_DIR:-<no-repo>}"
 fi
+if [[ -n "$DEVICE_ADDRESS" ]]; then
+  echo "    Device address: ${DEVICE_ADDRESS##*@}"
+fi
 echo "    Agent OS: ${AGENT_OS:-<current>}"
 echo "    Transport: ${TRANSPORT:-<none>}"
+echo "    Managed agent: $MANAGED_AGENT"
 
 set +e
 (

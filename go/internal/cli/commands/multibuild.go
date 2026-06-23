@@ -76,10 +76,6 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	if err := requireRegistryAuth(ctx, conn); err != nil {
-		return err
-	}
-
 	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
@@ -91,13 +87,15 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		architecture = "arm64"
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject("multi-service", platform)
+	}
 
-	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
+	if err := requireRegistryAuth(ctx, conn); err != nil {
 		return err
 	}
-	defer proxyCleanup()
+
+	regPort := registryPort(agentOS)
 
 	buildArgs := map[string]string{
 		"WENDY_PLATFORM": wendyPlatform(versionResp.GetDeviceType()),
@@ -106,42 +104,31 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		cliLogln("Warning: building with WENDY_DEBUG=true — do not deploy to production.")
 		buildArgs["WENDY_DEBUG"] = "true"
 	}
-	if dt := versionResp.GetDeviceType(); dt != "" {
-		buildArgs["WENDY_DEVICE_TYPE"] = dt
-	}
-	if versionResp.HasGpu != nil {
-		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-	}
-	if v := versionResp.GetGpuVendor(); v != "" {
-		buildArgs["WENDY_GPU_VENDOR"] = v
-	}
-	if jv := versionResp.GetJetpackVersion(); jv != "" {
-		buildArgs["WENDY_JETPACK_VERSION"] = jv
-	}
-	if cv := versionResp.GetCudaVersion(); cv != "" {
-		buildArgs["WENDY_CUDA_VERSION"] = cv
-	}
+	applyDeviceBuildArgHints(buildArgs, versionResp)
 
-	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, cwd, appCfg.AppID, services, registryAddr, platform, buildArgs, conn.IsMTLS); err != nil {
+	// Ensure the Apple Container system is up once, before the parallel builds,
+	// so an explicit --builder apple-container prompts/starts a single time
+	// rather than racing across service goroutines.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
 		return err
 	}
 
-	// Create containers in dependency order.
+	// Build all service images in parallel, then create and start containers.
+	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder); err != nil {
+		return err
+	}
+
+	// Create (and start) containers in dependency order.
 	ordered, err := serviceTopoOrder(services)
 	if err != nil {
 		return err
 	}
-	for _, name := range ordered {
+	createService := func(name string) error {
 		svc := services[name]
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
 			strings.ToLower(appCfg.AppID), strings.ToLower(name))
 
-		serviceCfg := &appconfig.AppConfig{
-			AppID:        fmt.Sprintf("%s-%s", appCfg.AppID, name),
-			Platform:     appCfg.Platform,
-			Entitlements: svc.Entitlements,
-		}
+		serviceCfg := multiServiceCreateConfig(appCfg, name, svc)
 		appConfigData, err := json.Marshal(serviceCfg)
 		if err != nil {
 			return fmt.Errorf("marshaling config for service %s: %w", name, err)
@@ -150,7 +137,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		restartPolicy := resolveRestartPolicy(opts)
 		createReq := &agentpb.CreateContainerRequest{
 			ImageName:     deviceImage,
-			AppName:       serviceCfg.AppID,
+			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
 		}
@@ -160,15 +147,30 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
 		cliLogln("Service %s container created.", name)
+		return nil
 	}
 
 	if opts.deploy {
+		// Create-only: no service ever starts, so shared-namespace groups
+		// cannot join here — the join happens at create time against the
+		// primary's running task. Such groups should be deployed without
+		// --deploy (or started service-by-service in dependency order).
+		for _, name := range ordered {
+			if err := createService(name); err != nil {
+				return err
+			}
+		}
 		cliLogln("App group %s created (not started, --deploy).", appCfg.AppID)
 		return nil
 	}
 
-	// Start all containers and multiplex log output with per-service prefixes.
-	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts)
+	// Create and start each service in dependency order, multiplexing log
+	// output with per-service prefixes. Interleaving create and start is
+	// load-bearing for shared-ipc/shared-network groups: a secondary's
+	// namespace join is resolved at container create time against the
+	// primary's running task, so the primary must be started before the
+	// next service is created.
+	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService)
 }
 
 // buildServicesParallel builds all service images concurrently (up to
@@ -176,11 +178,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 // spinner in interactive terminals and via plain log lines otherwise.
 func buildServicesParallel(
 	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
-	registryAddr, platform string,
+	platform string,
 	buildArgs map[string]string,
-	useMTLS bool,
+	builder string,
 ) error {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -221,8 +225,8 @@ func buildServicesParallel(
 
 			start := time.Now()
 			contextDir := filepath.Join(cwd, svc.Context)
-			imageName := fmt.Sprintf("%s/%s-%s:latest",
-				registryAddr, strings.ToLower(appID), strings.ToLower(name))
+			repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+			dockerfile, dockerfileErr := resolveDockerfile(contextDir, "", false)
 
 			var buildOut io.Writer
 			var logBuf bytes.Buffer
@@ -237,7 +241,10 @@ func buildServicesParallel(
 			if prog == nil {
 				logOut = os.Stderr
 			}
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
+			err := dockerfileErr
+			if err == nil {
+				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, buildOut, logOut)
+			}
 			dur := time.Since(start)
 
 			if prog != nil {
@@ -286,11 +293,45 @@ func buildServicesParallel(
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
 
+// multiServiceCreateConfig builds the per-service AppConfig transmitted to
+// the agent for a standalone multi-service app. The group identity and
+// runtime context (isolation, frameworks, shared entitlements) must travel
+// with every service: the agent keys namespace sharing, ROS 2 env injection,
+// and container naming on these fields (WDY-878, WDY-884).
+func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
+	cfg := &appconfig.AppConfig{
+		AppID:       appCfg.AppID,
+		ServiceName: name,
+		Version:     appCfg.Version,
+		Platform:    appCfg.Platform,
+		Isolation:   appCfg.Isolation,
+		Frameworks:  appCfg.Frameworks,
+	}
+	cfg.Entitlements = append(append([]appconfig.Entitlement{}, appCfg.Entitlements...), svc.Entitlements...)
+	cfg.Entitlements = deduplicateEntitlements(cfg.Entitlements)
+	if svc.Frameworks != nil {
+		cfg.Frameworks = svc.Frameworks
+	}
+	return cfg
+}
+
+// multiServiceContainerName returns the container name the agent derives for
+// a service: "{appId}_{serviceName}" (WDY-878). Start/stop calls must address
+// the same name the create path produced.
+func multiServiceContainerName(appID, serviceName string) string {
+	return appID + "_" + serviceName
+}
+
 // startAndStreamServices starts all service containers and streams their
 // combined output to stdout/stderr with a "[serviceName] " prefix per line.
 // This is a best-effort multiplexer; proper per-service log routing is handled
 // by WDY-893 (multiplexed AttachContainer).
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions) error {
+// createService is invoked for each service, in dependency order, immediately
+// before that service is started — after every earlier service is already
+// running. This ordering is required for shared-ipc/shared-network groups:
+// the agent resolves a secondary's namespace join at container create time
+// against the primary's running task.
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -310,7 +351,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			go func(name string) {
 				defer stopWg.Done()
 				_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
-					AppName: fmt.Sprintf("%s-%s", appID, name),
+					AppName: multiServiceContainerName(appID, name),
 				})
 			}(name)
 		}
@@ -319,7 +360,10 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 
 	if opts.detach {
 		for _, name := range ordered {
-			containerName := fmt.Sprintf("%s-%s", appID, name)
+			if err := createService(name); err != nil {
+				return err
+			}
+			containerName := multiServiceContainerName(appID, name)
 			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
 				AppName: containerName,
 			})
@@ -341,21 +385,33 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 	lines := make(chan logLine, 256)
 
+	// Create and start sequentially in dependency order; the first Recv
+	// blocks until the agent's Started ack, guaranteeing each service's task
+	// is running before the next service's container is created.
 	var wg sync.WaitGroup
 	for _, name := range ordered {
+		if err := createService(name); err != nil {
+			runCancel()
+			wg.Wait()
+			return err
+		}
+		containerName := multiServiceContainerName(appID, name)
+		stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+			AppName: containerName,
+		})
+		if err != nil {
+			runCancel()
+			wg.Wait()
+			return fmt.Errorf("starting service %s: %w", name, err)
+		}
+		if _, err := stream.Recv(); err != nil && err != io.EOF {
+			runCancel()
+			wg.Wait()
+			return fmt.Errorf("waiting for service %s to start: %w", name, err)
+		}
 		wg.Add(1)
-		go func(name string) {
+		go func(name string, stream agentpb.WendyContainerService_StartContainerClient) {
 			defer wg.Done()
-			containerName := fmt.Sprintf("%s-%s", appID, name)
-			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
-				AppName: containerName,
-			})
-			if err != nil {
-				if runCtx.Err() == nil {
-					cliLogln("Warning: starting service %s: %v", name, err)
-				}
-				return
-			}
 			for {
 				resp, recvErr := stream.Recv()
 				if recvErr == io.EOF {
@@ -382,7 +438,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 					}
 				}
 			}
-		}(name)
+		}(name, stream)
 	}
 
 	go func() {
