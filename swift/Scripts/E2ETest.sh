@@ -127,28 +127,6 @@ validate_port() {
   (( 10#$port >= 1 && 10#$port <= 65535 ))
 }
 
-safe_managed_env_path() {
-  local path="$1"
-  local path_regex='^/[-._/A-Za-z0-9]+$'
-  [[ "$path" =~ $path_regex ]] \
-    && [[ "$path" != */../* && "$path" != */.. && "$path" != /.. ]]
-}
-
-write_e2e_config_entry() {
-  local key="$1" value="$2"
-  [[ "$key" =~ ^[A-Z0-9_]+$ ]] || return 1
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *=* ]] || return 1
-  printf '%s=%s\n' "$key" "$value"
-}
-
-is_managed_mac_app_pid() {
-  local pid="$1" expected_path actual_path
-  [[ "$pid" =~ ^[1-9][0-9]{0,6}$ ]] || return 1
-  expected_path="$(managed_agent_executable_path)"
-  actual_path="$(ps -p "$pid" -o comm= 2>/dev/null | xargs)"
-  [[ "$actual_path" == "$expected_path" ]]
-}
-
 valid_device_address() {
   local value="$1" port=""
   [[ "$value" != *@* ]] || return 1
@@ -753,7 +731,6 @@ start_managed_agent() {
   local stdout_path="$managed_dir/stdout.log"
   local stderr_path="$managed_dir/stderr.log"
   local pid_path="$managed_dir/pid"
-  local e2e_config_path="$managed_dir/e2e.config"
   local port="50051"
 
   if [[ "$DEVICE_ADDRESS" =~ ^[A-Za-z0-9._-]{1,253}:([0-9]{1,5})$ ]]; then
@@ -768,47 +745,22 @@ start_managed_agent() {
 
   echo "==> Starting managed wendy-agent"
   echo "    Address: ${DEVICE_ADDRESS##*@}"
-  echo "    Config:  $config_dir"
   echo "    Logs:    $stdout_path, $stderr_path"
 
-  mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
-  chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
-  (umask 077; : > "$pid_path")
+  mkdir -p "$managed_dir"
   if managed_agent_is_macos; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
-    if ! validate_port "$port" \
-      || [[ "$config_dir" != "$RUN_DIR/"* ]] \
-      || ! safe_managed_env_path "$RUN_DIR" \
-      || ! safe_managed_env_path "$config_dir" \
-      || ! safe_managed_env_path "$config_dir/state" \
-      || ! safe_managed_env_path "$pid_path" \
-      || ! safe_managed_env_path "$e2e_config_path"
-    then
-      echo "ERROR: invalid managed WendyAgentMac E2E launch configuration." >&2
-      return 64
-    fi
-    (
-      umask 077
-      {
-        write_e2e_config_entry WENDY_AGENT_E2E 1
-        write_e2e_config_entry WENDY_AGENT_PORT "$port"
-        write_e2e_config_entry WENDY_AGENT_STATE_DIR "$config_dir/state"
-        write_e2e_config_entry WENDY_AGENT_E2E_ROOT "$RUN_DIR"
-        write_e2e_config_entry WENDY_AGENT_E2E_PID_FILE "$pid_path"
-        write_e2e_config_entry WENDY_OTEL_PORT 0
-      } >"$e2e_config_path"
-    )
-    chmod 600 "$e2e_config_path"
     (umask 077; : >"$stdout_path"; : >"$stderr_path")
     open \
       -n \
       -g \
       --stdout "$stdout_path" \
       --stderr "$stderr_path" \
-      "$(managed_agent_path)" \
-      --args \
-      --wendy-agent-e2e-config "$e2e_config_path"
+      "$(managed_agent_path)"
   else
+    mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+    chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+    (umask 077; : > "$pid_path")
     env -i \
       HOME="$config_dir/home" \
       LOGNAME="wendy-e2e-agent" \
@@ -834,23 +786,11 @@ start_managed_agent() {
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if managed_agent_is_macos; then
-      if [[ -z "$MANAGED_AGENT_PID" && -s "$pid_path" ]]; then
-        MANAGED_AGENT_PID="$(head -n 1 "$pid_path")"
-      fi
-      if [[ -n "$MANAGED_AGENT_PID" ]] && ! is_managed_mac_app_pid "$MANAGED_AGENT_PID"; then
-        echo "ERROR: managed WendyAgentMac wrote an invalid PID; see $stderr_path in the E2E artifact." >&2
-        return 1
-      fi
-    elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+    if ! managed_agent_is_macos && ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
       echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
-      if managed_agent_is_macos && [[ -z "$MANAGED_AGENT_PID" ]]; then
-        echo "ERROR: managed WendyAgentMac became ready without writing a PID; see $stderr_path in the E2E artifact." >&2
-        return 1
-      fi
       echo "    Ready"
       return 0
     fi
@@ -866,28 +806,6 @@ stop_managed_agent() {
     local quit_log="$RUN_DIR/managed-agent/quit.log"
     if ! "$REPO_DIR/swift/Scripts/Quit.sh" >>"$quit_log" 2>&1; then
       echo "WARN: WendyAgentMac quit script reported an error; see $quit_log" >&2
-    fi
-    local pid="${MANAGED_AGENT_PID:-}"
-    if [[ -z "$pid" && -s "$RUN_DIR/managed-agent/pid" ]]; then
-      pid="$(head -n 1 "$RUN_DIR/managed-agent/pid")"
-    fi
-    if [[ -n "$pid" ]] && is_managed_mac_app_pid "$pid"; then
-      kill "$pid" 2>/dev/null || true
-      local deadline=$((SECONDS + 10))
-      while (( SECONDS < deadline )); do
-        if ! kill -0 "$pid" 2>/dev/null; then
-          break
-        fi
-        sleep 1
-      done
-      if kill -0 "$pid" 2>/dev/null; then
-        if is_managed_mac_app_pid "$pid"; then
-          echo "WARN: WendyAgentMac PID $pid did not exit gracefully; sending SIGKILL." | tee -a "$quit_log" >&2
-          kill -9 "$pid" 2>/dev/null || true
-        else
-          echo "WARN: PID $pid no longer belongs to WendyAgentMac; skipping SIGKILL." | tee -a "$quit_log" >&2
-        fi
-      fi
     fi
     MANAGED_AGENT_PID=""
     return

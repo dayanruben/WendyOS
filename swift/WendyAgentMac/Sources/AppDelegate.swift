@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         subsystem: Bundle.main.bundleIdentifier!,
         category: "AppDelegate"
     )
-    private let wendyAgent = WendyAgent(configuration: .environment)
+    private let wendyAgent = WendyAgent(configuration: WendyAgentConfiguration())
     private let welcomeAndPermissions = WelcomeAndPermissions()
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?
@@ -25,9 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
-        #if DEBUG
-            self.writeE2EPIDFileIfRequested()
-        #endif
 
         self.statusMenuController = StatusMenuController(
             wendyAgent: self.wendyAgent,
@@ -86,37 +83,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         self.welcomeAndPermissionsPresentationTask = nil
         self.welcomeAndPermissionsWindow = nil
     }
-
-    #if DEBUG
-        private func writeE2EPIDFileIfRequested() {
-            guard let e2eConfiguration = WendyAgentE2EConfiguration.current else {
-                return
-            }
-            guard
-                let pidURL = e2eConfiguration.urlInsideRoot(
-                    for: "WENDY_AGENT_E2E_PID_FILE",
-                    isDirectory: false
-                )
-            else {
-                self.logger.error("Invalid E2E PID file configuration")
-                NSApplication.shared.terminate(nil)
-                return
-            }
-
-            do {
-                try "\(ProcessInfo.processInfo.processIdentifier)\n".write(
-                    to: pidURL,
-                    atomically: true,
-                    encoding: .utf8
-                )
-            } catch {
-                self.logger.error(
-                    "Failed to write E2E PID file: \(String(describing: error), privacy: .public)"
-                )
-                NSApplication.shared.terminate(nil)
-            }
-        }
-    #endif
 
     private func makeWelcomeAndPermissionsWindow() -> NSWindow {
         let rootView = WelcomeAndPermissionsView(
@@ -205,50 +171,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             self.welcomeAndPermissionsPresentationTask = nil
         }
     }
-}
-
-extension WendyAgentConfiguration {
-    fileprivate static var environment: Self {
-        #if DEBUG
-            guard let e2eConfiguration = WendyAgentE2EConfiguration.current else {
-                return Self()
-            }
-            return Self(
-                port: Self.portValue(
-                    named: "WENDY_AGENT_PORT",
-                    in: e2eConfiguration,
-                    default: 50051,
-                    allowsZero: false
-                ),
-                otelPort: Self.portValue(
-                    named: "WENDY_OTEL_PORT",
-                    in: e2eConfiguration,
-                    default: 4317,
-                    allowsZero: true
-                ),
-                appPath: "",
-                sandboxProfile: ""
-            )
-        #else
-            return Self()
-        #endif
-    }
-
-    #if DEBUG
-        fileprivate static func portValue(
-            named name: String,
-            in e2eConfiguration: WendyAgentE2EConfiguration,
-            default defaultValue: Int,
-            allowsZero: Bool
-        ) -> Int {
-            guard let value = e2eConfiguration[name], let intValue = Int(value) else {
-                return defaultValue
-            }
-            let lowerBound = allowsZero ? 0 : 1
-            guard (lowerBound...65535).contains(intValue) else {
-                return defaultValue
-            }
-            return intValue
-        }
-    #endif
 }
