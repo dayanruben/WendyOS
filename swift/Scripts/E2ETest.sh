@@ -129,7 +129,7 @@ validate_port() {
 
 safe_managed_env_path() {
   local path="$1"
-  local path_regex='^/[-._/@ A-Za-z0-9]+$'
+  local path_regex='^/[-._/A-Za-z0-9]+$'
   [[ "$path" =~ $path_regex ]] \
     && [[ "$path" != */../* && "$path" != */.. && "$path" != /.. ]]
 }
@@ -137,14 +137,16 @@ safe_managed_env_path() {
 write_e2e_config_entry() {
   local key="$1" value="$2"
   [[ "$key" =~ ^[A-Z0-9_]+$ ]] || return 1
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *=* ]] || return 1
   printf '%s=%s\n' "$key" "$value"
 }
 
 is_managed_mac_app_pid() {
-  local pid="$1"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [[ "$(ps -p "$pid" -o comm= 2>/dev/null)" == *"WendyAgentMac"* ]]
+  local pid="$1" expected_path actual_path
+  [[ "$pid" =~ ^[1-9][0-9]{0,6}$ ]] || return 1
+  expected_path="$(managed_agent_executable_path)"
+  actual_path="$(ps -p "$pid" -o comm= 2>/dev/null | xargs)"
+  [[ "$actual_path" == "$expected_path" ]]
 }
 
 valid_device_address() {
@@ -507,7 +509,7 @@ if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
 mkdir -p "$RUN_DIR"
-chmod 700 "$RUN_DIR" 2>/dev/null || true
+chmod 700 "$RUN_DIR"
 
 if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
   DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
@@ -710,6 +712,7 @@ build_unsigned_managed_mac_app() {
     echo "ERROR: built WendyAgentMac executable is missing." >&2
     exit 1
   }
+  shasum -a 256 "$agent_path/Contents/MacOS/WendyAgentMac"
 }
 
 build_managed_agent() {
@@ -769,7 +772,7 @@ start_managed_agent() {
   echo "    Logs:    $stdout_path, $stderr_path"
 
   mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
-  chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data" 2>/dev/null || true
+  chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
   (umask 077; : > "$pid_path")
   if managed_agent_is_macos; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
@@ -795,7 +798,7 @@ start_managed_agent() {
         write_e2e_config_entry WENDY_OTEL_PORT 0
       } >"$e2e_config_path"
     )
-    chmod 600 "$e2e_config_path" 2>/dev/null || true
+    chmod 600 "$e2e_config_path"
     (umask 077; : >"$stdout_path"; : >"$stderr_path")
     open \
       -n \
@@ -844,6 +847,10 @@ start_managed_agent() {
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
+      if managed_agent_is_macos && [[ -z "$MANAGED_AGENT_PID" ]]; then
+        echo "ERROR: managed WendyAgentMac became ready without writing a PID; see $stderr_path in the E2E artifact." >&2
+        return 1
+      fi
       echo "    Ready"
       return 0
     fi

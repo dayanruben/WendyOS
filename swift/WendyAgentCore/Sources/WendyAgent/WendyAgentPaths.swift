@@ -3,10 +3,13 @@ import Foundation
 enum WendyAgentPaths {
     static var stateDirectory: URL {
         #if DEBUG
-            if let stateURL = WendyAgentE2EConfiguration.current?.urlInsideRoot(
-                for: "WENDY_AGENT_STATE_DIR",
-                isDirectory: true
-            ) {
+            if let e2eConfiguration = WendyAgentE2EConfiguration.current {
+                guard let stateURL = e2eConfiguration.urlInsideRoot(
+                    for: "WENDY_AGENT_STATE_DIR",
+                    isDirectory: true
+                ) else {
+                    fatalError("Invalid WendyAgentMac E2E state directory configuration")
+                }
                 return stateURL
             }
         #endif

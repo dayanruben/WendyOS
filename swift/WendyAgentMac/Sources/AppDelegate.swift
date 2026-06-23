@@ -89,12 +89,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     #if DEBUG
         private func writeE2EPIDFileIfRequested() {
+            guard let e2eConfiguration = WendyAgentE2EConfiguration.current else {
+                return
+            }
             guard
-                let pidURL = WendyAgentE2EConfiguration.current?.urlInsideRoot(
+                let pidURL = e2eConfiguration.urlInsideRoot(
                     for: "WENDY_AGENT_E2E_PID_FILE",
                     isDirectory: false
                 )
             else {
+                self.logger.error("Invalid E2E PID file configuration")
+                NSApplication.shared.terminate(nil)
                 return
             }
 
@@ -108,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 self.logger.error(
                     "Failed to write E2E PID file: \(String(describing: error), privacy: .public)"
                 )
+                NSApplication.shared.terminate(nil)
             }
         }
     #endif
