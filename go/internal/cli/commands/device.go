@@ -490,7 +490,7 @@ func newDeviceEnrollCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (required when multiple auth sessions exist)")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
 	return cmd
 }
 

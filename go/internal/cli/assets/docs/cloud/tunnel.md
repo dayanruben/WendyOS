@@ -30,7 +30,7 @@ Only online devices (those with an active broker presence) are shown. If you nee
 
 | Flag | Description |
 |------|-------------|
-| `--cloud-grpc` | Override the cloud gRPC endpoint (required when multiple auth sessions exist). |
+| `--cloud-grpc` | Override the cloud gRPC endpoint. Overrides session selection. When multiple sessions are stored and no default is set, an interactive terminal shows a session picker; a non-interactive environment errors. |
 | `--device` | Target a specific device by name (case-insensitive exact match) or numeric asset ID. When omitted in a non-interactive context with multiple devices, the command exits with an error listing `id=name` pairs. |
 
 ## Related
