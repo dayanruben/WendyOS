@@ -41,6 +41,13 @@ func RunOSUpdateGate(logger *zap.Logger) {
 	gate.Run(context.Background())
 }
 
+// menderCommandTimeout bounds a single mender-update commit/rollback. These are
+// fast bootloader-metadata operations; the timeout exists only so a hung mender
+// (the likely failure mode exactly when systemd/D-Bus/storage is unhealthy
+// early in boot) cannot block agent startup — and therefore the
+// commit-or-rollback decision — indefinitely.
+const menderCommandTimeout = 60 * time.Second
+
 // menderRun executes "mender-update <subcommand>" and classifies the result.
 // Exit code 2 means "nothing pending" for both commit and rollback. If the
 // update is never committed, Mender rolls back on the next reboot.
@@ -49,11 +56,20 @@ func menderRun(logger *zap.Logger, subcommand string) oshealth.MenderResult {
 	if !found {
 		return oshealth.MenderResult{Status: oshealth.MenderUnavailable}
 	}
-	cmd := exec.Command(binary, subcommand)
+	ctx, cancel := context.WithTimeout(context.Background(), menderCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, subcommand)
 	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error("mender-update timed out",
+				zap.String("subcommand", subcommand),
+				zap.Duration("timeout", menderCommandTimeout),
+				zap.String("output", output))
+			return oshealth.MenderResult{Status: oshealth.MenderError, Output: output, Err: ctx.Err()}
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
 			return oshealth.MenderResult{Status: oshealth.MenderNothingPending, Output: output}
@@ -90,12 +106,26 @@ func recordPendingOSUpdate(logger *zap.Logger, stateDir, artifactURL string) {
 	}
 }
 
-// redactURLCredentials masks the password of a URL before it is persisted or
-// logged; the marker only needs the URL for debugging.
+// redactURLCredentials masks any credentials in a URL before it is persisted or
+// logged; the marker only needs the URL for debugging. It strips the userinfo
+// password and redacts every query-string value, since presigned/OTA artifact
+// URLs carry their auth material in the query (e.g. X-Amz-Signature, token),
+// which url.Redacted alone leaves in cleartext. It fails closed: a URL that
+// cannot be parsed is dropped rather than echoed, since it may embed
+// credentials we cannot locate.
 func redactURLCredentials(raw string) string {
+	if raw == "" {
+		return ""
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return "<redacted: unparseable URL>"
+	}
+	if values := u.Query(); len(values) > 0 {
+		for key := range values {
+			values[key] = []string{"REDACTED"}
+		}
+		u.RawQuery = values.Encode()
 	}
 	return u.Redacted()
 }

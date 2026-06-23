@@ -66,24 +66,28 @@ func (g *Gate) Run(ctx context.Context) {
 		g.finalizeRolledBackRecord()
 		return
 	}
-	if age := g.now().Sub(marker.CreatedAt); age > MaxPendingMarkerAge {
-		// The marker outlived its update — most likely the updated slot ran
-		// an agent without healthcheck support, which committed (or rolled
-		// back) without consuming the marker.
-		g.Logger.Warn("Pending OS update marker is stale, discarding it",
-			zap.Time("created_at", marker.CreatedAt), zap.Duration("age", age))
-		g.clearMarker()
-		g.plainCommit()
-		return
-	}
-
 	if cur := g.bootID(); marker.BootID != "" && cur != "" && cur == marker.BootID {
 		// The marker was written in this same boot: the device has not
 		// rebooted into the new slot yet (e.g. the agent restarted between
 		// install and reboot). Committing now would confirm an image that has
-		// never booted, so leave the update pending for the next boot.
+		// never booted, so leave the update pending for the next boot. This is
+		// checked before the staleness guard on purpose: an old same-boot
+		// marker still means "the reboot never happened", not "already
+		// confirmed", so it must not be plain-committed.
 		g.Logger.Info("OS update installed but the device has not rebooted yet; leaving the update pending",
 			zap.String("boot_id", cur))
+		return
+	}
+
+	if age := g.now().Sub(marker.CreatedAt); age > MaxPendingMarkerAge {
+		// The marker outlived its update — most likely the updated slot ran
+		// an agent without healthcheck support, which committed (or rolled
+		// back) without consuming the marker. (A same-boot stale marker was
+		// already handled above.)
+		g.Logger.Warn("Pending OS update marker is stale, discarding it",
+			zap.Time("created_at", marker.CreatedAt), zap.Duration("age", age))
+		g.clearMarker()
+		g.plainCommit()
 		return
 	}
 

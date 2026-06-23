@@ -232,6 +232,35 @@ func TestGateSameBootLeavesMarkerUntouched(t *testing.T) {
 	}
 }
 
+func TestGateStaleSameBootLeavesMarker(t *testing.T) {
+	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{Status: MenderOK})
+	// The marker is old enough to look stale, but it was written in the current
+	// boot — the device never rebooted into the new slot (e.g. the reboot
+	// failed, or a caller that does not reboot left it behind). The same-boot
+	// guard must win over the staleness guard: plain-committing here would
+	// confirm a slot that has never booted, the exact thing the guard prevents.
+	err := WritePendingMarker(fx.dir, PendingMarker{
+		CreatedAt: gateNow.Add(-2 * time.Hour),
+		BootID:    "boot-current",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 0 || fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 0/0/0: a never-booted slot must not be committed",
+			fx.commits, fx.rollback, fx.reboots)
+	}
+	if !fx.markerExists(t) {
+		t.Error("marker must be left pending for the boot that runs the updated OS")
+	}
+	if n := fx.systemd.callCount("a.service"); n != 0 {
+		t.Errorf("healthchecks must not run before the reboot (%d calls)", n)
+	}
+}
+
 func TestGateDifferentBootRunsHealthchecks(t *testing.T) {
 	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
 	err := WritePendingMarker(fx.dir, PendingMarker{
