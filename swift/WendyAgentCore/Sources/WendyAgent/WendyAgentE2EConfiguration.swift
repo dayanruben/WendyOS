@@ -1,5 +1,5 @@
-public import Foundation
 import Darwin
+public import Foundation
 
 public struct WendyAgentE2EConfiguration {
     private static let expectedKeys: Set<String> = [
