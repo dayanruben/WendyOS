@@ -53,6 +53,7 @@ Docker for local provider runs.
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
+| `WENDY_GPU_ARCH` | e.g. `sm_87` | GPU architecture identifier; absent when no GPU is reported |
 
 Example — selecting a base image by platform:
 
