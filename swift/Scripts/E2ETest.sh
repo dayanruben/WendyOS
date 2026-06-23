@@ -486,8 +486,7 @@ rm -rf "$RUN_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
-mkdir -p "$RUN_DIR"
-chmod 700 "$RUN_DIR"
+(umask 077; mkdir -p "$RUN_DIR")
 
 if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
   DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
@@ -653,15 +652,16 @@ managed_agent_executable_path() {
 }
 
 has_mac_development_signing_identity() {
-  if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
-    return 0
-  fi
-
   local security_command=(security find-identity -v -p codesigning)
   if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
     security_command+=("$KEYCHAIN_PATH")
   fi
-  "${security_command[@]}" 2>/dev/null | grep -q '"Apple Development'
+
+  if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
+    "${security_command[@]}" 2>/dev/null | grep -qF "\"$SIGNING_IDENTITY\""
+  else
+    "${security_command[@]}" 2>/dev/null | grep -q '"Apple Development'
+  fi
 }
 
 build_unsigned_managed_mac_app() {
@@ -691,6 +691,10 @@ build_unsigned_managed_mac_app() {
     exit 1
   }
   shasum -a 256 "$agent_path/Contents/MacOS/WendyAgentMac"
+}
+
+managed_mac_app_is_running() {
+  [[ "$(osascript -e 'application id "sh.wendy.WendyAgentMac" is running' 2>/dev/null || true)" == "true" ]]
 }
 
 build_managed_agent() {
@@ -747,16 +751,28 @@ start_managed_agent() {
   echo "    Address: ${DEVICE_ADDRESS##*@}"
   echo "    Logs:    $stdout_path, $stderr_path"
 
-  mkdir -p "$managed_dir"
+  (umask 077; mkdir -p "$managed_dir")
   if managed_agent_is_macos; then
     "$REPO_DIR/swift/Scripts/Quit.sh" || true
+    (umask 077; mkdir -p "$config_dir/home")
     (umask 077; : >"$stdout_path"; : >"$stderr_path")
-    open \
-      -n \
-      -g \
-      --stdout "$stdout_path" \
-      --stderr "$stderr_path" \
-      "$(managed_agent_path)"
+    env -i \
+      HOME="$config_dir/home" \
+      LOGNAME="wendy-e2e-agent" \
+      PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TMPDIR="${TMPDIR:-/tmp}" \
+      USER="wendy-e2e-agent" \
+      open \
+        -n \
+        -g \
+        --stdout "$stdout_path" \
+        --stderr "$stderr_path" \
+        --env "HOME=$config_dir/home" \
+        --env "LOGNAME=wendy-e2e-agent" \
+        --env "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        --env "TMPDIR=${TMPDIR:-/tmp}" \
+        --env "USER=wendy-e2e-agent" \
+        "$(managed_agent_path)"
   else
     mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
     chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
@@ -786,7 +802,13 @@ start_managed_agent() {
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if ! managed_agent_is_macos && ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+    if managed_agent_is_macos; then
+      if (( attempt > 3 )) && ! managed_mac_app_is_running; then
+        echo "ERROR: WendyAgentMac exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+        tail -20 "$stderr_path" >&2 || true
+        return 1
+      fi
+    elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
       echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
       return 1
     fi
