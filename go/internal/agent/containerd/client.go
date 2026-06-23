@@ -79,6 +79,10 @@ type Client struct {
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
 
+	// ros2ExecRefs counts active ExecROS2 calls per sidecar name. Protected by mu.
+	// Teardown paths check this before SIGKILLing a sidecar (WDY-1702 H5).
+	ros2ExecRefs map[string]int
+
 	// chunkIndex maps CDC chunk hashes to byte ranges in uncompressed layer
 	// blobs (Model B). staging holds chunks received this session until the
 	// following AssembleLayerFromChunks consumes them.
@@ -119,6 +123,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		appIsolation: make(map[string]string),
 		serviceIPs:   make(map[string]map[string]string),
 		appStopping:  make(map[string]bool),
+		ros2ExecRefs: make(map[string]int),
 		chunkIndex:   idx,
 		staging:      newStaging(defaultChunkStagingDir),
 		snapshotter:  snapshotter,
@@ -126,37 +131,8 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 }
 
 // probeSnapshotter returns "overlayfs" if the kernel supports overlay mounts,
-// otherwise falls back to "native". This handles nested container environments
-// (e.g. Docker-in-Docker on OrbStack) where the kernel overlay module is absent.
-func probeSnapshotter(logger *zap.Logger) string {
-	dir, err := os.MkdirTemp("", "wendy-overlay-probe-*")
-	if err != nil {
-		logger.Warn("snapshotter probe: cannot create temp dir, using native", zap.Error(err))
-		return "native"
-	}
-	defer os.RemoveAll(dir)
-
-	lower := dir + "/lower"
-	upper := dir + "/upper"
-	work := dir + "/work"
-	merged := dir + "/merged"
-	for _, d := range []string{lower, upper, work, merged} {
-		if err := os.Mkdir(d, 0o755); err != nil {
-			return "native"
-		}
-	}
-
-	// Attempt an overlay mount; if the kernel does not support it, fall back.
-	err = syscall.Mount("overlay", merged, "overlay", 0,
-		"lowerdir="+lower+",upperdir="+upper+",workdir="+work)
-	if err != nil {
-		logger.Info("overlayfs not supported by kernel, using native snapshotter", zap.Error(err))
-		return "native"
-	}
-	_ = syscall.Unmount(merged, 0)
-	logger.Debug("overlayfs supported, using overlayfs snapshotter")
-	return "overlayfs"
-}
+// otherwise "native". Implemented in client_linux.go (Linux) and
+// client_other.go (always "native" on non-Linux platforms).
 
 // Close releases the underlying containerd client connection and stops all
 // D-Bus proxy processes.

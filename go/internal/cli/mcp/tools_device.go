@@ -33,7 +33,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 	), s.handleDeviceDisconnect)
 
 	srv.AddTool(mcpgo.NewTool("device_info",
-		mcpgo.WithDescription("Get agent version, OS, CPU architecture, and feature set of connected device"),
+		mcpgo.WithDescription("Get agent version, OS, CPU architecture, GPU info, and feature set of connected device"),
 	), s.handleDeviceInfo)
 
 	srv.AddTool(mcpgo.NewTool("device_set_default",

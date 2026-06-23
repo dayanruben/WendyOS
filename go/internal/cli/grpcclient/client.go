@@ -13,6 +13,7 @@ import (
 
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
@@ -79,6 +80,10 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 }
 
 func ConnectWithTLS(ctx context.Context, address string, certInfo *config.CertificateInfo) (*AgentConnection, error) {
+	return ConnectWithTLSAndPins(ctx, address, certInfo, nil)
+}
+
+func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
 	// chain certs (from pki-core) cause parse failures on the agent's server.
@@ -91,9 +96,18 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      certInfo.PemCertificateChain,
+		ExpectedOrgID: int32(certInfo.OrganizationID),
+		PinStore:      pins,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, //nolint:gosec — agent uses self-signed certs
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 

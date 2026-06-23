@@ -13,8 +13,8 @@ import (
 )
 
 // TestROS2SidecarName maps each RMW to a distinct, prefix-scoped sidecar name
-// and collapses unknown/empty RMW to the stock-image (FastRTPS) default — the
-// basis for one persistent sidecar per RMW (WDY-1594).
+// and collapses empty RMW to the CycloneDDS (config-default) sidecar — the
+// basis for one persistent sidecar per RMW (WDY-1594, WDY-1703).
 func TestROS2SidecarName(t *testing.T) {
 	cyc := ros2SidecarName("rmw_cyclonedds_cpp")
 	fast := ros2SidecarName("rmw_fastrtps_cpp")
@@ -22,8 +22,8 @@ func TestROS2SidecarName(t *testing.T) {
 	if cyc == fast {
 		t.Errorf("distinct RMWs must map to distinct sidecars: %q == %q", cyc, fast)
 	}
-	if fast != def {
-		t.Errorf("empty RMW should map to the FastRTPS (image-default) sidecar: %q vs %q", def, fast)
+	if def != cyc {
+		t.Errorf("empty RMW should map to the CycloneDDS (config-default) sidecar (WDY-1703): %q vs %q", def, cyc)
 	}
 	if got := ros2SidecarName("rmw_bogus"); got != ros2SidecarPrefix+"-default" {
 		t.Errorf("unknown RMW = %q, want %q", got, ros2SidecarPrefix+"-default")
@@ -784,8 +784,8 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 		t.Fatalf("expected ROS_DOMAIN_ID in env, got %v", got)
 	}
 	id, err := strconv.Atoi(val)
-	if err != nil || id < 0 || id > 101 {
-		t.Errorf("auto domain ID = %q, want integer in [0,101]", val)
+	if err != nil || id < 0 || id > 232 {
+		t.Errorf("auto domain ID = %q, want integer in [0,232]", val)
 	}
 	// Stable: a second call for the same appId must produce the same ID.
 	again := buildROS2Env(cfg, "com.example.app", "")

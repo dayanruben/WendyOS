@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc"
@@ -205,7 +206,7 @@ func TestROS2Service_DomainOverride(t *testing.T) {
 		t.Errorf("exec domain = %d, want override 42", rt.calls[0].DomainID)
 	}
 
-	bad := int32(200)
+	bad := int32(233) // first value above the max valid ROS_DOMAIN_ID (232)
 	_, err := svc.ListNodes(context.Background(), &agentpbv2.ListROS2NodesRequest{DomainId: &bad})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("out-of-range override error = %v, want InvalidArgument", err)
@@ -344,6 +345,53 @@ func TestROS2Service_EchoTopic_CountLimit(t *testing.T) {
 	}
 	if !strings.Contains(stream.sent[0].GetYaml(), "msg-0") {
 		t.Errorf("first message = %q", stream.sent[0].GetYaml())
+	}
+}
+
+// TestROS2Service_EchoTopic_CountLimit_UnblocksBlockedPublisher guards WDY-1698:
+// once the count limit is reached, EchoTopic must return promptly even if the
+// publisher goroutine is blocked writing into the pipe (it must not wedge on
+// <-execDone). The fake blocks on every write until ctx is cancelled.
+func TestROS2Service_EchoTopic_CountLimit_UnblocksBlockedPublisher(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(ctx context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			// Routing calls (topic list) must return quickly so EchoTopic reaches
+			// the echo loop. Only the topic echo call should block mid-write.
+			if len(opts.Args) > 0 && opts.Args[0] != "topic" || len(opts.Args) < 2 || opts.Args[1] != "echo" {
+				return 0, nil
+			}
+			// Emit enough docs to satisfy the count, then keep trying to write.
+			// Each write may block until the handler stops reading; the fake must
+			// observe ctx cancellation and return rather than spin or wedge.
+			for i := 0; ; i++ {
+				if ctx.Err() != nil {
+					return 130, ctx.Err()
+				}
+				if _, werr := fmt.Fprintf(stdout, "data: msg-%d\n---\n", i); werr != nil {
+					// Pipe closed by the handler after the count limit: stop.
+					return 130, ctx.Err()
+				}
+			}
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeServerStream[agentpbv2.ROS2Message]{ctx: context.Background()}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.EchoTopic(&agentpbv2.EchoROS2TopicRequest{Topic: "/chatter", Count: 3}, stream)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("EchoTopic: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("EchoTopic did not return after count limit — WDY-1698 deadlock")
+	}
+	if len(stream.sent) != 3 {
+		t.Fatalf("got %d messages, want 3", len(stream.sent))
 	}
 }
 
@@ -585,6 +633,111 @@ func TestROS2Service_RecordBag_UnexpectedExitWithHealthyAnchor(t *testing.T) {
 	}
 	if !strings.Contains(last.GetMessage(), "exit code 1") || !strings.Contains(last.GetMessage(), "storage full") {
 		t.Errorf("message should include exit code and output, got: %s", last.GetMessage())
+	}
+}
+
+// TestROS2Service_ListNodes_DedupsAcrossSidecars verifies that a node visible to
+// more than one sidecar appears only once per (namespace+name, rmw) pair
+// (WDY-1710). Two sidecars each on their own RMW both emit /talker → 2 nodes
+// kept (distinct RMWs). A sidecar that emits /talker twice in its stdout → only
+// 1 node kept (true duplicate).
+func TestROS2Service_ListNodes_DedupsAcrossSidecars(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecars: []ROS2Sidecar{
+			{Name: "sc-cyc", Distro: "humble", DomainID: 42, RMW: "rmw_cyclonedds_cpp"},
+			{Name: "sc-fast", Distro: "humble", DomainID: 42, RMW: "rmw_fastrtps_cpp"},
+		},
+		// Both sidecars emit /talker (different RMWs → 2 distinct entries kept).
+		// sc-cyc also emits /talker a second time via a duplicate stdout line to
+		// prove within-sidecar dedup (same name+rmw → collapsed to 1).
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			switch opts.SidecarName {
+			case "sc-cyc":
+				// Duplicate line simulates a sidecar reporting the same node twice.
+				io.WriteString(stdout, "/talker\n/talker\n")
+			case "sc-fast":
+				io.WriteString(stdout, "/talker\n")
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.ListNodes(context.Background(), &agentpbv2.ListROS2NodesRequest{})
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	// /talker on rmw_cyclonedds_cpp and /talker on rmw_fastrtps_cpp are distinct
+	// (different RMW) → 2 entries. The duplicate /talker from sc-cyc is collapsed.
+	if len(resp.GetNodes()) != 2 {
+		t.Fatalf("got %d nodes, want 2 distinct (name,rmw) pairs", len(resp.GetNodes()))
+	}
+	// Verify both RMWs are represented.
+	rmws := map[string]bool{}
+	for _, n := range resp.GetNodes() {
+		rmws[n.GetRmw()] = true
+	}
+	if !rmws["rmw_cyclonedds_cpp"] || !rmws["rmw_fastrtps_cpp"] {
+		t.Errorf("RMW coverage = %v, want both cyclonedds and fastrtps", rmws)
+	}
+}
+
+// TestROS2Service_GetGraph_DedupsEdges verifies that a node's publish/subscribe
+// edges are deduplicated when a sidecar's node info stdout contains the same
+// topic twice (same (node, topic, rmw) → collapsed to 1 edge) (WDY-1710).
+func TestROS2Service_GetGraph_DedupsEdges(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Name: "sc-cyc", Distro: "humble", DomainID: 0, RMW: "rmw_cyclonedds_cpp"},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			key := strings.Join(opts.Args, " ")
+			switch key {
+			case "node list":
+				io.WriteString(stdout, "/talker\n")
+			case "node info /talker":
+				// Duplicate publisher entry simulates noisy node info output.
+				io.WriteString(stdout, `/talker
+  Subscribers:
+  Publishers:
+    /chatter: std_msgs/msg/String
+    /chatter: std_msgs/msg/String
+`)
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.GetGraph(context.Background(), &agentpbv2.GetROS2GraphRequest{})
+	if err != nil {
+		t.Fatalf("GetGraph: %v", err)
+	}
+	// The /talker→/chatter publish edge must appear exactly once despite the
+	// duplicate line in node info stdout.
+	if len(resp.GetPublishes()) != 1 {
+		t.Fatalf("got %d publish edges, want 1 (deduped)", len(resp.GetPublishes()))
+	}
+	if resp.GetPublishes()[0].GetNode() != "/talker" || resp.GetPublishes()[0].GetTopic() != "/chatter" {
+		t.Errorf("publish edge = %+v", resp.GetPublishes()[0])
+	}
+}
+
+func TestROS2Service_EchoTopic_StderrNotInPayload(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(_ context.Context, _ ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+			io.WriteString(stderr, "selected interface \"lo\" is not multicast-capable: disabling multicast\n")
+			io.WriteString(stdout, "data: 'Hello World: 1'\n---\n")
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeServerStream[agentpbv2.ROS2Message]{ctx: context.Background()}
+	if err := svc.EchoTopic(&agentpbv2.EchoROS2TopicRequest{Topic: "/chatter", Count: 1}, stream); err != nil {
+		t.Fatalf("EchoTopic: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("got %d messages, want 1", len(stream.sent))
+	}
+	if strings.Contains(stream.sent[0].GetYaml(), "multicast") {
+		t.Errorf("stderr leaked into echo payload (WDY-1708): %q", stream.sent[0].GetYaml())
 	}
 }
 

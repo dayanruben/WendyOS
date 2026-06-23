@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,9 +22,12 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -798,6 +800,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		}
 	}
 	if len(allCerts) > 0 {
+		pins := openPinStore()
 		host, portStr, _ := net.SplitHostPort(plaintextAddr)
 		if port, err := strconv.Atoi(portStr); err == nil {
 			// Try the given port first (covers explicit tunnel ports that already
@@ -820,7 +823,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 			var mtlsPortCertFails, mtlsPortNonCertFails int
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
-					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
+					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
 					if tlsErr != nil {
 						recordMTLSErr(mtlsAddr, tlsErr)
 						if tlsDebug {
@@ -1166,25 +1169,85 @@ func loadCLIAuth() *config.AuthConfig {
 	return nil
 }
 
-// bleTLSConfig loads the CLI certificate and returns a *tls.Config for mTLS
-// over BLE L2CAP. Returns an error if the user is not logged in.
-func bleTLSConfig() (*tls.Config, error) {
+// openPinStore loads the device pin store from the wendy config directory.
+// Returns nil (without error) if the store cannot be opened, so callers can
+// treat nil PinChecker as "pinning disabled" without failing the connection.
+func openPinStore() certs.PinChecker {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return nil
+	}
+	store, err := devicepin.Open(dir)
+	if err != nil {
+		return nil
+	}
+	return store
+}
+
+// findCertByOrgID returns the first CertificateInfo across all auth entries
+// whose OrganizationID matches orgID, or nil if none is found.
+func findCertByOrgID(authEntries []config.AuthConfig, orgID int) *config.CertificateInfo {
+	for i := range authEntries {
+		for j := range authEntries[i].Certificates {
+			if authEntries[i].Certificates[j].OrganizationID == orgID {
+				return &authEntries[i].Certificates[j]
+			}
+		}
+	}
+	return nil
+}
+
+// attemptBLEConnect builds a TLS config and connects to device using the
+// given certificate info and pin store.
+func attemptBLEConnect(device *models.BluetoothDevice, cert config.CertificateInfo, pins certs.PinChecker) (*ble.AgentClient, error) {
+	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, certs.ServerVerifyOpts{
+		ChainPEM:      cert.PemCertificateChain,
+		ExpectedOrgID: int32(cert.OrganizationID),
+		PinStore:      pins,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building BLE TLS config: %w", err)
+	}
+	return ble.ConnectAgent(device, tlsCfg)
+}
+
+// connectBLEAgent connects to device via BLE mTLS, automatically retrying
+// with the matching cert if the device belongs to a different org than the
+// default auth session.
+func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	auth := loadCLIAuth()
 	if auth == nil || len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate")
 	}
+	pins := openPinStore()
 	cert := auth.Certificates[0]
-	return ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey)
-}
 
-// connectBLEAgent builds a TLS config and connects to the given Bluetooth
-// device over BLE L2CAP mTLS. Callers must Close() the returned client.
-func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
-	tlsCfg, err := bleTLSConfig()
-	if err != nil {
+	// Best-effort time sync before mTLS handshake — gives the device a chance
+	// to advance its clock before we attempt the TLS handshake.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	clitimesync.BroadcastTime(ctx) //nolint:errcheck
+	cancel()
+
+	client, err := attemptBLEConnect(device, cert, pins)
+	if err == nil {
+		return client, nil
+	}
+
+	var mismatch *certs.OrgMismatchError
+	if !errors.As(err, &mismatch) {
 		return nil, err
 	}
-	return ble.ConnectAgent(device, tlsCfg)
+
+	// The device belongs to a different org. Search all auth entries.
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		return nil, fmt.Errorf("device belongs to org %d but could not load config to find matching certificate: %w", mismatch.Got, cfgErr)
+	}
+	alt := findCertByOrgID(cfg.Auth, int(mismatch.Got))
+	if alt == nil {
+		return nil, fmt.Errorf("device belongs to org %d; authenticate for that org with 'wendy auth login'", mismatch.Got)
+	}
+	return attemptBLEConnect(device, *alt, pins)
 }
 
 // resolveOption configures resolveTarget behaviour.
