@@ -657,11 +657,19 @@ has_mac_development_signing_identity() {
     security_command+=("$KEYCHAIN_PATH")
   fi
 
+  local pattern
   if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
-    "${security_command[@]}" 2>/dev/null | grep -qF "\"$SIGNING_IDENTITY\""
+    local identity_pattern='^[A-Za-z0-9][A-Za-z0-9 .,:_@()+/&-]*$'
+    if ! [[ "$SIGNING_IDENTITY" =~ $identity_pattern ]]; then
+      echo "ERROR: SIGNING_IDENTITY contains invalid characters." >&2
+      return 1
+    fi
+    pattern="\"$SIGNING_IDENTITY\""
   else
-    "${security_command[@]}" 2>/dev/null | grep -q '"Apple Development'
+    pattern='"Apple Development'
   fi
+
+  "${security_command[@]}" 2>/dev/null | grep -qF "$pattern"
 }
 
 build_unsigned_managed_mac_app() {
@@ -773,6 +781,7 @@ start_managed_agent() {
         --env "TMPDIR=${TMPDIR:-/tmp}" \
         --env "USER=wendy-e2e-agent" \
         "$(managed_agent_path)"
+    chmod 600 "$stdout_path" "$stderr_path"
   else
     mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
     chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
@@ -826,7 +835,7 @@ start_managed_agent() {
 stop_managed_agent() {
   if managed_agent_is_macos; then
     local quit_log="$RUN_DIR/managed-agent/quit.log"
-    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >>"$quit_log" 2>&1; then
+    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >"$quit_log" 2>&1; then
       echo "WARN: WendyAgentMac quit script reported an error; see $quit_log" >&2
     fi
     MANAGED_AGENT_PID=""
