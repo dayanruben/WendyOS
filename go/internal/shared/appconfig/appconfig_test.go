@@ -1002,9 +1002,13 @@ func TestFiles_RoundTripJSON(t *testing.T) {
 }
 
 func TestValidate_Brewfile_Valid(t *testing.T) {
-	cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: "ops/Brewfile"}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() unexpected error: %v", err)
+	for _, path := range []string{"ops/Brewfile", "./Brewfile"} {
+		t.Run(path, func(t *testing.T) {
+			cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: path}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error: %v", err)
+			}
+		})
 	}
 }
 
@@ -1016,7 +1020,7 @@ func TestValidate_Brewfile_AbsolutePath(t *testing.T) {
 }
 
 func TestValidate_Brewfile_UnsafeComponents(t *testing.T) {
-	for _, path := range []string{"../Brewfile", "./Brewfile", "ops//Brewfile", "ops/", `ops\\Brewfile`, "ops%2fBrewfile", "ops\r/Brewfile"} {
+	for _, path := range []string{"../Brewfile", "ops//Brewfile", "ops/", `ops\\Brewfile`, "ops%2fBrewfile", "ops\r/Brewfile"} {
 		t.Run(path, func(t *testing.T) {
 			cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: path}
 			if err := cfg.Validate(); err == nil {

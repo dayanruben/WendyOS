@@ -289,6 +289,26 @@ func TestAppendNativeBrewfileSyncEntry_DeduplicatesSameSource(t *testing.T) {
 	}
 }
 
+func TestResolveNativeBrewfileSyncEntry_NormalizesLeadingDotSlash(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "Brewfile.wendy")
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile.wendy: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "./Brewfile.wendy"}
+	entry, err := resolveNativeBrewfileSyncEntry(dir, cfg)
+	if err != nil {
+		t.Fatalf("resolveNativeBrewfileSyncEntry: %v", err)
+	}
+	if entry == nil || entry.remotePath != "Brewfile.wendy" {
+		t.Fatalf("entry = %+v, want remotePath Brewfile.wendy", entry)
+	}
+	if cfg.Brewfile != "Brewfile.wendy" {
+		t.Fatalf("cfg.Brewfile = %q, want Brewfile.wendy", cfg.Brewfile)
+	}
+}
+
 func TestAppendNativeBrewfileSyncEntry_RejectsConflictingFilesMapping(t *testing.T) {
 	dir := t.TempDir()
 	appBrewfilePath := filepath.Join(dir, "ops", "Brewfile")
