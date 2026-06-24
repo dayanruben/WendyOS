@@ -8,7 +8,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 {
   "appId": "com.example.myapp",
   "version": "1.0.0",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" }
   ]
@@ -19,27 +19,30 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 |-------|-------------|
 | `appId` | Unique identifier (reverse domain notation recommended) |
 | `version` | Application version string |
-| `platform` | Target platform: `wendyos`, `wendy-lite`, or `darwin` |
+| `platform` | Target platform: `linux`, `wendyos`, `wendy-lite`, or `darwin` |
 | `entitlements` | Array of entitlement objects specifying required permissions |
 
 ## Platforms
 
 | Value | Description |
 |-------|-------------|
-| `wendyos` | Linux edge device running WendyOS; apps run in containers |
+| `linux` | Linux edge device; the device architecture is inferred |
+| `wendyos` | Compatibility alias for `linux`; apps run in containers |
 | `wendy-lite` | ESP32 WASM target |
 | `darwin` | Native macOS execution through [Wendy for Mac](/docs/installation/wendy-agent-macos) |
 
+Omit `platform` to target Linux. Existing `"wendyos"` configs are accepted as an alias and resolve to `linux` before Docker or Apple Container builds.
+
 Use `"darwin"` for Apple Silicon Mac targets managed by Wendy for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
 
-Minimal SwiftPM/macOS configuration:
+Minimal SwiftPM/Linux container configuration:
 
 ```json
 {
-  "appId": "com.example.hello-mac",
+  "appId": "com.example.hello-linux",
   "version": "1.0.0",
   "language": "swift",
-  "platform": "darwin"
+  "platform": "linux"
 }
 ```
 
@@ -135,6 +138,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.video-streamer",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -147,6 +151,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.ml-server",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -159,6 +164,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.vision-app",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "gpu" },
@@ -171,6 +177,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.voice-assistant",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -184,6 +191,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.hello-world",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": []
 }

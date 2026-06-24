@@ -57,7 +57,7 @@ Web server:
 ```json
 {
   "appId": "api-server",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" }
   ],
@@ -73,7 +73,7 @@ Camera + audio app:
 ```json
 {
   "appId": "camera-assistant",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "camera" },
@@ -87,7 +87,7 @@ Jetson GPU app with persistent model cache:
 ```json
 {
   "appId": "vision-inference",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "gpu" },
@@ -102,7 +102,7 @@ I2C sensor app:
 ```json
 {
   "appId": "sensor-reader",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "i2c", "device": "i2c-1" },
     { "type": "persist", "name": "sensor-data", "path": "/data" }
@@ -115,7 +115,7 @@ Serial device app (USB-serial servo bus):
 ```json
 {
   "appId": "servo-controller",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "serial", "device": "ttyACM0" }

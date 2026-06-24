@@ -1905,16 +1905,25 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 // Rules:
 //   - If cfgPlatform is a full "os/arch" string, use it as-is.
 //   - If cfgPlatform is OS-only (e.g., "linux" or "darwin"), append the agent arch.
-//   - If cfgPlatform is empty, default to the agent's OS and architecture.
+//   - If cfgPlatform is empty, default to Linux with the agent architecture.
+//   - "wendyos" is a compatibility alias for "linux" and is normalized before
+//     passing the platform to container builders.
 func resolveAgentPlatform(cfgPlatform, agentOS, agentArch string) string {
 	if cfgPlatform == "" {
-		return agentOS + "/" + agentArch
+		return appconfig.PlatformLinux + "/" + agentArch
 	}
-	if strings.Contains(cfgPlatform, "/") {
-		return cfgPlatform
+	if i := strings.IndexByte(cfgPlatform, '/'); i >= 0 {
+		return normalizePlatformOS(cfgPlatform[:i]) + cfgPlatform[i:]
 	}
 	// OS-only: append agent architecture.
-	return cfgPlatform + "/" + agentArch
+	return normalizePlatformOS(cfgPlatform) + "/" + agentArch
+}
+
+func normalizePlatformOS(os string) string {
+	if strings.EqualFold(os, appconfig.PlatformWendyOS) {
+		return appconfig.PlatformLinux
+	}
+	return os
 }
 
 func registryPort(agentOS string) int {

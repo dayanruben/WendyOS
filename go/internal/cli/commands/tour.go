@@ -100,6 +100,7 @@ type (
 
 const tourWendyJSONTemplate = `{
     "appId": %q,
+    "platform": "linux",
     "version": "1.0.0",
     "language": "python",
     "entitlements": [

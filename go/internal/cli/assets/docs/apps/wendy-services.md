@@ -7,6 +7,7 @@ When your project needs more than one container managed through a `wendy.json` f
 ```json
 {
   "appId": "com.example.myapp",
+  "platform": "linux",
   "services": {
     "db": {
       "context": "db"

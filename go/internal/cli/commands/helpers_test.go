@@ -62,6 +62,66 @@ func TestHostPort(t *testing.T) {
 	}
 }
 
+func TestResolveAgentPlatform(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfgPlatform string
+		agentOS     string
+		agentArch   string
+		want        string
+	}{
+		{
+			name:        "full platform is used as-is",
+			cfgPlatform: "linux/amd64",
+			agentOS:     "darwin",
+			agentArch:   "arm64",
+			want:        "linux/amd64",
+		},
+		{
+			name:        "full wendyos platform is normalized to linux",
+			cfgPlatform: "wendyos/arm64",
+			agentOS:     "darwin",
+			agentArch:   "amd64",
+			want:        "linux/arm64",
+		},
+		{
+			name:        "OS-only platform uses agent architecture",
+			cfgPlatform: "darwin",
+			agentOS:     "linux",
+			agentArch:   "arm64",
+			want:        "darwin/arm64",
+		},
+		{
+			name:        "OS-only wendyos platform is normalized to linux",
+			cfgPlatform: "wendyos",
+			agentOS:     "darwin",
+			agentArch:   "arm64",
+			want:        "linux/arm64",
+		},
+		{
+			name:      "empty platform defaults to linux on Linux agent",
+			agentOS:   "linux",
+			agentArch: "arm64",
+			want:      "linux/arm64",
+		},
+		{
+			name:      "empty platform defaults to linux on Darwin agent",
+			agentOS:   "darwin",
+			agentArch: "arm64",
+			want:      "linux/arm64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveAgentPlatform(tt.cfgPlatform, tt.agentOS, tt.agentArch)
+			if got != tt.want {
+				t.Fatalf("resolveAgentPlatform(%q, %q, %q) = %q, want %q", tt.cfgPlatform, tt.agentOS, tt.agentArch, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLANAgentAddressesPrefersIPAddress(t *testing.T) {
 	dev := models.LANDevice{
 		IPAddress: "192.168.1.23",

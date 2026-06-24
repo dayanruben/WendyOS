@@ -27,6 +27,7 @@ ROS2/
 ```jsonc
 {
   "appId": "sh.wendy.examples.ros2",
+  "platform": "linux",
   "version": "1.0.0",
   "isolation": "shared-ipc",
   "frameworks": {
