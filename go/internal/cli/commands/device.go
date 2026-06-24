@@ -61,6 +61,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceInfoCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
+		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
@@ -313,6 +314,36 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Default device set to: %s\n", device)
+			return nil
+		},
+	}
+}
+
+func newDeviceGetDefaultCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get-default",
+		Short: "Show the current default device",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+
+			if jsonOutput {
+				data, err := json.MarshalIndent(map[string]string{"defaultDevice": cfg.DefaultDevice}, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				return nil
+			}
+
+			if cfg.DefaultDevice == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No default device set. Set one with 'wendy device set-default'.")
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Default device: %s\n", cfg.DefaultDevice)
 			return nil
 		},
 	}
