@@ -818,7 +818,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if appCfg.Brewfile != "" {
 			cliLogln("Brewfile applied.")
 		}
-		cliLogln("Container %s created (not started).", appCfg.AppID)
+		cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
 		return nil
 	}
 
@@ -828,7 +828,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if appCfg.Brewfile != "" {
 		cliLogln("Brewfile applied.")
 	}
-	cliLogln("Container %s created.", appCfg.AppID)
+	cliLogln("Container %s created.", tui.App(appCfg.AppID))
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -840,7 +840,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
-		cliLogln("Application %s running in detached mode.", appCfg.AppID)
+		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
 		return nil
 	}
 
@@ -854,7 +854,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		return fmt.Errorf("starting container: %w", err)
 	}
 
-	cliLogln("Application %s started.", appCfg.AppID)
+	cliLogln("Application %s started.", tui.App(appCfg.AppID))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -886,7 +886,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 	}
 
-	cliLogln("\nApplication %s stopped.", appCfg.AppID)
+	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
 	return nil
 }
 
@@ -937,7 +937,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	defer proxyCleanup()
 
-	cliLogln("Building Swift container image for %s (%s)...", product, architecture)
+	cliLogln("Building Swift container image for %s (%s)...", tui.App(product), tui.Value(architecture))
 	if err := buildSwiftContainerImage(ctx, cwd, product, registryAddr, architecture, swiftUseMTLS, &dimWriter{}, os.Stderr); err != nil {
 		return fmt.Errorf("building Swift container image: %w", err)
 	}
@@ -1232,7 +1232,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	cliLogln("Build completed.")
 
 	if opts.deploy {
-		cliLogln("Application %s built but not started (--deploy).", product)
+		cliLogln("Application %s built but not started (--deploy).", tui.App(product))
 		return nil
 	}
 
@@ -1261,9 +1261,9 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	for out := range output {
 		switch out.Type {
 		case providers.RunOutputStarted:
-			cliLogln("Application %s started.", product)
+			cliLogln("Application %s started.", tui.App(product))
 			if opts.detach {
-				cliLogln("Application %s running in detached mode.", product)
+				cliLogln("Application %s running in detached mode.", tui.App(product))
 				return nil
 			}
 		case providers.RunOutputStdout:
@@ -1274,7 +1274,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	}
 
 	runErr := <-errCh
-	cliLogln("\nApplication %s stopped.", product)
+	cliLogln("\nApplication %s stopped.", tui.App(product))
 	if runCtx.Err() != nil {
 		return nil // cancelled by signal
 	}
@@ -1478,7 +1478,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if err != nil {
 			return fmt.Errorf("creating container: %w", err)
 		}
-		cliLogln("Container %s created (not started).", appCfg.AppID)
+		cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
 		return nil
 	}
 
@@ -1486,7 +1486,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 		return err
 	}
-	cliLogln("Container %s created.", appCfg.AppID)
+	cliLogln("Container %s created.", tui.App(appCfg.AppID))
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -1498,7 +1498,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
-		cliLogln("Application %s running in detached mode.", appCfg.AppID)
+		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
 		// Wait for readiness before firing hook.
 		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 			cliLogln("Warning: %v", err)
@@ -1517,7 +1517,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		return err
 	}
 
-	cliLogln("Application %s started.", appCfg.AppID)
+	cliLogln("Application %s started.", tui.App(appCfg.AppID))
 
 	// Set up Ctrl+C handler first so readiness polling is cancellable.
 	sigCh := make(chan os.Signal, 1)
@@ -1582,7 +1582,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
 	}
-	cliLogln("\nApplication %s stopped.", appCfg.AppID)
+	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
 	return nil
 }
 
@@ -1600,7 +1600,7 @@ func waitForReadiness(ctx context.Context, cfg *appconfig.ReadinessConfig, hostn
 	}
 
 	addr := net.JoinHostPort(hostname, fmt.Sprintf("%d", cfg.TCPSocket.Port))
-	cliLogln("Waiting for %s to be ready...", addr)
+	cliLogln("Waiting for %s to be ready...", tui.Value(addr))
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1679,7 +1679,7 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 		if err := browserOpen(url); err != nil {
 			cliLogln("Warning: postStart openURL failed: %v", err)
 		} else {
-			cliLogln("Hook postStart: opened %s", url)
+			cliLogln("Hook postStart: opened %s", tui.Path(url))
 		}
 	}
 
@@ -1701,7 +1701,7 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 		return nil
 	}
 	finalizeProcessGroup()
-	cliLogln("Hook postStart: %s", expanded)
+	cliLogln("Hook postStart: %s", tui.Command(expanded))
 	return cmd
 }
 
@@ -1752,7 +1752,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 		}
 		if resp.GetStarted() != nil {
 			if opts.deploy {
-				cliLogln("Container %s created (not started).", appCfg.AppID)
+				cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
 				return nil
 			}
 			if opts.detach {
@@ -1760,7 +1760,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				// is started; wait for readiness, fire the host post-start hook,
 				// then return without tailing logs. The container keeps running
 				// independently of this (now-abandoned) output stream.
-				cliLogln("Application %s running in detached mode.", appCfg.AppID)
+				cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
 				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 					cliLogln("Warning: %v", err)
 				}
@@ -1776,7 +1776,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			_, _ = os.Stderr.Write(out.GetData())
 		}
 	}
-	cliLogln("\nApplication %s stopped.", appCfg.AppID)
+	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
 	return nil
 }
 
@@ -1807,7 +1807,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	defer os.RemoveAll(tmp)
 	ociTar := filepath.Join(tmp, "image.tar")
 
-	cliLogln("Building image (OCI layout) for %s...", platform)
+	cliLogln("Building image (OCI layout) for %s...", tui.Value(platform))
 	// In quiet mode (wendy watch) capture the buildx output and surface it only
 	// if the build genuinely fails — but stay silent on a cancellation (a newer
 	// change superseded this build), which would otherwise dump a partial log.
@@ -1830,7 +1830,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	mark("read+decompress layers")
 
-	cliLogln("Diffing %d layer(s) against device...", len(layers))
+	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
 	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
 	if err != nil {
 		return err
