@@ -40,10 +40,10 @@ const (
 )
 
 var (
-	successStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
-	errorStyle   = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
-	warningStyle = lipgloss.NewStyle().Foreground(ColorNotice).Bold(true)
-	infoStyle    = lipgloss.NewStyle().Foreground(ColorInfo).Bold(true)
+	successStyle    = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	errorStyle      = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
+	warningStyle    = lipgloss.NewStyle().Foreground(ColorNotice).Bold(true)
+	infoStyle       = lipgloss.NewStyle().Foreground(ColorInfo).Bold(true)
 	headerStyleTUI  = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
 	deviceStyleTUI  = lipgloss.NewStyle().Foreground(Emerald300).Bold(true)
 	valueStyleTUI   = lipgloss.NewStyle().Bold(true)
