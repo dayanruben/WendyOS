@@ -808,7 +808,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	createReq.AppConfig = appConfigData
 
 	if appCfg.Brewfile != "" {
-		cliLogln("Will apply Brewfile %s on target Mac.", appCfg.Brewfile)
+		cliLogln("Will apply Brewfile on target Mac.")
 	}
 
 	if opts.deploy {
@@ -892,7 +892,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 func macOSNativeCreateContainerError(err error, appCfg *appconfig.AppConfig) error {
 	if appCfg != nil && appCfg.Brewfile != "" {
-		return fmt.Errorf("creating container (including brew bundle for %s): %w", appCfg.Brewfile, err)
+		return fmt.Errorf("creating container (including brew bundle): %w", err)
 	}
 	return fmt.Errorf("creating container: %w", err)
 }

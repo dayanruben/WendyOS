@@ -25,7 +25,7 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Will apply Brewfile Brewfile.wendy on target Mac."))
+            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
             #expect(result.stdout.contains("Brewfile applied."))
             #expect(result.stdout.contains("SWIFTPM_AUTODETECT: Hello, world!"))
         }
@@ -49,7 +49,7 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Will apply Brewfile Brewfile.wendy on target Mac."))
+            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
             #expect(result.stdout.contains("Brewfile applied."))
             #expect(result.stdout.contains("XCODE_HELLO: Hello, world!"))
         }
@@ -99,7 +99,7 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isSuccess)
-            #expect(result.stdout.contains("Will apply Brewfile ops/Brewfile on target Mac."))
+            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
             #expect(result.stdout.contains("Brewfile applied."))
             #expect(result.stdout.contains("EXPLICIT_BREWFILE: Hello, world!"))
         }
@@ -130,7 +130,7 @@ struct `'wendy run' with native Mac Brewfiles` {
 
             let result = try await Self.wendyRun(cli, agent: agent, project: project)
             #expect(result.status.isFailure)
-            #expect(result.stderr.contains("brew bundle failed for Brewfile Brewfile.wendy"))
+            #expect(result.stderr.contains("brew bundle failed"))
             #expect(result.stderr.contains("exit code"))
             #expect(!result.stdout.contains("Brewfile applied."))
             #expect(!result.stdout.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))

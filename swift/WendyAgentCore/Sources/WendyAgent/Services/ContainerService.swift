@@ -436,6 +436,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
+        environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
         return environment
     }
 
@@ -443,11 +444,15 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         brewfile: String,
         status: Int32
     ) -> String {
-        "brew bundle failed for Brewfile \(brewfile) with exit code \(status). Check agent logs for details."
+        "brew bundle failed with exit code \(status). Check agent logs for details."
     }
 
     nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
-        guard !path.isEmpty, !path.hasPrefix("/") else { return false }
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains("%") else {
+            return false
+        }
+        guard !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return false }
         for component in path.split(separator: "/", omittingEmptySubsequences: false) {
             if component == "" || component == "." || component == ".." {
                 return false
@@ -475,6 +480,27 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
         return brewfileURL
+    }
+
+    nonisolated private static func ensureNoSymlinkBrewfileComponents(
+        appDirectory: String,
+        brewfile: String
+    ) throws {
+        var currentURL = URL(fileURLWithPath: appDirectory, isDirectory: true).standardizedFileURL
+        for component in brewfile.split(separator: "/", omittingEmptySubsequences: false) {
+            currentURL.appendPathComponent(String(component))
+            do {
+                _ = try FileManager.default.destinationOfSymbolicLink(atPath: currentURL.path)
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "brewfile path must stay within the app directory"
+                )
+            } catch let error as RPCError {
+                throw error
+            } catch {
+                continue
+            }
+        }
     }
 
     nonisolated private static func ensureRegularBrewfile(atPath path: String) throws {
@@ -583,6 +609,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
+        try Self.ensureNoSymlinkBrewfileComponents(appDirectory: appDirectory, brewfile: brewfile)
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
         try Self.ensureRegularBrewfile(atPath: brewfilePath)
@@ -617,7 +644,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             throw RPCError(
                 code: .failedPrecondition,
                 message:
-                    "Homebrew is required to apply Brewfile \(brewfile) on the target Mac, but brew was not found. Install Homebrew on the target Mac: https://brew.sh/"
+                    "Homebrew is required to apply the Brewfile on the target Mac, but brew was not found. Install Homebrew on the target Mac: https://brew.sh/"
             )
         }
 
@@ -625,8 +652,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             "Applying Brewfile",
             metadata: [
                 "app_name": "\(appName)",
-                "brewfile": "\(brewfile)",
                 "brew": "\(brewExecutable)",
+                "formula_count": "\(validatedBrewfile.formulas.count)",
             ]
         )
 
@@ -640,7 +667,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         } catch {
             throw RPCError(
                 code: .failedPrecondition,
-                message: "Failed to launch brew bundle for Brewfile \(brewfile)"
+                message: "Failed to launch brew bundle for the Brewfile"
             )
         }
 
@@ -653,8 +680,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 "brew bundle failed",
                 metadata: [
                     "app_name": "\(appName)",
-                    "brewfile": "\(brewfile)",
                     "exit_code": "\(status)",
+                    "formula_count": "\(validatedBrewfile.formulas.count)",
                 ]
             )
             throw RPCError(code: .failedPrecondition, message: message)
@@ -664,8 +691,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             "Brewfile applied successfully",
             metadata: [
                 "app_name": "\(appName)",
-                "brewfile": "\(brewfile)",
                 "brew": "\(brewExecutable)",
+                "formula_count": "\(validatedBrewfile.formulas.count)",
             ]
         )
     }

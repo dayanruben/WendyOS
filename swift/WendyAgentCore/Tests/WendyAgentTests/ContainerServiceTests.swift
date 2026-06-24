@@ -612,7 +612,7 @@ struct ContainerServiceTests {
             brewfile: "ops/Brewfile",
             status: 17
         )
-        #expect(message.contains("ops/Brewfile"))
+        #expect(!message.contains("ops/Brewfile"))
         #expect(message.contains("exit code 17"))
         #expect(message.contains("agent logs"))
         #expect(!message.contains("No available formula"))
@@ -640,6 +640,7 @@ struct ContainerServiceTests {
         #expect(environment["TMPDIR"] == "/tmp")
         #expect(environment["USER"] == "wendy")
         #expect(environment["HOMEBREW_NO_ANALYTICS"] == "1")
+        #expect(environment["HOMEBREW_NO_AUTO_UPDATE"] == "1")
         #expect(environment["AWS_SECRET_ACCESS_KEY"] == nil)
         #expect(environment["GITHUB_TOKEN"] == nil)
         #expect(environment["DATABASE_PASSWORD"] == nil)
