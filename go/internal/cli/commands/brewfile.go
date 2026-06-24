@@ -135,12 +135,16 @@ func syncEntryCoversBrewfile(existing, brewfile fileSyncEntry) (brewfileCoverage
 	if err != nil {
 		return brewfileCoverage{}, err
 	}
+	currentInfo, err := os.Lstat(existing.localPath)
+	if err != nil || !currentInfo.IsDir() || !os.SameFile(info, currentInfo) {
+		return brewfileCoverage{}, nil
+	}
 	return brewfileCoverage{covered: true, sameSource: same}, nil
 }
 
 func remotePathRelativeToPrefix(remotePath, prefix string) (string, bool) {
-	remotePath = strings.TrimPrefix(remotePath, "./")
-	prefix = strings.TrimPrefix(prefix, "./")
+	remotePath = appconfig.NormalizeBrewfilePath(remotePath)
+	prefix = appconfig.NormalizeBrewfilePath(prefix)
 	if prefix == "" {
 		return remotePath, remotePath != ""
 	}

@@ -509,28 +509,40 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
     }
 
-    nonisolated private static func ensureRegularBrewfile(atPath path: String) throws {
-        let attributes: [FileAttributeKey: Any]
-        do {
-            attributes = try FileManager.default.attributesOfItem(atPath: path)
-        } catch {
+    nonisolated private static func validatedBrewfileContents(
+        atPath path: String
+    ) throws -> (data: Data, formulas: [String]) {
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            if errno == ELOOP {
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "brewfile path must stay within the app directory"
+                )
+            }
+            throw RPCError(code: .failedPrecondition, message: "Unable to read Brewfile after sync")
+        }
+
+        var statBuffer = stat()
+        guard fstat(descriptor, &statBuffer) == 0 else {
+            close(descriptor)
             throw RPCError(
                 code: .failedPrecondition,
                 message: "Unable to inspect Brewfile after sync"
             )
         }
-        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+        guard (statBuffer.st_mode & S_IFMT) == S_IFREG else {
+            close(descriptor)
             throw RPCError(code: .invalidArgument, message: "Brewfile must be a regular file")
         }
-    }
 
-    nonisolated private static func validatedBrewfileContents(
-        atPath path: String
-    ) throws -> (data: Data, formulas: [String]) {
         let data: Data
         do {
-            data = try Data(contentsOf: URL(fileURLWithPath: path))
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            data = try handle.read(upToCount: 64 * 1024 + 1) ?? Data()
+            try? handle.close()
         } catch {
+            close(descriptor)
             throw RPCError(code: .failedPrecondition, message: "Unable to read Brewfile after sync")
         }
         guard data.count <= 64 * 1024 else {
@@ -588,13 +600,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             defer { try? FileManager.default.removeItem(at: outputDirectory) }
 
             let outputURL = outputDirectory.appendingPathComponent("output.log")
-            FileManager.default.createFile(
-                atPath: outputURL.path,
-                contents: nil,
-                attributes: [.posixPermissions: 0o600]
+            let outputDescriptor = open(
+                outputURL.path,
+                O_WRONLY | O_CREAT | O_EXCL,
+                S_IRUSR | S_IWUSR
             )
+            guard outputDescriptor >= 0 else {
+                throw CocoaError(.fileWriteUnknown)
+            }
 
-            let outputHandle = try FileHandle(forWritingTo: outputURL)
+            let outputHandle = FileHandle(fileDescriptor: outputDescriptor, closeOnDealloc: true)
             defer { try? outputHandle.close() }
 
             let process = Foundation.Process()
@@ -659,33 +674,39 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         try Self.ensureNoSymlinkBrewfileComponents(appDirectory: appDirectory, brewfile: brewfile)
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
-        try Self.ensureRegularBrewfile(atPath: brewfilePath)
         let validatedBrewfile = try Self.validatedBrewfileContents(atPath: brewfilePath)
         let sanitizedBrewfile =
             validatedBrewfile.formulas
             .map { "brew \"\($0)\"\n" }
             .joined()
             .data(using: .utf8) ?? Data()
-        let bundleBaseDirectory = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let bundleDirectory =
-            bundleBaseDirectory
-            .appendingPathComponent(
-                "WendyAgent/BrewBundles/\(UUID().uuidString)",
-                isDirectory: true
-            )
+        let bundleDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wendy-brew-bundle-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
             at: bundleDirectory,
-            withIntermediateDirectories: true,
+            withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700]
         )
         defer { try? FileManager.default.removeItem(at: bundleDirectory) }
         let bundleURL = bundleDirectory.appendingPathComponent("Brewfile")
-        try sanitizedBrewfile.write(to: bundleURL, options: .withoutOverwriting)
+        let bundleDescriptor = open(bundleURL.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard bundleDescriptor >= 0 else {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "Unable to prepare Brewfile for Homebrew"
+            )
+        }
+        let bundleHandle = FileHandle(fileDescriptor: bundleDescriptor, closeOnDealloc: true)
+        do {
+            try bundleHandle.write(contentsOf: sanitizedBrewfile)
+            try bundleHandle.close()
+        } catch {
+            try? bundleHandle.close()
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "Unable to prepare Brewfile for Homebrew"
+            )
+        }
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
@@ -695,12 +716,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        logger.info(
-            "Applying Brewfile",
+        logger.notice(
+            "Brewfile package install requested",
             metadata: [
                 "app_name": "\(appName)",
                 "brew": "\(brewExecutable)",
                 "formula_count": "\(validatedBrewfile.formulas.count)",
+                "formulas": "\(validatedBrewfile.formulas.joined(separator: ","))",
             ]
         )
 
@@ -741,12 +763,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             throw RPCError(code: .failedPrecondition, message: message)
         }
 
-        logger.info(
-            "Brewfile applied successfully",
+        logger.notice(
+            "Brewfile package install completed",
             metadata: [
                 "app_name": "\(appName)",
                 "brew": "\(brewExecutable)",
                 "formula_count": "\(validatedBrewfile.formulas.count)",
+                "formulas": "\(validatedBrewfile.formulas.joined(separator: ","))",
             ]
         )
     }
