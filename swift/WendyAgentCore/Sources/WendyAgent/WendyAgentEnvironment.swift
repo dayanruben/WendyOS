@@ -2,7 +2,16 @@ import Foundation
 
 public enum WendyAgentEnvironment {
     public static var host: String? {
-        value("WENDY_AGENT_HOST")
+        guard let host = value("WENDY_AGENT_HOST") else {
+            return nil
+        }
+
+        switch host {
+        case "127.0.0.1", "::1", "localhost":
+            return host
+        default:
+            return nil
+        }
     }
 
     public static var port: Int? {
@@ -14,15 +23,29 @@ public enum WendyAgentEnvironment {
     }
 
     public static var appPath: String? {
-        value("WENDY_AGENT_APP_PATH")
+        path("WENDY_AGENT_APP_PATH")
     }
 
     public static var sandboxProfile: String? {
-        value("WENDY_AGENT_SANDBOX_PROFILE")
+        path("WENDY_AGENT_SANDBOX_PROFILE")
     }
 
     private static func value(_ name: String) -> String? {
-        guard let value = ProcessInfo.processInfo.environment[name], !value.isEmpty else {
+        guard let value = ProcessInfo.processInfo.environment[name],
+            !value.isEmpty,
+            !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 })
+        else {
+            return nil
+        }
+        return value
+    }
+
+    private static func path(_ name: String) -> String? {
+        guard let value = value(name) else {
+            return nil
+        }
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains("..") else {
             return nil
         }
         return value
