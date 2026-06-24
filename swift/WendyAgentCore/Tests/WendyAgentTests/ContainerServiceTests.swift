@@ -699,51 +699,6 @@ struct ContainerServiceTests {
         }
     }
 
-    @Test("invalid Brewfile contents are rejected before launching Homebrew")
-    func invalidBrewfileContentsAreRejectedBeforeLaunchingHomebrew() async throws {
-        let appsBase = try makeTempDir()
-        defer { cleanup(appsBase) }
-
-        let appID = "sh.wendy.tests.BadBrewfileContents"
-        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
-        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
-        try writePrintPWDScript(to: appDirectory.appendingPathComponent("printpwd.sh"))
-        try "brew \"hello\" brew \"jq\"\n".write(
-            to: appDirectory.appendingPathComponent("Brewfile.wendy"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let service = ContainerService(
-            broadcaster: TelemetryBroadcaster(),
-            executablePath: "/usr/bin/false",
-            appsBase: URL(fileURLWithPath: appsBase)
-        )
-
-        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
-        request.appName = appID
-        request.cmd = "printpwd.sh"
-        request.appConfig = try JSONEncoder().encode(
-            WendyAppConfig(
-                appId: appID,
-                platform: "darwin",
-                entitlements: nil,
-                brewfile: "Brewfile.wendy"
-            )
-        )
-
-        do {
-            _ = try await service.createContainer(
-                request: ServerRequest(metadata: [:], message: request),
-                context: makeServerContext(method: "CreateContainer")
-            )
-            Issue.record("Expected createContainer to reject unsafe Brewfile contents")
-        } catch let error as RPCError {
-            #expect(error.code == .invalidArgument)
-            #expect("\(error)".contains("Brewfile supports simple brew formula entries only"))
-        }
-    }
-
     @Test("invalid Brewfile paths are rejected before launching Homebrew")
     func invalidBrewfilePathsAreRejectedBeforeLaunchingHomebrew() async throws {
         let appsBase = try makeTempDir()

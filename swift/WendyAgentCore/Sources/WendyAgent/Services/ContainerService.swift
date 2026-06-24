@@ -503,9 +503,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
     }
 
-    nonisolated private static func validatedBrewfileContents(
-        atPath path: String
-    ) throws -> (data: Data, formulas: [String]) {
+    nonisolated private static func validateSyncedBrewfile(atPath path: String) throws {
         let descriptor = open(path, O_RDONLY | O_NOFOLLOW)
         guard descriptor >= 0 else {
             if errno == ELOOP {
@@ -516,66 +514,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             }
             throw RPCError(code: .failedPrecondition, message: "Unable to read Brewfile after sync")
         }
+        defer { close(descriptor) }
 
         var statBuffer = stat()
         guard fstat(descriptor, &statBuffer) == 0 else {
-            close(descriptor)
             throw RPCError(
                 code: .failedPrecondition,
                 message: "Unable to inspect Brewfile after sync"
             )
         }
         guard (statBuffer.st_mode & S_IFMT) == S_IFREG else {
-            close(descriptor)
             throw RPCError(code: .invalidArgument, message: "Brewfile must be a regular file")
         }
-
-        let data: Data
-        do {
-            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-            data = try handle.read(upToCount: 64 * 1024 + 1) ?? Data()
-            try? handle.close()
-        } catch {
-            close(descriptor)
-            throw RPCError(code: .failedPrecondition, message: "Unable to read Brewfile after sync")
-        }
-        guard data.count <= 64 * 1024 else {
-            throw RPCError(code: .invalidArgument, message: "Brewfile is too large")
-        }
-        guard !data.contains(13), let text = String(data: data, encoding: .utf8) else {
-            throw RPCError(code: .invalidArgument, message: "Brewfile must be UTF-8 text")
-        }
-        let formulaLinePattern = #"^brew[ \t]+["']([A-Za-z0-9_.+-]{1,64})["']$"#
-        let formulaLineRegex = try NSRegularExpression(pattern: formulaLinePattern)
-        var formulas: [String] = []
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.isEmpty || line.hasPrefix("#") {
-                continue
-            }
-            let lineRange = NSRange(line.startIndex..<line.endIndex, in: line)
-            guard let match = formulaLineRegex.firstMatch(in: line, range: lineRange),
-                match.range == lineRange,
-                let nameRange = Range(match.range(at: 1), in: line)
-            else {
-                throw RPCError(
-                    code: .invalidArgument,
-                    message: "Brewfile supports simple brew formula entries only"
-                )
-            }
-            let name = String(line[nameRange])
-            guard name.first != "-", name.first != "." else {
-                throw RPCError(
-                    code: .invalidArgument,
-                    message: "Brewfile supports simple brew formula entries only"
-                )
-            }
-            formulas.append(name)
-            guard formulas.count <= 50 else {
-                throw RPCError(code: .invalidArgument, message: "Brewfile has too many entries")
-            }
-        }
-        return (data, formulas)
     }
 
     nonisolated private static func runBrewBundle(
@@ -678,39 +628,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         try Self.ensureNoSymlinkBrewfileComponents(appDirectory: appDirectory, brewfile: brewfile)
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
-        let validatedBrewfile = try Self.validatedBrewfileContents(atPath: brewfilePath)
-        let sanitizedBrewfile =
-            validatedBrewfile.formulas
-            .map { "brew \"\($0)\"\n" }
-            .joined()
-            .data(using: .utf8) ?? Data()
-        let bundleDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wendy-brew-bundle-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: bundleDirectory,
-            withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700]
-        )
-        defer { try? FileManager.default.removeItem(at: bundleDirectory) }
-        let bundleURL = bundleDirectory.appendingPathComponent("Brewfile")
-        let bundleDescriptor = open(bundleURL.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-        guard bundleDescriptor >= 0 else {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: "Unable to prepare Brewfile for Homebrew"
-            )
-        }
-        let bundleHandle = FileHandle(fileDescriptor: bundleDescriptor, closeOnDealloc: true)
-        do {
-            try bundleHandle.write(contentsOf: sanitizedBrewfile)
-            try bundleHandle.close()
-        } catch {
-            try? bundleHandle.close()
-            throw RPCError(
-                code: .failedPrecondition,
-                message: "Unable to prepare Brewfile for Homebrew"
-            )
-        }
+        try Self.validateSyncedBrewfile(atPath: brewfilePath)
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
@@ -725,7 +643,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             metadata: [
                 "app_name": "\(appName)",
                 "brew": "\(brewExecutable)",
-                "formula_count": "\(validatedBrewfile.formulas.count)",
             ]
         )
 
@@ -733,7 +650,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         do {
             result = try await Self.runBrewBundle(
                 brewExecutable: brewExecutable,
-                brewfilePath: bundleURL.path,
+                brewfilePath: brewfilePath,
                 appDirectory: appDirectory
             )
         } catch {
@@ -757,7 +674,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 metadata: [
                     "app_name": "\(appName)",
                     "exit_code": "\(result.status)",
-                    "formula_count": "\(validatedBrewfile.formulas.count)",
                 ]
             )
             throw RPCError(code: .failedPrecondition, message: message)
@@ -768,7 +684,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             metadata: [
                 "app_name": "\(appName)",
                 "brew": "\(brewExecutable)",
-                "formula_count": "\(validatedBrewfile.formulas.count)",
             ]
         )
     }

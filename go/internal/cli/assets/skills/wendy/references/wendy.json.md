@@ -49,9 +49,7 @@ Place `Brewfile.wendy` at the project root for auto-detection, or set `"brewfile
 "ops/Brewfile"` to use a relative path. A plain project-root `Brewfile` is left
 for developer-machine setup unless explicitly referenced. `wendy run` syncs the
 Wendy Brewfile to the target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>`
-before starting the app. Wendy currently accepts simple `brew "formula"` entries only;
-taps, casks, and other Brew Bundle directives are rejected. Homebrew must already be
-installed on the target Mac.
+before starting the app. Homebrew must already be installed on the target Mac.
 
 ## Entitlements Overview
 
