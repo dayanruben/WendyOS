@@ -606,15 +606,16 @@ struct ContainerServiceTests {
         #expect(found == "/opt/homebrew/bin/brew")
     }
 
-    @Test("Brewfile failure messages include exit status but not process output")
-    func brewfileFailureMessagesIncludeExitStatusButNotProcessOutput() {
+    @Test("Brewfile failure messages include requested formulas but not process output")
+    func brewfileFailureMessagesIncludeRequestedFormulasButNotProcessOutput() {
         let message = ContainerService.brewBundleFailureMessage(
-            brewfile: "ops/Brewfile",
-            status: 17
+            status: 17,
+            formulas: ["wendy-e2e-missing-formula"]
         )
         #expect(!message.contains("ops/Brewfile"))
         #expect(message.contains("exit code 17"))
         #expect(message.contains("agent logs"))
+        #expect(message.contains("wendy-e2e-missing-formula"))
         #expect(!message.contains("No available formula"))
         #expect(!message.contains("ghp_secret"))
     }
@@ -698,6 +699,51 @@ struct ContainerServiceTests {
         } catch let error as RPCError {
             #expect(error.code == .invalidArgument)
             #expect("\(error)".contains("brewfile path must stay within the app directory"))
+        }
+    }
+
+    @Test("invalid Brewfile contents are rejected before launching Homebrew")
+    func invalidBrewfileContentsAreRejectedBeforeLaunchingHomebrew() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.BadBrewfileContents"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writePrintPWDScript(to: appDirectory.appendingPathComponent("printpwd.sh"))
+        try "brew \"hello\" brew \"jq\"\n".write(
+            to: appDirectory.appendingPathComponent("Brewfile.wendy"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.cmd = "printpwd.sh"
+        request.appConfig = try JSONEncoder().encode(
+            WendyAppConfig(
+                appId: appID,
+                platform: "darwin",
+                entitlements: nil,
+                brewfile: "Brewfile.wendy"
+            )
+        )
+
+        do {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+            Issue.record("Expected createContainer to reject unsafe Brewfile contents")
+        } catch let error as RPCError {
+            #expect(error.code == .invalidArgument)
+            #expect("\(error)".contains("Brewfile supports simple brew formula entries only"))
         }
     }
 

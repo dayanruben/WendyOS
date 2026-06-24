@@ -6,6 +6,12 @@ import OpenTelemetryGRPC
 import SwiftProtobuf
 import WendyAgentGRPC
 
+#if os(macOS)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#endif
+
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
     private let appsBase: URL
     private let blobsDirectory: String
@@ -440,14 +446,12 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     nonisolated static func brewBundleFailureMessage(
-        brewfile: String,
         status: Int32,
-        output: String? = nil
+        formulas: [String]
     ) -> String {
         var message = "brew bundle failed with exit code \(status). Check agent logs for details."
-        if let output = output?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
-            let tail = String(output.suffix(2 * 1024))
-            message += "\n\nbrew output:\n\(tail)"
+        if !formulas.isEmpty {
+            message += " Requested formula(s): \(formulas.joined(separator: ", "))."
         }
         return message
     }
@@ -494,16 +498,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         var currentURL = URL(fileURLWithPath: appDirectory, isDirectory: true).standardizedFileURL
         for component in brewfile.split(separator: "/", omittingEmptySubsequences: false) {
             currentURL.appendPathComponent(String(component))
-            do {
-                _ = try FileManager.default.destinationOfSymbolicLink(atPath: currentURL.path)
+            var statBuffer = stat()
+            guard lstat(currentURL.path, &statBuffer) == 0 else { continue }
+            if (statBuffer.st_mode & S_IFMT) == S_IFLNK {
                 throw RPCError(
                     code: .invalidArgument,
                     message: "brewfile path must stay within the app directory"
                 )
-            } catch let error as RPCError {
-                throw error
-            } catch {
-                continue
             }
         }
     }
@@ -535,30 +536,29 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         guard data.count <= 64 * 1024 else {
             throw RPCError(code: .invalidArgument, message: "Brewfile is too large")
         }
-        let allowedNameCharacters = CharacterSet(
-            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-"
-        )
         guard !data.contains(13), let text = String(data: data, encoding: .utf8) else {
             throw RPCError(code: .invalidArgument, message: "Brewfile must be UTF-8 text")
         }
+        let formulaLinePattern = #"^brew[ \t]+["']([A-Za-z0-9_.+-]{1,64})["']$"#
+        let formulaLineRegex = try NSRegularExpression(pattern: formulaLinePattern)
         var formulas: [String] = []
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.isEmpty || line.hasPrefix("#") {
                 continue
             }
-            let name: String?
-            if line.hasPrefix("brew \"") && line.hasSuffix("\"") {
-                name = String(line.dropFirst(6).dropLast())
-            } else if line.hasPrefix("brew '") && line.hasSuffix("'") {
-                name = String(line.dropFirst(6).dropLast())
-            } else {
-                name = nil
-            }
-            guard let name, (1...64).contains(name.count),
-                name.first != "-", name.first != ".",
-                name.unicodeScalars.allSatisfy({ allowedNameCharacters.contains($0) })
+            let lineRange = NSRange(line.startIndex..<line.endIndex, in: line)
+            guard let match = formulaLineRegex.firstMatch(in: line, range: lineRange),
+                match.range == lineRange,
+                let nameRange = Range(match.range(at: 1), in: line)
             else {
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "Brewfile supports simple brew formula entries only"
+                )
+            }
+            let name = String(line[nameRange])
+            guard name.first != "-", name.first != "." else {
                 throw RPCError(
                     code: .invalidArgument,
                     message: "Brewfile supports simple brew formula entries only"
@@ -578,14 +578,21 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         appDirectory: String
     ) async throws -> (status: Int32, output: String, outputTruncated: Bool) {
         try await Task.detached(priority: .utility) {
-            let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("wendy-brew-output-\(UUID().uuidString)")
+            let outputDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wendy-brew-output-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: outputDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+            let outputURL = outputDirectory.appendingPathComponent("output.log")
             FileManager.default.createFile(
                 atPath: outputURL.path,
                 contents: nil,
                 attributes: [.posixPermissions: 0o600]
             )
-            defer { try? FileManager.default.removeItem(at: outputURL) }
 
             let outputHandle = try FileHandle(forWritingTo: outputURL)
             defer { try? outputHandle.close() }
@@ -605,6 +612,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 if Date() >= deadline {
                     timedOut = true
                     process.terminate()
+                    let graceDeadline = Date().addingTimeInterval(2)
+                    while process.isRunning && Date() < graceDeadline {
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    if process.isRunning {
+                        Self.forceKillProcess(process)
+                    }
                     process.waitUntilExit()
                     break
                 }
@@ -713,9 +727,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         guard result.status == 0 else {
             let message = Self.brewBundleFailureMessage(
-                brewfile: brewfile,
                 status: result.status,
-                output: result.output
+                formulas: validatedBrewfile.formulas
             )
             logger.error(
                 "brew bundle failed\(result.output.isEmpty ? "" : "\n\(result.output)")\(result.outputTruncated ? "\n[output truncated]" : "")",

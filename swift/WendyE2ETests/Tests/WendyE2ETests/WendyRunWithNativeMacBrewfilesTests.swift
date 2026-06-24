@@ -133,6 +133,7 @@ struct `'wendy run' with native Mac Brewfiles` {
             #expect(result.stderr.contains("brew bundle failed"))
             #expect(result.stderr.contains("exit code"))
             #expect(result.stderr.contains("wendy-e2e-this-formula-should-not-exist"))
+            #expect(!result.stderr.contains("No available formula"))
             #expect(!result.stdout.contains("Brewfile applied."))
             #expect(!result.stdout.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))
             #expect(!result.stderr.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))
@@ -327,7 +328,7 @@ struct `'wendy run' with native Mac Brewfiles` {
         _ cli: WendyE2ESession,
         scheme: String
     ) async throws {
-        guard scheme.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil else {
+        guard scheme.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
             throw NSError(
                 domain: "WendyRunWithNativeMacBrewfilesTests",
                 code: 3,

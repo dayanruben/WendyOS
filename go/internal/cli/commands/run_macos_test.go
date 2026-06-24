@@ -268,6 +268,29 @@ func TestResolveNativeBrewfileSyncEntry_RejectsSymlinkBrewfile(t *testing.T) {
 	}
 }
 
+func TestResolveNativeBrewfileSyncEntry_NormalizesDotComponents(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "./ops/./Brewfile"}
+	entry, err := resolveNativeBrewfileSyncEntry(dir, cfg)
+	if err != nil {
+		t.Fatalf("resolveNativeBrewfileSyncEntry: %v", err)
+	}
+	if entry == nil || entry.remotePath != "ops/Brewfile" {
+		t.Fatalf("entry = %+v, want remotePath ops/Brewfile", entry)
+	}
+	if cfg.Brewfile != "ops/Brewfile" {
+		t.Fatalf("cfg.Brewfile = %q, want ops/Brewfile", cfg.Brewfile)
+	}
+}
+
 func TestAppendNativeBrewfileSyncEntry_DeduplicatesSameSource(t *testing.T) {
 	dir := t.TempDir()
 	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
