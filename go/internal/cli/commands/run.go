@@ -801,16 +801,32 @@ func resolveRunWorkingDir(opts runOptions) (string, error) {
 // from a container that was deployed via file sync (not an OCI image pull).
 // It is shared by both the SwiftPM and Xcode macOS run paths.
 func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
+	appConfigData, err := json.Marshal(appCfg)
+	if err != nil {
+		return fmt.Errorf("marshaling app config: %w", err)
+	}
+	createReq.AppConfig = appConfigData
+
+	if appCfg.Brewfile != "" {
+		cliLogln("Will apply Brewfile on target Mac.")
+	}
+
 	if opts.deploy {
 		if _, err := conn.ContainerService.CreateContainer(ctx, createReq); err != nil {
-			return fmt.Errorf("creating container: %w", err)
+			return macOSNativeCreateContainerError(err, appCfg)
+		}
+		if appCfg.Brewfile != "" {
+			cliLogln("Brewfile applied.")
 		}
 		cliLogln("Container %s created (not started).", appCfg.AppID)
 		return nil
 	}
 
 	if _, err := conn.ContainerService.CreateContainer(ctx, createReq); err != nil {
-		return fmt.Errorf("creating container: %w", err)
+		return macOSNativeCreateContainerError(err, appCfg)
+	}
+	if appCfg.Brewfile != "" {
+		cliLogln("Brewfile applied.")
 	}
 	cliLogln("Container %s created.", appCfg.AppID)
 
@@ -872,6 +888,13 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	cliLogln("\nApplication %s stopped.", appCfg.AppID)
 	return nil
+}
+
+func macOSNativeCreateContainerError(err error, appCfg *appconfig.AppConfig) error {
+	if appCfg != nil && appCfg.Brewfile != "" {
+		return fmt.Errorf("creating container (including brew bundle): %w", err)
+	}
+	return fmt.Errorf("creating container: %w", err)
 }
 
 // runSwiftWithAgent builds a Swift package using swift-container-plugin, which
@@ -1069,7 +1092,7 @@ func assembleSwiftPMSyncEntries(binaryPath, cwd string, appCfg *appconfig.AppCon
 		})
 	}
 
-	return entries, nil
+	return appendNativeBrewfileSyncEntry(entries, cwd, appCfg)
 }
 
 func resolveRunProjectType(dir, requestedType string) (string, error) {

@@ -655,6 +655,153 @@ struct ContainerServiceTests {
         #expect(stats.first?.memoryBytes == 0)
         #expect(stats.first?.storageBytes == 0)
     }
+
+    @Test("Brewfile command uses brew bundle with explicit file")
+    func brewfileCommandUsesBrewBundleWithExplicitFile() {
+        let args = ContainerService.brewBundleArguments(brewfilePath: "/tmp/app/Brewfile")
+        #expect(args == ["bundle", "--file", "/tmp/app/Brewfile"])
+    }
+
+    @Test("Homebrew lookup uses default install locations only")
+    func homebrewLookupUsesDefaultInstallLocationsOnly() {
+        let found = ContainerService.findBrewExecutable(
+            fileExists: { $0 == "/tmp/fake/brew" || $0 == "/opt/homebrew/bin/brew" }
+        )
+        #expect(found == "/opt/homebrew/bin/brew")
+    }
+
+    @Test("Brewfile failure messages include exit status but not process output")
+    func brewfileFailureMessagesIncludeExitStatusButNotProcessOutput() {
+        let message = ContainerService.brewBundleFailureMessage(status: 17)
+        #expect(!message.contains("ops/Brewfile"))
+        #expect(message.contains("exit code 17"))
+        #expect(message.contains("wendy device logs"))
+        #expect(!message.contains("wendy-e2e-missing-formula"))
+        #expect(!message.contains("No available formula"))
+        #expect(!message.contains("ghp_secret"))
+    }
+
+    @Test("Brewfile command environment omits credentials")
+    func brewfileCommandEnvironmentOmitsCredentials() {
+        let environment = ContainerService.brewBundleEnvironment(
+            source: [
+                "HOME": "/Users/wendy",
+                "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+                "TMPDIR": "/tmp",
+                "USER": "wendy",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "GITHUB_TOKEN": "token",
+                "DATABASE_PASSWORD": "secret",
+            ]
+        )
+
+        #expect(environment["HOME"] == "/Users/wendy")
+        #expect(
+            environment["PATH"] == "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
+        )
+        #expect(environment["TMPDIR"] == "/tmp")
+        #expect(environment["USER"] == "wendy")
+        #expect(environment["HOMEBREW_NO_ANALYTICS"] == "1")
+        #expect(environment["HOMEBREW_NO_AUTO_UPDATE"] == nil)
+        #expect(environment["AWS_SECRET_ACCESS_KEY"] == nil)
+        #expect(environment["GITHUB_TOKEN"] == nil)
+        #expect(environment["DATABASE_PASSWORD"] == nil)
+    }
+
+    @Test("Brewfile symlink escapes are rejected before launching Homebrew")
+    func brewfileSymlinkEscapesAreRejectedBeforeLaunchingHomebrew() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.SymlinkBrewfile"
+        let baseURL = URL(fileURLWithPath: appsBase)
+        let appDirectory = baseURL.appendingPathComponent(appID)
+        let outsideDirectory = baseURL.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: outsideDirectory,
+            withIntermediateDirectories: true
+        )
+        try writePrintPWDScript(to: appDirectory.appendingPathComponent("printpwd.sh"))
+        try "brew \"hello\"\n".write(
+            to: outsideDirectory.appendingPathComponent("Brewfile"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createSymbolicLink(
+            at: appDirectory.appendingPathComponent("ops"),
+            withDestinationURL: outsideDirectory
+        )
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: baseURL
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.cmd = "printpwd.sh"
+        request.appConfig = try JSONEncoder().encode(
+            WendyAppConfig(
+                appId: appID,
+                platform: "darwin",
+                entitlements: nil,
+                brewfile: "ops/Brewfile"
+            )
+        )
+
+        do {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+            Issue.record("Expected createContainer to reject symlink Brewfile escape")
+        } catch let error as RPCError {
+            #expect(error.code == .invalidArgument)
+            #expect("\(error)".contains("brewfile path must stay within the app directory"))
+        }
+    }
+
+    @Test("invalid Brewfile paths are rejected before launching Homebrew")
+    func invalidBrewfilePathsAreRejectedBeforeLaunchingHomebrew() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.BadBrewfile"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writePrintPWDScript(to: appDirectory.appendingPathComponent("printpwd.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.cmd = "printpwd.sh"
+        request.appConfig = try JSONEncoder().encode(
+            WendyAppConfig(
+                appId: appID,
+                platform: "darwin",
+                entitlements: nil,
+                brewfile: "../Brewfile"
+            )
+        )
+
+        do {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+            Issue.record("Expected createContainer to reject unsafe Brewfile path")
+        } catch let error as RPCError {
+            #expect(error.code == .invalidArgument)
+            #expect("\(error)".contains("brewfile path must be relative"))
+        }
+    }
 }
 
 // MARK: - Helpers
