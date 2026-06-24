@@ -4,7 +4,8 @@ import WendyE2ETesting
 final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
     // MARK: - Internal
 
-    typealias Hook = @Sendable (_ cli: WendyE2ESession, _ agent: WendyE2ESession) async throws -> Void
+    typealias Hook =
+        @Sendable (_ cli: WendyE2ESession, _ agent: WendyE2ESession) async throws -> Void
 
     init(
         before: Hook? = nil,

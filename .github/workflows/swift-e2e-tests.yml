@@ -48,7 +48,7 @@ on:
 
 concurrency:
   group: swift-e2e-tests-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
