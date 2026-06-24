@@ -44,7 +44,7 @@ For Jetson GPU issues, verify all of:
 
 - `/etc/wendyos/device-type` exists and identifies a Jetson variant.
 - The agent maps the device type to the expected Wendy platform.
-- `/etc/cdi/nvidia.yaml` exists and exposes the expected device nodes.
+- GPU provisioning is in place: on JetPack 6 this means `/etc/cdi/nvidia.yaml` exists; on JetPack 5 (L4T r35, where nvidia-ctk predates CDI) the L4T CSV fallback (`/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`) is used instead.
 - The application handles CUDA absence gracefully and exposes enough debug state.
 
 ## Repo files to inspect

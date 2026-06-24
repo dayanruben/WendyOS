@@ -654,13 +654,29 @@ managed_agent_executable_path() {
 has_mac_development_signing_identity() {
   local security_command=(security find-identity -v -p codesigning)
   if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+    case "$KEYCHAIN_PATH" in
+      *..*|*$'\n'*|*$'\r'*)
+        echo "ERROR: KEYCHAIN_PATH contains invalid path components." >&2
+        return 1
+        ;;
+    esac
+    if [[ "$KEYCHAIN_PATH" != *.keychain && "$KEYCHAIN_PATH" != *.keychain-db ]]; then
+      echo "ERROR: KEYCHAIN_PATH must end in .keychain or .keychain-db." >&2
+      return 1
+    fi
     security_command+=("$KEYCHAIN_PATH")
   fi
 
   if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
-    "${security_command[@]}" 2>/dev/null | grep -qF "\"$SIGNING_IDENTITY\""
+    # This value is only used with grep -F -- below; keep that fixed-string usage.
+    local identity_pattern='^[A-Za-z0-9][A-Za-z0-9 .,:_@()+&-]*$'
+    if ! [[ "$SIGNING_IDENTITY" =~ $identity_pattern ]]; then
+      echo "ERROR: SIGNING_IDENTITY contains invalid characters." >&2
+      return 1
+    fi
+    "${security_command[@]}" 2>/dev/null | grep -qF -- "$SIGNING_IDENTITY"
   else
-    "${security_command[@]}" 2>/dev/null | grep -q '"Apple Development'
+    "${security_command[@]}" 2>/dev/null | grep -qF -- 'Apple Development'
   fi
 }
 
@@ -690,7 +706,9 @@ build_unsigned_managed_mac_app() {
     echo "ERROR: built WendyAgentMac executable is missing." >&2
     exit 1
   }
-  shasum -a 256 "$agent_path/Contents/MacOS/WendyAgentMac"
+  mkdir -p "$RUN_DIR/managed-agent"
+  shasum -a 256 "$agent_path/Contents/MacOS/WendyAgentMac" \
+    | tee "$RUN_DIR/managed-agent/WendyAgentMac.sha256"
 }
 
 managed_mac_app_is_running() {
@@ -749,7 +767,7 @@ start_managed_agent() {
 
   echo "==> Starting managed wendy-agent"
   echo "    Address: ${DEVICE_ADDRESS##*@}"
-  echo "    Logs:    $stdout_path, $stderr_path"
+  echo "    Logs:    managed-agent/stdout.log, managed-agent/stderr.log"
 
   (umask 077; mkdir -p "$managed_dir")
   if managed_agent_is_macos; then
@@ -772,7 +790,11 @@ start_managed_agent() {
         --env "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         --env "TMPDIR=${TMPDIR:-/tmp}" \
         --env "USER=wendy-e2e-agent" \
+        --env "WENDY_AGENT_HOST=127.0.0.1" \
+        --env "WENDY_AGENT_PORT=$port" \
+        --env "WENDY_OTEL_PORT=0" \
         "$(managed_agent_path)"
+    sleep 1
   else
     mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
     chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
@@ -803,13 +825,13 @@ start_managed_agent() {
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if managed_agent_is_macos; then
-      if (( attempt > 3 )) && ! managed_mac_app_is_running; then
-        echo "ERROR: WendyAgentMac exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+      if ! managed_mac_app_is_running; then
+        echo "ERROR: WendyAgentMac exited before becoming ready; see managed-agent/stderr.log in the E2E artifact." >&2
         tail -20 "$stderr_path" >&2 || true
         return 1
       fi
     elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
-      echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+      echo "ERROR: managed wendy-agent exited before becoming ready; see managed-agent/stderr.log in the E2E artifact." >&2
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
@@ -819,15 +841,15 @@ start_managed_agent() {
     sleep 1
   done
 
-  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see $stderr_path in the E2E artifact." >&2
+  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see managed-agent/stderr.log in the E2E artifact." >&2
   return 1
 }
 
 stop_managed_agent() {
   if managed_agent_is_macos; then
     local quit_log="$RUN_DIR/managed-agent/quit.log"
-    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >>"$quit_log" 2>&1; then
-      echo "WARN: WendyAgentMac quit script reported an error; see $quit_log" >&2
+    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >"$quit_log" 2>&1; then
+      echo "WARN: WendyAgentMac quit script reported an error; see managed-agent/quit.log" >&2
     fi
     MANAGED_AGENT_PID=""
     return

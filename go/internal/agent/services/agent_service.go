@@ -57,13 +57,15 @@ func NewAgentService(
 func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
 	resp := &agentpb.GetAgentVersionResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
@@ -86,6 +88,9 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	}
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
+	}
+	if gpuInfo.gpuArch != "" {
+		resp.GpuArch = &gpuInfo.gpuArch
 	}
 
 	if usage, ok := rootDiskUsage(); ok {
@@ -111,6 +116,7 @@ type gpuInfo struct {
 	vendor         string
 	jetpackVersion string
 	cudaVersion    string
+	gpuArch        string
 }
 
 func detectGPUInfo() gpuInfo {
@@ -134,6 +140,7 @@ func detectGPUInfo() gpuInfo {
 	if info.vendor == "nvidia" {
 		info.jetpackVersion = detectJetPackVersion()
 		info.cudaVersion = detectCUDAVersion()
+		info.gpuArch = detectNvidiaGPUArch()
 	}
 
 	return info
@@ -161,6 +168,7 @@ func detectJetPackVersion() string {
 	// L4T → JetPack version table.
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
+		"39.2": "7.2",
 		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
@@ -181,7 +189,7 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T " + major + "." + revision
+	return "L4T-" + major + "." + revision
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
@@ -211,6 +219,22 @@ func detectCUDAVersion() string {
 		}
 	}
 
+	return ""
+}
+
+var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
+
+func detectNvidiaGPUArch() string {
+	if nvidiaSmi, err := exec.LookPath("nvidia-smi"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, nvidiaSmi, "--query-gpu=compute_cap", "--format=csv,noheader,nounits").Output()
+		if err == nil {
+			if m := computeCapRe.FindSubmatch(out); len(m) > 2 {
+				return "sm_" + string(m[1]) + string(m[2])
+			}
+		}
+	}
 	return ""
 }
 

@@ -133,7 +133,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&noWifi, "no-wifi", false, "Skip WiFi setup entirely (no interactive prompt, no pre-seeded networks)")
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "Set device name on first boot (e.g. brave-dolphin)")
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
-	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (when multiple sessions exist)")
+	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
 
 	return cmd
 }
@@ -537,6 +537,10 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
+	if seekableZst != "" || bmapPath != "" {
+		// bmap failures fall back silently; suppress the TUI error render
+		writeProg = writeProg.WithoutErrorView()
+	}
 	wp := tea.NewProgram(writeProg)
 
 	go func() {
@@ -589,14 +593,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		var fallbackCloser io.Closer
 		switch {
 		case seekableZst != "":
-			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
 			si, ferr := openSeekableZstd(seekableZst)
 			if ferr != nil {
 				return fmt.Errorf("writing image: %w", writeModel.Err())
 			}
 			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
 		case bmapPath != "":
-			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
 			fs, ferr := openOSImageStream(deviceKey, imgInfo)
 			if ferr != nil {
 				return fmt.Errorf("writing image: %w", writeModel.Err())

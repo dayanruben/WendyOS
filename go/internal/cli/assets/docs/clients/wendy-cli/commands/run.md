@@ -7,11 +7,11 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
-> **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Wendy Agent for Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
+> **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Wendy for Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
-## Wendy Agent for Mac — supported project types
+## Wendy for Mac — supported project types
 
-Wendy Agent for Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
+Wendy for Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
 
 | Project type | Mac target support |
 |---|---|
@@ -54,6 +54,7 @@ local runs, but compose service builds targeting a WendyOS device can use
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
+| `WENDY_GPU_ARCH` | e.g. `sm_87` | GPU architecture identifier; absent when no GPU is reported |
 
 `WENDY_PLATFORM` and `WENDY_DEBUG` are always set. The remaining args are only injected when the agent reports them, so Dockerfiles and Containerfiles can define their own `ARG` defaults for devices that predate the field.
 
@@ -71,13 +72,13 @@ Use `--service <name>` to build and run only a specific service and its transiti
 
 See [Multi-Service Apps with `wendy.json`](../../../apps/wendy-services.md) for a full walkthrough.
 
-> **Wendy Agent for Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Wendy Agent for Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
+> **Wendy for Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Wendy for Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
 
 ## Compose projects
 
 If the current directory contains a `docker-compose.yml` (or `compose.yml`) but no `wendy.json`, `wendy run` automatically runs it as a multi-service compose project. Each service is built, pushed, and started on the device in dependency order. See [Multi-Service Apps with Docker Compose](../../../apps/compose.md) for full details.
 
-> **Wendy Agent for Mac:** Compose projects are not supported when the selected target is Wendy Agent for Mac. `wendy run` returns an error before performing any registry or Docker setup. To deploy a compose workload, target a Linux/WendyOS device. For Mac targets, use a native SwiftPM or Xcode project with `platform: "darwin"`.
+> **Wendy for Mac:** Compose projects are not supported when the selected target is Wendy for Mac. `wendy run` returns an error before performing any registry or Docker setup. To deploy a compose workload, target a Linux/WendyOS device. For Mac targets, use a native SwiftPM or Xcode project with `platform: "darwin"`.
 
 ## Swift Package Manager projects (macOS)
 

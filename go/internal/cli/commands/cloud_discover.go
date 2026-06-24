@@ -38,10 +38,6 @@ func newCloudDiscoverCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(auth.Certificates) == 0 {
-				return fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-			}
-
 			if jsonOutput || !isInteractiveTerminal() {
 				return cloudDiscoverJSON(ctx, auth, all)
 			}
@@ -55,7 +51,7 @@ func newCloudDiscoverCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (required when multiple auth sessions exist)")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is set via 'wendy auth use')")
 	cmd.Flags().StringVar(&brokerURL, "broker-url", os.Getenv("WENDY_BROKER_URL"), "Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)")
 	cmd.Flags().BoolVar(&all, "all", false, "Include offline devices")
 	return cmd

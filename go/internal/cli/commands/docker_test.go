@@ -76,6 +76,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 		"linux/arm64",
 		"Dockerfile",
 		map[string]string{"B": "2", "A": "1"},
+		"",
 		io.Discard,
 		io.Discard,
 		false,
@@ -1509,8 +1510,16 @@ func TestStartRegistryProxy(t *testing.T) {
 	}
 	defer conn.Close()
 
-	conn.Write([]byte("PUSH"))
-	got := <-fakeRegistry
+	if _, err := conn.Write([]byte("PUSH")); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	select {
+	case got = <-fakeRegistry:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not forward request")
+	}
 	if got != "PUSH" {
 		t.Errorf("proxy forwarded %q, want %q", got, "PUSH")
 	}

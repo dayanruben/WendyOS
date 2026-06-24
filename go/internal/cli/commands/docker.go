@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -546,7 +547,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -1323,7 +1324,22 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	return nil
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+// buildxLocalCacheDir returns the local buildx cache directory
+// (--cache-to/--cache-from type=local) for a build. A non-empty cacheKey gives
+// the build its own isolated subdir so concurrent multi-service builds never
+// share one cache dir — BuildKit's local cache-export ingest store is not safe
+// for concurrent writers and parallel builds clobber each other's temp files
+// (WDY-1689). An empty cacheKey uses the shared base dir so single and
+// sequential builds keep their cross-run cache.
+func buildxLocalCacheDir(userCache, cacheKey string) string {
+	dir := filepath.Join(userCache, "wendy", "buildx")
+	if cacheKey != "" {
+		dir = filepath.Join(dir, sanitizeAppleContainerTag(cacheKey))
+	}
+	return dir
+}
+
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1350,7 +1366,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	cacheDir := filepath.Join(userCache, "wendy", "buildx")
+	cacheDir := buildxLocalCacheDir(userCache, cacheKey)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -1434,14 +1450,11 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	)
 
-	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = dir
-	cmd.Stdout = streamOutput
-	cmd.Stderr = streamOutput
+	// Build the command environment once; it is reused across retry attempts.
 	// On macOS/Linux, override DOCKER_CONFIG so the buildx client does not
 	// call the host credential helper when setting up the build session.
 	// On Windows we leave DOCKER_CONFIG untouched (cleanDockerConfigDir == "").
+	var cmdEnv []string
 	if cleanDockerConfigDir != "" {
 		baseEnv := make([]string, 0, len(os.Environ()))
 		for _, e := range os.Environ() {
@@ -1449,23 +1462,100 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 				baseEnv = append(baseEnv, e)
 			}
 		}
-		cmd.Env = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
+		cmdEnv = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
 	}
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker buildx build failed: %w", err)
+	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
+
+	// Build and push, retrying transient registry/push failures. Images push to
+	// the device registry through one shared mTLS tunnel; under concurrent
+	// multi-service load it can briefly collapse (TLS handshake timeouts on even
+	// cheap blob HEADs) and buildkit reports the whole build as failed though the
+	// device is healthy (WDY-1690). A retry is cheap: the build is a cache hit and
+	// buildkit re-pushes only the blobs that did not make it.
+	var lastErr error
+	for attempt := 1; attempt <= maxBuildPushAttempts; attempt++ {
+		capture := &capturingWriter{w: streamOutput}
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd.Dir = dir
+		cmd.Stdout = capture
+		cmd.Stderr = capture
+		if cmdEnv != nil {
+			cmd.Env = cmdEnv
+		}
+
+		err := cmd.Run()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// Don't retry on cancellation, on the final attempt, or for errors that
+		// don't look like a transient registry/push hiccup (a real build failure
+		// would just fail again and waste time).
+		if ctx.Err() != nil || attempt >= maxBuildPushAttempts || !isTransientPushError(capture.String()) {
+			break
+		}
+		backoff := buildPushRetryBackoff(attempt)
+		fmt.Fprintf(logOutput, "[buildx] transient registry/push error; retrying in %s (attempt %d/%d)\n", backoff, attempt+1, maxBuildPushAttempts)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("docker buildx build failed: %w", lastErr)
+		case <-time.After(backoff):
+		}
 	}
-	return nil
+	return fmt.Errorf("docker buildx build failed: %w", lastErr)
 }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+// maxBuildPushAttempts bounds how many times a fused buildx build+push is retried
+// on a transient registry/push failure (WDY-1690).
+const maxBuildPushAttempts = 3
+
+// buildPushRetryBackoff returns the wait before retry N+1 (2s, 4s). The tunnel
+// recovers quickly once concurrent push pressure drops, so a short linear backoff
+// is enough.
+func buildPushRetryBackoff(attempt int) time.Duration {
+	return time.Duration(attempt) * 2 * time.Second
+}
+
+// transientPushErrorRe matches buildkit output for registry/push failures that
+// are worth retrying — the device-registry tunnel collapsing under concurrent
+// pushes surfaces as TLS handshake timeouts and push failures, not as a genuine
+// build error (WDY-1690).
+var transientPushErrorRe = regexp.MustCompile(`(?i)(tls handshake timeout|failed to push|failed to do request|connection reset by peer|i/o timeout|unexpected eof|broken pipe|write: connection timed out|503 service unavailable|429 too many requests)`)
+
+func isTransientPushError(output string) bool {
+	return transientPushErrorRe.MatchString(output)
+}
+
+// capturingWriter tees writes to an underlying writer while retaining the last
+// maxCaptureBytes bytes, so a failed build's tail can be classified for the
+// push-retry path (WDY-1690) without buffering the entire (large) build log.
+type capturingWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+const maxCaptureBytes = 64 << 10
+
+func (c *capturingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.buf = append(c.buf, p[:n]...)
+	if len(c.buf) > maxCaptureBytes {
+		c.buf = append([]byte(nil), c.buf[len(c.buf)-maxCaptureBytes:]...)
+	}
+	return n, err
+}
+
+func (c *capturingWriter) String() string { return string(c.buf) }
+
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1473,24 +1563,26 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	}
 }
 
-func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	if _, err := normalizeImageBuilder(builder); err != nil {
 		return err
 	}
 	if imageBuilderWasExplicit(builder) {
-		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
-		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput); err == nil {
+		// Apple Container builds don't use buildx, so the local-cache key never
+		// applies; only the Docker fallback below consumes it.
+		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
 		} else {
 			logAppleContainerFallback(logOutput, err)
 		}
 	}
-	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 }
 
-func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
@@ -1503,7 +1595,7 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
@@ -2162,6 +2254,14 @@ func (p *registryProxy) serve(ctx context.Context) {
 func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
+	// Test-only fault injection: with probability WENDY_REGISTRY_CHAOS, drop the
+	// connection before forwarding to simulate the device-registry tunnel
+	// hiccuping under load (connection reset / broken pipe). Used to exercise the
+	// build+push retry path (WDY-1690) on demand. Off (0) by default.
+	if chaosProxyShouldDrop() {
+		return
+	}
+
 	remote, err := p.dial(ctx)
 	if err != nil {
 		return
@@ -2172,6 +2272,21 @@ func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 	go func() { _, _ = io.Copy(remote, client); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(client, remote); done <- struct{}{} }()
 	<-done
+}
+
+// chaosProxyShouldDrop reports whether this proxied connection should be dropped
+// for fault-injection testing, per the WENDY_REGISTRY_CHAOS probability (0..1).
+// Returns false (no chaos) when unset, unparseable, or <= 0.
+func chaosProxyShouldDrop() bool {
+	v := os.Getenv("WENDY_REGISTRY_CHAOS")
+	if v == "" {
+		return false
+	}
+	p, err := strconv.ParseFloat(v, 64)
+	if err != nil || p <= 0 {
+		return false
+	}
+	return rand.Float64() < p
 }
 
 // splitIPv6RegistryAddr checks if registryAddr is a bracketed IPv6 address
