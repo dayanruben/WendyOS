@@ -128,7 +128,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-				cliLogln("Connecting to %s via Bluetooth...", target.Bluetooth.DisplayName)
+				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
 				bleClient, bleErr := connectBLEAgent(target.Bluetooth)
 				if bleErr != nil {
 					return bleErr
@@ -320,7 +320,7 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 				return fmt.Errorf("saving config: %w", err)
 			}
 
-			fmt.Printf("Default device set to: %s\n", device)
+			fmt.Printf("Default device set to: %s\n", tui.Device(device))
 			return nil
 		},
 	}
