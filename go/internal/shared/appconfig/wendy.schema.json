@@ -24,8 +24,8 @@
     },
     "platform": {
       "type": "string",
-      "enum": ["wendyos", "wendy-lite", "darwin"],
-      "description": "Target platform: wendyos (Linux edge devices), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy for Mac)."
+      "pattern": "^(linux|wendyos|darwin)(/[A-Za-z0-9._-]+){0,2}$|^wendy-lite$",
+      "description": "Target platform: linux (default Linux edge devices), wendyos (compatibility alias for linux), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy for Mac)."
     },
     "language": {
       "type": "string",
