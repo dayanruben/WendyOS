@@ -792,6 +792,7 @@ start_managed_agent() {
         --env "USER=wendy-e2e-agent" \
         --env "WENDY_AGENT_HOST=127.0.0.1" \
         --env "WENDY_AGENT_PORT=$port" \
+        --env "WENDY_OTEL_PORT=0" \
         "$(managed_agent_path)"
     sleep 1
   else
