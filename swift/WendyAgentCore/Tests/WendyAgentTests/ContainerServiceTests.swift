@@ -606,16 +606,13 @@ struct ContainerServiceTests {
         #expect(found == "/opt/homebrew/bin/brew")
     }
 
-    @Test("Brewfile failure messages include requested formulas but not process output")
-    func brewfileFailureMessagesIncludeRequestedFormulasButNotProcessOutput() {
-        let message = ContainerService.brewBundleFailureMessage(
-            status: 17,
-            formulas: ["wendy-e2e-missing-formula"]
-        )
+    @Test("Brewfile failure messages include exit status but not process output")
+    func brewfileFailureMessagesIncludeExitStatusButNotProcessOutput() {
+        let message = ContainerService.brewBundleFailureMessage(status: 17)
         #expect(!message.contains("ops/Brewfile"))
         #expect(message.contains("exit code 17"))
         #expect(message.contains("agent logs"))
-        #expect(message.contains("wendy-e2e-missing-formula"))
+        #expect(!message.contains("wendy-e2e-missing-formula"))
         #expect(!message.contains("No available formula"))
         #expect(!message.contains("ghp_secret"))
     }
@@ -636,7 +633,7 @@ struct ContainerServiceTests {
 
         #expect(environment["HOME"] == "/Users/wendy")
         #expect(
-            environment["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            environment["PATH"] == "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
         )
         #expect(environment["TMPDIR"] == "/tmp")
         #expect(environment["USER"] == "wendy")

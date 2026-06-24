@@ -25,6 +25,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private let nativeStopTimeout: Duration = .seconds(5)
     private var appsByID: [String: WendyApp] = [:]
     private var isStopping = false
+    private var brewBundleInProgress = false
     private let sandboxProfilePath: String?
 
     /// Docker backend for Linux containers. Nil while Linux containers remain unsupported.
@@ -440,20 +441,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         if environment["HOME"] == nil {
             environment["HOME"] = NSHomeDirectory()
         }
-        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
         return environment
     }
 
-    nonisolated static func brewBundleFailureMessage(
-        status: Int32,
-        formulas: [String]
-    ) -> String {
-        var message = "brew bundle failed with exit code \(status). Check agent logs for details."
-        if !formulas.isEmpty {
-            message += " Requested formula(s): \(formulas.joined(separator: ", "))."
-        }
-        return message
+    nonisolated static func brewBundleFailureMessage(status: Int32) -> String {
+        "brew bundle failed with exit code \(status). Check agent logs for details."
     }
 
     nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
@@ -671,6 +665,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
+        guard !self.brewBundleInProgress else {
+            throw RPCError(
+                code: .failedPrecondition,
+                message:
+                    "Another Brewfile install is already in progress. Try again when it finishes."
+            )
+        }
+        self.brewBundleInProgress = true
+        defer { self.brewBundleInProgress = false }
+
         try Self.ensureNoSymlinkBrewfileComponents(appDirectory: appDirectory, brewfile: brewfile)
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
@@ -722,7 +726,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 "app_name": "\(appName)",
                 "brew": "\(brewExecutable)",
                 "formula_count": "\(validatedBrewfile.formulas.count)",
-                "formulas": "\(validatedBrewfile.formulas.joined(separator: ","))",
             ]
         )
 
@@ -748,10 +751,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         guard result.status == 0 else {
-            let message = Self.brewBundleFailureMessage(
-                status: result.status,
-                formulas: validatedBrewfile.formulas
-            )
+            let message = Self.brewBundleFailureMessage(status: result.status)
             logger.error(
                 "brew bundle failed\(result.output.isEmpty ? "" : "\n\(result.output)")\(result.outputTruncated ? "\n[output truncated]" : "")",
                 metadata: [
@@ -769,7 +769,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 "app_name": "\(appName)",
                 "brew": "\(brewExecutable)",
                 "formula_count": "\(validatedBrewfile.formulas.count)",
-                "formulas": "\(validatedBrewfile.formulas.joined(separator: ","))",
             ]
         )
     }

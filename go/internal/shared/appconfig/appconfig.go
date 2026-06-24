@@ -427,7 +427,7 @@ func (c *AppConfig) Validate() error {
 
 	if c.Brewfile != "" {
 		if !IsSafeRelativeBrewfilePath(c.Brewfile) {
-			return fmt.Errorf("brewfile path must be relative and must not contain '..' or empty components")
+			return fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
 		}
 	}
 
@@ -490,20 +490,7 @@ func containsDotDot(p string) bool {
 	return false
 }
 
-func NormalizeBrewfilePath(p string) string {
-	components := strings.Split(p, "/")
-	normalized := components[:0]
-	for _, component := range components {
-		if component == "." {
-			continue
-		}
-		normalized = append(normalized, component)
-	}
-	return strings.Join(normalized, "/")
-}
-
 func IsSafeRelativeBrewfilePath(p string) bool {
-	p = NormalizeBrewfilePath(p)
 	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") || strings.Contains(p, "%") || strings.Contains(p, "\x00") {
 		return false
 	}
@@ -513,7 +500,7 @@ func IsSafeRelativeBrewfilePath(p string) bool {
 		}
 	}
 	for _, component := range strings.Split(p, "/") {
-		if component == "" || component == ".." {
+		if component == "" || component == "." || component == ".." {
 			return false
 		}
 	}

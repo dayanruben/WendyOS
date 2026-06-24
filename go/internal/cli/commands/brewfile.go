@@ -46,7 +46,7 @@ func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*f
 		return nil, nil
 	}
 
-	configured := appconfig.NormalizeBrewfilePath(strings.TrimSpace(appCfg.Brewfile))
+	configured := strings.TrimSpace(appCfg.Brewfile)
 	if configured == "" {
 		localPath := filepath.Join(cwd, defaultNativeBrewfile)
 		if err := checkRegularBrewfile(localPath); err != nil {
@@ -67,9 +67,9 @@ func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*f
 		return nil, fmt.Errorf("checking brewfile %q: %w", configured, err)
 	}
 
-	remotePath := appconfig.NormalizeBrewfilePath(effectiveRemotePath(configured, ""))
+	remotePath := effectiveRemotePath(configured, "")
 	if !appconfig.IsSafeRelativeBrewfilePath(remotePath) {
-		return nil, fmt.Errorf("brewfile path must be relative and must not contain '..' or empty components")
+		return nil, fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
 	}
 	appCfg.Brewfile = remotePath
 	return &fileSyncEntry{localPath: localPath, remotePath: remotePath}, nil
@@ -143,8 +143,8 @@ func syncEntryCoversBrewfile(existing, brewfile fileSyncEntry) (brewfileCoverage
 }
 
 func remotePathRelativeToPrefix(remotePath, prefix string) (string, bool) {
-	remotePath = appconfig.NormalizeBrewfilePath(remotePath)
-	prefix = appconfig.NormalizeBrewfilePath(prefix)
+	remotePath = strings.TrimPrefix(remotePath, "./")
+	prefix = strings.TrimPrefix(prefix, "./")
 	if prefix == "" {
 		return remotePath, remotePath != ""
 	}
