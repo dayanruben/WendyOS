@@ -430,7 +430,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             return try? JSONDecoder().decode(WendyAppConfig.self, from: data)
         }()
 
-        let isLinux = appConfig?.platform?.hasPrefix("linux") == true
+        let isLinux = appConfig.map { config in
+            Self.platformIsLinux(config.platform ?? "linux")
+        } ?? false
 
         if isLinux {
             throw RPCError(
@@ -693,6 +695,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
             return Metadata()
         }
+    }
+
+    private static func platformIsLinux(_ platform: String) -> Bool {
+        platform == "linux" || platform.hasPrefix("linux/")
+            || platform == "wendyos" || platform.hasPrefix("wendyos/")
     }
 
     func stopContainer(

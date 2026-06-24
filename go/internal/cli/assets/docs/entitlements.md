@@ -6,6 +6,7 @@ A minimal version looks like this:
 ```json
 {
     "appId": "com.example.app",
+    "platform": "linux",
     "version": "1.0.0",
 }
 ```
@@ -19,6 +20,7 @@ Entitlements are a way to grant containers access to resources on the host. The 
 ```json
 {
     "appId": "com.example.app",
+    "platform": "linux",
     "version": "1.0.0",
     ...
     "entitlements": [
