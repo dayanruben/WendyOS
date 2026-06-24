@@ -14,7 +14,7 @@
 - Do not change the existing palette constants or restyle existing tables/spinners/pickers.
 - Do not add any new color-gating logic — lipgloss/termenv already renders plain text on a non-TTY and respects `NO_COLOR`.
 - Identifier helpers (`Device`, `App`) share one underlying style; `Value` is bold with no hue.
-- Run all commands from the repo's `go/` directory (module root). Color profile in tests is forced via `lipgloss.SetColorProfile` so assertions are deterministic.
+- Run all Go commands from the worktree/module root (where `go.mod` lives — the worktree root, NOT the `go/` subdirectory). Package paths are `./go/internal/...` and the CLI is `./go/cmd/wendy`. Color profile in tests is forced via `lipgloss.SetColorProfile` so assertions are deterministic.
 - Commit message trailer (every commit):
   ```
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
@@ -108,7 +108,7 @@ func TestHelpersDegradeWhenColorOff(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go && go test ./internal/cli/tui/ -run TestHelpers -v`
+Run: `go test ./go/internal/cli/tui/ -run TestHelpers -v`
 Expected: FAIL — compile error, `undefined: Header` (and the other helpers).
 
 - [ ] **Step 3: Add the styles and helpers**
@@ -151,12 +151,12 @@ func Dim(s string) string { return dimStyle.Render(s) }
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd go && go test ./internal/cli/tui/ -run TestHelpers -v`
+Run: `go test ./go/internal/cli/tui/ -run TestHelpers -v`
 Expected: PASS (both `TestHelpersEmitANSIWhenColorOn` and `TestHelpersDegradeWhenColorOff`).
 
 - [ ] **Step 5: Run the full package test + build**
 
-Run: `cd go && go test ./internal/cli/tui/ && go build ./...`
+Run: `go test ./go/internal/cli/tui/ && go build ./...`
 Expected: PASS, build succeeds.
 
 - [ ] **Step 6: Commit**
@@ -185,7 +185,7 @@ Claude-Session: https://claude.ai/code/session_01G3EnvtweXhNDyLq4FX9XsV"
 
 - [ ] **Step 1: Inventory the lines to change**
 
-Run: `cd go && grep -nE "fmt\.(Print|Printf|Println|Fprintf|Fprintln)|infof\(|successf\(|noticef\(" internal/cli/commands/run.go internal/cli/commands/build.go`
+Run: `grep -nE "fmt\.(Print|Printf|Println|Fprintf|Fprintln)|infof\(|successf\(|noticef\(" go/internal/cli/commands/run.go go/internal/cli/commands/build.go`
 Note each line that prints a device name, app name, address, version, duration, count, or a copyable `wendy …` command.
 
 - [ ] **Step 2: Wrap identifiers, values, and commands**
@@ -217,17 +217,17 @@ Leave dim/notice/success line styling (`cliStyle`, `cliNoticeStyle`, `cliSuccess
 
 - [ ] **Step 3: Build**
 
-Run: `cd go && go build ./...`
+Run: `go build ./...`
 Expected: build succeeds (catches any unimported `tui` or `fmt` mismatch).
 
 - [ ] **Step 4: Run existing tests for the package**
 
-Run: `cd go && go test ./internal/cli/commands/ -run 'Run|Build'`
+Run: `go test ./go/internal/cli/commands/ -run 'Run|Build'`
 Expected: PASS. (Tests assert on plain text; lipgloss renders bare strings on the non-TTY test output, so assertions are unchanged.)
 
 - [ ] **Step 5: Visual check with forced color**
 
-Run: `cd go && CLICOLOR_FORCE=1 go run ./cmd/wendy build --help | head -20` (or a `run`/`build` invocation that does not require a device), and confirm no garbled output. Eyeball that wrapped substrings render in color when piped to a terminal.
+Run: `CLICOLOR_FORCE=1 go run ./go/cmd/wendy build --help | head -20` (or a `run`/`build` invocation that does not require a device), and confirm no garbled output. Eyeball that wrapped substrings render in color when piped to a terminal.
 
 - [ ] **Step 6: Commit**
 
@@ -254,7 +254,7 @@ Claude-Session: https://claude.ai/code/session_01G3EnvtweXhNDyLq4FX9XsV"
 
 - [ ] **Step 1: Inventory the lines to change**
 
-Run: `cd go && grep -nE "fmt\.(Print|Printf|Println)|warn\.Render" internal/cli/commands/device.go`
+Run: `grep -nE "fmt\.(Print|Printf|Println)|warn\.Render" go/internal/cli/commands/device.go`
 Identify: the `Agent Version:`/`OS:`/`Architecture:`/etc. label-value lines, the device-name lines in `device list`/`device connect`, and the two `warn.Render` lines.
 
 - [ ] **Step 2: Color the info block label/value lines**
@@ -286,17 +286,17 @@ Do the same for the "CLI is behind the agent" line and the "Update available" li
 
 - [ ] **Step 4: Build**
 
-Run: `cd go && go build ./...`
+Run: `go build ./...`
 Expected: build succeeds (catches an unused `warn`/`lipgloss` import).
 
 - [ ] **Step 5: Run existing tests for the package**
 
-Run: `cd go && go test ./internal/cli/commands/ -run 'Device'`
+Run: `go test ./go/internal/cli/commands/ -run 'Device'`
 Expected: PASS.
 
 - [ ] **Step 6: Visual check**
 
-Run: `cd go && go run ./cmd/wendy device list` (if a device/discovery is available) or `go run ./cmd/wendy device --help`. Confirm output is well-formed.
+Run: `go run ./go/cmd/wendy device list` (if a device/discovery is available) or `go run ./go/cmd/wendy device --help`. Confirm output is well-formed.
 
 - [ ] **Step 7: Commit**
 
@@ -324,7 +324,7 @@ Claude-Session: https://claude.ai/code/session_01G3EnvtweXhNDyLq4FX9XsV"
 
 - [ ] **Step 1: Inventory the lines to change**
 
-Run: `cd go && grep -nE "fmt\.(Print|Printf|Println)" internal/cli/commands/apps.go internal/cli/commands/init_cmd.go`
+Run: `grep -nE "fmt\.(Print|Printf|Println)" go/internal/cli/commands/apps.go go/internal/cli/commands/init_cmd.go`
 For `apps.go`, list only plain lines that are NOT `tui.RenderTable(...)` or `string(data)` (JSON output). For `init_cmd.go`, find printed file paths and `wendy …` next-step lines.
 
 - [ ] **Step 2: Color apps.go non-table lines**
@@ -359,17 +359,17 @@ If a "project created" confirmation is printed as a plain line, replace it with 
 
 - [ ] **Step 4: Build**
 
-Run: `cd go && go build ./...`
+Run: `go build ./...`
 Expected: build succeeds.
 
 - [ ] **Step 5: Run existing tests for the package**
 
-Run: `cd go && go test ./internal/cli/commands/ -run 'Apps|Init'`
+Run: `go test ./go/internal/cli/commands/ -run 'Apps|Init'`
 Expected: PASS.
 
 - [ ] **Step 6: Visual check of init**
 
-Run: `cd go && go run ./cmd/wendy init --help` and, in a scratch dir, an actual `init` if it is non-interactive. Confirm paths render underlined-dim and next-step commands render cyan.
+Run: `go run ./go/cmd/wendy init --help` and, in a scratch dir, an actual `init` if it is non-interactive. Confirm paths render underlined-dim and next-step commands render cyan.
 
 - [ ] **Step 7: Commit**
 
@@ -389,22 +389,22 @@ Claude-Session: https://claude.ai/code/session_01G3EnvtweXhNDyLq4FX9XsV"
 
 - [ ] **Step 1: Full build**
 
-Run: `cd go && go build ./...`
+Run: `go build ./...`
 Expected: succeeds.
 
 - [ ] **Step 2: Full test suite for touched packages**
 
-Run: `cd go && go test ./internal/cli/tui/ ./internal/cli/commands/`
+Run: `go test ./go/internal/cli/tui/ ./go/internal/cli/commands/`
 Expected: PASS.
 
 - [ ] **Step 3: Confirm degradation (no color when piped)**
 
-Run: `cd go && go run ./cmd/wendy device --help | cat -v | grep -c '\^\['`
+Run: `go run ./go/cmd/wendy device --help | cat -v | grep -c '\^\['`
 Expected: `0` — no ANSI escapes when output is piped (not a TTY), confirming graceful degradation.
 
 - [ ] **Step 4: Confirm `NO_COLOR` is respected**
 
-Run: `cd go && NO_COLOR=1 go run ./cmd/wendy device --help | cat -v | grep -c '\^\['`
+Run: `NO_COLOR=1 go run ./go/cmd/wendy device --help | cat -v | grep -c '\^\['`
 Expected: `0`.
 
 - [ ] **Step 5: Final commit if any fixups were needed**
