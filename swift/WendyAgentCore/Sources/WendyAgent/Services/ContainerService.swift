@@ -436,7 +436,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
-        environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
         return environment
     }
 
@@ -568,27 +567,52 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         brewExecutable: String,
         brewfilePath: String,
         appDirectory: String
-    ) async throws -> Int32 {
+    ) async throws -> (status: Int32, output: String, outputTruncated: Bool) {
         try await Task.detached(priority: .utility) {
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wendy-brew-output-\(UUID().uuidString)")
+            FileManager.default.createFile(
+                atPath: outputURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
+            defer { try? FileManager.default.removeItem(at: outputURL) }
+
+            let outputHandle = try FileHandle(forWritingTo: outputURL)
+            defer { try? outputHandle.close() }
+
             let process = Foundation.Process()
             process.executableURL = URL(fileURLWithPath: brewExecutable)
             process.arguments = Self.brewBundleArguments(brewfilePath: brewfilePath)
             process.currentDirectoryURL = URL(fileURLWithPath: appDirectory)
             process.environment = Self.brewBundleEnvironment()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+            process.standardOutput = outputHandle
+            process.standardError = outputHandle
 
             try process.run()
             let deadline = Date().addingTimeInterval(5 * 60)
+            var timedOut = false
             while process.isRunning {
                 if Date() >= deadline {
+                    timedOut = true
                     process.terminate()
                     process.waitUntilExit()
-                    return 124
+                    break
                 }
                 try await Task.sleep(for: .milliseconds(250))
             }
-            return process.terminationStatus
+
+            try? outputHandle.close()
+            let maxOutputBytes = 64 * 1024
+            let readHandle = try FileHandle(forReadingFrom: outputURL)
+            let data = try readHandle.read(upToCount: maxOutputBytes + 1) ?? Data()
+            try? readHandle.close()
+            let truncated = data.count > maxOutputBytes
+            let outputData = truncated ? data.prefix(maxOutputBytes) : data[...]
+            let output = String(decoding: outputData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            return (timedOut ? 124 : process.terminationStatus, output, truncated)
         }.value
     }
 
@@ -657,9 +681,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             ]
         )
 
-        let status: Int32
+        let result: (status: Int32, output: String, outputTruncated: Bool)
         do {
-            status = try await Self.runBrewBundle(
+            result = try await Self.runBrewBundle(
                 brewExecutable: brewExecutable,
                 brewfilePath: bundleURL.path,
                 appDirectory: appDirectory
@@ -671,16 +695,23 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        guard status == 0 else {
+        if result.status == 0, !result.output.isEmpty {
+            logger.info(
+                "brew bundle output\n\(result.output)\(result.outputTruncated ? "\n[output truncated]" : "")",
+                metadata: ["app_name": "\(appName)"]
+            )
+        }
+
+        guard result.status == 0 else {
             let message = Self.brewBundleFailureMessage(
                 brewfile: brewfile,
-                status: status
+                status: result.status
             )
             logger.error(
-                "brew bundle failed",
+                "brew bundle failed\(result.output.isEmpty ? "" : "\n\(result.output)")\(result.outputTruncated ? "\n[output truncated]" : "")",
                 metadata: [
                     "app_name": "\(appName)",
-                    "exit_code": "\(status)",
+                    "exit_code": "\(result.status)",
                     "formula_count": "\(validatedBrewfile.formulas.count)",
                 ]
             )

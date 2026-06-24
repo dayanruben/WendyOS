@@ -640,7 +640,7 @@ struct ContainerServiceTests {
         #expect(environment["TMPDIR"] == "/tmp")
         #expect(environment["USER"] == "wendy")
         #expect(environment["HOMEBREW_NO_ANALYTICS"] == "1")
-        #expect(environment["HOMEBREW_NO_AUTO_UPDATE"] == "1")
+        #expect(environment["HOMEBREW_NO_AUTO_UPDATE"] == nil)
         #expect(environment["AWS_SECRET_ACCESS_KEY"] == nil)
         #expect(environment["GITHUB_TOKEN"] == nil)
         #expect(environment["DATABASE_PASSWORD"] == nil)
