@@ -26,6 +26,7 @@ Entitlements are configured in your project's `wendy.json` file. This file defin
 ```json
 {
   "appId": "com.example.myapp",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" }
@@ -202,6 +203,7 @@ For applications that serve video streams over HTTP:
 ```json
 {
   "appId": "com.example.video-streamer",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -217,6 +219,7 @@ For AI/ML applications that expose an API:
 ```json
 {
   "appId": "com.example.ml-server",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -232,6 +235,7 @@ For applications that process video using GPU acceleration:
 ```json
 {
   "appId": "com.example.vision-app",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "gpu" },
@@ -247,6 +251,7 @@ For applications that use audio input/output and Bluetooth:
 ```json
 {
   "appId": "com.example.voice-assistant",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -263,6 +268,7 @@ For simple applications that don't need any hardware access:
 ```json
 {
   "appId": "com.example.hello-world",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": []
 }
@@ -275,6 +281,7 @@ For applications that need to persist data across restarts (databases, logs, con
 ```json
 {
   "appId": "com.example.counter-app",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "persist", "name": "appdata", "path": "/data" }
@@ -289,6 +296,7 @@ For applications that serve HTTP and persist data:
 ```json
 {
   "appId": "com.example.web-app",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -464,6 +472,7 @@ The TCP socket probe checks whether your application is accepting connections on
 ```json
 {
   "appId": "com.example.web-server",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" }
@@ -522,6 +531,7 @@ Here's a complete `wendy.json` with entitlements, readiness, and a postStart hoo
 ```json
 {
   "appId": "com.example.web-app",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },

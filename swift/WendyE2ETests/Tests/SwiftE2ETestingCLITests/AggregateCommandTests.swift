@@ -200,7 +200,8 @@ private func writeAggregateTestMetadata(to observationURL: URL) throws {
 }
 
 private func writeAggregateTestSource(in packageURL: URL) throws {
-    let sourceURL = packageURL
+    let sourceURL =
+        packageURL
         .appendingPathComponent("Tests/WendyE2ETests", isDirectory: true)
         .appendingPathComponent("WendyDeviceInfoTests.swift")
     try FileManager.default.createDirectory(
@@ -208,20 +209,20 @@ private func writeAggregateTestSource(in packageURL: URL) throws {
         withIntermediateDirectories: true
     )
     try """
-        import Testing
+    import Testing
 
-        @Suite
-        struct `wendy device info` {
-            /**
-             Documents the expected JSON output.
-             */
-            @Test
-            func `prints JSON device information`() async throws {
-                #expect(true)
-            }
+    @Suite
+    struct `wendy device info` {
+        /**
+         Documents the expected JSON output.
+         */
+        @Test
+        func `prints JSON device information`() async throws {
+            #expect(true)
         }
+    }
 
-        """.write(to: sourceURL, atomically: true, encoding: .utf8)
+    """.write(to: sourceURL, atomically: true, encoding: .utf8)
 }
 
 private func aggregateTemporaryDirectory() -> URL {

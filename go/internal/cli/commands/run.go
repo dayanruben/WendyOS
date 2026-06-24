@@ -475,6 +475,8 @@ type runOptions struct {
 	prefix               string
 	product              string
 	service              string
+	keepGoing            bool
+	maxConcurrency       int
 	userArgs             []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
@@ -506,6 +508,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to run from instead of the current working directory")
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies (multi-service projects)")
+	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
+	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 
 	return cmd
@@ -553,6 +557,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 	if _, err := normalizeImageBuilder(opts.builder); err != nil {
 		return err
+	}
+	if opts.maxConcurrency < 0 {
+		return fmt.Errorf("--max-concurrency must be >= 0 (0 = auto)")
 	}
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
@@ -801,7 +808,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	createReq.AppConfig = appConfigData
 
 	if appCfg.Brewfile != "" {
-		cliLogln("Applying Brewfile %s on target Mac...", appCfg.Brewfile)
+		cliLogln("Will apply Brewfile on target Mac.")
 	}
 
 	if opts.deploy {
@@ -885,7 +892,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 func macOSNativeCreateContainerError(err error, appCfg *appconfig.AppConfig) error {
 	if appCfg != nil && appCfg.Brewfile != "" {
-		return fmt.Errorf("creating container (including brew bundle for %s): %w", appCfg.Brewfile, err)
+		return fmt.Errorf("creating container (including brew bundle): %w", err)
 	}
 	return fmt.Errorf("creating container: %w", err)
 }
@@ -1435,7 +1442,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Build and push the Docker image directly to the device's registry.
 	regPort := registryPort(agentOS)
 	repo := strings.ToLower(appCfg.AppID)
-	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr); err != nil {
+	// Single-service build: no concurrency, so keep the shared local cache dir
+	// (empty cache key) for cross-run cache reuse.
+	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("building and pushing image: %w", err)
 	}
 	cliLogln("Build and push completed.")

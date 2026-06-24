@@ -6,6 +6,12 @@ import OpenTelemetryGRPC
 import SwiftProtobuf
 import WendyAgentGRPC
 
+#if os(macOS)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#endif
+
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
     private let appsBase: URL
     private let blobsDirectory: String
@@ -408,17 +414,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     nonisolated static func findBrewExecutable(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> String? {
-        var candidates: [String] = []
-        if let path = environment["PATH"] {
-            candidates += path.split(separator: ":").map { "\($0)/brew" }
-        }
-        candidates += ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-
-        var seen = Set<String>()
-        for candidate in candidates where seen.insert(candidate).inserted {
+        for candidate in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] {
             if fileExists(candidate) {
                 return candidate
             }
@@ -442,24 +440,22 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         if environment["HOME"] == nil {
             environment["HOME"] = NSHomeDirectory()
         }
-        environment["PATH"] =
-            source["PATH"].flatMap { $0.isEmpty ? nil : $0 }
-            ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
         return environment
     }
 
-    nonisolated static func brewBundleFailureMessage(
-        brewfile: String,
-        status: Int32,
-        output: String
-    ) -> String {
-        let suffix = output.isEmpty ? "" : ": \(output)"
-        return "brew bundle failed for Brewfile \(brewfile) with exit code \(status)\(suffix)"
+    nonisolated static func brewBundleFailureMessage(status: Int32) -> String {
+        "brew bundle failed with exit code \(status). Run 'wendy device logs --tail 100 --level info' for Homebrew output."
     }
 
     nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
-        guard !path.isEmpty, !path.hasPrefix("/") else { return false }
+        let path = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains("%") else {
+            return false
+        }
+        guard !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return false }
         for component in path.split(separator: "/", omittingEmptySubsequences: false) {
             if component == "" || component == "." || component == ".." {
                 return false
@@ -476,9 +472,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             .standardizedFileURL
         let brewfileURL = appDirectoryURL.appendingPathComponent(brewfile)
             .standardizedFileURL
-        let appDirectoryPath = appDirectoryURL.path
-        let brewfilePath = brewfileURL.path
-        guard brewfilePath.hasPrefix(appDirectoryPath + "/") else {
+        let appComponents = appDirectoryURL.pathComponents
+        let brewfileComponents = brewfileURL.pathComponents
+        guard brewfileComponents.starts(with: appComponents),
+            brewfileComponents.count > appComponents.count
+        else {
             throw RPCError(
                 code: .invalidArgument,
                 message: "brewfile path must stay within the app directory"
@@ -487,36 +485,124 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         return brewfileURL
     }
 
+    nonisolated private static func ensureNoSymlinkBrewfileComponents(
+        appDirectory: String,
+        brewfile: String
+    ) throws {
+        var currentURL = URL(fileURLWithPath: appDirectory, isDirectory: true).standardizedFileURL
+        for component in brewfile.split(separator: "/", omittingEmptySubsequences: false) {
+            currentURL.appendPathComponent(String(component))
+            var statBuffer = stat()
+            guard lstat(currentURL.path, &statBuffer) == 0 else { continue }
+            if (statBuffer.st_mode & S_IFMT) == S_IFLNK {
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "brewfile path must stay within the app directory"
+                )
+            }
+        }
+    }
+
+    nonisolated private static func validateSyncedBrewfile(atPath path: String) throws {
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            if errno == ELOOP {
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "brewfile path must stay within the app directory"
+                )
+            }
+            throw RPCError(code: .failedPrecondition, message: "Unable to read Brewfile after sync")
+        }
+        defer { close(descriptor) }
+
+        var statBuffer = stat()
+        guard fstat(descriptor, &statBuffer) == 0 else {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "Unable to inspect Brewfile after sync"
+            )
+        }
+        guard (statBuffer.st_mode & S_IFMT) == S_IFREG else {
+            throw RPCError(code: .invalidArgument, message: "Brewfile must be a regular file")
+        }
+    }
+
     nonisolated private static func runBrewBundle(
         brewExecutable: String,
         brewfilePath: String,
         appDirectory: String
-    ) async throws -> (status: Int32, output: String) {
+    ) async throws -> (status: Int32, output: String, outputTruncated: Bool) {
         try await Task.detached(priority: .utility) {
+            let outputDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wendy-brew-output-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: outputDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+            let outputURL = outputDirectory.appendingPathComponent("output.log")
+            let outputDescriptor = open(
+                outputURL.path,
+                O_WRONLY | O_CREAT | O_EXCL,
+                S_IRUSR | S_IWUSR
+            )
+            guard outputDescriptor >= 0 else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+
+            let outputHandle = FileHandle(fileDescriptor: outputDescriptor, closeOnDealloc: true)
+            defer { try? outputHandle.close() }
+
             let process = Foundation.Process()
             process.executableURL = URL(fileURLWithPath: brewExecutable)
             process.arguments = Self.brewBundleArguments(brewfilePath: brewfilePath)
             process.currentDirectoryURL = URL(fileURLWithPath: appDirectory)
             process.environment = Self.brewBundleEnvironment()
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
+            process.standardOutput = outputHandle
+            process.standardError = outputHandle
 
             try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            let deadline = Date().addingTimeInterval(5 * 60)
+            var timedOut = false
+            while process.isRunning {
+                if Date() >= deadline {
+                    timedOut = true
+                    process.terminate()
+                    let graceDeadline = Date().addingTimeInterval(2)
+                    while process.isRunning && Date() < graceDeadline {
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    if process.isRunning {
+                        Self.forceKillProcess(process)
+                    }
+                    process.waitUntilExit()
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(250))
+            }
 
-            return (
-                process.terminationStatus,
-                String(decoding: data, as: UTF8.self).trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-            )
+            try? outputHandle.close()
+            let maxOutputBytes = 64 * 1024
+            let readHandle = try FileHandle(forReadingFrom: outputURL)
+            let data = try readHandle.read(upToCount: maxOutputBytes + 1) ?? Data()
+            try? readHandle.close()
+            let truncated = data.count > maxOutputBytes
+            let outputData = truncated ? data.prefix(maxOutputBytes) : data[...]
+            let output = String(decoding: outputData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            return (timedOut ? 124 : process.terminationStatus, output, truncated)
         }.value
     }
 
-    private func applyBrewfileIfNeeded(_ brewfile: String?, appDirectory: String) async throws {
+    private func applyBrewfileIfNeeded(
+        _ brewfile: String?,
+        appName: String,
+        appDirectory: String
+    ) async throws {
         guard let brewfile = brewfile?.trimmingCharacters(in: .whitespacesAndNewlines),
             !brewfile.isEmpty
         else { return }
@@ -529,32 +615,28 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
+        try Self.ensureNoSymlinkBrewfileComponents(appDirectory: appDirectory, brewfile: brewfile)
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)
         let brewfilePath = brewfileURL.path
-        var isDirectory = ObjCBool(false)
-        guard FileManager.default.fileExists(atPath: brewfilePath, isDirectory: &isDirectory),
-            !isDirectory.boolValue
-        else {
-            throw RPCError(
-                code: .notFound,
-                message: "Brewfile \(brewfile) declared in wendy.json was not found after sync"
-            )
-        }
+        try Self.validateSyncedBrewfile(atPath: brewfilePath)
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
                 code: .failedPrecondition,
                 message:
-                    "Homebrew is required to apply Brewfile \(brewfile) on the target Mac, but brew was not found. Install Homebrew on the target Mac: https://brew.sh/"
+                    "Homebrew is required to apply the Brewfile on the target Mac, but brew was not found. Install Homebrew on the target Mac: https://brew.sh/"
             )
         }
 
-        logger.info(
-            "Applying Brewfile",
-            metadata: ["brewfile": "\(brewfilePath)", "brew": "\(brewExecutable)"]
+        logger.notice(
+            "Brewfile package install requested",
+            metadata: [
+                "app_name": "\(appName)",
+                "brew": "\(brewExecutable)",
+            ]
         )
 
-        let result: (status: Int32, output: String)
+        let result: (status: Int32, output: String, outputTruncated: Bool)
         do {
             result = try await Self.runBrewBundle(
                 brewExecutable: brewExecutable,
@@ -564,26 +646,36 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         } catch {
             throw RPCError(
                 code: .failedPrecondition,
-                message: "Failed to run brew bundle for Brewfile \(brewfile): \(error)"
+                message: "Failed to launch brew bundle for the Brewfile"
+            )
+        }
+
+        if result.status == 0, !result.output.isEmpty {
+            logger.info(
+                "brew bundle output\n\(result.output)\(result.outputTruncated ? "\n[output truncated]" : "")",
+                metadata: ["app_name": "\(appName)"]
             )
         }
 
         guard result.status == 0 else {
-            let message = Self.brewBundleFailureMessage(
-                brewfile: brewfile,
-                status: result.status,
-                output: result.output
-            )
+            let message = Self.brewBundleFailureMessage(status: result.status)
             logger.error(
-                "brew bundle failed",
+                "brew bundle failed\(result.output.isEmpty ? "" : "\n\(result.output)")\(result.outputTruncated ? "\n[output truncated]" : "")",
                 metadata: [
-                    "brewfile": "\(brewfile)",
+                    "app_name": "\(appName)",
                     "exit_code": "\(result.status)",
-                    "output": "\(result.output)",
                 ]
             )
             throw RPCError(code: .failedPrecondition, message: message)
         }
+
+        logger.notice(
+            "Brewfile package install completed",
+            metadata: [
+                "app_name": "\(appName)",
+                "brew": "\(brewExecutable)",
+            ]
+        )
     }
 
     // MARK: - Implemented
@@ -609,7 +701,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             return try? JSONDecoder().decode(WendyAppConfig.self, from: data)
         }()
 
-        let isLinux = appConfig?.platform?.hasPrefix("linux") == true
+        let isLinux =
+            appConfig.map { config in
+                Self.platformIsLinux(config.platform ?? "linux")
+            } ?? false
+        let brewfile = appConfig?.brewfile?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !brewfile.isEmpty, appConfig?.platform != "darwin" {
+            throw RPCError(
+                code: .invalidArgument,
+                message: "Brewfile is only supported for native Darwin apps"
+            )
+        }
 
         if isLinux {
             throw RPCError(
@@ -718,7 +821,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         try await self.applyBrewfileIfNeeded(
-            appConfig?.brewfile,
+            brewfile,
+            appName: appName,
             appDirectory: nativeLaunchInfo.directory
         )
         try await self.registerApp(id: appName, kind: .native, native: nativeLaunchInfo)
@@ -876,6 +980,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
             return Metadata()
         }
+    }
+
+    private static func platformIsLinux(_ platform: String) -> Bool {
+        platform == "linux" || platform.hasPrefix("linux/")
+            || platform == "wendyos" || platform.hasPrefix("wendyos/")
     }
 
     func stopContainer(

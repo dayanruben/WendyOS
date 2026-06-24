@@ -18,14 +18,14 @@ func appendNativeBrewfileSyncEntry(entries []fileSyncEntry, cwd string, appCfg *
 	}
 
 	for _, existing := range entries {
-		covered, sameSource, err := syncEntryCoversBrewfile(existing, *entry)
+		coverage, err := syncEntryCoversBrewfile(existing, *entry)
 		if err != nil {
 			return entries, err
 		}
-		if !covered {
+		if !coverage.covered {
 			continue
 		}
-		if sameSource {
+		if coverage.sameSource {
 			return entries, nil
 		}
 		return entries, fmt.Errorf(
@@ -38,6 +38,9 @@ func appendNativeBrewfileSyncEntry(entries []fileSyncEntry, cwd string, appCfg *
 	return append(entries, *entry), nil
 }
 
+// resolveNativeBrewfileSyncEntry returns the file-sync entry for a native Mac
+// Brewfile and updates appCfg.Brewfile to the exact remote path the agent will
+// use after sync.
 func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*fileSyncEntry, error) {
 	if appCfg == nil {
 		return nil, nil
@@ -46,72 +49,97 @@ func resolveNativeBrewfileSyncEntry(cwd string, appCfg *appconfig.AppConfig) (*f
 	configured := strings.TrimSpace(appCfg.Brewfile)
 	if configured == "" {
 		localPath := filepath.Join(cwd, defaultNativeBrewfile)
-		info, err := os.Stat(localPath)
-		if err != nil {
+		if err := checkRegularBrewfile(localPath); err != nil {
 			if os.IsNotExist(err) {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("checking %s: %w", defaultNativeBrewfile, err)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("%s must be a file, got directory %s", defaultNativeBrewfile, localPath)
 		}
 		appCfg.Brewfile = defaultNativeBrewfile
 		return &fileSyncEntry{localPath: localPath, remotePath: defaultNativeBrewfile}, nil
 	}
 
 	localPath := filepath.Join(cwd, configured)
-	info, err := os.Stat(localPath)
-	if err != nil {
+	if err := checkRegularBrewfile(localPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("brewfile %q declared in wendy.json does not exist", configured)
 		}
 		return nil, fmt.Errorf("checking brewfile %q: %w", configured, err)
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("brewfile %q declared in wendy.json must be a file, got directory", configured)
-	}
 
 	remotePath := effectiveRemotePath(configured, "")
+	if !appconfig.IsSafeRelativeBrewfilePath(remotePath) {
+		return nil, fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
+	}
 	appCfg.Brewfile = remotePath
 	return &fileSyncEntry{localPath: localPath, remotePath: remotePath}, nil
 }
 
-func syncEntryCoversBrewfile(existing, brewfile fileSyncEntry) (bool, bool, error) {
-	info, err := os.Stat(existing.localPath)
+func checkRegularBrewfile(path string) error {
+	info, err := os.Lstat(path)
 	if err != nil {
-		return false, false, fmt.Errorf("checking synced file %s: %w", existing.localPath, err)
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("must be a regular file, got %s", info.Mode().Type())
+	}
+	return nil
+}
+
+type brewfileCoverage struct {
+	covered    bool
+	sameSource bool
+}
+
+func syncEntryCoversBrewfile(existing, brewfile fileSyncEntry) (brewfileCoverage, error) {
+	info, err := os.Lstat(existing.localPath)
+	if err != nil {
+		return brewfileCoverage{}, fmt.Errorf("checking synced file %s: %w", existing.localPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		if existing.remotePath == brewfile.remotePath {
+			return brewfileCoverage{covered: true, sameSource: false}, nil
+		}
+		return brewfileCoverage{}, nil
 	}
 
 	if !info.IsDir() {
 		if existing.remotePath != brewfile.remotePath {
-			return false, false, nil
+			return brewfileCoverage{}, nil
 		}
 		same, err := sameLocalFile(existing.localPath, brewfile.localPath)
 		if err != nil {
-			return true, false, err
+			return brewfileCoverage{}, err
 		}
-		return true, same, nil
+		return brewfileCoverage{covered: true, sameSource: same}, nil
 	}
 
 	rel, ok := remotePathRelativeToPrefix(brewfile.remotePath, existing.remotePath)
 	if !ok {
-		return false, false, nil
+		return brewfileCoverage{}, nil
 	}
 
 	candidate := filepath.Join(existing.localPath, rel)
-	if _, err := os.Stat(candidate); err != nil {
+	candidateInfo, err := os.Lstat(candidate)
+	if err != nil {
 		if os.IsNotExist(err) {
-			return false, false, nil
+			return brewfileCoverage{}, nil
 		}
-		return true, false, fmt.Errorf("checking synced brewfile source %s: %w", candidate, err)
+		return brewfileCoverage{}, fmt.Errorf("checking synced brewfile source %s: %w", candidate, err)
+	}
+	if !candidateInfo.Mode().IsRegular() {
+		return brewfileCoverage{}, nil
 	}
 
 	same, err := sameLocalFile(candidate, brewfile.localPath)
 	if err != nil {
-		return true, false, err
+		return brewfileCoverage{}, err
 	}
-	return true, same, nil
+	currentInfo, err := os.Lstat(existing.localPath)
+	if err != nil || !currentInfo.IsDir() || !os.SameFile(info, currentInfo) {
+		return brewfileCoverage{}, nil
+	}
+	return brewfileCoverage{covered: true, sameSource: same}, nil
 }
 
 func remotePathRelativeToPrefix(remotePath, prefix string) (string, bool) {
@@ -131,13 +159,19 @@ func remotePathRelativeToPrefix(remotePath, prefix string) (string, bool) {
 }
 
 func sameLocalFile(a, b string) (bool, error) {
-	aInfo, err := os.Stat(a)
+	aInfo, err := os.Lstat(a)
 	if err != nil {
 		return false, fmt.Errorf("checking synced brewfile source %s: %w", a, err)
 	}
-	bInfo, err := os.Stat(b)
+	if !aInfo.Mode().IsRegular() {
+		return false, nil
+	}
+	bInfo, err := os.Lstat(b)
 	if err != nil {
 		return false, fmt.Errorf("checking brewfile source %s: %w", b, err)
+	}
+	if !bInfo.Mode().IsRegular() {
+		return false, nil
 	}
 	return os.SameFile(aInfo, bInfo), nil
 }

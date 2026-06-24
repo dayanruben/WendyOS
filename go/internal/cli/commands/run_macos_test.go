@@ -247,6 +247,27 @@ func TestResolveNativeBrewfileSyncEntry_IgnoresProjectRootBrewfile(t *testing.T)
 	}
 }
 
+func TestResolveNativeBrewfileSyncEntry_RejectsSymlinkBrewfile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "RealBrewfile")
+	link := filepath.Join(dir, "Brewfile.wendy")
+	if err := os.WriteFile(target, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile RealBrewfile: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink Brewfile.wendy: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp"}
+	_, err := resolveNativeBrewfileSyncEntry(dir, cfg)
+	if err == nil {
+		t.Fatal("resolveNativeBrewfileSyncEntry succeeded; want symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("error = %v, want regular file", err)
+	}
+}
+
 func TestAppendNativeBrewfileSyncEntry_DeduplicatesSameSource(t *testing.T) {
 	dir := t.TempDir()
 	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
@@ -396,14 +417,18 @@ func TestPreflightMissingAppConfigForMacTarget_RejectsContainerProjectBeforeConf
 	}
 }
 
-func TestPreflightMissingAppConfigForMacTarget_AllowsNativeSwiftProject(t *testing.T) {
+func TestPreflightMissingAppConfigForMacTarget_RejectsNativeSwiftProjectWithoutDarwinPlatform(t *testing.T) {
 	state := &fakeMacRunState{}
 	conn, cleanup := startFakeMacRunServer(t, state)
 	defer cleanup()
 
 	target := &SelectedDevice{Agent: conn}
-	if err := preflightMissingAppConfigForMacTarget(context.Background(), target, "swift"); err != nil {
-		t.Fatalf("preflightMissingAppConfigForMacTarget swift error = %v, want nil", err)
+	err := preflightMissingAppConfigForMacTarget(context.Background(), target, "swift")
+	if err == nil {
+		t.Fatal("preflightMissingAppConfigForMacTarget swift error = nil, want unsupported Mac project error")
+	}
+	if got := err.Error(); !strings.Contains(got, "Project/target mismatch") || !strings.Contains(got, "platform: \"darwin\"") {
+		t.Fatalf("preflightMissingAppConfigForMacTarget swift error = %q, want Mac project guidance", got)
 	}
 }
 

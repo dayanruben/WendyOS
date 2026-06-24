@@ -41,6 +41,8 @@ vendor/
 
 # Local settings
 *.local.*
+.env*
+!.env.example
 
 # Git worktrees
 .worktrees/
@@ -56,3 +58,4 @@ __pycache__/
 *.pyc
 .superpowers
 go/internal/cli/assets/docs/superpowers
+.superpowers/

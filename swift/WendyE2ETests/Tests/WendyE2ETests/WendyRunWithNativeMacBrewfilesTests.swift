@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import WendyE2ETesting
 
@@ -6,130 +7,444 @@ private typealias Machine = WendyE2EMachine
 @Suite(.enabled(if: Machine.agent.os == .macOS, "Specs only valid for macOS agent"))
 struct `'wendy run' with native Mac Brewfiles` {
     /**
-     Copies the native Mac app's `Brewfile.wendy` to the selected Wendy Agent
-     for Mac target and runs `brew bundle` on that target before starting the
-     app.
-
-     The fixture is a SwiftPM project with `platform: "darwin"`, a project-root
-     `Brewfile.wendy` that installs a small formula such as `figlet`, and an app
-     that proves the formula is available at runtime. Before running, the test
-     removes the formula from the CI Mac target to prove `brew bundle` installs
-     it; after running, it uninstalls the formula to restore the target. The
-     command runs as `wendy run --json --device <mac-agent> --prefix <project>`.
-     It builds locally, syncs the app and `Brewfile.wendy`, invokes `brew bundle
-     --file <synced Brewfile>` on the agent machine, then starts the app. The
-     command recording and target-side evidence show that `brew bundle` did not
-     run on the developer machine.
+     Auto-detects `Brewfile.wendy`, syncs it to the target Mac, and runs
+     target-side `brew bundle` before the app starts.
      */
-    @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `syncs the 'Brewfile.wendy' and runs 'brew bundle' on the target before starting`() async throws {
-        // TODO: implement.
+    @Test
+    func `syncs the 'Brewfile.wendy' and runs 'brew bundle' on the target before starting`()
+        async throws
+    {
+        try await Self.helloFormulaScenario().run(authenticated: false) { cli, agent in
+            let project = try await Self.makeSwiftPMProject(
+                cli,
+                name: "swiftpm-autodetect",
+                appID: "sh.wendy.e2e.brewfile.swiftpm.autodetect",
+                appSource: Self.swiftHelloAppSource(marker: "SWIFTPM_AUTODETECT"),
+                extraFiles: ["Brewfile.wendy": Self.helloBrewfile]
+            )
+
+            let result = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(result.status.isSuccess)
+            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
+            #expect(result.stdout.contains("Brewfile applied."))
+            #expect(result.stdout.contains("SWIFTPM_AUTODETECT: Hello, world!"))
+        }
     }
 
     /**
-     Applies the same target-side `Brewfile.wendy` and `brew bundle` behavior
-     for native Xcode projects.
-
-     The fixture is an Xcode project with `platform: "darwin"` and a
-     project-root `Brewfile.wendy` that installs the same small formula used by
-     the SwiftPM coverage. The test uninstalls the formula before the run and
-     again during teardown. `wendy run --json --device <mac-agent> --prefix
-     <project>` builds with `xcodebuild`, syncs the build product and
-     `Brewfile.wendy`, runs `brew bundle --file <synced Brewfile>` on the Mac
-     agent, and starts the built product only after `brew bundle` succeeds.
+     Applies the same Brewfile behavior for native Xcode projects. The test uses
+     a tiny fake `xcodebuild` to exercise Wendy's Xcode path while still using
+     the real target-side Homebrew installation.
      */
-    @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
+    @Test
     func `syncs 'Brewfile.wendy' and runs 'brew bundle' for Xcode apps`() async throws {
-        // TODO: implement.
+        try await Self.helloFormulaScenario().run(authenticated: false) { cli, agent in
+            try await Self.installFakeXcodebuild(cli, scheme: "BrewfileXcode")
+            let project = try await Self.makeXcodeProject(
+                cli,
+                name: "xcode-autodetect",
+                appID: "sh.wendy.e2e.brewfile.xcode.autodetect",
+                extraFiles: ["Brewfile.wendy": Self.helloBrewfile]
+            )
+
+            let result = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(result.status.isSuccess)
+            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
+            #expect(result.stdout.contains("Brewfile applied."))
+            #expect(result.stdout.contains("XCODE_HELLO: Hello, world!"))
+        }
     }
 
     /**
      Leaves a project-root `Brewfile` for developer-machine setup unless the
      project explicitly opts into using it for the target.
-
-     The fixture contains `Brewfile` but no `Brewfile.wendy` and no `brewfile`
-     field in `wendy.json`. `wendy run --json --device <mac-agent>` starts the
-     native Mac app without syncing that `Brewfile` as a target dependency file
-     and without invoking target-side `brew bundle`.
      */
-    @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
+    @Test
     func `does not auto-apply a plain project root 'Brewfile'`() async throws {
-        // TODO: implement.
+        try await CLIAndAgentScenario().run(authenticated: false) { cli, agent in
+            let project = try await Self.makeSwiftPMProject(
+                cli,
+                name: "plain-brewfile-ignored",
+                appID: "sh.wendy.e2e.brewfile.plain.ignored",
+                appSource: Self.swiftMarkerAppSource(marker: "PLAIN_BREWFILE_IGNORED"),
+                extraFiles: ["Brewfile": "brew \"wendy-e2e-this-formula-should-not-exist\"\n"]
+            )
+
+            let result = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(result.status.isSuccess)
+            #expect(!result.stdout.contains("Will apply Brewfile"))
+            #expect(!result.stdout.contains("Brewfile applied."))
+            #expect(result.stdout.contains("PLAIN_BREWFILE_IGNORED"))
+        }
     }
 
     /**
-     Uses an explicit `wendy.json` > `brewfile` path as the target Brewfile,
-     overriding project-root auto-detection.
-
-     The fixture contains both `Brewfile.wendy` and `ops/Brewfile`, while
-     `wendy.json` sets `"brewfile": "ops/Brewfile"`. The explicit Brewfile
-     installs a small formula that the test uninstalls before the run and during
-     teardown. `wendy run --json --device <mac-agent>` syncs and applies
-     `ops/Brewfile`, does not apply `Brewfile.wendy`, and starts the app only
-     after the explicit Brewfile has succeeded on the target Mac.
+     Uses the explicit `wendy.json` > `brewfile` path and ignores auto-detected
+     `Brewfile.wendy` when both are present.
      */
-    @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
-    func `uses the explicit 'wendy.json' > 'brewfile' path instead of 'Brewfile.wendy' auto detection`() async throws {
-        // TODO: implement.
+    @Test
+    func `uses explicit brewfile path instead of Brewfile_wendy auto detection`() async throws {
+        try await Self.helloFormulaScenario().run(authenticated: false) { cli, agent in
+            let project = try await Self.makeSwiftPMProject(
+                cli,
+                name: "explicit-brewfile",
+                appID: "sh.wendy.e2e.brewfile.explicit",
+                appSource: Self.swiftHelloAppSource(marker: "EXPLICIT_BREWFILE"),
+                brewfile: "ops/Brewfile",
+                extraFiles: [
+                    "Brewfile.wendy": "brew \"wendy-e2e-this-formula-should-not-exist\"\n",
+                    "ops/Brewfile": Self.helloBrewfile,
+                ]
+            )
+
+            let result = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(result.status.isSuccess)
+            #expect(result.stdout.contains("Will apply Brewfile on target Mac."))
+            #expect(result.stdout.contains("Brewfile applied."))
+            #expect(result.stdout.contains("EXPLICIT_BREWFILE: Hello, world!"))
+        }
     }
 
     /**
-     Fails before app start when `brew` is missing on the target Mac.
-
-     The fixture has a valid native Mac app and target Brewfile, but the Mac
-     agent cannot resolve `brew` from `PATH`, `/opt/homebrew/bin/brew`, or
-     `/usr/local/bin/brew`. `wendy run --json --device <mac-agent>` returns a
-     failure status, reports that Homebrew must be installed on the target Mac,
-     emits no interactive prompts, and leaves the app stopped.
+     Requires a disposable Mac agent image where Homebrew is absent. We do not
+     mutate a real developer/CI Homebrew installation to simulate this.
      */
-    @Test(.disabled("SPEC STUB: requires target without Homebrew or controllable brew path"))
+    @Test(.disabled("requires a disposable macOS agent without Homebrew installed"))
     func `reports missing 'brew' on the target without starting the app`() async throws {
-        // TODO: implement.
+        // Covered by WendyAgentCore unit tests until a no-Homebrew Mac image is available.
     }
 
     /**
      Fails before app start when target-side `brew bundle` fails.
-
-     The fixture uses a Brewfile that makes `brew bundle --file <synced
-     Brewfile>` exit non-zero on the Mac agent. `wendy run --json --device
-     <mac-agent>` returns a failure status, includes the Brewfile path, exit
-     status, and useful bundle output in the diagnostic, emits no success
-     message, and leaves the app stopped.
      */
-    @Test(.disabled("SPEC STUB: requires controllable failing target-side brew bundle"))
+    @Test
     func `reports 'brew bundle' failures without starting the app`() async throws {
-        // TODO: implement.
+        try await Self.brewRequiredScenario().run(authenticated: false) { cli, agent in
+            let project = try await Self.makeSwiftPMProject(
+                cli,
+                name: "failing-brewfile",
+                appID: "sh.wendy.e2e.brewfile.failure",
+                appSource: Self.swiftMarkerAppSource(marker: "SHOULD_NOT_START_AFTER_BREW_FAILURE"),
+                extraFiles: ["Brewfile.wendy": "brew \"wendy-e2e-this-formula-should-not-exist\"\n"]
+            )
+
+            let result = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(result.status.isFailure)
+            #expect(result.stderr.contains("brew bundle failed"))
+            #expect(result.stderr.contains("exit code"))
+            #expect(!result.stderr.contains("wendy-e2e-this-formula-should-not-exist"))
+            #expect(!result.stderr.contains("No available formula"))
+            #expect(!result.stdout.contains("Brewfile applied."))
+            #expect(!result.stdout.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))
+            #expect(!result.stderr.contains("SHOULD_NOT_START_AFTER_BREW_FAILURE"))
+        }
     }
 
     /**
-     Remains idempotent when the target already satisfies the Brewfile.
-
-     The fixture first uninstalls the small formula from the CI Mac target, then
-     runs the same native Mac app with the same target Brewfile twice against
-     the same Mac agent. The first run installs the formula; the second `wendy
-     run --json --device <mac-agent>` succeeds, does not reinstall
-     already-satisfied dependencies in a noisy loop, reports normal file-sync
-     up-to-date behavior where possible, and starts the app after the
-     target-side bundle check succeeds. Teardown uninstalls the formula again.
+     Running the same Brewfile twice should be safe: the first run installs the
+     formula, and the second run treats the already-installed dependency as
+     satisfied before starting the app again.
      */
-    @Test(.disabled("SPEC STUB: requires Mac agent E2E fixture"))
+    @Test
     func `is idempotent when 'brew bundle' dependencies are already installed`() async throws {
-        // TODO: implement.
+        try await Self.helloFormulaScenario().run(authenticated: false) { cli, agent in
+            let project = try await Self.makeSwiftPMProject(
+                cli,
+                name: "idempotent-brewfile",
+                appID: "sh.wendy.e2e.brewfile.idempotent",
+                appSource: Self.swiftHelloAppSource(marker: "IDEMPOTENT_BREWFILE"),
+                extraFiles: ["Brewfile.wendy": Self.helloBrewfile]
+            )
+
+            let first = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(first.status.isSuccess)
+            #expect(first.stdout.contains("IDEMPOTENT_BREWFILE: Hello, world!"))
+            #expect(first.stdout.contains("Brewfile applied."))
+
+            let second = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(second.status.isSuccess)
+            #expect(second.stdout.contains("IDEMPOTENT_BREWFILE: Hello, world!"))
+            #expect(second.stdout.contains("Brewfile applied."))
+        }
     }
 
     /**
-     Rejects ambiguous sync configuration before deployment starts.
-
-     The fixture sets `wendy.json` > `brewfile` to `ops/Brewfile` while
-     `wendy.json` > `files` maps a different local file to the same target
-     path, for example `"path": "dev/Brewfile", "to": "ops/Brewfile"`.
-     `wendy run --json --device <mac-agent>` fails during local project
-     validation, explains that the `wendy.json` > `brewfile` destination
-     conflicts with another synced file, syncs no app files, invokes no
-     target-side `brew bundle`, and leaves any existing app state unchanged.
+     Rejects ambiguous sync configuration before target-side Brewfile work can
+     run.
      */
-    @Test(.disabled("SPEC STUB: can run with fake or real Mac target once E2E harness exists"))
-    func `rejects 'wendy.json' 'files' entries that conflict with the 'wendy.json' > 'brewfile' destination`() async throws {
-        // TODO: implement.
+    @Test
+    func `rejects conflicting brewfile file mappings`() async throws {
+        try await CLIAndAgentScenario().run(authenticated: false) { cli, agent in
+            let project = try await Self.makeSwiftPMProject(
+                cli,
+                name: "conflicting-brewfile-sync",
+                appID: "sh.wendy.e2e.brewfile.conflict",
+                appSource: Self.swiftMarkerAppSource(marker: "SHOULD_NOT_START_AFTER_CONFLICT"),
+                brewfile: "ops/Brewfile",
+                filesJSON: #"[{"path":"dev/Brewfile","to":"ops/Brewfile"}]"#,
+                extraFiles: [
+                    "ops/Brewfile": Self.helloBrewfile,
+                    "dev/Brewfile": "brew \"jq\"\n",
+                ]
+            )
+
+            let result = try await Self.wendyRun(cli, agent: agent, project: project)
+            #expect(result.status.isFailure)
+            #expect(result.stderr.contains("conflicts with another synced file"))
+            #expect(!result.stdout.contains("Will apply Brewfile"))
+            #expect(!result.stdout.contains("Brewfile applied."))
+            #expect(!result.stdout.contains("SHOULD_NOT_START_AFTER_CONFLICT"))
+        }
+    }
+
+    // MARK: - Helpers
+
+    private static let helloBrewfile = "brew \"hello\"\n"
+
+    private static func helloFormulaScenario() -> CLIAndAgentScenario {
+        CLIAndAgentScenario(
+            before: { _, agent in try await Self.uninstallHello(agent) },
+            after: { _, agent in try await Self.uninstallHello(agent) }
+        )
+    }
+
+    private static func brewRequiredScenario() -> CLIAndAgentScenario {
+        CLIAndAgentScenario(before: { _, agent in try await Self.requireBrew(agent) })
+    }
+
+    private static func wendyRun(
+        _ cli: WendyE2ESession,
+        agent: WendyE2ESession,
+        project: String
+    ) async throws -> WendyE2EShellResult {
+        try await cli.sh(
+            "/usr/bin/env PATH=\"$PATH:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin\" wendy run --yes --device \(Self.shQuote(agent.machine.address)) --prefix \(Self.shQuote(project)) --product BrewfileE2E"
+        ) { result in
+            result
+        }
+    }
+
+    private static func makeSwiftPMProject(
+        _ cli: WendyE2ESession,
+        name: String,
+        appID: String,
+        appSource: String,
+        brewfile: String? = nil,
+        filesJSON: String = "[]",
+        extraFiles: [String: String] = [:]
+    ) async throws -> String {
+        let project = try Self.makeProjectDirectory(cli, name: name)
+        let brewfileLine = brewfile.map { ",\n  \"brewfile\": \"\($0)\"" } ?? ""
+        try Self.writeFile(
+            at: "\(project)/Package.swift",
+            contents: """
+                // swift-tools-version: 6.0
+                import PackageDescription
+
+                let package = Package(
+                    name: "BrewfileE2E",
+                    platforms: [.macOS(.v14)],
+                    products: [.executable(name: "BrewfileE2E", targets: ["BrewfileE2E"])],
+                    targets: [.executableTarget(name: "BrewfileE2E")]
+                )
+                """
+        )
+        try Self.writeFile(at: "\(project)/Sources/BrewfileE2E/main.swift", contents: appSource)
+        try Self.writeFile(
+            at: "\(project)/wendy.json",
+            contents: """
+                {
+                  "appId": "\(appID)",
+                  "version": "1.0.0",
+                  "language": "swift",
+                  "platform": "darwin",
+                  "files": \(filesJSON)\(brewfileLine)
+                }
+                """
+        )
+        try Self.writeExtraFiles(project: project, files: extraFiles)
+        return project
+    }
+
+    private static func makeXcodeProject(
+        _ cli: WendyE2ESession,
+        name: String,
+        appID: String,
+        extraFiles: [String: String]
+    ) async throws -> String {
+        let project = try Self.makeProjectDirectory(cli, name: name)
+        try FileManager.default.createDirectory(
+            atPath: "\(project)/BrewfileXcode.xcodeproj",
+            withIntermediateDirectories: true
+        )
+        try Self.writeFile(
+            at: "\(project)/wendy.json",
+            contents: """
+                {
+                  "appId": "\(appID)",
+                  "version": "1.0.0",
+                  "language": "xcode",
+                  "platform": "darwin",
+                  "xcode": { "scheme": "BrewfileXcode" }
+                }
+                """
+        )
+        try Self.writeExtraFiles(project: project, files: extraFiles)
+        return project
+    }
+
+    private static func makeProjectDirectory(_ cli: WendyE2ESession, name: String) throws -> String
+    {
+        guard let workingDirectory = cli.workingDirectory else {
+            throw NSError(
+                domain: "WendyRunWithNativeMacBrewfilesTests",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "CLI session must have a local working directory"
+                ]
+            )
+        }
+        let project = "\(workingDirectory)/\(name)"
+        try? FileManager.default.removeItem(atPath: project)
+        try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+        return project
+    }
+
+    private static func writeExtraFiles(project: String, files: [String: String]) throws {
+        for (relativePath, content) in files {
+            try Self.writeFile(at: "\(project)/\(relativePath)", contents: content)
+        }
+    }
+
+    private static func writeFile(at path: String, contents: String) throws {
+        try FileManager.default.createDirectory(
+            atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path,
+            withIntermediateDirectories: true
+        )
+        try contents.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    private static func installFakeXcodebuild(
+        _ cli: WendyE2ESession,
+        scheme: String
+    ) async throws {
+        guard scheme.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
+            throw NSError(
+                domain: "WendyRunWithNativeMacBrewfilesTests",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Xcode scheme is not shell-safe"]
+            )
+        }
+        guard let binDirectory = cli.env["PATH"]?.split(separator: ":").first else {
+            throw NSError(
+                domain: "WendyRunWithNativeMacBrewfilesTests",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "CLI session PATH must include a bin directory"
+                ]
+            )
+        }
+        let scriptPath = "\(binDirectory)/xcodebuild"
+        try Self.writeFile(
+            at: scriptPath,
+            contents: """
+                #!/bin/sh
+                set -eu
+                for arg in "$@"; do
+                  if [ "$arg" = "-list" ]; then
+                    printf '{"project":{"schemes":["\(scheme)"]}}\n'
+                    exit 0
+                  fi
+                done
+                release_dir="$PWD/.xcode/Build/Products/Release"
+                /bin/mkdir -p "$release_dir"
+                product="$release_dir/\(scheme)"
+                /bin/cat > "$product" <<'APP'
+                #!/bin/sh
+                set -eu
+                for hello in /opt/homebrew/bin/hello /opt/homebrew/opt/hello/bin/hello /usr/local/bin/hello /usr/local/opt/hello/bin/hello; do
+                  if [ -x "$hello" ]; then
+                    printf 'XCODE_HELLO: %s\n' "$($hello)"
+                    exit 0
+                  fi
+                done
+                echo 'XCODE_HELLO_NOT_FOUND'
+                exit 42
+                APP
+                /bin/chmod +x "$product"
+                """
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptPath
+        )
+    }
+
+    private static func requireBrew(_ agent: WendyE2ESession) async throws {
+        try await agent.sh(posix: Self.brewShell("brew --version >/dev/null"), power: "throw")
+    }
+
+    private static func uninstallHello(_ agent: WendyE2ESession) async throws {
+        try await agent.sh(
+            posix: Self.brewShell(
+                "brew uninstall --ignore-dependencies hello >/dev/null 2>&1 || true"
+            ),
+            power: "throw"
+        )
+    }
+
+    private static func brewShell(_ body: String) -> String {
+        """
+        set -euo pipefail
+        if [ -x /opt/homebrew/bin/brew ]; then
+          brew=/opt/homebrew/bin/brew
+        elif [ -x /usr/local/bin/brew ]; then
+          brew=/usr/local/bin/brew
+        else
+          echo 'Homebrew is required for this E2E test' >&2
+          exit 1
+        fi
+        \(body)
+        """
+    }
+
+    private static func swiftMarkerAppSource(marker: String) -> String {
+        """
+        print("\(marker)")
+        """
+    }
+
+    private static func swiftHelloAppSource(marker: String) -> String {
+        """
+        import Foundation
+
+        let candidates = [
+            "/opt/homebrew/bin/hello",
+            "/opt/homebrew/opt/hello/bin/hello",
+            "/usr/local/bin/hello",
+            "/usr/local/opt/hello/bin/hello",
+        ]
+        guard let hello = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            print("\(marker): HELLO_NOT_FOUND")
+            exit(42)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: hello)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        print("\(marker): \\(output)")
+        exit(process.terminationStatus)
+        """
+    }
+
+    private static func shQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

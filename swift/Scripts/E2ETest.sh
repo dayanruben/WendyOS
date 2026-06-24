@@ -102,6 +102,25 @@ normalize_isolation() {
   esac
 }
 
+normalized_agent_os() {
+  local value="${AGENT_OS:-}"
+  if [[ -z "$value" ]]; then
+    value="$(uname -s)"
+  fi
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+managed_agent_is_macos() {
+  case "$(normalized_agent_os)" in
+    macos|darwin)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 validate_port() {
   local port="$1"
   [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
@@ -365,6 +384,10 @@ if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
   echo "Use --device-address for the local device address instead." >&2
   exit 64
 fi
+if [[ "$MANAGED_AGENT" == "true" ]] && managed_agent_is_macos && [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "ERROR: macOS managed agents can only run on macOS runners." >&2
+  exit 64
+fi
 
 if [[ -n "$DEVICE_ADDRESS" ]] && ! valid_device_address "$DEVICE_ADDRESS"; then
   echo "ERROR: invalid --device-address." >&2
@@ -463,7 +486,7 @@ rm -rf "$RUN_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
-mkdir -p "$RUN_DIR"
+(umask 077; mkdir -p "$RUN_DIR")
 
 if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
   DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
@@ -612,23 +635,119 @@ EOF
   echo "    Version: $version"
 }
 
+managed_agent_path() {
+  if managed_agent_is_macos; then
+    printf '%s/swift/Build/WendyAgentMac.app' "$REPO_DIR"
+  else
+    printf '%s/wendy-agent' "$AGENT_BIN_DIR"
+  fi
+}
+
+managed_agent_executable_path() {
+  if managed_agent_is_macos; then
+    printf '%s/Contents/MacOS/WendyAgentMac' "$(managed_agent_path)"
+  else
+    managed_agent_path
+  fi
+}
+
+has_mac_development_signing_identity() {
+  local security_command=(security find-identity -v -p codesigning)
+  if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+    case "$KEYCHAIN_PATH" in
+      *..*|*$'\n'*|*$'\r'*)
+        echo "ERROR: KEYCHAIN_PATH contains invalid path components." >&2
+        return 1
+        ;;
+    esac
+    if [[ "$KEYCHAIN_PATH" != *.keychain && "$KEYCHAIN_PATH" != *.keychain-db ]]; then
+      echo "ERROR: KEYCHAIN_PATH must end in .keychain or .keychain-db." >&2
+      return 1
+    fi
+    security_command+=("$KEYCHAIN_PATH")
+  fi
+
+  if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
+    # This value is only used with grep -F -- below; keep that fixed-string usage.
+    local identity_pattern='^[A-Za-z0-9][A-Za-z0-9 .,:_@()+&-]*$'
+    if ! [[ "$SIGNING_IDENTITY" =~ $identity_pattern ]]; then
+      echo "ERROR: SIGNING_IDENTITY contains invalid characters." >&2
+      return 1
+    fi
+    "${security_command[@]}" 2>/dev/null | grep -qF -- "$SIGNING_IDENTITY"
+  else
+    "${security_command[@]}" 2>/dev/null | grep -qF -- 'Apple Development'
+  fi
+}
+
+build_unsigned_managed_mac_app() {
+  local agent_path
+  agent_path="$(managed_agent_path)"
+
+  echo "==> No Apple Development signing identity; building unsigned WendyAgentMac Debug app"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::warning::No Apple Development signing identity available; Swift macOS E2Es will use an unsigned Debug WendyAgentMac.app."
+  fi
+  xcodebuild build \
+    -workspace WendyAgent.xcworkspace \
+    -scheme WendyAgentMac \
+    -configuration Debug \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$REPO_DIR/swift/Build/Xcode" \
+    WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-0000.00.00-000000-dev}" \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    -skipMacroValidation
+  rm -rf "$agent_path"
+  ditto \
+    "$REPO_DIR/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app" \
+    "$agent_path"
+  [[ -x "$agent_path/Contents/MacOS/WendyAgentMac" ]] || {
+    echo "ERROR: built WendyAgentMac executable is missing." >&2
+    exit 1
+  }
+  mkdir -p "$RUN_DIR/managed-agent"
+  shasum -a 256 "$agent_path/Contents/MacOS/WendyAgentMac" \
+    | tee "$RUN_DIR/managed-agent/WendyAgentMac.sha256"
+}
+
+managed_mac_app_is_running() {
+  [[ "$(osascript -e 'application id "sh.wendy.WendyAgentMac" is running' 2>/dev/null || true)" == "true" ]]
+}
+
 build_managed_agent() {
-  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local agent_path
+  agent_path="$(managed_agent_path)"
 
   echo "==> Building managed wendy-agent"
+  echo "    Agent OS: $(normalized_agent_os)"
   echo "    Output: $agent_path"
 
-  mkdir -p "$AGENT_BIN_DIR"
-  (
-    cd "$REPO_DIR/go"
-    go build -o "$agent_path" ./cmd/wendy-agent
-  )
-
-  "$agent_path" --version
+  if managed_agent_is_macos; then
+    (
+      cd "$REPO_DIR/swift"
+      ./Scripts/Quit.sh
+      if has_mac_development_signing_identity; then
+        OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev
+      else
+        build_unsigned_managed_mac_app
+      fi
+    )
+    /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
+      "$agent_path/Contents/Info.plist" 2>/dev/null || true
+  else
+    mkdir -p "$AGENT_BIN_DIR"
+    (
+      cd "$REPO_DIR/go"
+      go build -o "$agent_path" ./cmd/wendy-agent
+    )
+    "$agent_path" --version
+  fi
 }
 
 start_managed_agent() {
-  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local agent_path
+  agent_path="$(managed_agent_executable_path)"
   local managed_dir="$RUN_DIR/managed-agent"
   local config_dir="$managed_dir/config"
   local stdout_path="$managed_dir/stdout.log"
@@ -648,26 +767,55 @@ start_managed_agent() {
 
   echo "==> Starting managed wendy-agent"
   echo "    Address: ${DEVICE_ADDRESS##*@}"
-  echo "    Config:  $config_dir"
-  echo "    Logs:    $stdout_path, $stderr_path"
+  echo "    Logs:    managed-agent/stdout.log, managed-agent/stderr.log"
 
-  mkdir -p "$config_dir/home" "$config_dir/xdg-config" "$config_dir/xdg-data"
-  env -i \
-    HOME="$config_dir/home" \
-    LOGNAME="wendy-e2e-agent" \
-    PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    TMPDIR="${TMPDIR:-/tmp}" \
-    USER="wendy-e2e-agent" \
-    WENDY_CONFIG_PATH="$config_dir" \
-    XDG_CONFIG_HOME="$config_dir/xdg-config" \
-    XDG_DATA_HOME="$config_dir/xdg-data" \
-    WENDY_AGENT_PORT="$port" \
-    WENDY_OTEL_PORT=0 \
-    WENDY_OTEL_HTTP_PORT=0 \
-    WENDY_REGISTRY_ADDR=127.0.0.1:0 \
-    "$agent_path" >"$stdout_path" 2>"$stderr_path" &
-  MANAGED_AGENT_PID=$!
-  (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
+  (umask 077; mkdir -p "$managed_dir")
+  if managed_agent_is_macos; then
+    "$REPO_DIR/swift/Scripts/Quit.sh" || true
+    (umask 077; mkdir -p "$config_dir/home")
+    (umask 077; : >"$stdout_path"; : >"$stderr_path")
+    env -i \
+      HOME="$config_dir/home" \
+      LOGNAME="wendy-e2e-agent" \
+      PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TMPDIR="${TMPDIR:-/tmp}" \
+      USER="wendy-e2e-agent" \
+      open \
+        -n \
+        -g \
+        --stdout "$stdout_path" \
+        --stderr "$stderr_path" \
+        --env "HOME=$config_dir/home" \
+        --env "LOGNAME=wendy-e2e-agent" \
+        --env "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        --env "TMPDIR=${TMPDIR:-/tmp}" \
+        --env "USER=wendy-e2e-agent" \
+        --env "WENDY_AGENT_HOST=127.0.0.1" \
+        --env "WENDY_AGENT_PORT=$port" \
+        --env "WENDY_OTEL_PORT=0" \
+        "$(managed_agent_path)"
+    sleep 1
+  else
+    mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+    chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+    (umask 077; : > "$pid_path")
+    env -i \
+      HOME="$config_dir/home" \
+      LOGNAME="wendy-e2e-agent" \
+      PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TMPDIR="${TMPDIR:-/tmp}" \
+      USER="wendy-e2e-agent" \
+      WENDY_CONFIG_PATH="$config_dir" \
+      XDG_CONFIG_HOME="$config_dir/xdg-config" \
+      XDG_DATA_HOME="$config_dir/xdg-data" \
+      WENDY_AGENT_PORT="$port" \
+      WENDY_OTEL_PORT=0 \
+      WENDY_OTEL_HTTP_PORT=0 \
+      WENDY_REGISTRY_ADDR=127.0.0.1:0 \
+      "$agent_path" >"$stdout_path" 2>"$stderr_path" &
+    MANAGED_AGENT_PID=$!
+    (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
+  fi
 
   if ! valid_device_address "$DEVICE_ADDRESS"; then
     echo "ERROR: invalid --device-address." >&2
@@ -676,8 +824,14 @@ start_managed_agent() {
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
-      echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+    if managed_agent_is_macos; then
+      if ! managed_mac_app_is_running; then
+        echo "ERROR: WendyAgentMac exited before becoming ready; see managed-agent/stderr.log in the E2E artifact." >&2
+        tail -20 "$stderr_path" >&2 || true
+        return 1
+      fi
+    elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+      echo "ERROR: managed wendy-agent exited before becoming ready; see managed-agent/stderr.log in the E2E artifact." >&2
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
@@ -687,11 +841,19 @@ start_managed_agent() {
     sleep 1
   done
 
-  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see $stderr_path in the E2E artifact." >&2
+  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see managed-agent/stderr.log in the E2E artifact." >&2
   return 1
 }
 
 stop_managed_agent() {
+  if managed_agent_is_macos; then
+    local quit_log="$RUN_DIR/managed-agent/quit.log"
+    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >"$quit_log" 2>&1; then
+      echo "WARN: WendyAgentMac quit script reported an error; see managed-agent/quit.log" >&2
+    fi
+    MANAGED_AGENT_PID=""
+    return
+  fi
   if [[ -z "${MANAGED_AGENT_PID:-}" ]]; then
     return
   fi

@@ -161,15 +161,19 @@ struct `report command` {
 
         #expect(html.contains("macos-jetson-orin-nano"))
         #expect(html.contains("<td><span class=\"badge fail\">Failed</span></td>"))
-        #expect(html.contains("""
-          <td class="numeric">1</td>
-          <td class="numeric">0</td>
-          <td class="numeric">0</td>
-          <td class="numeric">0</td>
-          <td class="numeric">1</td>
-          <td class="numeric">0</td>
-          <td class="numeric">0</td>
-        """))
+        #expect(
+            html.contains(
+                """
+                  <td class="numeric">1</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">1</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">0</td>
+                """
+            )
+        )
     }
 }
 
