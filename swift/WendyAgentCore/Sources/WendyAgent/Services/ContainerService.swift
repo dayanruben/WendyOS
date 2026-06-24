@@ -440,12 +440,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     nonisolated static func brewBundleFailureMessage(
+        brewfile: String,
         status: Int32,
-        formulas: [String]
+        output: String? = nil
     ) -> String {
         var message = "brew bundle failed with exit code \(status). Check agent logs for details."
-        if !formulas.isEmpty {
-            message += " Requested formula(s): \(formulas.joined(separator: ", "))."
+        if let output = output?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+            let tail = String(output.suffix(2 * 1024))
+            message += "\n\nbrew output:\n\(tail)"
         }
         return message
     }
@@ -492,13 +494,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         var currentURL = URL(fileURLWithPath: appDirectory, isDirectory: true).standardizedFileURL
         for component in brewfile.split(separator: "/", omittingEmptySubsequences: false) {
             currentURL.appendPathComponent(String(component))
-            var statBuffer = stat()
-            guard lstat(currentURL.path, &statBuffer) == 0 else { continue }
-            if (statBuffer.st_mode & S_IFMT) == S_IFLNK {
+            do {
+                _ = try FileManager.default.destinationOfSymbolicLink(atPath: currentURL.path)
                 throw RPCError(
                     code: .invalidArgument,
                     message: "brewfile path must stay within the app directory"
                 )
+            } catch let error as RPCError {
+                throw error
+            } catch {
+                continue
             }
         }
     }
@@ -569,7 +574,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     nonisolated private static func runBrewBundle(
         brewExecutable: String,
-        brewfileData: Data,
+        brewfilePath: String,
         appDirectory: String
     ) async throws -> (status: Int32, output: String, outputTruncated: Bool) {
         try await Task.detached(priority: .utility) {
@@ -585,20 +590,15 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             let outputHandle = try FileHandle(forWritingTo: outputURL)
             defer { try? outputHandle.close() }
 
-            let inputPipe = Pipe()
             let process = Foundation.Process()
             process.executableURL = URL(fileURLWithPath: brewExecutable)
-            process.arguments = Self.brewBundleArguments(brewfilePath: "/dev/stdin")
+            process.arguments = Self.brewBundleArguments(brewfilePath: brewfilePath)
             process.currentDirectoryURL = URL(fileURLWithPath: appDirectory)
             process.environment = Self.brewBundleEnvironment()
-            process.standardInput = inputPipe.fileHandleForReading
             process.standardOutput = outputHandle
             process.standardError = outputHandle
 
             try process.run()
-            try? inputPipe.fileHandleForReading.close()
-            try? inputPipe.fileHandleForWriting.write(contentsOf: brewfileData)
-            try? inputPipe.fileHandleForWriting.close()
             let deadline = Date().addingTimeInterval(5 * 60)
             var timedOut = false
             while process.isRunning {
@@ -652,6 +652,26 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             .map { "brew \"\($0)\"\n" }
             .joined()
             .data(using: .utf8) ?? Data()
+        let bundleBaseDirectory = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let bundleDirectory =
+            bundleBaseDirectory
+            .appendingPathComponent(
+                "WendyAgent/BrewBundles/\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: bundleDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: bundleDirectory) }
+        let bundleURL = bundleDirectory.appendingPathComponent("Brewfile")
+        try sanitizedBrewfile.write(to: bundleURL, options: .withoutOverwriting)
 
         guard let brewExecutable = Self.findBrewExecutable() else {
             throw RPCError(
@@ -674,7 +694,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         do {
             result = try await Self.runBrewBundle(
                 brewExecutable: brewExecutable,
-                brewfileData: sanitizedBrewfile,
+                brewfilePath: bundleURL.path,
                 appDirectory: appDirectory
             )
         } catch {
@@ -684,30 +704,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        if result.status == 0 {
-            if result.output.isEmpty {
-                logger.info(
-                    "brew bundle produced no output",
-                    metadata: [
-                        "app_name": "\(appName)",
-                        "output_truncated": "\(result.outputTruncated)",
-                    ]
-                )
-            } else {
-                logger.info(
-                    "brew bundle output\n\(result.output)\(result.outputTruncated ? "\n[output truncated]" : "")",
-                    metadata: [
-                        "app_name": "\(appName)",
-                        "output_truncated": "\(result.outputTruncated)",
-                    ]
-                )
-            }
+        if result.status == 0, !result.output.isEmpty {
+            logger.info(
+                "brew bundle output\n\(result.output)\(result.outputTruncated ? "\n[output truncated]" : "")",
+                metadata: ["app_name": "\(appName)"]
+            )
         }
 
         guard result.status == 0 else {
             let message = Self.brewBundleFailureMessage(
+                brewfile: brewfile,
                 status: result.status,
-                formulas: validatedBrewfile.formulas
+                output: result.output
             )
             logger.error(
                 "brew bundle failed\(result.output.isEmpty ? "" : "\n\(result.output)")\(result.outputTruncated ? "\n[output truncated]" : "")",
@@ -715,7 +723,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     "app_name": "\(appName)",
                     "exit_code": "\(result.status)",
                     "formula_count": "\(validatedBrewfile.formulas.count)",
-                    "output_truncated": "\(result.outputTruncated)",
                 ]
             )
             throw RPCError(code: .failedPrecondition, message: message)

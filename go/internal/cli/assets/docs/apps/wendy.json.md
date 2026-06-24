@@ -79,7 +79,7 @@ Optional Homebrew Bundle manifest for native macOS (`platform: "darwin"`) deploy
 }
 ```
 
-If `brewfile` is omitted and a `Brewfile.wendy` exists at the project root, `wendy run` auto-detects it for native SwiftPM and Xcode Mac deployments. A plain project-root `Brewfile` is left for developer-machine setup and is not applied to the target unless explicitly referenced. The CLI syncs the Wendy Brewfile to the target Mac and Wendy Agent applies it with Homebrew before starting the app. Wendy currently accepts simple `brew "formula"` entries only; taps, casks, and other Brew Bundle directives are rejected. Homebrew must already be installed on the target Mac; Wendy does not install Homebrew automatically. Brewfile dependencies are installed by Homebrew as the Wendy Agent user, so only use Brewfiles you trust. Linux/WendyOS container deployments ignore Brewfiles.
+If `brewfile` is omitted and a `Brewfile.wendy` exists at the project root, `wendy run` auto-detects it for native SwiftPM and Xcode Mac deployments. A plain project-root `Brewfile` is left for developer-machine setup and is not applied to the target unless explicitly referenced. The CLI syncs the Wendy Brewfile to the target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>` before starting the app. Wendy currently accepts simple `brew "formula"` entries only; taps, casks, and other Brew Bundle directives are rejected. Homebrew must already be installed on the target Mac; Wendy does not install Homebrew automatically. Linux/WendyOS container deployments ignore Brewfiles.
 
 ### `entitlements`
 

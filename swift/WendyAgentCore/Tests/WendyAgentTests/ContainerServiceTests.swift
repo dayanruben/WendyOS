@@ -606,16 +606,15 @@ struct ContainerServiceTests {
         #expect(found == "/opt/homebrew/bin/brew")
     }
 
-    @Test("Brewfile failure messages include requested formulas but not process output")
-    func brewfileFailureMessagesIncludeRequestedFormulasButNotProcessOutput() {
+    @Test("Brewfile failure messages include exit status but not process output")
+    func brewfileFailureMessagesIncludeExitStatusButNotProcessOutput() {
         let message = ContainerService.brewBundleFailureMessage(
-            status: 17,
-            formulas: ["wendy-e2e-missing-formula"]
+            brewfile: "ops/Brewfile",
+            status: 17
         )
         #expect(!message.contains("ops/Brewfile"))
         #expect(message.contains("exit code 17"))
         #expect(message.contains("agent logs"))
-        #expect(message.contains("wendy-e2e-missing-formula"))
         #expect(!message.contains("No available formula"))
         #expect(!message.contains("ghp_secret"))
     }
