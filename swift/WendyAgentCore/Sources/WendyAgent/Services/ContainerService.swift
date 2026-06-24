@@ -430,9 +430,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             return try? JSONDecoder().decode(WendyAppConfig.self, from: data)
         }()
 
-        let isLinux = appConfig.map { config in
-            Self.platformIsLinux(config.platform ?? "linux")
-        } ?? false
+        let isLinux =
+            appConfig.map { config in
+                Self.platformIsLinux(config.platform ?? "linux")
+            } ?? false
 
         if isLinux {
             throw RPCError(

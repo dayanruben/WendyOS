@@ -500,7 +500,9 @@ struct ContainerServiceTests {
                 request: ServerRequest(metadata: [:], message: request),
                 context: makeServerContext(method: "CreateContainer")
             )
-            Issue.record("Expected createContainer to reject missing-platform apps as Linux containers")
+            Issue.record(
+                "Expected createContainer to reject missing-platform apps as Linux containers"
+            )
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
             #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
