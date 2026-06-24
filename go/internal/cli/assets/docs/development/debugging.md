@@ -207,12 +207,18 @@ Check the device clock:
 ssh wendy@<device-ip> 'timedatectl status'
 ```
 
-If NTP is not synchronized, wait for NTP sync or force it:
+If NTP is not synchronized, you can:
 
-```sh
-# Force NTP sync (if using systemd-timesyncd)
-sudo systemctl restart systemd-timesyncd
-```
+1. **Wait for NTP sync** or force it:
+   ```sh
+   sudo systemctl restart systemd-timesyncd
+   ```
+
+2. **Use Roughtime** — The CLI can broadcast cryptographically-signed time to nearby WendyOS devices:
+   ```sh
+   wendy device sync-time
+   ```
+   This queries public Roughtime servers and multicasts the verified timestamp. Devices on the same network receive it and advance their clocks.
 
 The agent logs a warning at startup if it detects clock skew. For TLS handshake details, run the CLI with:
 
