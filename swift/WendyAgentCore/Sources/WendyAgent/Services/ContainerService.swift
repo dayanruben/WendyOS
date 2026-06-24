@@ -25,7 +25,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private let nativeStopTimeout: Duration = .seconds(5)
     private var appsByID: [String: WendyApp] = [:]
     private var isStopping = false
-    private var brewBundleInProgress = false
     private let sandboxProfilePath: String?
 
     /// Docker backend for Linux containers. Nil while Linux containers remain unsupported.
@@ -447,10 +446,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     nonisolated static func brewBundleFailureMessage(status: Int32) -> String {
-        "brew bundle failed with exit code \(status). Check agent logs for details."
+        "brew bundle failed with exit code \(status). Run 'wendy device logs --tail 100 --level info' for Homebrew output."
     }
 
     nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
+        let path = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains("%") else {
             return false
         }
@@ -614,16 +614,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     "brewfile path must be relative and must not contain '.', '..', or empty components"
             )
         }
-
-        guard !self.brewBundleInProgress else {
-            throw RPCError(
-                code: .failedPrecondition,
-                message:
-                    "Another Brewfile install is already in progress. Try again when it finishes."
-            )
-        }
-        self.brewBundleInProgress = true
-        defer { self.brewBundleInProgress = false }
 
         try Self.ensureNoSymlinkBrewfileComponents(appDirectory: appDirectory, brewfile: brewfile)
         let brewfileURL = try Self.brewfileURL(appDirectory: appDirectory, brewfile: brewfile)

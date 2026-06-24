@@ -491,6 +491,7 @@ func containsDotDot(p string) bool {
 }
 
 func IsSafeRelativeBrewfilePath(p string) bool {
+	p = strings.TrimPrefix(p, "./")
 	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") || strings.Contains(p, "%") || strings.Contains(p, "\x00") {
 		return false
 	}

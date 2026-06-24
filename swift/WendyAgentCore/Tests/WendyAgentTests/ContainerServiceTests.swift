@@ -611,7 +611,7 @@ struct ContainerServiceTests {
         let message = ContainerService.brewBundleFailureMessage(status: 17)
         #expect(!message.contains("ops/Brewfile"))
         #expect(message.contains("exit code 17"))
-        #expect(message.contains("agent logs"))
+        #expect(message.contains("wendy device logs"))
         #expect(!message.contains("wendy-e2e-missing-formula"))
         #expect(!message.contains("No available formula"))
         #expect(!message.contains("ghp_secret"))

@@ -65,7 +65,7 @@
     "brewfile": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*[\\\\%\\u0000-\\u001F])(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*/$).+$",
+      "pattern": "^(?:\\./)?(?!/)(?!.*[\\\\%\\u0000-\\u001F])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:/)\\.(?:/|$))(?!.*//)(?!.*/$).+$",
       "description": "Optional Homebrew Bundle manifest for native Darwin deployments, relative to wendy.json. If omitted, a project-root Brewfile.wendy is auto-detected for native Mac runs."
     },
     "isolation": {
