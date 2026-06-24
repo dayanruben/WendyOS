@@ -657,19 +657,16 @@ has_mac_development_signing_identity() {
     security_command+=("$KEYCHAIN_PATH")
   fi
 
-  local pattern
   if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
     local identity_pattern='^[A-Za-z0-9][A-Za-z0-9 .,:_@()+/&-]*$'
     if ! [[ "$SIGNING_IDENTITY" =~ $identity_pattern ]]; then
       echo "ERROR: SIGNING_IDENTITY contains invalid characters." >&2
       return 1
     fi
-    pattern="\"$SIGNING_IDENTITY\""
+    "${security_command[@]}" 2>/dev/null | grep -qF -- "$SIGNING_IDENTITY"
   else
-    pattern='"Apple Development'
+    "${security_command[@]}" 2>/dev/null | grep -qF -- 'Apple Development'
   fi
-
-  "${security_command[@]}" 2>/dev/null | grep -qF "$pattern"
 }
 
 build_unsigned_managed_mac_app() {
@@ -780,6 +777,8 @@ start_managed_agent() {
         --env "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         --env "TMPDIR=${TMPDIR:-/tmp}" \
         --env "USER=wendy-e2e-agent" \
+        --env "WENDY_AGENT_HOST=127.0.0.1" \
+        --env "WENDY_AGENT_PORT=$port" \
         "$(managed_agent_path)"
     chmod 600 "$stdout_path" "$stderr_path"
   else

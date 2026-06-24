@@ -218,7 +218,9 @@ public final class WendyAgent {
 
         let server = PosixGRPCServer(
             transport: HTTP2ServerTransport.Posix(
-                address: .ipv6(host: "::", port: self.configuration.port),
+                address: self.configuration.host.contains(":")
+                    ? .ipv6(host: self.configuration.host, port: self.configuration.port)
+                    : .ipv4(host: self.configuration.host, port: self.configuration.port),
                 transportSecurity: .plaintext,
                 config: .defaults {
                     $0.http2.maxFrameSize = 256 * 1024
