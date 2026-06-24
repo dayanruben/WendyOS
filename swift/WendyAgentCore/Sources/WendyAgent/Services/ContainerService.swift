@@ -441,9 +441,15 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     nonisolated static func brewBundleFailureMessage(
         brewfile: String,
-        status: Int32
+        status: Int32,
+        output: String? = nil
     ) -> String {
-        "brew bundle failed with exit code \(status). Check agent logs for details."
+        var message = "brew bundle failed with exit code \(status). Check agent logs for details."
+        if let output = output?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+            let tail = String(output.suffix(2 * 1024))
+            message += "\n\nbrew output:\n\(tail)"
+        }
+        return message
     }
 
     nonisolated private static func isSafeRelativeBrewfilePath(_ path: String) -> Bool {
@@ -532,7 +538,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let allowedNameCharacters = CharacterSet(
             charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-"
         )
-        let text = String(decoding: data, as: UTF8.self)
+        guard !data.contains(13), let text = String(data: data, encoding: .utf8) else {
+            throw RPCError(code: .invalidArgument, message: "Brewfile must be UTF-8 text")
+        }
         var formulas: [String] = []
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -548,6 +556,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 name = nil
             }
             guard let name, (1...64).contains(name.count),
+                name.first != "-", name.first != ".",
                 name.unicodeScalars.allSatisfy({ allowedNameCharacters.contains($0) })
             else {
                 throw RPCError(
@@ -705,7 +714,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         guard result.status == 0 else {
             let message = Self.brewBundleFailureMessage(
                 brewfile: brewfile,
-                status: result.status
+                status: result.status,
+                output: result.output
             )
             logger.error(
                 "brew bundle failed\(result.output.isEmpty ? "" : "\n\(result.output)")\(result.outputTruncated ? "\n[output truncated]" : "")",
@@ -752,6 +762,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }()
 
         let isLinux = appConfig?.platform?.hasPrefix("linux") == true
+        let brewfile = appConfig?.brewfile?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !brewfile.isEmpty, appConfig?.platform != "darwin" {
+            throw RPCError(
+                code: .invalidArgument,
+                message: "Brewfile is only supported for native Darwin apps"
+            )
+        }
 
         if isLinux {
             throw RPCError(
@@ -860,7 +878,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         try await self.applyBrewfileIfNeeded(
-            appConfig?.brewfile,
+            brewfile,
             appName: appName,
             appDirectory: nativeLaunchInfo.directory
         )
