@@ -20,19 +20,64 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// localLayer holds a single image layer as its COMPRESSED blob plus the
-// metadata needed to address and decompress it. Decompression is deferred
-// (see decompress) so callers that can resolve a layer from the manifest cache
-// never pay to decompress it.
+// localLayer addresses a single image layer's COMPRESSED blob plus the metadata
+// needed to decompress it. The compressed bytes are NOT held in memory for the
+// real deploy path: TarPath/Offset/Size point at the layer's bytes inside the
+// on-disk OCI tar, streamed on demand (see compressedReader). Decompression is
+// deferred so callers that resolve a layer from the manifest cache never pay to
+// read or decompress it. Blob is an in-memory fallback used by tests.
 type localLayer struct {
 	Digest    string // compressed OCI layer blob digest ("sha256:<hex>") — stable cache key
 	MediaType string // OCI/Docker layer media type (drives decompression)
-	Blob      []byte // compressed layer bytes
+
+	Blob []byte // compressed bytes, when held in memory (tests / small blobs)
+
+	TarPath string // path to the OCI tar holding the compressed blob, when file-backed
+	Offset  int64  // byte offset of the compressed blob within TarPath
+	Size    int64  // compressed blob length
 }
 
-// decompress returns the raw (uncompressed) tar bytes for the layer.
+// compressedReader opens the layer's compressed bytes as a stream. The caller
+// must Close it. File-backed layers reopen the OCI tar (one fd per call, so
+// concurrent layers don't share state); in-memory layers wrap Blob.
+func (l localLayer) compressedReader() (io.ReadCloser, error) {
+	if l.TarPath != "" {
+		f, err := os.Open(l.TarPath)
+		if err != nil {
+			return nil, fmt.Errorf("open OCI tar: %w", err)
+		}
+		return &sectionReadCloser{Reader: io.NewSectionReader(f, l.Offset, l.Size), c: f}, nil
+	}
+	return io.NopCloser(bytes.NewReader(l.Blob)), nil
+}
+
+// sectionReadCloser couples a SectionReader with the file it reads from so the
+// fd is released on Close.
+type sectionReadCloser struct {
+	io.Reader
+	c io.Closer
+}
+
+func (s *sectionReadCloser) Close() error { return s.c.Close() }
+
+// decompress returns the raw (uncompressed) tar bytes for the layer in memory.
+// Prefer decompressLayerToTemp for large layers so the tar never sits in RAM.
 func (l localLayer) decompress() ([]byte, error) {
-	return decompressLayer(l.Blob, l.MediaType)
+	cr, err := l.compressedReader()
+	if err != nil {
+		return nil, err
+	}
+	defer cr.Close()
+	r, cleanup, err := layerTarReader(cr, l.MediaType)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("decompress layer: %w", err)
+	}
+	return out, nil
 }
 
 // ociDescriptor is a descriptor entry as it appears in an OCI index.json or a
@@ -76,7 +121,7 @@ func parseOCIPlatform(platform string) (os, arch string) {
 // image manifest blob for the target platform, descending through nested
 // image-indexes (Apple Container's `image save` produces one or two levels).
 // It returns the raw image-manifest JSON.
-func resolveOCIImageManifest(descs []ociDescriptor, blobs map[string][]byte, wantOS, wantArch string, depth int) ([]byte, error) {
+func resolveOCIImageManifest(descs []ociDescriptor, getBlob func(hex string) ([]byte, error), wantOS, wantArch string, depth int) ([]byte, error) {
 	if depth > 4 {
 		return nil, fmt.Errorf("OCI index nesting too deep")
 	}
@@ -88,9 +133,9 @@ func resolveOCIImageManifest(descs []ociDescriptor, blobs map[string][]byte, wan
 	if err != nil {
 		return nil, fmt.Errorf("invalid manifest digest %q: %w", chosen.Digest, err)
 	}
-	blob, ok := blobs[hex]
-	if !ok {
-		return nil, fmt.Errorf("manifest blob %s not found in OCI tar", chosen.Digest)
+	blob, err := getBlob(hex)
+	if err != nil {
+		return nil, fmt.Errorf("manifest blob %s: %w", chosen.Digest, err)
 	}
 	if isOCIImageIndexMediaType(chosen.MediaType) {
 		var nested struct {
@@ -102,7 +147,7 @@ func resolveOCIImageManifest(descs []ociDescriptor, blobs map[string][]byte, wan
 		if len(nested.Manifests) == 0 {
 			return nil, fmt.Errorf("nested image index has no manifests")
 		}
-		return resolveOCIImageManifest(nested.Manifests, blobs, wantOS, wantArch, depth+1)
+		return resolveOCIImageManifest(nested.Manifests, getBlob, wantOS, wantArch, depth+1)
 	}
 	return blob, nil
 }
@@ -142,11 +187,15 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	}
 	defer f.Close()
 
-	// First pass: index all blobs by their sha256 hex digest.
-	blobs := map[string][]byte{} // hex digest → raw blob bytes
+	// First pass: index each blob's byte range within the tar WITHOUT reading the
+	// (potentially multi-GiB) layer bytes into memory. Only index.json is held;
+	// manifest/config blobs are read back on demand below, and layer blobs are
+	// streamed from the tar later via localLayer.compressedReader.
+	blobOffsets := map[string]blobLoc{} // hex digest → byte range in the tar
 	var indexJSON []byte
 
-	tr := tar.NewReader(f)
+	cr := &offsetCountingReader{r: f}
+	tr := tar.NewReader(cr)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -155,21 +204,37 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading OCI tar: %w", err)
 		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			return nil, nil, fmt.Errorf("reading blob %q: %w", hdr.Name, err)
-		}
+		// After Next() the counting reader sits exactly at this entry's data
+		// (tar headers/padding are 512-byte blocks read straight from f).
+		dataOff := cr.n
 		switch {
 		case hdr.Name == "index.json":
-			indexJSON = data
+			indexJSON, err = io.ReadAll(tr)
+			if err != nil {
+				return nil, nil, fmt.Errorf("reading index.json: %w", err)
+			}
 		case strings.HasPrefix(hdr.Name, "blobs/sha256/"):
 			blobHex := strings.TrimPrefix(hdr.Name, "blobs/sha256/")
-			blobs[blobHex] = data
+			blobOffsets[blobHex] = blobLoc{off: dataOff, size: hdr.Size}
+			if _, err := io.Copy(io.Discard, tr); err != nil {
+				return nil, nil, fmt.Errorf("scanning blob %q: %w", hdr.Name, err)
+			}
 		}
 	}
 
 	if indexJSON == nil {
 		return nil, nil, fmt.Errorf("OCI tar missing index.json")
+	}
+
+	// getBlob reads a (small) blob — manifest, image-index, or config — back from
+	// the tar by its recorded byte range. Layer blobs are NOT fetched this way;
+	// they stay on disk and are streamed during the push.
+	getBlob := func(hex string) ([]byte, error) {
+		loc, ok := blobOffsets[hex]
+		if !ok {
+			return nil, fmt.Errorf("blob sha256:%s not found in OCI tar", hex)
+		}
+		return io.ReadAll(io.NewSectionReader(f, loc.off, loc.size))
 	}
 
 	// Parse index.json and resolve to a concrete image manifest. buildx emits
@@ -187,7 +252,7 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	}
 
 	wantOS, wantArch := parseOCIPlatform(platform)
-	manifestData, err := resolveOCIImageManifest(index.Manifests, blobs, wantOS, wantArch, 0)
+	manifestData, err := resolveOCIImageManifest(index.Manifests, getBlob, wantOS, wantArch, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -214,11 +279,10 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid config digest %q: %w", manifest.Config.Digest, err)
 		}
-		cfg, ok := blobs[configHex]
-		if !ok {
-			return nil, nil, fmt.Errorf("config blob %s not found in OCI tar", manifest.Config.Digest)
+		imageConfig, err = getBlob(configHex)
+		if err != nil {
+			return nil, nil, fmt.Errorf("config blob %s: %w", manifest.Config.Digest, err)
 		}
-		imageConfig = cfg
 	}
 
 	layers := make([]localLayer, 0, len(manifest.Layers))
@@ -227,31 +291,57 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		if err != nil {
 			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
 		}
-		blobData, ok := blobs[layerHex]
+		loc, ok := blobOffsets[layerHex]
 		if !ok {
 			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
 		}
-		// Keep the compressed blob; decompression is deferred to pushLayersByChunks
-		// so unchanged layers resolved from the manifest cache are never decompressed.
-		layers = append(layers, localLayer{Digest: desc.Digest, MediaType: desc.MediaType, Blob: blobData})
+		// Reference the compressed blob by its range in the on-disk tar; it is
+		// streamed (never fully buffered) during the push, and decompression is
+		// deferred so cache-resolved layers are never read at all.
+		layers = append(layers, localLayer{
+			Digest:    desc.Digest,
+			MediaType: desc.MediaType,
+			TarPath:   ociTarPath,
+			Offset:    loc.off,
+			Size:      loc.size,
+		})
 	}
 	return layers, imageConfig, nil
 }
 
-// layerTarReader returns a streaming reader over the layer's raw (uncompressed)
-// tar bytes, selected by media type, plus a cleanup func that releases the
-// underlying decompressor. The reader should be fully consumed before cleanup.
-func layerTarReader(blobData []byte, mediaType string) (io.Reader, func(), error) {
+// blobLoc is a blob's byte range within an OCI-layout tar.
+type blobLoc struct {
+	off  int64
+	size int64
+}
+
+// offsetCountingReader tracks how many bytes have been read from the wrapped
+// reader, so the tar scan can record each entry's absolute data offset.
+type offsetCountingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *offsetCountingReader) Read(p []byte) (int, error) {
+	m, err := c.r.Read(p)
+	c.n += int64(m)
+	return m, err
+}
+
+// layerTarReader wraps a compressed layer stream with the decompressor selected
+// by media type, returning the raw (uncompressed) tar reader plus a cleanup func
+// that releases the decompressor. The reader should be fully consumed first.
+func layerTarReader(compressed io.Reader, mediaType string) (io.Reader, func(), error) {
 	switch {
 	case mediaType == "application/vnd.oci.image.layer.v1.tar" ||
 		mediaType == "application/vnd.docker.image.rootfs.diff.tar":
-		// Uncompressed — read the blob bytes directly.
-		return bytes.NewReader(blobData), func() {}, nil
+		// Uncompressed — the stream is already the raw tar.
+		return compressed, func() {}, nil
 
 	case strings.HasSuffix(mediaType, ".tar+gzip") ||
 		strings.HasSuffix(mediaType, ".tar.gzip") ||
 		mediaType == "application/vnd.docker.image.rootfs.diff.tar.gzip":
-		gr, err := gzip.NewReader(bytes.NewReader(blobData))
+		gr, err := gzip.NewReader(compressed)
 		if err != nil {
 			return nil, nil, fmt.Errorf("gzip reader: %w", err)
 		}
@@ -259,7 +349,7 @@ func layerTarReader(blobData []byte, mediaType string) (io.Reader, func(), error
 
 	case strings.HasSuffix(mediaType, ".tar+zstd") ||
 		strings.HasSuffix(mediaType, ".tar.zstd"):
-		dec, err := zstd.NewReader(bytes.NewReader(blobData))
+		dec, err := zstd.NewReader(compressed)
 		if err != nil {
 			return nil, nil, fmt.Errorf("zstd reader: %w", err)
 		}
@@ -268,22 +358,6 @@ func layerTarReader(blobData []byte, mediaType string) (io.Reader, func(), error
 	default:
 		return nil, nil, fmt.Errorf("unsupported layer media type: %q", mediaType)
 	}
-}
-
-// decompressLayer decompresses blobData according to the OCI/Docker layer
-// media type, returning the raw (uncompressed) tar bytes in memory. Prefer
-// decompressLayerToTemp for large layers so the tar never sits fully in RAM.
-func decompressLayer(blobData []byte, mediaType string) ([]byte, error) {
-	r, cleanup, err := layerTarReader(blobData, mediaType)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	out, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("decompress layer: %w", err)
-	}
-	return out, nil
 }
 
 // decompressedLayer is a layer's uncompressed tar spilled to a temp file so the
@@ -307,7 +381,12 @@ func (d *decompressedLayer) Close() {
 // (a few MiB) rather than the whole layer. The returned file is positioned for
 // random access via ReadAt; the caller must Close it.
 func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
-	r, cleanup, err := layerTarReader(l.Blob, l.MediaType)
+	cr, err := l.compressedReader()
+	if err != nil {
+		return nil, err
+	}
+	defer cr.Close()
+	r, cleanup, err := layerTarReader(cr, l.MediaType)
 	if err != nil {
 		return nil, err
 	}
