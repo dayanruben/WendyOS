@@ -53,6 +53,7 @@ local runs, but compose service builds targeting a WendyOS device can use
 | `WENDY_HAS_GPU` | `true` \| `false` | Absent on older agents |
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
+| `WENDY_JETPACK_MAJOR` | e.g. `6`, `7` | Jetson only; JetPack major for per-generation base-image selection |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
 | `WENDY_GPU_ARCH` | e.g. `sm_87` | GPU architecture identifier; absent when no GPU is reported |
 
@@ -123,7 +124,24 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
+| `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure (multi-service projects only). |
+| `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
+| `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
+
+## Deploy path: `--chunking`
+
+`wendy run` normally attempts a fast content-based chunking (CBC) chunk-diff deploy and falls back to a full registry push when it fails (`auto`, the default). Use `--chunking` to override this:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | Try chunk-diff; fall back to a registry push on failure. |
+| `force` | Use chunk-diff only. If chunk-diff fails the error is returned and no registry-push fallback is attempted. Cancellation still exits cleanly. |
+| `off` | Skip chunk-diff entirely; go straight to the registry push. |
+
+> **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
+
+Any value other than `auto`, `force`, or `off` is rejected with an error before the build starts.
 
 ## postStart hooks
 
