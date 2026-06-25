@@ -2,8 +2,6 @@ package commands
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"runtime"
 
 	"golang.org/x/sync/errgroup"
@@ -14,17 +12,19 @@ import (
 
 // maxConcurrentLayerPush bounds how many layers are decompressed, chunked, and
 // streamed at once. It overlaps the CPU-bound work of one layer with another's
-// QueryChunks/WriteChunks network round-trips, but each in-flight layer holds
-// its whole decompressed tar in memory, so the cap keeps peak memory bounded on
-// modest hosts. Chunking within a single layer is already parallelized across
-// cores (chunk.ChunkBytes), so this need not equal the core count.
+// QueryChunks/WriteChunks network round-trips. Each in-flight layer spills its
+// uncompressed tar to a temp file (not RAM), so the cap mainly bounds transient
+// chunking buffers rather than whole layers. Chunking within a single layer is
+// already parallelized across cores (chunk.ChunkReaderAt), so this need not
+// equal the core count.
 const maxConcurrentLayerPush = 4
 
 // pushLayersByChunks implements chunk-diff layer push for a set of OCI layers,
 // processing up to maxConcurrentLayerPush layers concurrently. For each layer it:
 //  1. Resolves the chunk manifest (DiffID, size, ordered chunk hashes) from the
 //     on-disk manifest cache when the layer's compressed digest is known,
-//     otherwise decompresses and CDC-chunks the raw tar and caches the result.
+//     otherwise decompresses (to a temp file) and CDC-chunks the raw tar and
+//     caches the result.
 //  2. Queries the device for which chunk hashes are missing.
 //  3. Streams only the missing chunk bytes via WriteChunks — decompressing the
 //     layer at this point if the cache hit let us skip it earlier.
@@ -68,31 +68,45 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 }
 
 // pushLayerByChunks runs the chunk-diff push for a single layer and returns its
-// reassembly header. See pushLayersByChunks for the per-layer steps.
+// reassembly header. The uncompressed tar is spilled to a temp file rather than
+// held in RAM; missing chunk bytes are read back from it on demand.
 func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, l localLayer) (*agentpb.RunContainerLayerHeader, error) {
 	var (
 		diffID        string
 		size          int64
-		orderedHashes [][]byte    // ordered raw 32-byte hashes, for the manifest + QueryChunks
-		tar           []byte      // decompressed bytes; populated only when needed
-		refs          []chunk.Ref // chunk offsets; populated only when decompressed
+		orderedHashes [][]byte           // ordered raw 32-byte hashes, for the manifest + QueryChunks
+		dl            *decompressedLayer // file-backed tar; populated only when we must produce chunk bytes
+		refs          []chunk.Ref        // chunk offsets into dl; populated alongside dl
 	)
+	defer func() {
+		if dl != nil {
+			dl.Close()
+		}
+	}()
+
+	// decompressAndChunk spills the layer to a temp file and chunks it, filling
+	// dl/refs/diffID/size. Both entry points (CLI here and the agent) run the
+	// identical region+FastCDC algorithm, so these hashes match the device's.
+	decompressAndChunk := func() error {
+		d, err := decompressLayerToTemp(l)
+		if err != nil {
+			return err
+		}
+		dl = d
+		r, err := chunk.ChunkReaderAt(d.f, d.size)
+		if err != nil {
+			return err
+		}
+		refs, diffID, size = r, d.diffID, d.size
+		return nil
+	}
 
 	if cm, ok := loadManifestCache(l.Digest); ok {
 		diffID, size, orderedHashes = cm.DiffID, cm.Size, cm.Hashes
 	} else {
-		t, err := l.decompress()
-		if err != nil {
+		if err := decompressAndChunk(); err != nil {
 			return nil, err
 		}
-		r, err := chunk.ChunkBytes(t)
-		if err != nil {
-			return nil, err
-		}
-		tar, refs = t, r
-		sum := sha256.Sum256(tar)
-		diffID = "sha256:" + hex.EncodeToString(sum[:])
-		size = int64(len(tar))
 		orderedHashes = make([][]byte, len(refs))
 		for i, rf := range refs {
 			h := rf.Hash // copy to avoid aliasing the loop variable
@@ -117,17 +131,11 @@ func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 		// cache hit let us skip decompression above, do it now. Re-chunking here
 		// reproduces the exact hashes in `missing` only because chunking is
 		// deterministic and loadManifestCache rejects manifests from a different
-		// AlgoVersion — so the cached hashes always match what ChunkBytes emits.
-		if tar == nil {
-			t, err := l.decompress()
-			if err != nil {
+		// AlgoVersion — so the cached hashes always match what ChunkReaderAt emits.
+		if dl == nil {
+			if err := decompressAndChunk(); err != nil {
 				return nil, err
 			}
-			r, err := chunk.ChunkBytes(t)
-			if err != nil {
-				return nil, err
-			}
-			tar, refs = t, r
 		}
 		wc, err := cs.WriteChunks(ctx)
 		if err != nil {
@@ -137,10 +145,14 @@ func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 			if !missing[r.Hash] {
 				continue
 			}
+			buf := make([]byte, r.Len) // r.Len <= chunk.MaxSize (256 KiB)
+			if _, err := dl.f.ReadAt(buf, int64(r.Offset)); err != nil {
+				return nil, err
+			}
 			hb := r.Hash // copy
 			if err := wc.Send(&agentpb.WriteChunksRequest{
 				Hash: hb[:],
-				Data: tar[r.Offset : r.Offset+r.Len],
+				Data: buf,
 			}); err != nil {
 				return nil, err
 			}

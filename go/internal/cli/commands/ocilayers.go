@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -236,50 +238,97 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	return layers, imageConfig, nil
 }
 
-// decompressLayer decompresses blobData according to the OCI/Docker layer
-// media type. Returns the raw (uncompressed) tar bytes.
-func decompressLayer(blobData []byte, mediaType string) ([]byte, error) {
+// layerTarReader returns a streaming reader over the layer's raw (uncompressed)
+// tar bytes, selected by media type, plus a cleanup func that releases the
+// underlying decompressor. The reader should be fully consumed before cleanup.
+func layerTarReader(blobData []byte, mediaType string) (io.Reader, func(), error) {
 	switch {
 	case mediaType == "application/vnd.oci.image.layer.v1.tar" ||
 		mediaType == "application/vnd.docker.image.rootfs.diff.tar":
-		// Uncompressed — return as-is.
-		return blobData, nil
+		// Uncompressed — read the blob bytes directly.
+		return bytes.NewReader(blobData), func() {}, nil
 
 	case strings.HasSuffix(mediaType, ".tar+gzip") ||
 		strings.HasSuffix(mediaType, ".tar.gzip") ||
 		mediaType == "application/vnd.docker.image.rootfs.diff.tar.gzip":
 		gr, err := gzip.NewReader(bytes.NewReader(blobData))
 		if err != nil {
-			return nil, fmt.Errorf("gzip reader: %w", err)
+			return nil, nil, fmt.Errorf("gzip reader: %w", err)
 		}
-		defer gr.Close()
-		out, err := io.ReadAll(gr)
-		if err != nil {
-			return nil, fmt.Errorf("gzip read: %w", err)
-		}
-		return out, nil
+		return gr, func() { _ = gr.Close() }, nil
 
 	case strings.HasSuffix(mediaType, ".tar+zstd") ||
 		strings.HasSuffix(mediaType, ".tar.zstd"):
-		return decompressZstd(blobData)
+		dec, err := zstd.NewReader(bytes.NewReader(blobData))
+		if err != nil {
+			return nil, nil, fmt.Errorf("zstd reader: %w", err)
+		}
+		return dec, func() { dec.Close() }, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported layer media type: %q", mediaType)
+		return nil, nil, fmt.Errorf("unsupported layer media type: %q", mediaType)
 	}
 }
 
-// decompressZstd decompresses zstd-compressed data and returns the raw bytes.
-func decompressZstd(data []byte) ([]byte, error) {
-	dec, err := zstd.NewReader(bytes.NewReader(data))
+// decompressLayer decompresses blobData according to the OCI/Docker layer
+// media type, returning the raw (uncompressed) tar bytes in memory. Prefer
+// decompressLayerToTemp for large layers so the tar never sits fully in RAM.
+func decompressLayer(blobData []byte, mediaType string) ([]byte, error) {
+	r, cleanup, err := layerTarReader(blobData, mediaType)
 	if err != nil {
-		return nil, fmt.Errorf("zstd reader: %w", err)
+		return nil, err
 	}
-	defer dec.Close()
-	out, err := io.ReadAll(dec)
+	defer cleanup()
+	out, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("zstd read: %w", err)
+		return nil, fmt.Errorf("decompress layer: %w", err)
 	}
 	return out, nil
+}
+
+// decompressedLayer is a layer's uncompressed tar spilled to a temp file so the
+// whole layer never resides in RAM. Chunk it via ChunkReaderAt(f, size) and
+// read missing chunk bytes with f.ReadAt; call Close to delete the temp file.
+type decompressedLayer struct {
+	f      *os.File
+	size   int64
+	diffID string // "sha256:<hex>" of the uncompressed tar
+}
+
+// Close closes and removes the backing temp file. It is safe to call once.
+func (d *decompressedLayer) Close() {
+	name := d.f.Name()
+	_ = d.f.Close()
+	_ = os.Remove(name)
+}
+
+// decompressLayerToTemp streams the layer's uncompressed tar into a temp file,
+// computing its DiffID as it writes. Peak memory is the decompressor window
+// (a few MiB) rather than the whole layer. The returned file is positioned for
+// random access via ReadAt; the caller must Close it.
+func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
+	r, cleanup, err := layerTarReader(l.Blob, l.MediaType)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	f, err := os.CreateTemp("", "wendy-layer-*")
+	if err != nil {
+		return nil, fmt.Errorf("create layer temp file: %w", err)
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), r)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, fmt.Errorf("decompress layer to disk: %w", err)
+	}
+	return &decompressedLayer{
+		f:      f,
+		size:   n,
+		diffID: "sha256:" + hex.EncodeToString(h.Sum(nil)),
+	}, nil
 }
 
 // digestToHex converts a "sha256:<hex>" digest string to the bare hex portion.
