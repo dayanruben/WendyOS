@@ -26,7 +26,7 @@ Use `--no-bmap` to disable this optimization and flash the full image. Use `--st
 
 ### Block map error handling
 
-If a bmap-accelerated write fails — for example due to a checksum mismatch or a stale/incorrect published bmap — `wendy os install` automatically falls back to a full sequential write using the already-cached `.img.zst` or `.zip`. A notice is printed when this happens; no user action and no re-download are required.
+If a bmap-accelerated write fails — for example due to a checksum mismatch or a stale/incorrect published bmap — `wendy os install` automatically falls back to a full sequential write using the already-cached `.img.zst` or `.zip`. No user action and no re-download are required.
 
 A failure that occurs *during* the fallback write (short write, decode error, or a non-zero helper exit) is fatal: the helper's stderr is surfaced as the error.
 
