@@ -1,6 +1,6 @@
 ---
 name: wendy-app-lifecycle
-description: Use when a developer wants to build, deploy, run, detach, stream logs, start, stop, list, remove, or clean up Wendy apps with `wendy build`, `wendy run`, `wendy device apps`, `wendy device logs`, telemetry streams, or volumes.
+description: Use when a developer wants to build, deploy, run, detach, stream logs, start, stop, list, remove, or clean up Wendy apps with `wendy build`, `wendy run`, `wendy device apps list`, `wendy device logs`, telemetry streams, or volumes.
 ---
 
 # Wendy App Lifecycle Workflow
