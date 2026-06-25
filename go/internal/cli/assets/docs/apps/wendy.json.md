@@ -134,6 +134,41 @@ Python-specific settings.
 | `python.sourceRoot` | Path to the Python source root directory |
 | `python.container.sourceRoot` | Path to the Python source root inside the container image |
 
+### `resources`
+
+Optional CPU, memory, and process-count ceilings the agent enforces on the container via cgroups. Edge devices are resource-constrained and often run several apps side by side, so capping a service keeps one busy or leaky app from starving its neighbours. Every field is optional; an omitted field leaves that resource **unbounded** (the historical behaviour), so adding `resources` is backward compatible.
+
+```json
+{
+  "resources": {
+    "memory": "512Mi",
+    "cpus": "1.5",
+    "pids": 256
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resources.memory` | string | Hard memory limit. A number of bytes, optionally with a binary (`Ki`, `Mi`, `Gi`, `Ti`) or decimal (`K`, `M`, `G`, `T`) suffix — e.g. `"512Mi"`, `"1Gi"`. The container is OOM-killed if it exceeds this. |
+| `resources.cpus` | string | Maximum number of CPU cores as a decimal — e.g. `"0.5"`, `"1.5"`, `"2"`. Enforced as a CFS quota over a 100 ms period (so `"1.5"` ⇒ 150 ms of CPU time per 100 ms). |
+| `resources.pids` | integer | Maximum number of processes/threads the container may create. A cheap guard against fork bombs. |
+
+For multi-service apps, set `resources` at the top level as the default and/or per service under `services.<name>.resources`. A service that declares its own `resources` overrides the app-level limits **wholesale** (the two are not merged field-by-field):
+
+```json
+{
+  "appId": "fleet",
+  "resources": { "memory": "1Gi" },
+  "services": {
+    "web":    { "context": "./web" },
+    "worker": { "context": "./worker", "resources": { "memory": "256Mi", "cpus": "0.5" } }
+  }
+}
+```
+
+Here `web` inherits the app-level `1Gi` memory limit, while `worker` uses only its own `256Mi`/`0.5` cores (it does **not** also inherit the `1Gi`).
+
 ### `$schema`
 
 Optional URI pointing to the JSON Schema for editor autocompletion and validation. Set to `"https://wendy.sh/schemas/wendy.json"`.

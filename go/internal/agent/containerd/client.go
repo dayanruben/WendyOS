@@ -766,6 +766,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", sharedenv.SystemdServiceName(), cgroupSuffix)
 
+	// Apply CPU/memory/PID ceilings from wendy.json (per-service overrides
+	// the app-level default). Malformed values are rejected here rather than
+	// silently running the container unbounded. CLI-side validation should
+	// catch these first, but the agent must not trust the request blindly.
+	if err := localoci.ApplyResourceLimits(spec, appCfg.ResolveResourcesForService(serviceName)); err != nil {
+		return fmt.Errorf("applying resource limits: %w", err)
+	}
+
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
