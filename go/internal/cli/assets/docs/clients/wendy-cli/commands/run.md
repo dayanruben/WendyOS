@@ -96,6 +96,7 @@ When running a Swift Package Manager project on a macOS target, `wendy run`:
 3. Syncs the compiled binary to the device.
 4. Automatically syncs any sibling `.bundle` and `.resources` directories found in the build products directory alongside the binary, so SwiftPM resource bundles are available at runtime.
 5. Syncs `sandbox.sb` from the project root if present, and any additional files declared under `files` in `wendy.json`.
+6. If a `Brewfile.wendy` or explicitly configured `brewfile` is present, syncs it to the device and the agent runs `brew bundle` before starting the app.
 
 ## Swift Package Manager projects — host requirements
 
