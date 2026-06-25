@@ -11,6 +11,20 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+func TestValidateChunkingMode(t *testing.T) {
+	valid := []string{"", chunkingAuto, chunkingForce, chunkingOff}
+	for _, m := range valid {
+		if err := validateChunkingMode(m); err != nil {
+			t.Errorf("validateChunkingMode(%q) = %v; want nil", m, err)
+		}
+	}
+	for _, m := range []string{"auto ", "AUTO", "yes", "true", "none"} {
+		if err := validateChunkingMode(m); err == nil {
+			t.Errorf("validateChunkingMode(%q) = nil; want error", m)
+		}
+	}
+}
+
 func TestResolveRestartPolicy_Default(t *testing.T) {
 	opts := runOptions{}
 	rp := resolveRestartPolicy(opts)
