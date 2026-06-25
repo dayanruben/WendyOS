@@ -301,7 +301,6 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 var (
 	pickerTitle    = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
-	pickerSection  = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
 	pickerHint     = lipgloss.NewStyle().Foreground(ColorDim)
 	pickerScanning = lipgloss.NewStyle().Foreground(ColorPrimary)
 	pickerInsecure = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ef4444"))
@@ -722,10 +721,17 @@ func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols 
 }
 
 // sectionHeaderRow builds a non-selectable header row whose first column shows
-// the styled section label and whose remaining columns are blank.
+// the section label and whose remaining columns are blank.
+//
+// The label is intentionally plain text, not a lipgloss-styled string: the
+// underlying bubbles table truncates every cell with runewidth.Truncate, which
+// is not ANSI-aware. A styled value's escape bytes count toward the column
+// width, so truncation cuts inside the escape sequence and the terminal renders
+// garbage. The "── " rule prefix keeps the row readable as a header without
+// embedding color.
 func sectionHeaderRow(label string, ncols int) bubbleTable.Row {
 	row := make(bubbleTable.Row, max(ncols, 1))
-	row[0] = pickerSection.Render("── " + label)
+	row[0] = "── " + label
 	return row
 }
 

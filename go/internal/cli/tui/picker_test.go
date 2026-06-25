@@ -6,7 +6,9 @@ import (
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 func TestPickerModel_SelectsFromTable(t *testing.T) {
@@ -675,6 +677,26 @@ func TestPickerModel_RendersSectionHeaders(t *testing.T) {
 	// The WendyOS header must appear before the Wendy Lite header.
 	if strings.Index(view, "WendyOS") > strings.Index(view, "Wendy Lite") {
 		t.Fatalf("expected WendyOS section before Wendy Lite section, got %q", view)
+	}
+}
+
+// TestPickerModel_RendersSectionHeadersInColor guards against the section
+// header cell carrying lipgloss ANSI escapes into the table: the underlying
+// bubbles table truncates each cell with runewidth.Truncate, which counts the
+// escape bytes as visible width and cuts inside the escape sequence, leaving
+// mangled output (e.g. "…K") on a real color terminal. Tests default to the
+// Ascii profile (no escapes), so this forces truecolor to exercise that path.
+func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	pm := sectionedPicker(t)
+
+	view := ansi.Strip(pm.View())
+	for _, want := range []string{"WendyOS", "Wendy Lite"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected colorized sectioned picker to render header %q intact, got %q", want, view)
+		}
 	}
 }
 
