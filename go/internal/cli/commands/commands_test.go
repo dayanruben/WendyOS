@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -208,7 +209,7 @@ func TestNewDeviceCmd(t *testing.T) {
 		subNames[c.Name()] = true
 	}
 
-	expectedSubs := []string{"info", "version", "set-default", "unset-default", "setup", "update"}
+	expectedSubs := []string{"info", "version", "set-default", "get-default", "unset-default", "setup", "update"}
 	for _, name := range expectedSubs {
 		if !subNames[name] {
 			t.Errorf("device command missing subcommand %q", name)
@@ -237,6 +238,44 @@ func TestNewDeviceCmd(t *testing.T) {
 	}
 	if strings.Contains(help, "\n  version") {
 		t.Fatalf("device help should not list deprecated version command: %s", help)
+	}
+}
+
+func TestDeviceGetDefault_Set(t *testing.T) {
+	origJSON := jsonOutput
+	t.Cleanup(func() { jsonOutput = origJSON })
+	jsonOutput = false
+	setTempConfig(t, &config.Config{DefaultDevice: "wendy-thor.local"})
+
+	buf := new(bytes.Buffer)
+	cmd := newDeviceGetDefaultCmd()
+	cmd.SetOut(buf)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("get-default: %v", err)
+	}
+	if !strings.Contains(buf.String(), "wendy-thor.local") {
+		t.Fatalf("output %q missing default device", buf.String())
+	}
+}
+
+func TestDeviceGetDefault_NotSet(t *testing.T) {
+	origJSON := jsonOutput
+	t.Cleanup(func() { jsonOutput = origJSON })
+	jsonOutput = false
+	setTempConfig(t, &config.Config{})
+
+	buf := new(bytes.Buffer)
+	cmd := newDeviceGetDefaultCmd()
+	cmd.SetOut(buf)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("get-default: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(buf.String()), "no default") {
+		t.Fatalf("output %q should indicate no default device is set", buf.String())
 	}
 }
 
