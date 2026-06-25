@@ -47,7 +47,8 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 4. **Validate OTA support** — confirm `mender` is present in the featureset.
 5. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. If the device type is missing or not recognized, shows a warning and prompts the user to select the correct device type.
 6. **Check current version** — if the device is already at the latest version, exits without updating.
-7. **Stream update** — call `UpdateOS` on the agent, which runs `mender-update install` and streams progress to the terminal.
+7. **Inhibit auto-updater** — before streaming begins, the agent stops `wendyos-agent-updater.timer` and `wendyos-agent-updater.service` so the updater cannot SIGTERM the in-flight `mender-update` process (they share a systemd cgroup). The timer is re-started when the update call returns. On devices without the auto-updater (Jetson, QEMU), this step is a silent no-op.
+8. **Stream update** — call `UpdateOS` on the agent, which runs `mender-update install` and streams progress to the terminal.
 
 ---
 
