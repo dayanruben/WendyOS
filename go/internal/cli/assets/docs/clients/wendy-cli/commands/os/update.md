@@ -26,6 +26,8 @@ A target is treated as a WendyOS OTA target when the agent reports `os = "linux"
 - `os_version` begins with `WendyOS-`, or
 - `device_type` is set (non-empty).
 
+Note that WendyOS devices report `os = "linux"` (they do not have a standard `/etc/os-release` file). Other Linux hosts report their distro ID (e.g., "ubuntu", "debian", "arch") when detectable.
+
 Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown platforms, Wendy Lite / BLE-only targets, external/local-provider targets, and generic Linux hosts with `wendy-agent` installed but no WendyOS identity — are rejected immediately with an actionable error message.
 
 | Circumstance | Error |
