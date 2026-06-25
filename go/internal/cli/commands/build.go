@@ -627,6 +627,10 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 	}
 
 	cliLogln("Building Xcode project %s (scheme: %s)...", tui.Value(xcodeproj), tui.Value(scheme))
+	// NOTE: We intentionally skip Swift macro/package plugin validation here as
+	// well as in the Mac deploy path. Wendy Xcode builds are often run from
+	// headless CLI/agent sessions where Xcode's trust prompts cannot be answered;
+	// templates that need this path must commit a reviewed Package.resolved.
 	if err := runXcodebuild(ctx, dir,
 		"-project", xcodeproj,
 		"-scheme", scheme,

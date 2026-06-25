@@ -405,6 +405,9 @@ func TestInitCommand_NonInteractiveFlagsCreateProject(t *testing.T) {
 	}
 }
 
+// NOTE: Native Mac end-to-end deployment requires a Wendy Agent for Mac target
+// in CI. Until that exists, keep Darwin coverage at the CLI/config boundary here
+// and validate real Mac deploys manually with the companion templates PR.
 func TestInitCommand_NonInteractiveDarwinCreatesNativeSwiftProject(t *testing.T) {
 	tempDir := t.TempDir()
 	prevWD, err := os.Getwd()

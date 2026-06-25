@@ -940,7 +940,7 @@ func pickInitLanguage(target string) (string, error) {
 		return langSwift, nil
 	case targetDarwin:
 		cliNotice("Wendy Agent for Mac currently supports native Swift apps.")
-		return darwinLanguages[0].key, nil
+		return langSwift, nil
 
 	default:
 		var items []tui.PickerItem

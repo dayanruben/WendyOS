@@ -70,6 +70,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$TARGET" in
+    wendyos|wendy-lite|darwin) ;;
+    *)
+        echo -e "${RED}ERROR: Unknown target '$TARGET' (valid: wendyos, wendy-lite, darwin)${RESET}"
+        exit 1
+        ;;
+esac
+
 # Add .local suffix only for bare mDNS hostnames (no dots or colons).
 # Leave IPs, FQDNs, and IPv6 addresses unchanged.
 if [[ "$HOSTNAME_PROVIDED" == true ]] && [[ "$HOSTNAME" != *.local ]] && [[ "$HOSTNAME" != *.* ]] && [[ "$HOSTNAME" != *:* ]]; then
