@@ -481,6 +481,31 @@ type runOptions struct {
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
+	// chunking controls the content-defined chunking (CBC) deploy path:
+	// chunkingAuto (default/empty) tries chunk-diff and falls back to a registry
+	// push on failure, chunkingForce uses chunk-diff with no fallback, and
+	// chunkingOff skips chunk-diff entirely (registry push only).
+	chunking string
+}
+
+// Valid values for runOptions.chunking. An empty value is treated as
+// chunkingAuto so callers that build runOptions directly (e.g. wendy watch)
+// keep the default behavior.
+const (
+	chunkingAuto  = "auto"
+	chunkingForce = "force"
+	chunkingOff   = "off"
+)
+
+// validateChunkingMode rejects unknown --chunking values. Empty is allowed and
+// means chunkingAuto.
+func validateChunkingMode(mode string) error {
+	switch mode {
+	case "", chunkingAuto, chunkingForce, chunkingOff:
+		return nil
+	default:
+		return fmt.Errorf("invalid --chunking value %q: must be auto, force, or off", mode)
+	}
 }
 
 func newRunCmd() *cobra.Command {
@@ -511,6 +536,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
+	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
 
 	return cmd
 }
@@ -560,6 +586,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 	if opts.maxConcurrency < 0 {
 		return fmt.Errorf("--max-concurrency must be >= 0 (0 = auto)")
+	}
+	if err := validateChunkingMode(opts.chunking); err != nil {
+		return err
 	}
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
@@ -1418,7 +1447,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// detached (--detach) runs. Deploy-only (--deploy) is excluded because it
 	// must create the container WITHOUT starting it, whereas RunContainer always
 	// starts; that mode stays on the registry path via startAndStreamContainer.
-	if !opts.deploy {
+	//
+	// --chunking gates this path: "off" skips it entirely (registry push only),
+	// while "force" uses it with no registry-push fallback on failure.
+	if !opts.deploy && opts.chunking != chunkingOff {
 		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
 				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version})
@@ -1429,6 +1461,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// newer change, or the user hit Ctrl-C). Don't fall back to a full
 			// registry push — just surface the cancellation.
 			return err
+		} else if opts.chunking == chunkingForce {
+			// --chunking=force opts out of the registry-push fallback so the
+			// failure is surfaced instead of silently masked by a slower path.
+			return fmt.Errorf("chunk-diff deploy failed and --chunking=force disables the registry-push fallback: %w", err)
 		} else {
 			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
 		}
