@@ -124,6 +124,8 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
+| `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure (multi-service projects only). |
+| `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
 
