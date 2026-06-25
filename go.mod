@@ -25,6 +25,7 @@ require (
 	github.com/hashicorp/mdns v1.0.6
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.54.0
+	github.com/muesli/termenv v0.16.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -81,7 +82,6 @@ require (
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
