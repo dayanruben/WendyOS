@@ -85,6 +85,8 @@ wendy run --yes --debug --device <hostname>
 wendy run --yes --restart-unless-stopped --detach --device <hostname>
 wendy run --yes --restart-on-failure --detach --device <hostname>
 wendy run --yes --no-restart --device <hostname>
+wendy run --yes --chunking off --device <hostname>     # registry push only, skip chunk-diff
+wendy run --yes --chunking force --device <hostname>   # chunk-diff only, no fallback
 ```
 
 Attached `wendy run` starts the container and streams output. Ctrl+C stops the container. Detached `wendy run --detach` starts the container, waits for readiness when configured, fires post-start hooks, and exits.
