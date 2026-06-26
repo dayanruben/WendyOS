@@ -1518,7 +1518,7 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
 				c.Password = pw
 			} else if isInteractiveTerminal() {
-				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
+				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
@@ -1643,7 +1643,7 @@ var (
 		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
 	}
 	promptWifiPassword = func(ssid string) (string, error) {
-		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+		return tui.PromptPassword(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
 	}
 )
 
