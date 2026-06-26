@@ -83,10 +83,12 @@ The cursor must never rest on a header row.
 
 ### 4. Header styling
 
-The section label renders in the Name column as a bold `── WendyOS`-style cell
-(lipgloss styling embedded in the cell string; remaining columns blank). Because
-the cursor never lands on a header, it is never drawn with the selected-row
-highlight.
+The section label renders in the Name column as a plain-text `── WendyOS` cell
+(no lipgloss styling; remaining columns blank). The underlying bubble table
+truncates cells with `runewidth.Truncate`, which is not ANSI-aware and would
+mangle styled header strings. The `── ` prefix signals the header row without
+relying on color or bold weight. Because the cursor never lands on a header,
+it is never drawn with the selected-row highlight.
 
 ### 5. `os_install.go`
 

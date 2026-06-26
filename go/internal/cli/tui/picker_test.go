@@ -680,12 +680,10 @@ func TestPickerModel_RendersSectionHeaders(t *testing.T) {
 	}
 }
 
-// TestPickerModel_RendersSectionHeadersInColor guards against the section
-// header cell carrying lipgloss ANSI escapes into the table: the underlying
-// bubbles table truncates each cell with runewidth.Truncate, which counts the
-// escape bytes as visible width and cuts inside the escape sequence, leaving
-// mangled output (e.g. "…K") on a real color terminal. Tests default to the
-// Ascii profile (no escapes), so this forces truecolor to exercise that path.
+// TestPickerModel_RendersSectionHeadersInColor verifies that section headers
+// render correctly in truecolor mode. Headers are plain text (no lipgloss
+// styling) to avoid ANSI truncation issues in the bubble table, but this test
+// ensures they still display correctly when the terminal supports truecolor.
 func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
