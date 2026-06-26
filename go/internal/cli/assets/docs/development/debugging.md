@@ -51,6 +51,8 @@ All environment variables are read at startup. Restart the agent after changing 
 |---|---|---|
 | `WENDY_DEBUG` | _(unset)_ | Set to any value to enable development-mode logging (verbose, human-readable) |
 | `WENDY_TLS_DEBUG` | _(unset)_ | Set to any value to log TLS handshake details for debugging mTLS connection issues |
+| `WENDY_MDNS_DEBUG` | _(unset)_ | Set to any value to log mDNS query failures during discovery |
+| `WENDY_MDNS_TIMEOUT` | `4s` | Timeout for mDNS browse fallback on Linux/Windows hosts (range: 1s–30s) |
 | `WENDY_CONFIG_PATH` | `/etc/wendy-agent` | Directory for provisioning certificates and config |
 | `WENDY_AGENT_HOST` | `::` | Host address for the plaintext gRPC server (Swift agent only; accepted values: `127.0.0.1`, `::1`, `localhost`) |
 | `WENDY_AGENT_PORT` | `50051` | Port for the plaintext gRPC server (pre-provisioning only) |
@@ -183,6 +185,8 @@ sudo systemctl status avahi-daemon
 ```
 
 The agent advertises itself via Avahi using the service definition in `/etc/avahi/services/wendy-agent.service`.
+
+The CLI itself performs an mDNS browse on Linux hosts (shipped binaries are CGO_ENABLED=0 and cannot use nss-mdns). If discovery fails, the CLI prints hints about `avahi-daemon` and UDP port 5353. Set `WENDY_MDNS_DEBUG=1` to log mDNS query failures, or `WENDY_MDNS_TIMEOUT=8s` to extend the browse window on slow networks.
 
 ### mTLS handshake fails after re-provisioning
 

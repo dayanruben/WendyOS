@@ -29,9 +29,11 @@ wendy discover [flags]
 
 ### LAN (mDNS) discovery
 
-mDNS discovery works on all platforms. On Linux, ensure `avahi-daemon` is
-running on the device. On macOS, the CLI shells out to `dns-sd` and requires
-Local Network TCC permission.
+mDNS discovery works on all platforms. On Linux, the CLI performs an mDNS browse
+that requires UDP port 5353 open on the host firewall (e.g., `sudo ufw allow 5353/udp`).
+On macOS, the CLI shells out to `dns-sd` and requires Local Network TCC permission.
+For USB-connected devices on Linux, run `wendy device usb-setup` first to bring up
+the interface.
 
 Wendy for Mac advertises the same `_wendyos._udp` service. When discovery
 succeeds, Mac agents appear under `lanDevices` in JSON output with
