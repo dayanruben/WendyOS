@@ -2354,7 +2354,14 @@ func resolveRegistryIP(host string) string {
 func resolveHostPreferRoutable(hostname string) string {
 	addrs, err := net.LookupHost(hostname)
 	if err != nil || len(addrs) == 0 {
-		return ""
+		// The shipped CGO_ENABLED=0 binary can't resolve ".local" via the OS
+		// resolver; fall back to an mDNS browse so a device reached by its
+		// ".local" name still resolves for registry use (issue #1155).
+		if ip := resolveMDNSHost(context.Background(), hostname); ip != "" {
+			addrs = []string{ip}
+		} else {
+			return ""
+		}
 	}
 
 	// Scan all addresses before returning — IPv4 may appear after global IPv6

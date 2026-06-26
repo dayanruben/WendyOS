@@ -54,7 +54,27 @@ In this mode the host receives an address from `10.42.0.2`–`10.42.0.5` and the
 
 ## Host-Side Setup
 
-### Mode 1 host setup — NetworkManager shared (recommended)
+### Easiest — `wendy device usb-setup` (Linux)
+
+On a Linux host, the CLI can do the host-side setup for you. It auto-detects the
+gadget interface, brings it up via NetworkManager, and installs a udev rule so
+ModemManager stops grabbing the gadget's serial console:
+
+```sh
+# Link-local (no DHCP server needed):
+sudo wendy device usb-setup
+
+# Or serve DHCP to the device (10.42.0.1/24) and share internet:
+sudo wendy device usb-setup --shared
+
+# Preview the changes first, or undo them:
+wendy device usb-setup --check
+sudo wendy device usb-setup --undo
+```
+
+The manual steps below are equivalent and remain available.
+
+### Mode 1 host setup — NetworkManager shared
 
 Run on the host once the NCM interface (`enxXXXXXXXXXXXX`) appears:
 

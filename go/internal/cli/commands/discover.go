@@ -165,11 +165,30 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 	collection, ok := result.(*models.DevicesCollection)
 	if !ok || collection == nil || collection.IsEmpty() {
 		fmt.Println("No devices found.")
+		fmt.Println(noDevicesHint())
 		return nil
 	}
 
 	fmt.Print(renderDeviceTable(collection))
 	return nil
+}
+
+// noDevicesHint returns short, OS-appropriate guidance shown when discovery
+// finds nothing. mDNS discovery needs multicast on the path; on Linux the
+// browse uses Avahi (or raw multicast) and is commonly defeated by a stopped
+// avahi-daemon or a firewall blocking UDP 5353.
+func noDevicesHint() string {
+	if runtime.GOOS == "linux" {
+		return "Hints:\n" +
+			"  • Is avahi-daemon running?   systemctl status avahi-daemon\n" +
+			"  • Firewall blocking mDNS?    sudo ufw allow 5353/udp   (if ufw is active)\n" +
+			"  • USB-C tethered device?     sudo wendy device usb-setup\n" +
+			"  • Or connect directly by IP: wendy device connect <ip>:50051"
+	}
+	return "Hints:\n" +
+		"  • Device powered on and on the same network (or USB-C tethered).\n" +
+		"  • mDNS uses UDP 5353 — make sure a firewall isn't blocking it.\n" +
+		"  • Or connect directly by IP: wendy device connect <ip>:50051"
 }
 
 // discoverContinuous runs scans in a loop, refreshing the table until Ctrl+C.
