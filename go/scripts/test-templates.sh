@@ -70,6 +70,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# SECURITY: TARGET is passed into jq and generated shell commands below. Keep
+# this allowlist before all TARGET uses, and only add fixed literal target names.
 case "$TARGET" in
     wendyos|wendy-lite|darwin) ;;
     *)
