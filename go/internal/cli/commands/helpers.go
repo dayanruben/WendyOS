@@ -263,38 +263,6 @@ func hostPort(host string, port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
-// resolveHostPreferIPv4 resolves a hostname to a concrete IP address,
-// preferring IPv4 over global IPv6. If the input is already an IP address
-// or resolution fails, it returns the input unchanged.
-func resolveHostPreferIPv4(host string) string {
-	if _, err := netip.ParseAddr(host); err == nil {
-		return host // already an IP
-	}
-
-	addrs, err := net.LookupHost(host)
-	if err != nil || len(addrs) == 0 {
-		return host
-	}
-
-	var globalIPv6 string
-	for _, a := range addrs {
-		addr, parseErr := netip.ParseAddr(a)
-		if parseErr != nil {
-			continue
-		}
-		if addr.Is4() {
-			return a
-		}
-		if !addr.IsLinkLocalUnicast() && globalIPv6 == "" {
-			globalIPv6 = addr.WithZone("").String()
-		}
-	}
-	if globalIPv6 != "" {
-		return globalIPv6
-	}
-	return host // only link-local IPv6 found — keep hostname for zone-aware dial
-}
-
 // lanAgentAddresses returns candidate gRPC addresses for a LAN device.
 // Prefer the discovered IP address so commands still work when .local
 // hostname resolution is unavailable on the host machine.
@@ -768,6 +736,19 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 // does not stall a command for the full default discovery window.
 const mdnsBrowseTimeout = 4 * time.Second
 
+// mdnsBrowseTimeoutValue returns the mDNS fallback browse timeout, allowing
+// WENDY_MDNS_TIMEOUT (a Go duration like "8s") to raise it for slow networks
+// where the default window is too short to hear a response. Values outside
+// [1s, 30s] are ignored in favour of the default.
+func mdnsBrowseTimeoutValue() time.Duration {
+	if v := os.Getenv("WENDY_MDNS_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= time.Second && d <= 30*time.Second {
+			return d
+		}
+	}
+	return mdnsBrowseTimeout
+}
+
 // osLookupHostFn resolves a hostname via the operating system resolver. It is a
 // package variable so tests can simulate a resolver that cannot see mDNS names.
 var osLookupHostFn = func(ctx context.Context, host string) ([]string, error) {
@@ -777,6 +758,33 @@ var osLookupHostFn = func(ctx context.Context, host string) ([]string, error) {
 // lanBrowseFn browses the LAN for WendyOS devices via mDNS. It is a package
 // variable so tests can substitute a fixture instead of a real network browse.
 var lanBrowseFn = discovery.DiscoverLAN
+
+// resolveHostMDNSFallback resolves a bare hostname to a single IP, preferring
+// IPv4. It tries the OS resolver first, then falls back to an mDNS browse for
+// ".local" names. The OS resolver (and thus gRPC's) can't see mDNS ".local"
+// names on Windows or on Linux hosts without nss-mdns/avahi — and the shipped
+// binaries are built CGO_ENABLED=0, so they use Go's pure resolver which
+// ignores nss-mdns entirely. Only macOS resolves ".local" natively. The
+// mDNS-browse fallback keeps ".local" names working on those platforms (issue
+// #1155). A bare IP literal is returned unchanged; "" is returned when the
+// name cannot be resolved and no advertised mDNS device matches.
+func resolveHostMDNSFallback(ctx context.Context, host string) string {
+	if net.ParseIP(host) != nil {
+		return host
+	}
+	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ips, err := osLookupHostFn(rctx, host)
+	cancel()
+	if err == nil && len(ips) > 0 {
+		for _, ip := range ips { // prefer IPv4
+			if net.ParseIP(ip).To4() != nil {
+				return ip
+			}
+		}
+		return ips[0]
+	}
+	return resolveMDNSHost(ctx, host) // "" for non-".local" names or no match
+}
 
 // resolveAddrOnce resolves a host:port whose host is a DNS/mDNS name to an
 // IPv4-preferred IP:port, so the dials below target a literal IP. gRPC
@@ -791,22 +799,7 @@ func resolveAddrOnce(ctx context.Context, addr string) string {
 	if err != nil || net.ParseIP(host) != nil {
 		return addr // not host:port, or already a literal IP
 	}
-	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	ips, err := osLookupHostFn(rctx, host)
-	cancel()
-	if err == nil && len(ips) > 0 {
-		for _, ip := range ips { // prefer IPv4
-			if net.ParseIP(ip).To4() != nil {
-				return net.JoinHostPort(ip, port)
-			}
-		}
-		return net.JoinHostPort(ips[0], port)
-	}
-	// The OS resolver (and thus gRPC's) can't see mDNS ".local" names on
-	// Windows or on Linux hosts without nss-mdns/avahi — only macOS resolves
-	// them natively. Fall back to an mDNS browse so a saved default hostname
-	// still connects on those platforms (issue #1155).
-	if ip := resolveMDNSHost(ctx, host); ip != "" {
+	if ip := resolveHostMDNSFallback(ctx, host); ip != "" {
 		return net.JoinHostPort(ip, port)
 	}
 	return addr
@@ -822,9 +815,10 @@ func resolveMDNSHost(ctx context.Context, host string) string {
 	if !strings.HasSuffix(normalized, ".local") {
 		return ""
 	}
-	bctx, cancel := context.WithTimeout(ctx, mdnsBrowseTimeout)
+	timeout := mdnsBrowseTimeoutValue()
+	bctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	devices, err := lanBrowseFn(bctx, mdnsBrowseTimeout)
+	devices, err := lanBrowseFn(bctx, timeout)
 	if err != nil {
 		return ""
 	}
@@ -847,14 +841,28 @@ func normalizeMDNSHost(host string) string {
 	return strings.TrimSuffix(h, ".local")
 }
 
+// mdnsLocalHint returns guidance for ".local" mDNS resolution failures. The
+// shipped CLI is built CGO_ENABLED=0, so it can't see ".local" names via the OS
+// resolver (nss-mdns) and relies on an mDNS browse (avahi/raw multicast)
+// instead; that browse needs multicast on the path. Returns "" for
+// non-".local" hosts.
+func mdnsLocalHint(host string) string {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if !strings.HasSuffix(h, ".local") {
+		return ""
+	}
+	return "\n  Resolving a .local name needs mDNS: ensure avahi-daemon is running and" +
+		" UDP 5353 isn't firewalled (e.g. 'sudo ufw allow 5353/udp'), or connect by IP."
+}
+
 // defaultDeviceUnreachableError wraps a connection failure for a saved default
 // device so the message makes clear the default IS persisted but could not be
 // reached — rather than letting the failure read as if set-default never took
 // effect (issue #1155).
 func defaultDeviceUnreachableError(hostname string, err error) error {
 	return fmt.Errorf("default device %q is set but could not be reached: %w\n"+
-		"  Confirm it with 'wendy device get-default'; change it with 'wendy device set-default' or clear it with 'wendy device unset-default'.",
-		hostname, err)
+		"  Confirm it with 'wendy device get-default'; change it with 'wendy device set-default' or clear it with 'wendy device unset-default'.%s",
+		hostname, err, mdnsLocalHint(hostname))
 }
 
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {

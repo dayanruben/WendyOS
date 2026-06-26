@@ -68,7 +68,14 @@ ip addr show enxXXXXXXXXXXXX    # should show 10.42.0.1/24 if NM sharing is acti
 nmcli connection show | grep -i usb
 ```
 
-If the host is not set up for sharing, run:
+If the host is not set up for sharing, the simplest fix on Linux is:
+```bash
+sudo wendy device usb-setup --shared    # serve DHCP to the device
+# or, without a DHCP server:
+sudo wendy device usb-setup             # link-local only
+```
+
+The equivalent manual steps:
 ```bash
 sudo ./scripts/setup-host-usb-link-local.sh install
 # Or for full internet sharing (NM):

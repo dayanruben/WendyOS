@@ -124,4 +124,89 @@ func TestDefaultDeviceUnreachableError(t *testing.T) {
 			t.Errorf("error %q missing %q", msg, want)
 		}
 	}
+	// A ".local" target carries the mDNS troubleshooting hint.
+	if !strings.Contains(msg, "5353") {
+		t.Errorf("expected mDNS hint for a .local default, got %q", msg)
+	}
+
+	// A non-".local" target must not carry the mDNS hint.
+	if msg := defaultDeviceUnreachableError("192.168.1.50", cause).Error(); strings.Contains(msg, "5353") {
+		t.Errorf("did not expect mDNS hint for an IP default, got %q", msg)
+	}
+}
+
+func TestMDNSBrowseTimeoutValue(t *testing.T) {
+	cases := []struct {
+		env  string
+		want time.Duration
+	}{
+		{"", mdnsBrowseTimeout},
+		{"8s", 8 * time.Second},
+		{"500ms", mdnsBrowseTimeout}, // below floor → default
+		{"60s", mdnsBrowseTimeout},   // above ceiling → default
+		{"garbage", mdnsBrowseTimeout},
+	}
+	for _, c := range cases {
+		t.Setenv("WENDY_MDNS_TIMEOUT", c.env)
+		if got := mdnsBrowseTimeoutValue(); got != c.want {
+			t.Errorf("WENDY_MDNS_TIMEOUT=%q → %v, want %v", c.env, got, c.want)
+		}
+	}
+}
+
+func TestMDNSLocalHint(t *testing.T) {
+	if got := mdnsLocalHint("wendy-thor.local"); !strings.Contains(got, "5353") || !strings.Contains(got, "mDNS") {
+		t.Errorf("mdnsLocalHint(.local) = %q, want mDNS/5353 guidance", got)
+	}
+	for _, h := range []string{"example.com", "192.168.1.50", "wendy-thor"} {
+		if got := mdnsLocalHint(h); got != "" {
+			t.Errorf("mdnsLocalHint(%q) = %q, want empty", h, got)
+		}
+	}
+}
+
+func TestResolveHostMDNSFallback(t *testing.T) {
+	origLookup := osLookupHostFn
+	origBrowse := lanBrowseFn
+	defer func() {
+		osLookupHostFn = origLookup
+		lanBrowseFn = origBrowse
+	}()
+
+	// IP literal passes through untouched (no resolver calls).
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		t.Fatal("OS resolver should not be called for an IP literal")
+		return nil, nil
+	}
+	if got := resolveHostMDNSFallback(context.Background(), "192.168.1.50"); got != "192.168.1.50" {
+		t.Fatalf("resolveHostMDNSFallback(IP) = %q, want unchanged", got)
+	}
+
+	// OS resolver result prefers IPv4 over IPv6.
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return []string{"fe80::1", "192.168.1.50"}, nil
+	}
+	if got := resolveHostMDNSFallback(context.Background(), "wendy-thor.local"); got != "192.168.1.50" {
+		t.Fatalf("resolveHostMDNSFallback(OS) = %q, want 192.168.1.50", got)
+	}
+
+	// OS resolver failure on a ".local" name falls back to the mDNS browse.
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return nil, errors.New("no such host")
+	}
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return []models.LANDevice{{Hostname: "wendy-thor.local", IPAddress: "10.0.0.7"}}, nil
+	}
+	if got := resolveHostMDNSFallback(context.Background(), "wendy-thor.local"); got != "10.0.0.7" {
+		t.Fatalf("resolveHostMDNSFallback(mDNS) = %q, want 10.0.0.7", got)
+	}
+
+	// OS failure on a non-".local" name yields "" (no browse attempted).
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		t.Fatal("mDNS browse should not run for a non-.local host")
+		return nil, nil
+	}
+	if got := resolveHostMDNSFallback(context.Background(), "example.com"); got != "" {
+		t.Fatalf("resolveHostMDNSFallback(non-.local fail) = %q, want empty", got)
+	}
 }
