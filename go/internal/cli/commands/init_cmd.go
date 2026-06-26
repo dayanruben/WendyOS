@@ -892,7 +892,7 @@ func resolveInitTarget(opts initOptions) (string, error) {
 	fmt.Println()
 	return pickFromItems("What is your target device?", []tui.PickerItem{
 		{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS, SortKey: "0"},
-		{Name: "Wendy Agent for Mac", Description: "Native macOS app deployed to a Mac agent", Value: targetDarwin, SortKey: "1"},
+		{Name: "macOS", Description: "Native macOS app deployed to Wendy Agent for Mac", Value: targetDarwin, SortKey: "1"},
 		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
 	})
 }
