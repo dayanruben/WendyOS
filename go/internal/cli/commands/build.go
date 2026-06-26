@@ -627,10 +627,14 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 	}
 
 	cliLogln("Building Xcode project %s (scheme: %s)...", tui.Value(xcodeproj), tui.Value(scheme))
-	// NOTE: We intentionally skip Swift macro/package plugin validation here as
-	// well as in the Mac deploy path. Wendy Xcode builds are often run from
-	// headless CLI/agent sessions where Xcode's trust prompts cannot be answered;
-	// templates that need this path must commit a reviewed Package.resolved.
+	// SECURITY: Xcode project support exists for native Mac packages that cannot be
+	// built correctly with SwiftPM alone today, for example packages that require
+	// Xcode-only resource or shader build steps (see
+	// docs/clients/wendy-cli/commands/build.md).
+	// Xcode's macro/plugin prompts are an interactive consent layer on top of
+	// SwiftPM's build-time code/sandbox model; headless Wendy CLI builds cannot
+	// answer those prompts, so we deliberately make xcodebuild behave like CLI
+	// build tools and rely on a trusted, pinned Package.resolved.
 	if err := runXcodebuild(ctx, dir,
 		"-project", xcodeproj,
 		"-scheme", scheme,

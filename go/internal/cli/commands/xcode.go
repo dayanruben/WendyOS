@@ -286,9 +286,14 @@ func runMacOSXcodeWithAgent(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 
 	// Build with xcodebuild -configuration Release.
-	// NOTE: Package macro/plugin validation prompts cannot be answered in
-	// headless CLI deploys, so we skip them and trust the package graph committed
-	// by the app project.
+	// SECURITY: Xcode project support exists for native Mac packages that cannot be
+	// built correctly with SwiftPM alone today, for example packages that require
+	// Xcode-only resource or shader build steps (see
+	// docs/clients/wendy-cli/commands/build.md).
+	// Xcode's macro/plugin prompts are an interactive consent layer on top of
+	// SwiftPM's build-time code/sandbox model; headless Wendy CLI deploys cannot
+	// answer those prompts, so we deliberately make xcodebuild behave like CLI
+	// build tools and rely on a trusted, pinned Package.resolved.
 	derivedDataPath := filepath.Join(cwd, ".xcode")
 	cliLogln("Building Xcode project %s (scheme: %s)...", xp, scheme)
 	if err := runXcodebuild(ctx, cwd,

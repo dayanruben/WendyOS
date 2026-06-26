@@ -70,7 +70,11 @@ FROM ${WENDY_PLATFORM}-base-image
 
 ### Xcode projects
 
-Builds with `xcodebuild`. For native Mac runs, if a `Brewfile.wendy` is present in the project root, Wendy applies it on the target Mac before starting the app. A plain project-root `Brewfile` is left for developer-machine setup unless explicitly referenced by `wendy.json`.
+Builds with `xcodebuild`. Xcode project support exists for native Mac packages that cannot be built correctly with SwiftPM alone, for example packages that need Xcode-only resource or shader build steps.
+
+Wendy passes `-skipMacroValidation` and `-skipPackagePluginValidation` so `xcodebuild` can run from a headless CLI/agent session. Xcode's macro/plugin prompts are an interactive consent layer on top of SwiftPM's build-time code and package-plugin sandbox model; headless Wendy builds treat invoking the build as consent, similar to CLI build tools. Only use Xcode projects with trusted, pinned package dependencies.
+
+For native Mac runs, if a `Brewfile.wendy` is present in the project root, Wendy applies it on the target Mac before starting the app. A plain project-root `Brewfile` is left for developer-machine setup unless explicitly referenced by `wendy.json`.
 
 ## Platform support for Swift projects
 
