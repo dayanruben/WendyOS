@@ -7,6 +7,10 @@ description: Use when creating, reviewing, or debugging `wendy.json` entitlement
 
 Use this for any task involving `wendy.json` capabilities. Base recommendations on the runtime behavior in `wendy-agent/go/internal/agent/oci/entitlements.go` and validation in `wendy-agent/go/internal/shared/appconfig/appconfig.go`.
 
+## Platform scope
+
+Entitlements apply to containerized platforms (`linux`/`wendyos` and `wendy-lite`). Darwin (native macOS) apps run non-containerized and do not use WendyOS container entitlements.
+
 ## Start from app needs
 
 Ask what the app actually touches, then choose the smallest entitlement set:
