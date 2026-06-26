@@ -2,14 +2,17 @@ package commands
 
 import "testing"
 
-func TestNewDeviceUSBSetupCmd_Flags(t *testing.T) {
-	cmd := newDeviceUSBSetupCmd()
-	if cmd.Use != "usb-setup" {
-		t.Fatalf("Use = %q, want usb-setup", cmd.Use)
+// The hidden "__usb-setup" subcommand is the privileged half of the USB-C
+// auto-setup flow, re-executed under sudo by maybeOfferUSBSetup.
+func TestNewUSBSetupHiddenCmd_Flags(t *testing.T) {
+	cmd := newUSBSetupHiddenCmd()
+	if cmd.Use != "__usb-setup" {
+		t.Fatalf("Use = %q, want __usb-setup", cmd.Use)
 	}
-	for _, f := range []string{"iface", "shared", "dry-run", "check", "undo"} {
-		if cmd.Flags().Lookup(f) == nil {
-			t.Errorf("missing flag --%s", f)
-		}
+	if !cmd.Hidden {
+		t.Error("expected __usb-setup to be hidden")
+	}
+	if cmd.Flags().Lookup("iface") == nil {
+		t.Error("missing flag --iface")
 	}
 }

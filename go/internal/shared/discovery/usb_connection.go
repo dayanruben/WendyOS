@@ -12,8 +12,8 @@ import (
 // USBNetworkInterfaceNames returns the names of non-loopback network interfaces
 // that appear to be USB-attached (USB-CDC gadget links), using the same
 // heuristics as device discovery (name patterns plus, on Linux, a sysfs
-// device-path check). It is used by the CLI's `wendy device usb-setup` command
-// to locate the host's gadget interface.
+// device-path check). The CLI's USB-C auto-setup flow uses it to locate the
+// host's gadget interface.
 func USBNetworkInterfaceNames() ([]string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {

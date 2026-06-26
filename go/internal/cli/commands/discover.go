@@ -53,6 +53,11 @@ func newDiscoverCmd() *cobra.Command {
 				return fmt.Errorf("unknown discovery type: %s (valid: usb, lan, bluetooth, external, all)", discoverType)
 			}
 
+			// Pre-flight: on Linux, if a USB-C Wendy device is tethered but its
+			// host link isn't configured, offer to set it up so it shows up in
+			// the scan below. No-op on other platforms / non-interactive runs.
+			_ = maybeOfferUSBSetup(cmd.Context())
+
 			timeoutSet := cmd.Flags().Changed("timeout")
 
 			if jsonOutput {
@@ -182,7 +187,7 @@ func noDevicesHint() string {
 		return "Hints:\n" +
 			"  • Is avahi-daemon running?   systemctl status avahi-daemon\n" +
 			"  • Firewall blocking mDNS?    sudo ufw allow 5353/udp   (if ufw is active)\n" +
-			"  • USB-C tethered device?     sudo wendy device usb-setup\n" +
+			"  • USB-C tethered device?     re-run 'wendy discover' and accept the USB setup prompt\n" +
 			"  • Or connect directly by IP: wendy device connect <ip>:50051"
 	}
 	return "Hints:\n" +

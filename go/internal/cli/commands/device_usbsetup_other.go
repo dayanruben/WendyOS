@@ -3,24 +3,15 @@
 package commands
 
 import (
+	"context"
 	"fmt"
-	"runtime"
-
-	"github.com/spf13/cobra"
+	"io"
 )
 
-// usbSetupRun is unsupported off Linux. macOS brings up the USB-C gadget link
-// automatically; Windows users configure the gadget network adapter manually.
-func usbSetupRun(cmd *cobra.Command, opts usbSetupOptions) error {
-	_ = opts
-	switch runtime.GOOS {
-	case "darwin":
-		fmt.Fprintln(cmd.OutOrStdout(),
-			"macOS brings up the USB-C link to a Wendy device automatically — no setup needed.\n"+
-				"If the device isn't found, check System Settings ▸ Network for the USB adapter, then run 'wendy discover'.")
-		return nil
-	default:
-		return fmt.Errorf("'wendy device usb-setup' configures a Linux host's USB-C link and is not supported on %s.\n"+
-			"  Configure the USB gadget network adapter manually, then run 'wendy discover'.", runtime.GOOS)
-	}
+// runUSBSetup is only meaningful on Linux, where a USB-C-tethered Wendy device
+// needs host-side NetworkManager + udev configuration. The hidden "__usb-setup"
+// subcommand compiles on every platform but is only ever invoked on Linux (the
+// auto-detect offer is a no-op elsewhere — see maybeOfferUSBSetup).
+func runUSBSetup(_ context.Context, _ string, _ io.Writer) error {
+	return fmt.Errorf("USB setup is only supported on Linux")
 }
