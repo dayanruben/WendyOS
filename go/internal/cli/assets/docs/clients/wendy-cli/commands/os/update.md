@@ -1,6 +1,8 @@
 # `wendy os update`
 
-Updates the OS on a WendyOS device using the Mender OTA mechanism.
+Updates the OS on a WendyOS device using an A/B OTA mechanism. The device
+prefers the in-house **wendyos-update** engine when it supports the board and
+falls back to **mender**; `--updater` forces a specific backend.
 
 ```sh
 # Auto-detect the latest stable release for the connected device
@@ -9,11 +11,15 @@ wendy os update
 # Use the latest nightly build
 wendy os update --nightly
 
-# Provide a specific Mender artifact URL
-wendy os update --artifact-url https://example.com/update.mender
+# Provide a specific artifact URL (.wendy or .mender)
+wendy os update --artifact-url https://example.com/update.wendy
 
-# Provide a local Mender artifact file
-wendy os update ./update.mender
+# Provide a local artifact file
+wendy os update ./update.wendy
+
+# Force a specific update backend (default: auto)
+wendy os update --updater wendyos
+wendy os update --updater mender
 ```
 
 ---
@@ -34,7 +40,7 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 |---|---|
 | macOS, Windows, unknown non-WendyOS platform, Wendy Lite, external/local provider | `This setup cannot be updated with wendy os update. Use this machine's normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install.` |
 | Generic Linux host with `wendy-agent` but no WendyOS identity (including hosts that also have `mender-update` installed) | `This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution's package manager, such as apt, dnf, or pacman, to update this machine.` |
-| WendyOS identity present but `mender-update` not found | `This WendyOS image does not support OTA updates because mender-update was not found. Reinstall or upgrade to a WendyOS image with OTA support.` |
+| WendyOS identity present but neither `wendyos-update` nor `mender-update` was found | `This WendyOS image does not support OTA updates because no update backend (wendyos-update or mender) was found. Reinstall or upgrade to a WendyOS image with OTA support.` |
 | No explicit artifact and the device type is missing or unrecognized in the update catalog | Shows a warning and prompts the user to select the correct device type from a picker. The latest version (stable or nightly) is then chosen automatically. |
 
 > **Note:** macOS agents report a host OS version, but this does not qualify the host as a WendyOS OTA target. Only a `WendyOS-`-prefixed `os_version` or a non-empty `device_type` on a Linux host qualifies.
@@ -46,18 +52,31 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 1. **Validate target identity** — query `GetAgentVersion` and confirm the target is a WendyOS OTA target. Exits immediately with an error if not.
 2. **Update the agent** — ensure the agent binary is at the latest release before proceeding with the OS image update. GitHub release lookups use the `GITHUB_TOKEN` environment variable when present, and fall back to unauthenticated requests otherwise.
 3. **Re-query version** — query `GetAgentVersion` again after the agent update.
-4. **Validate OTA support** — confirm `mender` is present in the featureset.
+4. **Validate OTA support** — confirm `wendyos-update` or `mender` is present in the featureset.
 5. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. If the device type is missing or not recognized, shows a warning and prompts the user to select the correct device type.
 6. **Check current version** — if the device is already at the latest version, exits without updating.
-7. **Stream update** — call `UpdateOS` on the agent, which runs `mender-update install` and streams progress to the terminal. The agent then reboots into the updated OS.
+7. **Stream update** — call `UpdateOS` on the agent. The agent selects the backend (see [Update backend selection](#update-backend-selection)), runs `<backend> install` and streams progress to the terminal. The agent then reboots into the updated OS.
 8. **Wait for reboot** — poll the device until it is reachable again (up to 10 minutes, enough for a rollback's second reboot).
 9. **Report the outcome** — query the device for the post-update healthcheck verdict and print it. The command exits non-zero when the update was rolled back.
 
 ---
 
+## Update backend selection
+
+The agent supports two OS update backends and chooses one per request:
+
+- **wendyos-update** — the in-house A/B OTA engine, used as the primary backend. The agent prefers it whenever its binary is installed and its platform connector detects the board (probed via `wendyos-update status`).
+- **mender** — the fallback, used when wendyos-update is unavailable or does not yet support the device (e.g. boards without a connector).
+
+The `--updater` flag overrides selection: `auto` (default), `wendyos`, or `mender`. An explicit choice is honored or fails — it does not silently fall back. The backend that installed an update is recorded on the device so the post-reboot gate commits or rolls back with the same backend.
+
+> **Image requirement:** because the agent's healthcheck gate is the single commit authority (below), the WendyOS image must **not** enable wendyos-update's own `wendyos-update-commit.service` / `wendyos-update-verify.service` units — they would race the agent. The image bundles the `wendyos-update` binary on `PATH` with those units masked.
+
+---
+
 ## Post-update healthchecks and automatic rollback
 
-WendyOS uses Mender A/B rootfs slots, so an update boots into the new slot while keeping the previous OS intact. On the first boot after an update, the agent healthchecks critical system services **before** committing the update:
+Both backends use A/B rootfs slots, so an update boots into the new slot while keeping the previous OS intact. The agent's healthcheck gate is backend-agnostic: on the first boot after an update, it healthchecks critical system services **before** committing, regardless of which backend installed it:
 
 | Service | Why it matters |
 |---------|----------------|
@@ -65,7 +84,7 @@ WendyOS uses Mender A/B rootfs slots, so an update boots into the new slot while
 | `containerd.service` | Container runtime — apps cannot run without it |
 | `NetworkManager.service` | WiFi/network connectivity |
 
-Each service gets a bounded time to become active (services that do not exist on a device, or are intentionally disabled, are skipped). If every check passes, the agent runs `mender-update commit` to make the update permanent. If any check fails, the agent rolls back (`mender-update rollback`) and reboots into the previous OS.
+Each service gets a bounded time to become active (services that do not exist on a device, or are intentionally disabled, are skipped). If every check passes, the agent runs the backend's `commit` to make the update permanent. If any check fails, the agent runs the backend's `rollback` and reboots into the previous OS.
 
 The verdict — including which services failed and why — is persisted on the device's data partition, so it survives the rollback. `wendy os update` reports it once the device is back online:
 
@@ -91,7 +110,8 @@ Use `--nightly` to select nightly (pre-release) artifacts instead of stable ones
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--artifact-url` | — | URL of a Mender artifact to install directly |
+| `--artifact-url` | — | URL of an artifact (`.wendy` or `.mender`) to install directly |
 | `--nightly` | false | Use nightly/pre-release builds for auto-selection |
+| `--updater` | `auto` | OS update backend: `auto` (prefer wendyos-update, fall back to mender), `wendyos`, or `mender` |
 
 A positional argument (local file path) can be used instead of `--artifact-url`.

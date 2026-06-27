@@ -2,10 +2,7 @@ package services
 
 import (
 	"context"
-	"errors"
 	"net/url"
-	"os/exec"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -14,24 +11,36 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
-// RunOSUpdateGate confirms or rolls back a pending Mender A/B update at agent
-// startup. When an OS update is pending verification (marker written by
-// UpdateOS before the reboot), it healthchecks the critical services first
-// and rolls back to the previous OS if any of them failed to come up. Without
-// a pending update it reduces to the plain "mender-update commit" the agent
-// has always run on startup.
+// RunOSUpdateGate confirms or rolls back a pending A/B update at agent startup.
+// When an OS update is pending verification (marker written by UpdateOS before
+// the reboot), it healthchecks the critical services first and rolls back to
+// the previous OS if any of them failed to come up. Without a pending update it
+// reduces to the plain "commit" the agent has always run on startup.
 //
-// This must run before the gRPC server starts: the device must not appear
-// back online to a waiting `wendy os update` until the commit-or-rollback
-// decision is made.
+// The commit/rollback are driven by the backend that installed the update
+// (recorded in the marker): the in-house wendyos-update engine, or mender as a
+// fallback. The healthcheck logic itself is backend-agnostic.
+//
+// This must run before the gRPC server starts: the device must not appear back
+// online to a waiting `wendy os update` until the commit-or-rollback decision
+// is made.
 func RunOSUpdateGate(logger *zap.Logger) {
+	marker, found, err := oshealth.ReadPendingMarker(oshealth.DefaultStateDir)
+	if err != nil {
+		// The gate re-reads and discards a corrupt marker itself; here we only
+		// need a backend to drive the commit, so fall through to auto-select.
+		logger.Warn("Pending OS update marker is unreadable; auto-selecting the update backend", zap.Error(err))
+	}
+	requested := requestedBackendFromMarker(marker, found && err == nil)
+	commit, rollback := commitClosures(logger, requested)
+
 	gate := &oshealth.Gate{
 		Logger:   logger,
 		StateDir: oshealth.DefaultStateDir,
 		Services: oshealth.DefaultCriticalServices,
 		Checker:  oshealth.NewChecker(logger),
-		Commit:   func() oshealth.MenderResult { return menderRun(logger, "commit") },
-		Rollback: func() oshealth.MenderResult { return menderRun(logger, "rollback") },
+		Commit:   commit,
+		Rollback: rollback,
 		Reboot:   rebootSystem,
 		OSVersion: func() string {
 			v, _ := wendyOSVersion()
@@ -41,51 +50,38 @@ func RunOSUpdateGate(logger *zap.Logger) {
 	gate.Run(context.Background())
 }
 
-// menderCommandTimeout bounds a single mender-update commit/rollback. These are
-// fast bootloader-metadata operations; the timeout exists only so a hung mender
-// (the likely failure mode exactly when systemd/D-Bus/storage is unhealthy
-// early in boot) cannot block agent startup — and therefore the
-// commit-or-rollback decision — indefinitely.
-const menderCommandTimeout = 60 * time.Second
-
-// menderRun executes "mender-update <subcommand>" and classifies the result.
-// Exit code 2 means "nothing pending" for both commit and rollback. If the
-// update is never committed, Mender rolls back on the next reboot.
-func menderRun(logger *zap.Logger, subcommand string) oshealth.MenderResult {
-	binary, found := resolveMenderBinary()
-	if !found {
-		return oshealth.MenderResult{Status: oshealth.MenderUnavailable}
+// requestedBackendFromMarker returns the backend the gate should drive: the one
+// the marker recorded, or "" (auto-select) when there is no marker or it
+// predates multi-backend support.
+func requestedBackendFromMarker(marker oshealth.PendingMarker, found bool) string {
+	if found {
+		return marker.Backend
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), menderCommandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, subcommand)
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	out, err := cmd.CombinedOutput()
-	output := strings.TrimSpace(string(out))
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			logger.Error("mender-update timed out",
-				zap.String("subcommand", subcommand),
-				zap.Duration("timeout", menderCommandTimeout),
-				zap.String("output", output))
-			return oshealth.MenderResult{Status: oshealth.MenderError, Output: output, Err: ctx.Err()}
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-			return oshealth.MenderResult{Status: oshealth.MenderNothingPending, Output: output}
-		}
-		logger.Warn("mender-update invocation failed",
-			zap.String("subcommand", subcommand), zap.String("output", output), zap.Error(err))
-		return oshealth.MenderResult{Status: oshealth.MenderError, Output: output, Err: err}
-	}
-	return oshealth.MenderResult{Status: oshealth.MenderOK, Output: output}
+	return ""
 }
 
-// recordPendingOSUpdate persists the pending-update marker that the
-// healthcheck gate consumes on the next boot. Failure is fail-open: without a
-// marker the next boot performs a plain commit, matching the pre-healthcheck
-// behavior.
-func recordPendingOSUpdate(logger *zap.Logger, stateDir, artifactURL string) {
+// commitClosures resolves the backend for the gate and returns its
+// commit/rollback. It selects by binary presence (chooseUpdaterForCommit), not
+// the install-time connector probe: the update has already been installed, so a
+// transient probe failure must not block committing a healthy slot. If no
+// backend binary is present (e.g. a non-WendyOS host), it returns no-ops
+// reporting "unavailable" so the gate degrades to the pre-multi-backend no-op.
+func commitClosures(logger *zap.Logger, requested string) (commit, rollback func() oshealth.MenderResult) {
+	updater := chooseUpdaterForCommit(requested, productionUpdaters(logger))
+	if updater == nil {
+		logger.Debug("No OS update backend available for the gate; commit/rollback are no-ops",
+			zap.String("requested", requested))
+		noop := func() oshealth.MenderResult { return oshealth.MenderResult{Status: oshealth.MenderUnavailable} }
+		return noop, noop
+	}
+	return updater.commit, updater.rollback
+}
+
+// recordPendingOSUpdate persists the pending-update marker that the healthcheck
+// gate consumes on the next boot, tagging it with the backend that installed
+// the update. Failure is fail-open: without a marker the next boot performs a
+// plain commit, matching the pre-healthcheck behavior.
+func recordPendingOSUpdate(logger *zap.Logger, stateDir, artifactURL, backend string) {
 	// A result record left over from a previous attempt must not be mistaken
 	// for this update's outcome, so drop it before the reboot.
 	if err := oshealth.ClearUpdateResult(stateDir); err != nil {
@@ -96,6 +92,7 @@ func recordPendingOSUpdate(logger *zap.Logger, stateDir, artifactURL string) {
 		ArtifactURL:  redactURLCredentials(artifactURL),
 		AgentVersion: version.Version,
 		BootID:       oshealth.CurrentBootID(),
+		Backend:      backend,
 	}
 	if v, ok := wendyOSVersion(); ok {
 		marker.OldOSVersion = v

@@ -37,6 +37,11 @@ type PendingMarker struct {
 	// there is nothing to verify (e.g. the agent restarted between install
 	// and reboot).
 	BootID string `json:"boot_id,omitempty"`
+	// Backend identifies the OS update backend that installed this update
+	// ("wendyos-update" or "mender"), so the next boot's gate commits or rolls
+	// back with the same backend. Empty on markers written before multi-backend
+	// support; the gate then auto-selects (see requestedBackendFromMarker).
+	Backend string `json:"backend,omitempty"`
 }
 
 // CurrentBootID returns the kernel's boot ID, which uniquely identifies the
