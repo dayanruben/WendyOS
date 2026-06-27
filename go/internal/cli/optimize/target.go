@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
@@ -50,6 +51,16 @@ func resolveArch(override string) string {
 		return override
 	}
 	return "arm64"
+}
+
+// isWithinDir reports whether target is base itself or a descendant of it,
+// guarding against path-traversal (e.g. a "../../etc" build context).
+func isWithinDir(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func fileExists(path string) bool {
@@ -103,7 +114,15 @@ func DiscoverTargets(dir string, cfg *appconfig.AppConfig, arch string) ([]Targe
 		for _, name := range names {
 			svcDir := dir
 			if svc := cfg.Services[name]; svc != nil && svc.Context != "" {
-				svcDir = filepath.Join(dir, svc.Context)
+				candidate := filepath.Join(dir, svc.Context)
+				// Refuse to read a build context that escapes the project tree.
+				// A malicious wendy.json could otherwise point Context at
+				// "../../etc" and have us read (and, via --agentic, surface)
+				// arbitrary files. Skip such services entirely.
+				if !isWithinDir(dir, candidate) {
+					continue
+				}
+				svcDir = candidate
 			}
 			targets = append(targets, Target{
 				Name:         name,
