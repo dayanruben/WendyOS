@@ -16,15 +16,14 @@ const hintInterval = 7 * time.Second
 // CLI can do during otherwise-idle wait time. Edit this list freely.
 var ProgressHints = []string{
 	"Tip: Stream live app output with 'wendy device logs'",
-	"Tip: 'wendy run' rebuilds and redeploys automatically as you edit files",
+	"Tip: 'wendy run --watch' rebuilds and redeploys automatically as you edit files",
 	"Tip: Inspect a device's hardware and capabilities with 'wendy device info'",
-	"Tip: Update the on-device agent with 'wendy device update'",
+	"Tip: Update the device agent with 'wendy device update'",
 	"Tip: Discover devices on your network with 'wendy device discover'",
-	"Tip: List and manage running apps with 'wendy device apps list'",
+	"Tip: List and manage running apps with 'wendy device ps'",
 	"Tip: Scaffold a new project in seconds with 'wendy init'",
 	"Tip: Grant hardware access (GPU, camera, GPIO) via entitlements in wendy.json",
 	"Tip: Validate your wendy.json against the schema with 'wendy json'",
-	"Tip: View metrics, traces, and logs with the 'wendy telemetry' commands",
 	"Tip: Reach a device behind NAT with 'wendy cloud run'",
 	"Tip: Let Claude/Codex drive your devices - set up the MCP server with 'wendy mcp setup'",
 	"Tip: Let Claude/Codex help you debug - set up the MCP server with 'wendy mcp setup'",
