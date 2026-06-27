@@ -9,7 +9,8 @@ type Analyzer interface {
 // DefaultAnalyzers returns all built-in analyzers. Each analyzer task appends here.
 func DefaultAnalyzers() []Analyzer {
 	return []Analyzer{
-		// appended by later tasks: buildCacheAnalyzer{}, releaseDebugAnalyzer{}, cudaMLAnalyzer{}, archImageAnalyzer{}
+		buildCacheAnalyzer{},
+		// appended by later tasks: releaseDebugAnalyzer{}, cudaMLAnalyzer{}, archImageAnalyzer{}
 	}
 }
 
