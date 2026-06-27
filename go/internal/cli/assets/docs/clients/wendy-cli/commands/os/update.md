@@ -38,7 +38,7 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 
 | Circumstance | Error |
 |---|---|
-| macOS, Windows, unknown non-WendyOS platform, Wendy Lite, external/local provider | `This setup cannot be updated with wendy os update. Use this machine's normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install.` |
+| macOS, Windows, unknown non-WendyOS platform, Wendy Lite, external/local provider | `This setup cannot be updated with wendy os update. Use this machine's normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy install.` |
 | Generic Linux host with `wendy-agent` but no WendyOS identity (including hosts that also have `mender-update` installed) | `This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution's package manager, such as apt, dnf, or pacman, to update this machine.` |
 | WendyOS identity present but neither `wendyos-update` nor `mender-update` was found | `This WendyOS image does not support OTA updates because no update backend (wendyos-update or mender) was found. Reinstall or upgrade to a WendyOS image with OTA support.` |
 | No explicit artifact and the device type is missing or unrecognized in the update catalog | Shows a warning and prompts the user to select the correct device type from a picker. The latest version (stable or nightly) is then chosen automatically. |
