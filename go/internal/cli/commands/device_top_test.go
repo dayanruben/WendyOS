@@ -78,3 +78,34 @@ func TestBuildTopRowsMultiServiceGrouping(t *testing.T) {
 		t.Errorf("rows 1,2 should be subrows")
 	}
 }
+
+func TestBuildTopJSON(t *testing.T) {
+	containers := []*agentpb.AppContainer{
+		{AppName: "myapp", RunningState: agentpb.AppRunningState_RUNNING},
+	}
+	prev := topSample{
+		host:         &agentpb.HostStats{CpuTotalJiffies: 1000, CpuIdleJiffies: 900, CpuCount: 2, MemTotalBytes: 200, MemAvailableBytes: 150},
+		containers:   map[string]uint64{"myapp": 0},
+		mem:          map[string]int64{"myapp": 50},
+		takenAtNanos: 0,
+	}
+	cur := topSample{
+		host:         &agentpb.HostStats{CpuTotalJiffies: 1100, CpuIdleJiffies: 950, CpuCount: 2, MemTotalBytes: 200, MemAvailableBytes: 140},
+		containers:   map[string]uint64{"myapp": 500_000_000},
+		mem:          map[string]int64{"myapp": 60},
+		takenAtNanos: 1_000_000_000,
+	}
+	out := buildTopJSON(prev, cur, containers)
+	if out.Host.CPUPercent <= 0 {
+		t.Errorf("host cpu%% = %v, want > 0", out.Host.CPUPercent)
+	}
+	if out.Host.MemUsedBytes != 60 { // total - available = 200-140
+		t.Errorf("host memUsed = %d, want 60", out.Host.MemUsedBytes)
+	}
+	if len(out.Containers) != 1 || out.Containers[0].Name != "myapp" {
+		t.Fatalf("containers = %+v", out.Containers)
+	}
+	if out.Containers[0].CPUPercent <= 0 {
+		t.Errorf("container cpu%% = %v, want > 0", out.Containers[0].CPUPercent)
+	}
+}

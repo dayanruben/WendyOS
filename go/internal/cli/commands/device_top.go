@@ -1,9 +1,20 @@
 package commands
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
 	"sort"
+	"text/tabwriter"
+	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // topSample is a normalized snapshot used to compute CPU% from deltas.
@@ -148,4 +159,191 @@ func buildTopRows(containers []*agentpb.AppContainer, cpuByID map[string]float64
 		}
 	}
 	return rows
+}
+
+// errResourceStatsUnimplemented marks an agent too old to support device top.
+var errResourceStatsUnimplemented = fmt.Errorf("the device's agent does not support resource stats; update it with 'wendy device update'")
+
+func sampleResourceStats(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpb.GetResourceStatsResponse, error) {
+	resp, err := conn.ContainerService.GetResourceStats(ctx, &agentpb.GetResourceStatsRequest{})
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return nil, errResourceStatsUnimplemented
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+func listAppContainers(ctx context.Context, conn *grpcclient.AgentConnection) ([]*agentpb.AppContainer, error) {
+	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
+	if err != nil {
+		return nil, err
+	}
+	var out []*agentpb.AppContainer
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if c := resp.GetContainer(); c != nil {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+type topJSONHost struct {
+	CPUPercent    float64      `json:"cpuPercent"`
+	CPUCount      uint32       `json:"cpuCount"`
+	MemUsedBytes  int64        `json:"memUsedBytes"`
+	MemTotalBytes int64        `json:"memTotalBytes"`
+	GPUs          []topJSONGPU `json:"gpus,omitempty"`
+}
+
+type topJSONGPU struct {
+	Index         uint32   `json:"index"`
+	Name          string   `json:"name"`
+	UtilPercent   float64  `json:"utilPercent"`
+	MemUsedBytes  int64    `json:"memUsedBytes"`
+	MemTotalBytes int64    `json:"memTotalBytes"`
+	TempC         *float64 `json:"tempC,omitempty"`
+	PowerW        *float64 `json:"powerW,omitempty"`
+}
+
+type topJSONContainer struct {
+	Name       string  `json:"name"`
+	State      string  `json:"state"`
+	CPUPercent float64 `json:"cpuPercent"`
+	MemBytes   int64   `json:"memBytes"`
+}
+
+type topJSONOutput struct {
+	Host       topJSONHost        `json:"host"`
+	Containers []topJSONContainer `json:"containers"`
+}
+
+func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJSONOutput {
+	out := topJSONOutput{}
+	if cur.host != nil {
+		out.Host.CPUPercent = hostCPUPercent(prev, cur)
+		out.Host.CPUCount = cur.host.GetCpuCount()
+		out.Host.MemTotalBytes = cur.host.GetMemTotalBytes()
+		out.Host.MemUsedBytes = cur.host.GetMemTotalBytes() - cur.host.GetMemAvailableBytes()
+		for _, g := range cur.host.GetGpus() {
+			out.Host.GPUs = append(out.Host.GPUs, topJSONGPU{
+				Index:         g.GetIndex(),
+				Name:          g.GetName(),
+				UtilPercent:   g.GetUtilPercent(),
+				MemUsedBytes:  g.GetMemUsedBytes(),
+				MemTotalBytes: g.GetMemTotalBytes(),
+				TempC:         g.TempC,
+				PowerW:        g.PowerW,
+			})
+		}
+	}
+	cpuCount := uint32(1)
+	if cur.host != nil && cur.host.GetCpuCount() > 0 {
+		cpuCount = cur.host.GetCpuCount()
+	}
+	cpuByID := map[string]float64{}
+	for id := range cur.containers {
+		cpuByID[id] = containerCPUPercent(prev, cur, id, cpuCount)
+	}
+	rows := buildTopRows(containers, cpuByID, cur.mem, false)
+	for _, r := range rows {
+		if r.isSubrow {
+			continue
+		}
+		out.Containers = append(out.Containers, topJSONContainer{
+			Name:       r.displayName,
+			CPUPercent: r.cpuPercent,
+			MemBytes:   r.memBytes,
+		})
+	}
+	return out
+}
+
+func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSON bool) error {
+	containers, err := listAppContainers(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+	first, err := sampleResourceStats(ctx, conn)
+	if err != nil {
+		return err
+	}
+	prev := newTopSample(first, time.Now().UnixNano())
+	time.Sleep(250 * time.Millisecond)
+	second, err := sampleResourceStats(ctx, conn)
+	if err != nil {
+		return err
+	}
+	cur := newTopSample(second, time.Now().UnixNano())
+
+	if asJSON {
+		data, err := json.MarshalIndent(buildTopJSON(prev, cur, containers), "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Plain table.
+	cpuCount := uint32(1)
+	if cur.host != nil && cur.host.GetCpuCount() > 0 {
+		cpuCount = cur.host.GetCpuCount()
+	}
+	if cur.host != nil {
+		fmt.Printf("CPU: %.1f%%  MEM: %s / %s\n",
+			hostCPUPercent(prev, cur),
+			formatBytes(cur.host.GetMemTotalBytes()-cur.host.GetMemAvailableBytes()),
+			formatBytes(cur.host.GetMemTotalBytes()))
+		for _, g := range cur.host.GetGpus() {
+			fmt.Printf("GPU%d %s: %.0f%%  %s / %s\n", g.GetIndex(), g.GetName(),
+				g.GetUtilPercent(), formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+		}
+	}
+	cpuByID := map[string]float64{}
+	for id := range cur.containers {
+		cpuByID[id] = containerCPUPercent(prev, cur, id, cpuCount)
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "APP\tCPU%\tMEM")
+	for _, r := range buildTopRows(containers, cpuByID, cur.mem, false) {
+		fmt.Fprintf(tw, "%s\t%.1f\t%s\n", r.displayName, r.cpuPercent, formatBytes(r.memBytes))
+	}
+	return tw.Flush()
+}
+
+func newTopCmd() *cobra.Command {
+	var interval time.Duration
+	cmd := &cobra.Command{
+		Use:   "top",
+		Short: "Live CPU, memory, and GPU usage for the device and its containers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if jsonOutput || !isInteractiveTerminal() {
+				return runTopSnapshot(ctx, conn, jsonOutput)
+			}
+			return runTopDashboard(ctx, conn, interval)
+		},
+	}
+	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "Refresh interval for the live view")
+	return cmd
+}
+
+// TEMP: replaced by full implementation in Task 8.
+func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) error {
+	return nil
 }
