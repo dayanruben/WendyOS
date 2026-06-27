@@ -19,6 +19,7 @@ service WendyContainerService {
     rpc RemoveVolume(RemoveVolumeRequest) returns (RemoveVolumeResponse);
     rpc ListContainerStats(ListContainerStatsRequest) returns (ListContainerStatsResponse);
     rpc GetResourceStats(GetResourceStatsRequest) returns (GetResourceStatsResponse);
+    rpc GetContainerPorts(GetContainerPortsRequest) returns (GetContainerPortsResponse);
     rpc StreamMCP(stream MCPChunk) returns (stream MCPChunk);
     rpc QueryChunks(QueryChunksRequest) returns (QueryChunksResponse);
     rpc WriteChunks(stream WriteChunksRequest) returns (WriteChunksResponse);
@@ -283,6 +284,22 @@ message ResourceContainerStats {
     string app_name = 1;
     uint64 cpu_usage_nanos = 2;      // cumulative user+sys CPU nanoseconds
     int64 memory_bytes = 3;          // current cgroup memory usage
+}
+
+// --- Container open ports (listening/bound sockets, for `wendy device top`) ---
+
+message GetContainerPortsRequest {
+    string app_name = 1;
+}
+
+message GetContainerPortsResponse {
+    repeated PortEntry ports = 1;
+}
+
+message PortEntry {
+    string protocol = 1;   // "tcp", "tcp6", "udp", "udp6"
+    uint32 port = 2;       // local port the socket is bound to
+    string address = 3;    // local bind address (e.g. "0.0.0.0", "::", "127.0.0.1")
 }
 
 message MCPChunk {

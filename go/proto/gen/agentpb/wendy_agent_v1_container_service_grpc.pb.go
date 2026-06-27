@@ -33,6 +33,7 @@ const (
 	WendyContainerService_RemoveVolume_FullMethodName                = "/wendy.agent.services.v1.WendyContainerService/RemoveVolume"
 	WendyContainerService_ListContainerStats_FullMethodName          = "/wendy.agent.services.v1.WendyContainerService/ListContainerStats"
 	WendyContainerService_GetResourceStats_FullMethodName            = "/wendy.agent.services.v1.WendyContainerService/GetResourceStats"
+	WendyContainerService_GetContainerPorts_FullMethodName           = "/wendy.agent.services.v1.WendyContainerService/GetContainerPorts"
 	WendyContainerService_StreamMCP_FullMethodName                   = "/wendy.agent.services.v1.WendyContainerService/StreamMCP"
 	WendyContainerService_QueryChunks_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/QueryChunks"
 	WendyContainerService_WriteChunks_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/WriteChunks"
@@ -56,6 +57,7 @@ type WendyContainerServiceClient interface {
 	RemoveVolume(ctx context.Context, in *RemoveVolumeRequest, opts ...grpc.CallOption) (*RemoveVolumeResponse, error)
 	ListContainerStats(ctx context.Context, in *ListContainerStatsRequest, opts ...grpc.CallOption) (*ListContainerStatsResponse, error)
 	GetResourceStats(ctx context.Context, in *GetResourceStatsRequest, opts ...grpc.CallOption) (*GetResourceStatsResponse, error)
+	GetContainerPorts(ctx context.Context, in *GetContainerPortsRequest, opts ...grpc.CallOption) (*GetContainerPortsResponse, error)
 	StreamMCP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MCPChunk, MCPChunk], error)
 	QueryChunks(ctx context.Context, in *QueryChunksRequest, opts ...grpc.CallOption) (*QueryChunksResponse, error)
 	WriteChunks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse], error)
@@ -260,6 +262,16 @@ func (c *wendyContainerServiceClient) GetResourceStats(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *wendyContainerServiceClient) GetContainerPorts(ctx context.Context, in *GetContainerPortsRequest, opts ...grpc.CallOption) (*GetContainerPortsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetContainerPortsResponse)
+	err := c.cc.Invoke(ctx, WendyContainerService_GetContainerPorts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *wendyContainerServiceClient) StreamMCP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MCPChunk, MCPChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[7], WendyContainerService_StreamMCP_FullMethodName, cOpts...)
@@ -314,6 +326,7 @@ type WendyContainerServiceServer interface {
 	RemoveVolume(context.Context, *RemoveVolumeRequest) (*RemoveVolumeResponse, error)
 	ListContainerStats(context.Context, *ListContainerStatsRequest) (*ListContainerStatsResponse, error)
 	GetResourceStats(context.Context, *GetResourceStatsRequest) (*GetResourceStatsResponse, error)
+	GetContainerPorts(context.Context, *GetContainerPortsRequest) (*GetContainerPortsResponse, error)
 	StreamMCP(grpc.BidiStreamingServer[MCPChunk, MCPChunk]) error
 	QueryChunks(context.Context, *QueryChunksRequest) (*QueryChunksResponse, error)
 	WriteChunks(grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]) error
@@ -368,6 +381,9 @@ func (UnimplementedWendyContainerServiceServer) ListContainerStats(context.Conte
 }
 func (UnimplementedWendyContainerServiceServer) GetResourceStats(context.Context, *GetResourceStatsRequest) (*GetResourceStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetResourceStats not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) GetContainerPorts(context.Context, *GetContainerPortsRequest) (*GetContainerPortsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetContainerPorts not implemented")
 }
 func (UnimplementedWendyContainerServiceServer) StreamMCP(grpc.BidiStreamingServer[MCPChunk, MCPChunk]) error {
 	return status.Error(codes.Unimplemented, "method StreamMCP not implemented")
@@ -594,6 +610,24 @@ func _WendyContainerService_GetResourceStats_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyContainerService_GetContainerPorts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetContainerPortsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyContainerServiceServer).GetContainerPorts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyContainerService_GetContainerPorts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyContainerServiceServer).GetContainerPorts(ctx, req.(*GetContainerPortsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WendyContainerService_StreamMCP_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(WendyContainerServiceServer).StreamMCP(&grpc.GenericServerStream[MCPChunk, MCPChunk]{ServerStream: stream})
 }
@@ -660,6 +694,10 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetResourceStats",
 			Handler:    _WendyContainerService_GetResourceStats_Handler,
+		},
+		{
+			MethodName: "GetContainerPorts",
+			Handler:    _WendyContainerService_GetContainerPorts_Handler,
 		},
 		{
 			MethodName: "QueryChunks",
