@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,8 +12,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -369,7 +370,8 @@ type topModel struct {
 	havePrev         bool
 	cachedContainers []*agentpb.AppContainer
 
-	table     tui.BubbleTable
+	rows      []topRow
+	cursor    int
 	sortByCPU bool
 	width     int
 	height    int
@@ -383,7 +385,6 @@ func newTopModel(ctx context.Context, conn *grpcclient.AgentConnection, interval
 		interval:     interval,
 		statsCh:      make(chan topStatsMsg, 2),
 		containersCh: make(chan topContainersMsg, 2),
-		table:        tui.NewBubbleTable(true, nil),
 	}
 }
 
@@ -403,13 +404,17 @@ func waitForTopContainers(ch chan topContainersMsg) tea.Cmd {
 func (m topModel) runStatsPoll() {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
+	// fetch keeps polling on transient errors (a hiccup recovers on the next
+	// tick); it only stops when the agent does not implement the RPC at all,
+	// since that will never succeed.
 	fetch := func() bool {
 		resp, err := sampleResourceStats(m.ctx, m.conn)
 		select {
 		case m.statsCh <- topStatsMsg{resp: resp, err: err}:
 		case <-m.ctx.Done():
+			return false
 		}
-		return err == nil
+		return !errors.Is(err, errResourceStatsUnimplemented)
 	}
 	if !fetch() {
 		return
@@ -447,7 +452,9 @@ func (m topModel) runContainersPoll() {
 	}
 }
 
-func (m *topModel) refreshTable() {
+// rebuildRows recomputes the displayed rows from the cached samples, keeping
+// the cursor within bounds.
+func (m *topModel) rebuildRows() {
 	cpuCount := uint32(1)
 	if m.cur.host != nil && m.cur.host.GetCpuCount() > 0 {
 		cpuCount = m.cur.host.GetCpuCount()
@@ -458,34 +465,12 @@ func (m *topModel) refreshTable() {
 			cpuByID[id] = containerCPUPercent(m.prev, m.cur, id, cpuCount)
 		}
 	}
-	rows := buildTopRows(m.cachedContainers, cpuByID, m.cur.mem, m.sortByCPU)
-
-	cols := []bubbleTable.Column{
-		{Title: "", Width: 2},
-		{Title: "App", Width: 30},
-		{Title: "CPU%", Width: 8},
-		{Title: "MEM", Width: 10},
+	m.rows = buildTopRows(m.cachedContainers, cpuByID, m.cur.mem, m.sortByCPU)
+	if m.cursor >= len(m.rows) {
+		m.cursor = len(m.rows) - 1
 	}
-	trows := make([]bubbleTable.Row, len(rows))
-	for i, r := range rows {
-		icon := " "
-		if !r.isSubrow {
-			icon = "●"
-		}
-		cpu := "—"
-		if r.hasCPU && m.havePrev {
-			cpu = fmt.Sprintf("%.1f", r.cpuPercent)
-		}
-		trows[i] = bubbleTable.Row{icon, r.displayName, cpu, formatBytes(r.memBytes)}
-	}
-	m.table.SetColumns(cols)
-	m.table.SetRows(trows)
-	if m.height > 0 {
-		tableH := m.height - 7
-		if tableH < 1 {
-			tableH = 1
-		}
-		m.table.SetHeight(min(len(trows)+1, tableH))
+	if m.cursor < 0 {
+		m.cursor = 0
 	}
 }
 
@@ -494,28 +479,28 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		var cmd tea.Cmd
-		m.table, cmd = m.table.Update(msg)
-		m.refreshTable()
-		return m, cmd
+		return m, nil
 
 	case topStatsMsg:
 		if msg.err != nil {
 			m.flash = userFacingGRPCError(msg.err)
 			return m, waitForTopStats(m.statsCh)
 		}
+		m.flash = ""
 		if m.cur.host != nil || len(m.cur.containers) > 0 {
 			m.prev = m.cur
 			m.havePrev = true
 		}
 		m.cur = newTopSample(msg.resp, time.Now().UnixNano())
-		m.refreshTable()
+		m.rebuildRows()
 		return m, waitForTopStats(m.statsCh)
 
 	case topContainersMsg:
-		if msg.err == nil {
+		if msg.err != nil {
+			m.flash = userFacingGRPCError(msg.err)
+		} else {
 			m.cachedContainers = msg.containers
-			m.refreshTable()
+			m.rebuildRows()
 		}
 		return m, waitForTopContainers(m.containersCh)
 
@@ -523,69 +508,243 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.rows)-1 {
+				m.cursor++
+			}
 		case "c":
 			m.sortByCPU = true
-			m.refreshTable()
-			return m, nil
+			m.rebuildRows()
 		case "m":
 			m.sortByCPU = false
-			m.refreshTable()
-			return m, nil
-		default:
-			var cmd tea.Cmd
-			m.table, cmd = m.table.Update(msg)
-			return m, cmd
+			m.rebuildRows()
 		}
+		return m, nil
 	}
 	return m, nil
 }
 
-func (m topModel) View() string {
-	var sb strings.Builder
-	// Header panel.
-	if m.cur.host != nil {
-		hostCPU := 0.0
-		if m.havePrev {
-			hostCPU = hostCPUPercent(m.prev, m.cur)
-		}
-		sb.WriteString(m.viewLine(fmt.Sprintf("  CPU %.1f%%   MEM %s / %s",
-			hostCPU,
-			formatBytes(m.cur.host.GetMemTotalBytes()-m.cur.host.GetMemAvailableBytes()),
-			formatBytes(m.cur.host.GetMemTotalBytes()))) + "\n")
-		for _, g := range m.cur.host.GetGpus() {
-			line := fmt.Sprintf("  GPU%d %s  %.0f%%  %s / %s", g.GetIndex(), g.GetName(),
-				g.GetUtilPercent(), formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
-			if g.TempC != nil {
-				line += fmt.Sprintf("  %.0f°C", *g.TempC)
-			}
-			sb.WriteString(m.viewLine(line) + "\n")
-		}
-		if len(m.cur.host.GetGpus()) == 0 {
-			sb.WriteString(m.viewLine(dashDimStyle.Render("  No GPU detected")) + "\n")
-		}
+// --- htop-style rendering ---
+
+var (
+	topMeterLabel = lipgloss.NewStyle().Bold(true).Foreground(tui.Emerald400)
+	topBracket    = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	topValDim     = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	topHeaderBar  = lipgloss.NewStyle().Bold(true).Background(tui.Emerald500).Foreground(lipgloss.Color("#02160f"))
+	// Bright mint selection bar for strong contrast with the black row text.
+	topSelRow   = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
+	topKeyCap   = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
+	topKeyLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
+)
+
+// topMeter renders an htop-style bracketed meter: LABEL[|||||      value].
+// The fill is colored green/amber/red by load, and value is right-aligned
+// inside the bracket.
+func topMeter(label string, ratio float64, value string, width int) string {
+	if ratio < 0 {
+		ratio = 0
 	}
-	sortLabel := "mem"
-	if m.sortByCPU {
-		sortLabel = "cpu"
+	if ratio > 1 {
+		ratio = 1
 	}
-	sb.WriteString(m.viewLine(dashDimStyle.Render(
-		fmt.Sprintf("  ↑/↓ navigate  m sort by mem  c sort by cpu  [sort: %s]  q quit", sortLabel))) + "\n\n")
-	if len(m.table.View()) == 0 {
-		sb.WriteString(m.viewLine(dashDimStyle.Render("  Sampling…")) + "\n")
-	} else {
-		sb.WriteString(m.table.View() + "\n")
+	valW := lipgloss.Width(value)
+	inner := width - lipgloss.Width(label) - 2 // 2 for the brackets
+	if inner < valW+1 {
+		inner = valW + 1
 	}
-	if m.flash != "" {
-		sb.WriteString(m.viewLine(dashMetricVal.Render("  "+m.flash)) + "\n")
+	barArea := inner - valW
+	if barArea < 0 {
+		barArea = 0
 	}
-	return sb.String()
+	filled := int(ratio * float64(barArea))
+	if filled > barArea {
+		filled = barArea
+	}
+	var c lipgloss.Color
+	switch {
+	case ratio < 0.5:
+		c = tui.Emerald500
+	case ratio < 0.85:
+		c = tui.Amber500
+	default:
+		c = tui.Red500
+	}
+	bars := lipgloss.NewStyle().Foreground(c).Render(strings.Repeat("|", filled))
+	gap := strings.Repeat(" ", barArea-filled)
+	return topMeterLabel.Render(label) + topBracket.Render("[") + bars + gap + topValDim.Render(value) + topBracket.Render("]")
 }
 
-func (m topModel) viewLine(line string) string {
-	if m.width <= 0 {
-		return line
+// topColWidths returns the fixed column widths and the flexible name width for
+// a given total terminal width. Layout: " name  CPU%  MEM%  MEM  STATE".
+func topNameWidth(width int) int {
+	// 1 (lead) + name + 1 + 6 (cpu) + 1 + 6 (memp) + 1 + 10 (mem) + 1 + 8 (state)
+	nameW := width - 36
+	if nameW < 10 {
+		nameW = 10
 	}
-	return tui.CropANSIView(line, 0, m.width)
+	return nameW
+}
+
+func topFormatRow(name, cpu, memp, mem, state string, nameW int) string {
+	r := []rune(name)
+	if len(r) > nameW {
+		name = string(r[:nameW])
+	}
+	return fmt.Sprintf(" %-*s %6s %6s %10s %-8s", nameW, name, cpu, memp, mem, state)
+}
+
+func (m topModel) View() string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	height := m.height
+	if height <= 0 {
+		height = 24
+	}
+	meterW := width - 2
+
+	var lines []string
+
+	if m.cur.host != nil {
+		h := m.cur.host
+		cpuRatio, cpuVal := 0.0, "—"
+		if m.havePrev {
+			pct := hostCPUPercent(m.prev, m.cur)
+			cpuRatio, cpuVal = pct/100, fmt.Sprintf("%.1f%%", pct)
+		}
+		cpuLabel := "CPU"
+		if h.GetCpuCount() > 0 {
+			cpuLabel = fmt.Sprintf("CPU(%d)", h.GetCpuCount())
+		}
+		lines = append(lines, topMeter(cpuLabel, cpuRatio, cpuVal, meterW))
+
+		used := h.GetMemTotalBytes() - h.GetMemAvailableBytes()
+		memRatio := 0.0
+		if h.GetMemTotalBytes() > 0 {
+			memRatio = float64(used) / float64(h.GetMemTotalBytes())
+		}
+		lines = append(lines, topMeter("Mem", memRatio,
+			fmt.Sprintf("%s/%s", formatBytes(used), formatBytes(h.GetMemTotalBytes())), meterW))
+
+		for _, g := range h.GetGpus() {
+			val := fmt.Sprintf("%.0f%%", g.GetUtilPercent())
+			if g.GetMemTotalBytes() > 0 {
+				val += fmt.Sprintf(" %s/%s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+			}
+			if g.TempC != nil {
+				val += fmt.Sprintf(" %.0f°C", *g.TempC)
+			}
+			lines = append(lines, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
+		}
+	} else {
+		lines = append(lines, topValDim.Render(" Connecting…"))
+	}
+
+	// Tasks summary.
+	running := 0
+	for _, c := range m.cachedContainers {
+		if c.GetRunningState() == agentpb.AppRunningState_RUNNING {
+			running++
+		}
+	}
+	lines = append(lines, topValDim.Render(fmt.Sprintf(" Apps: %d, %d running", len(m.cachedContainers), running)))
+	lines = append(lines, "")
+
+	// Column header (htop cyan bar), with the active sort column highlighted.
+	nameW := topNameWidth(width)
+	cpuTitle, memTitle := "CPU%", "MEM"
+	if m.sortByCPU {
+		cpuTitle = "CPU%▾"
+	} else {
+		memTitle = "MEM▾"
+	}
+	header := topFormatRow("APP", cpuTitle, "MEM%", memTitle, "STATE", nameW)
+	header = padOrCrop(header, width)
+	lines = append(lines, topHeaderBar.Render(header))
+
+	// Rows.
+	if len(m.rows) == 0 {
+		lines = append(lines, topValDim.Render(" Sampling…"))
+	}
+	memTotal := int64(0)
+	if m.cur.host != nil {
+		memTotal = m.cur.host.GetMemTotalBytes()
+	}
+	for i, r := range m.rows {
+		cpu := "-"
+		if r.hasCPU && m.havePrev {
+			cpu = fmt.Sprintf("%.1f", r.cpuPercent)
+		}
+		memp := "-"
+		if memTotal > 0 {
+			memp = fmt.Sprintf("%.1f", float64(r.memBytes)/float64(memTotal)*100)
+		}
+		name := r.displayName
+		row := topFormatRow(name, cpu, memp, formatBytes(r.memBytes), "", nameW)
+		row = padOrCrop(row, width)
+		if i == m.cursor {
+			lines = append(lines, topSelRow.Render(row))
+		} else if r.isSubrow {
+			lines = append(lines, topValDim.Render(row))
+		} else {
+			lines = append(lines, row)
+		}
+	}
+
+	// Pad to fill the screen, leaving the last line for the key bar.
+	bodyHeight := height - 1
+	for len(lines) < bodyHeight {
+		lines = append(lines, "")
+	}
+	if len(lines) > bodyHeight {
+		lines = lines[:bodyHeight]
+	}
+
+	keyBar := m.topKeyBar(width)
+	return strings.Join(lines, "\n") + "\n" + keyBar
+}
+
+// padOrCrop pads a plain string with spaces to exactly width, or crops it.
+func padOrCrop(s string, width int) string {
+	n := lipgloss.Width(s)
+	if n < width {
+		return s + strings.Repeat(" ", width-n)
+	}
+	if n > width {
+		return tui.CropANSIView(s, 0, width)
+	}
+	return s
+}
+
+func (m topModel) topKeyBar(width int) string {
+	flash := m.flash
+	segs := []struct{ key, label string }{
+		{"↑↓", "Nav"},
+		{"m", "Mem"},
+		{"c", "CPU"},
+		{"q", "Quit"},
+	}
+	var b strings.Builder
+	plainLen := 0
+	for _, s := range segs {
+		b.WriteString(topKeyCap.Render(s.key))
+		b.WriteString(topKeyLabel.Render(s.label + " "))
+		plainLen += lipgloss.Width(s.key) + lipgloss.Width(s.label) + 1
+	}
+	if flash != "" && plainLen+2+len(flash) < width {
+		msg := "  " + flash
+		b.WriteString(topKeyLabel.Render(msg))
+		plainLen += lipgloss.Width(msg)
+	}
+	if plainLen < width {
+		b.WriteString(topKeyLabel.Render(strings.Repeat(" ", width-plainLen)))
+	}
+	return b.String()
 }
 
 func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) error {
