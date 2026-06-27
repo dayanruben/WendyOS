@@ -31,20 +31,24 @@ type MultiSpinnerDetailMsg struct {
 
 // MultiSpinnerDoneMsg signals that a service's build has finished.
 type MultiSpinnerDoneMsg struct {
-	Name string
-	Err  error
-	Dur  time.Duration
+	Name    string
+	Err     error
+	Dur     time.Duration
+	Cached  int
+	Rebuilt int
 }
 
 // MultiSpinnerAllDoneMsg signals that all service builds have completed.
 type MultiSpinnerAllDoneMsg struct{}
 
 type multiSpinnerRow struct {
-	name   string
-	status MultiSpinnerServiceStatus
-	detail string
-	dur    time.Duration
-	err    error
+	name    string
+	status  MultiSpinnerServiceStatus
+	detail  string
+	dur     time.Duration
+	cached  int
+	rebuilt int
+	err     error
 }
 
 // MultiSpinnerModel is a Bubble Tea model that shows per-service build progress.
@@ -127,6 +131,8 @@ func (m MultiSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.rows[i].status = MultiSpinnerDone
 				m.rows[i].detail = ""
+				m.rows[i].cached = msg.Cached
+				m.rows[i].rebuilt = msg.Rebuilt
 			}
 		}
 
@@ -184,10 +190,12 @@ func (m MultiSpinnerModel) View() string {
 			))
 
 		case MultiSpinnerDone:
+			note := fmt.Sprintf("built (%d cached, %d rebuilt) %s",
+				r.cached, r.rebuilt, r.dur.Round(time.Millisecond))
 			sb.WriteString(fmt.Sprintf("  %s %s%s\n",
 				msCheckStyle.Render("✓"),
 				msNameStyle.Render(r.name),
-				msDimStyle.Render(fmt.Sprintf("built (%s)", r.dur.Round(time.Millisecond))),
+				msDimStyle.Render(note),
 			))
 
 		case MultiSpinnerFailed:
