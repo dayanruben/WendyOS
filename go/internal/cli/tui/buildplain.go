@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"io"
-	"math"
 	"time"
 )
 
@@ -16,13 +15,7 @@ type BuildTally struct {
 // formatDuration returns a human-readable duration string with at least one
 // decimal place (e.g., "2.0s", "4.3s").
 func formatDuration(d time.Duration) string {
-	d = d.Round(time.Millisecond)
-	seconds := d.Seconds()
-	// If the value is a whole second, format with .0
-	if math.Mod(seconds, 1) == 0 {
-		return fmt.Sprintf("%.1fs", seconds)
-	}
-	return fmt.Sprintf("%.1fs", seconds)
+	return fmt.Sprintf("%.1fs", d.Round(time.Millisecond).Seconds())
 }
 
 // NewBuildPlainRenderer returns an emit callback (to pass to NewBuildParser) that

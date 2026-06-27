@@ -483,8 +483,7 @@ func buildServicesParallel(
 			} else {
 				buildOut = os.Stdout
 			}
-			logOut := &logBuf
-			var logOutW io.Writer = logOut
+			var logOutW io.Writer = &logBuf
 			if prog == nil {
 				logOutW = os.Stderr
 			}

@@ -37,10 +37,10 @@ const maxRawBuildCapture = 256 << 10
 
 // runBuildWithProgress runs build, rendering its buildx output as a clean live
 // step list (interactive) or concise per-step lines (non-interactive). The raw
-// buildx output is retained and printed if the build fails (but not on
-// cancellation). Setup-log chatter written to logw is buffered and surfaced only
-// on failure.
-func runBuildWithProgress(ctx context.Context, title string, build func(stream, logw io.Writer) error) error {
+// buildx output is retained and printed if the build fails AND dumpRawOnFailure
+// is true (but never on cancellation). Setup-log chatter written to logw is
+// buffered and surfaced only on failure (when dumpRawOnFailure is true).
+func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure bool, build func(stream, logw io.Writer) error) error {
 	start := time.Now()
 	raw := &boundedBuffer{max: maxRawBuildCapture}
 	var setupLog bytes.Buffer
@@ -52,7 +52,7 @@ func runBuildWithProgress(ctx context.Context, title string, build func(stream, 
 		fmt.Fprintf(buildProgressOut, "%s\n", title)
 		err := build(stream, &setupLog)
 		if err != nil {
-			if ctx.Err() == nil {
+			if dumpRawOnFailure && ctx.Err() == nil {
 				buildProgressOut.Write(raw.Bytes())
 				buildProgressOut.Write(setupLog.Bytes())
 			}
@@ -87,7 +87,7 @@ func runBuildWithProgress(ctx context.Context, title string, build func(stream, 
 	}
 	buildErr := <-buildErrC
 	if buildErr != nil {
-		if ctx.Err() == nil {
+		if dumpRawOnFailure && ctx.Err() == nil {
 			buildProgressOut.Write(raw.Bytes())
 			buildProgressOut.Write(setupLog.Bytes())
 		}

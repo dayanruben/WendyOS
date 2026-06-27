@@ -1481,7 +1481,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Single-service build: no concurrency, so keep the shared local cache dir
 	// (empty cache key) for cross-run cache reuse.
 	buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
-	if err := runBuildWithProgress(ctx, buildTitle, func(stream, logw io.Writer) error {
+	if err := runBuildWithProgress(ctx, buildTitle, true, func(stream, logw io.Writer) error {
 		return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
 	}); err != nil {
 		return fmt.Errorf("building and pushing image: %w", err)
@@ -1858,7 +1858,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			return err
 		}
 	} else {
-		if err := runBuildWithProgress(ctx, buildTitle, func(stream, logw io.Writer) error {
+		if err := runBuildWithProgress(ctx, buildTitle, opts.chunking == chunkingForce, func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
 			return err
