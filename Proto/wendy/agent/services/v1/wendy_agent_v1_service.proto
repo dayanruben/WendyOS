@@ -48,6 +48,11 @@ service WendyAgentService {
 
     // Update the operating system using a Mender artifact
     rpc UpdateOS(UpdateOSRequest) returns (stream UpdateOSResponse);
+
+    // Report the outcome of the most recent OS update attempt: committed
+    // after post-reboot healthchecks passed, or rolled back with details on
+    // which critical services failed and why.
+    rpc GetOSUpdateStatus(GetOSUpdateStatusRequest) returns (GetOSUpdateStatusResponse);
 }
 
 message RunContainerRequest {
@@ -457,4 +462,57 @@ message UpdateOSResponse {
         // Error message describing the failure
         string error_message = 1;
     }
+}
+
+message GetOSUpdateStatusRequest {}
+
+// Outcome of the most recent OS update attempt, produced by the agent's
+// post-reboot healthcheck gate and persisted on the device's data partition
+// (so it survives an A/B slot rollback).
+message GetOSUpdateStatusResponse {
+    // False when no update-result record exists on the device.
+    bool has_result = 1;
+
+    enum Outcome {
+        OUTCOME_UNSPECIFIED = 0;
+        // Healthchecks passed and the update was committed.
+        OUTCOME_COMMITTED = 1;
+        // Healthchecks failed and the previous OS was restored.
+        OUTCOME_ROLLED_BACK = 2;
+        // Healthchecks failed but the rollback could not be performed.
+        OUTCOME_ROLLBACK_FAILED = 3;
+        // Healthchecks passed but committing the update failed.
+        OUTCOME_COMMIT_FAILED = 4;
+    }
+    Outcome outcome = 2;
+
+    message ServiceResult {
+        // systemd unit name, e.g. "avahi-daemon.service"
+        string unit = 1;
+
+        enum Status {
+            STATUS_UNSPECIFIED = 0;
+            STATUS_HEALTHY = 1;
+            // Unit not present on this device or intentionally disabled.
+            STATUS_SKIPPED = 2;
+            STATUS_FAILED = 3;
+        }
+        Status status = 2;
+
+        // Failure reason; empty for healthy/skipped services.
+        string reason = 3;
+    }
+    repeated ServiceResult services = 3;
+
+    // OS version before the update was applied.
+    string old_os_version = 4;
+    // OS version the update attempted to boot into.
+    string new_os_version = 5;
+    // When the healthcheck gate produced this record (unix seconds).
+    int64 created_at_unix = 6;
+    // When the post-rollback boot confirmed the record (unix seconds);
+    // 0 until then.
+    int64 finalized_at_unix = 7;
+    // Non-empty when the rollback command itself errored.
+    string rollback_error = 8;
 }

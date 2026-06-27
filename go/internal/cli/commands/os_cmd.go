@@ -18,6 +18,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -132,9 +135,11 @@ so the device can download it directly.`,
 				return err
 			}
 
-			// Step 3: Show current OS version.
-			if osVer := versionResp.GetOsVersion(); osVer != "" {
-				fmt.Printf("Current OS version: %s\n", osVer)
+			// Step 3: Show current OS version. It is also the baseline for
+			// detecting a post-reboot rollback.
+			preUpdateOSVersion := versionResp.GetOsVersion()
+			if preUpdateOSVersion != "" {
+				fmt.Printf("Current OS version: %s\n", preUpdateOSVersion)
 			}
 
 			// No artifact provided — auto-detect from the reported device type.
@@ -292,7 +297,7 @@ so the device can download it directly.`,
 				return err
 			}
 			fmt.Println("Device is back online.")
-			return nil
+			return reportOSUpdateOutcome(ctx, deviceHost, preUpdateOSVersion)
 		},
 	}
 
@@ -427,11 +432,12 @@ func pollDeviceOnline(ctx context.Context, addr string) error {
 }
 
 // waitForDeviceOnline polls the device until it responds to GetAgentVersion,
-// or until a 5-minute timeout expires. Shows a spinner when running
-// interactively; polls silently otherwise.
+// or until a 10-minute timeout expires. Shows a spinner when running
+// interactively; polls silently otherwise. The budget must cover the rollback
+// path: two reboots plus the post-update healthcheck timeouts.
 func waitForDeviceOnline(ctx context.Context, host string) error {
 	addr := hostPort(host, defaultAgentPort)
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	if !isInteractiveTerminal() {
@@ -453,6 +459,150 @@ func waitForDeviceOnline(ctx context.Context, host string) error {
 	}
 	_, spinErr := finalModel.(tui.SpinnerModel).Result()
 	return spinErr
+}
+
+// osUpdateResultMaxAge guards against mistaking a record left over from a
+// previous update attempt for the one that just completed.
+const osUpdateResultMaxAge = 30 * time.Minute
+
+// reportOSUpdateOutcome queries the freshly booted device for the outcome of
+// the update (healthcheck verdict, rollback details) and prints it. It
+// returns a non-nil error when the update did not stick, so the command exits
+// non-zero.
+func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string) error {
+	addr := hostPort(host, defaultAgentPort)
+
+	var resp *agentpb.GetOSUpdateStatusResponse
+	var rpcErr error
+	var postUpdateOSVersion string
+
+	// The agent already answers GetAgentVersion (waitForDeviceOnline), so a
+	// short retry window is enough to absorb transient connection hiccups.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		conn, err := connectWithAutoTLS(callCtx, addr)
+		if err == nil {
+			resp, rpcErr = conn.AgentService.GetOSUpdateStatus(callCtx, &agentpb.GetOSUpdateStatusRequest{})
+			if ver, verErr := conn.AgentService.GetAgentVersion(callCtx, &agentpb.GetAgentVersionRequest{}); verErr == nil {
+				postUpdateOSVersion = ver.GetOsVersion()
+			}
+			conn.Close()
+		} else {
+			rpcErr = err
+		}
+		cancel()
+
+		// Unimplemented is definitive (older agent); anything else transient
+		// is retried until the deadline.
+		if rpcErr == nil || status.Code(rpcErr) == codes.Unimplemented || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	msg, outcomeErr := evaluateOSUpdateOutcome(resp, rpcErr, preUpdateOSVersion, postUpdateOSVersion, time.Now())
+	fmt.Println(msg)
+	return outcomeErr
+}
+
+// evaluateOSUpdateOutcome turns the device's update-status report (or the
+// failure to obtain one) into a user-facing message and, when the update did
+// not stick, an error. Pure function, unit-tested.
+func evaluateOSUpdateOutcome(
+	resp *agentpb.GetOSUpdateStatusResponse,
+	rpcErr error,
+	preUpdateOSVersion, postUpdateOSVersion string,
+	now time.Time,
+) (string, error) {
+	usable := rpcErr == nil && resp.GetHasResult() &&
+		resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_UNSPECIFIED &&
+		now.Sub(time.Unix(resp.GetCreatedAtUnix(), 0)) <= osUpdateResultMaxAge
+
+	if !usable {
+		// The device cannot report healthcheck results for this update — the
+		// new OS image may bundle an agent without healthcheck support, which
+		// commits without verification. Fall back to comparing OS versions.
+		switch {
+		case postUpdateOSVersion == "":
+			return "The update outcome could not be verified; check the device with `wendy status`.", nil
+		case postUpdateOSVersion == preUpdateOSVersion:
+			return fmt.Sprintf("Warning: the device is still running %s — the update was likely rolled back. "+
+					"This device's agent cannot report healthcheck details; see `journalctl -u wendyos-agent` on the device.",
+					postUpdateOSVersion),
+				errors.New("OS version unchanged after update; the device likely rolled back")
+		default:
+			return fmt.Sprintf("Update applied; device is now running %s. "+
+				"(Post-update health verification is not supported by this device's agent.)", postUpdateOSVersion), nil
+		}
+	}
+
+	switch resp.GetOutcome() {
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
+		// Both versions come from wendyOSVersion() on the device, so they are
+		// directly comparable. A mismatch means the record describes a commit
+		// to an OS the device is not running — most likely a record from an
+		// earlier attempt, or an update that did not survive the reboot.
+		if postUpdateOSVersion != "" && resp.GetNewOsVersion() != "" && postUpdateOSVersion != resp.GetNewOsVersion() {
+			return fmt.Sprintf("Warning: the device reports a committed update to %s but is running %s — "+
+					"the status may belong to an earlier update. Check the device with `wendy status`.",
+					resp.GetNewOsVersion(), postUpdateOSVersion),
+				errors.New("OS update status does not match the running OS version")
+		}
+		runningVersion := postUpdateOSVersion
+		if runningVersion == "" {
+			runningVersion = resp.GetNewOsVersion()
+		}
+		return fmt.Sprintf("Update verified: critical services healthy. Device is running %s.", runningVersion), nil
+
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK:
+		var b strings.Builder
+		rolledBackTo := resp.GetOldOsVersion()
+		if rolledBackTo == "" {
+			rolledBackTo = postUpdateOSVersion
+		}
+		fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
+		writeFailedServices(&b, resp.GetServices())
+		if re := resp.GetRollbackError(); re != "" {
+			fmt.Fprintf(&b, "Rollback error: %s\n", re)
+		}
+		return strings.TrimRight(b.String(), "\n"),
+			errors.New("OS update rolled back: critical services failed healthchecks")
+
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
+		var b strings.Builder
+		b.WriteString("Update failed post-reboot healthchecks, and the automatic rollback could not be performed. " +
+			"The device may be in a degraded state.\n")
+		writeFailedServices(&b, resp.GetServices())
+		if re := resp.GetRollbackError(); re != "" {
+			fmt.Fprintf(&b, "Rollback error: %s\n", re)
+		}
+		return strings.TrimRight(b.String(), "\n"),
+			errors.New("OS update healthchecks failed and automatic rollback did not run")
+
+	default: // OUTCOME_COMMIT_FAILED
+		return "Update healthchecks passed, but the update could not be committed. " +
+				"The device retries the commit on its next agent restart; if it is never committed, the OS reverts on the next reboot.",
+			errors.New("OS update commit failed")
+	}
+}
+
+func writeFailedServices(b *strings.Builder, services []*agentpb.GetOSUpdateStatusResponse_ServiceResult) {
+	header := false
+	for _, svc := range services {
+		if svc.GetStatus() != agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED {
+			continue
+		}
+		if !header {
+			b.WriteString("Failed services:\n")
+			header = true
+		}
+		fmt.Fprintf(b, "  - %s: %s\n", svc.GetUnit(), svc.GetReason())
+	}
 }
 
 func localIPForHost(host string) (string, error) {

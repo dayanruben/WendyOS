@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -15,10 +16,15 @@ type OSUpdateService struct {
 	agentpbv2.UnimplementedWendyOSUpdateServiceServer
 	logger        *zap.Logger
 	isWendyOSHost func() bool
+	stateDir      string
 }
 
 func NewOSUpdateService(logger *zap.Logger) *OSUpdateService {
-	return &OSUpdateService{logger: logger, isWendyOSHost: defaultIsWendyOSHost}
+	return &OSUpdateService{
+		logger:        logger,
+		isWendyOSHost: defaultIsWendyOSHost,
+		stateDir:      oshealth.DefaultStateDir,
+	}
 }
 
 func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpbv2.UpdateOSResponse]) error {
@@ -121,6 +127,8 @@ func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.S
 			},
 		})
 	}
+
+	recordPendingOSUpdate(s.logger, s.stateDir, req.GetArtifactUrl())
 
 	rebootRequired := true
 	return stream.Send(&agentpbv2.UpdateOSResponse{
