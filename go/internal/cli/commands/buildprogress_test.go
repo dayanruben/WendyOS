@@ -1,0 +1,61 @@
+package commands
+
+import (
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+)
+
+func TestRunBuildWithProgressPlainSuccess(t *testing.T) {
+	// Force non-interactive rendering and capture stdout via the package sink.
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+
+	err := runBuildWithProgress(context.Background(), "Building image...", func(stream, logw io.Writer) error {
+		io.WriteString(stream, "#9 [4/6] RUN pip install\n#9 DONE 4.3s\n")
+		io.WriteString(stream, "#6 [1/6] FROM python\n#6 CACHED\n")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "cached") || !strings.Contains(got, "4.3s") {
+		t.Errorf("missing step lines:\n%s", got)
+	}
+	if !strings.Contains(got, "1 cached") || !strings.Contains(got, "1 rebuilt") {
+		t.Errorf("missing summary tally:\n%s", got)
+	}
+}
+
+func TestRunBuildWithProgressPrintsRawOnFailure(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+
+	wantErr := errors.New("docker buildx build failed")
+	err := runBuildWithProgress(context.Background(), "Building image...", func(stream, logw io.Writer) error {
+		io.WriteString(stream, "#9 [4/6] RUN pip install\n")
+		io.WriteString(stream, "#9 12.34 ERROR: could not find a version\n")
+		io.WriteString(logw, "[buildx] bootstrapping builder\n")
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	got := out.String()
+	// Raw build output AND setup log are surfaced on failure.
+	if !strings.Contains(got, "could not find a version") {
+		t.Errorf("raw build output not surfaced:\n%s", got)
+	}
+	if !strings.Contains(got, "bootstrapping builder") {
+		t.Errorf("setup log not surfaced on failure:\n%s", got)
+	}
+}
