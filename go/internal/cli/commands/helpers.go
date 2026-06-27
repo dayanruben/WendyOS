@@ -652,7 +652,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 					return nil, connErr
 				}
 				conn = refreshedConn
-			} else if isDefault && !jsonOutput && isInteractiveTerminal() {
+			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
 				hostname, _, _ := net.SplitHostPort(addr)
 				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
@@ -674,6 +674,14 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			conn, updateErr = checkAndOfferUpdate(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
+			}
+		}
+		// WDY-1149: verify the resolved default device still belongs to the
+		// organisation + cloud it was pinned to (and pin it on first use).
+		if isDefault {
+			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
+				conn.Close()
+				return nil, pinErr
 			}
 		}
 		return conn, nil
