@@ -47,7 +47,7 @@ Docker for local provider runs.
 | Build-arg | Values | Notes |
 |---|---|---|
 | `WENDY_PLATFORM` | `nvidia-jetson` \| `generic` | Platform tier derived from the device type |
-| `WENDY_DEBUG` | `true` \| `false` | Set when `--debug` is passed |
+| `WENDY_DEBUG` | `true` \| `false` | Set when `--debug` is passed. [`wendy project optimize`](project/optimize.md) flags it when it's declared (`ARG`/`ENV`) but no `RUN` step branches on it — gate your optimization level on it so debug builds aren't shipped to release. |
 | `WENDY_DEVICE_TYPE` | e.g. `jetson-agx-orin` | Raw device type; absent when unknown |
 | `WENDY_HAS_GPU` | `true` \| `false` | Absent on older agents |
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
@@ -75,6 +75,18 @@ Builds with `xcodebuild`. Xcode project support exists for native Mac packages t
 Wendy passes `-skipMacroValidation` and `-skipPackagePluginValidation` so `xcodebuild` can run from a headless CLI/agent session. Xcode's macro/plugin prompts are an interactive consent layer on top of SwiftPM's build-time code and package-plugin sandbox model; headless Wendy builds treat invoking the build as consent, similar to CLI build tools. Only use Xcode projects with trusted, pinned package dependencies.
 
 For native Mac runs, if a `Brewfile.wendy` is present in the project root, Wendy applies it on the target Mac before starting the app. A plain project-root `Brewfile` is left for developer-machine setup unless explicitly referenced by `wendy.json`.
+
+## Post-build optimization hint
+
+After a **slow incremental build** — one that reused cached layers but still took longer than ~50 seconds — `wendy build` runs a quick static [`wendy project optimize`](project/optimize.md) scan and, if it finds fixable build-config issues, prints them and offers to apply the safe fixes:
+
+```
+This incremental build took 1m4s. A quick scan found 2 build-config issue(s):
+…
+Apply 2 safe fix(es) now? (takes effect on your next build) [Y/n]
+```
+
+The fixes take effect on your **next** build; the build that just completed is unchanged. This nudge is purely interactive and is a **no-op in CI / non-interactive shells**. A separate one-line tip pointing at `wendy project optimize` is throttled to at most once per day per project.
 
 ## Platform support for Swift projects
 
