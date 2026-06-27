@@ -1678,7 +1678,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 			} else {
 				// Auto-download: detect arch, fetch release, download binary.
 				if !jsonOutput {
-					fmt.Println("Detecting device architecture...")
+					fmt.Println(tui.InfoMessage("Detecting device architecture..."))
 				}
 				versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 				if err != nil {
@@ -1690,7 +1690,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("device did not report CPU architecture; use --binary to provide the binary manually")
 				}
 				if !jsonOutput {
-					fmt.Printf("Device architecture: %s\n", arch)
+					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
 				releaseType := "stable"
@@ -1698,7 +1698,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					releaseType = "nightly"
 				}
 				if !jsonOutput {
-					fmt.Printf("Fetching latest %s release...\n", releaseType)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s release...", releaseType)))
 				}
 
 				release, err := fetchAgentRelease(nightly)
@@ -1706,7 +1706,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("fetching release: %w", err)
 				}
 				if !jsonOutput {
-					fmt.Printf("Found release: %s\n", release.TagName)
+					fmt.Printf("%s %s\n", tui.Dim("Release:"), tui.Value(release.TagName))
 				}
 
 				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
@@ -1723,7 +1723,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				}
 
 				if !jsonOutput {
-					fmt.Printf("Downloading %s...\n", matchedAsset.Name)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Downloading %s...", matchedAsset.Name)))
 				}
 				binaryData, err = downloadAgentBinary(*matchedAsset)
 				if err != nil {
@@ -1755,7 +1755,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return updateErr
 				}
 			} else if !jsonOutput {
-				fmt.Println("Uploading agent binary...")
+				fmt.Println(tui.InfoMessage("Uploading agent binary..."))
 				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
 					return err
 				}
@@ -1782,7 +1782,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				}
 			} else {
 				if !jsonOutput {
-					fmt.Println("Waiting for agent to restart...")
+					fmt.Println(tui.InfoMessage("Waiting for agent to restart..."))
 				}
 				readyConn, err := waitForUpdatedAgentReady(ctx, reconnect, agentRestartWaitOptions{})
 				if err != nil {
@@ -1804,7 +1804,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				}
 				fmt.Println(string(b))
 			} else {
-				fmt.Println("Agent updated successfully.")
+				fmt.Println(tui.SuccessMessage("Agent updated successfully."))
 			}
 			return nil
 		},
