@@ -932,6 +932,19 @@ func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetR
 	}, nil
 }
 
+// GetContainerPorts returns the listening TCP and bound UDP sockets for the
+// given app, read from each of its containers' network namespaces.
+func (s *ContainerService) GetContainerPorts(ctx context.Context, req *agentpb.GetContainerPortsRequest) (*agentpb.GetContainerPortsResponse, error) {
+	if req.GetAppName() == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
+	}
+	ports, err := s.containerd.GetListeningPorts(ctx, req.GetAppName())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "getting container ports: %v", err)
+	}
+	return &agentpb.GetContainerPortsResponse{Ports: ports}, nil
+}
+
 func gpuStatsToProto(in []hoststats.GPUStat) []*agentpb.GpuStats {
 	out := make([]*agentpb.GpuStats, 0, len(in))
 	for _, g := range in {

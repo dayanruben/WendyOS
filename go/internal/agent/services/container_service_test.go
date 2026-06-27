@@ -46,6 +46,8 @@ type mockContainerdClient struct {
 	restartPolicyLabelErr error
 	resourceStats         []*agentpb.ResourceContainerStats
 	resourceStatsErr      error
+	listeningPorts        []*agentpb.PortEntry
+	listeningPortsErr     error
 }
 
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
@@ -102,6 +104,9 @@ func (m *mockContainerdClient) GetContainerStats(_ context.Context) ([]*agentpb.
 
 func (m *mockContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
 	return m.resourceStats, m.resourceStatsErr
+}
+func (m *mockContainerdClient) GetListeningPorts(_ context.Context, _ string) ([]*agentpb.PortEntry, error) {
+	return m.listeningPorts, m.listeningPortsErr
 }
 
 func (m *mockContainerdClient) GetContainerMetrics(_ context.Context, _ string) (ContainerMetrics, error) {
@@ -1179,6 +1184,29 @@ func TestGetResourceStatsHandler(t *testing.T) {
 	// fail, so we only assert the host message is present (non-nil).
 	if resp.GetHost() == nil {
 		t.Errorf("host stats missing")
+	}
+}
+
+func TestGetContainerPortsHandler(t *testing.T) {
+	svc := &ContainerService{
+		logger: zap.NewNop(),
+		containerd: &mockContainerdClient{
+			listeningPorts: []*agentpb.PortEntry{
+				{Protocol: "tcp", Port: 8080, Address: "0.0.0.0"},
+			},
+		},
+	}
+	resp, err := svc.GetContainerPorts(context.Background(), &agentpb.GetContainerPortsRequest{AppName: "myapp"})
+	if err != nil {
+		t.Fatalf("GetContainerPorts: %v", err)
+	}
+	if len(resp.GetPorts()) != 1 || resp.GetPorts()[0].GetPort() != 8080 {
+		t.Fatalf("unexpected ports: %+v", resp.GetPorts())
+	}
+
+	// Empty app name is rejected.
+	if _, err := svc.GetContainerPorts(context.Background(), &agentpb.GetContainerPortsRequest{}); err == nil {
+		t.Errorf("expected error for empty app_name")
 	}
 }
 

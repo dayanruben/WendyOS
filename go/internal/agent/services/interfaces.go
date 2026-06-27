@@ -60,6 +60,7 @@ type ContainerdClient interface {
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
 	GetResourceStats(ctx context.Context) ([]*agentpb.ResourceContainerStats, error)
+	GetListeningPorts(ctx context.Context, appName string) ([]*agentpb.PortEntry, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
 	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)
 	// GetContainerRestartPolicyLabel returns the raw restart policy label stored on
