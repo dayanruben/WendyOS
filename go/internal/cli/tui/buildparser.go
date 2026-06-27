@@ -175,6 +175,8 @@ func classifyBuildVertex(name string) (BuildVertexKind, string) {
 		return BuildVertexSetup, "load build definition"
 	case strings.HasPrefix(name, "exporting"), strings.HasPrefix(name, "pushing"):
 		return BuildVertexExport, name
+	case strings.HasPrefix(name, "[internal"):
+		return BuildVertexHidden, name
 	}
 	if buildStepLabelRe.MatchString(name) {
 		return BuildVertexStep, name

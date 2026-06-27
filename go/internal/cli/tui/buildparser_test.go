@@ -101,3 +101,10 @@ func TestParserHandlesSplitWrites(t *testing.T) {
 		t.Fatalf("split writes mis-parsed: %+v", got)
 	}
 }
+
+func TestParserHidesInternalVertexWithFraction(t *testing.T) {
+	text := "#7 [internal 2/3] settle layers\n#7 DONE 0.0s\n"
+	if got := collect(t, text); len(got) != 0 {
+		t.Fatalf("want no events for an [internal] vertex with N/N fraction, got %+v", got)
+	}
+}
