@@ -16,6 +16,7 @@ type Requirement struct {
 // Requirements is a parsed requirements.txt.
 type Requirements struct {
 	Path      string
+	Raw       string
 	Packages  []Requirement
 	IndexURLs []string
 }
@@ -25,9 +26,9 @@ var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*`)
 
 // ParseRequirements parses requirements.txt bytes leniently.
 func ParseRequirements(path string, data []byte) *Requirements {
+	r := &Requirements{Path: path, Raw: string(data)}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	lines := strings.Split(text, "\n")
-	r := &Requirements{Path: path}
 
 	for idx, raw := range lines {
 		line := strings.TrimSpace(raw)
