@@ -534,7 +534,7 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 	}
 
 	s := tui.NewSpinner("Building Docker image...")
-	p := tea.NewProgram(s)
+	p := tui.NewProgressProgram(s)
 
 	go func() {
 		cmd.Stdout = os.Stdout
