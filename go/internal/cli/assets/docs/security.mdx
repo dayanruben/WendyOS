@@ -11,13 +11,17 @@ This page describes the current security posture of Wendy and WendyOS and what's
 
 | Area | Status |
 |------|--------|
-| CLI-to-Agent communication | mTLS Authenticated |
-| Data in transit | mTLS encrypted with Post-Quantum Cryptography |
-| Cloud connectivity | Zero-trust — PKI authentication required |
-| Device identity / Enrollment | Available |
-| Access control | Available |
+| CLI-to-Agent communication | ✅ mTLS Authenticated |
+| Data in transit | ✅ mTLS encrypted with Post-Quantum Cryptography |
+| Cloud connectivity | ✅ Zero-trust — PKI authentication required |
+| Device identity / Enrollment | ✅ Available |
+| Access control | ✅ Available |
 
 ## Security Roadmap
+
+### Audit Logging
+
+We're working on audit logging so you can see who did what, when, and where — a tamper-evident record of CLI and agent actions across your fleet.
 
 ### Project-Scoped Access Control
 
