@@ -62,5 +62,5 @@ If reading the metadata for a cache entry fails, the command exits with an error
 ## Related
 
 - [`wendy cache list`](../../cache/list.md) — lists all cached items, including OS images
-- [`wendy os install`](../install.md) — installs WendyOS and populates the cache
+- [`wendy install`](../../install.md) / [`wendy os install`](../install.md) — installs WendyOS and populates the cache
 - [`wendy os download`](../download.md) — downloads WendyOS images into the cache
