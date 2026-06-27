@@ -44,12 +44,18 @@ const (
 )
 
 type AgentConnection struct {
-	Conn                *grpc.ClientConn
-	Host                string                  // hostname or IP of the connected agent
-	IsMTLS              bool                    // true when connected via mutual TLS
-	CertInfo            *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
-	RegistryDialer      func(context.Context, int) (net.Conn, error)
-	ExtraClosers        []io.Closer
+	Conn           *grpc.ClientConn
+	Host           string                  // hostname or IP of the connected agent
+	IsMTLS         bool                    // true when connected via mutual TLS
+	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
+	RegistryDialer func(context.Context, int) (net.Conn, error)
+	ExtraClosers   []io.Closer
+	// Reconnect re-establishes a connection to the SAME device this connection
+	// targets, after the agent restarts. It is set for transports where the
+	// connection identity can't be re-derived from Host alone (e.g. the cloud
+	// tunnel, which is pinned to a specific asset id). nil for plain LAN
+	// connections, where the caller re-dials Host directly.
+	Reconnect           func(context.Context) (*AgentConnection, error)
 	AgentService        agentpb.WendyAgentServiceClient
 	ContainerService    agentpb.WendyContainerServiceClient
 	AudioService        agentpb.WendyAudioServiceClient

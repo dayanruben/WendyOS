@@ -13,6 +13,58 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+func TestOSAlreadyCurrent(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		nightly bool
+		want    bool
+	}{
+		{"stable equal is current", "WendyOS-0.10.4", "0.10.4", false, true},
+		{"stable newer available", "WendyOS-0.10.4", "0.12.0", false, false},
+		{"stable device ahead is current", "WendyOS-0.12.0", "0.10.4", false, true},
+		{"nightly equal is current", "WendyOS-0.12.0-nightly", "0.12.0-nightly", true, true},
+		{"nightly different available", "WendyOS-0.12.0-nightly", "0.13.0-nightly", true, false},
+		{"empty current not current", "", "0.10.4", false, false},
+		{"empty latest not current", "WendyOS-0.10.4", "", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osAlreadyCurrent(tc.current, tc.latest, tc.nightly); got != tc.want {
+				t.Fatalf("osAlreadyCurrent(%q,%q,%v) = %v, want %v", tc.current, tc.latest, tc.nightly, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecideOSUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		current     string
+		latest      string
+		nightly     bool
+		assumeYes   bool
+		interactive bool
+		want        osUpdateAction
+	}{
+		{"already current", "WendyOS-0.10.4", "0.10.4", false, false, false, osActionAlreadyCurrent},
+		{"newer with yes", "WendyOS-0.10.4", "0.12.0", false, true, false, osActionApply},
+		{"newer with yes overrides tty", "WendyOS-0.10.4", "0.12.0", false, true, true, osActionApply},
+		{"newer interactive prompts", "WendyOS-0.10.4", "0.12.0", false, false, true, osActionPrompt},
+		{"newer noninteractive reports", "WendyOS-0.10.4", "0.12.0", false, false, false, osActionReportOnly},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideOSUpdate(tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive)
+			if got != tc.want {
+				t.Fatalf("decideOSUpdate(%q,%q,nightly=%v,yes=%v,tty=%v) = %v, want %v",
+					tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateOSUpdateIdentityAllowsWendyOSBeforeMenderCheck(t *testing.T) {
 	osVersion := "WendyOS-0.10.4"
 	resp := &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: &osVersion}
@@ -119,6 +171,25 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 				t.Fatalf("validateOSUpdateTarget() error = %q, want %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestProgressLabel(t *testing.T) {
+	tests := []struct {
+		phase   string
+		percent int32
+		want    string
+	}{
+		{"installing", 42, "Installing update (42%)"},
+		{"installing", 0, "Installing update..."},
+		{"downloading", 0, "Downloading update..."},
+		{"finalizing", 100, "Finalizing (100%)"},
+		{"", 0, "Updating WendyOS..."},
+	}
+	for _, tc := range tests {
+		if got := progressLabel(tc.phase, tc.percent); got != tc.want {
+			t.Errorf("progressLabel(%q,%d) = %q, want %q", tc.phase, tc.percent, got, tc.want)
+		}
 	}
 }
 
