@@ -15,6 +15,43 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
+func TestDiscoverComposeServiceRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	// A malicious context that escapes the project tree must not be analyzed.
+	cfg := &appconfig.AppConfig{
+		Services: map[string]*appconfig.ServiceConfig{
+			"evil": {Context: "../../../../../../etc"},
+		},
+	}
+	targets, err := DiscoverTargets(dir, cfg, "arm64")
+	if err != nil {
+		t.Fatalf("DiscoverTargets: %v", err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("traversal context must be skipped, got %d targets: %+v", len(targets), targets)
+	}
+}
+
+func TestIsWithinDir(t *testing.T) {
+	base := t.TempDir()
+	cases := []struct {
+		target string
+		want   bool
+	}{
+		{base, true},
+		{filepath.Join(base, "svc"), true},
+		{filepath.Join(base, "a", "b"), true},
+		{filepath.Join(base, ".."), false},
+		{filepath.Join(base, "..", "sibling"), false},
+		{filepath.Join(base, "..", "..", "etc"), false},
+	}
+	for _, c := range cases {
+		if got := isWithinDir(base, c.target); got != c.want {
+			t.Errorf("isWithinDir(%q, %q) = %v, want %v", base, c.target, got, c.want)
+		}
+	}
+}
+
 func TestResolveArch(t *testing.T) {
 	if got := resolveArch(""); got != "arm64" {
 		t.Fatalf("resolveArch(\"\") = %q, want arm64", got)

@@ -109,7 +109,16 @@ func newOptimizeCmd() *cobra.Command {
 				if merr != nil {
 					return merr
 				}
-				cmd.Println(string(data))
+				// The bundle embeds verbatim file contents (Dockerfiles,
+				// requirements.txt, wendy.json) so an agent has full context.
+				// Warn on stderr — these may carry secrets (ARG/ENV tokens,
+				// private registry URLs) and the JSON is meant to be handed to
+				// an external agent. stderr keeps the warning out of the piped
+				// JSON on stdout.
+				cliNotice("note: this --agentic bundle contains the verbatim contents of your Dockerfile(s), requirements.txt, and wendy.json. Review it for secrets (ARG/ENV tokens, private registry URLs) before sending it to an external agent.")
+				// Bundle JSON goes to stdout so it can be piped to an agent;
+				// cmd.Println would route to stderr (cobra's OutOrStderr).
+				fmt.Println(string(data))
 				return nil
 			}
 
@@ -123,21 +132,23 @@ func newOptimizeCmd() *cobra.Command {
 				cliSuccess("Applied fixes:")
 				for _, a := range applied {
 					if a.Applied {
-						cmd.Printf("  %s — %s\n", a.Fix.File, a.Fix.Description)
+						fmt.Printf("  %s — %s\n", a.Fix.File, a.Fix.Description)
 					} else {
-						cmd.Printf("  %s — skipped (%s)\n", a.Fix.File, a.Reason)
+						fmt.Printf("  %s — skipped (%s)\n", a.Fix.File, a.Reason)
 					}
 				}
 			}
 
+			// Emit on stdout (fmt, not cmd.Println) so --json/report output can
+			// be captured and piped, consistent with the rest of the CLI.
 			if jsonOutput {
 				data, merr := json.MarshalIndent(rep, "", "  ")
 				if merr != nil {
 					return merr
 				}
-				cmd.Println(string(data))
+				fmt.Println(string(data))
 			} else {
-				cmd.Print(optimize.RenderHuman(rep))
+				fmt.Print(optimize.RenderHuman(rep))
 			}
 
 			if rep.MaxSeverity() >= threshold && len(rep.Findings) > 0 {
