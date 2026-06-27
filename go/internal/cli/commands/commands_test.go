@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -84,11 +85,84 @@ func TestNewRunCmd(t *testing.T) {
 	}
 
 	// Verify expected flags exist.
-	expectedFlags := []string{"build-type", "builder", "debug", "deploy", "detach", "restart-unless-stopped", "restart-on-failure", "no-restart", "prefix", "user-args"}
+	expectedFlags := []string{"build-type", "builder", "debug", "deploy", "detach", "restart-unless-stopped", "restart-on-failure", "no-restart", "prefix", "user-args", "watch", "debounce", "verbose"}
 	for _, name := range expectedFlags {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing flag %q", name)
 		}
+	}
+}
+
+// TestWithWatchInvariants verifies the watch loop's required invariants are
+// applied: it must run detached and never prompt, so a rapid series of saves
+// can't block on log streaming or an interactive confirmation.
+func TestWithWatchInvariants(t *testing.T) {
+	got := withWatchInvariants(runOptions{})
+	if !got.detach {
+		t.Error("detach should be forced true in watch mode")
+	}
+	if !got.yes {
+		t.Error("yes should be forced true in watch mode")
+	}
+
+	// Other options must be preserved.
+	in := runOptions{product: "demo", prefix: "apps/demo", chunking: chunkingForce}
+	out := withWatchInvariants(in)
+	if out.product != "demo" || out.prefix != "apps/demo" || out.chunking != chunkingForce {
+		t.Errorf("watch invariants clobbered unrelated options: %+v", out)
+	}
+}
+
+// TestRunCmdWatchFlagAlias verifies `wendy run --watch` parses and that the
+// debounce/verbose flags carry the same defaults as the standalone `wendy watch`
+// command they mirror.
+func TestRunCmdWatchFlagAlias(t *testing.T) {
+	cmd := newRunCmd()
+	if err := cmd.Flags().Parse([]string{"--watch"}); err != nil {
+		t.Fatalf("parse --watch: %v", err)
+	}
+	if debounce := cmd.Flags().Lookup("debounce"); debounce == nil || debounce.DefValue != "400" {
+		t.Fatalf("debounce flag default = %v; want 400", debounce)
+	}
+}
+
+// TestRunResolveOptions_ExcludesLocalByDefault verifies that, without --all,
+// `wendy run`'s interactive picker hides the on-machine run targets.
+func TestRunResolveOptions_ExcludesLocalByDefault(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{}) {
+		o(&cfg)
+	}
+	for _, k := range providers.LocalProviderKeys() {
+		if !cfg.excludeProviderKeys[k] {
+			t.Errorf("provider %q should be excluded from the picker by default", k)
+		}
+	}
+}
+
+// TestRunResolveOptions_AllShowsLocal verifies that --all surfaces the local
+// run targets in the picker again.
+func TestRunResolveOptions_AllShowsLocal(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{allTargets: true}) {
+		o(&cfg)
+	}
+	for _, k := range providers.LocalProviderKeys() {
+		if cfg.excludeProviderKeys[k] {
+			t.Errorf("--all should not exclude provider %q", k)
+		}
+	}
+}
+
+// TestRunResolveOptions_YesIsNonInteractive verifies --yes keeps suppressing the
+// interactive picker (preserved while refactoring the option builder).
+func TestRunResolveOptions_YesIsNonInteractive(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{yes: true}) {
+		o(&cfg)
+	}
+	if !cfg.nonInteractive {
+		t.Error("--yes should set non-interactive resolve")
 	}
 }
 
@@ -383,7 +457,7 @@ func TestNewCloudDeviceCmd(t *testing.T) {
 	}
 }
 
-func TestPublicDeviceAliasesRemainVisible(t *testing.T) {
+func TestPsAliasIsHiddenButRunnable(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cmd  *cobra.Command
@@ -392,12 +466,14 @@ func TestPublicDeviceAliasesRemainVisible(t *testing.T) {
 		{name: "cloud device", cmd: newCloudDeviceCmd()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// ps is hidden from help but must remain resolvable so the alias
+			// keeps working for anyone who already relies on it.
 			psCmd, _, err := tc.cmd.Find([]string{"ps"})
 			if err != nil {
 				t.Fatalf("Find(ps): %v", err)
 			}
-			if psCmd.Name() != "ps" || psCmd.Hidden {
-				t.Fatalf("ps should be a visible command; cmd=%v hidden=%v", psCmd.Name(), psCmd.Hidden)
+			if psCmd.Name() != "ps" || !psCmd.Hidden {
+				t.Fatalf("ps should be a hidden (but runnable) command; cmd=%v hidden=%v", psCmd.Name(), psCmd.Hidden)
 			}
 			if !strings.Contains(psCmd.Short, "alias for 'apps list'") {
 				t.Fatalf("ps help should point at apps list, got %q", psCmd.Short)
@@ -410,8 +486,8 @@ func TestPublicDeviceAliasesRemainVisible(t *testing.T) {
 			if err := tc.cmd.Execute(); err != nil {
 				t.Fatalf("help: %v", err)
 			}
-			if !strings.Contains(buf.String(), "ps") {
-				t.Fatalf("parent help should list visible ps alias: %s", buf.String())
+			if strings.Contains(buf.String(), "\n  ps ") {
+				t.Fatalf("parent help should not list hidden ps alias: %s", buf.String())
 			}
 		})
 	}

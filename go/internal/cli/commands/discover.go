@@ -30,6 +30,7 @@ import (
 func newDiscoverCmd() *cobra.Command {
 	var discoverType string
 	var timeout time.Duration
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "discover",
@@ -65,29 +66,37 @@ func newDiscoverCmd() *cobra.Command {
 					timeout = 5 * time.Second
 				}
 				opts.Timeout = timeout
+				// JSON output always lists every target so scripts/MCP keep the
+				// full set regardless of --all.
 				return discoverJSON(cmd.Context(), opts)
 			}
 
 			if timeoutSet {
 				opts.Timeout = timeout
-				return discoverOnce(cmd.Context(), opts)
+				return discoverOnce(cmd.Context(), opts, all)
 			}
-			return discoverContinuous(cmd.Context(), opts)
+			return discoverContinuous(cmd.Context(), opts, all)
 		},
 	}
 
 	cmd.Flags().StringVar(&discoverType, "type", "all", "Discovery type: usb, lan, bluetooth, external, all")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Scan once for this duration then exit")
+	cmd.Flags().BoolVar(&all, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the results; hidden by default")
 
 	return cmd
 }
 
-// discoverExternalDevices queries all registered providers for their devices.
-// This uses AllProviders (not just available ones) so devices are discoverable
-// even when the build toolchain isn't installed.
-func discoverExternalDevices(ctx context.Context) []models.ExternalDevice {
+// discoverExternalDevices queries registered providers for their devices. This
+// uses AllProviders (not just available ones) so devices are discoverable even
+// when the build toolchain isn't installed. Unless includeLocal is set, local
+// run targets (this machine, Docker/OrbStack, Apple Container) are skipped so
+// the table lists separate WendyOS devices by default.
+func discoverExternalDevices(ctx context.Context, includeLocal bool) []models.ExternalDevice {
 	var all []models.ExternalDevice
 	for _, p := range providers.AllProviders() {
+		if !includeLocal && providers.IsLocalProviderKey(p.Key()) {
+			continue
+		}
 		devices, err := p.DiscoverDevices(ctx)
 		if err != nil {
 			continue
@@ -121,7 +130,8 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 	sortLANDevicesForDiscover(collection.LANDevices)
 
 	if shouldIncludeExternal(opts) {
-		collection.ExternalDevices = discoverExternalDevices(ctx)
+		// JSON output always includes local run targets (see newDiscoverCmd).
+		collection.ExternalDevices = discoverExternalDevices(ctx, true)
 	}
 
 	data, err := json.MarshalIndent(collection, "", "  ")
@@ -133,7 +143,8 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 }
 
 // discoverOnce runs a single scan with the given timeout and prints results.
-func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
+// includeLocal surfaces local run targets that are hidden by default.
+func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
 	s := tui.NewSpinner("Scanning for WendyOS devices...")
 
 	includeExternal := shouldIncludeExternal(opts)
@@ -145,7 +156,7 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 			annotateLANUSBFromEthernet(collection)
 			sortLANDevicesForDiscover(collection.LANDevices)
 			if includeExternal {
-				collection.ExternalDevices = discoverExternalDevices(ctx)
+				collection.ExternalDevices = discoverExternalDevices(ctx, includeLocal)
 			}
 		}
 		return tui.SpinnerDoneMsg{Result: collection, Err: err}
@@ -197,9 +208,10 @@ func noDevicesHint() string {
 }
 
 // discoverContinuous runs scans in a loop, refreshing the table until Ctrl+C.
-func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions) error {
+// includeLocal surfaces local run targets that are hidden by default.
+func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
 	opts.Timeout = 3 * time.Second // per-scan timeout
-	m := newDiscoverModel(ctx, opts)
+	m := newDiscoverModel(ctx, opts, includeLocal)
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("TUI error: %w", err)
@@ -273,9 +285,10 @@ type discoverModel struct {
 	flashMessage       string
 	flashIsError       bool
 	updatingDeviceName string // non-empty while a background update is running
+	includeLocal       bool   // surface local run targets hidden by default
 }
 
-func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions) discoverModel {
+func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) discoverModel {
 	m := discoverModel{
 		ctx:             ctx,
 		opts:            opts,
@@ -283,6 +296,7 @@ func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions) disc
 		bleSeen:         make(map[string]time.Time),
 		table:           newDiscoverTable(true),
 		includeExternal: shouldIncludeExternal(opts),
+		includeLocal:    includeLocal,
 	}
 	m.refreshTable()
 	return m
@@ -333,7 +347,7 @@ func (m discoverModel) scanBluetooth() tea.Cmd {
 
 func (m discoverModel) scanExternal() tea.Cmd {
 	return func() tea.Msg {
-		return extScanMsg{devices: discoverExternalDevices(m.ctx)}
+		return extScanMsg{devices: discoverExternalDevices(m.ctx, m.includeLocal)}
 	}
 }
 
