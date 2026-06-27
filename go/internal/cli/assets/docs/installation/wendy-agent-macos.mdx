@@ -78,22 +78,9 @@ wendy --device {hostname}:50051 device info --json
 
 The response should report `"os": "darwin"` and `"cpuArchitecture": "arm64"`.
 
-## Discovery and Default Device
+## Discovery
 
 Wendy for Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
-
-Save the Mac as your default Wendy device:
-
-```bash
-wendy device set-default {hostname}:50051
-wendy device info --json
-```
-
-Clear the default when you want commands to require an explicit target:
-
-```bash
-wendy device unset-default
-```
 
 ## Deploying Apps
 
