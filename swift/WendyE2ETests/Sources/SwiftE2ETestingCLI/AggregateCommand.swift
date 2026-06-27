@@ -18,7 +18,8 @@ struct AggregateCommand: ParsableCommand {
 
     @Option(
         name: .long,
-        help: "Swift package directory used to resolve test source paths. Defaults to the current directory."
+        help:
+            "Swift package directory used to resolve test source paths. Defaults to the current directory."
     )
     var packageDir: String?
 
@@ -202,10 +203,11 @@ private func writeTestSourceArtifactIfPossible(testRootURL: URL, packageURL: URL
         return
     }
 
-    guard let sourceURL = resolvedTestSourceURL(
-        packageURL: packageURL,
-        sourceFilePath: metadata.sourceFilePath
-    ), FileManager.default.fileExists(atPath: sourceURL.path)
+    guard
+        let sourceURL = resolvedTestSourceURL(
+            packageURL: packageURL,
+            sourceFilePath: metadata.sourceFilePath
+        ), FileManager.default.fileExists(atPath: sourceURL.path)
     else { return }
 
     guard try sourceFileSize(sourceURL) <= e2eSourceArtifactMaxBytes else { return }
@@ -255,7 +257,8 @@ private func writeRunSourceIndex(in runURL: URL) throws {
             let startLine = metadata.sourceStartLine.map(String.init) ?? "?"
             let endLine = metadata.sourceEndLine.map(String.init) ?? "?"
             let sourceArtifactPath = aggregateRelativePath(sourceURL, base: runURL)
-            let sourceRange = "\(aggregateMarkdownInline(metadata.sourceFilePath)):\(startLine)-\(endLine)"
+            let sourceRange =
+                "\(aggregateMarkdownInline(metadata.sourceFilePath)):\(startLine)-\(endLine)"
             let suiteName = aggregateMarkdownInline(metadata.suiteName)
             let testName = aggregateMarkdownInline(metadata.testName)
             entries.append(
@@ -305,10 +308,16 @@ private func aggregateRelativePath(_ url: URL, base: URL) -> String {
     return path
 }
 
-private func resolvedTestSourceURL(packageURL: URL, sourceFilePath rawSourceFilePath: String) -> URL? {
+private func resolvedTestSourceURL(
+    packageURL: URL,
+    sourceFilePath rawSourceFilePath: String
+) -> URL? {
     let sourceFilePath = rawSourceFilePath.precomposedStringWithCanonicalMapping
     let lowercasedPath = sourceFilePath.lowercased()
-    let sourcePathComponents = sourceFilePath.split(separator: "/", omittingEmptySubsequences: false)
+    let sourcePathComponents = sourceFilePath.split(
+        separator: "/",
+        omittingEmptySubsequences: false
+    )
     guard !sourceFilePath.hasPrefix("/"),
         !sourceFilePath.contains("\0"),
         !sourceFilePath.contains("\\"),
@@ -345,7 +354,8 @@ private func aggregateMarkdownInline(_ value: String) -> String {
             CharacterSet.controlCharacters.contains(scalar) ? " " : Character(scalar)
         }
     )
-    return withoutControlCharacters
+    return
+        withoutControlCharacters
         .replacingOccurrences(of: "`", with: "'")
         .components(separatedBy: .whitespacesAndNewlines)
         .filter { !$0.isEmpty }

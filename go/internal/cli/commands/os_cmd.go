@@ -625,25 +625,24 @@ func localIPForHost(host string) (string, error) {
 	}
 
 	if parsedIP == nil {
-		// Not an IP literal — resolve via DNS.
-		ips, err := net.LookupHost(host)
-		if err != nil {
-			return "", fmt.Errorf("resolving %s: %w", host, err)
+		// Not an IP literal — resolve via DNS, falling back to an mDNS browse
+		// for ".local" names. The shipped CGO_ENABLED=0 binary can't resolve
+		// ".local" via the OS resolver, so without this fallback `wendy os`
+		// commands targeting a ".local" host fail on Linux/Windows (issue #1155).
+		ip := resolveHostMDNSFallback(context.Background(), host)
+		if ip == "" {
+			return "", fmt.Errorf("resolving %s: no addresses found%s", host, mdnsLocalHint(host))
 		}
-		// Prefer IPv4; fall back to the first result.
-		for _, ip := range ips {
-			if p := net.ParseIP(ip); p != nil && p.To4() != nil {
-				parsedIP = p
-				dialHost = ip
-				break
-			}
+		// An mDNS-discovered IPv6 link-local address carries a zone (e.g.
+		// fe80::1%en0): keep it for dialing but strip it before ParseIP.
+		dialHost = ip
+		ipForParse := ip
+		if i := strings.Index(ip, "%"); i != -1 {
+			ipForParse = ip[:i]
 		}
-		if parsedIP == nil && len(ips) > 0 {
-			dialHost = ips[0]
-			parsedIP = net.ParseIP(ips[0])
-		}
+		parsedIP = net.ParseIP(ipForParse)
 		if parsedIP == nil {
-			return "", fmt.Errorf("no addresses found for %s", host)
+			return "", fmt.Errorf("resolving %s: invalid address %q", host, ip)
 		}
 	}
 

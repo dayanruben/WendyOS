@@ -29,9 +29,11 @@ wendy discover [flags]
 
 ### LAN (mDNS) discovery
 
-mDNS discovery works on all platforms. On Linux, ensure `avahi-daemon` is
-running on the device. On macOS, the CLI shells out to `dns-sd` and requires
-Local Network TCC permission.
+mDNS discovery works on all platforms. On Linux, the CLI performs an mDNS browse
+that requires UDP port 5353 open on the host firewall (e.g., `sudo ufw allow 5353/udp`).
+On macOS, the CLI shells out to `dns-sd` and requires Local Network TCC permission.
+For USB-connected devices on Linux, run `wendy device usb-setup` first to bring up
+the interface.
 
 Wendy for Mac advertises the same `_wendyos._udp` service. When discovery
 succeeds, Mac agents appear under `lanDevices` in JSON output with
@@ -39,12 +41,27 @@ succeeds, Mac agents appear under `lanDevices` in JSON output with
 `--device {hostname}:50051`, because discovery can be blocked by network policy
 or macOS permissions.
 
+## Local run targets
+
+By default `wendy discover` hides **local run targets** — this machine,
+Docker/OrbStack, and Apple Container — so the table shows only separate WendyOS
+devices. Pass `--all` to include them:
+
+```sh
+wendy discover --all
+```
+
+> **Note:** JSON output (`wendy discover --json`) always includes local run
+> targets regardless of `--all`, so scripts and MCP callers continue to receive
+> the full set.
+
 ## Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--timeout` | `5s` | How long to wait for mDNS responses |
 | `--json` | `false` | Output results as a JSON array instead of a table |
+| `--all` | `false` | Include local run targets (this machine, Docker/OrbStack, Apple Container) in the table. JSON output always includes them regardless of this flag. |
 
 ## Interactive table
 

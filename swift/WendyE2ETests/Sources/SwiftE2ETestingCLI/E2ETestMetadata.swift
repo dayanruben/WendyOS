@@ -37,13 +37,19 @@ struct E2ETestMetadata: Codable, Sendable {
         try validateOptionalLine(sourceStartLine, field: "sourceStartLine", sourceURL: sourceURL)
         try validateOptionalLine(sourceEndLine, field: "sourceEndLine", sourceURL: sourceURL)
         if let sourceStartLine, let sourceEndLine, sourceStartLine > sourceEndLine {
-            throw ValidationError("Test metadata has invalid source line range in \(sourceURL.path)")
+            throw ValidationError(
+                "Test metadata has invalid source line range in \(sourceURL.path)"
+            )
         }
         if let declarationLine, let sourceStartLine, declarationLine < sourceStartLine {
-            throw ValidationError("Test metadata has declaration before source range in \(sourceURL.path)")
+            throw ValidationError(
+                "Test metadata has declaration before source range in \(sourceURL.path)"
+            )
         }
         if let declarationLine, let sourceEndLine, declarationLine > sourceEndLine {
-            throw ValidationError("Test metadata has declaration after source range in \(sourceURL.path)")
+            throw ValidationError(
+                "Test metadata has declaration after source range in \(sourceURL.path)"
+            )
         }
     }
 

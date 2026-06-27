@@ -705,7 +705,9 @@ private func appendReviewOutputContract(
     lines.append("")
     lines.append("## Details")
     lines.append("")
-    lines.append("Human-friendly, well-structured, concise context for a human or AI coding agent to pick up the issue and create a fix: observed versus expected behavior, likely category/root cause, confidence, inspected source/diff paths, artifact paths, and concrete next steps. Prefer short paragraphs and bullets over raw log dumps.")
+    lines.append(
+        "Human-friendly, well-structured, concise context for a human or AI coding agent to pick up the issue and create a fix: observed versus expected behavior, likely category/root cause, confidence, inspected source/diff paths, artifact paths, and concrete next steps. Prefer short paragraphs and bullets over raw log dumps."
+    )
     lines.append("```")
     lines.append("")
     lines.append(
@@ -857,7 +859,8 @@ private func runReviewAttemptFiles(attemptURL: URL, runURL: URL) throws -> [Stri
         includingPropertiesForKeys: [.isRegularFileKey],
         options: [.skipsHiddenFiles]
     )
-    return urls
+    return
+        urls
         .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
         .sorted { $0.lastPathComponent < $1.lastPathComponent }
         .map { reviewRelativePath($0, base: runURL) }
@@ -867,11 +870,15 @@ private func runReviewObservationCount(runURL: URL, target: String, attempt: Str
     var count = 0
     for suiteURL in try runReviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         for testURL in try runReviewDirectoryChildren(of: suiteURL) {
-            let observationURL = testURL
+            let observationURL =
+                testURL
                 .appendingPathComponent(target, isDirectory: true)
                 .appendingPathComponent(attempt, isDirectory: true)
             var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: observationURL.path, isDirectory: &isDirectory),
+            if FileManager.default.fileExists(
+                atPath: observationURL.path,
+                isDirectory: &isDirectory
+            ),
                 isDirectory.boolValue
             {
                 count += 1
@@ -1181,7 +1188,8 @@ private func promptSafeInline(_ value: String, maxLength: Int) -> String {
             CharacterSet.controlCharacters.contains(scalar) ? " " : Character(scalar)
         }
     )
-    let singleLine = withoutControlCharacters
+    let singleLine =
+        withoutControlCharacters
         .replacingOccurrences(of: "`", with: "'")
         .components(separatedBy: .whitespacesAndNewlines)
         .filter { !$0.isEmpty }

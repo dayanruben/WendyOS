@@ -204,7 +204,6 @@ type pickerDevice struct {
 	Name       string
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
-	Category   string // e.g. "Linux" or "Wendy Lite"
 	IsESP32    bool
 	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
 	Manifest   *deviceManifest // cached manifest for Linux devices
@@ -278,14 +277,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:       dev.Name,
 			Version:    displayVersion,
 			RawVersion: rawVersion,
-			Category:   "Linux",
 			Manifest:   dev.Manifest,
 		}
 		deviceMap[dev.Key] = pd
 
 		items = append(items, tui.PickerItem{
 			Name:        dev.Name,
-			Description: fmt.Sprintf("%s    %s", displayVersion, pd.Category),
+			Description: displayVersion,
+			Section:     "WendyOS",
+			SortKey:     "0_wendyos_" + strings.ToLower(dev.Name),
 			Value:       dev.Key,
 		})
 	}
@@ -302,13 +302,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			deviceMap[esp.key] = pickerDevice{
 				Name:      esp.name,
 				Version:   espVersion,
-				Category:  "Wendy Lite",
 				IsESP32:   true,
 				ESP32Chip: esp.chip,
 			}
 			items = append(items, tui.PickerItem{
 				Name:        esp.name,
-				Description: fmt.Sprintf("%s    %s", espVersion, "Wendy Lite"),
+				Description: espVersion,
+				Section:     "Wendy Lite",
+				SortKey:     "1_lite_" + strings.ToLower(esp.name),
 				Value:       esp.key,
 			})
 		}
@@ -1517,7 +1518,7 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
 				c.Password = pw
 			} else if isInteractiveTerminal() {
-				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
+				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
@@ -1642,7 +1643,7 @@ var (
 		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
 	}
 	promptWifiPassword = func(ssid string) (string, error) {
-		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+		return tui.PromptPassword(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
 	}
 )
 

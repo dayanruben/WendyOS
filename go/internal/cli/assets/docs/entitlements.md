@@ -6,6 +6,7 @@ A minimal version looks like this:
 ```json
 {
     "appId": "com.example.app",
+    "platform": "linux",
     "version": "1.0.0",
 }
 ```
@@ -14,11 +15,12 @@ The app configuration is stored in the `wendy.json` file in the root of the app'
 
 ### Entitlements
 
-Entitlements are a way to grant containers access to resources on the host. The format of the entitlements is a JSON object with the following fields:
+Entitlements are a way to grant containers access to resources on the host. Entitlements apply to WendyOS container targets (`linux`/`wendyos`) and `wendy-lite`; native macOS (`darwin`) apps run non-containerized and do not use entitlements. The format of the entitlements is a JSON object with the following fields:
 
 ```json
 {
     "appId": "com.example.app",
+    "platform": "linux",
     "version": "1.0.0",
     ...
     "entitlements": [

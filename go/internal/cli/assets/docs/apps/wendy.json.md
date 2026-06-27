@@ -8,6 +8,7 @@
 {
   "$schema": "https://wendy.sh/schemas/wendy.json",
   "appId": "my-app",
+  "platform": "linux",
   "version": "1.0.0",
   "language": "swift",
   "entitlements": [
@@ -24,7 +25,7 @@
 Unique identifier for the app.
 
 ```json
-{ "appId": "my-app" }
+{ "appId": "my-app", "platform": "linux" }
 ```
 
 ### `version`
@@ -37,26 +38,27 @@ Target platform. One of:
 
 | Value | Description |
 |-------|-------------|
-| `wendyos` | Linux edge device running WendyOS |
+| `linux` | Linux edge device; the device architecture is inferred |
+| `wendyos` | Compatibility alias for `linux`; passed to container builders as `linux` |
 | `wendy-lite` | ESP32 WASM target |
 | `darwin` | Native macOS app running through Wendy for Mac |
 | `linux/arm64`, `linux/amd64`, etc. | Explicit Linux architecture target |
 
-Omit to target the default platform.
+Use `"linux"` for WendyOS/Linux container targets. Omit to target the default Linux platform. Existing `"wendyos"` configs are accepted as an alias and resolve to `linux` before Docker or Apple Container builds.
 
 Use `"darwin"` for native macOS targets managed by [Wendy for Mac](/docs/installation/wendy-agent-macos). The CLI builds the app on a Mac development machine, syncs the build output to the Mac agent, and launches it as a native macOS process. Darwin apps run natively and non-containerized; they do not use the WendyOS Linux container runtime.
 
 > **Wendy for Mac:** If the selected target is Wendy for Mac, `wendy run` rejects any `platform` value that does not resolve to `darwin` (for example, `linux/arm64` or `wendyos`). Set `platform: "darwin"` and use a native SwiftPM or Xcode project.
 
-Minimal SwiftPM/macOS configuration:
+Minimal SwiftPM/Linux container configuration:
 
 ```json
 {
   "$schema": "https://wendy.sh/schemas/wendy.json",
-  "appId": "com.example.hello-mac",
+  "appId": "com.example.hello-linux",
   "version": "1.0.0",
   "language": "swift",
-  "platform": "darwin"
+  "platform": "linux"
 }
 ```
 
@@ -67,6 +69,19 @@ Project language, e.g. `"swift"` or `"python"`. Used by the CLI to select the ap
 ### `debug`
 
 Set to `true` to enable debug mode (default `false`). Injects debug tooling into the container via the `WENDY_DEBUG` build arg.
+
+### `brewfile`
+
+Optional Homebrew Bundle manifest for native macOS (`platform: "darwin"`) deployments. The path is relative to `wendy.json`; absolute paths and `..` components are not allowed.
+
+```json
+{
+  "platform": "darwin",
+  "brewfile": "Brewfile.wendy"
+}
+```
+
+If `brewfile` is omitted and a `Brewfile.wendy` exists at the project root, `wendy run` auto-detects it for native SwiftPM and Xcode Mac deployments. A plain project-root `Brewfile` is left for developer-machine setup and is not applied to the target unless explicitly referenced. The CLI syncs the Wendy Brewfile to the target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>` before starting the app. Homebrew must already be installed on the target Mac; Wendy does not install Homebrew automatically. Linux/WendyOS container deployments ignore Brewfiles.
 
 ### `entitlements`
 

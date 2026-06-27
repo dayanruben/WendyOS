@@ -21,6 +21,7 @@ import (
 const (
 	targetWendyOS   = "wendyos"
 	targetWendyLite = "wendy-lite"
+	targetDarwin    = "darwin"
 
 	langSwift  = "swift"
 	langPython = "python"
@@ -49,6 +50,14 @@ var wendyLiteLanguages = []struct {
 	description string
 }{
 	{langSwift, "Swift", "Swift compiled to WASM"},
+}
+
+var darwinLanguages = []struct {
+	key         string
+	name        string
+	description string
+}{
+	{langSwift, "Swift", "Native macOS application for Wendy Agent for Mac"},
 }
 
 // Entitlement questions asked during interactive setup.
@@ -150,6 +159,14 @@ func newInitCmd() *cobra.Command {
     --no-extra-entitlements \
     --assistant skip
 
+  # Native macOS app for Wendy Agent for Mac
+  wendy init \
+    --app-id mac-llm \
+    --target darwin \
+    --language swift \
+    --template mac-llm \
+    --assistant skip
+
   # Enable all entitlements at once
   wendy init \
     --app-id full-app \
@@ -193,7 +210,7 @@ func newInitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
-	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos or wendy-lite")
+	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json), wendy-lite, or darwin")
 	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, or cpp")
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
 	cmd.Flags().StringVar(&opts.branch, "branch", "", fmt.Sprintf("Branch of the templates repo to use (default: %s)", templateRepoBranch))
@@ -290,9 +307,14 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	// Step 4: Generate wendy.json.
-	platform := appconfig.PlatformWendyOS
-	if target == targetWendyLite {
+	// WendyOS is Linux, so the WendyOS target writes the plain "linux"
+	// platform. wendy-lite and darwin need distinct values.
+	platform := appconfig.PlatformLinux
+	switch target {
+	case targetWendyLite:
 		platform = appconfig.PlatformWendyLite
+	case targetDarwin:
+		platform = appconfig.PlatformDarwin
 	}
 
 	cfg := appconfig.AppConfig{
@@ -351,9 +373,12 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 			return name, meta, err
 		}
 
-		// Explicit template name: validate it.
+		// Explicit template name: validate it and ensure it supports the target.
 		for _, t := range meta.Templates {
 			if t.Name == tmpl {
+				if !templateTargetMatch(t, target) {
+					return "", nil, fmt.Errorf("template %q is not available for target %q", opts.template, target)
+				}
 				return tmpl, meta, nil
 			}
 		}
@@ -383,8 +408,8 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 }
 
 // templateTargetMatch returns true if the template supports the given target.
-// Templates without a Targets list default to WendyOS only; Wendy Lite templates
-// must explicitly include "wendy-lite" in their Targets list.
+// Templates without a Targets list default to WendyOS only; Wendy Lite and
+// native macOS templates must explicitly include their target in the list.
 func templateTargetMatch(t repoMetaTemplate, target string) bool {
 	if len(t.Targets) == 0 {
 		return target == targetWendyOS
@@ -439,11 +464,12 @@ func pickTemplateOrSkipForTarget(target string, meta *repoMeta) (string, error) 
 }
 
 // resolveTemplateLanguage picks the language for the template flow.
-// Wendy Lite always uses Swift; WendyOS offers the languages available for the selected template.
+// Wendy Lite and native macOS always use Swift; WendyOS offers the languages
+// available for the selected template.
 func resolveTemplateLanguage(target, tmpl string, meta *repoMeta, opts initOptions) (string, error) {
-	if target == targetWendyLite {
+	if target == targetWendyLite || target == targetDarwin {
 		if opts.languageSet && normalizeInitChoice(opts.language) != langSwift {
-			return "", fmt.Errorf("%s templates require %s", targetWendyLite, langSwift)
+			return "", fmt.Errorf("%s templates require %s", target, langSwift)
 		}
 		languages, err := templateLanguagesForTemplate(context.Background(), meta, tmpl, opts.branch)
 		if err != nil {
@@ -660,7 +686,7 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 	}
 
 	cliSuccess("\nScaffolded %s project from template %q", language, tmpl)
-	cliLogln("  Directory: %s/", destDir)
+	cliLogln("  Directory: %s", tui.Path(destDir+"/"))
 	for _, v := range manifest.Variables {
 		if val, ok := vals[v.Name]; ok {
 			cliLogln("  %s: %v", v.Name, val)
@@ -679,7 +705,7 @@ func finishTemplateInit(cwd, destDir, appID string) error {
 	cliSuccess("\nYour project is ready!")
 	cliLogln("Next steps:")
 	for _, step := range templateNextSteps(cwd, destDir, appID) {
-		cliLogln("  %s", step)
+		cliLogln("  %s", tui.Command(step))
 	}
 	if filepath.Clean(destDir) != filepath.Clean(cwd) {
 		cliLogln("Note: run the cd command in your shell; a CLI process cannot change its parent shell directory.")
@@ -856,9 +882,9 @@ func resolveInitAppID(cwd string, args []string, opts initOptions) (string, erro
 
 func resolveInitTarget(opts initOptions) (string, error) {
 	if opts.targetSet {
-		target := normalizeInitChoice(opts.target)
+		target := normalizeInitTarget(opts.target)
 		if !isValidInitTarget(target) {
-			return "", fmt.Errorf("invalid target %q (valid: %s, %s)", opts.target, targetWendyOS, targetWendyLite)
+			return "", fmt.Errorf("invalid target %q (valid: %s, %s, %s)", opts.target, targetWendyOS, targetWendyLite, targetDarwin)
 		}
 		return target, nil
 	}
@@ -866,7 +892,8 @@ func resolveInitTarget(opts initOptions) (string, error) {
 	fmt.Println()
 	return pickFromItems("What is your target device?", []tui.PickerItem{
 		{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS, SortKey: "0"},
-		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "1"},
+		{Name: "macOS", Description: "Native macOS app deployed to Wendy Agent for Mac", Value: targetDarwin, SortKey: "1"},
+		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
 	})
 }
 
@@ -911,6 +938,9 @@ func pickInitLanguage(target string) (string, error) {
 		// Only WASM-capable languages (currently just Swift).
 		cliNotice("Wendy Lite requires a WASM-compatible language.")
 		return langSwift, nil
+	case targetDarwin:
+		cliNotice("Wendy Agent for Mac currently supports native Swift apps.")
+		return langSwift, nil
 
 	default:
 		var items []tui.PickerItem
@@ -926,7 +956,12 @@ func pickInitLanguage(target string) (string, error) {
 }
 
 var askEntitlementQuestions = func(target, language string) ([]appconfig.Entitlement, error) {
-	// Always include network.
+	if target == targetDarwin {
+		cliLogln("Native macOS apps do not use WendyOS container entitlements.")
+		return nil, nil
+	}
+
+	// Always include network for WendyOS/Wendy Lite containerized targets.
 	entitlements := []appconfig.Entitlement{
 		{Type: appconfig.EntitlementNetwork},
 	}
@@ -971,6 +1006,13 @@ func initEntitlementsProvided(opts initOptions) bool {
 }
 
 func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfig.Entitlement, error) {
+	if target == targetDarwin {
+		if opts.entitlementsSet || opts.allEntitlements || opts.gpioPinsSet || opts.i2cDeviceSet || opts.persistNameSet || opts.persistPathSet {
+			return nil, fmt.Errorf("%s apps do not support WendyOS container entitlements", targetDarwin)
+		}
+		return nil, nil
+	}
+
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}
 	seen := map[string]bool{appconfig.EntitlementNetwork: true}
 
@@ -1063,8 +1105,18 @@ func normalizeInitChoice(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+func normalizeInitTarget(value string) string {
+	target := normalizeInitChoice(value)
+	switch target {
+	case "mac", "macos", "mac-os":
+		return targetDarwin
+	default:
+		return target
+	}
+}
+
 func isValidInitTarget(target string) bool {
-	return target == targetWendyOS || target == targetWendyLite
+	return target == targetWendyOS || target == targetWendyLite || target == targetDarwin
 }
 
 func isValidInitLanguage(language string) bool {
@@ -1074,6 +1126,9 @@ func isValidInitLanguage(language string) bool {
 func validateInitLanguage(target, language string) error {
 	if target == targetWendyLite && language != langSwift {
 		return fmt.Errorf("%s requires %s", targetWendyLite, langSwift)
+	}
+	if target == targetDarwin && language != langSwift {
+		return fmt.Errorf("%s requires %s", targetDarwin, langSwift)
 	}
 	return nil
 }
@@ -1309,7 +1364,7 @@ func installWendySkills(autoInstall bool) error {
 
 func runAIAssistantChoice(choice, appID, target, language string, entitlements []appconfig.Entitlement, installClaudeSkills bool, interactive bool) error {
 	if choice == assistantSkip {
-		cliSuccess("\nYour project is ready! Run `wendy run` to build and deploy.")
+		cliSuccess("\nYour project is ready! Run %s to build and deploy.", tui.Command("wendy run"))
 		return nil
 	}
 
@@ -1344,6 +1399,8 @@ func buildAssistantPrompt(appID, target, language string, entitlements []appconf
 
 	if target == targetWendyLite {
 		sb.WriteString("It targets Wendy Lite (ESP32 microcontroller running WASM).\n")
+	} else if target == targetDarwin {
+		sb.WriteString("It targets Wendy Agent for Mac as a native macOS app.\n")
 	} else {
 		sb.WriteString("It targets WendyOS (a Linux-based edge device like NVIDIA Jetson or Raspberry Pi).\n")
 	}

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // appIDPattern restricts appId to characters that are safe to embed in
@@ -87,6 +88,7 @@ var allowedKeys = map[string][]string{
 
 // Platform constants identify the target hardware family.
 const (
+	PlatformLinux     = "linux"
 	PlatformWendyOS   = "wendyos"
 	PlatformWendyLite = "wendy-lite"
 	PlatformDarwin    = "darwin"
@@ -156,6 +158,10 @@ type AppConfig struct {
 	Python       *PythonConfig    `json:"python,omitempty"`
 	Debug        bool             `json:"debug,omitempty"`
 	Files        []FileSyncEntry  `json:"files,omitempty"`
+	// Brewfile is an optional Homebrew Bundle manifest path for native Darwin
+	// deployments. It is relative to wendy.json and synced to the target Mac
+	// before the agent runs `brew bundle --file`.
+	Brewfile string `json:"brewfile,omitempty"`
 	// Isolation sets the namespace isolation mode for multi-container deployments
 	// (e.g. "shared-ipc"). Enforced by the agent at container creation time.
 	Isolation string `json:"isolation,omitempty"`
@@ -420,6 +426,12 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if c.Brewfile != "" {
+		if !IsSafeRelativeBrewfilePath(c.Brewfile) {
+			return fmt.Errorf("brewfile path must be relative and must not contain '.', '..', or empty components")
+		}
+	}
+
 	if c.Readiness != nil {
 		if c.Readiness.TCPSocket != nil {
 			port := c.Readiness.TCPSocket.Port
@@ -477,6 +489,24 @@ func containsDotDot(p string) bool {
 		}
 	}
 	return false
+}
+
+func IsSafeRelativeBrewfilePath(p string) bool {
+	p = strings.TrimPrefix(p, "./")
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") || strings.Contains(p, "%") || strings.Contains(p, "\x00") {
+		return false
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	for _, component := range strings.Split(p, "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadComposeCompanion looks for a wendy.json alongside a docker-compose file

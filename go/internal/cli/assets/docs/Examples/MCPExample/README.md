@@ -27,6 +27,7 @@ MCPExample/
 ```json
 {
   "appId": "com.wendylabs.examples.mcp-example",
+  "platform": "linux",
   "version": "1.0.0",
   "language": "python",
   "python": {

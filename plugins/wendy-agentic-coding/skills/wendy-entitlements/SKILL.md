@@ -7,6 +7,10 @@ description: Use when creating, reviewing, or debugging `wendy.json` entitlement
 
 Use this for any task involving `wendy.json` capabilities. Base recommendations on the runtime behavior in `wendy-agent/go/internal/agent/oci/entitlements.go` and validation in `wendy-agent/go/internal/shared/appconfig/appconfig.go`.
 
+## Platform scope
+
+Entitlements apply to containerized platforms (`linux`/`wendyos` and `wendy-lite`). Darwin (native macOS) apps run non-containerized and do not use WendyOS container entitlements.
+
 ## Start from app needs
 
 Ask what the app actually touches, then choose the smallest entitlement set:
@@ -57,7 +61,7 @@ Web server:
 ```json
 {
   "appId": "api-server",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" }
   ],
@@ -73,7 +77,7 @@ Camera + audio app:
 ```json
 {
   "appId": "camera-assistant",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "camera" },
@@ -87,7 +91,7 @@ Jetson GPU app with persistent model cache:
 ```json
 {
   "appId": "vision-inference",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "gpu" },
@@ -102,7 +106,7 @@ I2C sensor app:
 ```json
 {
   "appId": "sensor-reader",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "i2c", "device": "i2c-1" },
     { "type": "persist", "name": "sensor-data", "path": "/data" }
@@ -115,7 +119,7 @@ Serial device app (USB-serial servo bus):
 ```json
 {
   "appId": "servo-controller",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "serial", "device": "ttyACM0" }

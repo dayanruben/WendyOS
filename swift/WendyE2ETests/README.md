@@ -89,7 +89,7 @@ The most useful environment variables are:
 | `WENDY_E2E_CLI_ADDRESS` | Optional SSH host for the CLI machine. |
 | `WENDY_E2E_AGENT_ADDRESS` | Optional SSH host for the agent/device machine. |
 | `WENDY_E2E_DEVICE_ADDRESS` | Device address used by CLI commands while the agent session still runs locally; must not include credentials. |
-| `WENDY_E2E_MANAGED_AGENT` | Build and launch a local `wendy-agent` process for the run. |
+| `WENDY_E2E_MANAGED_AGENT` | Build and launch a local `wendy-agent` process for the run. macOS managed-agent runs use the real WendyAgentMac app so native file sync and app lifecycle coverage matches production Mac behavior; Linux/WendyOS managed-agent runs continue to use the Go daemon. |
 | `WENDY_E2E_CLI_OS` / `WENDY_E2E_AGENT_OS` | Override machine OS metadata. |
 | `WENDY_E2E_ISOLATION` | Sandbox mode: `per-test`, `per-run`, or `none`. |
 | `WENDY_E2E_PARALLEL` | Enables parallel test execution when supported by the runner. |

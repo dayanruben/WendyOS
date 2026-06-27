@@ -21,6 +21,13 @@ func newCloudCmd() *cobra.Command {
 		Short: "Manage Wendy Cloud resources",
 	}
 
+	// Surface the common Wendy Cloud auth flow under `wendy cloud`. These reuse
+	// the same constructors as the (now hidden) top-level `wendy auth` command;
+	// the advanced session commands (refresh-certs, use, default) remain
+	// reachable only via `wendy auth`.
+	cmd.AddCommand(newAuthLoginCmd())
+	cmd.AddCommand(newAuthLogoutCmd())
+	cmd.AddCommand(newAuthStatusCmd())
 	cmd.AddCommand(newCloudEnrollDeviceCmd())
 	cmd.AddCommand(newCloudDiscoverCmd())
 	cmd.AddCommand(newCloudRunCmd())

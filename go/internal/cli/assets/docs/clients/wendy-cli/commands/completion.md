@@ -2,6 +2,10 @@
 
 Generates or installs shell completion scripts for the `wendy` CLI.
 
+> **Note:** `wendy completion` is not listed in `wendy --help` to keep the
+> top-level surface focused, but it is fully functional. Run
+> `wendy completion --help` directly to see its subcommands.
+
 ## Usage
 
 ```sh

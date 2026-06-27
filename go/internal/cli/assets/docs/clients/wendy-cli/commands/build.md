@@ -20,7 +20,7 @@ If multiple manifests are present you can override detection with `--build-type`
 |---|---|---|
 | `Dockerfile` / `Containerfile` | Docker Desktop, Apple `container` on Apple silicon macOS, or WendyOS | Local Docker builds use `docker buildx`; `--device apple-container` uses `container build`; WendyOS device builds can select `--builder docker` or `--builder apple-container` |
 | `Package.swift` | macOS or Linux | Requires a host Swift toolchain |
-| `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile` managed automatically |
+| `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile.wendy` is the auto-detected target-agent Brewfile for native Mac runs |
 
 ## Build paths
 
@@ -52,6 +52,7 @@ Docker for local provider runs.
 | `WENDY_HAS_GPU` | `true` \| `false` | Absent on older agents |
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
+| `WENDY_JETPACK_MAJOR` | e.g. `6`, `7` | Jetson only; JetPack major for per-generation base-image selection |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
 | `WENDY_GPU_ARCH` | e.g. `sm_87` | GPU architecture identifier; absent when no GPU is reported |
 
@@ -69,7 +70,11 @@ FROM ${WENDY_PLATFORM}-base-image
 
 ### Xcode projects
 
-Builds with `xcodebuild`. If a `Brewfile` is present in the project root, Wendy manages Homebrew dependencies automatically on a per-app basis.
+Builds with `xcodebuild`. Xcode project support exists for native Mac packages that cannot be built correctly with SwiftPM alone, for example packages that need Xcode-only resource or shader build steps.
+
+Wendy passes `-skipMacroValidation` and `-skipPackagePluginValidation` so `xcodebuild` can run from a headless CLI/agent session. Xcode's macro/plugin prompts are an interactive consent layer on top of SwiftPM's build-time code and package-plugin sandbox model; headless Wendy builds treat invoking the build as consent, similar to CLI build tools. Only use Xcode projects with trusted, pinned package dependencies.
+
+For native Mac runs, if a `Brewfile.wendy` is present in the project root, Wendy applies it on the target Mac before starting the app. A plain project-root `Brewfile` is left for developer-machine setup unless explicitly referenced by `wendy.json`.
 
 ## Platform support for Swift projects
 

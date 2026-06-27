@@ -33,6 +33,7 @@ Whenever you invoke a wendy command, use the JSON structure options to provide s
 - Configure WiFi: `wendy device wifi connect`
 - Install WendyOS on an external drive: `wendy os install`
 - Set a device as default using `wendy device set-default`
+- Check the default device with `wendy device get-default`
 
 ### `wendy init` — Create a New Wendy Lite Project
 
@@ -148,7 +149,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 
 | Problem | Solution |
 |---------|----------|
-| Device not found | Check USB/LAN connection, run `wendy discover` |
+| Device not found | Check USB/LAN connection, run `wendy discover`. On Linux with USB-C, run `wendy device usb-setup` first. |
 | Network access denied | Add network entitlement with host mode |
 | GPU not detected | Add gpu entitlement (Jetson for CUDA, Raspberry Pi for board telemetry) |
 | Camera not found | Add camera entitlement, verify camera at `/dev/video0` (for CSI cameras also check `/run/udev` is present on host) |

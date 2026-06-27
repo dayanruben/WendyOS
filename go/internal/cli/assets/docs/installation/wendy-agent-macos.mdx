@@ -109,6 +109,32 @@ If you set the Mac as your default device, omit `--device`:
 wendy run
 ```
 
+The CLI builds the app on the Mac development machine, syncs the build output
+to Wendy Agent for Mac, and starts it as a native macOS process. These apps
+currently run natively on macOS, not inside a Linux-style container.
+
+### Homebrew dependencies with Brewfile
+
+Native SwiftPM and Xcode Mac apps can declare Homebrew dependencies with a
+[Brew Bundle](https://docs.brew.sh/Brew-Bundle-and-Brewfile) `Brewfile`.
+Place `Brewfile.wendy` at the project root for auto-detection, or set a relative path
+in `wendy.json`:
+
+```json
+{
+  "platform": "darwin",
+  "brewfile": "ops/Brewfile"
+}
+```
+
+`wendy run` syncs the Wendy Brewfile to the target Mac and Wendy Agent runs
+`brew bundle --file <synced Brewfile>` before starting the app. A plain project-root
+`Brewfile` can remain dedicated to developer-machine setup; Wendy does not apply it
+to the target unless `wendy.json` explicitly references it. Homebrew must already be
+installed on the target Mac;
+Wendy reports a clear error if `brew` is missing or if `brew bundle` fails. This
+only applies to native Mac deployments.
+
 ## What Works
 
 - Apple Silicon Mac targets running macOS 15 or later

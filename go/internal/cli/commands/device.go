@@ -44,10 +44,9 @@ func newDeviceCmd() *cobra.Command {
 	}
 
 	cmd.AddGroup(
+		&cobra.Group{ID: "common", Title: "Common Commands:"},
 		&cobra.Group{ID: "manage", Title: "Device Management:"},
-		&cobra.Group{ID: "monitor", Title: "Monitoring:"},
 		&cobra.Group{ID: "hardware", Title: "Hardware:"},
-		&cobra.Group{ID: "data", Title: "Apps & Storage:"},
 	)
 
 	addToGroup := func(groupID string, cmds ...*cobra.Command) {
@@ -57,22 +56,26 @@ func newDeviceCmd() *cobra.Command {
 		}
 	}
 
+	// Common Commands: the subcommands used in everyday workflows, surfaced at
+	// the top in rough order of usefulness.
+	addToGroup("common",
+		newAppsCmd(),
+		newDeviceLogsCmd(),
+		newROS2Cmd(),
+		newDeviceDashboardCmd(),
+	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
+		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
-	)
-	addToGroup("monitor",
-		newDeviceLogsCmd(),
-		newDeviceDashboardCmd(),
-		newDeviceTelemetryStreamCmd(),
-		newROS2Cmd(),
+		newVolumesCmd(),
 	)
 	addToGroup("hardware",
 		newWifiCmd(),
@@ -81,9 +84,10 @@ func newDeviceCmd() *cobra.Command {
 		newCameraCmd(),
 		newHardwareCmd(),
 	)
-	addToGroup("data",
-		newAppsCmd(),
-		newVolumesCmd(),
+	// Hidden commands stay registered (and runnable) but are kept off the help
+	// menu; they are hidden via their own constructors.
+	addToGroup("manage",
+		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
 	)
 
@@ -128,7 +132,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-				cliLogln("Connecting to %s via Bluetooth...", target.Bluetooth.DisplayName)
+				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
 				bleClient, bleErr := connectBLEAgent(target.Bluetooth)
 				if bleErr != nil {
 					return bleErr
@@ -228,48 +232,56 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("Agent Version: %s\n", agentVersion)
-			fmt.Printf("OS: %s %s\n", osName, osVersion)
-			fmt.Printf("Architecture: %s\n", cpuArch)
+			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
+			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
+			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
 			if deviceType != "" {
-				fmt.Printf("Device Type: %s\n", deviceType)
+				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
 			if storageMedium != "" {
-				fmt.Printf("Storage: %s\n", storageMedium)
+				fmt.Printf("%s %s\n", tui.Dim("Storage:"), tui.Value(storageMedium))
 			}
 			if len(partitions) > 0 {
 				fmt.Print(formatPartitionTable(partitions))
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
-				fmt.Printf("Disk Usage: %s\n", formatDiskUsage(*diskUsedBytes, *diskTotalBytes))
+				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
 			}
 			if hasGPU {
 				vendor := gpuVendor
 				if vendor == "" {
 					vendor = "unknown"
 				}
-				fmt.Printf("GPU: %s\n", vendor)
+				fmt.Printf("%s %s\n", tui.Dim("GPU:"), tui.Value(vendor))
 				if jetpackVersion != "" {
-					fmt.Printf("JetPack: %s\n", jetpackVersion)
+					fmt.Printf("%s %s\n", tui.Dim("JetPack:"), tui.Value(jetpackVersion))
 				}
 				if cudaVersion != "" {
-					fmt.Printf("CUDA: %s\n", cudaVersion)
+					fmt.Printf("%s %s\n", tui.Dim("CUDA:"), tui.Value(cudaVersion))
 				}
 				if gpuArch != "" {
-					fmt.Printf("GPU Arch: %s\n", gpuArch)
+					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
 			}
-			fmt.Printf("CLI Version: %s\n", version.Version)
+			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
-			warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
-				fmt.Println(warn.Render("\nAgent is behind the CLI — run 'wendy device update' to update."))
+				fmt.Println()
+				fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
 			} else if cmp < 0 {
-				fmt.Println(warn.Render("\nCLI is behind the agent — consider updating the CLI."))
+				fmt.Println()
+				fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
 			}
 
 			if checkUpdates {
 				if version.CompareVersions(latestVersion, agentVersion) > 0 {
-					fmt.Printf(warn.Render("\nUpdate available: %s (you have %s)")+"\nUpdate with: wendy device update\n", latestVersion, agentVersion)
+					fmt.Println()
+					fmt.Printf("%s %s %s %s\n",
+						tui.WarningMessage("Update available:"),
+						tui.Value(latestVersion),
+						tui.Dim("(you have"),
+						tui.Value(agentVersion)+tui.Dim(")"),
+					)
+					fmt.Printf("%s %s\n", tui.Dim("Update with:"), tui.Command("wendy device update"))
 				} else {
 					fmt.Println("\nAgent is up to date.")
 				}
@@ -312,7 +324,38 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 				return fmt.Errorf("saving config: %w", err)
 			}
 
-			fmt.Printf("Default device set to: %s\n", device)
+			fmt.Printf("Default device set to: %s\n", tui.Device(device))
+			return nil
+		},
+	}
+}
+
+func newDeviceGetDefaultCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "get-default",
+		Short:  "Show the current default device",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+
+			if jsonOutput {
+				data, err := json.MarshalIndent(map[string]string{"defaultDevice": cfg.DefaultDevice}, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				return nil
+			}
+
+			if cfg.DefaultDevice == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No default device set. Set one with 'wendy device set-default'.")
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Default device: %s\n", cfg.DefaultDevice)
 			return nil
 		},
 	}
@@ -359,9 +402,10 @@ func newDeviceUnsetDefaultCmd() *cobra.Command {
 
 func newDeviceSetupCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "setup",
-		Short: "Interactive device setup: enroll, name, and configure WiFi",
-		Long:  "Walks through enrollment (with device naming) and WiFi configuration for a new device.",
+		Use:    "setup",
+		Short:  "Interactive device setup: enroll, name, and configure WiFi",
+		Long:   "Walks through enrollment (with device naming) and WiFi configuration for a new device.",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
@@ -466,9 +510,10 @@ func newDeviceEnrollCmd() *cobra.Command {
 	var cloudGRPC string
 
 	cmd := &cobra.Command{
-		Use:   "enroll",
-		Short: "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:  "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy auth login' first.",
+		Use:    "enroll",
+		Short:  "Enroll this device with Wendy Cloud or a local pki-core",
+		Long:   "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy cloud login' first.",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -1099,8 +1144,9 @@ func newDeviceTelemetryStreamCmd() *cobra.Command {
 	var enableTraces bool
 
 	cmd := &cobra.Command{
-		Use:   "telemetry-stream",
-		Short: "Stream telemetry data (logs, metrics, traces) as JSONL",
+		Use:    "telemetry-stream",
+		Short:  "Stream telemetry data (logs, metrics, traces) as JSONL",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// If no flags were explicitly set, enable all streams.
 			if !cmd.Flags().Changed("logs") && !cmd.Flags().Changed("metrics") && !cmd.Flags().Changed("traces") {
