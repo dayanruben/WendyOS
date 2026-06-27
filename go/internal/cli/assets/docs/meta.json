@@ -2,6 +2,7 @@
   "title": "Documentation",
   "pages": [
     "index",
+    "installation/developer-machine-setup",
     "installation",
     "guides",
     "buyers-guide",
