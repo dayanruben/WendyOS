@@ -1,7 +1,12 @@
 package commands
 
 import (
+	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -76,6 +81,173 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			}
 			if err.Error() != tc.want {
 				t.Fatalf("validateOSUpdateTarget() error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateOSUpdateOutcome(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-2 * time.Minute).Unix()
+	stale := now.Add(-2 * time.Hour).Unix()
+
+	committed := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED,
+		NewOsVersion:  "WendyOS-0.11.0",
+		CreatedAtUnix: fresh,
+		Services: []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
+			{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_HEALTHY},
+		},
+	}
+	rolledBack := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+		OldOsVersion:  "WendyOS-0.10.4",
+		NewOsVersion:  "WendyOS-0.11.0",
+		CreatedAtUnix: fresh,
+		Services: []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
+			{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED, Reason: "timed out after 30s waiting for active"},
+			{Unit: "containerd.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_HEALTHY},
+		},
+	}
+	rollbackFailed := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED,
+		CreatedAtUnix: fresh,
+		RollbackError: "mender-update reported nothing to roll back",
+		Services: []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
+			{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED, Reason: "timed out"},
+		},
+	}
+	commitFailed := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED,
+		CreatedAtUnix: fresh,
+	}
+
+	tests := []struct {
+		name         string
+		resp         *agentpb.GetOSUpdateStatusResponse
+		rpcErr       error
+		preVer       string
+		postVer      string
+		wantErr      bool
+		wantContains []string
+	}{
+		{
+			name:         "committed is verified success",
+			resp:         committed,
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "WendyOS-0.11.0",
+			wantErr:      false,
+			wantContains: []string{"verified"},
+		},
+		{
+			name:    "committed for a version the device is not running is rejected",
+			resp:    committed,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"WendyOS-0.11.0",
+				"WendyOS-0.10.4",
+			},
+		},
+		{
+			name:         "committed with unknown running version is trusted",
+			resp:         committed,
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "",
+			wantErr:      false,
+			wantContains: []string{"verified", "WendyOS-0.11.0"},
+		},
+		{
+			name:    "rolled back reports failed services",
+			resp:    rolledBack,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"rolled back",
+				"avahi-daemon.service",
+				"timed out after 30s",
+				"WendyOS-0.10.4",
+			},
+		},
+		{
+			name:         "rollback failed reports degraded state",
+			resp:         rollbackFailed,
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "WendyOS-0.11.0",
+			wantErr:      true,
+			wantContains: []string{"avahi-daemon.service", "nothing to roll back"},
+		},
+		{
+			name:         "commit failed is an error",
+			resp:         commitFailed,
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "WendyOS-0.11.0",
+			wantErr:      true,
+			wantContains: []string{"commit"},
+		},
+		{
+			name:         "unimplemented with unchanged version warns of rollback",
+			rpcErr:       status.Error(codes.Unimplemented, "unknown method"),
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "WendyOS-0.10.4",
+			wantErr:      true,
+			wantContains: []string{"WendyOS-0.10.4"},
+		},
+		{
+			name:         "unimplemented with changed version succeeds without verification",
+			rpcErr:       status.Error(codes.Unimplemented, "unknown method"),
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "WendyOS-0.11.0",
+			wantErr:      false,
+			wantContains: []string{"WendyOS-0.11.0"},
+		},
+		{
+			name:    "no record with changed version succeeds without verification",
+			resp:    &agentpb.GetOSUpdateStatusResponse{HasResult: false},
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.11.0",
+			wantErr: false,
+		},
+		{
+			name: "stale record falls back to version comparison",
+			resp: &agentpb.GetOSUpdateStatusResponse{
+				HasResult:     true,
+				Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED,
+				CreatedAtUnix: stale,
+			},
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+		},
+		{
+			name:         "unknown post version cannot verify but does not fail",
+			resp:         &agentpb.GetOSUpdateStatusResponse{HasResult: false},
+			preVer:       "WendyOS-0.10.4",
+			postVer:      "",
+			wantErr:      false,
+			wantContains: []string{"could not be verified"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, err := evaluateOSUpdateOutcome(tc.resp, tc.rpcErr, tc.preVer, tc.postVer, now)
+			if tc.wantErr && err == nil {
+				t.Fatalf("error = nil, want non-nil; msg = %q", msg)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("error = %v, want nil; msg = %q", err, msg)
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message %q missing %q", msg, want)
+				}
 			}
 		})
 	}

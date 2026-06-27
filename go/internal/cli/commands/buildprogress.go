@@ -93,7 +93,9 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure bo
 		}
 		return buildErr
 	}
-	printBuildSummary(buildProgressOut, fm.Tally(), time.Since(start))
+	elapsed := time.Since(start)
+	printBuildSummary(buildProgressOut, fm.Tally(), elapsed)
+	maybeSuggestOptimizeAfterBuild(fm.Tally(), elapsed)
 	return nil
 }
 

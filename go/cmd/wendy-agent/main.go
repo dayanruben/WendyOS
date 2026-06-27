@@ -128,7 +128,9 @@ func main() {
 	timesyncMgr := timesync.NewManager(logger, configPath)
 	timesyncMgr.ApplyFloor()
 
-	services.CommitMenderUpdate(logger)
+	// Run the OS-update gate after the time floor is applied so the marker
+	// staleness check and the persisted result timestamps use a sane clock.
+	services.RunOSUpdateGate(logger)
 
 	services.CleanupOldBackups(logger)
 	cdi.EnsureNVIDIACDISpec(logger)
