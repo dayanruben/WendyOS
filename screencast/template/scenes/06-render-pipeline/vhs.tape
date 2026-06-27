@@ -25,11 +25,11 @@ Type "scripts/render-voice 01"
 Enter
 Sleep 250ms
 
-Type "scripts/render-tape --dry-run --with-hooks 02"
+Type "scripts/render-tape --dry-run --with-hooks 06"
 Enter
 Sleep 250ms
 
-Type "scripts/render-tape --with-hooks 02"
+Type "scripts/render-tape --with-hooks 06"
 Enter
 Sleep 250ms
 

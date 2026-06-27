@@ -9,6 +9,6 @@ test -x scripts/render-voice
 test -x scripts/render-tape
 test -x scripts/stitch
 
-scripts/render-voice --dry-run template/scenes/01-payoff >/dev/null
-scripts/render-tape --dry-run --with-hooks template/scenes/05-render-pipeline >/dev/null
+scripts/render-voice --dry-run template/scenes/01-title >/dev/null
+scripts/render-tape --dry-run --with-hooks template/scenes/06-render-pipeline >/dev/null
 scripts/stitch --help >/dev/null
