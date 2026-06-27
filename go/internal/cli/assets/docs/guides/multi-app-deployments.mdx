@@ -29,7 +29,25 @@ Wendy auto-detects the project shape, so you do not need a build-type flag. A `w
 - Wendy CLI installed on your development machine
 - A WendyOS device reachable over USB, LAN, or Wendy Cloud
 - Docker installed locally so Wendy can build service images
-- A project directory containing either a `wendy.json` with a `services` map, or a `docker-compose.yml` (optionally with a companion `wendy.json`)
+- A project directory that contains `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, or `compose.yaml`
+
+## How Wendy runs compose projects
+
+When you run `wendy run` in a directory with a compose file, Wendy auto-detects the compose project and uses the compose path before the single-Dockerfile path.
+
+For a WendyOS device target, Wendy:
+
+1. Reads the compose file from the project root.
+2. Builds each service that has a `build:` directive for the target device platform.
+3. Pushes built images to the device's embedded registry.
+4. Uses declared `image:` references directly for services without `build:`.
+5. Generates one device app per service, named `<project-folder>-<service>`.
+6. Creates service containers in `depends_on` order.
+7. Starts all services and streams logs with a `[service]` prefix.
+
+<Callout type="info">
+For ROS 2, set `network_mode: host` on every service that needs DDS discovery, multicast, or direct host-network communication. Wendy converts that field into a host-network entitlement for the generated service app.
+</Callout>
 
 <Callout type="warning">
 Multi-service projects target Linux/WendyOS devices. Wendy for Mac does not run multi-container stacks — `wendy run` rejects them before any build when the selected target is a Mac.
