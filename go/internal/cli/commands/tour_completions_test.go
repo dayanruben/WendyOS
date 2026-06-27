@@ -2,6 +2,8 @@ package commands
 
 import (
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func TestTourAdvanceOffersCompletionsWhenMissing(t *testing.T) {
@@ -53,6 +55,40 @@ func TestTourCompletionsPhaseNoSkips(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected loadDevicesCmd")
+	}
+}
+
+func TestTourInstallCompletionsInProcess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("SHELL", "/bin/bash")
+	for _, k := range []string{"ZDOTDIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME"} {
+		t.Setenv(k, "")
+	}
+
+	m := newTourWizardModel()
+	m.root = NewRootCmd()
+	cmd := m.cmdInstallCompletions()
+	if cmd == nil {
+		t.Fatal("expected an install command")
+	}
+
+	msg := cmd()
+	done, ok := msg.(tourCompletionInstallDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want tourCompletionInstallDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("in-process install error: %v", done.err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.CompletionInstalled {
+		t.Error("CompletionInstalled = false after in-process install; want true")
 	}
 }
 

@@ -5,6 +5,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -173,6 +174,10 @@ const tourRequirements = "debugpy\n"
 // ─── model ───────────────────────────────────────────────────────────────────
 
 type tourWizardModel struct {
+	// root is the root cobra command, used to generate completion scripts
+	// in-process when installing shell completions.
+	root *cobra.Command
+
 	phase  tourPhase
 	width  int
 	height int
@@ -808,8 +813,10 @@ func (m tourWizardModel) handleCreateProjectPromptKey(key string) (tea.Model, te
 			m.phase = phaseTemplateLoading
 			return m, fetchTourTemplatesCmd()
 		}
-		m.phase = phaseAICheck
-		return m, m.cmdCheckAITools()
+		// Skip deploying a sample app — finish the tour. AI-tooling setup was
+		// already offered at the start, so there's nothing left to do here.
+		m.phase = phaseCloud
+		return m, nil
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	}
@@ -916,18 +923,18 @@ func (m tourWizardModel) handleCompletionsKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cmdInstallCompletions runs `wendy completion install` as a subprocess so its
-// progress is visible, mirroring how the tour runs `wendy os install` and
-// `wendy run`.
+// cmdInstallCompletions installs shell completions in-process, off the render
+// loop, so the alt-screen tour never flashes out to a subprocess. Install
+// output is discarded; the result is surfaced via the tour's own UI.
 func (m tourWizardModel) cmdInstallCompletions() tea.Cmd {
-	exePath, err := os.Executable()
-	if err != nil {
-		return func() tea.Msg { return tourCompletionInstallDoneMsg{err: err} }
-	}
-	cmd := exec.Command(exePath, "completion", "install")
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	root := m.root
+	return func() tea.Msg {
+		if root == nil {
+			return tourCompletionInstallDoneMsg{}
+		}
+		err := installCompletionsForCurrentShell(root, io.Discard)
 		return tourCompletionInstallDoneMsg{err: err}
-	})
+	}
 }
 
 // handleTextInput routes key events to the embedded textinput and advances the
@@ -1611,8 +1618,13 @@ func (m tourWizardModel) viewCompletions(w int) string {
 func (m tourWizardModel) viewCloud(w int) string {
 	var sb strings.Builder
 	sb.WriteString(wizSuccessStyle.Render("You're all set!") + "\n\n")
+	intro := "Your device is running, your first app is deployed."
+	if m.projectPath == "" {
+		// Reached by skipping the sample-app deployment.
+		intro = "Your device is up and running."
+	}
 	sb.WriteString(wizBodyStyle.Width(w).Render(
-		"Your device is running, your first app is deployed.\n\n"+
+		intro+"\n\n"+
 			"When you're ready to manage multiple devices remotely,\n"+
 			"Wendy Cloud can help:") + "\n\n")
 	sb.WriteString("  " + wizCodeStyle.Render("wendy auth login") + "\n\n")
@@ -1991,6 +2003,7 @@ func newTourCmd() *cobra.Command {
 				return fmt.Errorf("wendy tour requires an interactive terminal")
 			}
 			m := newTourWizardModel()
+			m.root = cmd.Root()
 			_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 			return err
 		},

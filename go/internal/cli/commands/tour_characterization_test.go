@@ -194,12 +194,11 @@ func TestTourCreateProjectPromptSkip(t *testing.T) {
 	m := newTourWizardModel()
 	m.phase = phaseCreateProjectPrompt
 	m, _ = stepTour(t, m, key("down")) // cursor 1 = skip
-	got, cmd := stepTour(t, m, key("enter"))
-	if got.phase != phaseAICheck {
-		t.Errorf("phase = %v, want phaseAICheck", got.phase)
-	}
-	if cmd == nil {
-		t.Error("expected AI-check command")
+	got, _ := stepTour(t, m, key("enter"))
+	// Skipping the sample-app deploy finishes the tour rather than looping
+	// back into AI-tooling onboarding.
+	if got.phase != phaseCloud {
+		t.Errorf("phase = %v, want phaseCloud", got.phase)
 	}
 }
 
