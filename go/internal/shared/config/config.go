@@ -41,6 +41,11 @@ type Config struct {
 	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
 	// surfaced for that project.
 	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
+	// DevicePins binds a device hostname to the organisation + cloud host its
+	// TLS identity must belong to (WDY-1149), so a different trust domain
+	// answering at that hostname is caught. Renewal/re-enrollment within the
+	// same org+cloud does not trip it. Keyed by normalized hostname.
+	DevicePins map[string]DevicePin `json:"devicePins,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.

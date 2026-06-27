@@ -325,6 +325,15 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Default device set to: %s\n", tui.Device(device))
+
+			// WDY-1149: pin the device's (organisation, cloud host) identity now
+			// if it is reachable, so later connections detect a swapped device or
+			// MITM. Best-effort and non-interactive: an offline device is pinned
+			// instead on its first successful connection. The pin itself is
+			// established inside connectToAgent's default-device path.
+			if conn, connErr := connectToAgent(cmd.Context(), SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive()); connErr == nil {
+				_ = conn.Close()
+			}
 			return nil
 		},
 	}
