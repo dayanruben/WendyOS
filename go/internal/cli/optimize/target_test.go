@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -69,5 +71,39 @@ func TestDiscoverNothing(t *testing.T) {
 	}
 	if len(targets) != 0 {
 		t.Fatalf("got %d targets, want 0", len(targets))
+	}
+}
+
+func TestDiscoverComposeServices(t *testing.T) {
+	dir := t.TempDir()
+	svcDir := filepath.Join(dir, "api")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, svcDir, "Dockerfile", "FROM golang:1.22\nRUN go build\n")
+	cfg := &appconfig.AppConfig{
+		Services: map[string]*appconfig.ServiceConfig{
+			"api": {Context: "api"},
+		},
+	}
+	targets, err := DiscoverTargets(dir, cfg, "arm64")
+	if err != nil {
+		t.Fatalf("DiscoverTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(targets))
+	}
+	tg := targets[0]
+	if tg.Kind != KindComposeService {
+		t.Fatalf("kind = %v, want KindComposeService", tg.Kind)
+	}
+	if tg.Name != "api" {
+		t.Fatalf("name = %q, want api", tg.Name)
+	}
+	if tg.Dir != svcDir {
+		t.Fatalf("dir = %q, want %q", tg.Dir, svcDir)
+	}
+	if tg.Dockerfile == nil || len(tg.Dockerfile.Instructions) == 0 {
+		t.Fatalf("Dockerfile not parsed for compose service")
 	}
 }
