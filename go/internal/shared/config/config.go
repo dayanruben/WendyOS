@@ -24,6 +24,18 @@ type Config struct {
 	// the MCP server config and bundled skills. Empty means the user has never
 	// run setup, so auto-refresh stays off.
 	LastMCPSetupVersion string `json:"lastMCPSetupVersion,omitempty"`
+	// CompletionInstalled is set once shell completions have been installed
+	// through the CLI (via `wendy completion install` or an accepted prompt).
+	// While false, the CLI may offer to install completions.
+	CompletionInstalled bool `json:"completionInstalled,omitempty"`
+	// CompletionPromptDismissed is set when the user declines the ambient
+	// "install completions?" prompt with "n". Once true, that prompt never
+	// reappears.
+	CompletionPromptDismissed bool `json:"completionPromptDismissed,omitempty"`
+	// LastCompletionPromptCheck records when the ambient completion prompt was
+	// last shown (RFC3339). It throttles the prompt so an unanswered prompt
+	// (e.g. Ctrl-C) doesn't reappear on every invocation.
+	LastCompletionPromptCheck string `json:"lastCompletionPromptCheck,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
