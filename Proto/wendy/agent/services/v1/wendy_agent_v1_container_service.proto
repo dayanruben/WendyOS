@@ -23,6 +23,11 @@ service WendyContainerService {
     rpc StreamMCP(stream MCPChunk) returns (stream MCPChunk);
     rpc QueryChunks(QueryChunksRequest) returns (QueryChunksResponse);
     rpc WriteChunks(stream WriteChunksRequest) returns (WriteChunksResponse);
+    // QueryLayers reports which uncompressed layers (by diff ID) the device
+    // already has in its content store, with their sizes. The CLI uses this to
+    // skip decompressing and content-chunking layers the device can reuse as-is
+    // — for those layers no dedup is possible, so chunking would be pure waste.
+    rpc QueryLayers(QueryLayersRequest) returns (QueryLayersResponse);
 }
 
 message ListContainersRequest {}
@@ -57,6 +62,27 @@ message WriteChunksRequest {
 }
 
 message WriteChunksResponse {}
+
+message QueryLayersRequest {
+    // Uncompressed layer digests (diff IDs, "sha256:<hex>") to check for
+    // presence in the device's content store.
+    repeated string diff_ids = 1;
+}
+
+message QueryLayersResponse {
+    // The subset of the requested layers the device already has. Layers absent
+    // from this list are not present and must be pushed.
+    repeated PresentLayer present = 1;
+}
+
+message PresentLayer {
+    // The uncompressed layer digest (diff ID) that the device has.
+    string diff_id = 1;
+    // Uncompressed blob size as stored in the content store. The CLI puts this
+    // in the reassembly header so AssembleImage references the layer correctly
+    // without the CLI having to decompress it to learn its size.
+    int64 size = 2;
+}
 
 message LayerHeader {
     // The hash identity of the layer.

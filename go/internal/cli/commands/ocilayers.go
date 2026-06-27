@@ -28,6 +28,7 @@ import (
 // read or decompress it. Blob is an in-memory fallback used by tests.
 type localLayer struct {
 	Digest    string // compressed OCI layer blob digest ("sha256:<hex>") — stable cache key
+	DiffID    string // uncompressed layer digest from the image config's rootfs.diff_ids; "" when unavailable
 	MediaType string // OCI/Docker layer media type (drives decompression)
 
 	Blob []byte // compressed bytes, when held in memory (tests / small blobs)
@@ -272,8 +273,12 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	}
 
 	// Fetch the image config blob so the runtime config (Cmd/Entrypoint/Env/
-	// WorkingDir/User) survives reassembly on the device.
+	// WorkingDir/User) survives reassembly on the device. It also carries
+	// rootfs.diff_ids — the uncompressed digest of each layer, in layer order —
+	// which lets the push pre-check layer presence on the device WITHOUT
+	// decompressing anything.
 	var imageConfig []byte
+	var diffIDs []string
 	if manifest.Config.Digest != "" {
 		configHex, err := digestToHex(manifest.Config.Digest)
 		if err != nil {
@@ -283,7 +288,23 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		if err != nil {
 			return nil, nil, fmt.Errorf("config blob %s: %w", manifest.Config.Digest, err)
 		}
+		var cfg struct {
+			RootFS struct {
+				DiffIDs []string `json:"diff_ids"`
+			} `json:"rootfs"`
+		}
+		// A malformed/absent rootfs just leaves diffIDs empty: the push falls back
+		// to deriving each diff ID by decompressing, so this is a pure optimization.
+		if err := json.Unmarshal(imageConfig, &cfg); err == nil {
+			diffIDs = cfg.RootFS.DiffIDs
+		}
 	}
+
+	// diff_ids align 1:1 with manifest layers (both bottom-to-top, empty layers
+	// excluded) per the OCI image-config spec. Only trust them to label layers
+	// when the counts match; otherwise leave DiffID empty and let the push derive
+	// it the slow way rather than risk mislabelling a layer.
+	diffIDsAligned := len(diffIDs) == len(manifest.Layers)
 
 	layers := make([]localLayer, 0, len(manifest.Layers))
 	for i, desc := range manifest.Layers {
@@ -295,11 +316,16 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		if !ok {
 			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
 		}
+		var diffID string
+		if diffIDsAligned {
+			diffID = diffIDs[i]
+		}
 		// Reference the compressed blob by its range in the on-disk tar; it is
 		// streamed (never fully buffered) during the push, and decompression is
 		// deferred so cache-resolved layers are never read at all.
 		layers = append(layers, localLayer{
 			Digest:    desc.Digest,
+			DiffID:    diffID,
 			MediaType: desc.MediaType,
 			TarPath:   ociTarPath,
 			Offset:    loc.off,

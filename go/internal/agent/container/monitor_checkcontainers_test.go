@@ -96,6 +96,10 @@ func (f *fakeContainerd) MissingChunks(_ context.Context, hashes [][32]byte) ([]
 	return hashes, nil
 }
 
+func (f *fakeContainerd) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
+}
+
 func (f *fakeContainerd) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
 	return nil
 }

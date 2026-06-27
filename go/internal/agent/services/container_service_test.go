@@ -129,6 +129,10 @@ func (m *mockContainerdClient) MissingChunks(_ context.Context, hashes [][32]byt
 	return hashes, nil
 }
 
+func (m *mockContainerdClient) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
+}
+
 func (m *mockContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
 	return nil
 }

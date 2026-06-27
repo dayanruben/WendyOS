@@ -259,6 +259,42 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 	}
 }
 
+// TestReadOCILayoutLayersPopulatesDiffID verifies the uncompressed diff ID is
+// read from the image config's rootfs.diff_ids — without decompressing — and is
+// distinct from the compressed layer digest for a gzip layer.
+func TestReadOCILayoutLayersPopulatesDiffID(t *testing.T) {
+	dir := t.TempDir()
+	ociTar := filepath.Join(dir, "image.tar")
+	want := []byte("diffid-probe-payload")
+
+	var compressed bytes.Buffer
+	gw := gzip.NewWriter(&compressed)
+	if _, err := gw.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressedBytes := compressed.Bytes()
+
+	writeMinimalOCILayout(t, ociTar, compressedBytes, "application/vnd.oci.image.layer.v1.tar+gzip", want)
+
+	layers, _, err := readOCILayoutLayers(ociTar, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("expected 1 layer, got %d", len(layers))
+	}
+	wantDiffID := "sha256:" + sha256Hex(want)
+	if layers[0].DiffID != wantDiffID {
+		t.Fatalf("DiffID = %q, want %q (from config rootfs.diff_ids)", layers[0].DiffID, wantDiffID)
+	}
+	if layers[0].DiffID == layers[0].Digest {
+		t.Fatal("DiffID must differ from the compressed Digest for a gzip layer")
+	}
+}
+
 // imageManifestBytes builds a single-layer image manifest (+ its config and
 // layer blobs) for the given architecture, returning the manifest JSON and the
 // blob entries to embed in an OCI tar.

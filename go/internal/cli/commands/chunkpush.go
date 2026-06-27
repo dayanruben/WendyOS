@@ -2,10 +2,12 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -33,16 +35,65 @@ const maxConcurrentLayerPush = 4
 //
 // The common case — an unchanged layer whose chunks the device already has —
 // resolves from cache and finds nothing missing, so the layer is never
-// decompressed or re-chunked.
+// decompressed or re-chunked. A layer the device already holds in full (reported
+// by the QueryLayers pre-check) is skipped entirely: it is never decompressed,
+// chunked, or transferred.
 func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer) ([]*agentpb.RunContainerLayerHeader, error) {
 	headers := make([]*agentpb.RunContainerLayerHeader, len(layers))
+
+	// Capability probe: a single empty QueryChunks tells us whether the agent
+	// supports chunk-diff at all BEFORE we decompress and chunk the first layer.
+	// An old agent returns Unimplemented, which bubbles up so deployByChunkDiff
+	// falls back to a registry push instead of wasting a layer's worth of work.
+	if _, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{}); err != nil {
+		return nil, err
+	}
+
+	// Layer pre-check: ask which layers the device already has by diff ID so we
+	// can skip them entirely. A layer the device already holds yields no dedup, so
+	// decompressing and content-chunking it would be pure waste. Degrades to
+	// chunking every layer when the agent is too old or the query fails.
+	present := queryPresentLayers(ctx, cs, layers)
+
+	// Build the present-layer headers up front and collect the indices that still
+	// need a chunk-diff push. A present-layer header carries no chunk hashes, so
+	// the agent skips reassembly and reuses the blob already in its content store.
+	// We trust that blob for the rest of the deploy: unlike the always-send-chunks
+	// path (where QueryChunks would re-report bytes the device lost mid-deploy),
+	// nothing re-sends a skipped layer. The window is safe in practice — the blob
+	// stays referenced by the app's current image until this deploy replaces it,
+	// so containerd GC will not reclaim it underneath us.
+	var toPush []int
+	skipped := 0
+	for i, l := range layers {
+		if l.DiffID != "" {
+			if size, ok := present[l.DiffID]; ok {
+				headers[i] = &agentpb.RunContainerLayerHeader{
+					Digest:      l.DiffID,
+					DiffId:      l.DiffID,
+					Size:        size,
+					Compression: agentpb.RunContainerLayerHeader_COMPRESSION_NONE,
+				}
+				skipped++
+				continue
+			}
+		}
+		toPush = append(toPush, i)
+	}
+	if skipped > 0 {
+		cliLogln("Reusing %s layer(s) already on device; chunking %s.",
+			tui.Value(fmt.Sprintf("%d", skipped)), tui.Value(fmt.Sprintf("%d", len(toPush))))
+	}
+	if len(toPush) == 0 {
+		return headers, nil
+	}
 
 	limit := maxConcurrentLayerPush
 	if n := runtime.GOMAXPROCS(0); n < limit {
 		limit = n
 	}
-	if limit > len(layers) {
-		limit = len(layers)
+	if limit > len(toPush) {
+		limit = len(toPush)
 	}
 	if limit < 1 {
 		limit = 1
@@ -50,14 +101,14 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(limit)
-	for i, l := range layers {
-		i, l := i, l
+	for _, idx := range toPush {
+		idx, l := idx, layers[idx]
 		g.Go(func() error {
 			h, err := pushLayerByChunks(ctx, cs, l)
 			if err != nil {
 				return err
 			}
-			headers[i] = h // distinct index per goroutine — preserves layer order
+			headers[idx] = h // distinct index per goroutine — preserves layer order
 			return nil
 		})
 	}
@@ -65,6 +116,38 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 		return nil, err
 	}
 	return headers, nil
+}
+
+// queryPresentLayers asks the device which of these layers it already has, keyed
+// by diff ID, returning each present diff ID's uncompressed size. Layers with no
+// known diff ID are not queried. The pre-check is a pure optimization: an agent
+// too old to implement QueryLayers (Unimplemented), or any query error, yields a
+// nil map so the caller chunks every layer as before.
+func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer) map[string]int64 {
+	diffIDs := make([]string, 0, len(layers))
+	for _, l := range layers {
+		if l.DiffID != "" {
+			diffIDs = append(diffIDs, l.DiffID)
+		}
+	}
+	if len(diffIDs) == 0 {
+		return nil
+	}
+	resp, err := cs.QueryLayers(ctx, &agentpb.QueryLayersRequest{DiffIds: diffIDs})
+	if err != nil {
+		if !isUnimplementedRPCError(err) {
+			// The agent supports chunk-diff (the probe succeeded) but the layer
+			// pre-check failed for another reason; chunk everything rather than
+			// abort the deploy over a missed optimization.
+			cliLogln("Layer pre-check unavailable (%v); chunking all layers.", err)
+		}
+		return nil
+	}
+	out := make(map[string]int64, len(resp.GetPresent()))
+	for _, p := range resp.GetPresent() {
+		out[p.GetDiffId()] = p.GetSize()
+	}
+	return out
 }
 
 // pushLayerByChunks runs the chunk-diff push for a single layer and returns its
