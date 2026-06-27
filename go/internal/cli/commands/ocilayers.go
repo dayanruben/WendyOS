@@ -499,6 +499,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		"buildx", "build",
 		"--builder", buildxBuilder,
 		"--platform", platform,
+		"--progress", "plain",
 	}
 	if dockerfile != "" {
 		resolvedDockerfile, err := confinedDockerfilePath(cwd, dockerfile)
