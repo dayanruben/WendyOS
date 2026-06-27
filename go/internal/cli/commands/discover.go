@@ -769,10 +769,14 @@ func newDiscoverTable(interactive bool) tui.BubbleTable {
 	return tui.NewBubbleTable(interactive, nil)
 }
 
+// These back the `wendy cloud discover` table. The Address column is omitted:
+// cloud devices are addressed by name/ID via the broker tunnel, so the IP adds
+// noise. (The interactive `wendy discover` table uses tui.PickerDeviceTableData,
+// not these.) The full address is still available in the clipboard JSON.
 var (
-	discoverTableHeaders   = []string{"", "Name", "Type", "Address", "Version"}
-	discoverTableMinWidths = []int{3, 12, 10, 14, 10}
-	discoverTableMaxWidths = []int{3, 33, 20, 28, 16}
+	discoverTableHeaders   = []string{"", "Name", "Type", "Version"}
+	discoverTableMinWidths = []int{3, 12, 10, 10}
+	discoverTableMaxWidths = []int{3, 33, 20, 16}
 )
 
 var deviceTypeNames = map[string]string{
