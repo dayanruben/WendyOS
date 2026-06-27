@@ -353,14 +353,19 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 			m.phase = phaseError
 			return m, nil
 		}
-		m.phase = phaseAICheck
-		return m, m.cmdCheckAITools()
+		m.phase = phaseCloud
+		return m, nil
 
 	case tourAICheckDoneMsg:
 		m.claudePath = msg.claudePath
 		m.codexPath = msg.codexPath
-		m.phase = phaseAICheck
-		return m, nil
+		if m.claudePath != "" || m.codexPath != "" {
+			m.phase = phaseAICheck
+			return m, nil
+		}
+		// No AI CLI installed — skip the AI step entirely.
+		m.phase = phaseLoadDevices
+		return m, loadDevicesCmd()
 
 	case tourMCPSetupDoneMsg:
 		m.mcpSetupResult = msg.results
@@ -429,8 +434,7 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case phaseWelcome:
 		switch key {
 		case "enter", " ":
-			m.phase = phaseLoadDevices
-			return m, loadDevicesCmd()
+			return m, m.cmdCheckAITools()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -787,10 +791,11 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.wifiCursor++
 			}
 		case "enter", " ":
-			if m.claudePath != "" && m.wifiCursor == 0 {
+			if (m.claudePath != "" || m.codexPath != "") && m.wifiCursor == 0 {
 				return m, runMCPSetupCmd()
 			}
-			m.phase = phaseCloud
+			m.phase = phaseLoadDevices
+			return m, loadDevicesCmd()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -798,7 +803,8 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case phaseAIMCPSetup:
 		switch key {
 		case "enter", " ":
-			m.phase = phaseCloud
+			m.phase = phaseLoadDevices
+			return m, loadDevicesCmd()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
