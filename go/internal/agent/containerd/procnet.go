@@ -27,9 +27,11 @@ type listeningPort struct {
 // address-decoding width.
 //
 // Selection rule: TCP sockets are included only in the LISTEN state (st 0A);
-// UDP sockets are included when they have no connected peer (remote port 0),
-// which is how a bound/serving UDP socket appears.
-func parseProcNet(data []byte, protocol string, ipv6 bool) []listeningPort {
+// UDP sockets are included when they have no connected peer (remote port 0).
+// An unconnected UDP socket on an ephemeral local port is almost always a
+// client (e.g. an outbound sendto), not a service, so UDP sockets bound at or
+// above udpEphemeralFloor are skipped. Pass 0 to keep every bound UDP socket.
+func parseProcNet(data []byte, protocol string, ipv6 bool, udpEphemeralFloor uint32) []listeningPort {
 	isTCP := strings.HasPrefix(protocol, "tcp")
 	var out []listeningPort
 
@@ -49,21 +51,26 @@ func parseProcNet(data []byte, protocol string, ipv6 bool) []listeningPort {
 		remote := fields[2] // HEXADDR:HEXPORT
 		st := fields[3]
 
+		addrHex, port, ok := splitHexAddr(local)
+		if !ok {
+			continue
+		}
+
 		if isTCP {
 			if st != "0A" { // TCP_LISTEN
 				continue
 			}
 		} else {
-			// UDP: include only unconnected (bound) sockets — remote port 0.
+			// UDP: only unconnected (bound) sockets, excluding ephemeral
+			// client ports.
 			if _, rport, ok := splitHexAddr(remote); !ok || rport != 0 {
+				continue
+			}
+			if udpEphemeralFloor > 0 && port >= udpEphemeralFloor {
 				continue
 			}
 		}
 
-		addrHex, port, ok := splitHexAddr(local)
-		if !ok {
-			continue
-		}
 		addr := decodeHexAddr(addrHex, ipv6)
 		if addr == "" {
 			continue
@@ -135,6 +142,7 @@ func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agen
 	}
 
 	nsCtx := c.withNamespace(ctx)
+	udpFloor := udpEphemeralFloor()
 	seen := make(map[string]bool)
 	var out []*agentpb.PortEntry
 
@@ -160,7 +168,7 @@ func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agen
 			if err != nil {
 				continue
 			}
-			for _, lp := range parseProcNet(data, p.name, p.ipv6) {
+			for _, lp := range parseProcNet(data, p.name, p.ipv6, udpFloor) {
 				key := fmt.Sprintf("%s|%s|%d", lp.protocol, lp.address, lp.port)
 				if seen[key] {
 					continue
@@ -182,4 +190,24 @@ func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agen
 		return out[i].Protocol < out[j].Protocol
 	})
 	return out, nil
+}
+
+// udpEphemeralFloor returns the lowest ephemeral (client) port, read from
+// /proc/sys/net/ipv4/ip_local_port_range. UDP sockets bound at or above this
+// are treated as clients and hidden. Falls back to the common Linux default.
+func udpEphemeralFloor() uint32 {
+	const def = 32768
+	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return def
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return def
+	}
+	v, err := strconv.ParseUint(fields[0], 10, 32)
+	if err != nil || v == 0 {
+		return def
+	}
+	return uint32(v)
 }

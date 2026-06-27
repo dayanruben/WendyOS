@@ -10,7 +10,7 @@ func TestParseProcNetTCPListening(t *testing.T) {
 			"   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1\n" +
 			"   1: 0100007F:1538 0100007F:C001 01 00000000:00000000 00:00000000 00000000  1000        0 2\n",
 	)
-	got := parseProcNet(data, "tcp", false)
+	got := parseProcNet(data, "tcp", false, 0)
 	if len(got) != 1 {
 		t.Fatalf("got %d ports, want 1 (only LISTEN): %+v", len(got), got)
 	}
@@ -31,7 +31,7 @@ func TestParseProcNetLocalhostV4(t *testing.T) {
 		"  sl  local_address rem_address   st\n" +
 			"   0: 0100007F:1538 00000000:0000 0A\n",
 	)
-	got := parseProcNet(data, "tcp", false)
+	got := parseProcNet(data, "tcp", false, 0)
 	if len(got) != 1 || got[0].address != "127.0.0.1" || got[0].port != 5432 {
 		t.Fatalf("got %+v, want 127.0.0.1:5432", got)
 	}
@@ -44,12 +44,26 @@ func TestParseProcNetUDPBoundOnly(t *testing.T) {
 			"   0: 00000000:14E9 00000000:0000 07\n" + // bound :5353
 			"   1: 0100007F:0035 0100007F:1234 07\n", // connected → excluded
 	)
-	got := parseProcNet(data, "udp", false)
+	got := parseProcNet(data, "udp", false, 32768)
 	if len(got) != 1 {
 		t.Fatalf("got %d, want 1 bound udp: %+v", len(got), got)
 	}
 	if got[0].port != 5353 {
 		t.Errorf("port = %d, want 5353", got[0].port)
+	}
+}
+
+func TestParseProcNetUDPEphemeralClientFiltered(t *testing.T) {
+	// A bound UDP socket on an ephemeral port (51000 = 0xC738) is a client and
+	// must be hidden; a service port (5353) is kept.
+	data := []byte(
+		"  sl  local_address rem_address   st\n" +
+			"   0: 00000000:C738 00000000:0000 07\n" + // ephemeral client → hidden
+			"   1: 00000000:14E9 00000000:0000 07\n", // :5353 service → kept
+	)
+	got := parseProcNet(data, "udp", false, 32768)
+	if len(got) != 1 || got[0].port != 5353 {
+		t.Fatalf("got %+v, want only :5353", got)
 	}
 }
 
@@ -59,7 +73,7 @@ func TestParseProcNetTCP6Wildcard(t *testing.T) {
 		"  sl  local_address rem_address   st\n" +
 			"   0: 00000000000000000000000000000000:01BB 00000000000000000000000000000000:0000 0A\n",
 	)
-	got := parseProcNet(data, "tcp6", true)
+	got := parseProcNet(data, "tcp6", true, 0)
 	if len(got) != 1 || got[0].address != "::" || got[0].port != 443 {
 		t.Fatalf("got %+v, want [::]:443", got)
 	}
