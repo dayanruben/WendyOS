@@ -3,6 +3,10 @@ package optimize
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 // ReportTarget is the lightweight target view embedded in a report.
@@ -55,15 +59,42 @@ func (r Report) MaxSeverity() Severity {
 	return maxSev
 }
 
-// RenderHuman renders a plain-text report grouped by target Name.
+// Presentation styles. lipgloss disables color automatically on non-TTY
+// output (and under NO_COLOR), so the rendered text degrades to clean plain
+// text in pipes, CI, and tests — the tokens below stay intact either way.
+var (
+	headerStyle  = lipgloss.NewStyle().Bold(true).Foreground(tui.ColorPrimary)
+	titleStyle   = lipgloss.NewStyle().Bold(true)
+	refStyle     = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	fixableStyle = lipgloss.NewStyle().Foreground(tui.ColorAccent)
+	footerStyle  = lipgloss.NewStyle().Foreground(tui.ColorDim)
+	nudgeStyle   = lipgloss.NewStyle().Bold(true).Foreground(tui.ColorAccent)
+
+	severityStyles = map[Severity]lipgloss.Style{
+		SeverityError:   lipgloss.NewStyle().Bold(true).Foreground(tui.ColorError),
+		SeverityWarning: lipgloss.NewStyle().Foreground(tui.ColorNotice),
+		SeverityInfo:    lipgloss.NewStyle().Foreground(tui.ColorInfo),
+	}
+	severityGlyphs = map[Severity]string{
+		SeverityError:   "✖",
+		SeverityWarning: "⚠",
+		SeverityInfo:    "ℹ",
+	}
+)
+
+// RenderHuman renders a report grouped by target. Output is colorized on a TTY
+// and plain (with identical text tokens) when piped or captured.
 func RenderHuman(r Report) string {
 	var b strings.Builder
 
+	refWidth := maxRefWidth(r.Findings)
+
 	for _, t := range r.Targets {
-		fmt.Fprintf(&b, "%s (%s)\n", t.Name, t.Kind)
+		b.WriteString(headerStyle.Render(fmt.Sprintf("%s (%s)", t.Name, t.Kind)))
+		b.WriteString("\n")
 		for _, f := range r.Findings {
 			if f.Target == t.Name {
-				writeFindingLine(&b, f)
+				writeFindingLine(&b, f, refWidth)
 			}
 		}
 	}
@@ -77,28 +108,53 @@ func RenderHuman(r Report) string {
 			}
 		}
 		if !matched {
-			writeFindingLine(&b, f)
+			writeFindingLine(&b, f, refWidth)
 		}
 	}
 
 	info, warn, errc, fixable := r.Counts()
 	total := info + warn + errc
-	fmt.Fprintf(&b, "\n%d findings (%d errors, %d warnings, %d info)", total, errc, warn, info)
+	b.WriteString("\n")
+	b.WriteString(footerStyle.Render(fmt.Sprintf("%d findings (%d errors, %d warnings, %d info)", total, errc, warn, info)))
 	if fixable > 0 {
-		fmt.Fprintf(&b, "  ·  %d fixable — run with --fix", fixable)
+		b.WriteString(footerStyle.Render("  ·  "))
+		b.WriteString(nudgeStyle.Render(fmt.Sprintf("%d fixable — run with --fix", fixable)))
 	}
 	b.WriteString("\n")
 	return b.String()
 }
 
-func writeFindingLine(b *strings.Builder, f Finding) {
-	loc := ""
+// findingRef is the "analyzer:line" (or just "analyzer") reference for a finding.
+func findingRef(f Finding) string {
 	if f.Location != nil {
-		loc = fmt.Sprintf(":%d", f.Location.Line)
+		return fmt.Sprintf("%s:%d", f.Analyzer, f.Location.Line)
 	}
-	fixable := ""
+	return f.Analyzer
+}
+
+// maxRefWidth returns the widest reference string, for column alignment.
+func maxRefWidth(findings []Finding) int {
+	w := 0
+	for _, f := range findings {
+		if n := len(findingRef(f)); n > w {
+			w = n
+		}
+	}
+	return w
+}
+
+func writeFindingLine(b *strings.Builder, f Finding, refWidth int) {
+	ref := findingRef(f)
+	glyph := severityGlyphs[f.Severity]
+	sevStyle := severityStyles[f.Severity]
+	// "<glyph> <severity>" padded so titles line up across severities.
+	marker := sevStyle.Render(fmt.Sprintf("%s %-7s", glyph, f.Severity.String()))
+	// Pad the reference to refWidth (plain-text width) so titles align.
+	paddedRef := refStyle.Render(ref) + strings.Repeat(" ", refWidth-len(ref))
+	line := fmt.Sprintf("  %s  %s  %s", marker, paddedRef, titleStyle.Render(f.Title))
 	if f.Fix != nil {
-		fixable = "  (fixable)"
+		line += "  " + fixableStyle.Render("(fixable)")
 	}
-	fmt.Fprintf(b, "  %-7s  %s%s  %s%s\n", f.Severity.String(), f.Analyzer, loc, f.Title, fixable)
+	b.WriteString(line)
+	b.WriteString("\n")
 }
