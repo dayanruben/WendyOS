@@ -10,7 +10,7 @@ type Analyzer interface {
 func DefaultAnalyzers() []Analyzer {
 	return []Analyzer{
 		buildCacheAnalyzer{},
-		// appended by later tasks: releaseDebugAnalyzer{}, cudaMLAnalyzer{}, archImageAnalyzer{}
+		releaseDebugAnalyzer{},
 	}
 }
 
