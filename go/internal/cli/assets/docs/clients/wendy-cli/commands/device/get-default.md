@@ -1,4 +1,7 @@
 
+> **Note:** `wendy device get-default` is not listed in `wendy device --help`,
+> but it remains fully functional.
+
 Shows the current [default device](../../device-selection.md), if one is set.
 
 Use this to confirm what is persisted in the CLI configuration:
