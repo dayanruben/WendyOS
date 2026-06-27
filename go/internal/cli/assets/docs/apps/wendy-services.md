@@ -7,6 +7,7 @@ When your project needs more than one container managed through a `wendy.json` f
 ```json
 {
   "appId": "com.example.myapp",
+  "platform": "linux",
   "services": {
     "db": {
       "context": "db"
@@ -47,6 +48,7 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 - A service `persist` entitlement missing `name` or `path`, or with a non-absolute or `..`-containing `path`.
 - A service `network` entitlement with a `mode` other than `"host"` or `"none"`.
 - A service `i2c` entitlement with a device not in `i2c-N` format.
+- A service `serial` entitlement with a device not matching the USB-only `ttyACM0` / `ttyUSB0` (`tty*N`) pattern.
 - A service `mcp` entitlement with a port outside the range 1–65535.
 - More than one `mcp` entitlement within a single service's `entitlements` array.
 
@@ -56,7 +58,7 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 
 When `appCfg.Services` is non-empty, `wendy run` routes to the multi-service pipeline:
 
-1. **Parallel build** — all service images are built and pushed concurrently, with a maximum of 4 simultaneous builds. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). In non-interactive terminals plain log lines are printed instead.
+1. **Parallel build** — all service images are built and pushed concurrently. By default, up to 4 simultaneous builds run; for large groups (8+ services), builds throttle to 2 concurrent to protect the device registry tunnel. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). In non-interactive terminals plain log lines are printed instead.
 2. **Ordered container creation** — containers are created one at a time in topological dependency order. A service listed in another service's `dependsOn` is created first.
 3. **Start and stream** — all containers are started and their combined stdout/stderr is multiplexed to the terminal. Each line is prefixed with `[serviceName]`.
 
@@ -96,6 +98,8 @@ All standard `wendy run` flags apply. The following are particularly relevant fo
 | `--service <name>` | Build and run only the named service and its transitive `dependsOn` dependencies. |
 | `--deploy` | Build and create all containers but do not start them. |
 | `--detach` | Start all containers but do not stream logs. |
+| `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure. |
+| `--max-concurrency <n>` | Max service images to build+push at once. 0 = auto-throttle large groups (default). |
 
 ## Example layout
 
@@ -119,4 +123,4 @@ wendy run --service api   # builds db and api only (frontend excluded)
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.
 - Containers are created via individual `CreateContainer` calls in dependency order. A grouped `CreateAppGroup` RPC for atomic creation is planned as a follow-up.
-- Wendy Agent for Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Wendy Agent for Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.
+- Wendy for Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Wendy for Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.

@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -44,10 +43,9 @@ func newDeviceCmd() *cobra.Command {
 	}
 
 	cmd.AddGroup(
+		&cobra.Group{ID: "common", Title: "Common Commands:"},
 		&cobra.Group{ID: "manage", Title: "Device Management:"},
-		&cobra.Group{ID: "monitor", Title: "Monitoring:"},
 		&cobra.Group{ID: "hardware", Title: "Hardware:"},
-		&cobra.Group{ID: "data", Title: "Apps & Storage:"},
 	)
 
 	addToGroup := func(groupID string, cmds ...*cobra.Command) {
@@ -57,20 +55,27 @@ func newDeviceCmd() *cobra.Command {
 		}
 	}
 
+	// Common Commands: the subcommands used in everyday workflows, surfaced at
+	// the top in rough order of usefulness.
+	addToGroup("common",
+		newAppsCmd(),
+		newDeviceLogsCmd(),
+		newROS2Cmd(),
+		newDeviceDashboardCmd(),
+		newTopCmd(),
+	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
+		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceUpdateCmd(),
-	)
-	addToGroup("monitor",
-		newDeviceLogsCmd(),
-		newDeviceDashboardCmd(),
-		newDeviceTelemetryStreamCmd(),
+		newDeviceSyncTimeCmd(),
+		newVolumesCmd(),
 	)
 	addToGroup("hardware",
 		newWifiCmd(),
@@ -79,9 +84,10 @@ func newDeviceCmd() *cobra.Command {
 		newCameraCmd(),
 		newHardwareCmd(),
 	)
-	addToGroup("data",
-		newAppsCmd(),
-		newVolumesCmd(),
+	// Hidden commands stay registered (and runnable) but are kept off the help
+	// menu; they are hidden via their own constructors.
+	addToGroup("manage",
+		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
 	)
 
@@ -120,13 +126,13 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			defer target.Close()
 
-			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion string
+			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
 			var partitions []*agentpb.DiskPartition
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-				cliLogln("Connecting to %s via Bluetooth...", target.Bluetooth.DisplayName)
+				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
 				bleClient, bleErr := connectBLEAgent(target.Bluetooth)
 				if bleErr != nil {
 					return bleErr
@@ -155,6 +161,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuVendor = resp.GetGpuVendor()
 				jetpackVersion = resp.GetJetpackVersion()
 				cudaVersion = resp.GetCudaVersion()
+				gpuArch = resp.GetGpuArch()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
 				partitions = resp.GetPartitions()
@@ -210,6 +217,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if cudaVersion != "" {
 					out["cudaVersion"] = cudaVersion
 				}
+				if gpuArch != "" {
+					out["gpuArch"] = gpuArch
+				}
 				if checkUpdates {
 					out["latestVersion"] = latestVersion
 					out["updateAvailable"] = version.CompareVersions(latestVersion, agentVersion) > 0
@@ -222,45 +232,56 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("Agent Version: %s\n", agentVersion)
-			fmt.Printf("OS: %s %s\n", osName, osVersion)
-			fmt.Printf("Architecture: %s\n", cpuArch)
+			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
+			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
+			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
 			if deviceType != "" {
-				fmt.Printf("Device Type: %s\n", deviceType)
+				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
 			if storageMedium != "" {
-				fmt.Printf("Storage: %s\n", storageMedium)
+				fmt.Printf("%s %s\n", tui.Dim("Storage:"), tui.Value(storageMedium))
 			}
 			if len(partitions) > 0 {
 				fmt.Print(formatPartitionTable(partitions))
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
-				fmt.Printf("Disk Usage: %s\n", formatDiskUsage(*diskUsedBytes, *diskTotalBytes))
+				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
 			}
 			if hasGPU {
 				vendor := gpuVendor
 				if vendor == "" {
 					vendor = "unknown"
 				}
-				fmt.Printf("GPU: %s\n", vendor)
+				fmt.Printf("%s %s\n", tui.Dim("GPU:"), tui.Value(vendor))
 				if jetpackVersion != "" {
-					fmt.Printf("JetPack: %s\n", jetpackVersion)
+					fmt.Printf("%s %s\n", tui.Dim("JetPack:"), tui.Value(jetpackVersion))
 				}
 				if cudaVersion != "" {
-					fmt.Printf("CUDA: %s\n", cudaVersion)
+					fmt.Printf("%s %s\n", tui.Dim("CUDA:"), tui.Value(cudaVersion))
+				}
+				if gpuArch != "" {
+					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
 			}
-			fmt.Printf("CLI Version: %s\n", version.Version)
+			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
-			warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
-				fmt.Println(warn.Render("\nAgent is behind the CLI — run 'wendy device update' to update."))
+				fmt.Println()
+				fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
 			} else if cmp < 0 {
-				fmt.Println(warn.Render("\nCLI is behind the agent — consider updating the CLI."))
+				fmt.Println()
+				fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
 			}
 
 			if checkUpdates {
 				if version.CompareVersions(latestVersion, agentVersion) > 0 {
-					fmt.Printf(warn.Render("\nUpdate available: %s (you have %s)")+"\nUpdate with: wendy device update\n", latestVersion, agentVersion)
+					fmt.Println()
+					fmt.Printf("%s %s %s %s\n",
+						tui.WarningMessage("Update available:"),
+						tui.Value(latestVersion),
+						tui.Dim("(you have"),
+						tui.Value(agentVersion)+tui.Dim(")"),
+					)
+					fmt.Printf("%s %s\n", tui.Dim("Update with:"), tui.Command("wendy device update"))
 				} else {
 					fmt.Println("\nAgent is up to date.")
 				}
@@ -303,7 +324,38 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 				return fmt.Errorf("saving config: %w", err)
 			}
 
-			fmt.Printf("Default device set to: %s\n", device)
+			fmt.Printf("Default device set to: %s\n", tui.Device(device))
+			return nil
+		},
+	}
+}
+
+func newDeviceGetDefaultCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "get-default",
+		Short:  "Show the current default device",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+
+			if jsonOutput {
+				data, err := json.MarshalIndent(map[string]string{"defaultDevice": cfg.DefaultDevice}, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				return nil
+			}
+
+			if cfg.DefaultDevice == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No default device set. Set one with 'wendy device set-default'.")
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Default device: %s\n", cfg.DefaultDevice)
 			return nil
 		},
 	}
@@ -350,9 +402,10 @@ func newDeviceUnsetDefaultCmd() *cobra.Command {
 
 func newDeviceSetupCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "setup",
-		Short: "Interactive device setup: enroll, name, and configure WiFi",
-		Long:  "Walks through enrollment (with device naming) and WiFi configuration for a new device.",
+		Use:    "setup",
+		Short:  "Interactive device setup: enroll, name, and configure WiFi",
+		Long:   "Walks through enrollment (with device naming) and WiFi configuration for a new device.",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
@@ -457,9 +510,10 @@ func newDeviceEnrollCmd() *cobra.Command {
 	var cloudGRPC string
 
 	cmd := &cobra.Command{
-		Use:   "enroll",
-		Short: "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:  "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy auth login' first.",
+		Use:    "enroll",
+		Short:  "Enroll this device with Wendy Cloud or a local pki-core",
+		Long:   "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy cloud login' first.",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -481,7 +535,7 @@ func newDeviceEnrollCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (required when multiple auth sessions exist)")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
 	return cmd
 }
 
@@ -640,24 +694,18 @@ func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	if len(cfg.Auth) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
-	}
-	if cloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cloudGRPC {
-				return &cfg.Auth[i], nil
-			}
+	// A default that points at a removed session is treated as unset; warn so
+	// the user understands why the picker appeared instead of auto-selecting.
+	if cloudGRPC == "" && cfg.DefaultCloudGRPC != "" {
+		if _, ok := cfg.DefaultAuth(); !ok {
+			fmt.Fprintf(os.Stderr, "warning: default session %s no longer exists; clear it with 'wendy auth default --clear'\n", cfg.DefaultCloudGRPC)
 		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
 	}
-	if len(cfg.Auth) > 1 {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass --cloud-grpc to select one")
+	var pick config.SessionPicker
+	if isInteractiveTerminal() {
+		pick = pickAuthSessionFn
 	}
-	if len(cfg.Auth[0].Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	return &cfg.Auth[0], nil
+	return config.ResolveAuth(cfg, cloudGRPC, pick)
 }
 
 func newDeviceUnenrollCmd() *cobra.Command {
@@ -1096,8 +1144,9 @@ func newDeviceTelemetryStreamCmd() *cobra.Command {
 	var enableTraces bool
 
 	cmd := &cobra.Command{
-		Use:   "telemetry-stream",
-		Short: "Stream telemetry data (logs, metrics, traces) as JSONL",
+		Use:    "telemetry-stream",
+		Short:  "Stream telemetry data (logs, metrics, traces) as JSONL",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// If no flags were explicitly set, enable all streams.
 			if !cmd.Flags().Changed("logs") && !cmd.Flags().Changed("metrics") && !cmd.Flags().Changed("traces") {
@@ -1689,7 +1738,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		otaURL = u
 	}
 
-	if err := streamOSUpdate(ctx, conn, otaURL); err != nil {
+	if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
 		return err
 	}
 
@@ -1725,7 +1774,11 @@ func newDeviceUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer func() {
+				if conn != nil {
+					_ = conn.Close()
+				}
+			}()
 
 			var preUpdateVersion *agentpb.GetAgentVersionResponse
 
@@ -1754,7 +1807,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 			} else {
 				// Auto-download: detect arch, fetch release, download binary.
 				if !jsonOutput {
-					fmt.Println("Detecting device architecture...")
+					fmt.Println(tui.InfoMessage("Detecting device architecture..."))
 				}
 				versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 				if err != nil {
@@ -1767,7 +1820,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("device did not report CPU architecture; use --binary to provide the binary manually")
 				}
 				if !jsonOutput {
-					fmt.Printf("Device architecture: %s\n", arch)
+					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
 				releaseType := "stable"
@@ -1775,7 +1828,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					releaseType = "nightly"
 				}
 				if !jsonOutput {
-					fmt.Printf("Fetching latest %s release...\n", releaseType)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s release...", releaseType)))
 				}
 
 				release, err := fetchAgentRelease(nightly)
@@ -1783,7 +1836,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("fetching release: %w", err)
 				}
 				if !jsonOutput {
-					fmt.Printf("Found release: %s\n", release.TagName)
+					fmt.Printf("%s %s\n", tui.Dim("Release:"), tui.Value(release.TagName))
 				}
 
 				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
@@ -1800,7 +1853,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				}
 
 				if !jsonOutput {
-					fmt.Printf("Downloading %s...\n", matchedAsset.Name)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Downloading %s...", matchedAsset.Name)))
 				}
 				binaryData, err = downloadAgentBinary(*matchedAsset)
 				if err != nil {
@@ -1814,7 +1867,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 
 			if isInteractiveTerminal() && !jsonOutput {
 				s := tui.NewSpinner("Uploading agent binary...")
-				p := tea.NewProgram(s)
+				p := tui.NewProgressProgram(s)
 
 				go func() {
 					uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)
@@ -1832,13 +1885,41 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return updateErr
 				}
 			} else if !jsonOutput {
-				fmt.Println("Uploading agent binary...")
+				fmt.Println(tui.InfoMessage("Uploading agent binary..."))
 				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
 					return err
 				}
 			} else {
 				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
 					return err
+				}
+			}
+
+			reconnect := updatedAgentReconnectFunc(ctx, conn)
+			if conn != nil {
+				_ = conn.Close()
+				conn = nil
+			}
+			if isInteractiveTerminal() && !jsonOutput {
+				readyConn, err := runAgentConnectionSpinner(ctx, "Waiting for agent to restart...", func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
+					return waitForUpdatedAgentReady(spinCtx, reconnect, agentRestartWaitOptions{})
+				})
+				if err != nil {
+					return err
+				}
+				if readyConn != nil {
+					_ = readyConn.Close()
+				}
+			} else {
+				if !jsonOutput {
+					fmt.Println(tui.InfoMessage("Waiting for agent to restart..."))
+				}
+				readyConn, err := waitForUpdatedAgentReady(ctx, reconnect, agentRestartWaitOptions{})
+				if err != nil {
+					return err
+				}
+				if readyConn != nil {
+					_ = readyConn.Close()
 				}
 			}
 
@@ -1855,7 +1936,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// OS update check is skipped in JSON mode to keep output stable.
 				return nil
 			}
-			fmt.Println("Agent updated successfully.")
+			fmt.Println(tui.SuccessMessage("Agent updated successfully."))
 			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL); err != nil {
 				return err
 			}
@@ -1923,6 +2004,18 @@ func checkELFArchitecture(data []byte, deviceArch string) error {
 	return nil
 }
 
+type agentRestartWaitOptions struct {
+	InitialDelay time.Duration
+	Timeout      time.Duration
+	PollInterval time.Duration
+}
+
+const (
+	defaultAgentRestartInitialDelay = time.Second
+	defaultAgentRestartTimeout      = 20 * time.Second
+	defaultAgentRestartPollInterval = time.Second
+)
+
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
 	stream, err := agentService.UpdateAgent(ctx)
 	if err != nil {
@@ -1982,4 +2075,93 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 	}
 
 	return nil
+}
+
+func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {
+	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return connectToCloudAgent(waitCtx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)
+		}
+	}
+
+	if addr, _, err := resolveDeviceAddress(); err == nil {
+		hostname := addr
+		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
+			hostname = host
+		}
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(waitCtx, hostname, addr, false, deferProvisionedMTLSCheck(waitCtx, addr))
+		}
+	}
+
+	if previous != nil && previous.Host != "" {
+		addr := hostPort(previous.Host, defaultAgentPort)
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(waitCtx, previous.Host, addr, false, func() bool { return false })
+		}
+	}
+
+	return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+		return connectToAgent(waitCtx,
+			ExcludeProviders("local", "docker", "wendy-lite"),
+			ExcludeBluetooth(),
+			SuppressUpdateCheck(),
+			SuppressProvisioningHint(),
+			NonInteractive(),
+		)
+	}
+}
+
+func waitForUpdatedAgentReady(ctx context.Context, reconnect func(context.Context) (*grpcclient.AgentConnection, error), opts agentRestartWaitOptions) (*grpcclient.AgentConnection, error) {
+	if opts.InitialDelay <= 0 {
+		opts.InitialDelay = defaultAgentRestartInitialDelay
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultAgentRestartTimeout
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = defaultAgentRestartPollInterval
+	}
+
+	if err := sleepContext(ctx, opts.InitialDelay); err != nil {
+		return nil, err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
+	var lastErr error
+	for {
+		conn, err := reconnect(waitCtx)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		if waitCtx.Err() != nil {
+			break
+		}
+		if err := sleepContext(waitCtx, opts.PollInterval); err != nil {
+			break
+		}
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("agent did not become reachable after update: %w", lastErr)
+	}
+	return nil, fmt.Errorf("agent did not become reachable after update: %w", waitCtx.Err())
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

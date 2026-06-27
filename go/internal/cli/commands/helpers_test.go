@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -55,6 +57,66 @@ func TestHostPort(t *testing.T) {
 			got := hostPort(tt.host, tt.port)
 			if got != tt.want {
 				t.Fatalf("hostPort(%q, %d) = %q, want %q", tt.host, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveAgentPlatform(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfgPlatform string
+		agentOS     string
+		agentArch   string
+		want        string
+	}{
+		{
+			name:        "full platform is used as-is",
+			cfgPlatform: "linux/amd64",
+			agentOS:     "darwin",
+			agentArch:   "arm64",
+			want:        "linux/amd64",
+		},
+		{
+			name:        "full wendyos platform is normalized to linux",
+			cfgPlatform: "wendyos/arm64",
+			agentOS:     "darwin",
+			agentArch:   "amd64",
+			want:        "linux/arm64",
+		},
+		{
+			name:        "OS-only platform uses agent architecture",
+			cfgPlatform: "darwin",
+			agentOS:     "linux",
+			agentArch:   "arm64",
+			want:        "darwin/arm64",
+		},
+		{
+			name:        "OS-only wendyos platform is normalized to linux",
+			cfgPlatform: "wendyos",
+			agentOS:     "darwin",
+			agentArch:   "arm64",
+			want:        "linux/arm64",
+		},
+		{
+			name:      "empty platform defaults to linux on Linux agent",
+			agentOS:   "linux",
+			agentArch: "arm64",
+			want:      "linux/arm64",
+		},
+		{
+			name:      "empty platform defaults to linux on Darwin agent",
+			agentOS:   "darwin",
+			agentArch: "arm64",
+			want:      "linux/arm64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveAgentPlatform(tt.cfgPlatform, tt.agentOS, tt.agentArch)
+			if got != tt.want {
+				t.Fatalf("resolveAgentPlatform(%q, %q, %q) = %q, want %q", tt.cfgPlatform, tt.agentOS, tt.agentArch, got, tt.want)
 			}
 		})
 	}
@@ -587,7 +649,7 @@ func TestConnectResolvedAgent_NoAuthProvisionedAgentRequiresLogin(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, func() bool { return knownProvisionedMTLS })
 	if conn != nil {
 		conn.Close()
 		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
@@ -629,7 +691,7 @@ func TestConnectResolvedAgent_ProvisionedAgentPreservesMTLSError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, func() bool { return knownProvisionedMTLS })
 	if conn != nil {
 		conn.Close()
 		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
@@ -782,5 +844,41 @@ func TestIsCertRejectionError(t *testing.T) {
 				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateCheckTTLCache(t *testing.T) {
+	tmp := t.TempDir()
+	// Redirect os.UserCacheDir() on both darwin ($HOME/Library/Caches) and
+	// linux ($XDG_CACHE_HOME or $HOME/.cache) into the temp dir.
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+
+	const host = "device.local"
+
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("cold: expected no recent pass before any check")
+	}
+
+	markUpdateCheckPassed(host)
+	if !updateCheckRecentlyPassed(host) {
+		t.Fatal("warm: expected recent pass after marking")
+	}
+
+	if updateCheckRecentlyPassed("other.local") {
+		t.Fatal("marker must be per-host")
+	}
+
+	// Backdate the marker beyond the TTL: it must no longer count as recent.
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		t.Fatal("expected a non-empty marker path")
+	}
+	old := time.Now().Add(-updateCheckTTL - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("stale: expected marker older than TTL to fail the check")
 	}
 }

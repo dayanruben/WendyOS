@@ -1,7 +1,6 @@
 package services
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,9 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -35,6 +33,7 @@ type AgentService struct {
 	bluetoothManager   BluetoothManager
 	installer          *AgentInstaller
 	isWendyOSHost      func() bool
+	osUpdateStateDir   string
 }
 
 func NewAgentService(
@@ -51,19 +50,22 @@ func NewAgentService(
 		bluetoothManager:   bm,
 		installer:          installer,
 		isWendyOSHost:      defaultIsWendyOSHost,
+		osUpdateStateDir:   oshealth.DefaultStateDir,
 	}
 }
 
 func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
 	resp := &agentpb.GetAgentVersionResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
@@ -86,6 +88,9 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	}
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
+	}
+	if gpuInfo.gpuArch != "" {
+		resp.GpuArch = &gpuInfo.gpuArch
 	}
 
 	if usage, ok := rootDiskUsage(); ok {
@@ -111,6 +116,7 @@ type gpuInfo struct {
 	vendor         string
 	jetpackVersion string
 	cudaVersion    string
+	gpuArch        string
 }
 
 func detectGPUInfo() gpuInfo {
@@ -134,6 +140,7 @@ func detectGPUInfo() gpuInfo {
 	if info.vendor == "nvidia" {
 		info.jetpackVersion = detectJetPackVersion()
 		info.cudaVersion = detectCUDAVersion()
+		info.gpuArch = detectNvidiaGPUArch()
 	}
 
 	return info
@@ -161,6 +168,7 @@ func detectJetPackVersion() string {
 	// L4T → JetPack version table.
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
+		"39.2": "7.2",
 		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
@@ -181,7 +189,7 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T " + major + "." + revision
+	return "L4T-" + major + "." + revision
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
@@ -211,6 +219,22 @@ func detectCUDAVersion() string {
 		}
 	}
 
+	return ""
+}
+
+var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
+
+func detectNvidiaGPUArch() string {
+	if nvidiaSmi, err := exec.LookPath("nvidia-smi"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, nvidiaSmi, "--query-gpu=compute_cap", "--format=csv,noheader,nounits").Output()
+		if err == nil {
+			if m := computeCapRe.FindSubmatch(out); len(m) > 2 {
+				return "sm_" + string(m[1]) + string(m[2])
+			}
+		}
+	}
 	return ""
 }
 
@@ -248,8 +272,21 @@ func detectFeatureset() []string {
 		features = append(features, "camera")
 	}
 
-	if _, found := resolveMenderBinary(); found {
+	_, hasMender := resolveMenderBinary()
+	if hasMender {
 		features = append(features, "mender")
+	}
+	_, hasWendyOS := resolveWendyOSBinary()
+	if hasWendyOS {
+		// The in-house wendyos-update engine; the primary OS update backend
+		// when present (mender is the fallback). See selectUpdater.
+		features = append(features, "wendyos-update")
+	}
+	if hasMender || hasWendyOS {
+		// "os-healthcheck": OS updates are verified by post-reboot service
+		// healthchecks with automatic rollback (and GetOSUpdateStatus reports
+		// the outcome). Backend-agnostic — see oshealth.Gate.
+		features = append(features, "os-healthcheck")
 	}
 
 	return features
@@ -571,6 +608,46 @@ const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wen
 // "  10%" or "50% 5120 kB" or "Installing:  75%".
 var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
 
+// systemctlFn runs systemctl; overridable in tests.
+var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+}
+
+const (
+	updaterTimerUnit   = "wendyos-agent-updater.timer"
+	updaterServiceUnit = "wendyos-agent-updater.service"
+)
+
+// inhibitAutoUpdater stops the agent auto-updater (timer+service) and returns a
+// defer-able restore func that re-enables the timer. The updater's "systemctl
+// stop wendyos-agent" would otherwise SIGTERM in-flight mender via the shared
+// service cgroup (default KillMode=control-group) and abort the OTA.
+// Best-effort: failures are logged, not fatal.
+func inhibitAutoUpdater(logger *zap.Logger) func() {
+	sysctl := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return systemctlFn(ctx, args...)
+	}
+	run := func(args ...string) {
+		if out, err := sysctl(args...); err != nil {
+			logger.Warn("OTA updater-inhibit: systemctl failed",
+				zap.Strings("args", args), zap.Error(err),
+				zap.String("output", strings.TrimSpace(string(out))))
+		}
+	}
+	// Hosts without the auto-updater (Jetson/QEMU) have nothing to stop — no-op
+	// instead of logging a spurious failure on every OTA. `cat` exits non-zero
+	// when the unit is absent.
+	if _, err := sysctl("cat", updaterTimerUnit); err != nil {
+		return func() {}
+	}
+	run("stop", updaterTimerUnit, updaterServiceUnit)
+	// Restore only the timer: it re-triggers the oneshot service itself, and a
+	// stopped timer re-arms on the next boot regardless.
+	return func() { run("start", updaterTimerUnit) }
+}
+
 func defaultIsWendyOSHost() bool {
 	// Older WendyOS builds did not write /etc/wendyos/device-type, so keep the
 	// version file as a compatibility marker alongside the newer device type.
@@ -665,18 +742,25 @@ func enableJetsonRootfsAB(logger *zap.Logger) error {
 }
 
 func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
-	s.logger.Info("UpdateOS started", zap.String("artifact_url", req.GetArtifactUrl()))
+	s.logger.Info("UpdateOS started",
+		zap.String("artifact_url", req.GetArtifactUrl()), zap.String("updater", req.GetUpdaterBackend()))
 
 	if !s.isWendyOSHost() {
 		s.logger.Warn("UpdateOS rejected: host is not a WendyOS OTA target", zap.String("artifact_url", req.GetArtifactUrl()))
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: osUpdateUnsupportedForHostMessage,
-				},
-			},
-		})
+		return sendOSUpdateFailure(stream, osUpdateUnsupportedForHostMessage)
 	}
+
+	// Stop the auto-updater so it can't SIGTERM the in-flight install mid-OTA;
+	// see inhibitAutoUpdater. Restored on return.
+	restoreUpdater := inhibitAutoUpdater(s.logger)
+	defer restoreUpdater()
+
+	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend())
+	if err != nil {
+		s.logger.Warn("UpdateOS rejected: no usable updater backend", zap.Error(err))
+		return sendOSUpdateFailure(stream, err.Error())
+	}
+	s.logger.Info("UpdateOS using backend", zap.String("backend", updater.name()))
 
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpb.UpdateOSResponse{
@@ -689,143 +773,11 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 		})
 	}
 
-	if err := enableJetsonRootfsAB(s.logger); err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("Jetson A/B setup failed: %v", err),
-				},
-			},
-		})
+	if err := updater.install(stream.Context(), req.GetArtifactUrl(), sendProgress); err != nil {
+		return sendOSUpdateFailure(stream, err.Error())
 	}
 
-	sendProgress("downloading", 0)
-	cmdName, found := resolveMenderBinary()
-	if !found {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: "mender-update binary not found",
-				},
-			},
-		})
-	}
-
-	cmd := exec.CommandContext(stream.Context(), cmdName, "install", req.GetArtifactUrl())
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to create stderr pipe: %v", err),
-				},
-			},
-		})
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to create stdout pipe: %v", err),
-				},
-			},
-		})
-	}
-
-	if err := cmd.Start(); err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to start mender: %v", err),
-				},
-			},
-		})
-	}
-
-	// Stream progress by scanning mender's output in real time.
-	// Mender writes structured log lines to stderr; stdout may have additional info.
-	// We merge both and parse for phase transitions and percentage patterns.
-	//
-	// Download progress occupies 0-80% of the overall bar.
-	// Install progress occupies 80-95%.
-	// 95-100% is reserved for finalization.
-	phase := "downloading"
-	lastPercent := int32(0)
-
-	// Retain the tail of mender's output so a non-zero exit can report the
-	// real cause (e.g. an incompatible device type) instead of a bare
-	// "exit status 1".
-	outputTail := newLineRing(menderErrorTailLines)
-
-	scanLines := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			outputTail.push(line)
-			lower := strings.ToLower(line)
-			s.logger.Debug("mender output", zap.String("line", line))
-
-			// Detect phase transitions.
-			switch {
-			case strings.Contains(lower, "installing") || strings.Contains(lower, "writing artifact"):
-				if phase != "installing" {
-					phase = "installing"
-					sendProgress(phase, 80)
-					lastPercent = 80
-				}
-			case strings.Contains(lower, "download complete") || strings.Contains(lower, "download finished"):
-				if phase == "downloading" {
-					sendProgress("downloading", 80)
-					lastPercent = 80
-				}
-			}
-
-			// Extract percentage from the line.
-			if m := menderProgressRe.FindStringSubmatch(line); len(m) > 1 {
-				if pct, err := strconv.Atoi(m[1]); err == nil && pct >= 0 && pct <= 100 {
-					var overall int32
-					if phase == "downloading" {
-						// Map download 0-100% → overall 0-80%
-						overall = int32(pct) * 80 / 100
-					} else {
-						// Map install 0-100% → overall 80-95%
-						overall = 80 + int32(pct)*15/100
-					}
-					if overall > lastPercent {
-						lastPercent = overall
-						sendProgress(phase, overall)
-					}
-				}
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			s.logger.Warn("mender output scan error", zap.Error(err))
-		}
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); scanLines(stderr) }()
-	go func() { defer wg.Done(); scanLines(stdout) }()
-
-	wg.Wait()
-
-	if err := cmd.Wait(); err != nil {
-		msg := formatMenderFailure(err, outputTail.tail())
-		s.logger.Error("mender install failed", zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: msg,
-				},
-			},
-		})
-	}
+	recordPendingOSUpdate(s.logger, s.osUpdateStateDir, req.GetArtifactUrl(), updater.name())
 
 	sendProgress("finalizing", 100)
 
@@ -844,6 +796,15 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	}
 
 	return nil
+}
+
+// sendOSUpdateFailure sends a terminal Failed response on the v1 UpdateOS stream.
+func sendOSUpdateFailure(stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse], msg string) error {
+	return stream.Send(&agentpb.UpdateOSResponse{
+		ResponseType: &agentpb.UpdateOSResponse_Failed_{
+			Failed: &agentpb.UpdateOSResponse_Failed{ErrorMessage: msg},
+		},
+	})
 }
 
 // envWithPath returns os.Environ() with the PATH entry replaced by the given value.
@@ -892,30 +853,6 @@ func resolveMenderBinary() (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// CommitMenderUpdate runs "mender-update commit" on startup to confirm a
-// pending Mender A/B update. If not committed, Mender rolls back on next reboot.
-// This is a no-op if mender-update is not installed.
-func CommitMenderUpdate(logger *zap.Logger) {
-	binary, found := resolveMenderBinary()
-	if !found {
-		return
-	}
-	cmd := exec.Command(binary, "commit")
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-			// Exit code 2 means "nothing to commit" — not an error.
-			logger.Debug("mender-update commit: nothing to commit", zap.String("output", strings.TrimSpace(string(out))))
-			return
-		}
-		logger.Warn("mender-update commit failed", zap.String("output", strings.TrimSpace(string(out))), zap.Error(err))
-		return
-	}
-	logger.Info("Committed Mender update", zap.String("output", strings.TrimSpace(string(out))))
 }
 
 func CleanupOldBackups(logger *zap.Logger) {

@@ -4,6 +4,7 @@ package providers
 
 import (
 	"context"
+	"slices"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -49,9 +50,26 @@ type RunOutputType int
 
 // Provider key constants for the built-in providers.
 const (
-	ProviderKeyDocker = "docker"
-	ProviderKeyLocal  = "local"
+	ProviderKeyAppleContainer = "apple-container"
+	ProviderKeyDocker         = "docker"
+	ProviderKeyLocal          = "local"
 )
+
+// LocalProviderKeys are the providers whose "devices" are really this computer
+// or a local container runtime (the local machine, Docker/OrbStack, Apple
+// Container) rather than a separate WendyOS device. `wendy run` and
+// `wendy discover` hide these from the default device list unless --all is
+// given. Real external hardware providers (e.g. android, wendy-lite) are not
+// local and are always shown.
+func LocalProviderKeys() []string {
+	return []string{ProviderKeyLocal, ProviderKeyDocker, ProviderKeyAppleContainer}
+}
+
+// IsLocalProviderKey reports whether key names a local run target (see
+// LocalProviderKeys).
+func IsLocalProviderKey(key string) bool {
+	return slices.Contains(LocalProviderKeys(), key)
+}
 
 const (
 	RunOutputStarted RunOutputType = iota
@@ -80,8 +98,8 @@ type TypedBuilder interface {
 }
 
 // DockerfileBuilder is optionally implemented by providers that support
-// building from a specific Dockerfile (e.g. Dockerfile.prod). When dockerfile
-// is empty, the provider uses its default Dockerfile resolution.
+// building from a specific Dockerfile/Containerfile (e.g. Dockerfile.prod).
+// When dockerfile is empty, the provider uses its default build-file resolution.
 type DockerfileBuilder interface {
 	BuildWithDockerfile(ctx context.Context, device models.ExternalDevice, projectPath, product, buildType, dockerfile string, debug bool) (*BuiltApp, error)
 }

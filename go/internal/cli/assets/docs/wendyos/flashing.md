@@ -14,6 +14,22 @@ Use `wendy os list-drives` to enumerate available drives.
 
 `wendy os install` downloads the WendyOS release zip (~5.5 GB) for the selected device type and writes it directly to the target drive. The compressed zip is never fully extracted to disk — the image entry is streamed from the zip to the drive in a single pass, so the peak temporary disk usage is the zip file itself.
 
+### Block map acceleration
+
+When a block map (`.bmap`) and seekable-zstd image (`.img.zst`) are available for the target storage variant, `wendy os install` uses them to flash significantly faster:
+
+- Only mapped (non-zero) ranges are written; holes are skipped entirely
+- The seekable zstd format allows random access, so zero regions are never decompressed
+- Typical Jetson images (~19 GB uncompressed, ~4 GB mapped data) flash in a fraction of the time
+
+Use `--no-bmap` to disable this optimization and flash the full image. Use `--storage nvme` or `--storage sd` to force a specific storage variant when the auto-detection is incorrect (e.g., an NVMe drive in a USB enclosure).
+
+### Block map error handling
+
+If a bmap-accelerated write fails — for example due to a checksum mismatch or a stale/incorrect published bmap — `wendy os install` automatically falls back to a full sequential write using the already-cached `.img.zst` or `.zip`. No user action and no re-download are required.
+
+A failure that occurs *during* the fallback write (short write, decode error, or a non-zero helper exit) is fatal: the helper's stderr is surfaced as the error.
+
 ### Image formats
 
 Both raw (`.img`) and gzip-compressed (`.img.gz`) images are supported, in addition to zip archives. Gzip content is detected by inspecting the file's magic bytes rather than its extension, so a cached or renamed image without a `.gz` suffix is still handled correctly. Gzip images are decompressed on the fly and streamed straight to the drive — the full decompressed image is never written to a temporary file.

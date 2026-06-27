@@ -121,9 +121,18 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		closeTunnel()
 		return nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      cert.PemCertificateChain,
+		ExpectedOrgID: int32(cert.OrganizationID),
+	})
+	if err != nil {
+		closeTunnel()
+		return nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
-		InsecureSkipVerify: true, //nolint:gosec — agent uses self-signed certs; chain verified server-side
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 
@@ -149,6 +158,7 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = asset.GetName()
 	agentConn.IsMTLS = true
+	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
 	}
@@ -401,7 +411,7 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 
 	var assets []*cloudpb.Asset
 	if isInteractiveTerminal() {
-		prog := tea.NewProgram(tui.NewSpinner("Fetching devices from cloud..."))
+		prog := tui.NewProgressProgram(tui.NewSpinner("Fetching devices from cloud..."))
 		var fetchErr error
 		go func() {
 			assets, fetchErr = fetchCloudAssets(ctx, auth)

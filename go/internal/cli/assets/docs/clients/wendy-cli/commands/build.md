@@ -7,7 +7,7 @@ The build command is mainly used to verify your app can build/compile.
 `wendy build` scans the project directory for a build manifest in the following priority order:
 
 1. `docker-compose.yml` / `compose.yml` — multi-service Compose project
-2. `Dockerfile` (or `Dockerfile.<variant>` / `Dockerfile-<variant>`) — container image build
+2. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
 3. `Package.swift` — Swift Package Manager project
 4. `*.xcodeproj` — Xcode project (macOS targets only)
 5. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
@@ -18,15 +18,31 @@ If multiple manifests are present you can override detection with `--build-type`
 
 | Manifest | Required host | Notes |
 |---|---|---|
-| `Dockerfile` | Docker Desktop (macOS/Windows/Linux) or WendyOS | Built with `docker buildx` |
+| `Dockerfile` / `Containerfile` | Docker Desktop, Apple `container` on Apple silicon macOS, or WendyOS | Local Docker builds use `docker buildx`; `--device apple-container` uses `container build`; WendyOS device builds can select `--builder docker` or `--builder apple-container` |
 | `Package.swift` | macOS or Linux | Requires a host Swift toolchain |
-| `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile` managed automatically |
+| `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile.wendy` is the auto-detected target-agent Brewfile for native Mac runs |
 
 ## Build paths
 
-### Dockerfile projects
+### Dockerfile and Containerfile projects
 
-`wendy build` invokes `docker buildx build` targeting the device's CPU architecture. It passes the following build-args so the Dockerfile can adapt to the target hardware — declare them with `ARG` to use them:
+`wendy build` invokes an image builder targeting the device's CPU architecture. It passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them:
+
+On Apple silicon Macs with [Apple `container`](https://github.com/apple/container)
+installed and started, Wendy tries Apple Container first for Dockerfile and
+Containerfile builds when `--builder` is omitted. If Apple Container is
+unavailable or the build fails, Wendy falls back to Docker. Use
+`--builder docker` to force Docker, or `--builder apple-container` to require
+Apple Container:
+
+```sh
+container system start
+wendy --device my-wendy.local build
+```
+
+For local-only Dockerfile or Containerfile builds on the Mac itself, select the
+local provider with `--device apple-container`. Compose projects still require
+Docker for local provider runs.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -36,7 +52,9 @@ If multiple manifests are present you can override detection with `--build-type`
 | `WENDY_HAS_GPU` | `true` \| `false` | Absent on older agents |
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
+| `WENDY_JETPACK_MAJOR` | e.g. `6`, `7` | Jetson only; JetPack major for per-generation base-image selection |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
+| `WENDY_GPU_ARCH` | e.g. `sm_87` | GPU architecture identifier; absent when no GPU is reported |
 
 Example — selecting a base image by platform:
 
@@ -52,8 +70,12 @@ FROM ${WENDY_PLATFORM}-base-image
 
 ### Xcode projects
 
-Builds with `xcodebuild`. If a `Brewfile` is present in the project root, Wendy manages Homebrew dependencies automatically on a per-app basis.
+Builds with `xcodebuild`. Xcode project support exists for native Mac packages that cannot be built correctly with SwiftPM alone, for example packages that need Xcode-only resource or shader build steps.
+
+Wendy passes `-skipMacroValidation` and `-skipPackagePluginValidation` so `xcodebuild` can run from a headless CLI/agent session. Xcode's macro/plugin prompts are an interactive consent layer on top of SwiftPM's build-time code and package-plugin sandbox model; headless Wendy builds treat invoking the build as consent, similar to CLI build tools. Only use Xcode projects with trusted, pinned package dependencies.
+
+For native Mac runs, if a `Brewfile.wendy` is present in the project root, Wendy applies it on the target Mac before starting the app. A plain project-root `Brewfile` is left for developer-machine setup unless explicitly referenced by `wendy.json`.
 
 ## Platform support for Swift projects
 
-`wendy build` for Swift packages requires a host Swift toolchain and is supported on **macOS and Linux hosts only**. On Windows, `wendy build` returns an error for Swift projects. The recommended alternative is to provide a `Dockerfile` and use `wendy run`, which routes through the Docker buildx path on all platforms.
+`wendy build` for Swift packages requires a host Swift toolchain and is supported on **macOS and Linux hosts only**. On Windows, `wendy build` returns an error for Swift projects. The recommended alternative is to provide a `Dockerfile` or `Containerfile` and use `wendy run`, which routes through the image build path on all platforms.
