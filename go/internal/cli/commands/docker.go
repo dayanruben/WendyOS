@@ -1429,6 +1429,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		"buildx", "build",
 		"--builder", builder,
 		"--platform", platform,
+		"--progress", "plain",
 	}
 	if dockerfile != "" {
 		// Callers validate the filename at their own boundary: the CLI flag path

@@ -1466,7 +1466,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// failure is surfaced instead of silently masked by a slower path.
 			return fmt.Errorf("chunk-diff deploy failed and --chunking=force disables the registry-push fallback: %w", err)
 		} else {
-			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
+			cliLogln("Fast deploy unavailable; using registry push.")
 		}
 	}
 
@@ -1480,10 +1480,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	repo := strings.ToLower(appCfg.AppID)
 	// Single-service build: no concurrency, so keep the shared local cache dir
 	// (empty cache key) for cross-run cache reuse.
-	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", os.Stdout, os.Stderr); err != nil {
+	buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
+	if err := runBuildWithProgress(ctx, buildTitle, true, func(stream, logw io.Writer) error {
+		return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
+	}); err != nil {
 		return fmt.Errorf("building and pushing image: %w", err)
 	}
-	cliLogln("Build and push completed.")
 
 	// The agent pulls from localhost:<regPort>.
 	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
@@ -1844,21 +1846,23 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	defer os.RemoveAll(tmp)
 	ociTar := filepath.Join(tmp, "image.tar")
 
-	cliLogln("Building image (OCI layout) for %s...", tui.Value(platform))
-	// In quiet mode (wendy watch) capture the buildx output and surface it only
-	// if the build genuinely fails — but stay silent on a cancellation (a newer
-	// change superseded this build), which would otherwise dump a partial log.
-	var buildOut, buildErr io.Writer = os.Stdout, os.Stderr
-	var buildLog *bytes.Buffer
+	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
 	if opts.quietBuild {
-		buildLog = &bytes.Buffer{}
-		buildOut, buildErr = buildLog, buildLog
-	}
-	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, buildOut, buildErr); err != nil {
-		if buildLog != nil && ctx.Err() == nil {
-			_, _ = os.Stderr.Write(buildLog.Bytes())
+		// wendy watch: keep the legacy quiet behavior (buffer, surface only on
+		// genuine failure) rather than rendering a live UI under the watcher.
+		var buildLog bytes.Buffer
+		if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, &buildLog, &buildLog); err != nil {
+			if ctx.Err() == nil {
+				_, _ = os.Stderr.Write(buildLog.Bytes())
+			}
+			return err
 		}
-		return err
+	} else {
+		if err := runBuildWithProgress(ctx, buildTitle, opts.chunking == chunkingForce, func(stream, logw io.Writer) error {
+			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
+		}); err != nil {
+			return err
+		}
 	}
 	mark("build (oci export)")
 	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
