@@ -292,6 +292,25 @@ func defaultSeccomp() *LinuxSeccomp {
 				ErrnoRet: &eperm,
 			},
 			{
+				// SECURITY (WDY-1012): deny kernel-attack-surface syscalls that
+				// a normal application container never needs — kernel module
+				// loading and kexec. These are pure host-escape primitives;
+				// blocking them here is defense-in-depth on top of the capability
+				// gating that already withholds CAP_SYS_MODULE / CAP_SYS_BOOT.
+				// (create_module is long-removed from Linux but is listed so the
+				// filter denies it on any kernel that still exposes it.)
+				Names: []string{
+					"init_module",
+					"finit_module",
+					"delete_module",
+					"create_module",
+					"kexec_load",
+					"kexec_file_load",
+				},
+				Action:   ActErrno,
+				ErrnoRet: &eperm,
+			},
+			{
 				Names:  []string{"clone"},
 				Action: ActErrno,
 				Args: []LinuxSeccompArg{
