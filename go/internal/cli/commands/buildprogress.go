@@ -70,10 +70,11 @@ func runBuildWithProgress(ctx context.Context, title string, build func(stream, 
 	})
 	stream := io.MultiWriter(parser, raw)
 
-	var buildErr error
+	buildErrC := make(chan error, 1)
 	go func() {
-		buildErr = build(stream, &setupLog)
-		prog.Send(tui.BuildAllDoneMsg{Err: buildErr})
+		err := build(stream, &setupLog)
+		prog.Send(tui.BuildAllDoneMsg{Err: err})
+		buildErrC <- err
 	}()
 
 	final, runErr := prog.Run()
@@ -84,6 +85,7 @@ func runBuildWithProgress(ctx context.Context, title string, build func(stream, 
 	if cancelErr := fm.Err(); cancelErr == tui.ErrCancelled {
 		return cancelErr
 	}
+	buildErr := <-buildErrC
 	if buildErr != nil {
 		if ctx.Err() == nil {
 			buildProgressOut.Write(raw.Bytes())
