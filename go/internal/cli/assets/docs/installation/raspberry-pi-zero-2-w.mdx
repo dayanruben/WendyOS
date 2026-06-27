@@ -49,6 +49,14 @@ Before you begin, make sure you have:
     ```
 
     Select **Raspberry Pi Zero 2 W** and then select your drive. This process may take several minutes. The CLI will show progress updates.
+
+    During the install, the CLI also prompts you to set up first-boot provisioning. You can:
+
+    - **Connect to WiFi on first boot** — pre-seed one or more networks so the device joins WiFi the moment it powers on, no monitor or keyboard required.
+    - **Install important updates on first boot** — the device fetches and applies any critical OS updates automatically the first time it boots.
+    - **Securely link the device to Wendy Cloud or your developer machine** — pre-enroll the device (`--pre-enroll`, requires `wendy auth login`) so it provisions mTLS certificates and links to Wendy Cloud on first boot. It links to your developer machine once you connect it over USB-C and run `wendy discover`.
+
+    Each of these is optional and can also be configured after the device boots. See [`wendy os install`](/docs/advanced/clients/wendy-cli/commands/os/install) for all the flags.
   </Step>
 
   <Step>
