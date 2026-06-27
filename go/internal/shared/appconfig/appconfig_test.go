@@ -103,6 +103,27 @@ func TestValidate_ValidConfig(t *testing.T) {
 	}
 }
 
+// TestValidate_NetworkHostAdminMode covers the WDY-1094 opt-in: "host-admin"
+// is a valid network mode (host networking + CAP_NET_ADMIN), while an unknown
+// mode is still rejected.
+func TestValidate_NetworkHostAdminMode(t *testing.T) {
+	valid := &AppConfig{
+		AppID:        "com.example.app",
+		Entitlements: []Entitlement{{Type: EntitlementNetwork, Mode: "host-admin"}},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("Validate() rejected host-admin mode: %v", err)
+	}
+
+	invalid := &AppConfig{
+		AppID:        "com.example.app",
+		Entitlements: []Entitlement{{Type: EntitlementNetwork, Mode: "bogus"}},
+	}
+	if err := invalid.Validate(); err == nil {
+		t.Error("Validate() accepted an unknown network mode; want error")
+	}
+}
+
 func TestValidate_MissingAppID(t *testing.T) {
 	cfg := &AppConfig{}
 	err := cfg.Validate()

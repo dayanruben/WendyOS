@@ -1493,7 +1493,7 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 
 func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 	for _, e := range appCfg.Entitlements {
-		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "") {
+		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "host-admin" || e.Mode == "") {
 			return true
 		}
 	}

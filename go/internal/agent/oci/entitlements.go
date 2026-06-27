@@ -239,7 +239,7 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 		mode = "host"
 	}
 
-	if mode == "host" {
+	if mode == "host" || mode == "host-admin" {
 		// Remove the network namespace to use host networking.
 		var namespaces []LinuxNamespace
 		for _, ns := range spec.Linux.Namespaces {
@@ -264,10 +264,18 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			}
 		}
 
-		// Add CAP_NET_ADMIN and CAP_NET_RAW for host networking.
-		spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN")
-		spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_NET_ADMIN")
-		spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
+		// SECURITY (WDY-1094): CAP_NET_ADMIN lets a container reconfigure host
+		// network interfaces, routes, and netfilter — a privilege that plain
+		// host networking (visibility: bind ports, see interfaces) does not
+		// require. Grant it only for the explicit "host-admin" opt-in, so the
+		// reconfiguration capability is separate from, and auditable apart from,
+		// the visibility entitlement. (CAP_NET_RAW for ping etc. comes from the
+		// baseline capability set, not from here, so it is unaffected.)
+		if mode == "host-admin" {
+			spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN")
+			spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+			spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
+		}
 
 		// Mount a resolv.conf from the host so DNS works inside the container.
 		// The container has its own mount namespace, so its rootfs resolv.conf

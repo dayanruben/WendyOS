@@ -90,8 +90,8 @@
             "type": { "const": "network" },
             "mode": {
               "type": "string",
-              "enum": ["host", "none"],
-              "description": "Network mode. \"host\" shares the host network stack; \"none\" disables networking."
+              "enum": ["host", "host-admin", "none"],
+              "description": "Network mode. \"host\" shares the host network stack (visibility only); \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking."
             }
           },
           "required": ["type"],
