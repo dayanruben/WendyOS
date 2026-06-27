@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func executeCompletion(t *testing.T, args ...string) (stdout, stderr *bytes.Buffer, err error) {
@@ -292,6 +293,45 @@ func TestInstall_WritesFile(t *testing.T) {
 	// Fish completion scripts use the `complete` builtin.
 	if !bytes.Contains(data, []byte("complete")) {
 		t.Errorf("fish script missing `complete` keyword; got: %s", data)
+	}
+}
+
+func TestInstall_SetsCompletionInstalledFlag(t *testing.T) {
+	tmp := t.TempDir()
+	// HOME is pinned to tmp for the rest of this test, so config lives under
+	// tmp/.wendy and stays isolated from the developer's real config.
+	if _, _, err := executeCompletionInHome(t, tmp,
+		"completion", "install",
+		"--shell", "fish",
+	); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.CompletionInstalled {
+		t.Error("CompletionInstalled = false after `completion install`; want true")
+	}
+}
+
+func TestInstall_PrintPathDoesNotSetFlag(t *testing.T) {
+	tmp := t.TempDir()
+	if _, _, err := executeCompletionInHome(t, tmp,
+		"completion", "install",
+		"--shell", "fish",
+		"--print-path",
+	); err != nil {
+		t.Fatalf("install --print-path: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.CompletionInstalled {
+		t.Error("CompletionInstalled = true after dry-run --print-path; want false")
 	}
 }
 
