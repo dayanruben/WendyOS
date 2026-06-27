@@ -368,6 +368,14 @@ debugpy>=1.8.0
 - Debug multi-threaded applications
 - Exception breakpoints for catching errors
 
+<Callout type="warning">
+  **Security**: the debugpy listener binds to the device's loopback interface
+  (`127.0.0.1:5678`), not all interfaces. debugpy is an unauthenticated remote
+  code execution endpoint, so it is never exposed on the device's network.
+  Remote attach reaches it through a tunnel that forwards your local `5678` to
+  the device's loopback.
+</Callout>
+
 {/* SCREENSHOT PLACEHOLDER: Python debugging session with breakpoint and variable inspection */}
 
 <Callout type="info">
