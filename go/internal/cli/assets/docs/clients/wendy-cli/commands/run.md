@@ -121,7 +121,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects, builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
 | `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
-| `--build-type <type>` | Override build type detection: `docker`, `swift`, `python`, or `compose`. |
+| `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
