@@ -299,10 +299,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 func newDeviceSetDefaultCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "set-default [hostname]",
-		Short:  "Set the default device hostname",
-		Hidden: true,
-		Args:   cobra.MaximumNArgs(1),
+		Use:   "set-default [hostname]",
+		Short: "Set the default device hostname",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var device string
 			if len(args) > 0 {
