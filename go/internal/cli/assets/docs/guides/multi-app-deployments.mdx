@@ -18,11 +18,7 @@ Wendy treats the compose file as the deployment plan. You do not need a `wendy.j
 
 ## How Wendy runs compose projects
 
-When you run `wendy run` in a directory with a compose file, Wendy uses the compose path before the single-Dockerfile path. You can also make this explicit:
-
-```bash
-wendy run --build-type compose
-```
+When you run `wendy run` in a directory with a compose file, Wendy auto-detects the compose project and uses the compose path before the single-Dockerfile path.
 
 For a WendyOS device target, Wendy:
 
@@ -131,7 +127,7 @@ Run the stack from the project root:
 
 ```bash
 cd ros2-stack
-wendy run --build-type compose
+wendy run
 ```
 
 Attached mode streams logs from all services:
@@ -172,7 +168,7 @@ Avoid host bind mounts such as `./bags:/bags` for device deployments. Wendy skip
 For long-running robot stacks, start the services without attaching logs:
 
 ```bash
-wendy run --build-type compose --detach
+wendy run --detach
 ```
 
 Generated app names use the project folder and service name. For the example above, the apps are `ros2-stack-talker` and `ros2-stack-listener`.
