@@ -136,7 +136,7 @@ Python-specific settings.
 
 ### `resources`
 
-Optional CPU, memory, and process-count ceilings the agent enforces on the container via cgroups. Edge devices are resource-constrained and often run several apps side by side, so capping a service keeps one busy or leaky app from starving its neighbours. Every field is optional; an omitted field leaves that resource **unbounded** (the historical behaviour), so adding `resources` is backward compatible.
+Optional CPU, memory, and process-count ceilings the agent enforces on the container via cgroups. Edge devices are resource-constrained and often run several apps side by side, so capping a service keeps one busy or leaky app from starving its neighbours. Every field is optional. Omitting `memory` or `cpus` leaves that resource **unbounded** (the historical behaviour), so adding `resources` is backward compatible. `pids` is the exception: when omitted, a conservative default ceiling (4096) is applied as a fork-bomb guard — set it explicitly to raise or lower that ceiling.
 
 ```json
 {
@@ -152,7 +152,7 @@ Optional CPU, memory, and process-count ceilings the agent enforces on the conta
 |-------|------|-------------|
 | `resources.memory` | string | Hard memory limit. A number of bytes, optionally with a binary (`Ki`, `Mi`, `Gi`, `Ti`) or decimal (`K`, `M`, `G`, `T`) suffix — e.g. `"512Mi"`, `"1Gi"`. The container is OOM-killed if it exceeds this. |
 | `resources.cpus` | string | Maximum number of CPU cores as a decimal — e.g. `"0.5"`, `"1.5"`, `"2"`. Enforced as a CFS quota over a 100 ms period (so `"1.5"` ⇒ 150 ms of CPU time per 100 ms). |
-| `resources.pids` | integer | Maximum number of processes/threads the container may create. A cheap guard against fork bombs. |
+| `resources.pids` | integer | Maximum number of processes/threads the container may create. A cheap guard against fork bombs. **Defaults to 4096** when omitted; set a higher value for heavily-threaded workloads, or lower to tighten the cap. |
 
 For multi-service apps, set `resources` at the top level as the default and/or per service under `services.<name>.resources`. A service that declares its own `resources` overrides the app-level limits **wholesale** (the two are not merged field-by-field):
 

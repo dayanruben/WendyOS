@@ -35,18 +35,23 @@ func TestApplyResourceLimits_NilAndEmpty(t *testing.T) {
 	if err := ApplyResourceLimits(spec, nil); err != nil {
 		t.Fatalf("nil limits should be a no-op: %v", err)
 	}
+	// Memory and CPU stay unbounded (WDY-1729); only the default PID guard
+	// (WDY-1101) is applied — covered by TestApplyResourceLimits_DefaultsPIDs*.
 	if m := spec.Linux.Resources.Memory; m != nil {
 		t.Errorf("nil limits should not set memory, got %+v", m)
 	}
+	if c := spec.Linux.Resources.CPU; c != nil {
+		t.Errorf("nil limits should not set cpu, got %+v", c)
+	}
 
-	// empty limits: leaves every resource unset.
+	// empty limits: leaves memory/cpu unset.
 	spec2 := DefaultSpec("rootfs", []string{"/app"})
 	if err := ApplyResourceLimits(spec2, &appconfig.ResourceLimits{}); err != nil {
 		t.Fatalf("empty limits should be a no-op: %v", err)
 	}
 	res := spec2.Linux.Resources
-	if res.Memory != nil || res.CPU != nil || res.Pids != nil {
-		t.Errorf("empty limits should leave resources unset, got %+v", res)
+	if res.Memory != nil || res.CPU != nil {
+		t.Errorf("empty limits should leave memory/cpu unset, got %+v", res)
 	}
 }
 
@@ -61,8 +66,51 @@ func TestApplyResourceLimits_PartialPreservesDeviceRules(t *testing.T) {
 	if got := len(spec.Linux.Resources.Devices); got != before {
 		t.Errorf("device rules changed: before %d, after %d", before, got)
 	}
-	if spec.Linux.Resources.CPU != nil || spec.Linux.Resources.Pids != nil {
-		t.Errorf("only memory should be set")
+	// Only memory was declared, so CPU stays unset; Pids carries the WDY-1101
+	// default since the app declared none.
+	if spec.Linux.Resources.CPU != nil {
+		t.Errorf("only memory was declared; cpu should be unset, got %+v", spec.Linux.Resources.CPU)
+	}
+	if p := spec.Linux.Resources.Pids; p == nil || p.Limit != DefaultMaxPIDs {
+		t.Errorf("expected default PID limit when undeclared, got %+v", p)
+	}
+}
+
+// TestApplyResourceLimits_DefaultsPIDsWhenUndeclared is the WDY-1101 guard: a
+// container that declares no PID limit still gets a conservative default so a
+// fork bomb cannot exhaust host PIDs. Memory and CPU intentionally remain
+// unbounded by default (WDY-1729 backward compatibility).
+func TestApplyResourceLimits_DefaultsPIDsWhenUndeclared(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		limits *appconfig.ResourceLimits
+	}{
+		{"nil", nil},
+		{"empty", &appconfig.ResourceLimits{}},
+		{"only-memory", &appconfig.ResourceLimits{Memory: "128Mi"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := DefaultSpec("rootfs", []string{"/app"})
+			if err := ApplyResourceLimits(spec, tc.limits); err != nil {
+				t.Fatalf("ApplyResourceLimits: %v", err)
+			}
+			p := spec.Linux.Resources.Pids
+			if p == nil || p.Limit != DefaultMaxPIDs {
+				t.Errorf("expected default PID limit %d, got %+v", DefaultMaxPIDs, p)
+			}
+		})
+	}
+}
+
+// TestApplyResourceLimits_DeclaredPIDsOverridesDefault ensures an explicit PID
+// limit always wins over the default — including a deliberately high value.
+func TestApplyResourceLimits_DeclaredPIDsOverridesDefault(t *testing.T) {
+	spec := DefaultSpec("rootfs", []string{"/app"})
+	if err := ApplyResourceLimits(spec, &appconfig.ResourceLimits{PIDs: DefaultMaxPIDs * 4}); err != nil {
+		t.Fatalf("ApplyResourceLimits: %v", err)
+	}
+	if p := spec.Linux.Resources.Pids; p == nil || p.Limit != DefaultMaxPIDs*4 {
+		t.Errorf("declared PID limit must override the default, got %+v", p)
 	}
 }
 
