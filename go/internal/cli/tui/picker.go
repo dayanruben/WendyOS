@@ -4,10 +4,68 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// newProbeSpinner builds the spinner that animates the Agent/OS columns while a
+// device probe is in flight. Its Style is intentionally empty so View() returns
+// a bare frame rune: the frame is written into plain table cells, which the
+// bubbles table truncates without ANSI awareness, so it must carry no escapes.
+func newProbeSpinner() spinner.Model {
+	return spinner.New(spinner.WithSpinner(spinner.Dot))
+}
+
+// ProbeState describes whether an agent version/OS probe for a device row is in
+// flight, succeeded, or failed. The zero value (ProbeNone) renders the version
+// columns exactly as before, so non-probing pickers are unaffected.
+type ProbeState int
+
+const (
+	ProbeNone    ProbeState = iota // no probe semantics: show version text as-is
+	ProbePending                   // probe in flight: show an animated spinner
+	ProbeOK                        // probe succeeded: show the version
+	ProbeFailed                    // probe failed: show the error glyph
+)
+
+// ProbeFailedGlyph marks a row whose agent probe failed and for which no version
+// is cached. It is rendered red by the view layer (see ColorizeProbeGlyphs); the
+// cell value itself is kept as a plain glyph so the table's non-ANSI-aware
+// truncation stays correct.
+const ProbeFailedGlyph = "▲"
+
+// probeFailedColored wraps the failure glyph in a red foreground that resets
+// only the foreground (\x1b[39m), not the whole SGR state. A full reset would
+// clear a selected row's background for the rest of the line; resetting just the
+// foreground keeps the highlight intact. 196 matches the red used elsewhere in
+// the device tables.
+const probeFailedColored = "\x1b[38;5;196m" + ProbeFailedGlyph + "\x1b[39m"
+
+// ColorizeProbeGlyphs colors the (plain-text) failure glyph red in an
+// already-rendered table view. The glyph is kept plain inside table cells so the
+// table's non-ANSI-aware truncation stays correct; color is applied here, after
+// layout, so it never affects column widths.
+func ColorizeProbeGlyphs(view string) string {
+	return strings.ReplaceAll(view, ProbeFailedGlyph, probeFailedColored)
+}
+
+// probeColumnValue renders an Agent/OS cell for the given probe state. While
+// pending it shows the current spinner frame; on failure with no cached version
+// it shows the error glyph; otherwise it shows the version text (a cached
+// version is preserved even after a later transient failure).
+func probeColumnValue(state ProbeState, version, frame string) string {
+	switch state {
+	case ProbePending:
+		return frame
+	case ProbeFailed:
+		if version == "" {
+			return ProbeFailedGlyph
+		}
+	}
+	return version
+}
 
 // PickerItem represents a selectable row in the device picker.
 type PickerItem struct {
@@ -24,6 +82,15 @@ type PickerItem struct {
 	OSVersion    string
 	Provisioned  string // "Provisioned" or "Unprovisioned" when known, empty otherwise
 	Hint         string // optional footer text shown when this item is highlighted
+
+	// Probe reflects whether the agent version/OS probe for this row is in
+	// flight (ProbePending), done (ProbeOK), or failed (ProbeFailed). The zero
+	// value (ProbeNone) renders the version columns verbatim.
+	Probe ProbeState
+	// ProbeFrame is the spinner frame shown in the Agent/OS columns while
+	// Probe == ProbePending. The owning model refreshes it on every spinner
+	// tick; it is ignored for every other probe state.
+	ProbeFrame string
 
 	// Section, when non-empty, groups this item under a non-selectable header
 	// row bearing the section name. Sections are rendered in the order they
@@ -110,6 +177,7 @@ type PickerModel struct {
 	// picker exactly.
 	rowItem      []int
 	table        BubbleTable
+	spinner      spinner.Model // animates Agent/OS cells while probes are pending
 	columns      []pickerColumnDef
 	fixedColumns bool
 	legend       string // optional glyph legend rendered under the table
@@ -133,6 +201,7 @@ func NewPicker() PickerModel {
 		Title:        "Select a device",
 		seenIdx:      make(map[string]int),
 		table:        newPickerTable(),
+		spinner:      newProbeSpinner(),
 		columns:      pickerDeviceColumnDefs,
 		fixedColumns: true,
 		legend:       DeviceTableLegend,
@@ -147,6 +216,7 @@ func NewPickerWithTitle(title string) PickerModel {
 		Title:    title,
 		seenIdx:  make(map[string]int),
 		table:    newPickerTable(),
+		spinner:  newProbeSpinner(),
 		scanning: true,
 	}
 	m.refreshTable()
@@ -166,10 +236,30 @@ func NewPickerWithTitleAndColumns(title string, columns []PickerColumn) PickerMo
 	return m
 }
 
-func (m PickerModel) Init() tea.Cmd { return nil }
+func (m PickerModel) Init() tea.Cmd { return m.spinner.Tick }
+
+// anyProbePending reports whether any item still has a probe in flight, i.e.
+// whether the spinner has anything to animate.
+func (m PickerModel) anyProbePending() bool {
+	for i := range m.items {
+		if m.items[i].Probe == ProbePending {
+			return true
+		}
+	}
+	return false
+}
 
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		// Re-render so pending rows pick up the new frame; skip the rebuild
+		// when nothing is animating, but keep the tick loop alive cheaply.
+		if m.anyProbePending() {
+			m.refreshTable()
+		}
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -354,7 +444,7 @@ func (m PickerModel) View() string {
 		return sb.String()
 	}
 
-	sb.WriteString(m.tableView() + "\n")
+	sb.WriteString(ColorizeProbeGlyphs(m.tableView()) + "\n")
 
 	if m.legend != "" {
 		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")
@@ -513,14 +603,14 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 		title:    "Agent",
 		minWidth: 7,
 		value: func(item PickerItem) string {
-			return item.AgentVersion
+			return probeColumnValue(item.Probe, item.AgentVersion, item.ProbeFrame)
 		},
 	},
 	{
 		title:    "OS",
 		minWidth: 4,
 		value: func(item PickerItem) string {
-			return item.OSVersion
+			return probeColumnValue(item.Probe, item.OSVersion, item.ProbeFrame)
 		},
 	},
 	{
@@ -614,6 +704,15 @@ func (m *PickerModel) refreshTable() {
 }
 
 func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
+	// Stamp the current spinner frame onto pending rows so the Agent/OS columns
+	// animate as the table is rebuilt.
+	frame := m.spinner.View()
+	for i := range m.items {
+		if m.items[i].Probe == ProbePending {
+			m.items[i].ProbeFrame = frame
+		}
+	}
+
 	// Sort items for a stable, predictable display order. When SortKey is set,
 	// it takes precedence; otherwise sort by name (using DedupKey if present).
 	sort.SliceStable(m.items, func(i, j int) bool {
