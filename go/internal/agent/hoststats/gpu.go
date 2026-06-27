@@ -2,12 +2,22 @@ package hoststats
 
 import (
 	"context"
+	"io"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// maxGPUToolOutput caps how much stdout we read from nvidia-smi/tegrastats. The
+// real tools emit a few hundred bytes; the cap bounds agent memory if a rogue or
+// misbehaving binary ahead of the real one on $PATH streams unbounded output.
+const maxGPUToolOutput = 64 << 10 // 64 KiB
+
+// maxGPUNameLen bounds the GPU name stored from tool output so a pathological
+// name cannot corrupt downstream proto/TUI rendering.
+const maxGPUNameLen = 64
 
 // GPUStat is a single GPU's instantaneous utilization snapshot.
 type GPUStat struct {
@@ -21,8 +31,10 @@ type GPUStat struct {
 }
 
 // ParseNvidiaSMI parses CSV output of:
-//   nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw
-//              --format=csv,noheader,nounits
+//
+//	nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw
+//	           --format=csv,noheader,nounits
+//
 // Memory fields are MiB. Missing/[N/A] numeric fields are treated as zero/nil.
 func ParseNvidiaSMI(csv string) []GPUStat {
 	var out []GPUStat
@@ -38,7 +50,11 @@ func ParseNvidiaSMI(csv string) []GPUStat {
 		if len(f) < 5 {
 			continue
 		}
-		g := GPUStat{Name: f[1]}
+		name := f[1]
+		if len(name) > maxGPUNameLen {
+			name = name[:maxGPUNameLen]
+		}
+		g := GPUStat{Name: name}
 		if v, err := strconv.ParseUint(f[0], 10, 32); err == nil {
 			g.Index = uint32(v)
 		}
@@ -106,9 +122,9 @@ func SampleGPU(ctx context.Context) []GPUStat {
 	if path, err := exec.LookPath("nvidia-smi"); err == nil {
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(cctx, path,
+		out, err := runBounded(exec.CommandContext(cctx, path,
 			"--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
-			"--format=csv,noheader,nounits").Output()
+			"--format=csv,noheader,nounits"))
 		if err == nil {
 			if gpus := ParseNvidiaSMI(string(out)); len(gpus) > 0 {
 				return gpus
@@ -119,10 +135,30 @@ func SampleGPU(ctx context.Context) []GPUStat {
 		// tegrastats streams; --interval + a short deadline yields one line.
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		out, _ := exec.CommandContext(cctx, path, "--interval", "500", "--count", "1").Output()
+		out, _ := runBounded(exec.CommandContext(cctx, path, "--interval", "500", "--count", "1"))
 		if line := strings.TrimSpace(string(out)); line != "" {
 			return ParseTegrastats(line)
 		}
 	}
 	return nil
+}
+
+// runBounded starts cmd and returns up to maxGPUToolOutput bytes of its stdout.
+// It mirrors (*Cmd).Output but reads through an io.LimitReader so a subprocess
+// cannot stream unbounded data into agent memory; the command's context deadline
+// still bounds wall-clock time.
+func runBounded(cmd *exec.Cmd) ([]byte, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(stdout, maxGPUToolOutput))
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return data, readErr
+	}
+	return data, waitErr
 }

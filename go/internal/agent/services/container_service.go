@@ -908,7 +908,13 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 // and memory for `wendy device top`. Host metrics are best-effort: a failed
 // /proc read or absent GPU tool yields zero/empty fields rather than an error,
 // so the command degrades gracefully on constrained hosts.
+//
+// Like every other method on this service, access is gated by the agent's gRPC
+// transport (the device's trusted control channel); there is no per-RPC
+// authorization layer, so the read-only host topology this returns is no more
+// exposed than the existing container-stats RPCs. The call is logged for audit.
 func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetResourceStatsRequest) (*agentpb.GetResourceStatsResponse, error) {
+	s.logger.Info("GetResourceStats")
 	containers, err := s.containerd.GetResourceStats(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "getting resource stats: %v", err)
@@ -933,11 +939,16 @@ func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetR
 }
 
 // GetContainerPorts returns the listening TCP and bound UDP sockets for the
-// given app, read from each of its containers' network namespaces.
+// given app, read from each of its containers' network namespaces. Loopback-bound
+// ports are intentionally included so operators can see services that are exposed
+// only on localhost. Access is gated by the agent's gRPC transport, the same
+// trusted control channel that secures every other method here; the call is
+// logged for audit.
 func (s *ContainerService) GetContainerPorts(ctx context.Context, req *agentpb.GetContainerPortsRequest) (*agentpb.GetContainerPortsResponse, error) {
 	if req.GetAppName() == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
 	}
+	s.logger.Info("GetContainerPorts", zap.String("app_name", req.GetAppName()))
 	ports, err := s.containerd.GetListeningPorts(ctx, req.GetAppName())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "getting container ports: %v", err)

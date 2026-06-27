@@ -422,10 +422,22 @@ func (m topModel) Init() tea.Cmd {
 }
 
 func waitForTopStats(ch chan topStatsMsg) tea.Cmd {
-	return func() tea.Msg { msg, ok := <-ch; if !ok { return nil }; return msg }
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msg
+	}
 }
 func waitForTopContainers(ch chan topContainersMsg) tea.Cmd {
-	return func() tea.Msg { msg, ok := <-ch; if !ok { return nil }; return msg }
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msg
+	}
 }
 
 // selectedAppName returns the app the cursor is on, walking up from a service

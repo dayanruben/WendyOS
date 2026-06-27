@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -14,6 +15,16 @@ import (
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// maxProcNetBytes caps how much of a /proc/<pid>/net/* table is read per poll. On
+// a host with tens of thousands of sockets these virtual files can grow large;
+// the cap bounds agent memory at the cost of truncating the socket list on
+// pathological hosts.
+const maxProcNetBytes = 8 << 20 // 8 MiB
+
+// maxFDsPerPID caps how many /proc/<pid>/fd entries are scanned per process so a
+// process with a runaway number of open descriptors cannot stall a poll.
+const maxFDsPerPID = 1 << 16 // 65536
 
 // listeningPort is a single listening/bound socket parsed from /proc/<pid>/net/*.
 type listeningPort struct {
@@ -183,7 +194,7 @@ func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agen
 		// socket tables are identical regardless of which PID we read.
 		netPID := pids[0]
 		for _, p := range protocols {
-			data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/%s", netPID, p.name))
+			data, err := readBounded(fmt.Sprintf("/proc/%d/net/%s", netPID, p.name), maxProcNetBytes)
 			if err != nil {
 				continue
 			}
@@ -238,12 +249,22 @@ func containerPIDs(ctx context.Context, task containerd.Task) []uint32 {
 func appSocketInodes(pids []uint32) map[string]struct{} {
 	inodes := make(map[string]struct{})
 	for _, pid := range pids {
+		// task.Pids() reports host-namespace PIDs, so a container process is
+		// never the host init (1) or the kernel (0). Skip those defensively in
+		// case containerd returns an unexpected value, to avoid attributing the
+		// host's own sockets to the app.
+		if pid <= 1 {
+			continue
+		}
 		fdDir := fmt.Sprintf("/proc/%d/fd", pid)
 		entries, err := os.ReadDir(fdDir)
 		if err != nil {
 			continue
 		}
-		for _, e := range entries {
+		for i, e := range entries {
+			if i >= maxFDsPerPID {
+				break
+			}
 			link, err := os.Readlink(fmt.Sprintf("%s/%s", fdDir, e.Name()))
 			if err != nil {
 				continue
@@ -254,6 +275,18 @@ func appSocketInodes(pids []uint32) map[string]struct{} {
 		}
 	}
 	return inodes
+}
+
+// readBounded reads up to max bytes from path. /proc virtual files report a zero
+// size, so a plain ReadFile would buffer the entire (potentially huge) table;
+// the LimitReader bounds the allocation.
+func readBounded(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, max))
 }
 
 // socketInode extracts the inode from an fd symlink target like "socket:[12345]".

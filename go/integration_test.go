@@ -205,6 +205,14 @@ func (m *statefulContainerdClient) GetContainerStats(_ context.Context) ([]*agen
 	return nil, nil
 }
 
+func (m *statefulContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+
+func (m *statefulContainerdClient) GetListeningPorts(_ context.Context, _ string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
+}
+
 func (m *statefulContainerdClient) GetContainerMetrics(_ context.Context, _ string) (services.ContainerMetrics, error) {
 	return services.ContainerMetrics{}, nil
 }
