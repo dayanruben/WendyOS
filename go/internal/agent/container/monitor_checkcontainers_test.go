@@ -76,6 +76,12 @@ func (f *fakeContainerd) ContainerIDsForApp(ctx context.Context, appID string) (
 func (f *fakeContainerd) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error) {
 	return nil, nil
 }
+func (f *fakeContainerd) GetResourceStats(context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+func (f *fakeContainerd) GetListeningPorts(context.Context, string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
+}
 func (f *fakeContainerd) GetContainerMetrics(ctx context.Context, appName string) (services.ContainerMetrics, error) {
 	return services.ContainerMetrics{}, nil
 }

@@ -48,6 +48,13 @@ func (f *fakeContainerd) StageChunk(ctx context.Context, h [32]byte, data []byte
 	return nil
 }
 
+func (f *fakeContainerd) GetResourceStats(context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+func (f *fakeContainerd) GetListeningPorts(context.Context, string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
+}
+
 func TestQueryChunksReturnsMissing(t *testing.T) {
 	fake := newFakeContainerd()
 	fake.missingFn = func(_ context.Context, hs [][32]byte) ([][32]byte, error) {

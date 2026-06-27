@@ -2494,6 +2494,41 @@ func (c *Client) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerSta
 	return result, nil
 }
 
+// cpuUsageNanos returns cumulative user+sys CPU nanoseconds, clamped at 0.
+func cpuUsageNanos(m services.ContainerMetrics) uint64 {
+	total := m.UserCPUNanos + m.SysCPUNanos
+	if total < 0 {
+		return 0
+	}
+	return uint64(total)
+}
+
+// GetResourceStats returns cumulative per-container CPU nanoseconds and current
+// memory usage, keyed by container ID (matching GetContainerStats). The client
+// computes CPU percentages from deltas between consecutive samples.
+func (c *Client) GetResourceStats(ctx context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	ctx = c.withNamespace(ctx)
+
+	containers, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []*agentpb.ResourceContainerStats
+	for _, ctr := range containers {
+		stat := &agentpb.ResourceContainerStats{AppName: ctr.ID()}
+		if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
+			if metric, metErr := task.Metrics(ctx); metErr == nil {
+				m := extractContainerMetrics(metric)
+				stat.CpuUsageNanos = cpuUsageNanos(m)
+				stat.MemoryBytes = m.MemBytes
+			}
+		}
+		result = append(result, stat)
+	}
+	return result, nil
+}
+
 func (c *Client) GetContainerMetrics(ctx context.Context, appName string) (services.ContainerMetrics, error) {
 	ctx = c.withNamespace(ctx)
 	container, err := c.client.LoadContainer(ctx, appName)
