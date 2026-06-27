@@ -1,0 +1,5 @@
+{
+  "title": "Integrations",
+  "description": "Connect Wendy to the robotics tools you already use",
+  "pages": ["index", "ros2", "foxglove"]
+}

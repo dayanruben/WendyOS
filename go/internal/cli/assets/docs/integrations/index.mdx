@@ -1,0 +1,49 @@
+---
+title: Integrations
+description: Connect Wendy to the robotics tools you already use — inspect live ROS 2 systems and visualize them in Foxglove.
+---
+
+import { Network, MonitorPlay } from 'lucide-react';
+
+Wendy meets your robotics stack where it already lives. Deploy an app, then reach
+into its running ROS 2 graph and stream it to the tools your team uses every day —
+all over the same secure, mutually-authenticated connection the CLI already holds,
+with no SSH and no agent setup on the device.
+
+<Cards>
+  <Card icon={<Network />} title="Wendy for ROS 2" href="/docs/integrations/ros2" className="h-full">
+    Inspect and debug live ROS 2 systems on a device straight from the CLI: list
+    nodes, topics, and services; echo messages; watch publish rates; render the
+    graph; read and set parameters; and record rosbags — no SSH, no `setup.bash`.
+  </Card>
+
+  <div className="relative flex flex-col">
+    <span className="absolute -top-px right-0 z-10 bg-orange-500 text-white text-xs px-2 py-1 font-medium">Coming Soon</span>
+    <Card icon={<MonitorPlay />} title="Wendy for Foxglove" href="/docs/integrations/foxglove" className="h-full">
+      Bridge a device's live ROS 2 topics into Foxglove Studio for real-time
+      visualization. The CLI hosts a Foxglove WebSocket server on your machine and
+      forwards messages over the existing secure link — your data never leaves your
+      laptop to a third party.
+    </Card>
+  </div>
+</Cards>
+
+## How integrations work
+
+Both integrations build on the same foundation. When you deploy a ROS 2 app —
+with a `frameworks.ros2` block in `wendy.json`, or a `network_mode: host` service
+in a [multi-container deployment](/docs/guides/multi-app-deployments) — the agent
+discovers the app's containers and starts a lightweight CLI sidecar in the same
+DDS domain. Inspection and bridging commands run inside that sidecar over the
+CLI's existing mTLS gRPC connection.
+
+That means you get full `ros2` tooling and live visualization without opening a
+shell on the device, sourcing environment files, or exposing any extra ports.
+
+## Get started
+
+1. Deploy a ROS 2 app. See [Multi-app deployments](/docs/guides/multi-app-deployments)
+   for a complete talker/listener stack and the host-networking entitlement ROS 2
+   discovery needs.
+2. Inspect it live with [Wendy for ROS 2](/docs/integrations/ros2).
+3. Visualize it in [Foxglove](/docs/integrations/foxglove) *(coming soon)*.
