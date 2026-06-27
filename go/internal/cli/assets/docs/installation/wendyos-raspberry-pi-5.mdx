@@ -51,6 +51,14 @@ Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installatio
     Select **Raspberry Pi 5** and then select your drive. You'll begin a process of downloading a copy of WendyOS to your SD card. This could take a while but soon you'll be prompted to put WendyOS on the micro SD card.
 
     You'll need to enter your user's administrator password for this to continue.
+
+    During the install, the CLI also prompts you to set up first-boot provisioning. You can:
+
+    - **Connect to WiFi on first boot** — pre-seed one or more networks so the device joins WiFi the moment it powers on, no monitor or keyboard required.
+    - **Install important updates on first boot** — the device fetches and applies any critical OS updates automatically the first time it boots.
+    - **Securely link the device to Wendy Cloud or your developer machine** — pre-enroll the device (`--pre-enroll`, requires `wendy auth login`) so it provisions mTLS certificates and links to Wendy Cloud on first boot. It links to your developer machine once you connect it over USB-C and run `wendy discover`.
+
+    Each of these is optional and can also be configured after the device boots. See [`wendy os install`](/docs/advanced/clients/wendy-cli/commands/os/install) for all the flags.
   </Step>
 
   <Step>
