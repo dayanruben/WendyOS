@@ -393,7 +393,7 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 
 	var assets []*cloudpb.Asset
 	if isInteractiveTerminal() {
-		prog := tea.NewProgram(tui.NewSpinner("Fetching devices from cloud..."))
+		prog := tui.NewProgressProgram(tui.NewSpinner("Fetching devices from cloud..."))
 		var fetchErr error
 		go func() {
 			assets, fetchErr = fetchCloudAssets(ctx, auth)

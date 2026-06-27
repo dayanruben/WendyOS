@@ -332,7 +332,7 @@ func progressModelUserCancelled(model tea.Model) bool {
 }
 
 func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.WendyContainerService_CreateContainerWithProgressClient) error {
-	prog := tea.NewProgram(tui.NewProgress("Pulling image on device...").WithoutErrorView())
+	prog := tui.NewProgressProgram(tui.NewProgress("Pulling image on device...").WithoutErrorView())
 
 	var (
 		createErr error

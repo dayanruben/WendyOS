@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -1737,7 +1736,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 
 			if isInteractiveTerminal() && !jsonOutput {
 				s := tui.NewSpinner("Uploading agent binary...")
-				p := tea.NewProgram(s)
+				p := tui.NewProgressProgram(s)
 
 				go func() {
 					uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)

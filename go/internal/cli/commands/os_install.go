@@ -542,7 +542,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// bmap failures fall back silently; suppress the TUI error render
 		writeProg = writeProg.WithoutErrorView()
 	}
-	wp := tea.NewProgram(writeProg)
+	wp := tui.NewProgressProgram(writeProg)
 
 	go func() {
 		var writeErr error
@@ -610,7 +610,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 		defer fallbackCloser.Close()
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
-		fp := tea.NewProgram(fallbackProg)
+		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
 			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
 				if fallbackSize > 0 {
@@ -878,7 +878,7 @@ func downloadImage(img *imageInfo) (string, error) {
 	}
 
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	contentLength, supportsRanges := probeRangeSupport(client, img)
@@ -1282,7 +1282,7 @@ func measureGzipImage(path string, progress func(read, total int64)) (int64, err
 // the user quits the bar.
 func measureImageWithProgress(stream *imageStream) error {
 	prog := tui.NewProgress("Determining image size (one-time per image)...")
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	go func() {
@@ -2013,7 +2013,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	// Download with progress bar.
 
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 
 	var fwPath string
 	var dlErr error
@@ -2065,7 +2065,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	fmt.Println()
 	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
-	fp := tea.NewProgram(flashProg)
+	fp := tui.NewProgressProgram(flashProg)
 
 	go func() {
 		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {

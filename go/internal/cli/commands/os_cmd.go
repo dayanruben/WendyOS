@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -244,7 +243,7 @@ so the device can download it directly.`,
 
 			if isInteractiveTerminal() {
 				spin := tui.NewSpinner("Downloading update...")
-				p := tea.NewProgram(spin)
+				p := tui.NewProgressProgram(spin)
 
 				go func() {
 					for {
@@ -445,7 +444,7 @@ func waitForDeviceOnline(ctx context.Context, host string) error {
 	}
 
 	spin := tui.NewSpinner("Waiting for device to come back online...")
-	p := tea.NewProgram(spin)
+	p := tui.NewProgressProgram(spin)
 	go func() {
 		if err := pollDeviceOnline(ctx, addr); err != nil {
 			p.Send(tui.SpinnerDoneMsg{Err: err})
@@ -827,7 +826,7 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 
 	total := resp.ContentLength
 	prog := tui.NewProgress("Downloading artifact...")
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 
 	go func() {
 		var downloaded int64

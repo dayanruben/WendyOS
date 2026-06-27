@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -549,7 +548,7 @@ func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	prog := tea.NewProgram(tui.NewSpinner("Fetching template registry..."))
+	prog := tui.NewProgressProgram(tui.NewSpinner("Fetching template registry..."))
 
 	var (
 		meta     *repoMeta
@@ -592,7 +591,7 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	prog := tea.NewProgram(tui.NewProgress(title).WithoutErrorView())
+	prog := tui.NewProgressProgram(tui.NewProgress(title).WithoutErrorView())
 
 	var (
 		files    map[string][]byte

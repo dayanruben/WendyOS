@@ -53,6 +53,30 @@ Each model gets the same four touch-points:
 4. `View()` appends `m.hints.view()` **only while the operation is running** —
    not on the done/error render paths — so final output stays clean.
 
+### Clearing the hint on interrupt
+
+Hiding the hint in `View()` is sufficient only on Bubble Tea's **graceful**
+shutdown path: when the model returns `tea.Quit`, Bubble Tea renders the final
+(hint-free) `View()` and its renderer emits `EraseScreenBelow` to clear the now
+shorter frame.
+
+On the **killed** path — `tea.InterruptMsg` (raised by SIGINT or an explicit
+interrupt), or any error returned from `Program.Run()` — Bubble Tea skips that
+final render entirely and its `kill()` erases only the bottom line. For a
+single-line spinner that was invisible; with the extra hint line it left the
+hint (and the spinner) lingering on screen above the next output.
+
+Fix (`tui.InterruptFilter` + `tui.NewProgressProgram` in `interrupt.go`): install
+a `tea.WithFilter` that rewrites `tea.InterruptMsg` into a `Ctrl+C` key press.
+Every progress model already treats `Ctrl+C` as a graceful quit (it sets its
+done/cancelled state and returns `tea.Quit`), so an interrupt now takes the
+proven graceful-clear path and the hint never lingers. This makes a SIGINT
+behave exactly like a `Ctrl+C` keypress, which a raw-mode terminal already
+delivers as a `KeyMsg` (never a signal); callers already detect cancellation via
+model state (`Done()` / `Err()`), not via the `Run()` error. All call sites that
+run a hint-bearing model construct their program with `tui.NewProgressProgram`
+instead of `tea.NewProgram`; picker/menu/non-hint models are left untouched.
+
 ## Testing
 
 `hints_test.go`:
@@ -63,6 +87,14 @@ Each model gets the same four touch-points:
   `""` for an empty one.
 - Each model's `View()` includes the hint line while running and omits it once
   `done`.
+
+`interrupt_test.go`:
+
+- `InterruptFilter` rewrites `tea.InterruptMsg` into a `Ctrl+C` `KeyMsg` and
+  passes other messages through unchanged.
+- For every hint-bearing model, feeding the filtered interrupt makes the model
+  quit (`tea.Quit`) and produces a final `View()` with no hint — so the
+  graceful-clear path runs and nothing lingers.
 
 ## Out of scope
 

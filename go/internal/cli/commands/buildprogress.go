@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
@@ -64,7 +63,7 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure bo
 
 	// Interactive: run the steps model while the build streams events to it.
 	m := tui.NewBuildStepsModel(title)
-	prog := tea.NewProgram(m)
+	prog := tui.NewProgressProgram(m)
 	parser := tui.NewBuildParser(func(e tui.BuildStepEvent) {
 		prog.Send(tui.BuildStepMsg(e))
 	})

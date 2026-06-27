@@ -163,7 +163,7 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions, includeL
 		return tui.SpinnerDoneMsg{Result: collection, Err: err}
 	}
 
-	p := tea.NewProgram(s)
+	p := tui.NewProgressProgram(s)
 	go func() {
 		p.Send(work())
 	}()

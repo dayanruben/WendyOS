@@ -434,7 +434,7 @@ func buildServicesParallel(
 	if isInteractiveTerminal() {
 		title := fmt.Sprintf("Building %d service(s)...", len(names))
 		m := tui.NewMultiSpinner(title, names)
-		prog = tea.NewProgram(m)
+		prog = tui.NewProgressProgram(m)
 	}
 
 	var wg sync.WaitGroup
