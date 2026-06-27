@@ -124,7 +124,7 @@ func (m BuildStepsModel) View() string {
 		label := truncateLabel(r.display, buildStepLabelWidth)
 		switch r.status {
 		case BuildStepRunning:
-			sb.WriteString(fmt.Sprintf("  %s %s %s\n", m.spinner.View(), label, bsDim.Render(elapsedNote(r))))
+			sb.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), label))
 		case BuildStepCached:
 			sb.WriteString(fmt.Sprintf("  %s %s %s\n", bsCache.Render("⚡"), label, bsDim.Render("cached")))
 		case BuildStepDone:
@@ -138,10 +138,6 @@ func (m BuildStepsModel) View() string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
-}
-
-func elapsedNote(r buildRow) string {
-	return "" // running steps show only the spinner; duration is shown on DONE.
 }
 
 func truncateLabel(s string, max int) string {
