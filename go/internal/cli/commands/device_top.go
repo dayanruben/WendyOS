@@ -7,11 +7,15 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
+	bubbleTable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -343,7 +347,252 @@ func newTopCmd() *cobra.Command {
 	return cmd
 }
 
-// TEMP: replaced by full implementation in Task 8.
+type topStatsMsg struct {
+	resp *agentpb.GetResourceStatsResponse
+	err  error
+}
+
+type topContainersMsg struct {
+	containers []*agentpb.AppContainer
+	err        error
+}
+
+type topModel struct {
+	conn     *grpcclient.AgentConnection
+	ctx      context.Context
+	interval time.Duration
+
+	statsCh      chan topStatsMsg
+	containersCh chan topContainersMsg
+
+	prev, cur        topSample
+	havePrev         bool
+	cachedContainers []*agentpb.AppContainer
+
+	table     tui.BubbleTable
+	sortByCPU bool
+	width     int
+	height    int
+	flash     string
+}
+
+func newTopModel(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) topModel {
+	return topModel{
+		conn:         conn,
+		ctx:          ctx,
+		interval:     interval,
+		statsCh:      make(chan topStatsMsg, 2),
+		containersCh: make(chan topContainersMsg, 2),
+		table:        tui.NewBubbleTable(true, nil),
+	}
+}
+
+func (m topModel) Init() tea.Cmd {
+	go m.runStatsPoll()
+	go m.runContainersPoll()
+	return tea.Batch(waitForTopStats(m.statsCh), waitForTopContainers(m.containersCh))
+}
+
+func waitForTopStats(ch chan topStatsMsg) tea.Cmd {
+	return func() tea.Msg { msg, ok := <-ch; if !ok { return nil }; return msg }
+}
+func waitForTopContainers(ch chan topContainersMsg) tea.Cmd {
+	return func() tea.Msg { msg, ok := <-ch; if !ok { return nil }; return msg }
+}
+
+func (m topModel) runStatsPoll() {
+	ticker := time.NewTicker(m.interval)
+	defer ticker.Stop()
+	fetch := func() bool {
+		resp, err := sampleResourceStats(m.ctx, m.conn)
+		select {
+		case m.statsCh <- topStatsMsg{resp: resp, err: err}:
+		case <-m.ctx.Done():
+		}
+		return err == nil
+	}
+	if !fetch() {
+		return
+	}
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			if !fetch() {
+				return
+			}
+		}
+	}
+}
+
+func (m topModel) runContainersPoll() {
+	ticker := time.NewTicker(m.interval)
+	defer ticker.Stop()
+	fetch := func() {
+		containers, err := listAppContainers(m.ctx, m.conn)
+		select {
+		case m.containersCh <- topContainersMsg{containers: containers, err: err}:
+		case <-m.ctx.Done():
+		}
+	}
+	fetch()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			fetch()
+		}
+	}
+}
+
+func (m *topModel) refreshTable() {
+	cpuCount := uint32(1)
+	if m.cur.host != nil && m.cur.host.GetCpuCount() > 0 {
+		cpuCount = m.cur.host.GetCpuCount()
+	}
+	cpuByID := map[string]float64{}
+	if m.havePrev {
+		for id := range m.cur.containers {
+			cpuByID[id] = containerCPUPercent(m.prev, m.cur, id, cpuCount)
+		}
+	}
+	rows := buildTopRows(m.cachedContainers, cpuByID, m.cur.mem, m.sortByCPU)
+
+	cols := []bubbleTable.Column{
+		{Title: "", Width: 2},
+		{Title: "App", Width: 30},
+		{Title: "CPU%", Width: 8},
+		{Title: "MEM", Width: 10},
+	}
+	trows := make([]bubbleTable.Row, len(rows))
+	for i, r := range rows {
+		icon := " "
+		if !r.isSubrow {
+			icon = "●"
+		}
+		cpu := "—"
+		if r.hasCPU && m.havePrev {
+			cpu = fmt.Sprintf("%.1f", r.cpuPercent)
+		}
+		trows[i] = bubbleTable.Row{icon, r.displayName, cpu, formatBytes(r.memBytes)}
+	}
+	m.table.SetColumns(cols)
+	m.table.SetRows(trows)
+	if m.height > 0 {
+		tableH := m.height - 7
+		if tableH < 1 {
+			tableH = 1
+		}
+		m.table.SetHeight(min(len(trows)+1, tableH))
+	}
+}
+
+func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		m.refreshTable()
+		return m, cmd
+
+	case topStatsMsg:
+		if msg.err != nil {
+			m.flash = userFacingGRPCError(msg.err)
+			return m, waitForTopStats(m.statsCh)
+		}
+		if m.cur.host != nil || len(m.cur.containers) > 0 {
+			m.prev = m.cur
+			m.havePrev = true
+		}
+		m.cur = newTopSample(msg.resp, time.Now().UnixNano())
+		m.refreshTable()
+		return m, waitForTopStats(m.statsCh)
+
+	case topContainersMsg:
+		if msg.err == nil {
+			m.cachedContainers = msg.containers
+			m.refreshTable()
+		}
+		return m, waitForTopContainers(m.containersCh)
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "c":
+			m.sortByCPU = true
+			m.refreshTable()
+			return m, nil
+		case "m":
+			m.sortByCPU = false
+			m.refreshTable()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.table, cmd = m.table.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+func (m topModel) View() string {
+	var sb strings.Builder
+	// Header panel.
+	if m.cur.host != nil {
+		hostCPU := 0.0
+		if m.havePrev {
+			hostCPU = hostCPUPercent(m.prev, m.cur)
+		}
+		sb.WriteString(m.viewLine(fmt.Sprintf("  CPU %.1f%%   MEM %s / %s",
+			hostCPU,
+			formatBytes(m.cur.host.GetMemTotalBytes()-m.cur.host.GetMemAvailableBytes()),
+			formatBytes(m.cur.host.GetMemTotalBytes()))) + "\n")
+		for _, g := range m.cur.host.GetGpus() {
+			line := fmt.Sprintf("  GPU%d %s  %.0f%%  %s / %s", g.GetIndex(), g.GetName(),
+				g.GetUtilPercent(), formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+			if g.TempC != nil {
+				line += fmt.Sprintf("  %.0f°C", *g.TempC)
+			}
+			sb.WriteString(m.viewLine(line) + "\n")
+		}
+		if len(m.cur.host.GetGpus()) == 0 {
+			sb.WriteString(m.viewLine(dashDimStyle.Render("  No GPU detected")) + "\n")
+		}
+	}
+	sortLabel := "mem"
+	if m.sortByCPU {
+		sortLabel = "cpu"
+	}
+	sb.WriteString(m.viewLine(dashDimStyle.Render(
+		fmt.Sprintf("  ↑/↓ navigate  m sort by mem  c sort by cpu  [sort: %s]  q quit", sortLabel))) + "\n\n")
+	if len(m.table.View()) == 0 {
+		sb.WriteString(m.viewLine(dashDimStyle.Render("  Sampling…")) + "\n")
+	} else {
+		sb.WriteString(m.table.View() + "\n")
+	}
+	if m.flash != "" {
+		sb.WriteString(m.viewLine(dashMetricVal.Render("  "+m.flash)) + "\n")
+	}
+	return sb.String()
+}
+
+func (m topModel) viewLine(line string) string {
+	if m.width <= 0 {
+		return line
+	}
+	return tui.CropANSIView(line, 0, m.width)
+}
+
 func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) error {
-	return nil
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	m := newTopModel(cctx, conn, interval)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
 }
