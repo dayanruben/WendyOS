@@ -12,6 +12,12 @@ import (
 // so a `cpus` of "1.5" becomes quota=150000 over period=100000.
 const cpuCFSPeriod uint64 = 100000
 
+// maxPIDsLimit is the upper bound accepted for an explicit `pids` limit. It
+// matches the common Linux kernel.pid_max ceiling; above it the cgroup pids
+// controller may clamp to "max" (unbounded), silently defeating the fork-bomb
+// guard, so we reject such values at validation time instead.
+const maxPIDsLimit int64 = 4194304
+
 // ResourceLimits declares the resource ceilings the agent enforces on a
 // container via cgroups. All fields are optional; an omitted field leaves that
 // resource unbounded (the historical behaviour). Limits may be set at the app
@@ -90,11 +96,23 @@ func (r *ResourceLimits) CPUQuota() (*int64, *uint64, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("cpus %q is not a valid number of cores (e.g. \"0.5\", \"1\", \"2\")", r.CPUs)
 	}
+	// ParseFloat accepts "Inf"/"NaN" without error; reject non-finite values
+	// explicitly (NaN also slips past the cores<=0 check below).
+	if math.IsInf(cores, 0) || math.IsNaN(cores) {
+		return nil, nil, fmt.Errorf("cpus %q is not a finite number of cores", r.CPUs)
+	}
 	if cores <= 0 {
 		return nil, nil, fmt.Errorf("cpus must be a positive number of cores, got %q", r.CPUs)
 	}
 	period := cpuCFSPeriod
-	quota := int64(cores*float64(period) + 0.5) // round to nearest microsecond
+	// Guard the quota against int64 overflow before casting: a value like
+	// "1e308" would otherwise wrap to a tiny or negative CFS quota and silently
+	// throttle the container to near-zero CPU (or be treated as unlimited).
+	quotaF := cores*float64(period) + 0.5 // round to nearest microsecond
+	if quotaF > float64(math.MaxInt64) {
+		return nil, nil, fmt.Errorf("cpus %q is too large (overflows the maximum CFS quota)", r.CPUs)
+	}
+	quota := int64(quotaF)
 	return &quota, &period, nil
 }
 
@@ -121,24 +139,52 @@ func (r *ResourceLimits) validate(prefix string) error {
 		return fmt.Errorf("%s.%w", prefix, err)
 	}
 	// nil means "use the default cap"; an explicit value must be a positive
-	// process count. Reject 0 (and negatives) with a clear hint rather than
-	// silently treating 0 as "unset" — schema enforces minimum:1, but a legacy
-	// or hand-rolled config could still reach the agent.
-	if r.PIDs != nil && *r.PIDs < 1 {
-		return fmt.Errorf("%s.pids must be a positive process count (omit the field to use the default cap), got %d", prefix, *r.PIDs)
+	// process count within the kernel's pid ceiling. Reject 0 (and negatives)
+	// with a clear hint rather than silently treating 0 as "unset" — schema
+	// enforces minimum:1, but a legacy or hand-rolled config could still reach
+	// the agent. Reject absurdly large values too: above kernel.pid_max the
+	// cgroup may clamp to "max" and silently defeat the fork-bomb guard.
+	if r.PIDs != nil {
+		if *r.PIDs < 1 {
+			return fmt.Errorf("%s.pids must be a positive process count (omit the field to use the default cap), got %d", prefix, *r.PIDs)
+		}
+		if *r.PIDs > maxPIDsLimit {
+			return fmt.Errorf("%s.pids %d exceeds the maximum supported value (%d)", prefix, *r.PIDs, maxPIDsLimit)
+		}
 	}
 	return nil
 }
 
 // ResolveResourcesForService returns the resource limits that apply to the
-// named service. A service that declares its own resources overrides the
-// app-level limits wholesale (mirroring ResolveROS2ConfigForService); otherwise
-// the app-level Resources are inherited. Returns nil when neither is set.
+// named service, merging service-level over app-level limits PER FIELD: a field
+// the service sets wins, and a field the service leaves unset inherits the
+// app-level value. This prevents a service block that overrides only one field
+// (e.g. memory) from silently dropping a security-relevant app-level constraint
+// such as a PID cap. Returns nil when neither level sets anything.
 func (a *AppConfig) ResolveResourcesForService(serviceName string) *ResourceLimits {
+	var svc *ResourceLimits
 	if serviceName != "" {
-		if svc, ok := a.Services[serviceName]; ok && svc != nil && svc.Resources != nil {
-			return svc.Resources
+		if s, ok := a.Services[serviceName]; ok && s != nil {
+			svc = s.Resources
 		}
 	}
-	return a.Resources
+	switch {
+	case svc == nil:
+		return a.Resources
+	case a.Resources == nil:
+		return svc
+	}
+	// Both set: start from the app-level limits and overlay the fields the
+	// service actually declares. Copy by value so neither input is mutated.
+	merged := *a.Resources
+	if strings.TrimSpace(svc.Memory) != "" {
+		merged.Memory = svc.Memory
+	}
+	if strings.TrimSpace(svc.CPUs) != "" {
+		merged.CPUs = svc.CPUs
+	}
+	if svc.PIDs != nil {
+		merged.PIDs = svc.PIDs
+	}
+	return &merged
 }

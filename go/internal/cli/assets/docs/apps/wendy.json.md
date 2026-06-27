@@ -154,12 +154,12 @@ Optional CPU, memory, and process-count ceilings the agent enforces on the conta
 | `resources.cpus` | string | Maximum number of CPU cores as a decimal — e.g. `"0.5"`, `"1.5"`, `"2"`. Enforced as a CFS quota over a 100 ms period (so `"1.5"` ⇒ 150 ms of CPU time per 100 ms). |
 | `resources.pids` | integer | Maximum number of processes/threads the container may create. A cheap guard against fork bombs. **Defaults to 4096** when omitted; set a higher value for heavily-threaded workloads, or lower to tighten the cap. |
 
-For multi-service apps, set `resources` at the top level as the default and/or per service under `services.<name>.resources`. A service that declares its own `resources` overrides the app-level limits **wholesale** (the two are not merged field-by-field):
+For multi-service apps, set `resources` at the top level as the default and/or per service under `services.<name>.resources`. App-level and service-level limits are merged **per field**: a field a service sets wins, and a field it leaves unset inherits the app-level value. This means a service can override one limit without silently dropping the others (e.g. an app-level PID cap stays in force even if a service only changes `memory`).
 
 ```json
 {
   "appId": "fleet",
-  "resources": { "memory": "1Gi" },
+  "resources": { "memory": "1Gi", "pids": 512 },
   "services": {
     "web":    { "context": "./web" },
     "worker": { "context": "./worker", "resources": { "memory": "256Mi", "cpus": "0.5" } }
@@ -167,7 +167,7 @@ For multi-service apps, set `resources` at the top level as the default and/or p
 }
 ```
 
-Here `web` inherits the app-level `1Gi` memory limit, while `worker` uses only its own `256Mi`/`0.5` cores (it does **not** also inherit the `1Gi`).
+Here `web` inherits the full app-level limits (`1Gi`, `pids: 512`). `worker` uses its own `256Mi` and `0.5` cores, and still **inherits** the app-level `pids: 512` it did not override.
 
 ### `$schema`
 

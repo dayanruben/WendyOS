@@ -49,7 +49,7 @@ func TestResourceLimits_MemoryLimitBytes(t *testing.T) {
 		{in: "-1", wantErr: true},
 		{in: "abc", wantErr: true},
 		{in: "12Xi", wantErr: true},
-		{in: "1.5Gi", wantErr: true},                  // fractional bytes not allowed
+		{in: "1.5Gi", wantErr: true},                 // fractional bytes not allowed
 		{in: "9223372036854775807Ti", wantErr: true}, // overflows int64 after suffix multiply
 		{in: "9999999999999999Gi", wantErr: true},    // also overflows
 	}
@@ -94,6 +94,13 @@ func TestResourceLimits_CPUQuota(t *testing.T) {
 		{in: "0", wantErr: true},
 		{in: "-1", wantErr: true},
 		{in: "abc", wantErr: true},
+		// Overflow / non-finite guards (security review HIGH-1): a huge or
+		// non-finite core count must error, never wrap int64 into a tiny or
+		// negative CFS quota.
+		{in: "1e308", wantErr: true},
+		{in: "Inf", wantErr: true},
+		{in: "inf", wantErr: true},
+		{in: "NaN", wantErr: true},
 	}
 	for _, c := range cases {
 		r := &ResourceLimits{CPUs: c.in}
@@ -146,6 +153,8 @@ func TestValidate_Resources(t *testing.T) {
 		{name: "bad cpus", res: &ResourceLimits{CPUs: "-2"}, wantErr: true},
 		{name: "negative pids", res: &ResourceLimits{PIDs: pidsPtr(-5)}, wantErr: true},
 		{name: "explicit zero pids rejected", res: &ResourceLimits{PIDs: pidsPtr(0)}, wantErr: true},
+		{name: "pids at kernel ceiling ok", res: &ResourceLimits{PIDs: pidsPtr(4194304)}},
+		{name: "pids above kernel ceiling rejected", res: &ResourceLimits{PIDs: pidsPtr(4194305)}, wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -174,25 +183,52 @@ func TestValidate_ServiceResources(t *testing.T) {
 }
 
 func TestResolveResourcesForService(t *testing.T) {
-	group := &ResourceLimits{Memory: "1Gi"}
-	svc := &ResourceLimits{Memory: "256Mi"}
+	// app-level sets all three; "worker" overrides only memory. Per-field merge
+	// (security review HIGH-2) must inherit the app-level cpus and the
+	// security-relevant pids cap rather than silently dropping them.
 	cfg := &AppConfig{
-		Resources: group,
+		Resources: &ResourceLimits{Memory: "1Gi", CPUs: "2", PIDs: pidsPtr(512)},
 		Services: map[string]*ServiceConfig{
-			"worker": {Context: "./worker", Resources: svc},
+			"worker": {Context: "./worker", Resources: &ResourceLimits{Memory: "256Mi"}},
+			"pidsvc": {Context: "./pidsvc", Resources: &ResourceLimits{PIDs: pidsPtr(64)}},
 			"web":    {Context: "./web"},
 		},
 	}
-	if got := cfg.ResolveResourcesForService("worker"); got != svc {
-		t.Errorf("worker should use service-level resources")
+
+	worker := cfg.ResolveResourcesForService("worker")
+	if worker == nil || worker.Memory != "256Mi" {
+		t.Fatalf("worker memory: want 256Mi, got %+v", worker)
 	}
-	if got := cfg.ResolveResourcesForService("web"); got != group {
-		t.Errorf("web should inherit app-level resources")
+	if worker.CPUs != "2" {
+		t.Errorf("worker must inherit app-level cpus=2, got %q", worker.CPUs)
 	}
-	if got := cfg.ResolveResourcesForService(""); got != group {
-		t.Errorf("single-container app should use app-level resources")
+	if worker.PIDs == nil || *worker.PIDs != 512 {
+		t.Errorf("worker must inherit app-level pids=512 (not silently dropped), got %v", worker.PIDs)
 	}
+
+	// A service may still tighten a field: pidsvc overrides pids, inherits memory.
+	pidsvc := cfg.ResolveResourcesForService("pidsvc")
+	if pidsvc == nil || pidsvc.PIDs == nil || *pidsvc.PIDs != 64 {
+		t.Errorf("pidsvc should override pids to 64, got %v", pidsvc)
+	}
+	if pidsvc.Memory != "1Gi" {
+		t.Errorf("pidsvc should inherit app-level memory=1Gi, got %q", pidsvc.Memory)
+	}
+
+	// web declares no resources of its own → app-level applies.
+	if got := cfg.ResolveResourcesForService("web"); got == nil || got.Memory != "1Gi" {
+		t.Errorf("web should inherit app-level resources, got %+v", got)
+	}
+	// single-container app uses app-level.
+	if got := cfg.ResolveResourcesForService(""); got == nil || got.Memory != "1Gi" {
+		t.Errorf("single-container app should use app-level resources, got %+v", got)
+	}
+	// nothing set anywhere → nil.
 	if got := (&AppConfig{}).ResolveResourcesForService("x"); got != nil {
-		t.Errorf("absent resources should resolve to nil")
+		t.Errorf("absent resources should resolve to nil, got %+v", got)
+	}
+	// Merge must not mutate the app-level struct.
+	if cfg.Resources.Memory != "1Gi" {
+		t.Errorf("app-level Resources was mutated by merge: %+v", cfg.Resources)
 	}
 }

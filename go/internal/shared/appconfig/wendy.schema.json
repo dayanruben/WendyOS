@@ -415,7 +415,8 @@
         "pids": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum number of processes/threads the container may create. Guards against fork bombs."
+          "maximum": 4194304,
+          "description": "Maximum number of processes/threads the container may create. Guards against fork bombs. Omit to use the agent's conservative default cap."
         }
       }
     }
