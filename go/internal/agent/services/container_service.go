@@ -241,6 +241,18 @@ func (s *ContainerService) QueryChunks(ctx context.Context, req *agentpb.QueryCh
 	return &agentpb.QueryChunksResponse{MissingHashes: out}, nil
 }
 
+func (s *ContainerService) QueryLayers(ctx context.Context, req *agentpb.QueryLayersRequest) (*agentpb.QueryLayersResponse, error) {
+	present, err := s.containerd.PresentLayers(ctx, req.GetDiffIds())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "querying layers: %v", err)
+	}
+	out := make([]*agentpb.PresentLayer, 0, len(present))
+	for diffID, size := range present {
+		out = append(out, &agentpb.PresentLayer{DiffId: diffID, Size: size})
+	}
+	return &agentpb.QueryLayersResponse{Present: out}, nil
+}
+
 func (s *ContainerService) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
 	ctx := stream.Context()
 	for {

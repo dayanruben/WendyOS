@@ -37,6 +37,7 @@ const (
 	WendyContainerService_StreamMCP_FullMethodName                   = "/wendy.agent.services.v1.WendyContainerService/StreamMCP"
 	WendyContainerService_QueryChunks_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/QueryChunks"
 	WendyContainerService_WriteChunks_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/WriteChunks"
+	WendyContainerService_QueryLayers_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/QueryLayers"
 )
 
 // WendyContainerServiceClient is the client API for WendyContainerService service.
@@ -61,6 +62,11 @@ type WendyContainerServiceClient interface {
 	StreamMCP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MCPChunk, MCPChunk], error)
 	QueryChunks(ctx context.Context, in *QueryChunksRequest, opts ...grpc.CallOption) (*QueryChunksResponse, error)
 	WriteChunks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse], error)
+	// QueryLayers reports which uncompressed layers (by diff ID) the device
+	// already has in its content store, with their sizes. The CLI uses this to
+	// skip decompressing and content-chunking layers the device can reuse as-is
+	// — for those layers no dedup is possible, so chunking would be pure waste.
+	QueryLayers(ctx context.Context, in *QueryLayersRequest, opts ...grpc.CallOption) (*QueryLayersResponse, error)
 }
 
 type wendyContainerServiceClient struct {
@@ -308,6 +314,16 @@ func (c *wendyContainerServiceClient) WriteChunks(ctx context.Context, opts ...g
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyContainerService_WriteChunksClient = grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse]
 
+func (c *wendyContainerServiceClient) QueryLayers(ctx context.Context, in *QueryLayersRequest, opts ...grpc.CallOption) (*QueryLayersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryLayersResponse)
+	err := c.cc.Invoke(ctx, WendyContainerService_QueryLayers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyContainerServiceServer is the server API for WendyContainerService service.
 // All implementations must embed UnimplementedWendyContainerServiceServer
 // for forward compatibility.
@@ -330,6 +346,11 @@ type WendyContainerServiceServer interface {
 	StreamMCP(grpc.BidiStreamingServer[MCPChunk, MCPChunk]) error
 	QueryChunks(context.Context, *QueryChunksRequest) (*QueryChunksResponse, error)
 	WriteChunks(grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]) error
+	// QueryLayers reports which uncompressed layers (by diff ID) the device
+	// already has in its content store, with their sizes. The CLI uses this to
+	// skip decompressing and content-chunking layers the device can reuse as-is
+	// — for those layers no dedup is possible, so chunking would be pure waste.
+	QueryLayers(context.Context, *QueryLayersRequest) (*QueryLayersResponse, error)
 	mustEmbedUnimplementedWendyContainerServiceServer()
 }
 
@@ -393,6 +414,9 @@ func (UnimplementedWendyContainerServiceServer) QueryChunks(context.Context, *Qu
 }
 func (UnimplementedWendyContainerServiceServer) WriteChunks(grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]) error {
 	return status.Error(codes.Unimplemented, "method WriteChunks not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) QueryLayers(context.Context, *QueryLayersRequest) (*QueryLayersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryLayers not implemented")
 }
 func (UnimplementedWendyContainerServiceServer) mustEmbedUnimplementedWendyContainerServiceServer() {}
 func (UnimplementedWendyContainerServiceServer) testEmbeddedByValue()                               {}
@@ -660,6 +684,24 @@ func _WendyContainerService_WriteChunks_Handler(srv interface{}, stream grpc.Ser
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyContainerService_WriteChunksServer = grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]
 
+func _WendyContainerService_QueryLayers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryLayersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyContainerServiceServer).QueryLayers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyContainerService_QueryLayers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyContainerServiceServer).QueryLayers(ctx, req.(*QueryLayersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyContainerService_ServiceDesc is the grpc.ServiceDesc for WendyContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -702,6 +744,10 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryChunks",
 			Handler:    _WendyContainerService_QueryChunks_Handler,
+		},
+		{
+			MethodName: "QueryLayers",
+			Handler:    _WendyContainerService_QueryLayers_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

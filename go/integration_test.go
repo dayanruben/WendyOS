@@ -242,6 +242,10 @@ func (m *statefulContainerdClient) MissingChunks(_ context.Context, hashes [][32
 	return hashes, nil
 }
 
+func (m *statefulContainerdClient) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
+}
+
 func (m *statefulContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
 	return nil
 }
