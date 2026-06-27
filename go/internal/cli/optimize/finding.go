@@ -67,6 +67,7 @@ type Fix struct {
 // Finding is a single optimization issue.
 type Finding struct {
 	Analyzer string `json:"analyzer"`
+	Target   string `json:"target,omitempty"`
 	Severity Severity
 	Title    string `json:"title"`
 	Detail   string `json:"detail"`

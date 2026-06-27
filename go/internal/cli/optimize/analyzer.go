@@ -22,7 +22,10 @@ func Analyze(targets []Target, analyzers []Analyzer) []Finding {
 	for i := range targets {
 		t := &targets[i]
 		for _, a := range analyzers {
-			out = append(out, a.Analyze(t)...)
+			for _, f := range a.Analyze(t) {
+				f.Target = t.Name
+				out = append(out, f)
+			}
 		}
 	}
 	return out

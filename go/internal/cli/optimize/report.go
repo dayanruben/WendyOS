@@ -46,35 +46,39 @@ func (r Report) Counts() (info, warning, errc, fixable int) {
 
 // MaxSeverity returns the highest severity in the report (SeverityInfo if empty).
 func (r Report) MaxSeverity() Severity {
-	max := SeverityInfo
+	maxSev := SeverityInfo
 	for _, f := range r.Findings {
-		if f.Severity > max {
-			max = f.Severity
+		if f.Severity > maxSev {
+			maxSev = f.Severity
 		}
 	}
-	return max
+	return maxSev
 }
 
 // RenderHuman renders a plain-text report grouped by target Name.
 func RenderHuman(r Report) string {
 	var b strings.Builder
 
-	// Group findings by the target each was produced under. Findings carry no
-	// back-pointer, so render per target header then all findings (single-target
-	// is the common case; multi-target groups by Location file when present).
 	for _, t := range r.Targets {
 		fmt.Fprintf(&b, "%s (%s)\n", t.Name, t.Kind)
+		for _, f := range r.Findings {
+			if f.Target == t.Name {
+				writeFindingLine(&b, f)
+			}
+		}
 	}
+	// Defensive: any finding whose Target matches no listed target still gets shown.
 	for _, f := range r.Findings {
-		loc := ""
-		if f.Location != nil {
-			loc = fmt.Sprintf(":%d", f.Location.Line)
+		matched := false
+		for _, t := range r.Targets {
+			if f.Target == t.Name {
+				matched = true
+				break
+			}
 		}
-		fixable := ""
-		if f.Fix != nil {
-			fixable = "  (fixable)"
+		if !matched {
+			writeFindingLine(&b, f)
 		}
-		fmt.Fprintf(&b, "  %-7s  %s%s  %s%s\n", f.Severity.String(), f.Analyzer, loc, f.Title, fixable)
 	}
 
 	info, warn, errc, fixable := r.Counts()
@@ -85,4 +89,16 @@ func RenderHuman(r Report) string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+func writeFindingLine(b *strings.Builder, f Finding) {
+	loc := ""
+	if f.Location != nil {
+		loc = fmt.Sprintf(":%d", f.Location.Line)
+	}
+	fixable := ""
+	if f.Fix != nil {
+		fixable = "  (fixable)"
+	}
+	fmt.Fprintf(b, "  %-7s  %s%s  %s%s\n", f.Severity.String(), f.Analyzer, loc, f.Title, fixable)
 }
