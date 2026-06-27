@@ -138,6 +138,9 @@ type ServiceConfig struct {
 	Entitlements []Entitlement     `json:"entitlements,omitempty"`
 	DependsOn    []string          `json:"dependsOn,omitempty"`
 	Frameworks   *FrameworksConfig `json:"frameworks,omitempty"`
+	// Resources optionally caps this service's CPU/memory/PID usage, overriding
+	// any app-level resources wholesale.
+	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
 // AppConfig represents the wendy.json application configuration.
@@ -169,6 +172,9 @@ type AppConfig struct {
 	// Nested under "frameworks" per WDY-1339.
 	Frameworks *FrameworksConfig         `json:"frameworks,omitempty"`
 	Services   map[string]*ServiceConfig `json:"services,omitempty"`
+	// Resources optionally caps the app's CPU/memory/PID usage. For
+	// multi-service apps it is the default; a service may override it.
+	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
 // ContainerName returns the container identifier for this app config.
@@ -450,6 +456,10 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if err := c.Resources.validate("resources"); err != nil {
+		return err
+	}
+
 	for name, svc := range c.Services {
 		if svc == nil {
 			return fmt.Errorf("services[%q]: must not be null", name)
@@ -475,6 +485,9 @@ func (c *AppConfig) Validate() error {
 			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2); err != nil {
 				return err
 			}
+		}
+		if err := svc.Resources.validate(fmt.Sprintf("services[%q].resources", name)); err != nil {
+			return err
 		}
 	}
 

@@ -136,6 +136,41 @@ Python-specific settings.
 | `python.sourceRoot` | Path to the Python source root directory |
 | `python.container.sourceRoot` | Path to the Python source root inside the container image |
 
+### `resources`
+
+Optional CPU, memory, and process-count ceilings the agent enforces on the container via cgroups. Edge devices are resource-constrained and often run several apps side by side, so capping a service keeps one busy or leaky app from starving its neighbours. Every field is optional. Omitting `memory` or `cpus` leaves that resource **unbounded** (the historical behaviour), so adding `resources` is backward compatible. `pids` is the exception: when omitted, a conservative default ceiling (4096) is applied as a fork-bomb guard — set it explicitly to raise or lower that ceiling.
+
+```json
+{
+  "resources": {
+    "memory": "512Mi",
+    "cpus": "1.5",
+    "pids": 256
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resources.memory` | string | Hard memory limit. A number of bytes, optionally with a binary (`Ki`, `Mi`, `Gi`, `Ti`) or decimal (`K`, `M`, `G`, `T`) suffix — e.g. `"512Mi"`, `"1Gi"`. The container is OOM-killed if it exceeds this. |
+| `resources.cpus` | string | Maximum number of CPU cores as a decimal — e.g. `"0.5"`, `"1.5"`, `"2"`. Enforced as a CFS quota over a 100 ms period (so `"1.5"` ⇒ 150 ms of CPU time per 100 ms). |
+| `resources.pids` | integer | Maximum number of processes/threads the container may create. A cheap guard against fork bombs. **Defaults to 4096** when omitted; set a higher value for heavily-threaded workloads, or lower to tighten the cap. |
+
+For multi-service apps, set `resources` at the top level as the default and/or per service under `services.<name>.resources`. App-level and service-level limits are merged **per field**: a field a service sets wins, and a field it leaves unset inherits the app-level value. This means a service can override one limit without silently dropping the others (e.g. an app-level PID cap stays in force even if a service only changes `memory`).
+
+```json
+{
+  "appId": "fleet",
+  "resources": { "memory": "1Gi", "pids": 512 },
+  "services": {
+    "web":    { "context": "./web" },
+    "worker": { "context": "./worker", "resources": { "memory": "256Mi", "cpus": "0.5" } }
+  }
+}
+```
+
+Here `web` inherits the full app-level limits (`1Gi`, `pids: 512`). `worker` uses its own `256Mi` and `0.5` cores, and still **inherits** the app-level `pids: 512` it did not override.
+
 ### `$schema`
 
 Optional URI pointing to the JSON Schema for editor autocompletion and validation. Set to `"https://wendy.sh/schemas/wendy.json"`.
