@@ -91,9 +91,22 @@ type topRow struct {
 	displayName   string
 	cpuPercent    float64
 	memBytes      int64
+	state         string // "running", "stopped", …
 	hasCPU        bool
 	isGroupHeader bool
 	isSubrow      bool
+}
+
+// topStateLabel renders an app/service running state as a short lowercase label.
+func topStateLabel(s agentpb.AppRunningState) string {
+	switch s {
+	case agentpb.AppRunningState_RUNNING:
+		return "running"
+	case agentpb.AppRunningState_STOPPED:
+		return "stopped"
+	default:
+		return strings.ToLower(strings.TrimPrefix(s.String(), "APP_RUNNING_STATE_"))
+	}
 }
 
 // buildTopRows groups containers by app (mirroring buildDashboardRows) with CPU%
@@ -140,6 +153,7 @@ func buildTopRows(containers []*agentpb.AppContainer, cpuByID map[string]float64
 				displayName:   appName + " [group]",
 				cpuPercent:    a.cpu,
 				memBytes:      a.mem,
+				state:         topStateLabel(c.GetRunningState()),
 				hasCPU:        true,
 				isGroupHeader: true,
 			})
@@ -149,6 +163,7 @@ func buildTopRows(containers []*agentpb.AppContainer, cpuByID map[string]float64
 					displayName: "  ↳ " + svc.GetName(),
 					cpuPercent:  cpuByID[key],
 					memBytes:    memByID[key],
+					state:       topStateLabel(svc.GetRunningState()),
 					hasCPU:      true,
 					isSubrow:    true,
 				})
@@ -159,6 +174,7 @@ func buildTopRows(containers []*agentpb.AppContainer, cpuByID map[string]float64
 				displayName: appName,
 				cpuPercent:  a.cpu,
 				memBytes:    a.mem,
+				state:       topStateLabel(c.GetRunningState()),
 				hasCPU:      true,
 			})
 		}
@@ -797,7 +813,7 @@ func (m topModel) listLines(width int) []string {
 		if memTotal > 0 {
 			memp = fmt.Sprintf("%.1f", float64(r.memBytes)/float64(memTotal)*100)
 		}
-		row := padOrCrop(topFormatRow(r.displayName, cpu, memp, formatBytes(r.memBytes), "", nameW), width)
+		row := padOrCrop(topFormatRow(r.displayName, cpu, memp, formatBytes(r.memBytes), r.state, nameW), width)
 		switch {
 		case i == m.cursor:
 			lines = append(lines, topSelRow.Render(row))
