@@ -1,3 +1,6 @@
+> **Note:** `wendy device set-default` is not listed in `wendy device --help`,
+> but it remains fully functional.
+
 Selects a device as the [default device](../../device-selection.md), so that other commands default to this device if available.
 
 The default can be a hostname, IP address, provider key, or explicit `host:port` value:

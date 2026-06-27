@@ -129,6 +129,30 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
+| `--all` | Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker. Hidden by default so the picker lists WendyOS devices first. |
+| `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
+| `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
+| `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
+
+## Watch mode
+
+Pass `--watch` to rebuild and redeploy automatically whenever source files in the
+project directory change:
+
+```sh
+wendy run --watch
+wendy run --watch --debounce 800 --verbose
+```
+
+In watch mode the deployment is always **detached** and **non-interactive**
+(equivalent to `--detach --yes`), so the watch loop never blocks on a prompt. A
+rapid sequence of saves is coalesced by the debounce window (default 400 ms) so a
+single redeploy runs after edits settle. Build output is hidden unless a build
+fails; pass `--verbose` to always show it, or `--debounce <ms>` to tune the quiet
+period.
+
+> **Note:** `wendy watch` is kept as a hidden alias for `wendy run --watch` for
+> backward compatibility, but `wendy run --watch` is the supported entry point.
 
 ## Deploy path: `--chunking`
 
