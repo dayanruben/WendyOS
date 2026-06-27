@@ -146,7 +146,10 @@ func main() {
 	if dbusproxy.IsAvailable() {
 		proxyMgr = dbusproxy.NewManager(logger)
 	} else {
-		logger.Warn("xdg-dbus-proxy not found, Bluetooth containers will have unfiltered D-Bus access")
+		// WDY-1093: without xdg-dbus-proxy there is no way to scope D-Bus to
+		// org.bluez, so containers declaring the bluetooth entitlement are
+		// refused rather than started with unfiltered access.
+		logger.Warn("xdg-dbus-proxy not found; containers with the bluetooth entitlement will be refused")
 	}
 
 	// Initialize containerd client (best-effort; may fail on non-Linux or without containerd).

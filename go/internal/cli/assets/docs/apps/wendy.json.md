@@ -125,6 +125,8 @@ Lifecycle commands to run at specific points during the app lifecycle.
 | `hooks.postStart.cli` | Command run on the developer's machine after the app starts |
 | `hooks.postStart.agent` | Command run on the device after the app starts |
 
+> **Note:** `hooks.postStart.agent` is executed directly on the device, not through a shell. Shell features such as pipes (`|`), redirects (`>`), command chaining (`;`, `&&`), and command substitution (`$(...)`) are **not** interpreted — they are passed through as literal arguments. If you need them, put the logic in a script file (e.g. `/app/post-start.sh`) and invoke that. `${WENDY_APP_ID}`, `${WENDY_HOSTNAME}`, and environment variables are still expanded.
+
 ### `python`
 
 Python-specific settings.
