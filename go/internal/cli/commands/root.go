@@ -31,8 +31,10 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip heavy init for commands that don't need device/cloud setup.
+			// __usb-setup runs as root under sudo; skipping init avoids doing
+			// config/analytics writes (and an update check) as root.
 			switch cmd.Name() {
-			case "__ble-check", "open-browser":
+			case "__ble-check", "__usb-setup", "open-browser":
 				return nil
 			}
 
@@ -246,6 +248,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(
 		bleCheckCmd,
 		bmapWriteCmd,
+		newUSBSetupHiddenCmd(),
 		runCmd,
 		watchCmd,
 		buildCmd,
@@ -271,4 +274,21 @@ func NewRootCmd() *cobra.Command {
 
 	root.Version = version.Version
 	return root
+}
+
+// newUSBSetupHiddenCmd builds the hidden "__usb-setup" subcommand. It is the
+// privileged half of the USB-C auto-setup flow: maybeOfferUSBSetup re-execs the
+// CLI as `sudo wendy __usb-setup --iface <iface>` so the NetworkManager + udev
+// changes run as root. It is hidden because users never invoke it directly.
+func newUSBSetupHiddenCmd() *cobra.Command {
+	var iface string
+	cmd := &cobra.Command{
+		Use:    "__usb-setup",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runUSBSetup(cmd.Context(), iface, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().StringVar(&iface, "iface", "", "USB gadget interface to configure")
+	return cmd
 }
