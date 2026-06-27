@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -35,6 +36,7 @@ type AgentService struct {
 	bluetoothManager   BluetoothManager
 	installer          *AgentInstaller
 	isWendyOSHost      func() bool
+	osUpdateStateDir   string
 }
 
 func NewAgentService(
@@ -51,6 +53,7 @@ func NewAgentService(
 		bluetoothManager:   bm,
 		installer:          installer,
 		isWendyOSHost:      defaultIsWendyOSHost,
+		osUpdateStateDir:   oshealth.DefaultStateDir,
 	}
 }
 
@@ -273,7 +276,10 @@ func detectFeatureset() []string {
 	}
 
 	if _, found := resolveMenderBinary(); found {
-		features = append(features, "mender")
+		// "os-healthcheck": OS updates are verified by post-reboot service
+		// healthchecks with automatic rollback (and GetOSUpdateStatus reports
+		// the outcome).
+		features = append(features, "mender", "os-healthcheck")
 	}
 
 	return features
@@ -861,6 +867,8 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 		})
 	}
 
+	recordPendingOSUpdate(s.logger, s.osUpdateStateDir, req.GetArtifactUrl())
+
 	sendProgress("finalizing", 100)
 
 	if err := stream.Send(&agentpb.UpdateOSResponse{
@@ -926,30 +934,6 @@ func resolveMenderBinary() (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// CommitMenderUpdate runs "mender-update commit" on startup to confirm a
-// pending Mender A/B update. If not committed, Mender rolls back on next reboot.
-// This is a no-op if mender-update is not installed.
-func CommitMenderUpdate(logger *zap.Logger) {
-	binary, found := resolveMenderBinary()
-	if !found {
-		return
-	}
-	cmd := exec.Command(binary, "commit")
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-			// Exit code 2 means "nothing to commit" — not an error.
-			logger.Debug("mender-update commit: nothing to commit", zap.String("output", strings.TrimSpace(string(out))))
-			return
-		}
-		logger.Warn("mender-update commit failed", zap.String("output", strings.TrimSpace(string(out))), zap.Error(err))
-		return
-	}
-	logger.Info("Committed Mender update", zap.String("output", strings.TrimSpace(string(out))))
 }
 
 func CleanupOldBackups(logger *zap.Logger) {

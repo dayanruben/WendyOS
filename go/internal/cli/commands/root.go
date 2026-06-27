@@ -81,6 +81,10 @@ func NewRootCmd() *cobra.Command {
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			// Surface a throttled tip about `wendy project optimize` after a
+			// successful build/run (no-op for other commands and in CI).
+			maybeShowOptimizeTip(cmd)
+
 			// Surface any pending CLI-update notice first. If it showed a prompt,
 			// don't stack the completion prompt on top of it this invocation.
 			updateShown, err := notifyCLIUpdate(cmd)

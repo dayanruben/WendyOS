@@ -36,6 +36,11 @@ type Config struct {
 	// last shown (RFC3339). It throttles the prompt so an unanswered prompt
 	// (e.g. Ctrl-C) doesn't reappear on every invocation.
 	LastCompletionPromptCheck string `json:"lastCompletionPromptCheck,omitempty"`
+	// OptimizeTipShownAt throttles the `wendy project optimize` tip to once per
+	// day per project. Keyed by the project directory, value is an RFC3339 date
+	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
+	// surfaced for that project.
+	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
