@@ -1466,7 +1466,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// failure is surfaced instead of silently masked by a slower path.
 			return fmt.Errorf("chunk-diff deploy failed and --chunking=force disables the registry-push fallback: %w", err)
 		} else {
-			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
+			cliLogln("Fast deploy unavailable; using registry push.")
 		}
 	}
 
