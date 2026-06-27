@@ -24,6 +24,11 @@ type Config struct {
 	// the MCP server config and bundled skills. Empty means the user has never
 	// run setup, so auto-refresh stays off.
 	LastMCPSetupVersion string `json:"lastMCPSetupVersion,omitempty"`
+	// OptimizeTipShownAt throttles the `wendy project optimize` tip to once per
+	// day per project. Keyed by the project directory, value is an RFC3339 date
+	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
+	// surfaced for that project.
+	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
