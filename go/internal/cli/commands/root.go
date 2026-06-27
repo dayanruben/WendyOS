@@ -166,55 +166,72 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname")
 
+	// Render the top-level command groups in the deliberate order below rather
+	// than alphabetically, so e.g. "project" lists before "device".
+	cobra.EnableCommandSorting = false
+
 	root.AddGroup(
-		&cobra.Group{ID: "project", Title: "Project Commands:"},
-		&cobra.Group{ID: "cloud", Title: "Manage Your Cloud:"},
-		&cobra.Group{ID: "devices", Title: "Manage Your Devices:"},
-		&cobra.Group{ID: "misc", Title: "Misc.:"},
+		&cobra.Group{ID: "develop", Title: "Develop & Deploy:"},
+		&cobra.Group{ID: "manage", Title: "Manage:"},
+		&cobra.Group{ID: "cloud", Title: "Cloud:"},
+		&cobra.Group{ID: "settings", Title: "Settings:"},
 	)
 
-	// Project Commands
-	runCmd := newRunCmd()
-	runCmd.GroupID = "project"
-	watchCmd := newWatchCmd()
-	watchCmd.GroupID = "project"
-	buildCmd := newBuildCmd()
-	buildCmd.GroupID = "project"
+	// Develop & Deploy
 	initCmd := newInitCmd()
-	initCmd.GroupID = "project"
-	projectCmd := newProjectCmd()
-	projectCmd.GroupID = "project"
-	jsonCmd := newJSONCmd()
-	jsonCmd.GroupID = "project"
+	initCmd.GroupID = "develop"
+	runCmd := newRunCmd()
+	runCmd.GroupID = "develop"
+	// `wendy install` is the surfaced alias for `wendy os install` (the `os`
+	// group is hidden). A fresh command instance is used because a cobra
+	// command can only be attached to one parent.
+	installCmd := newOSInstallCmd()
+	installCmd.GroupID = "develop"
 
-	// Cloud Commands
-	authCmd := newAuthCmd()
-	authCmd.GroupID = "cloud"
+	// Manage
+	projectCmd := newProjectCmd()
+	projectCmd.GroupID = "manage"
+	deviceCmd := newDeviceCmd()
+	deviceCmd.GroupID = "manage"
+
+	// Cloud
 	cloudCmd := newCloudCmd()
 	cloudCmd.GroupID = "cloud"
 
-	// Device Commands
-	deviceCmd := newDeviceCmd()
-	deviceCmd.GroupID = "devices"
-	discoverCmd := newDiscoverCmd()
-	discoverCmd.GroupID = "devices"
-	osCmd := newOSCmd()
-	osCmd.GroupID = "devices"
-	// Misc Commands
-	cacheCmd := newCacheCmd()
-	cacheCmd.GroupID = "misc"
-	infoCmd := newInfoCmd()
-	infoCmd.GroupID = "misc"
+	// Settings
 	analyticsCmd := newAnalyticsCmd()
-	analyticsCmd.GroupID = "misc"
+	analyticsCmd.GroupID = "settings"
+	cacheCmd := newCacheCmd()
+	cacheCmd.GroupID = "settings"
+
+	// Hidden commands: still fully functional, just omitted from `wendy --help`
+	// to keep the top-level surface focused on the common workflow. `auth`
+	// remains a working command for back-compat ('wendy cloud login' is the
+	// surfaced entry point); 'json' is already hidden in its constructor.
+	buildCmd := newBuildCmd()
+	buildCmd.Hidden = true
+	watchCmd := newWatchCmd()
+	watchCmd.Hidden = true
+	jsonCmd := newJSONCmd()
+	authCmd := newAuthCmd()
+	authCmd.Hidden = true
+	discoverCmd := newDiscoverCmd()
+	discoverCmd.Hidden = true
+	osCmd := newOSCmd()
+	osCmd.Hidden = true
+	infoCmd := newInfoCmd()
+	infoCmd.Hidden = true
 	utilsCmd := newUtilsCmd()
-	utilsCmd.GroupID = "misc"
+	utilsCmd.Hidden = true
 	tourCmd := newTourCmd()
-	tourCmd.GroupID = "misc"
+	tourCmd.Hidden = true
 	mcpCmd := newMCPCmd()
-	mcpCmd.GroupID = "misc"
+	mcpCmd.Hidden = true
 	completionCmd := newCompletionCmd()
-	completionCmd.GroupID = "misc"
+	completionCmd.Hidden = true
+	// Keep a valid group on the (hidden) completion command so the help/
+	// completion group wiring below stays consistent.
+	completionCmd.GroupID = "settings"
 
 	// Hidden command used by a subprocess to test CoreBluetooth access.
 	// The main process spawns a child process that runs this command so
@@ -245,32 +262,40 @@ func NewRootCmd() *cobra.Command {
 	bmapWriteCmd.Flags().StringVar(&bmapSource, "source", "", "Path to the seekable .img.zst source")
 	bmapWriteCmd.Flags().IntVar(&bmapWriters, "writers", 0, "Concurrent writer goroutines (0 = sequential default)")
 
+	// Visible commands are added in display order (command sorting is disabled
+	// above); hidden commands follow and never appear in help.
 	root.AddCommand(
+		// Develop & Deploy
+		initCmd,
+		runCmd,
+		installCmd,
+		// Manage
+		projectCmd,
+		deviceCmd,
+		// Cloud
+		cloudCmd,
+		// Settings
+		analyticsCmd,
+		cacheCmd,
+		// Hidden
 		bleCheckCmd,
 		bmapWriteCmd,
 		newUSBSetupHiddenCmd(),
-		runCmd,
 		watchCmd,
 		buildCmd,
-		initCmd,
-		projectCmd,
 		jsonCmd,
 		authCmd,
-		cloudCmd,
-		deviceCmd,
 		discoverCmd,
 		osCmd,
-		cacheCmd,
 		infoCmd,
-		analyticsCmd,
 		utilsCmd,
 		tourCmd,
 		mcpCmd,
 		completionCmd,
 	)
 
-	root.SetHelpCommandGroupID("misc")
-	root.SetCompletionCommandGroupID("misc")
+	root.SetHelpCommandGroupID("settings")
+	root.SetCompletionCommandGroupID("settings")
 
 	root.Version = version.Version
 	return root

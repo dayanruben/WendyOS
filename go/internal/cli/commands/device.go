@@ -44,10 +44,9 @@ func newDeviceCmd() *cobra.Command {
 	}
 
 	cmd.AddGroup(
+		&cobra.Group{ID: "common", Title: "Common Commands:"},
 		&cobra.Group{ID: "manage", Title: "Device Management:"},
-		&cobra.Group{ID: "monitor", Title: "Monitoring:"},
 		&cobra.Group{ID: "hardware", Title: "Hardware:"},
-		&cobra.Group{ID: "data", Title: "Apps & Storage:"},
 	)
 
 	addToGroup := func(groupID string, cmds ...*cobra.Command) {
@@ -57,6 +56,14 @@ func newDeviceCmd() *cobra.Command {
 		}
 	}
 
+	// Common Commands: the subcommands used in everyday workflows, surfaced at
+	// the top in rough order of usefulness.
+	addToGroup("common",
+		newAppsCmd(),
+		newDeviceLogsCmd(),
+		newROS2Cmd(),
+		newDeviceDashboardCmd(),
+	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
 		newDeprecatedDeviceVersionCmd(),
@@ -68,12 +75,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceUnenrollCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
-	)
-	addToGroup("monitor",
-		newDeviceLogsCmd(),
-		newDeviceDashboardCmd(),
-		newDeviceTelemetryStreamCmd(),
-		newROS2Cmd(),
+		newVolumesCmd(),
 	)
 	addToGroup("hardware",
 		newWifiCmd(),
@@ -82,9 +84,10 @@ func newDeviceCmd() *cobra.Command {
 		newCameraCmd(),
 		newHardwareCmd(),
 	)
-	addToGroup("data",
-		newAppsCmd(),
-		newVolumesCmd(),
+	// Hidden commands stay registered (and runnable) but are kept off the help
+	// menu; they are hidden via their own constructors.
+	addToGroup("manage",
+		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
 	)
 
@@ -329,9 +332,10 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 
 func newDeviceGetDefaultCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "get-default",
-		Short: "Show the current default device",
-		Args:  cobra.NoArgs,
+		Use:    "get-default",
+		Short:  "Show the current default device",
+		Hidden: true,
+		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -398,9 +402,10 @@ func newDeviceUnsetDefaultCmd() *cobra.Command {
 
 func newDeviceSetupCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "setup",
-		Short: "Interactive device setup: enroll, name, and configure WiFi",
-		Long:  "Walks through enrollment (with device naming) and WiFi configuration for a new device.",
+		Use:    "setup",
+		Short:  "Interactive device setup: enroll, name, and configure WiFi",
+		Long:   "Walks through enrollment (with device naming) and WiFi configuration for a new device.",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
@@ -505,9 +510,10 @@ func newDeviceEnrollCmd() *cobra.Command {
 	var cloudGRPC string
 
 	cmd := &cobra.Command{
-		Use:   "enroll",
-		Short: "Enroll this device with Wendy Cloud or a local pki-core",
-		Long:  "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy auth login' first.",
+		Use:    "enroll",
+		Short:  "Enroll this device with Wendy Cloud or a local pki-core",
+		Long:   "Creates an enrollment token using your stored auth session and provisions the connected device with mTLS certificates. Run 'wendy cloud login' first.",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -1138,8 +1144,9 @@ func newDeviceTelemetryStreamCmd() *cobra.Command {
 	var enableTraces bool
 
 	cmd := &cobra.Command{
-		Use:   "telemetry-stream",
-		Short: "Stream telemetry data (logs, metrics, traces) as JSONL",
+		Use:    "telemetry-stream",
+		Short:  "Stream telemetry data (logs, metrics, traces) as JSONL",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// If no flags were explicitly set, enable all streams.
 			if !cmd.Flags().Changed("logs") && !cmd.Flags().Changed("metrics") && !cmd.Flags().Changed("traces") {

@@ -64,8 +64,8 @@ func TestCompletion_HasInstallSubcommand(t *testing.T) {
 	if compCmd == nil {
 		t.Fatal("expected `completion` subcommand on root")
 	}
-	if compCmd.GroupID != "misc" {
-		t.Errorf("completion.GroupID = %q; want %q", compCmd.GroupID, "misc")
+	if compCmd.GroupID != "settings" {
+		t.Errorf("completion.GroupID = %q; want %q", compCmd.GroupID, "settings")
 	}
 	want := map[string]bool{"bash": true, "zsh": true, "fish": true, "powershell": true, "install": true}
 	have := []string{}

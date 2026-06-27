@@ -486,6 +486,25 @@ type runOptions struct {
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
 	// chunkingOff skips chunk-diff entirely (registry push only).
 	chunking string
+	// allTargets shows local run targets (the local machine, Docker/OrbStack,
+	// Apple Container) in the interactive device picker. They are hidden by
+	// default so the picker lists WendyOS devices first.
+	allTargets bool
+}
+
+// runResolveOptions builds the resolveTarget options shared by every `wendy run`
+// device-selection path. By default the interactive picker hides local run
+// targets (LocalProviderKeys); --all (opts.allTargets) surfaces them again.
+// --yes suppresses the picker entirely.
+func runResolveOptions(opts runOptions) []resolveOption {
+	var resolveOpts []resolveOption
+	if opts.yes {
+		resolveOpts = append(resolveOpts, NonInteractive())
+	}
+	if !opts.allTargets {
+		resolveOpts = append(resolveOpts, ExcludeProviders(providers.LocalProviderKeys()...))
+	}
+	return resolveOpts
 }
 
 // Valid values for runOptions.chunking. An empty value is treated as
@@ -510,12 +529,22 @@ func validateChunkingMode(mode string) error {
 
 func newRunCmd() *cobra.Command {
 	var opts runOptions
+	var watch bool
+	var debounceMS int
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Build and run application on a WendyOS device",
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if watch {
+				// In watch mode, hide build output unless a build fails (unless
+				// --verbose); detached + non-interactive are enforced by
+				// watchCommand. This mirrors `wendy watch`.
+				opts.quietBuild = !verbose
+				return watchCommand(cmd.Context(), opts, time.Duration(debounceMS)*time.Millisecond)
+			}
 			return runCommand(cmd.Context(), opts)
 		},
 	}
@@ -537,6 +566,10 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
+	cmd.Flags().BoolVar(&opts.allTargets, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker; hidden by default")
+	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change (runs detached; same as 'wendy watch')")
+	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")
 
 	return cmd
 }
@@ -649,11 +682,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		}
 	}()
 	if cfgMissing {
-		var resolveOpts []resolveOption
-		if opts.yes {
-			resolveOpts = append(resolveOpts, NonInteractive())
-		}
-		target, err = resolveRunTarget(ctx, resolveOpts...)
+		target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
 		if err != nil {
 			return err
 		}
@@ -697,11 +726,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// Step 2: Resolve the target device.
 	if target == nil {
-		var resolveOpts []resolveOption
-		if opts.yes {
-			resolveOpts = append(resolveOpts, NonInteractive())
-		}
-		target, err = resolveRunTarget(ctx, resolveOpts...)
+		target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
 		if err != nil {
 			return err
 		}
@@ -769,11 +794,7 @@ func preflightMissingAppConfigForMacTarget(ctx context.Context, target *Selected
 // runComposeCommand handles the full device-selection + execution flow for
 // docker-compose projects, bypassing the wendy.json requirement.
 func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
-	var resolveOpts []resolveOption
-	if opts.yes {
-		resolveOpts = append(resolveOpts, NonInteractive())
-	}
-	target, err := resolveRunTarget(ctx, resolveOpts...)
+	target, err := resolveRunTarget(ctx, runResolveOptions(opts)...)
 	if err != nil {
 		return err
 	}
@@ -1466,7 +1487,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// failure is surfaced instead of silently masked by a slower path.
 			return fmt.Errorf("chunk-diff deploy failed and --chunking=force disables the registry-push fallback: %w", err)
 		} else {
-			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
+			cliLogln("Fast deploy unavailable; using registry push.")
 		}
 	}
 
@@ -1480,10 +1501,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	repo := strings.ToLower(appCfg.AppID)
 	// Single-service build: no concurrency, so keep the shared local cache dir
 	// (empty cache key) for cross-run cache reuse.
-	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", os.Stdout, os.Stderr); err != nil {
+	buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
+	if err := runBuildWithProgress(ctx, buildTitle, true, func(stream, logw io.Writer) error {
+		return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
+	}); err != nil {
 		return fmt.Errorf("building and pushing image: %w", err)
 	}
-	cliLogln("Build and push completed.")
 
 	// The agent pulls from localhost:<regPort>.
 	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
@@ -1844,21 +1867,23 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	defer os.RemoveAll(tmp)
 	ociTar := filepath.Join(tmp, "image.tar")
 
-	cliLogln("Building image (OCI layout) for %s...", tui.Value(platform))
-	// In quiet mode (wendy watch) capture the buildx output and surface it only
-	// if the build genuinely fails — but stay silent on a cancellation (a newer
-	// change superseded this build), which would otherwise dump a partial log.
-	var buildOut, buildErr io.Writer = os.Stdout, os.Stderr
-	var buildLog *bytes.Buffer
+	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
 	if opts.quietBuild {
-		buildLog = &bytes.Buffer{}
-		buildOut, buildErr = buildLog, buildLog
-	}
-	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, buildOut, buildErr); err != nil {
-		if buildLog != nil && ctx.Err() == nil {
-			_, _ = os.Stderr.Write(buildLog.Bytes())
+		// wendy watch: keep the legacy quiet behavior (buffer, surface only on
+		// genuine failure) rather than rendering a live UI under the watcher.
+		var buildLog bytes.Buffer
+		if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, &buildLog, &buildLog); err != nil {
+			if ctx.Err() == nil {
+				_, _ = os.Stderr.Write(buildLog.Bytes())
+			}
+			return err
 		}
-		return err
+	} else {
+		if err := runBuildWithProgress(ctx, buildTitle, opts.chunking == chunkingForce, func(stream, logw io.Writer) error {
+			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
+		}); err != nil {
+			return err
+		}
 	}
 	mark("build (oci export)")
 	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)

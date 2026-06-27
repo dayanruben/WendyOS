@@ -353,14 +353,19 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 			m.phase = phaseError
 			return m, nil
 		}
-		m.phase = phaseAICheck
-		return m, m.cmdCheckAITools()
+		m.phase = phaseCloud
+		return m, nil
 
 	case tourAICheckDoneMsg:
 		m.claudePath = msg.claudePath
 		m.codexPath = msg.codexPath
-		m.phase = phaseAICheck
-		return m, nil
+		if m.claudePath != "" || m.codexPath != "" {
+			m.phase = phaseAICheck
+			return m, nil
+		}
+		// No AI CLI installed — skip the AI step entirely.
+		m.phase = phaseLoadDevices
+		return m, loadDevicesCmd()
 
 	case tourMCPSetupDoneMsg:
 		m.mcpSetupResult = msg.results
@@ -429,8 +434,7 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case phaseWelcome:
 		switch key {
 		case "enter", " ":
-			m.phase = phaseLoadDevices
-			return m, loadDevicesCmd()
+			return m, m.cmdCheckAITools()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -787,10 +791,11 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.wifiCursor++
 			}
 		case "enter", " ":
-			if m.claudePath != "" && m.wifiCursor == 0 {
+			if (m.claudePath != "" || m.codexPath != "") && m.wifiCursor == 0 {
 				return m, runMCPSetupCmd()
 			}
-			m.phase = phaseCloud
+			m.phase = phaseLoadDevices
+			return m, loadDevicesCmd()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -798,7 +803,8 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case phaseAIMCPSetup:
 		switch key {
 		case "enter", " ":
-			m.phase = phaseCloud
+			m.phase = phaseLoadDevices
+			return m, loadDevicesCmd()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -965,9 +971,10 @@ func (m tourWizardModel) viewWelcome(w int) string {
 	sb.WriteString(wizSubStyle.Render("Let's get you set up from scratch — takes about 5 minutes.") + "\n\n")
 	sb.WriteString(wizBodyStyle.Width(w).Render(
 		"This wizard will:\n"+
-			"  1. Flash WendyOS onto your device\n"+
-			"  2. Boot it and connect over the network\n"+
-			"  3. Deploy a sample Python app\n\n"+
+			"  1. Connect your AI coding assistant (if installed)\n"+
+			"  2. Flash WendyOS onto your device\n"+
+			"  3. Boot it and connect over the network\n"+
+			"  4. Deploy a sample Python app\n\n"+
 			"If anything goes wrong you can restart at any time with:\n") + "\n")
 	sb.WriteString("  " + wizCodeStyle.Render("wendy tour") + "\n\n")
 	sb.WriteString(wizHintStyle.Render("Press Enter to begin"))
@@ -1425,39 +1432,29 @@ func (m tourWizardModel) viewCreateProject(w int) string {
 
 func (m tourWizardModel) viewAICheck(w int) string {
 	var sb strings.Builder
-	sb.WriteString(wizTitleStyle.Render("Step 9 — Continue development") + "\n\n")
+	sb.WriteString(wizTitleStyle.Render("Connect your AI coding assistant") + "\n\n")
 
+	var detected []string
 	if m.claudePath != "" {
-		sb.WriteString(wizSuccessStyle.Render("Claude Code detected") + "\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"You can continue developing with Claude Code. Open your project in it:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Set up the Wendy MCP server so Claude can access your device directly?") + "\n\n")
-		opts := []string{"Yes, set up MCP now", "No, skip"}
-		for i, opt := range opts {
-			if i == m.wifiCursor {
-				sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
-			} else {
-				sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
-			}
-		}
-		sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
-	} else if m.codexPath != "" {
-		sb.WriteString(wizSuccessStyle.Render("Codex detected") + "\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Continue development with Codex from your project directory:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && codex", m.projectPath)) + "\n\n")
-		sb.WriteString(wizHintStyle.Render("Enter to continue"))
-	} else {
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"To get AI-assisted development for Wendy apps, install Claude Code:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render("npm install -g @anthropic-ai/claude-code") + "\n\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Then open your project and run:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n\n")
-		sb.WriteString(wizHintStyle.Render("Enter to continue"))
+		detected = append(detected, "Claude Code")
 	}
+	if m.codexPath != "" {
+		detected = append(detected, "Codex")
+	}
+	sb.WriteString(wizSuccessStyle.Render("Detected: "+strings.Join(detected, ", ")) + "\n\n")
+	sb.WriteString(wizBodyStyle.Width(w).Render(
+		"Set up the Wendy MCP server so your assistant can talk to your devices "+
+			"directly — list devices, manage containers, read telemetry, and more?") + "\n\n")
+
+	opts := []string{"Yes, set up MCP now", "No, skip"}
+	for i, opt := range opts {
+		if i == m.wifiCursor {
+			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
+		} else {
+			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
+		}
+	}
+	sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
 	return sb.String()
 }
 
@@ -1476,8 +1473,8 @@ func (m tourWizardModel) viewAIMCPSetup(w int) string {
 		}
 		sb.WriteString("\n")
 		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Restart Claude Code to activate the Wendy MCP server.\n"+
-				"Claude will now have tools to list devices, manage containers,\n"+
+			"Restart your AI assistant to activate the Wendy MCP server.\n"+
+				"It will then have tools to list devices, manage containers,\n"+
 				"read telemetry, and more.") + "\n\n")
 		sb.WriteString(wizHintStyle.Render("Enter to continue"))
 	}

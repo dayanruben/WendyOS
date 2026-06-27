@@ -28,7 +28,7 @@ func discoverAgentCell(t *testing.T, m discoverModel) string {
 }
 
 func TestDiscoverModel_LANProbePendingThenOK(t *testing.T) {
-	m := newDiscoverModel(context.Background(), defaultOpts())
+	m := newDiscoverModel(context.Background(), defaultOpts(), true)
 
 	// A LAN device discovered without a version is "connecting": probe state is
 	// pending and the Agent cell shows a (non-empty) spinner frame, not blank.
@@ -55,7 +55,7 @@ func TestDiscoverModel_LANProbePendingThenOK(t *testing.T) {
 }
 
 func TestDiscoverModel_LANProbeFailedShowsGlyph(t *testing.T) {
-	m := newDiscoverModel(context.Background(), defaultOpts())
+	m := newDiscoverModel(context.Background(), defaultOpts(), true)
 	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{DisplayName: "beta"}}})
 	dm := updated.(discoverModel)
 
@@ -70,7 +70,7 @@ func TestDiscoverModel_LANProbeFailedShowsGlyph(t *testing.T) {
 }
 
 func TestDiscoverModel_LANProbeOKSurvivesTransientFailure(t *testing.T) {
-	m := newDiscoverModel(context.Background(), defaultOpts())
+	m := newDiscoverModel(context.Background(), defaultOpts(), true)
 	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{DisplayName: "gamma"}}})
 	dm := updated.(discoverModel)
 	updated, _ = dm.Update(lanProbeMsg{name: "gamma", dev: models.LANDevice{DisplayName: "gamma", AgentVersion: "1.2.3"}})
