@@ -550,6 +550,21 @@ func TestHasHostNetworkEntitlementEmptyModeIsHost(t *testing.T) {
 	}
 }
 
+// TestHasHostNetworkEntitlementHostAdmin verifies the WDY-1094 opt-in mode is
+// still recognised as host networking (it shares the host network stack; it
+// just additionally carries CAP_NET_ADMIN), so host-network-dependent wiring
+// like OTEL endpoint injection continues to apply.
+func TestHasHostNetworkEntitlementHostAdmin(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host-admin"},
+		},
+	}
+	if !hasHostNetworkEntitlement(cfg) {
+		t.Error("host-admin mode should imply host networking")
+	}
+}
+
 func TestExpandAgentHook(t *testing.T) {
 	t.Setenv("EXTRA_VALUE", "ok")
 

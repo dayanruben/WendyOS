@@ -269,9 +269,43 @@ func TestApplyEntitlements_Network_Host(t *testing.T) {
 		t.Error("host network entitlement did not remove network namespace")
 	}
 
-	// CAP_NET_ADMIN should be added.
-	if !slices.Contains(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN") {
-		t.Error("host network entitlement did not add CAP_NET_ADMIN")
+	// WDY-1094: plain "host" grants network *visibility* only. It must NOT grant
+	// CAP_NET_ADMIN — that lets a container reconfigure host interfaces, routes,
+	// and netfilter. Reconfiguration requires the explicit "host-admin" opt-in.
+	if slices.Contains(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN") {
+		t.Error("plain host network entitlement must not grant CAP_NET_ADMIN (WDY-1094)")
+	}
+}
+
+// TestApplyEntitlements_Network_HostAdmin verifies the explicit opt-in: mode
+// "host-admin" is host networking AND grants CAP_NET_ADMIN for apps that
+// genuinely need to reconfigure the network (WDY-1094).
+func TestApplyEntitlements_Network_HostAdmin(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host-admin"},
+		},
+	}
+
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// host-admin is host networking: the network namespace is removed.
+	if hasNamespace(spec, "network") {
+		t.Error("host-admin entitlement did not remove network namespace")
+	}
+	// host-admin is the opt-in that grants CAP_NET_ADMIN.
+	for _, set := range [][]string{
+		spec.Process.Capabilities.Bounding,
+		spec.Process.Capabilities.Effective,
+		spec.Process.Capabilities.Permitted,
+	} {
+		if !slices.Contains(set, "CAP_NET_ADMIN") {
+			t.Error("host-admin entitlement must grant CAP_NET_ADMIN in all capability sets")
+		}
 	}
 }
 

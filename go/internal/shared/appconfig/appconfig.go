@@ -293,8 +293,8 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 
 		switch e.Type {
 		case EntitlementNetwork:
-			if e.Mode != "" && e.Mode != "host" && e.Mode != "none" {
-				return fmt.Errorf("%s[%d]: network mode must be \"host\" or \"none\", got %q", prefix, i, e.Mode)
+			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" {
+				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", or \"none\", got %q", prefix, i, e.Mode)
 			}
 		case EntitlementPersist:
 			if e.Name == "" {
