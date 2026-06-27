@@ -40,9 +40,14 @@ func ParseRequirements(path string, data []byte) *Requirements {
 			line = strings.TrimSpace(line[:h])
 		}
 
-		if strings.HasPrefix(line, "--index-url") || strings.HasPrefix(line, "--extra-index-url") || strings.HasPrefix(line, "-i ") {
+		if strings.HasPrefix(line, "--index-url") || strings.HasPrefix(line, "--extra-index-url") || strings.HasPrefix(line, "-i ") || strings.HasPrefix(line, "-i=") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
+			first := fields[0]
+			if eq := strings.IndexByte(first, '='); eq >= 0 {
+				if url := first[eq+1:]; url != "" {
+					r.IndexURLs = append(r.IndexURLs, url)
+				}
+			} else if len(fields) >= 2 {
 				r.IndexURLs = append(r.IndexURLs, fields[len(fields)-1])
 			}
 			continue

@@ -26,3 +26,10 @@ func TestParseRequirements(t *testing.T) {
 		t.Fatalf("third pkg = %+v, want onnxruntime-gpu", r.Packages[2])
 	}
 }
+
+func TestParseRequirementsEqualsIndexURL(t *testing.T) {
+	r := ParseRequirements("requirements.txt", []byte("--index-url=https://download.pytorch.org/whl/cpu\ntorch\n"))
+	if len(r.IndexURLs) != 1 || r.IndexURLs[0] != "https://download.pytorch.org/whl/cpu" {
+		t.Fatalf("IndexURLs = %v, want one whl/cpu url", r.IndexURLs)
+	}
+}

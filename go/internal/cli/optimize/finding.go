@@ -1,6 +1,9 @@
 package optimize
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // Severity ranks how strongly a finding should be acted on.
 type Severity int
@@ -38,6 +41,25 @@ func ParseSeverity(s string) (Severity, error) {
 	}
 }
 
+// MarshalJSON encodes Severity as its lowercase string name.
+func (s Severity) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.Quote(s.String())), nil
+}
+
+// UnmarshalJSON decodes a Severity from its string name.
+func (s *Severity) UnmarshalJSON(data []byte) error {
+	str, err := strconv.Unquote(string(data))
+	if err != nil {
+		return err
+	}
+	v, err := ParseSeverity(str)
+	if err != nil {
+		return err
+	}
+	*s = v
+	return nil
+}
+
 // Loc points at a source location for a finding.
 type Loc struct {
 	File string `json:"file"`
@@ -66,11 +88,11 @@ type Fix struct {
 
 // Finding is a single optimization issue.
 type Finding struct {
-	Analyzer string `json:"analyzer"`
-	Target   string `json:"target,omitempty"`
-	Severity Severity
-	Title    string `json:"title"`
-	Detail   string `json:"detail"`
-	Location *Loc   `json:"location,omitempty"`
-	Fix      *Fix   `json:"fix,omitempty"`
+	Analyzer string   `json:"analyzer"`
+	Target   string   `json:"target,omitempty"`
+	Severity Severity `json:"severity"`
+	Title    string   `json:"title"`
+	Detail   string   `json:"detail"`
+	Location *Loc     `json:"location,omitempty"`
+	Fix      *Fix     `json:"fix,omitempty"`
 }

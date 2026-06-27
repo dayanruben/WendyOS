@@ -65,3 +65,17 @@ func TestCudaSilentWhenAligned(t *testing.T) {
 		t.Fatalf("want 0, got %+v", got)
 	}
 }
+
+func TestCudaCPUIndexURLEqualsFormWithGPUEntitlement(t *testing.T) {
+	tg := &Target{
+		Name:         "app",
+		Kind:         KindDockerfile,
+		Arch:         "arm64",
+		Config:       gpuCfg(),
+		Requirements: ParseRequirements("requirements.txt", []byte("--index-url=https://download.pytorch.org/whl/cpu\ntorch\n")),
+	}
+	got := cudaMLAnalyzer{}.Analyze(tg)
+	if len(got) != 1 || got[0].Severity != SeverityWarning {
+		t.Fatalf("want 1 warning for cpu-index + gpu entitlement, got %+v", got)
+	}
+}

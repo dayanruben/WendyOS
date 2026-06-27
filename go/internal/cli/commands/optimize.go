@@ -76,13 +76,19 @@ func newOptimizeCmd() *cobra.Command {
 		Use:   "optimize",
 		Short: "Analyze the project's build config for missed optimizations",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if agenticFlag && fixFlag {
+				fmt.Fprintln(os.Stderr, "error: --agentic and --fix cannot be combined; --agentic only emits an analysis bundle")
+				os.Exit(2)
+			}
 			cwd, err := os.Getwd()
 			if err != nil {
-				return err
+				fmt.Fprintln(os.Stderr, err.Error())
+				os.Exit(2)
 			}
 			threshold, err := optimize.ParseSeverity(severityFlag)
 			if err != nil {
-				return err
+				fmt.Fprintln(os.Stderr, err.Error())
+				os.Exit(2)
 			}
 			opts := optimizeOptions{Dir: cwd, Arch: archFlag, Fix: fixFlag, Agentic: agenticFlag}
 

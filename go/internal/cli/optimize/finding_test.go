@@ -1,6 +1,10 @@
 package optimize
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestSeverityString(t *testing.T) {
 	cases := []struct {
@@ -30,5 +34,30 @@ func TestParseSeverity(t *testing.T) {
 	}
 	if _, err := ParseSeverity("bogus"); err == nil {
 		t.Fatalf("ParseSeverity(\"bogus\") expected error, got nil")
+	}
+}
+
+func TestSeverityJSON(t *testing.T) {
+	b, err := json.Marshal(SeverityWarning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `"warning"` {
+		t.Fatalf("marshal = %s, want \"warning\"", b)
+	}
+	var s Severity
+	if err := json.Unmarshal([]byte(`"error"`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s != SeverityError {
+		t.Fatalf("unmarshal = %v, want SeverityError", s)
+	}
+	// Finding marshals severity under the lowercase key with a string value.
+	fb, err := json.Marshal(Finding{Analyzer: "x", Severity: SeverityError, Title: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fb), `"severity":"error"`) {
+		t.Fatalf("finding json = %s, want severity:\"error\"", fb)
 	}
 }
