@@ -4,7 +4,24 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
+
+// withTourCompletionsInstalled pins HOME to a temp dir and, when installed is
+// true, seeds a config marking shell completions as installed. This makes the
+// AI-onboarding → device-setup transition deterministic in tests, since it now
+// interposes the completions phase when completions are missing.
+func withTourCompletionsInstalled(t *testing.T, installed bool) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	if installed {
+		if err := config.Save(&config.Config{CompletionInstalled: true}); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+	}
+}
 
 // stepTour runs one Update and returns the resulting model + command.
 func stepTour(t *testing.T, m tourWizardModel, msg tea.Msg) (tourWizardModel, tea.Cmd) {
@@ -37,6 +54,7 @@ func TestTourAICheckRouting(t *testing.T) {
 	})
 
 	t.Run("neither detected skips to device load", func(t *testing.T) {
+		withTourCompletionsInstalled(t, true)
 		m := newTourWizardModel()
 		m.phase = phaseWelcome
 		m, cmd := stepTour(t, m, tourAICheckDoneMsg{})
@@ -51,10 +69,11 @@ func TestTourAICheckRouting(t *testing.T) {
 
 func TestTourAIStepTransitions(t *testing.T) {
 	t.Run("skip leads to device load", func(t *testing.T) {
+		withTourCompletionsInstalled(t, true)
 		m := newTourWizardModel()
 		m.phase = phaseAICheck
 		m.codexPath = "/usr/bin/codex"
-		m.wifiCursor = 1 // "No, skip"
+		m.menuCursor = 1 // "No, skip"
 		m, cmd := stepTour(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 		if m.phase != phaseLoadDevices {
 			t.Fatalf("phase = %v, want phaseLoadDevices", m.phase)
@@ -68,7 +87,7 @@ func TestTourAIStepTransitions(t *testing.T) {
 		m := newTourWizardModel()
 		m.phase = phaseAICheck
 		m.codexPath = "/usr/bin/codex" // no claude
-		m.wifiCursor = 0               // "Yes, set up MCP"
+		m.menuCursor = 0               // "Yes, set up MCP"
 		m, cmd := stepTour(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 		if cmd == nil {
 			t.Fatal("expected runMCPSetupCmd, got nil") // not executed — would write config
@@ -79,6 +98,7 @@ func TestTourAIStepTransitions(t *testing.T) {
 	})
 
 	t.Run("mcp results screen leads to device load", func(t *testing.T) {
+		withTourCompletionsInstalled(t, true)
 		m := newTourWizardModel()
 		m.phase = phaseAIMCPSetup
 		m, cmd := stepTour(t, m, tea.KeyMsg{Type: tea.KeyEnter})
