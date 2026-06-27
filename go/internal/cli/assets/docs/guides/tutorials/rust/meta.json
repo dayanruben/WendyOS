@@ -1,6 +1,6 @@
 {
-  "title": "TypeScript Guides",
-  "language": "typescript",
+  "title": "Rust",
+  "language": "rust",
   "pages": [
     "hello-world",
     "simple-web-server",
