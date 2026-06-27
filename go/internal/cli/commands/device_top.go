@@ -376,6 +376,17 @@ type topModel struct {
 	width     int
 	height    int
 	flash     string
+
+	// Ports for the currently selected app (always-on side panel).
+	portsApp string
+	ports    []*agentpb.PortEntry
+	portsErr error
+}
+
+type topPortsMsg struct {
+	app   string
+	ports []*agentpb.PortEntry
+	err   error
 }
 
 func newTopModel(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) topModel {
@@ -399,6 +410,48 @@ func waitForTopStats(ch chan topStatsMsg) tea.Cmd {
 }
 func waitForTopContainers(ch chan topContainersMsg) tea.Cmd {
 	return func() tea.Msg { msg, ok := <-ch; if !ok { return nil }; return msg }
+}
+
+// selectedAppName returns the app the cursor is on, walking up from a service
+// subrow to its group header.
+func (m topModel) selectedAppName() string {
+	for i := m.cursor; i >= 0 && i < len(m.rows); i-- {
+		if m.rows[i].name != "" {
+			return m.rows[i].name
+		}
+	}
+	return ""
+}
+
+// fetchPortsCmd fetches the listening ports for app. The result carries the app
+// name so a stale response for a no-longer-selected app can be ignored.
+func (m topModel) fetchPortsCmd(app string) tea.Cmd {
+	conn, ctx := m.conn, m.ctx
+	return func() tea.Msg {
+		if app == "" {
+			return topPortsMsg{app: app}
+		}
+		resp, err := conn.ContainerService.GetContainerPorts(ctx, &agentpb.GetContainerPortsRequest{AppName: app})
+		if err != nil {
+			return topPortsMsg{app: app, err: err}
+		}
+		return topPortsMsg{app: app, ports: resp.GetPorts()}
+	}
+}
+
+// maybeFetchPorts issues a ports fetch when the selected app has changed,
+// clearing the now-stale panel contents. Returns nil when the selection is
+// unchanged. The pointer receiver mutates the addressable model copy held by
+// Update.
+func (m *topModel) maybeFetchPorts() tea.Cmd {
+	sel := m.selectedAppName()
+	if sel == m.portsApp {
+		return nil
+	}
+	m.portsApp = sel
+	m.ports = nil
+	m.portsErr = nil
+	return m.fetchPortsCmd(sel)
 }
 
 func (m topModel) runStatsPoll() {
@@ -493,16 +546,28 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.cur = newTopSample(msg.resp, time.Now().UnixNano())
 		m.rebuildRows()
-		return m, waitForTopStats(m.statsCh)
+		// Refresh ports for the selected app on every tick so they stay current.
+		sel := m.selectedAppName()
+		m.portsApp = sel
+		return m, tea.Batch(waitForTopStats(m.statsCh), m.fetchPortsCmd(sel))
 
 	case topContainersMsg:
 		if msg.err != nil {
 			m.flash = userFacingGRPCError(msg.err)
-		} else {
-			m.cachedContainers = msg.containers
-			m.rebuildRows()
+			return m, waitForTopContainers(m.containersCh)
 		}
-		return m, waitForTopContainers(m.containersCh)
+		m.cachedContainers = msg.containers
+		m.rebuildRows()
+		return m, tea.Batch(waitForTopContainers(m.containersCh), m.maybeFetchPorts())
+
+	case topPortsMsg:
+		// Ignore responses for an app that is no longer selected.
+		if msg.app == m.selectedAppName() {
+			m.ports = msg.ports
+			m.portsErr = msg.err
+			m.portsApp = msg.app
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -512,16 +577,20 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 			}
+			return m, m.maybeFetchPorts()
 		case "down", "j":
 			if m.cursor < len(m.rows)-1 {
 				m.cursor++
 			}
+			return m, m.maybeFetchPorts()
 		case "c":
 			m.sortByCPU = true
 			m.rebuildRows()
+			return m, m.maybeFetchPorts()
 		case "m":
 			m.sortByCPU = false
 			m.rebuildRows()
+			return m, m.maybeFetchPorts()
 		}
 		return m, nil
 	}
@@ -606,12 +675,22 @@ func (m topModel) View() string {
 	if height <= 0 {
 		height = 24
 	}
-	meterW := width - 2
 
-	var lines []string
+	// Reserve a right-hand ports panel when the terminal is wide enough.
+	panelW := 0
+	if width >= 70 {
+		panelW = 34
+	}
+	listW := width
+	if panelW > 0 {
+		listW = width - panelW - 3 // " │ " separator
+	}
+
+	var top []string // full-width meters + summary
 
 	if m.cur.host != nil {
 		h := m.cur.host
+		meterW := width - 2
 		cpuRatio, cpuVal := 0.0, "—"
 		if m.havePrev {
 			pct := hostCPUPercent(m.prev, m.cur)
@@ -621,14 +700,14 @@ func (m topModel) View() string {
 		if h.GetCpuCount() > 0 {
 			cpuLabel = fmt.Sprintf("CPU(%d)", h.GetCpuCount())
 		}
-		lines = append(lines, topMeter(cpuLabel, cpuRatio, cpuVal, meterW))
+		top = append(top, topMeter(cpuLabel, cpuRatio, cpuVal, meterW))
 
 		used := h.GetMemTotalBytes() - h.GetMemAvailableBytes()
 		memRatio := 0.0
 		if h.GetMemTotalBytes() > 0 {
 			memRatio = float64(used) / float64(h.GetMemTotalBytes())
 		}
-		lines = append(lines, topMeter("Mem", memRatio,
+		top = append(top, topMeter("Mem", memRatio,
 			fmt.Sprintf("%s/%s", formatBytes(used), formatBytes(h.GetMemTotalBytes())), meterW))
 
 		for _, g := range h.GetGpus() {
@@ -639,23 +718,57 @@ func (m topModel) View() string {
 			if g.TempC != nil {
 				val += fmt.Sprintf(" %.0f°C", *g.TempC)
 			}
-			lines = append(lines, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
+			top = append(top, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
 		}
 	} else {
-		lines = append(lines, topValDim.Render(" Connecting…"))
+		top = append(top, topValDim.Render(" Connecting…"))
 	}
 
-	// Tasks summary.
 	running := 0
 	for _, c := range m.cachedContainers {
 		if c.GetRunningState() == agentpb.AppRunningState_RUNNING {
 			running++
 		}
 	}
-	lines = append(lines, topValDim.Render(fmt.Sprintf(" Apps: %d, %d running", len(m.cachedContainers), running)))
-	lines = append(lines, "")
+	top = append(top, topValDim.Render(fmt.Sprintf(" Apps: %d, %d running", len(m.cachedContainers), running)))
+	top = append(top, "")
 
-	// Column header (htop cyan bar), with the active sort column highlighted.
+	// Build the left (container list) and right (ports) columns of the body.
+	left := m.listLines(listW)
+	var right []string
+	if panelW > 0 {
+		right = m.portsPanelLines(panelW)
+	}
+
+	bodyHeight := height - len(top) - 1 // last line is the key bar
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	sep := topValDim.Render(" │ ")
+	body := make([]string, bodyHeight)
+	for i := 0; i < bodyHeight; i++ {
+		l := ""
+		if i < len(left) {
+			l = left[i]
+		}
+		l = padOrCrop(l, listW)
+		if panelW == 0 {
+			body[i] = l
+			continue
+		}
+		r := ""
+		if i < len(right) {
+			r = right[i]
+		}
+		body[i] = l + sep + padOrCrop(r, panelW)
+	}
+
+	out := append(top, body...)
+	return strings.Join(out, "\n") + "\n" + m.topKeyBar(width)
+}
+
+// listLines renders the container table (header + rows) at the given width.
+func (m topModel) listLines(width int) []string {
 	nameW := topNameWidth(width)
 	cpuTitle, memTitle := "CPU%", "MEM"
 	if m.sortByCPU {
@@ -663,13 +776,13 @@ func (m topModel) View() string {
 	} else {
 		memTitle = "MEM▾"
 	}
-	header := topFormatRow("APP", cpuTitle, "MEM%", memTitle, "STATE", nameW)
-	header = padOrCrop(header, width)
+	var lines []string
+	header := padOrCrop(topFormatRow("APP", cpuTitle, "MEM%", memTitle, "STATE", nameW), width)
 	lines = append(lines, topHeaderBar.Render(header))
 
-	// Rows.
 	if len(m.rows) == 0 {
 		lines = append(lines, topValDim.Render(" Sampling…"))
+		return lines
 	}
 	memTotal := int64(0)
 	if m.cur.host != nil {
@@ -684,29 +797,51 @@ func (m topModel) View() string {
 		if memTotal > 0 {
 			memp = fmt.Sprintf("%.1f", float64(r.memBytes)/float64(memTotal)*100)
 		}
-		name := r.displayName
-		row := topFormatRow(name, cpu, memp, formatBytes(r.memBytes), "", nameW)
-		row = padOrCrop(row, width)
-		if i == m.cursor {
+		row := padOrCrop(topFormatRow(r.displayName, cpu, memp, formatBytes(r.memBytes), "", nameW), width)
+		switch {
+		case i == m.cursor:
 			lines = append(lines, topSelRow.Render(row))
-		} else if r.isSubrow {
+		case r.isSubrow:
 			lines = append(lines, topValDim.Render(row))
-		} else {
+		default:
 			lines = append(lines, row)
 		}
 	}
+	return lines
+}
 
-	// Pad to fill the screen, leaving the last line for the key bar.
-	bodyHeight := height - 1
-	for len(lines) < bodyHeight {
-		lines = append(lines, "")
+// portsPanelLines renders the open-ports panel for the selected app.
+func (m topModel) portsPanelLines(width int) []string {
+	app := m.selectedAppName()
+	title := "OPEN PORTS"
+	if app != "" {
+		title = "OPEN PORTS — " + app
 	}
-	if len(lines) > bodyHeight {
-		lines = lines[:bodyHeight]
-	}
+	lines := []string{topHeaderBar.Render(padOrCrop(" "+title, width))}
 
-	keyBar := m.topKeyBar(width)
-	return strings.Join(lines, "\n") + "\n" + keyBar
+	switch {
+	case app == "":
+		lines = append(lines, topValDim.Render(" (no app selected)"))
+	case m.portsErr != nil:
+		if errors.Is(m.portsErr, errResourceStatsUnimplemented) || status.Code(m.portsErr) == codes.Unimplemented {
+			lines = append(lines, topValDim.Render(" (agent too old)"))
+		} else {
+			lines = append(lines, topValDim.Render(" (unavailable)"))
+		}
+	case m.portsApp != app:
+		lines = append(lines, topValDim.Render(" …"))
+	case len(m.ports) == 0:
+		lines = append(lines, topValDim.Render(" (none listening)"))
+	default:
+		for _, p := range m.ports {
+			addr := p.GetAddress()
+			if strings.Contains(addr, ":") { // IPv6 → bracket for clarity
+				addr = "[" + addr + "]"
+			}
+			lines = append(lines, fmt.Sprintf(" %-4s %s:%d", p.GetProtocol(), addr, p.GetPort()))
+		}
+	}
+	return lines
 }
 
 // padOrCrop pads a plain string with spaces to exactly width, or crops it.
