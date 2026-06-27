@@ -44,6 +44,8 @@ type mockContainerdClient struct {
 	mcpPortErr            error
 	restartPolicyLabel    string
 	restartPolicyLabelErr error
+	resourceStats         []*agentpb.ResourceContainerStats
+	resourceStatsErr      error
 }
 
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
@@ -96,6 +98,10 @@ func (m *mockContainerdClient) StartContainerWithStdin(_ context.Context, _ stri
 }
 func (m *mockContainerdClient) GetContainerStats(_ context.Context) ([]*agentpb.ContainerStats, error) {
 	return m.statsResult, m.statsErr
+}
+
+func (m *mockContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return m.resourceStats, m.resourceStatsErr
 }
 
 func (m *mockContainerdClient) GetContainerMetrics(_ context.Context, _ string) (ContainerMetrics, error) {
@@ -1147,6 +1153,32 @@ func TestParseAppConfigAcceptsValidAppID(t *testing.T) {
 	}
 	if cfg.AppID != "com.example.app" {
 		t.Fatalf("appId = %q, want %q", cfg.AppID, "com.example.app")
+	}
+}
+
+func TestGetResourceStatsHandler(t *testing.T) {
+	svc := &ContainerService{
+		logger: zap.NewNop(),
+		containerd: &mockContainerdClient{
+			resourceStats: []*agentpb.ResourceContainerStats{
+				{AppName: "myapp", CpuUsageNanos: 5000, MemoryBytes: 2048},
+			},
+		},
+	}
+	resp, err := svc.GetResourceStats(context.Background(), &agentpb.GetResourceStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetResourceStats: %v", err)
+	}
+	if len(resp.GetContainers()) != 1 || resp.GetContainers()[0].GetAppName() != "myapp" {
+		t.Fatalf("unexpected containers: %+v", resp.GetContainers())
+	}
+	if resp.GetContainers()[0].GetCpuUsageNanos() != 5000 {
+		t.Errorf("cpu = %d, want 5000", resp.GetContainers()[0].GetCpuUsageNanos())
+	}
+	// Host is populated best-effort; on a non-Linux test host the /proc reads may
+	// fail, so we only assert the host message is present (non-nil).
+	if resp.GetHost() == nil {
+		t.Errorf("host stats missing")
 	}
 }
 

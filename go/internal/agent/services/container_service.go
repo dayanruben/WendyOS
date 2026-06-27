@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -901,6 +902,51 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 		return nil, status.Errorf(codes.Internal, "getting container stats: %v", err)
 	}
 	return &agentpb.ListContainerStatsResponse{Stats: stats}, nil
+}
+
+// GetResourceStats returns host CPU/memory/GPU counters plus per-container CPU
+// and memory for `wendy device top`. Host metrics are best-effort: a failed
+// /proc read or absent GPU tool yields zero/empty fields rather than an error,
+// so the command degrades gracefully on constrained hosts.
+func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetResourceStatsRequest) (*agentpb.GetResourceStatsResponse, error) {
+	containers, err := s.containerd.GetResourceStats(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "getting resource stats: %v", err)
+	}
+
+	host := &agentpb.HostStats{}
+	if cpu, cpuErr := hoststats.ReadCPU(); cpuErr == nil {
+		host.CpuTotalJiffies = cpu.TotalJiffies
+		host.CpuIdleJiffies = cpu.IdleJiffies
+		host.CpuCount = cpu.CPUCount
+	}
+	if mem, memErr := hoststats.ReadMemory(); memErr == nil {
+		host.MemTotalBytes = mem.TotalBytes
+		host.MemAvailableBytes = mem.AvailableBytes
+	}
+	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
+
+	return &agentpb.GetResourceStatsResponse{
+		Host:       host,
+		Containers: containers,
+	}, nil
+}
+
+func gpuStatsToProto(in []hoststats.GPUStat) []*agentpb.GpuStats {
+	out := make([]*agentpb.GpuStats, 0, len(in))
+	for _, g := range in {
+		pg := &agentpb.GpuStats{
+			Index:         g.Index,
+			Name:          g.Name,
+			UtilPercent:   g.UtilPercent,
+			MemUsedBytes:  g.MemUsedBytes,
+			MemTotalBytes: g.MemTotalBytes,
+			TempC:         g.TempC,
+			PowerW:        g.PowerW,
+		}
+		out = append(out, pg)
+	}
+	return out
 }
 
 func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {
