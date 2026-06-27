@@ -20,9 +20,10 @@ import (
 
 // wendyOSUpdater drives the in-house wendyos-update engine
 // (github.com/wendylabsinc/wendyos-update), the primary OS A/B update backend.
-// Its CLI mirrors mender-update's verbs (install/commit/rollback with exit-2 =
-// "nothing pending"); the differences are structured JSON-lines progress on
-// stdout and richer exit codes (3 = artifact rejected, 4 = verify failed).
+// Its CLI mirrors mender-update's verbs: `commit` reports "nothing pending"
+// with exit 2, the differences being structured JSON-lines progress on stdout
+// and a richer install reject code (exit 3 = artifact rejected). A verify
+// failure surfaces as exit 4 from `commit` (not install), handled by the gate.
 type wendyOSUpdater struct {
 	logger *zap.Logger
 }
@@ -195,17 +196,15 @@ func parseWendyOSProgress(line string) (string, int32, bool) {
 }
 
 // wendyOSInstallErrorMessage builds the user-facing error for a failed
-// wendyos-update install, mapping the documented exit codes and appending the
-// captured tail of the tool's stderr.
+// wendyos-update install and appends the captured tail of the tool's stderr.
+// install rejects an artifact (incompatible device, bad checksum/digest, size
+// mismatch, or malformed) with exit 3; every other failure uses the generic
+// message. Exit 4 ("verify failed") is a commit-time code that install never
+// emits — the gate's commit path handles it — so it is not special-cased here.
 func wendyOSInstallErrorMessage(exitCode int, tail []string) string {
-	var reason string
-	switch exitCode {
-	case 3:
+	reason := "wendyos-update install failed"
+	if exitCode == 3 {
 		reason = "wendyos-update install failed: the artifact was rejected (incompatible device, bad checksum, or malformed)"
-	case 4:
-		reason = "wendyos-update install failed: verification failed"
-	default:
-		reason = "wendyos-update install failed"
 	}
 	if len(tail) > 0 {
 		return reason + "\nwendyos-update output:\n" + strings.Join(tail, "\n")

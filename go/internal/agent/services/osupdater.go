@@ -147,8 +147,9 @@ func findUpdater(candidates []osUpdater, name string) osUpdater {
 const updaterCommitTimeout = 60 * time.Second
 
 // commitStatusForExitCode maps a commit/rollback exit code to a status. Exit
-// code 2 means "nothing pending" for both wendyos-update and mender-update
-// (the in-house tool mirrors mender here on purpose).
+// code 2 is the "nothing pending" signal that `commit` emits (both
+// wendyos-update and mender-update mirror this). `rollback` reports "nothing to
+// roll back" via exit 1, not 2, so for the rollback path exit 2 never occurs.
 func commitStatusForExitCode(code int) oshealth.MenderStatus {
 	switch code {
 	case 0:

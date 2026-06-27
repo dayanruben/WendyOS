@@ -89,7 +89,6 @@ func TestWendyOSInstallErrorMessage(t *testing.T) {
 		wantContain string
 	}{
 		{name: "artifact rejected", exitCode: 3, wantContain: "rejected"},
-		{name: "verify failed", exitCode: 4, wantContain: "verif"},
 		{name: "generic error", exitCode: 1, wantContain: "wendyos-update install failed"},
 	}
 	for _, tt := range tests {
@@ -104,5 +103,19 @@ func TestWendyOSInstallErrorMessage(t *testing.T) {
 				t.Fatalf("wendyOSInstallErrorMessage(%d) = %q, want it to include the output tail", tt.exitCode, msg)
 			}
 		})
+	}
+}
+
+// exit 4 (verify failed) is a commit-time code in the wendyos-update contract;
+// install never emits it. The install error mapper must therefore not mislabel
+// a stray exit 4 as a verification failure — it falls through to the generic
+// message so it is not confused with a real install-time verify code.
+func TestWendyOSInstallErrorMessageDoesNotClaimVerifyFailure(t *testing.T) {
+	msg := wendyOSInstallErrorMessage(4, nil)
+	if strings.Contains(strings.ToLower(msg), "verif") {
+		t.Fatalf("wendyOSInstallErrorMessage(4) = %q, want no verification-failure wording (exit 4 is commit-time)", msg)
+	}
+	if !strings.Contains(msg, "wendyos-update install failed") {
+		t.Fatalf("wendyOSInstallErrorMessage(4) = %q, want the generic install-failed message", msg)
 	}
 }

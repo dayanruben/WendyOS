@@ -34,6 +34,7 @@ func newOSCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newOSUpdateCmd())
+	cmd.AddCommand(newOSUpdateStatusCmd())
 	cmd.AddCommand(newOSListDrivesCmd())
 	addOSInstallCmd(cmd)
 	addOSDownloadCmd(cmd)
@@ -51,10 +52,24 @@ func validateOSUpdateIdentity(versionResp *agentpb.GetAgentVersionResponse) erro
 	if isWendyOSUpdateTarget(versionResp) {
 		return nil
 	}
-	if versionResp.GetOs() == "linux" {
+	if osIsLinuxFamily(versionResp.GetOs()) {
 		return errors.New(linuxOSUpdateUnsupportedMessage)
 	}
 	return errors.New(osUpdateUnsupportedMessage)
+}
+
+// osIsLinuxFamily reports whether the agent's reported OS is a Linux
+// distribution. Since #1136 the agent reports the /etc/os-release ID (e.g.
+// "ubuntu", "wendyos") instead of "linux", so equality with "linux" no longer
+// identifies Linux hosts. Only darwin and windows agents are non-Linux; an
+// empty/unknown OS is treated as non-Linux so it gets the generic message.
+func osIsLinuxFamily(agentOS string) bool {
+	switch agentOS {
+	case "", "darwin", "windows":
+		return false
+	default:
+		return true
+	}
 }
 
 func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error {
@@ -69,9 +84,15 @@ func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error 
 	return nil
 }
 
+// isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The
+// signals are WendyOS-specific and authoritative on their own: a "WendyOS-" os
+// version (from /etc/wendyos/version.txt) or a device type (from
+// /etc/wendyos/device-type), neither of which is ever present on a non-WendyOS
+// host. It deliberately does NOT gate on the reported OS, which since #1136 is
+// the os-release ID (e.g. "wendyos"), not "linux".
 func isWendyOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) bool {
-	return versionResp.GetOs() == "linux" &&
-		(strings.HasPrefix(versionResp.GetOsVersion(), "WendyOS-") || versionResp.GetDeviceType() != "")
+	return strings.HasPrefix(versionResp.GetOsVersion(), "WendyOS-") ||
+		versionResp.GetDeviceType() != ""
 }
 
 func agentVersionHasFeature(versionResp *agentpb.GetAgentVersionResponse, feature string) bool {
@@ -612,10 +633,85 @@ func evaluateOSUpdateOutcome(
 			errors.New("OS update healthchecks failed and automatic rollback did not run")
 
 	default: // OUTCOME_COMMIT_FAILED
-		return "Update healthchecks passed, but the update could not be committed. " +
-				"The device retries the commit on its next agent restart; if it is never committed, the OS reverts on the next reboot.",
-			errors.New("OS update commit failed")
+		msg := "Update healthchecks passed, but the update could not be committed. " +
+			"The device retries the commit on its next agent restart; if it is never committed, the OS reverts on the next reboot."
+		if note := resp.GetNote(); note != "" {
+			msg += "\nReason: " + note
+		}
+		return msg, errors.New("OS update commit failed")
 	}
+}
+
+// newOSUpdateStatusCmd reports the device's record of its most recent OS update
+// without performing one. It is the only way to read why a commit failed when
+// the device has no shell access: the gate persists the reason and re-records
+// it on each agent restart while the commit keeps failing.
+func newOSUpdateStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update-status",
+		Short: "Show the result of the most recent WendyOS update",
+		Long: `Report the device's record of its most recent OS update attempt
+(committed, rolled back, or commit-failed), including the captured failure
+reason. Useful for diagnosing an update without shell access to the device.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{})
+			if err != nil {
+				if status.Code(err) == codes.Unimplemented {
+					return fmt.Errorf("this device's agent does not report OS update status; update the agent first")
+				}
+				return fmt.Errorf("querying OS update status: %w", err)
+			}
+			fmt.Println(formatOSUpdateStatus(resp))
+			return nil
+		},
+	}
+}
+
+// formatOSUpdateStatus renders a persisted OS-update record as-is, with no
+// staleness or version inference (unlike evaluateOSUpdateOutcome, which judges
+// a just-completed update). This keeps a past commit failure diagnosable after
+// the fact.
+func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
+	if resp == nil || !resp.GetHasResult() {
+		return "No OS update has been recorded on this device."
+	}
+
+	var b strings.Builder
+	switch resp.GetOutcome() {
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
+		b.WriteString("Last OS update: committed (healthchecks passed).\n")
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK:
+		b.WriteString("Last OS update: rolled back after failed healthchecks.\n")
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
+		b.WriteString("Last OS update: healthchecks failed and the rollback could not be performed.\n")
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED:
+		b.WriteString("Last OS update: healthchecks passed but the commit failed.\n")
+	default:
+		b.WriteString("Last OS update: outcome unknown.\n")
+	}
+
+	if v := resp.GetOldOsVersion(); v != "" {
+		fmt.Fprintf(&b, "  Previous version: %s\n", v)
+	}
+	if v := resp.GetNewOsVersion(); v != "" {
+		fmt.Fprintf(&b, "  Update version:   %s\n", v)
+	}
+	writeFailedServices(&b, resp.GetServices())
+	if note := resp.GetNote(); note != "" {
+		fmt.Fprintf(&b, "Reason: %s\n", note)
+	}
+	if re := resp.GetRollbackError(); re != "" {
+		fmt.Fprintf(&b, "Rollback error: %s\n", re)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func writeFailedServices(b *strings.Builder, services []*agentpb.GetOSUpdateStatusResponse_ServiceResult) {

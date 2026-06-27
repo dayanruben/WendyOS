@@ -341,6 +341,10 @@ type GetOSUpdateStatusResponse struct {
 	FinalizedAtUnix int64 `protobuf:"varint,7,opt,name=finalized_at_unix,json=finalizedAtUnix,proto3" json:"finalized_at_unix,omitempty"`
 	// Non-empty when the rollback command itself errored.
 	RollbackError string `protobuf:"bytes,8,opt,name=rollback_error,json=rollbackError,proto3" json:"rollback_error,omitempty"`
+	// Human-readable detail for the outcome. For OUTCOME_COMMIT_FAILED this is
+	// the commit command's failure reason, including the OS updater's output,
+	// so the failure is diagnosable without shell access to the device.
+	Note          string `protobuf:"bytes,9,opt,name=note,proto3" json:"note,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -427,6 +431,13 @@ func (x *GetOSUpdateStatusResponse) GetFinalizedAtUnix() int64 {
 func (x *GetOSUpdateStatusResponse) GetRollbackError() string {
 	if x != nil {
 		return x.RollbackError
+	}
+	return ""
+}
+
+func (x *GetOSUpdateStatusResponse) GetNote() string {
+	if x != nil {
+		return x.Note
 	}
 	return ""
 }
@@ -653,7 +664,7 @@ const file_wendy_agent_services_v2_os_update_service_proto_rawDesc = "" +
 	"\x06Failed\x12#\n" +
 	"\rerror_message\x18\x01 \x01(\tR\ferrorMessageB\x0f\n" +
 	"\rresponse_type\"\x1a\n" +
-	"\x18GetOSUpdateStatusRequest\"\xbe\x06\n" +
+	"\x18GetOSUpdateStatusRequest\"\xd2\x06\n" +
 	"\x19GetOSUpdateStatusResponse\x12\x1d\n" +
 	"\n" +
 	"has_result\x18\x01 \x01(\bR\thasResult\x12T\n" +
@@ -663,7 +674,8 @@ const file_wendy_agent_services_v2_os_update_service_proto_rawDesc = "" +
 	"\x0enew_os_version\x18\x05 \x01(\tR\fnewOsVersion\x12&\n" +
 	"\x0fcreated_at_unix\x18\x06 \x01(\x03R\rcreatedAtUnix\x12*\n" +
 	"\x11finalized_at_unix\x18\a \x01(\x03R\x0ffinalizedAtUnix\x12%\n" +
-	"\x0erollback_error\x18\b \x01(\tR\rrollbackError\x1a\xf9\x01\n" +
+	"\x0erollback_error\x18\b \x01(\tR\rrollbackError\x12\x12\n" +
+	"\x04note\x18\t \x01(\tR\x04note\x1a\xf9\x01\n" +
 	"\rServiceResult\x12\x12\n" +
 	"\x04unit\x18\x01 \x01(\tR\x04unit\x12_\n" +
 	"\x06status\x18\x02 \x01(\x0e2G.wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult.StatusR\x06status\x12\x16\n" +

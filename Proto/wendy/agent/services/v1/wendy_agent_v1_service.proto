@@ -518,4 +518,8 @@ message GetOSUpdateStatusResponse {
     int64 finalized_at_unix = 7;
     // Non-empty when the rollback command itself errored.
     string rollback_error = 8;
+    // Human-readable detail for the outcome. For OUTCOME_COMMIT_FAILED this is
+    // the commit command's failure reason, including the OS updater's output,
+    // so the failure is diagnosable without shell access to the device.
+    string note = 9;
 }

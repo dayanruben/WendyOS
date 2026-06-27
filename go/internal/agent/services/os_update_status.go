@@ -32,6 +32,7 @@ func osUpdateStatusToProtoV1(r oshealth.UpdateResult) *agentpb.GetOSUpdateStatus
 		NewOsVersion:  r.NewOSVersion,
 		CreatedAtUnix: r.CreatedAt.Unix(),
 		RollbackError: r.RollbackError,
+		Note:          r.Note,
 	}
 	if !r.FinalizedAt.IsZero() {
 		resp.FinalizedAtUnix = r.FinalizedAt.Unix()
@@ -96,6 +97,7 @@ func osUpdateStatusToProtoV2(r oshealth.UpdateResult) *agentpbv2.GetOSUpdateStat
 		CreatedAtUnix:   v1.CreatedAtUnix,
 		FinalizedAtUnix: v1.FinalizedAtUnix,
 		RollbackError:   v1.RollbackError,
+		Note:            v1.Note,
 	}
 	for _, svc := range v1.Services {
 		resp.Services = append(resp.Services, &agentpbv2.GetOSUpdateStatusResponse_ServiceResult{
