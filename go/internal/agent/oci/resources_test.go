@@ -6,9 +6,13 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
+// pidsPtr is a test helper: ResourceLimits.PIDs is a pointer so an absent field
+// (nil → default cap) is distinguishable from an explicit, rejected 0.
+func pidsPtr(v int64) *int64 { return &v }
+
 func TestApplyResourceLimits_AllFields(t *testing.T) {
 	spec := DefaultSpec("rootfs", []string{"/app"})
-	limits := &appconfig.ResourceLimits{Memory: "512Mi", CPUs: "1.5", PIDs: 256}
+	limits := &appconfig.ResourceLimits{Memory: "512Mi", CPUs: "1.5", PIDs: pidsPtr(256)}
 
 	if err := ApplyResourceLimits(spec, limits); err != nil {
 		t.Fatalf("ApplyResourceLimits: %v", err)
@@ -106,7 +110,7 @@ func TestApplyResourceLimits_DefaultsPIDsWhenUndeclared(t *testing.T) {
 // limit always wins over the default — including a deliberately high value.
 func TestApplyResourceLimits_DeclaredPIDsOverridesDefault(t *testing.T) {
 	spec := DefaultSpec("rootfs", []string{"/app"})
-	if err := ApplyResourceLimits(spec, &appconfig.ResourceLimits{PIDs: DefaultMaxPIDs * 4}); err != nil {
+	if err := ApplyResourceLimits(spec, &appconfig.ResourceLimits{PIDs: pidsPtr(DefaultMaxPIDs * 4)}); err != nil {
 		t.Fatalf("ApplyResourceLimits: %v", err)
 	}
 	if p := spec.Linux.Resources.Pids; p == nil || p.Limit != DefaultMaxPIDs*4 {

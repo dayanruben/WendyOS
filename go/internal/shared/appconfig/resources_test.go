@@ -2,6 +2,10 @@ package appconfig
 
 import "testing"
 
+// pidsPtr is a test helper: ResourceLimits.PIDs is a pointer so an absent field
+// (nil → default cap) is distinguishable from an explicit, rejected 0.
+func pidsPtr(v int64) *int64 { return &v }
+
 func TestLoadFromBytes_Resources(t *testing.T) {
 	data := []byte(`{
 		"appId": "demo",
@@ -14,7 +18,7 @@ func TestLoadFromBytes_Resources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromBytes: %v", err)
 	}
-	if cfg.Resources == nil || cfg.Resources.Memory != "512Mi" || cfg.Resources.CPUs != "1.5" || cfg.Resources.PIDs != 256 {
+	if cfg.Resources == nil || cfg.Resources.Memory != "512Mi" || cfg.Resources.CPUs != "1.5" || cfg.Resources.PIDs == nil || *cfg.Resources.PIDs != 256 {
 		t.Fatalf("app-level resources not decoded: %+v", cfg.Resources)
 	}
 	svc := cfg.Services["worker"]
@@ -45,7 +49,9 @@ func TestResourceLimits_MemoryLimitBytes(t *testing.T) {
 		{in: "-1", wantErr: true},
 		{in: "abc", wantErr: true},
 		{in: "12Xi", wantErr: true},
-		{in: "1.5Gi", wantErr: true}, // fractional bytes not allowed
+		{in: "1.5Gi", wantErr: true},                  // fractional bytes not allowed
+		{in: "9223372036854775807Ti", wantErr: true}, // overflows int64 after suffix multiply
+		{in: "9999999999999999Gi", wantErr: true},    // also overflows
 	}
 	for _, c := range cases {
 		r := &ResourceLimits{Memory: c.in}
@@ -119,9 +125,9 @@ func TestResourceLimits_CPUQuota(t *testing.T) {
 
 func TestResourceLimits_PIDsLimit(t *testing.T) {
 	if got := (&ResourceLimits{}).PIDsLimit(); got != nil {
-		t.Errorf("zero PIDs: want nil, got %d", *got)
+		t.Errorf("unset PIDs: want nil, got %d", *got)
 	}
-	if got := (&ResourceLimits{PIDs: 256}).PIDsLimit(); got == nil || *got != 256 {
+	if got := (&ResourceLimits{PIDs: pidsPtr(256)}).PIDsLimit(); got == nil || *got != 256 {
 		t.Errorf("PIDs 256: want 256, got %v", got)
 	}
 }
@@ -133,10 +139,13 @@ func TestValidate_Resources(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "nil resources ok", res: nil},
-		{name: "valid all fields", res: &ResourceLimits{Memory: "512Mi", CPUs: "1.5", PIDs: 256}},
+		{name: "valid all fields", res: &ResourceLimits{Memory: "512Mi", CPUs: "1.5", PIDs: pidsPtr(256)}},
+		{name: "unset pids ok", res: &ResourceLimits{Memory: "512Mi"}},
 		{name: "bad memory", res: &ResourceLimits{Memory: "lots"}, wantErr: true},
+		{name: "overflow memory", res: &ResourceLimits{Memory: "9223372036854775807Ti"}, wantErr: true},
 		{name: "bad cpus", res: &ResourceLimits{CPUs: "-2"}, wantErr: true},
-		{name: "negative pids", res: &ResourceLimits{PIDs: -5}, wantErr: true},
+		{name: "negative pids", res: &ResourceLimits{PIDs: pidsPtr(-5)}, wantErr: true},
+		{name: "explicit zero pids rejected", res: &ResourceLimits{PIDs: pidsPtr(0)}, wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

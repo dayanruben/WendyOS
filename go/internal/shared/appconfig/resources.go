@@ -2,6 +2,7 @@ package appconfig
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -23,9 +24,12 @@ type ResourceLimits struct {
 	// CPUs is the maximum number of CPU cores, as a decimal (e.g. "0.5", "1.5",
 	// "2"). It is enforced as a CFS quota over a fixed 100ms period.
 	CPUs string `json:"cpus,omitempty"`
-	// PIDs is the maximum number of processes/threads the container may create.
-	// A cheap guard against fork bombs. Omitted (0) means unbounded.
-	PIDs int64 `json:"pids,omitempty"`
+	// PIDs is the maximum number of processes/threads the container may create —
+	// a cheap guard against fork bombs. It is a pointer so an absent field is
+	// distinguishable from an explicit (and rejected) 0: when omitted (nil) the
+	// agent applies its conservative default cap (oci.DefaultMaxPIDs), set it
+	// explicitly to raise or lower that ceiling.
+	PIDs *int64 `json:"pids,omitempty"`
 }
 
 // memorySuffixes maps a (lower-cased) unit suffix to its multiplier. The "i"
@@ -63,6 +67,13 @@ func (r *ResourceLimits) MemoryLimitBytes() (*int64, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("memory must be a positive quantity, got %q", r.Memory)
 	}
+	// Guard the suffix multiplication against int64 overflow: a value like
+	// "9223372036854775807Ti" would otherwise wrap to a negative or tiny number
+	// and silently undersize (or unbound) the cgroup limit. n>0 and mult>=1, so
+	// the division is safe.
+	if n > math.MaxInt64/mult {
+		return nil, fmt.Errorf("memory %q is too large (overflows the maximum byte count)", r.Memory)
+	}
 	bytes := n * mult
 	return &bytes, nil
 }
@@ -87,12 +98,13 @@ func (r *ResourceLimits) CPUQuota() (*int64, *uint64, error) {
 	return &quota, &period, nil
 }
 
-// PIDsLimit returns the process-count limit, or nil when unset (unbounded).
+// PIDsLimit returns the process-count limit, or nil when unset (the agent then
+// applies its default cap, see oci.DefaultMaxPIDs).
 func (r *ResourceLimits) PIDsLimit() *int64 {
-	if r.PIDs == 0 {
+	if r.PIDs == nil {
 		return nil
 	}
-	limit := r.PIDs
+	limit := *r.PIDs
 	return &limit
 }
 
@@ -108,8 +120,12 @@ func (r *ResourceLimits) validate(prefix string) error {
 	if _, _, err := r.CPUQuota(); err != nil {
 		return fmt.Errorf("%s.%w", prefix, err)
 	}
-	if r.PIDs < 0 {
-		return fmt.Errorf("%s.pids must not be negative, got %d", prefix, r.PIDs)
+	// nil means "use the default cap"; an explicit value must be a positive
+	// process count. Reject 0 (and negatives) with a clear hint rather than
+	// silently treating 0 as "unset" — schema enforces minimum:1, but a legacy
+	// or hand-rolled config could still reach the agent.
+	if r.PIDs != nil && *r.PIDs < 1 {
+		return fmt.Errorf("%s.pids must be a positive process count (omit the field to use the default cap), got %d", prefix, *r.PIDs)
 	}
 	return nil
 }
