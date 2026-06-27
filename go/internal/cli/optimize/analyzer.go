@@ -11,6 +11,7 @@ func DefaultAnalyzers() []Analyzer {
 	return []Analyzer{
 		buildCacheAnalyzer{},
 		releaseDebugAnalyzer{},
+		cudaMLAnalyzer{},
 	}
 }
 
