@@ -87,7 +87,7 @@ export function InstallScripts() {
               </p>
               <Command
                 label="macOS / Linux"
-                command="curl -fsSL https://install.wendy.sh/cli.sh | bash"
+                command="curl -fsSL https://install.wendy.dev/cli.sh | bash"
               />
               <Command
                 label="Windows"
@@ -105,7 +105,7 @@ export function InstallScripts() {
               </p>
               <Command
                 label="Linux"
-                command="curl -fsSL https://install.wendy.sh/agent.sh | bash"
+                command="curl -fsSL https://install.wendy.dev/agent.sh | bash"
               />
             </section>
           </div>

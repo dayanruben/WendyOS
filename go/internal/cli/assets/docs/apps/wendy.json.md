@@ -6,7 +6,7 @@
 
 ```json
 {
-  "$schema": "https://wendy.sh/schemas/wendy.json",
+  "$schema": "https://wendy.dev/schemas/wendy.json",
   "appId": "my-app",
   "platform": "linux",
   "version": "1.0.0",
@@ -54,7 +54,7 @@ Minimal SwiftPM/Linux container configuration:
 
 ```json
 {
-  "$schema": "https://wendy.sh/schemas/wendy.json",
+  "$schema": "https://wendy.dev/schemas/wendy.json",
   "appId": "com.example.hello-linux",
   "version": "1.0.0",
   "language": "swift",
@@ -173,7 +173,7 @@ Here `web` inherits the full app-level limits (`1Gi`, `pids: 512`). `worker` use
 
 ### `$schema`
 
-Optional URI pointing to the JSON Schema for editor autocompletion and validation. Set to `"https://wendy.sh/schemas/wendy.json"`.
+Optional URI pointing to the JSON Schema for editor autocompletion and validation. Set to `"https://wendy.dev/schemas/wendy.json"`.
 
 ---
 
