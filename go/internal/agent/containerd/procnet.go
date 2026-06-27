@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -19,6 +20,7 @@ type listeningPort struct {
 	protocol string
 	port     uint32
 	address  string
+	inode    string // socket inode, used to attribute the socket to a process
 }
 
 // parseProcNet parses the contents of a /proc/<pid>/net/{tcp,tcp6,udp,udp6}
@@ -75,7 +77,11 @@ func parseProcNet(data []byte, protocol string, ipv6 bool, udpEphemeralFloor uin
 		if addr == "" {
 			continue
 		}
-		out = append(out, listeningPort{protocol: protocol, port: port, address: addr})
+		inode := ""
+		if len(fields) >= 10 {
+			inode = fields[9]
+		}
+		out = append(out, listeningPort{protocol: protocol, port: port, address: addr, inode: inode})
 	}
 	return out
 }
@@ -131,9 +137,13 @@ func decodeHexAddr(h string, ipv6 bool) string {
 	return net.IP(ip).String()
 }
 
-// GetListeningPorts returns the listening TCP and bound UDP sockets for every
-// container belonging to appName, read from each container's network namespace
-// via /proc/<pid>/net/*. Results are de-duplicated and sorted by port.
+// GetListeningPorts returns the listening TCP and bound UDP sockets owned by the
+// app's own processes. WendyOS single-container apps share the host network
+// namespace, so reading /proc/<pid>/net/* alone would surface every listener on
+// the device (sshd, systemd-resolved, the agent's OTLP collector, NFS, …). To
+// show only the app's ports, each socket is attributed to the process that holds
+// it open (via /proc/<pid>/fd socket inodes) and filtered to the container's
+// process tree. Results are de-duplicated and sorted by port.
 func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agentpb.PortEntry, error) {
 	ids, err := c.ContainerIDsForApp(ctx, appName)
 	if err != nil || len(ids) == 0 {
@@ -162,13 +172,27 @@ func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agen
 		if err != nil {
 			continue
 		}
-		pid := task.Pid()
+
+		pids := containerPIDs(nsCtx, task)
+		if len(pids) == 0 {
+			continue
+		}
+		ownInodes := appSocketInodes(pids)
+
+		// All processes in a container share one network namespace, so the
+		// socket tables are identical regardless of which PID we read.
+		netPID := pids[0]
 		for _, p := range protocols {
-			data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/%s", pid, p.name))
+			data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/%s", netPID, p.name))
 			if err != nil {
 				continue
 			}
 			for _, lp := range parseProcNet(data, p.name, p.ipv6, udpFloor) {
+				// Attribute the socket to the app: skip sockets the app's
+				// processes do not hold open (host services, the agent, etc.).
+				if _, owned := ownInodes[lp.inode]; !owned {
+					continue
+				}
 				key := fmt.Sprintf("%s|%s|%d", lp.protocol, lp.address, lp.port)
 				if seen[key] {
 					continue
@@ -190,6 +214,55 @@ func (c *Client) GetListeningPorts(ctx context.Context, appName string) ([]*agen
 		return out[i].Protocol < out[j].Protocol
 	})
 	return out, nil
+}
+
+// containerPIDs returns every PID in the container's process tree, falling back
+// to the task's main PID if the per-process listing is unavailable.
+func containerPIDs(ctx context.Context, task containerd.Task) []uint32 {
+	if procs, err := task.Pids(ctx); err == nil && len(procs) > 0 {
+		pids := make([]uint32, 0, len(procs))
+		for _, p := range procs {
+			pids = append(pids, p.Pid)
+		}
+		return pids
+	}
+	if pid := task.Pid(); pid != 0 {
+		return []uint32{pid}
+	}
+	return nil
+}
+
+// appSocketInodes scans /proc/<pid>/fd for the given PIDs and returns the set of
+// socket inodes those processes hold open (fd symlinks of the form
+// "socket:[12345]").
+func appSocketInodes(pids []uint32) map[string]struct{} {
+	inodes := make(map[string]struct{})
+	for _, pid := range pids {
+		fdDir := fmt.Sprintf("/proc/%d/fd", pid)
+		entries, err := os.ReadDir(fdDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			link, err := os.Readlink(fmt.Sprintf("%s/%s", fdDir, e.Name()))
+			if err != nil {
+				continue
+			}
+			if inode, ok := socketInode(link); ok {
+				inodes[inode] = struct{}{}
+			}
+		}
+	}
+	return inodes
+}
+
+// socketInode extracts the inode from an fd symlink target like "socket:[12345]".
+func socketInode(link string) (string, bool) {
+	const prefix = "socket:["
+	if !strings.HasPrefix(link, prefix) || !strings.HasSuffix(link, "]") {
+		return "", false
+	}
+	return link[len(prefix) : len(link)-1], true
 }
 
 // udpEphemeralFloor returns the lowest ephemeral (client) port, read from

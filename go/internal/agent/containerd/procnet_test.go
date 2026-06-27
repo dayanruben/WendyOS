@@ -79,6 +79,33 @@ func TestParseProcNetTCP6Wildcard(t *testing.T) {
 	}
 }
 
+func TestParseProcNetCapturesInode(t *testing.T) {
+	// A full /proc/net/tcp line: the inode is field index 9.
+	data := []byte(
+		"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
+			"   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 654321 1\n",
+	)
+	got := parseProcNet(data, "tcp", false, 0)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1", len(got))
+	}
+	if got[0].inode != "654321" {
+		t.Errorf("inode = %q, want 654321", got[0].inode)
+	}
+}
+
+func TestSocketInode(t *testing.T) {
+	if got, ok := socketInode("socket:[12345]"); !ok || got != "12345" {
+		t.Errorf("socketInode(socket:[12345]) = %q,%v want 12345,true", got, ok)
+	}
+	if _, ok := socketInode("/dev/null"); ok {
+		t.Errorf("socketInode(/dev/null) should not match")
+	}
+	if _, ok := socketInode("anon_inode:[eventpoll]"); ok {
+		t.Errorf("socketInode(anon_inode) should not match")
+	}
+}
+
 func TestDecodeHexAddrV6Loopback(t *testing.T) {
 	// ::1 is stored as 00000000000000000000000001000000 (last word little-endian).
 	if got := decodeHexAddr("00000000000000000000000001000000", true); got != "::1" {
