@@ -538,6 +538,16 @@ func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
 	}}})
 	dm := updated.(discoverModel)
 
+	// While the probe is still in flight the row is "connecting" (spinner), so
+	// the no-access hint is suppressed.
+	if view := ansi.Strip(dm.View()); strings.Contains(view, "does not have access") {
+		t.Fatalf("no-access hint should be suppressed while connecting, got %q", view)
+	}
+
+	// Once the probe fails, the provisioned device shows the no-access hint.
+	updated, _ = dm.Update(lanProbeMsg{name: "wendy-locked", err: context.DeadlineExceeded})
+	dm = updated.(discoverModel)
+
 	view := ansi.Strip(dm.View())
 	if !strings.Contains(view, "does not have access") {
 		t.Fatalf("expected no-access hint in view, got %q", view)
