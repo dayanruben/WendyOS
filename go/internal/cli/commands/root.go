@@ -82,6 +82,10 @@ func NewRootCmd() *cobra.Command {
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			// Surface a throttled tip about `wendy project optimize` after a
+			// successful build/run (no-op for other commands and in CI).
+			maybeShowOptimizeTip(cmd)
+
 			// Load fresh config so we see any value written by the background
 			// goroutine (possibly from a previous invocation).
 			cfg, err := config.Load()
