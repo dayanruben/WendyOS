@@ -126,14 +126,14 @@ Find answers to common questions about WendyOS.
 
   <Accordion title="What programming languages can I use with WendyOS?">
     WendyOS supports multiple programming languages:
-    - **Swift** (native support, no Docker required) - Our recommended language
-    - **TypeScript/JavaScript** (via Docker containers)
-    - **Python** (via Docker containers)
-    - **Rust** (via Docker containers)
-    - **C++** (via Docker containers)
-    - And other languages via Docker containers
+    - **Swift** (native support, no container build required) - Our recommended language
+    - **TypeScript/JavaScript** (via containers)
+    - **Python** (via containers)
+    - **Rust** (via containers)
+    - **C++** (via containers)
+    - And other languages via containers
 
-    While we support multiple languages through containerization, we highly recommend Swift for the most reliable experience with our frameworks.
+    Container builds run through Docker or, on Apple Silicon, [Apple Container](https://github.com/apple/container) — Docker is not strictly required. While we support multiple languages through containerization, we highly recommend Swift for the most reliable experience with our frameworks.
   </Accordion>
 
   <Accordion title="Which language should I use for physical AI projects?">
@@ -184,15 +184,19 @@ Find answers to common questions about WendyOS.
 
     We looked to mobile development's success: Apple's decision to unify development under Swift is one of their greatest contributions to software development. WendyOS brings this same unification to edge computing, creating a common ecosystem where Swift becomes the lingua franca—just as JavaScript is for web developers and Kotlin is for Android developers.
 
-    **Note**: We do support Python, Rust, C++, and other languages through Docker containers and containerd. However, for the most reliable experience with our frameworks, we highly recommend Swift.
+    **Note**: We do support Python, Rust, C++, and other languages through containers and containerd (built with Docker or Apple Container). However, for the most reliable experience with our frameworks, we highly recommend Swift.
   </Accordion>
 </Accordions>
 
 ### Installation & Setup
 
 <Accordions type="single">
-  <Accordion title="Does Wendy use Docker to build apps?">
-    Yes. Wendy uses containers for app builds and deployment, and the Wendy CLI handles the local Docker setup when it is needed.
+  <Accordion title="Do I need Docker to build apps?">
+    Not necessarily. Wendy uses containers for app builds and deployment, but Docker is only one of the supported builders.
+
+    On an Apple Silicon Mac, Wendy tries [Apple Container](https://github.com/apple/container) first for `Dockerfile` and `Containerfile` builds when `--builder` is omitted, and falls back to Docker if Apple Container is unavailable or the build fails. Use `--builder apple-container` to require Apple Container, or `--builder docker` to force Docker.
+
+    Docker is still required for Docker Compose projects (`docker-compose.yml` / `compose.yml`) on local provider runs. The Wendy CLI handles the local builder setup when it is needed.
   </Accordion>
 
   <Accordion title="Can I work from my MacBook?">
