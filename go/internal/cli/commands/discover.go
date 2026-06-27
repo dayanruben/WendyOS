@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -232,6 +233,14 @@ type btScanMsg struct {
 }
 type extScanMsg struct{ devices []models.ExternalDevice }
 
+// lanProbeMsg carries the result of an async agent version/OS probe for one LAN
+// device. dev holds the resolved metadata when err is nil.
+type lanProbeMsg struct {
+	name string
+	dev  models.LANDevice
+	err  error
+}
+
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
 type discoverDeviceInfo struct {
 	ID          int32  `json:"id,omitempty"`
@@ -284,8 +293,10 @@ type discoverModel struct {
 	bleWarning         string
 	flashMessage       string
 	flashIsError       bool
-	updatingDeviceName string // non-empty while a background update is running
-	includeLocal       bool   // surface local run targets hidden by default
+	updatingDeviceName string                    // non-empty while a background update is running
+	spinner            spinner.Model             // animates Agent/OS cells while LAN probes run
+	probe              map[string]tui.ProbeState // LAN display name (lowercased) -> probe state
+	includeLocal       bool                      // surface local run targets hidden by default
 }
 
 func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) discoverModel {
@@ -297,6 +308,10 @@ func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions, incl
 		table:           newDiscoverTable(true),
 		includeExternal: shouldIncludeExternal(opts),
 		includeLocal:    includeLocal,
+		// Empty style so View() yields a bare frame rune for the plain table
+		// cells (matches tui.newProbeSpinner).
+		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
+		probe:   make(map[string]tui.ProbeState),
 	}
 	m.refreshTable()
 	return m
@@ -330,10 +345,22 @@ func (m discoverModel) scanEthernet() tea.Cmd {
 
 func (m discoverModel) scanLAN() tea.Cmd {
 	return func() tea.Msg {
+		// Discover devices only; version/OS are resolved asynchronously per
+		// device (see probeLANCmd) so rows appear immediately with a
+		// "connecting" spinner instead of blocking on the probe.
 		devices, _ := discovery.DiscoverLAN(m.ctx, m.opts.Timeout)
-		devices = resolveLANVersions(m.ctx, devices)
 		sortLANDevicesForDiscover(devices)
 		return lanScanMsg{devices: devices}
+	}
+}
+
+// probeLANCmd resolves a single LAN device's agent version/OS in the background
+// and reports the result as a lanProbeMsg.
+func (m discoverModel) probeLANCmd(dev models.LANDevice) tea.Cmd {
+	ctx := m.ctx
+	return func() tea.Msg {
+		resolved, _, err := resolveLANVersion(ctx, dev)
+		return lanProbeMsg{name: dev.DisplayName, dev: resolved, err: err}
 	}
 }
 
@@ -368,6 +395,7 @@ func (m discoverModel) Init() tea.Cmd {
 	if m.includeExternal {
 		cmds = append(cmds, m.scanExternal())
 	}
+	cmds = append(cmds, m.spinner.Tick)
 	return tea.Batch(cmds...)
 }
 
@@ -493,8 +521,54 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.collection.LANDevices = msg.devices
 		m.hasResults = true
+
+		// Assign a probe state to each device and kick off a background probe
+		// for any whose version isn't known yet. nextProbeState keeps resolved
+		// rows sticky and avoids flipping a failed row back to the spinner.
+		cmds := []tea.Cmd{m.scanLAN()}
+		for i := range m.collection.LANDevices {
+			d := &m.collection.LANDevices[i]
+			key := strings.ToLower(d.DisplayName)
+			if d.AgentVersion != "" {
+				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeOK)
+				continue
+			}
+			prev := m.probe[key]
+			m.probe[key] = nextProbeState(prev, tui.ProbePending)
+			if prev != tui.ProbePending {
+				cmds = append(cmds, m.probeLANCmd(*d))
+			}
+		}
 		m.refreshTable()
-		return m, m.scanLAN()
+		return m, tea.Batch(cmds...)
+	case lanProbeMsg:
+		key := strings.ToLower(msg.name)
+		for i := range m.collection.LANDevices {
+			d := &m.collection.LANDevices[i]
+			if !strings.EqualFold(d.DisplayName, msg.name) {
+				continue
+			}
+			if msg.err == nil {
+				d.AgentVersion = msg.dev.AgentVersion
+				d.DeviceType = msg.dev.DeviceType
+				d.OS = msg.dev.OS
+				d.OSVersion = msg.dev.OSVersion
+				d.CPUArchitecture = msg.dev.CPUArchitecture
+				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeOK)
+			} else {
+				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeFailed)
+			}
+			break
+		}
+		m.refreshTable()
+		return m, nil
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if m.anyProbePending() {
+			m.refreshTable()
+		}
+		return m, cmd
 	case btScanMsg:
 		now := time.Now()
 
@@ -608,7 +682,7 @@ func (m discoverModel) View() string {
 	}
 
 	if !m.collection.IsEmpty() {
-		sb.WriteString(m.tableView() + "\n")
+		sb.WriteString(tui.ColorizeProbeGlyphs(m.tableView()) + "\n")
 		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend)) + "\n")
 		if hint := m.selectedHint(); hint != "" {
 			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
@@ -630,8 +704,34 @@ func (m discoverModel) View() string {
 	return sb.String()
 }
 
+// anyProbePending reports whether any LAN device still has a probe in flight.
+func (m discoverModel) anyProbePending() bool {
+	for _, st := range m.probe {
+		if st == tui.ProbePending {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *discoverModel) refreshTable() {
 	m.tableItems = discoverTableItems(m.collection)
+	// Stamp each LAN row with its probe state (and the current spinner frame
+	// while connecting) so the Agent/OS columns animate / show the error glyph.
+	frame := m.spinner.View()
+	for i := range m.tableItems {
+		name := m.tableItems[i].lanName
+		if name == "" {
+			continue
+		}
+		st := m.probe[strings.ToLower(name)]
+		m.tableItems[i].picker.Probe = st
+		if st == tui.ProbePending {
+			m.tableItems[i].picker.ProbeFrame = frame
+			// Still connecting: don't show the no-access hint yet.
+			m.tableItems[i].picker.Hint = ""
+		}
+	}
 	pickerItems := discoverPickerItems(m.tableItems)
 	cols, rows := tui.PickerDeviceTableData(pickerItems, discoverDefaultKey(), true)
 	m.table.SetColumns(cols)
