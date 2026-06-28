@@ -17,49 +17,27 @@ This guide will help you connect your NVIDIA Jetson or Raspberry Pi 5 running We
 
 <Steps>
   <Step>
-    ### Start the Wi-Fi Connection Command
+    ### Open the Wi-Fi Manager
 
-    With your device connected via USB-C, run the following command:
+    With your device connected via USB-C, run:
 
     ```bash
     wendy device wifi
     ```
 
-    After 1-2 seconds, you'll see a list of available devices. If you have multiple WendyOS devices connected, you'll see all of them listed.
+    This opens an interactive table of nearby Wi-Fi networks, showing which ones are already **Known** to the device, the current connection **Status**, security type, and signal strength.
 
-    ![CLI WiFi Connect](/images/docs/cli-wifi-connect.png)
+    <CliShot flow="wifi-connect" step="networks" alt="The Wendy CLI interactive Wi-Fi network table showing known networks, connection status, security, and signal strength" />
 
-    Select the device you want to connect to Wi-Fi.
+    Use the **↑/↓** arrow keys to move through the list, or press **`/`** to filter by name as you type.
   </Step>
 
   <Step>
-    ### Select Your Wi-Fi Network
+    ### Connect to a Network
 
-    You'll see a list of available Wi-Fi SSIDs. Use the up and down arrow keys to scroll through the list and select your Wi-Fi network.
+    Highlight the network you want and press **Enter**. If it's password-protected and not already known, you'll be prompted for the password. To join a hidden network that isn't listed, press **`n`** to enter its name and password manually.
 
-    ![CLI WiFi SSID Select](/images/docs/cli-wifi-ssid-select.png)
-
-    Press **Enter** to confirm your selection.
-  </Step>
-
-  <Step>
-    ### Enter Wi-Fi Password
-
-    If your Wi-Fi network is password-protected, you'll be prompted to enter the password.
-
-    ![CLI WiFi Password Entry](/images/docs/cli-wifi-password-entry.png)
-
-    Type your Wi-Fi password and press **Enter**.
-  </Step>
-
-  <Step>
-    ### Connection Successful
-
-    If the connection is successful, you'll see a confirmation message indicating that your device is now connected to Wi-Fi.
-
-    ![CLI WiFi Password Success](/images/docs/cli-wifi-password-success.png)
-
-    Your WendyOS device is now connected to your Wi-Fi network!
+    Once connected, the network's **Status** column updates to **Connected**. Press **`q`** to exit the manager.
   </Step>
 </Steps>
 

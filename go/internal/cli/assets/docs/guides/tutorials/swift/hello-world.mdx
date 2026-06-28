@@ -29,6 +29,8 @@ The `simple-api` template generates a small, long-running HTTP server built on [
     cd hello-world
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the Swift hello-world project" />
+
     This creates a ready-to-run Swift project with `Package.swift`, `Dockerfile`, and `wendy.json`. The next steps explain the generated files.
   </Step>
 
@@ -38,6 +40,10 @@ The `simple-api` template generates a small, long-running HTTP server built on [
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the Swift hello-world app" />
+
+    <CliClip flow="run" alt="wendy run deploying the Swift hello-world app end to end" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and stream the run output. Because this is a long-running server, the app stays running after deploy and the generated `postStart` hook opens the response in your browser automatically.
   </Step>
@@ -263,6 +269,8 @@ After deploying, you can verify the app is running by listing the applications o
 ```bash
 wendy device apps list
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running hello-world app" />
 
 You should see output similar to:
 

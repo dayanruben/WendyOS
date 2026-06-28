@@ -33,6 +33,8 @@ This guide shows you how to build a web server using Node.js with Express, the m
     cd simple-server
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the simple-server Express project from the simple-api template" />
+
     The template creates `package.json`, `tsconfig.json`, `src/index.ts`, `Dockerfile`, and `wendy.json`. The sections below explain the generated server and the pieces you can customize.
   </Step>
 
@@ -42,6 +44,8 @@ This guide shows you how to build a web server using Node.js with Express, the m
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the simple-server Express app to a WendyOS device" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the URL or run output.
   </Step>
@@ -260,6 +264,8 @@ You can verify the server container is running by listing the applications on yo
 ```bash
 wendy device apps list
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the simple-server app running on the device" />
 
 You should see your containerized web server listed among the running applications.
 

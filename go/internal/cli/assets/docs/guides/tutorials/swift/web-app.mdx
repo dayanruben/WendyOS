@@ -80,6 +80,8 @@ web-app/
     cd web-app
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the full-stack Swift web-app project" />
+
     The template creates `wendy.json`, the Dockerfile, the entire React frontend, and the Swift backend. The sections below explain how the generated full-stack app fits together.
   </Step>
 
@@ -89,6 +91,8 @@ web-app/
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the full-stack Swift web app" />
 
     Wendy will build the frontend, build and cross-compile the Swift backend, deploy the container, and stream the run output. Once the readiness probe passes, the `postStart` hook opens the dashboard in your browser.
   </Step>

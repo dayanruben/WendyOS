@@ -29,6 +29,8 @@ Bluetooth Low Energy (BLE) is essential for IoT applications, from connecting se
     wendy init --app-id bluetooth-discovery --target wendyos --language python --no-extra-entitlements --assistant skip
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the bluetooth-discovery Python project" />
+
     This creates `wendy.json` and a starter Python project. Continue below to add the BLE dependencies, app code, and Bluetooth entitlement.
   </Step>
 
@@ -394,6 +396,8 @@ Deploy your Bluetooth scanner to your WendyOS device:
 ```bash
 wendy run
 ```
+
+<CliShot flow="run" step="deploy" alt="wendy run building and deploying the Bluetooth discovery app to a WendyOS device" />
 
 You'll see output similar to the following:
 

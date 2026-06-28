@@ -110,6 +110,8 @@ cd ros2-stack
 wendy run
 ```
 
+<CliShot flow="run" step="deploy" alt="The Wendy CLI building and deploying a multi-service stack to a WendyOS device" />
+
 Attached mode streams logs from all services, each line prefixed with the service name:
 
 ```text
@@ -253,6 +255,10 @@ wendy device logs --app ros2-stack-talker
 wendy device apps stop ros2-stack-listener
 wendy device apps stop ros2-stack-talker
 ```
+
+<CliShot flow="apps-list" step="apps" alt="The Wendy CLI listing the deployed stack's apps with their version, state, and failure count" />
+
+<CliShot flow="logs" step="logs" alt="The Wendy CLI streaming logs for a single service of the deployed stack" />
 
 ## Choosing between the two shapes
 

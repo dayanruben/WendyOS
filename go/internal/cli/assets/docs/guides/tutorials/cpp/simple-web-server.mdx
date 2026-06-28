@@ -28,6 +28,8 @@ This guide shows you how to build a web server using [Drogon](https://drogon.org
     cd simple-server
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the C++ simple-server project" />
+
     The template creates `CMakeLists.txt`, `main.cpp`, `Dockerfile`, and `wendy.json`. The sections below explain the generated server and the pieces you can customize.
   </Step>
 
@@ -37,6 +39,8 @@ This guide shows you how to build a web server using [Drogon](https://drogon.org
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run deploying the C++ Drogon simple-server" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and stream the run output. The generated `wendy.json` includes a `postStart` hook, so your browser opens automatically once the server is ready.
   </Step>
@@ -278,6 +282,8 @@ wendy device apps list
 │ simple-server │ 0.1.0   │ Running │ 0        │
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running simple-server app" />
 
 Because the server stays up to serve requests, it shows as "Running" with `0` failures.
 

@@ -73,6 +73,8 @@ Then deploy:
 wendy run
 ```
 
+<CliShot flow="run" step="deploy" alt="The Wendy CLI deploying a GPU-enabled app to a WendyOS device" />
+
 ## Raspberry Pi Board Telemetry
 
 On Raspberry Pi hosts, the `gpu` entitlement also exposes the VideoCore mailbox device (`/dev/vcio`). This lets your app read board telemetry — power, voltage and current, temperature, throttling state, and (on Raspberry Pi 5) the PMIC ADC channels — through the firmware property interface, the same channel the `vcgencmd` tool uses.

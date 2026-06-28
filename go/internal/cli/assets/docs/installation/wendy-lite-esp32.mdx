@@ -36,6 +36,8 @@ Wendy Lite is a WebAssembly runtime for ESP32 RISC-V microcontrollers. It lets y
     wendy install
     ```
 
+    <CliShot flow="os-install" step="select-device-type" alt="The Wendy CLI prompting you to choose a device type, including ESP32 boards, before flashing" />
+
     Select **ESP32-C6** (or **ESP32-C5**) when prompted, then select the USB serial port for your board. The CLI will download and flash the Wendy Lite firmware automatically.
   </Step>
 
@@ -47,6 +49,8 @@ Wendy Lite is a WebAssembly runtime for ESP32 RISC-V microcontrollers. It lets y
     ```bash
     wendy discover
     ```
+
+    <CliShot flow="discover" step="devices" alt="The Wendy CLI listing discovered Wendy devices, including the ESP32 board over BLE" />
 
     You should see your ESP32 device appear in the list of discovered devices.
   </Step>
@@ -64,6 +68,8 @@ Wendy Lite is a WebAssembly runtime for ESP32 RISC-V microcontrollers. It lets y
     mkdir blink && cd blink
     wendy init
     ```
+
+    <CliShot flow="init" step="wizard" alt="The wendy init project wizard prompting for project details and target platform" />
 
     Select **ESP32** as the target platform when prompted. This creates a Swift project preconfigured with the WendyLite SDK and the correct build settings for WebAssembly.
   </Step>
@@ -110,6 +116,8 @@ Once your project is set up, deploy it to your ESP32 with a single command:
 ```bash
 wendy run
 ```
+
+<CliShot flow="run" step="deploy" alt="The wendy run command building the app and deploying it to the device" />
 
 The Wendy CLI compiles your Swift code to WebAssembly and uploads the `.wasm` binary to the device. You should see the onboard LED start blinking.
 

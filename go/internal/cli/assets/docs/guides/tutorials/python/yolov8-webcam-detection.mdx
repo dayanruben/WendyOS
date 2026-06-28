@@ -44,6 +44,8 @@ The complete sample is available in the [samples repository](https://github.com/
     cd yolov8
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the YOLOv8 detection project from the camera-feed-yolo template" />
+
     The template creates the Wendy config, Dockerfile, backend, frontend, and camera/GPU entitlements. The sections below explain the generated project.
   </Step>
 
@@ -53,6 +55,8 @@ The complete sample is available in the [samples repository](https://github.com/
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the YOLOv8 detection app to a WendyOS device" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the app URL.
   </Step>
@@ -442,6 +446,8 @@ wendy discover
 │ wendyos-zestful-stork.local         │ USB, LAN          │
 ╰─────────────────────────────────────┴───────────────────╯
 ```
+
+<CliShot flow="discover" step="devices" alt="wendy discover showing a WendyOS device reachable over USB and LAN" />
 
 ### Subsequent Deploys Are Fast
 

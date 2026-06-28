@@ -30,6 +30,8 @@ This guide will walk you through creating your first WendyOS application in C++.
     cd hello-world
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the C++ hello-world project" />
+
     The template creates `CMakeLists.txt`, `main.cpp`, `Dockerfile`, and `wendy.json`. Continue below to understand the generated project.
   </Step>
 
@@ -39,6 +41,10 @@ This guide will walk you through creating your first WendyOS application in C++.
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the C++ hello-world app" />
+
+    <CliClip flow="run" alt="wendy run deploying the C++ hello-world app end to end" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and stream the run output. Because the generated `wendy.json` includes a `postStart` hook, your browser opens automatically once the server is ready and shows the JSON response from `/`.
   </Step>
@@ -257,6 +263,8 @@ wendy device apps list
 │ hello-world   │ 0.1.0   │ Running │ 0        │
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running hello-world app" />
 
 <Callout type="info">
   **Expected State**: Because this app is an HTTP server, it shows as "Running" — it stays up to serve requests rather than exiting. The "Failures" column showing `0` confirms it started cleanly. (To stop it, run `wendy device apps stop hello-world`.)

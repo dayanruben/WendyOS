@@ -29,6 +29,8 @@ The Python `simple-api` template generates a small FastAPI HTTP server. Unlike a
     cd hello-world
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the hello-world Python project from the simple-api template" />
+
     This creates `wendy.json`, a `Dockerfile`, and a ready-to-run `app.py` from the template. The next steps explain the generated files.
   </Step>
 
@@ -38,6 +40,10 @@ The Python `simple-api` template generates a small FastAPI HTTP server. Unlike a
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the hello-world app to a WendyOS device" />
+
+    <CliClip flow="run" alt="Animated walkthrough of wendy run building, deploying, and starting the hello-world app" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output. Because the generated `wendy.json` includes a `postStart` browser hook, your browser opens to the app automatically once it is ready.
   </Step>
@@ -185,6 +191,8 @@ wendy device apps list
 │ hello-world   │ 0.1.0   │ Running │ 0        │
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the hello-world app in the Running state" />
 
 <Callout type="info">
   **Expected State**: The app shows as "Running" because it is a long-running HTTP server. The "Failures" column showing `0` confirms it started successfully. Reaching `/` in your browser returns `{"message":"hello-world"}`.

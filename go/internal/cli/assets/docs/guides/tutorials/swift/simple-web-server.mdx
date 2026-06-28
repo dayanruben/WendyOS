@@ -29,6 +29,8 @@ To prove this out, we'll use [Hummingbird](https://hummingbird.codes/), a lightw
     cd simple-web-server
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the Swift simple-web-server project" />
+
     This creates a Swift project with `Package.swift`, a `Sources/` directory, `Dockerfile`, and `wendy.json`.
   </Step>
 
@@ -38,6 +40,8 @@ To prove this out, we'll use [Hummingbird](https://hummingbird.codes/), a lightw
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run deploying the Hummingbird simple-web-server" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and stream the run output. Because this is a long-running server, the app stays running after deploy.
   </Step>
@@ -248,6 +252,8 @@ wendy device apps list
 │ simple-web-server │ 0.1.0   │ Running │ 0        │
 ╰───────────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running simple-web-server app" />
 
 The app shows as **Running** because it is a long-running HTTP server.
 

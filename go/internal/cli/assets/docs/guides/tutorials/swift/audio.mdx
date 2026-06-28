@@ -37,6 +37,8 @@ This demonstrates how to use **GStreamer** with Swift to handle complex multimed
     cd audio
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the Swift audio project" />
+
     The template creates the Wendy config, Dockerfile, frontend, and Swift backend files with the `audio` entitlement already wired. The sections below explain the generated project.
   </Step>
 
@@ -46,6 +48,8 @@ This demonstrates how to use **GStreamer** with Swift to handle complex multimed
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run deploying the Swift audio app" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the app URL.
   </Step>
@@ -283,6 +287,9 @@ If audio isn't working:
     ```bash
     wendy device logs
     ```
+
+    <CliShot flow="logs" step="logs" alt="wendy device logs streaming app logs from the device" />
+
 3.  **ALSA Devices**: The app attempts to auto-detect ALSA devices. You can override this by setting the `AUDIO_DEVICE` environment variable (e.g., `hw:1,0`).
 
 ## Learn More

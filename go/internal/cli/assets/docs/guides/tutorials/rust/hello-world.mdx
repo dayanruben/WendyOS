@@ -31,6 +31,8 @@ This guide will walk you through creating your first WendyOS application in Rust
     cd hello-world
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the Rust hello-world project" />
+
     The template creates `Cargo.toml`, `src/main.rs`, `Dockerfile`, and `wendy.json`. Continue below to understand the generated project.
   </Step>
 
@@ -40,6 +42,10 @@ This guide will walk you through creating your first WendyOS application in Rust
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the Rust hello-world app" />
+
+    <CliClip flow="run" alt="wendy run deploying the hello-world app end to end" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output. Because the app is a web server, it keeps running and your browser opens to it automatically (see the `postStart` hook below).
   </Step>
@@ -235,6 +241,8 @@ wendy device apps list
 │ hello-world   │ 0.1.0   │ Running │ 0        │
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running hello-world app" />
 
 <Callout type="info">
   **Expected State**: The app shows as "Running" because it's a long-lived HTTP server — it keeps listening for requests until you stop it. The "Failures" column showing `0` confirms it started cleanly without crashing.

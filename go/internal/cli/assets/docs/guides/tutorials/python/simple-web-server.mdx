@@ -33,6 +33,8 @@ To prove this out, we'll use FastAPI, a modern, fast (high-performance) web fram
     cd simple-server
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the simple-server FastAPI project from the simple-api template" />
+
     The template creates the Wendy config, Dockerfile, and Python server files. The sections below explain the generated app and the pieces you can customize.
   </Step>
 
@@ -42,6 +44,8 @@ To prove this out, we'll use FastAPI, a modern, fast (high-performance) web fram
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the simple-server app to a WendyOS device" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the URL or run output.
   </Step>
@@ -239,6 +243,8 @@ wendy device apps list
 │ simple-server │ 0.1.0   │ Running │ 0        │
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the simple-server app in the Running state" />
 
 ## Explore the API Documentation
 

@@ -26,6 +26,8 @@ Navigate to your project directory (containing a `Dockerfile` or `Containerfile`
 wendy run
 ```
 
+<CliShot flow="run" step="deploy" alt="The Wendy CLI building an app for ARM64 and deploying it to a WendyOS device" />
+
 The CLI will:
 1. Build your container image for ARM64
 2. Push the image to your WendyOS device's local registry
@@ -71,6 +73,8 @@ To discover all available WendyOS devices, run:
 ```bash
 wendy device apps list
 ```
+
+<CliShot flow="apps-list" step="apps" alt="The Wendy CLI listing apps on a WendyOS device with version, state, and failure columns" />
 
 An example output is:
 

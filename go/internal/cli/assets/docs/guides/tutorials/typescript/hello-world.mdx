@@ -31,6 +31,8 @@ This guide will walk you through creating your first WendyOS application using T
     cd hello-world
     ```
 
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the hello-world TypeScript project from the simple-api template" />
+
     The template creates `package.json`, `tsconfig.json`, `src/index.ts`, `Dockerfile`, and `wendy.json`. Continue below to understand the generated project.
   </Step>
 
@@ -40,6 +42,10 @@ This guide will walk you through creating your first WendyOS application using T
     ```bash
     wendy run
     ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the hello-world TypeScript app to a WendyOS device" />
+
+    <CliClip flow="run" alt="Animated walkthrough of wendy run building, deploying, and starting the hello-world app" />
 
     Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output. Because this is an HTTP server, the app keeps running and the generated `postStart` hook opens your browser to the device.
   </Step>
@@ -237,6 +243,8 @@ wendy device apps list
 │ hello-world   │ 0.1.0   │ Running │ 0        │
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the hello-world app in the Running state" />
 
 <Callout type="info">
   **Expected State**: The app shows as "Running" because it's a long-running HTTP server that stays up to serve requests. The "Failures" column showing `0` confirms it started cleanly. The generated `postStart` hook opens your browser to `http://<device>:5001`, where the root route returns `{"message":"hello-world"}`.
