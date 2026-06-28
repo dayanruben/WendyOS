@@ -6,14 +6,14 @@ description: Deploy and debug native macOS apps on Apple Silicon Mac targets wit
 import { ArrowRight } from 'lucide-react';
 
 <Callout type="warn">
-  Wendy for Mac is beta software. Apple Silicon only — Intel Macs are not supported.
+  Headless Mac is beta software. Apple Silicon only — Intel Macs are not supported.
 </Callout>
 
 ## Overview
 
-Wendy for Mac lets you use any Apple Silicon Mac as a Wendy target. Install Wendy Agent on the Mac, point the CLI at it, and deploy native macOS apps the same way you deploy to a Jetson or Raspberry Pi — with `wendy run`.
+Headless Mac lets you use any Apple Silicon Mac as a Wendy target. Install Wendy Agent on the Mac, point the CLI at it, and deploy native macOS apps the same way you deploy to a Jetson or Raspberry Pi — with `wendy run`.
 
-Apps run as native macOS processes, not Linux containers. This makes Wendy for Mac a natural fit for:
+Apps run as native macOS processes, not Linux containers. This makes Headless Mac a natural fit for:
 
 - **Headless Mac servers** — Mac minis and Mac Studios running AI inference, media processing, or robotics workloads without a display.
 - **Mixed fleets** — teams that deploy to both WendyOS edge devices and Mac targets from the same CLI and CI pipeline.
@@ -80,7 +80,7 @@ The response should report `"os": "darwin"` and `"cpuArchitecture": "arm64"`.
 
 ## Discovery
 
-Wendy for Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
+Headless Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
 
 ## Deploying Apps
 
@@ -125,7 +125,7 @@ only applies to native Mac deployments.
 ## What Works
 
 - Apple Silicon Mac targets running macOS 15 or later
-- Installing Wendy for Mac with Homebrew or the release zip
+- Installing Headless Mac with Homebrew or the release zip
 - Deploying native SwiftPM macOS apps with `wendy run`
 - Discovering Mac targets over Bonjour/mDNS
 - Setting the Mac as your default Wendy device
