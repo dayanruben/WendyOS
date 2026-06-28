@@ -39,7 +39,7 @@ The Wendy CLI checks GitHub for a newer release in the background once every 24 
 - **Non-interactive / `--json` mode:** The notice is printed to stderr. No prompt is shown.
 - **macOS:** The upgrade command is `brew update && brew install wendy`. If the tap is untrusted, the CLI also suggests `brew trust wendylabsinc/tap`.
 - **Windows:** `winget upgrade WendyLabs.Wendy`.
-- **Linux:** `curl -fsSL https://install.wendy.sh/cli.sh | bash`.
+- **Linux:** `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
 
 > **Note:** The 24-hour cooldown between update checks depends on `~/.wendy/config.json` being writable. If the file cannot be saved, the background check runs on every CLI invocation.
 

@@ -7,11 +7,11 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
-> **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Wendy for Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
+> **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
-## Wendy for Mac — supported project types
+## Headless Mac — supported project types
 
-Wendy for Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
+Headless Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
 
 | Project type | Mac target support |
 |---|---|
@@ -73,13 +73,13 @@ Use `--service <name>` to build and run only a specific service and its transiti
 
 See [Multi-Service Apps with `wendy.json`](../../../apps/wendy-services.md) for a full walkthrough.
 
-> **Wendy for Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Wendy for Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
+> **Headless Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Headless Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
 
 ## Compose projects
 
 If the current directory contains a `docker-compose.yml` (or `compose.yml`) but no `wendy.json`, `wendy run` automatically runs it as a multi-service compose project. Each service is built, pushed, and started on the device in dependency order. See [Multi-Service Apps with Docker Compose](../../../apps/compose.md) for full details.
 
-> **Wendy for Mac:** Compose projects are not supported when the selected target is Wendy for Mac. `wendy run` returns an error before performing any registry or Docker setup. To deploy a compose workload, target a Linux/WendyOS device. For Mac targets, use a native SwiftPM or Xcode project with `platform: "darwin"`.
+> **Headless Mac:** Compose projects are not supported when the selected target is Headless Mac. `wendy run` returns an error before performing any registry or Docker setup. To deploy a compose workload, target a Linux/WendyOS device. For Mac targets, use a native SwiftPM or Xcode project with `platform: "darwin"`.
 
 ## Swift Package Manager projects (macOS)
 
@@ -121,7 +121,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects, builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
 | `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
-| `--build-type <type>` | Override build type detection: `docker`, `swift`, `python`, or `compose`. |
+| `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |

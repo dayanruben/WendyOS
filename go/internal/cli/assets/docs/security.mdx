@@ -7,21 +7,21 @@ description: Current security status and roadmap for Wendy and WendyOS
 
 This page describes the current security posture of Wendy and WendyOS and what's coming next.
 
-<Callout type="warn">
-  **Access control and device enrollment are not yet available.** Treat any reachable agent as accessible to any authenticated CLI on the same network or tunnel. Do not expose wendy-agent to untrusted networks until access control ships.
-</Callout>
-
 ## Current Status
 
 | Area | Status |
 |------|--------|
-| CLI-to-Agent communication | mTLS Authenticated |
-| Data in transit | mTLS encrypted with Post-Quantum Cryptography |
-| Cloud connectivity | Zero-trust — PKI authentication required |
-| Device identity / Enrollment | Available |
-| Access control | Nearing launch |
+| CLI-to-Agent communication | ✅ mTLS Authenticated |
+| Data in transit | ✅ mTLS encrypted with Post-Quantum Cryptography |
+| Cloud connectivity | ✅ Zero-trust — PKI authentication required |
+| Device identity / Enrollment | ✅ Available |
+| Access control | ✅ Available |
 
 ## Security Roadmap
+
+### Audit Logging
+
+We're working on audit logging so you can see who did what, when, and where — a tamper-evident record of CLI and agent actions across your fleet.
 
 ### Project-Scoped Access Control
 
@@ -31,8 +31,8 @@ Granular control over who can deploy what and where. CLI instances and users wil
 
 ## Reporting Security Issues
 
-If you discover a security vulnerability, please report it responsibly by emailing **security@wendylabs.com** rather than filing a public issue. We take all reports seriously and will respond promptly.
+If you discover a security vulnerability, please report it responsibly by emailing **security@wendy.dev** rather than filing a public issue. We take all reports seriously and will respond promptly.
 
 ## Stay Updated
 
-Security features will be announced on our [blog](https://wendylabs.com/blog) and in our [Discord community](https://discord.gg/xYeUxq9TXv).
+Security features will be announced on our [blog](https://wendy.dev/blog) and in our [Discord community](https://discord.gg/xYeUxq9TXv).
