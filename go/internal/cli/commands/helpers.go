@@ -1796,6 +1796,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			USB:          dev.USB,
 			Address:      preferredLANAddress(dev),
 			AgentVersion: dev.AgentVersion,
+			OS:           dev.OS,
 			OSVersion:    dev.OSVersion,
 			Provisioned:  lanProvisionedDisplay(&devCopy),
 			Hint:         hint,
@@ -1862,6 +1863,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 								Type:         "LAN (Lite)",
 								Address:      devices[i].ConnectionInfo["ip"],
 								AgentVersion: devices[i].AgentVersion,
+								OS:           devices[i].OS,
 								OSVersion:    devices[i].OSVersion,
 								Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 									DisplayName:     devices[i].DisplayName,
@@ -1877,6 +1879,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 								Type:         prov.DisplayName(),
 								Address:      externalProviderAddress(devices[i].ProviderKey, devices[i].ID),
 								AgentVersion: devices[i].AgentVersion,
+								OS:           devices[i].OS,
 								OSVersion:    devices[i].OSVersion,
 								DedupKey:     devices[i].DisplayName,
 								SortKey:      externalProviderSortKey(prov.Key(), devices[i].DisplayName),
@@ -1917,6 +1920,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							Type:         connType,
 							Address:      bleDevices[i].Address,
 							AgentVersion: bleDevices[i].AgentVersion,
+							OS:           bleDevices[i].OS,
 							OSVersion:    bleDevices[i].OSVersion,
 							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 								DisplayName:     bleDevices[i].DisplayName,

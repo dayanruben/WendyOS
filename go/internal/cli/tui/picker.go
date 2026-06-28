@@ -67,6 +67,13 @@ func probeColumnValue(state ProbeState, version, frame string) string {
 	return version
 }
 
+// formatOSNameVersion joins an OS/distro name and its version into a single
+// display string (e.g. "ubuntu" + "24.04" -> "ubuntu 24.04"). Either part may
+// be empty; the result never has leading or trailing space.
+func formatOSNameVersion(os, version string) string {
+	return strings.TrimSpace(strings.TrimSpace(os) + " " + strings.TrimSpace(version))
+}
+
 // PickerItem represents a selectable row in the device picker.
 type PickerItem struct {
 	// Display columns rendered in the table.
@@ -79,6 +86,7 @@ type PickerItem struct {
 	USB          string // non-empty when the device is connected over USB
 	Address      string
 	AgentVersion string
+	OS           string // distro/OS name (e.g. "ubuntu"); shown alongside OSVersion
 	OSVersion    string
 	Provisioned  string // "Provisioned" or "Unprovisioned" when known, empty otherwise
 	Hint         string // optional footer text shown when this item is highlighted
@@ -610,7 +618,7 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 		title:    "OS",
 		minWidth: 4,
 		value: func(item PickerItem) string {
-			return probeColumnValue(item.Probe, item.OSVersion, item.ProbeFrame)
+			return probeColumnValue(item.Probe, formatOSNameVersion(item.OS, item.OSVersion), item.ProbeFrame)
 		},
 	},
 	{
