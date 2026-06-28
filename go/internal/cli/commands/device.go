@@ -930,10 +930,27 @@ func newDeviceLogsCmd() *cobra.Command {
 	var tail int32
 
 	cmd := &cobra.Command{
-		Use:   "logs",
+		Use:   "logs [app]",
 		Short: "Stream logs from containers on the device",
+		Long: "Stream logs from containers on the device.\n\n" +
+			"Pass an app name (positionally or with --app) to see only that app's\n" +
+			"logs. Without a filter, logs from every container and the agent itself\n" +
+			"are streamed, which can include agent lifecycle messages.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			// Accept the app name positionally (e.g. `wendy device logs IronPaws`)
+			// as well as via --app. Without this the positional argument was
+			// silently ignored, so the command streamed every container's logs
+			// instead of the requested app's (see issue #1169).
+			if len(args) == 1 {
+				if appName != "" && appName != args[0] {
+					return fmt.Errorf("conflicting app names: %q (positional) and %q (--app)", args[0], appName)
+				}
+				appName = args[0]
+			}
+
 			conn, err := connectToAgent(ctx)
 			if err != nil {
 				return err
@@ -970,6 +987,26 @@ func newDeviceLogsCmd() *cobra.Command {
 			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
 			if err != nil {
 				return fmt.Errorf("starting log stream: %w", err)
+			}
+
+			// Tell the user the stream is live and that waiting is expected.
+			// Without this the command appears to hang after connecting, with
+			// no way to tell streaming from a stuck command (see issue #1169).
+			// Printed to stderr (via cliLogln) so it never mixes into piped or
+			// --json log output.
+			if !jsonOutput {
+				target := "the device"
+				switch {
+				case appName != "":
+					target = appName
+				case serviceName != "":
+					target = serviceName
+				}
+				if tail > 0 {
+					cliLogln("Streaming logs from %s — replaying up to %d recent, then live. Press Ctrl-C to stop.", target, tail)
+				} else {
+					cliLogln("Streaming logs from %s. Waiting for new logs — press Ctrl-C to stop.", target)
+				}
 			}
 
 			liveSeparatorPrinted := tail == 0

@@ -1960,10 +1960,20 @@ func (c *Client) streamOutput(
 	exitStatus := <-exitStatusCh
 	code, _, err := exitStatus.Result()
 	if err != nil {
-		c.logger.Error("Task exited with error",
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
+		if errors.Is(err, context.Canceled) {
+			// The wait was canceled because the RPC that started this monitor
+			// ended — e.g. `wendy run --detach` returned and tore down its
+			// deploy stream. The container keeps running; this is normal
+			// teardown, not a task failure, so don't log it as an error.
+			c.logger.Debug("Stopped monitoring task exit (stream canceled)",
+				zap.String("app_name", appName),
+			)
+		} else {
+			c.logger.Error("Task exited with error",
+				zap.String("app_name", appName),
+				zap.Error(err),
+			)
+		}
 	} else {
 		c.logger.Info("Task exited",
 			zap.String("app_name", appName),
