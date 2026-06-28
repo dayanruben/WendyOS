@@ -11,21 +11,15 @@ import { ArrowRight } from 'lucide-react';
 
 ## Overview
 
-Headless Mac lets you use any Apple Silicon Mac as a Wendy target. Install Wendy Agent on the Mac, point the CLI at it, and deploy native macOS apps the same way you deploy to a Jetson or Raspberry Pi — with `wendy run`.
-
-Apps run as native macOS processes, not Linux containers. This makes Headless Mac a natural fit for:
-
-- **Headless Mac servers** — Mac minis and Mac Studios running AI inference, media processing, or robotics workloads without a display.
-- **Mixed fleets** — teams that deploy to both WendyOS edge devices and Mac targets from the same CLI and CI pipeline.
-- **Mac-native AI apps** — apps that depend on Core ML, Metal, or the Apple Neural Engine alongside standard Wendy tooling.
+Headless Mac turns any Apple Silicon Mac into a Wendy target: install Wendy Agent, point the CLI at it, and deploy native macOS apps with `wendy run` — same as a Jetson or Pi. Apps run as native macOS processes (not Linux containers), making it a fit for headless Mac mini/Studio servers, mixed WendyOS + Mac fleets, and Core ML / Metal / Neural Engine apps.
 
 ## Requirements
 
 - An Apple Silicon Mac target running macOS 15 or later
-- Wendy CLI installed on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup))
+- Wendy CLI on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup)) — it builds the app locally before syncing to the target
 - A native macOS SwiftPM app project to deploy
 
-Deploying native macOS apps requires a Mac development machine because the Wendy CLI builds the app locally before syncing it to the Mac target. If the same Mac is both your development machine and target, install both the CLI and Wendy Agent on that Mac.
+If one Mac is both development machine and target, install both the CLI and Wendy Agent on it.
 
 ## Installation
 
