@@ -20,6 +20,8 @@ wendy device list | cat
 wendy device list --json=false | cat
 ```
 
+> **Note:** For live, full-screen TUI commands such as [`wendy device top`](./commands/device/top.md), `--json` does not stream the interface — it switches the command to a one-shot **snapshot** mode that prints a single JSON object and exits, instead of rendering the interactive dashboard.
+
 ## `--device`
 
 Specifies a target device by IP address, hostname, provider key, or explicit `host:port`, bypassing [device selection](./device-selection.md).
@@ -40,6 +42,18 @@ The Wendy CLI checks GitHub for a newer release in the background once every 24 
 - **Linux:** `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
 
 > **Note:** The 24-hour cooldown between update checks depends on `~/.wendy/config.json` being writable. If the file cannot be saved, the background check runs on every CLI invocation.
+
+## Automatic shell-completion prompt
+
+When shell completions aren't installed, the CLI offers — at most once per 24-hour window — to install them with an ambient `Install them now? [y/n]` prompt after a command finishes. It is never shown in non-interactive or `--json` contexts, on commands that handle completions themselves (`wendy completion …`, [`wendy tour`](./commands/tour.md)), or once completions are installed or the prompt is dismissed. See [`wendy completion`](./commands/completion.md#automatic-prompt-to-install-completions) for the full behavior.
+
+Its state is persisted in `~/.wendy/config.json`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `completionInstalled` | bool | Completions were installed through the CLI; permanently suppresses the prompt. |
+| `completionPromptDismissed` | bool | The user answered `n` to the prompt; permanently suppresses it. |
+| `lastCompletionPromptCheck` | RFC3339 timestamp | When the prompt was last shown; throttles it to once per 24-hour window. |
 
 ## Environment variables
 

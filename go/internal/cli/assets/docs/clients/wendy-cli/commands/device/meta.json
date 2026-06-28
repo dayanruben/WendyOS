@@ -3,6 +3,7 @@
     "apps",
     "logs",
     "dashboard",
+    "top",
     "info",
     "set-default",
     "unset-default",

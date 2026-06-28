@@ -483,6 +483,44 @@ func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	}
 }
 
+func TestFormatOSNameVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		os      string
+		version string
+		want    string
+	}{
+		{name: "name and version", os: "ubuntu", version: "24.04", want: "ubuntu 24.04"},
+		{name: "version only", os: "", version: "24.04", want: "24.04"},
+		{name: "name only", os: "arch", version: "", want: "arch"},
+		{name: "both empty", os: "", version: "", want: ""},
+		{name: "trims surrounding space", os: " ubuntu ", version: " 24.04 ", want: "ubuntu 24.04"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatOSNameVersion(tt.os, tt.version); got != tt.want {
+				t.Errorf("formatOSNameVersion(%q, %q) = %q; want %q", tt.os, tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickerDeviceTableData_OSColumnShowsDistroName(t *testing.T) {
+	_, rows := PickerDeviceTableData([]PickerItem{{
+		Name:      "wendy-ser9",
+		Type:      "LAN",
+		OS:        "ubuntu",
+		OSVersion: "24.04",
+	}}, "", false)
+
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if !strings.Contains(strings.Join(rows[0], " "), "ubuntu 24.04") {
+		t.Errorf("row %v does not contain combined OS name+version %q", rows[0], "ubuntu 24.04")
+	}
+}
+
 func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 	_, rows := PickerTableData([]PickerItem{{
 		Name:        "ubuntu",

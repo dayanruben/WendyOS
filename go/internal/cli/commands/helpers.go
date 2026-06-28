@@ -52,6 +52,33 @@ const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login
 
 var errProvisionedAgentUnauthorized = errors.New(provisionedAgentUnauthorizedMessage)
 
+// errTLSHandshakeRejected is the sentinel for "the device rejected our client
+// certificate during the TLS handshake" — the signature of clock skew (the
+// device clock lags the cert's validity window) or a genuine cert mismatch.
+// connectWithAutoTLSDiagnostics returns a tlsHandshakeRejectedError, so callers
+// can detect this case with errors.Is rather than string matching.
+var errTLSHandshakeRejected = errors.New("TLS handshake rejected by device")
+
+type tlsHandshakeRejectedError struct {
+	cause error
+}
+
+func newTLSHandshakeRejectedError(cause error) error {
+	return tlsHandshakeRejectedError{cause: cause}
+}
+
+func (e tlsHandshakeRejectedError) Is(target error) bool {
+	return target == errTLSHandshakeRejected
+}
+
+func (e tlsHandshakeRejectedError) Unwrap() error {
+	return e.cause
+}
+
+func (e tlsHandshakeRejectedError) Error() string {
+	return "TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1"
+}
+
 type provisionedAgentUnauthorizedError struct {
 	cause error
 }
@@ -174,6 +201,76 @@ func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*g
 	conn, err := retry()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Still unable to connect after refreshing certificates: %v\n", err)
+		return nil, false
+	}
+	return conn, true
+}
+
+// clockSkewSyncTimeout bounds the Roughtime query + multicast.
+const clockSkewSyncTimeout = 5 * time.Second
+
+// clockSkewRetryDelay gives the device a moment to receive the multicast time
+// proof and advance its clock before we retry the TLS handshake.
+const clockSkewRetryDelay = 1500 * time.Millisecond
+
+// broadcastTimeFn fetches a signed time proof and multicasts it to devices on
+// the LAN. Indirected for tests.
+var broadcastTimeFn = func(ctx context.Context) error {
+	_, err := clitimesync.BroadcastTime(ctx)
+	return err
+}
+
+// clockSkewSyncSleep is the post-broadcast wait. Indirected for tests.
+var clockSkewSyncSleep = func(d time.Duration) { time.Sleep(d) }
+
+// clockSkewSyncAttempted guards against syncing more than once per CLI run, so
+// repeated connect attempts don't trigger a sync-and-sleep storm.
+var clockSkewSyncAttempted bool
+
+// isClockSkewSuspectError reports whether a connection failure looks like the
+// device rejected our client cert during the TLS handshake — the signature of
+// clock skew (which a time sync can fix). It matches the typed handshake
+// rejection as well as cert-refreshable TLS alerts.
+func isClockSkewSuspectError(err error) bool {
+	return errors.Is(err, errTLSHandshakeRejected) || isCertRefreshableError(err)
+}
+
+// autoSyncTimeAndRetry handles a likely clock-skew rejection automatically: it
+// broadcasts a signed time proof to the device (the same work as
+// `wendy sync-time`), waits briefly for the device to adopt it, then retries
+// the connection once. Returns (conn, true) only when the sync ran and the
+// retry connected; in every other case the caller falls through to its
+// existing error handling (e.g. the interactive cert-refresh offer).
+//
+// The sync runs at most once per CLI invocation. Unlike offerCertRefreshAndRetry
+// it is non-interactive — clock skew has an unambiguous, side-effect-free remedy
+// — so it does not gate on an interactive terminal.
+func autoSyncTimeAndRetry(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
+	if !isClockSkewSuspectError(cause) || clockSkewSyncAttempted {
+		return nil, false
+	}
+	clockSkewSyncAttempted = true
+
+	if !jsonOutput {
+		fmt.Fprintln(os.Stderr, "⏱  Possible clock skew — syncing device time and retrying...")
+	}
+
+	syncCtx, cancel := context.WithTimeout(ctx, clockSkewSyncTimeout)
+	syncErr := broadcastTimeFn(syncCtx)
+	cancel()
+	if syncErr != nil {
+		// Without a fresh time proof the device clock won't move, so retrying
+		// would just fail again. Surface the cause under the TLS debug flag.
+		if os.Getenv("WENDY_TLS_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[tls-debug] time sync failed: %v\n", syncErr)
+		}
+		return nil, false
+	}
+
+	clockSkewSyncSleep(clockSkewRetryDelay)
+
+	conn, err := retry()
+	if err != nil {
 		return nil, false
 	}
 	return conn, true
@@ -644,7 +741,11 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
-			if errors.Is(connErr, errProvisionedAgentUnauthorized) {
+			if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			}); ok {
+				conn = syncedConn
+			} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
 				refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 				})
@@ -946,7 +1047,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				}
 			}
 			if plaintextAddrCertReject || (mtlsPortCertFails > 0 && mtlsPortNonCertFails == 0) {
-				return nil, lastMTLSErr, fmt.Errorf("TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1")
+				return nil, lastMTLSErr, newTLSHandshakeRejectedError(lastMTLSErr)
 			}
 		}
 	}
@@ -1464,7 +1565,11 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			if errors.Is(err, ErrUserCancelled) {
 				return nil, err
 			}
-			if errors.Is(err, errProvisionedAgentUnauthorized) {
+			if syncedConn, ok := autoSyncTimeAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+				return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+			}); ok {
+				conn = syncedConn
+			} else if errors.Is(err, errProvisionedAgentUnauthorized) {
 				refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
 					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
 				})
@@ -1796,6 +1901,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			USB:          dev.USB,
 			Address:      preferredLANAddress(dev),
 			AgentVersion: dev.AgentVersion,
+			OS:           dev.OS,
 			OSVersion:    dev.OSVersion,
 			Provisioned:  lanProvisionedDisplay(&devCopy),
 			Hint:         hint,
@@ -1862,6 +1968,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 								Type:         "LAN (Lite)",
 								Address:      devices[i].ConnectionInfo["ip"],
 								AgentVersion: devices[i].AgentVersion,
+								OS:           devices[i].OS,
 								OSVersion:    devices[i].OSVersion,
 								Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 									DisplayName:     devices[i].DisplayName,
@@ -1877,6 +1984,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 								Type:         prov.DisplayName(),
 								Address:      externalProviderAddress(devices[i].ProviderKey, devices[i].ID),
 								AgentVersion: devices[i].AgentVersion,
+								OS:           devices[i].OS,
 								OSVersion:    devices[i].OSVersion,
 								DedupKey:     devices[i].DisplayName,
 								SortKey:      externalProviderSortKey(prov.Key(), devices[i].DisplayName),
@@ -1917,6 +2025,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							Type:         connType,
 							Address:      bleDevices[i].Address,
 							AgentVersion: bleDevices[i].AgentVersion,
+							OS:           bleDevices[i].OS,
 							OSVersion:    bleDevices[i].OSVersion,
 							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 								DisplayName:     bleDevices[i].DisplayName,
