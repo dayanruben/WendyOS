@@ -139,11 +139,11 @@ The display entitlement allows a container to present to a locally-attached moni
 
 The container receives:
 - A bind mount of `/dev/dri` (GPU render nodes) for GPU-accelerated graphics
-- Membership in the `video` and `render` groups (GIDs 44 and 105 or 107) for device permissions
+- Membership in the `video` and `render` groups for device permissions
 - A cgroup device rule allowing access to render device nodes (major 226)
 - The WendyOS compositor's Wayland socket, injected as an environment variable for client connection
 
-**At most one display entitlement per app.** Multiple containers cannot simultaneously render to the same display.
+**At most one display entitlement per app** (enforced by the runtime).
 
 **Display-enabled image required:** this entitlement is accepted during validation on all WendyOS images, but the Wayland socket is only present on display-enabled images. On headless images, the container will not have the socket available, so graphics output will not render.
 
