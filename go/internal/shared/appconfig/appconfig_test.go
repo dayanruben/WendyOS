@@ -1163,6 +1163,49 @@ func TestMCPEntitlementPortOutOfRange(t *testing.T) {
 	}
 }
 
+func TestDisplayEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{
+		AppID:        "test",
+		Entitlements: []Entitlement{{Type: EntitlementDisplay}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestDisplayEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementDisplay},
+			{Type: EntitlementDisplay},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for duplicate display entitlement")
+	}
+}
+
+func TestDisplayEntitlementJSONNoWarnings(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "test",
+		"entitlements": [ {"type": "display"} ]
+	}`))
+	if len(warnings) != 0 {
+		t.Fatalf("got %d warnings for valid display entitlement, want 0: %v", len(warnings), warnings)
+	}
+}
+
+func TestDisplayEntitlementJSONUnknownKeyWarns(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "test",
+		"entitlements": [ {"type": "display", "bogus": 1} ]
+	}`))
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for unknown key on display entitlement, got none")
+	}
+}
+
 func TestServiceConfigValidation(t *testing.T) {
 	t.Run("valid services", func(t *testing.T) {
 		cfg := &AppConfig{
