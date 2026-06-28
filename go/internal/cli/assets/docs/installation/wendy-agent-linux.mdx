@@ -5,20 +5,9 @@ description: Install wendy-agent on any Linux machine to turn it into a managed 
 
 ## Overview
 
-`wendy-agent` comes pre-installed on WendyOS, which currently supports [NVIDIA Jetson Orin Nano and AGX Orin](/docs/installation/wendyos-nvidia-jetson) plus [Raspberry Pi 3, 4, and 5](/docs/installation/wendyos-raspberry-pi-5). If you flashed WendyOS onto your device, you do not need to follow this guide.
+Install `wendy-agent` on **any existing Linux installation** — Ubuntu, Debian, Raspberry Pi OS, DGX Spark, NUCs, cloud VMs, or any other ARM64 or x86_64 distribution — to turn it into a managed Wendy device. Once installed, your `wendy` CLI and the device discover each other over the local network.
 
-Wendy Agent is also available as a standalone install for targets that already run an existing operating system.
-
-For Linux targets (Raspberry Pi OS, Ubuntu, Debian, DGX Spark's Linux image, or another Linux distribution), install the Linux agent directly. Once installed, your `wendy` CLI and device can discover each other over the local area network.
-
-This works on:
-
-- Raspberry Pi 5 running Raspberry Pi OS
-- DGX Spark
-- Ubuntu / Debian servers or desktops
-- Intel/AMD NUCs
-- Cloud VMs or remote servers
-- Any ARM64 or x86_64 Linux machine
+(`wendy-agent` is already built into [WendyOS](/docs/installation/wendyos-nvidia-jetson) — if you flashed WendyOS, skip this guide.)
 
 ## Requirements
 
