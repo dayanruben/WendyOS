@@ -257,7 +257,7 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
 - **Status:** ✅ Mitigated (WDY-1012)
 - **Component:** Container runtime, capability set
 - **Description:** Containers are granted a broad capability set when device entitlements are enabled (including `CAP_SYS_PTRACE`, `CAP_SYS_CHROOT`, `CAP_NET_ADMIN`). A container vulnerability combined with these capabilities could allow a container escape to the host.
-- **Existing mitigations:** `CAP_SYS_ADMIN` is not granted. User namespaces isolate container UID from host UID. A baseline seccomp profile is applied to all containers, blocking dangerous syscalls including `ptrace`, `unshare`, and `clone` with `CLONE_NEWUSER` (WDY-1012). `CAP_NET_ADMIN` is no longer granted by host networking alone; it requires a separate explicit entitlement (WDY-1094).
+- **Existing mitigations:** Containers run as non-root `appuser` (UID 1000). `CAP_SYS_ADMIN` is not granted. A baseline seccomp profile is applied to all containers, blocking dangerous syscalls including `ptrace`, `unshare`, and `clone` with `CLONE_NEWUSER` (WDY-1012). `CAP_NET_ADMIN` is no longer granted by host networking alone; it requires a separate explicit entitlement (WDY-1094). Note: full user-namespace UID remapping (container root → high host UID) is not yet implemented (WDY-1011, 📋 Planned), so the seccomp `CLONE_NEWUSER` block is the current primary defense against userns-based escapes.
 - **Recommended controls:**
   - Audit each entitlement's capability grants; remove `CAP_SYS_PTRACE` and `CAP_SYS_CHROOT` unless specifically required.
   - Enable AppArmor or SELinux profiles for containers.

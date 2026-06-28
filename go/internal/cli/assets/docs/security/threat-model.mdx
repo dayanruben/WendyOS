@@ -97,7 +97,7 @@ Each row leads with the existing control, then notes hardening underway. Severit
 | TM-I-02 | HIGH | 📋 Planned | Mitigated by: key files are mode 0o600, root-owned; the config partition copy is deleted after first boot. Hardening underway: HSM/TPM integration or non-exportable kernel keyring storage. |
 | TM-I-03 | HIGH | 📋 Planned | Mitigated by: enrollment tokens are single-use (invalidated after first use); pre-enrollment at imaging time eliminates in-transit exposure entirely. Hardening underway: ECDH key exchange or TLS-bootstrapped channel for post-boot provisioning flows. |
 | TM-I-04 | MEDIUM | 📋 Planned | Mitigated by: post-provisioning L2CAP channel uses mTLS with server cert verification and org-ID matching; SPKI pinning (trust-on-first-use) pins the device certificate fingerprint on first connection. Hardening underway: confirming TLS session resumption is disabled on BLE channels. |
-| TM-I-05 | MEDIUM | ✅ Shipped | Mitigated by: baseline seccomp profile blocks dangerous syscalls (`ptrace`, `unshare`, `clone(CLONE_NEWUSER)`, `kexec`, kernel-module loading). `CAP_SYS_ADMIN` is not granted. `CAP_NET_ADMIN` requires a separate explicit entitlement rather than being bundled with host networking. User namespaces isolate container UID from host UID. |
+| TM-I-05 | MEDIUM | ✅ Shipped | Mitigated by: containers run as non-root `appuser`; a baseline seccomp profile blocks dangerous syscalls (`ptrace`, `unshare`, `clone(CLONE_NEWUSER)`, `kexec`, kernel-module loading); `CAP_SYS_ADMIN` is not granted; and `CAP_NET_ADMIN` requires a separate explicit entitlement rather than being bundled with host networking. Hardening underway: full user-namespace UID remapping (container root → high host UID). |
 
 ### Denial of Service
 
