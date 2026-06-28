@@ -53,6 +53,7 @@ agent is current. The `run` flow builds/deploys from `$WENDY_SHOTS_RUN_DIR`
 | `init` | `wendy init` | `wizard` | yes |
 | `run` | `wendy run` | `deploy` | yes |
 | `os-install` | `wendy os install` | `select-device-type` | yes |
+| `entitlements` | `wendy project entitlements add` | `add` | yes |
 
 **Sanitised for public docs:** `wifi-connect` filters the table to `Wendy` (so
 neighbouring SSIDs never appear, in the still *or* the clip — the unfiltered
