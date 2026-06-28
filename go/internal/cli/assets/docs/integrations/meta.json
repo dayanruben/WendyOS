@@ -1,5 +1,5 @@
 {
   "title": "Robotics",
-  "description": "Connect Wendy to the robotics tools you already use",
-  "pages": ["ros2", "foxglove"]
+  "description": "Build, deploy, and operate ROS 2 robots with WendyOS",
+  "pages": ["index", "ros2", "foxglove"]
 }
