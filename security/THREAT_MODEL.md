@@ -118,7 +118,7 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
 ### 6.1 Spoofing
 
 #### TM-S-01 — Unauthenticated access on pre-provisioned port
-- **Severity:** HIGH
+- **Severity:** CRITICAL (inherent — accepted by design with provisioning as the mitigation; see framing note)
 - **Status:** 📋 Planned (additional hardening; WDY-1006 / WDY-1092)
 - **Component:** Port 50051 (gRPC plaintext)
 - **Description:** Unprovisioned devices use a plaintext channel by design — provisioning is the mitigation. Before provisioning completes, port 50051 accepts gRPC connections from any host on the network with no authentication. This is an intentional, documented, time-bounded state: the pre-provisioning window is warned to operators, and provisioning establishes mTLS for all subsequent communication. The `wendy tools install` flow offers provisioning during setup to minimise the window. Production deployments should use pre-enrollment at imaging time to skip the post-boot window entirely.
