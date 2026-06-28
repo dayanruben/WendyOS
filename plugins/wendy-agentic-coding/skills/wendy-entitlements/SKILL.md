@@ -17,6 +17,7 @@ Ask what the app actually touches, then choose the smallest entitlement set:
 
 - Server, WebRTC, callbacks, debugger, or LAN-visible API: `network`.
 - NVIDIA/Jetson inference or CUDA: `gpu`.
+- Present to a locally-attached monitor as a Wayland client: `display`.
 - Microphone, speaker, ALSA, PipeWire, PulseAudio compatibility: `audio`.
 - V4L2 cameras or USB webcams: `camera`.
 - Model cache, database, user uploads, generated files, or persistent app state: `persist`.
@@ -39,6 +40,7 @@ Use this table as the starting point, then verify against the local repo when ch
 | --- | --- | --- | --- |
 | `network` | none | `mode` as `host` or `none` | Defaults to host networking when `mode` is empty; `host` removes the network namespace and mounts host DNS config. |
 | `gpu` | none | none | Jetson: adds NVIDIA device nodes, env vars, CDI wiring. Raspberry Pi: exposes `/dev/vcio` for board telemetry. |
+| `display` | none | none | Grants `/dev/dri` (GPU render nodes) and the WendyOS compositor's Wayland socket; allows the container to present to a locally-attached monitor as a Wayland client. Requires a display-enabled WendyOS image; on headless images the socket is absent so nothing renders. On Jetson, GPU graphics userspace is injected from the host via CDI. At most one per app. |
 | `audio` | none | none | Adds audio group, mounts `/dev/snd`, allows sound devices, and mounts PipeWire/Pulse sockets when present. |
 | `camera` | none | `mode`, `allowlist` | Canonical V4L2/camera entitlement; allows major 81, bind-mounts host `/dev` for live camera hotplug, and bind-mounts `/run/udev` read-only for libcamera CSI enumeration. |
 | `video` | none | `mode`, `allowlist` | Deprecated compatibility alias for `camera`; prefer `camera` in new configs. |
