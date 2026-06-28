@@ -8,6 +8,12 @@ device. List nodes and topics, echo messages, watch publish rates, render the
 connectivity graph, read and set parameters, and record rosbags — all from your
 machine, over the same secure connection the CLI already uses.
 
+<Callout type="info">
+**Standard, upstream ROS 2.** WendyOS runs real ROS 2 from stock containers — Humble
+by default, configurable per app. Choose your middleware with `frameworks.ros2.rmw`:
+CycloneDDS (default), Fast DDS, RTI Connext, or Gurum.
+</Callout>
+
 ## How it works
 
 The agent discovers ROS 2 app containers (those deployed with a `frameworks.ros2`
