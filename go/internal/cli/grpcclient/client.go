@@ -88,6 +88,38 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 	return ac, nil
 }
 
+// ConnectUnix dials the agent over a local unix domain socket with plain h2c
+// (no TLS). It is used inside an `admin`-entitled container, where the agent's
+// control socket is bind-mounted in and WENDY_AGENT_SOCKET points at it. The
+// socket itself is the entire trust boundary (see the admin entitlement); there
+// is deliberately no authentication here.
+func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, error) {
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socketPath)
+	}
+	conn, err := grpc.NewClient(
+		"passthrough:///unix",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
+		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
+		grpc.WithReadBufferSize(grpcReadBufferSize),
+		grpc.WithWriteBufferSize(grpcWriteBufferSize),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                grpcKeepaliveTime,
+			Timeout:             grpcKeepaliveTimeout,
+			PermitWithoutStream: false,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to agent at unix:%s: %w", socketPath, err)
+	}
+	ac := newAgentConnection(conn)
+	ac.Host = "unix:" + socketPath
+	return ac, nil
+}
+
 func ConnectWithTLS(ctx context.Context, address string, certInfo *config.CertificateInfo) (*AgentConnection, error) {
 	return ConnectWithTLSAndPins(ctx, address, certInfo, nil)
 }
