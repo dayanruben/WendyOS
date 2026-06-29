@@ -161,3 +161,22 @@ Example for a Python ML app:
     "path": "/app/.cache/huggingface"
 }
 ```
+
+## Admin
+
+The admin entitlement grants a container full local control of the device's app orchestration and data via the wendy-agent's local gRPC socket.
+
+```json
+{
+    "type": "admin"
+}
+```
+
+- **Blast-radius warning:** This entitlement grants the container the wendy-agent's **full gRPC with no authentication** — an app with `admin` can start, stop, and delete other apps and read all device data locally. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell).
+
+The container receives:
+- A Unix domain socket bind mount at `WENDY_AGENT_SOCKET` environment variable pointing to `/run/wendy/agent.sock`
+- Full access to the agent's gRPC services, including app lifecycle and device telemetry
+- At most one `admin` entitlement per app
+
+Requires an agent build that serves the local socket (`/run/wendy/agent.sock` with mode `0660`).
