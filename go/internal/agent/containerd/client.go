@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1273,6 +1274,107 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
+}
+
+// execCounter disambiguates concurrent exec IDs within the agent process.
+var execCounter atomic.Uint64
+
+// Compile-time guarantee that *Client satisfies the optional exec capability the
+// ExecContainer RPC type-asserts for (the assertion there is only runtime).
+var _ services.ContainerExecer = (*Client)(nil)
+
+// runningContainerForApp resolves the single container for appName, mirroring
+// the lookup in StartContainerWithStdin: LoadContainer by name, then the
+// app-label fallback (rejecting ambiguous multi-service apps).
+func (c *Client) runningContainerForApp(ctx context.Context, appName string) (containerd.Container, error) {
+	container, err := c.client.LoadContainer(ctx, appName)
+	if err != nil {
+		ctrs, labelErr := c.containersForApp(ctx, appName)
+		if labelErr != nil || len(ctrs) == 0 {
+			return nil, fmt.Errorf("loading container %q: %w", appName, err)
+		}
+		if len(ctrs) > 1 {
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to exec into a specific service", appName)
+		}
+		container = ctrs[0]
+	}
+	return container, nil
+}
+
+// ExecInContainer runs command inside the named app's running container,
+// docker `exec -it` style. When tty is true a PTY is allocated (stderr is
+// merged into stdout) and resize events ([rows, cols]) are applied to the
+// process. Returns the process exit code. Implements services.ContainerExecer.
+func (c *Client) ExecInContainer(ctx context.Context, appName string, command []string, tty bool, stdin io.Reader, stdout, stderr io.Writer, resize <-chan [2]uint32) (int, error) {
+	if _, _, err := ParseContainerName(appName); err != nil {
+		return -1, fmt.Errorf("ExecInContainer: invalid app name: %w", err)
+	}
+	if len(command) == 0 {
+		return -1, fmt.Errorf("ExecInContainer: empty command")
+	}
+	ctx = c.withNamespace(ctx)
+
+	container, err := c.runningContainerForApp(ctx, appName)
+	if err != nil {
+		return -1, err
+	}
+	task, err := container.Task(ctx, nil)
+	if err != nil {
+		return -1, fmt.Errorf("container %q not running: %w", appName, err)
+	}
+	spec, err := container.Spec(ctx)
+	if err != nil {
+		return -1, fmt.Errorf("reading container spec for %q: %w", appName, err)
+	}
+	pspec := spec.Process
+	pspec.Terminal = tty
+	pspec.Args = command
+	// Defensive copy of Env before use (mirrors the ROS 2 exec path) so we never
+	// mutate the slice backing the cached container spec.
+	pspec.Env = append([]string(nil), pspec.Env...)
+
+	var ioCreator cio.Creator
+	if tty {
+		// With a terminal, stdout/stderr are multiplexed onto the PTY master, so
+		// stderr is left nil (containerd ignores it in terminal mode).
+		ioCreator = cio.NewCreator(cio.WithStreams(stdin, stdout, nil), cio.WithTerminal)
+	} else {
+		ioCreator = cio.NewCreator(cio.WithStreams(stdin, stdout, stderr))
+	}
+
+	execID := fmt.Sprintf("exec-%d-%d", time.Now().UnixNano(), execCounter.Add(1))
+	proc, err := task.Exec(ctx, execID, pspec, ioCreator)
+	if err != nil {
+		return -1, fmt.Errorf("exec in container %q: %w", appName, err)
+	}
+	defer func() { _, _ = proc.Delete(ctx, containerd.WithProcessKill) }()
+
+	statusC, err := proc.Wait(ctx)
+	if err != nil {
+		return -1, fmt.Errorf("waiting on exec: %w", err)
+	}
+	if err := proc.Start(ctx); err != nil {
+		return -1, fmt.Errorf("starting exec: %w", err)
+	}
+
+	if tty && resize != nil {
+		// proc.Resize takes (width=cols, height=rows). The initial size was sent
+		// by the handler as the first resize frame.
+		go func() {
+			for sz := range resize {
+				_ = proc.Resize(ctx, sz[1], sz[0])
+			}
+		}()
+	}
+
+	select {
+	case st := <-statusC:
+		return int(st.ExitCode()), st.Error()
+	case <-ctx.Done():
+		_ = proc.Kill(ctx, syscall.SIGKILL)
+		<-statusC
+		return -1, ctx.Err()
+	}
 }
 
 var deviceHostnameWithSuffix = func() string {

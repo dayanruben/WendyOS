@@ -73,6 +73,18 @@ type ContainerdClient interface {
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
 }
 
+// ContainerExecer is the optional capability to run a process inside a running
+// container with an interactive PTY (docker `exec -it`). The ExecContainer RPC
+// type-asserts for it; a client that does not implement it yields Unimplemented.
+// Kept separate (like GroupRestarter) so the many ContainerdClient mocks stay
+// untouched.
+type ContainerExecer interface {
+	// ExecInContainer runs command in the named app's running container. When tty
+	// is true a PTY is allocated (stderr merged into stdout) and resize events
+	// ([rows, cols]) are applied to the process. Returns the process exit code.
+	ExecInContainer(ctx context.Context, appName string, command []string, tty bool, stdin io.Reader, stdout, stderr io.Writer, resize <-chan [2]uint32) (int, error)
+}
+
 // GroupRestarter is the optional capability a ContainerdClient may provide to
 // restart a shared-namespace app group as a unit. The container monitor
 // type-asserts for it and falls back to single-container restarts when the
