@@ -2,10 +2,12 @@
 
 **Date:** 2026-06-29
 **Status:** Draft (design)
-**Depends on:** PR #1239 (`admin` entitlement + agent local unix-socket gRPC). SP1
-assumes the agent serves its full gRPC surface on `/run/wendy/agent.sock` and that
-`{"type":"admin"}` bind-mounts that socket into a container and sets
-`WENDY_AGENT_SOCKET`.
+**Depends on:** PR #1239 (`admin` entitlement + agent local unix-socket gRPC),
+**already merged to `main`** (verified present in this worktree: `EntitlementAdmin`
+in appconfig, `applyAdmin` in oci/entitlements, `internal/agent/localsocket`, and the
+`{"type":"admin"}` schema entry). The agent serves its full gRPC surface on
+`/run/wendy/agent.sock`, and `{"type":"admin"}` bind-mounts that socket into a
+container and sets `WENDY_AGENT_SOCKET`.
 **Followed by:** Sub-project 2 — on-device image builder (`wendy run` builds on the
 Jetson). Out of scope here.
 
@@ -174,9 +176,10 @@ TDD throughout (write the failing test first):
 1. **PTY over gRPC.** Wiring a containerd PTY master to a bidirectional gRPC stream
    with correct resize and clean teardown is the fiddliest part; the integration
    test plus the on-device smoke are the guards.
-2. **Depends on #1239 landing.** The local socket + `admin` entitlement must exist
-   on the deployed agent; SP1 ships its agent (with `ExecContainer`) the same way
-   #1239 did (`wendy device update --binary` / OS update).
+2. **Deployed agent must be new enough.** #1239 is merged to `main`, but a device
+   in the field still runs an older agent; SP1 ships its agent (with `ExecContainer`)
+   the same way #1239 did (`wendy device update --binary` / OS update) before the
+   `claude-on-device` app can attach.
 3. **Claude Code in a constrained container.** Node + the CLI's runtime
    assumptions (writable HOME, network egress for the API) must hold inside the
    container; the smoke test covers this.
