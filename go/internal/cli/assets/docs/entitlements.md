@@ -127,28 +127,6 @@ Use `serial` for serial ports and `usb` for raw USB protocols — they expose di
 
 > **Security note:** the cgroup rule is scoped to the named device's exact `major:minor`, so — unlike a whole-major grant — it never exposes other devices that share the major (e.g. other `ttyACM*`/`ttyUSB*` adapters on the host). The entitlement is USB-only, so it can never reach an on-board console UART. See *Replug behavior* above for why a reconnect needs a redeploy.
 
-## Display
-
-The display entitlement allows a container to present to a locally-attached monitor as a Wayland client.
-
-```json
-{
-    "type": "display"
-}
-```
-
-The container receives:
-- A bind mount of `/dev/dri` (GPU render nodes) for GPU-accelerated graphics
-- Membership in the `video` and `render` groups for device permissions
-- A cgroup device rule allowing access to render device nodes (major 226)
-- The WendyOS compositor's Wayland socket, injected as an environment variable for client connection
-
-**At most one display entitlement per app** (enforced by the runtime).
-
-**Display-enabled image required:** this entitlement is accepted during validation on all WendyOS images, but the Wayland socket is only present on display-enabled images. On headless images, the container will not have the socket available, so graphics output will not render.
-
-On Jetson devices, GPU graphics userspace (libraries, drivers) is injected from the host via Container Device Interface (CDI) integration.
-
 ## Persist
 
 The persist entitlement allows the container to persist data across restarts. Data is stored on the host filesystem and mounted into the container at the specified path.
