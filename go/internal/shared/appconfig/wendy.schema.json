@@ -251,6 +251,14 @@
         },
         {
           "properties": {
+            "type": { "const": "display" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Present to a locally-attached monitor as a Wayland client: GPU render nodes (/dev/dri) plus the WendyOS compositor's Wayland socket. At most one per app; requires a display-enabled WendyOS image."
+        },
+        {
+          "properties": {
             "type": { "const": "admin" }
           },
           "required": ["type"],

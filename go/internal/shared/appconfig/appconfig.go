@@ -44,6 +44,7 @@ const (
 	EntitlementInput     = "input"
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
+	EntitlementDisplay   = "display"
 	// EntitlementAdmin grants full, unauthenticated local control of the agent
 	// via its local unix socket — the most security-sensitive entitlement.
 	// See entitlements.md for the blast radius.
@@ -66,6 +67,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementInput,
 	EntitlementSerial,
 	EntitlementMCP,
+	EntitlementDisplay,
 	EntitlementAdmin,
 }
 
@@ -89,6 +91,7 @@ var allowedKeys = map[string][]string{
 	EntitlementInput:     {"type"},
 	EntitlementSerial:    {"type", "device"},
 	EntitlementMCP:       {"type", "port"},
+	EntitlementDisplay:   {"type"},
 	EntitlementAdmin:     {"type"},
 }
 
@@ -354,6 +357,16 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if mcpCount > 1 {
 		return fmt.Errorf("at most one mcp entitlement is allowed in %s, found %d", prefix, mcpCount)
+	}
+
+	displayCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementDisplay {
+			displayCount++
+		}
+	}
+	if displayCount > 1 {
+		return fmt.Errorf("at most one display entitlement is allowed in %s, found %d", prefix, displayCount)
 	}
 
 	adminCount := 0
