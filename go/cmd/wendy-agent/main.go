@@ -32,6 +32,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
@@ -565,6 +566,34 @@ func main() {
 		}()
 	}
 
+	// Local control socket: the agent's full gRPC over a unix socket with NO
+	// mTLS. Access is gated solely by the admin entitlement (oci.applyAdmin
+	// bind-mounts this socket into entitled containers). Disabled with
+	// WENDY_LOCAL_SOCKET=off.
+	var localSocketServer *grpc.Server
+	if os.Getenv("WENDY_LOCAL_SOCKET") != "off" {
+		localSocketServer = grpc.NewServer(
+			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+		)
+		registerAllServices(localSocketServer)
+
+		const localSocketPath = "/run/wendy/agent.sock"
+		localLis, err := localsocket.Listen(localSocketPath)
+		if err != nil {
+			logger.Error("Failed to listen on local control socket", zap.Error(err))
+		} else {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				logger.Info("Agent local control socket listening", zap.String("path", localSocketPath))
+				if err := localSocketServer.Serve(localLis); err != nil {
+					logger.Error("Local control socket server error", zap.Error(err))
+				}
+			}()
+		}
+	}
+
 	// Set up the provisioning callback to start the mTLS server, shut down
 	// the plaintext server, and switch the registry to HTTPS.
 	provisioningSvc.OnProvisioned = func(certPEM, chainPEM string, keyData []byte) {
@@ -673,6 +702,9 @@ func main() {
 	cancel()
 	if agentServer != nil {
 		agentServer.GracefulStop()
+	}
+	if localSocketServer != nil {
+		localSocketServer.GracefulStop()
 	}
 	otelServer.GracefulStop()
 
