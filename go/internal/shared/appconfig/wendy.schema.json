@@ -248,6 +248,14 @@
           "required": ["type", "device"],
           "additionalProperties": false,
           "description": "Serial tty device access (USB-attached servo buses, sensors, microcontrollers)."
+        },
+        {
+          "properties": {
+            "type": { "const": "admin" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Full local control of the agent over its unix socket, with no authentication. The entitlement-gated socket mount is the entire trust boundary — grant only to fully-trusted first-party apps. At most one per app."
         }
       ]
     },
