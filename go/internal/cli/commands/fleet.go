@@ -91,7 +91,11 @@ func newFleetCmd() *cobra.Command {
 			"carries that tag. Group membership is the targeting primitive that fleet-wide\n" +
 			"operations (deploying to a whole group, fleet inventory) build on.",
 	}
-	cmd.AddCommand(newFleetGroupCmd())
+	cmd.AddCommand(
+		newFleetGroupCmd(),
+		newFleetAppsCmd(),
+		newFleetRunCmd(),
+	)
 	return cmd
 }
 
