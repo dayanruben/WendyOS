@@ -673,6 +673,98 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	}
 }
 
+// ExecContainer runs a process inside a running container with an interactive
+// PTY (docker `exec -it`). The first client message must be ExecStart; later
+// messages carry stdin or window resizes. Output is streamed back as
+// stdout/stderr frames, followed by a final exit_code.
+func (s *ContainerService) ExecContainer(stream grpc.BidiStreamingServer[agentpb.ExecContainerRequest, agentpb.ExecContainerResponse]) error {
+	execer, ok := s.containerd.(ContainerExecer)
+	if !ok {
+		return status.Error(codes.Unimplemented, "container exec is not supported by this agent")
+	}
+
+	first, err := stream.Recv()
+	if err == io.EOF {
+		return status.Error(codes.InvalidArgument, "missing first exec message")
+	}
+	if err != nil {
+		return err
+	}
+	start := first.GetStart()
+	if start == nil || start.GetAppName() == "" {
+		return status.Error(codes.InvalidArgument, "first message must be ExecStart with app_name")
+	}
+	command := start.GetCommand()
+	if len(command) == 0 {
+		command = []string{"/bin/sh"}
+	}
+
+	ctx := stream.Context()
+	stdinR, stdinW := io.Pipe()
+	defer stdinR.Close()
+
+	resize := make(chan [2]uint32, 8)
+	if ts := start.GetTermSize(); ts != nil {
+		resize <- [2]uint32{ts.GetRows(), ts.GetCols()}
+	}
+
+	// Forward stdin + resize frames from the client until it closes the stream.
+	go func() {
+		defer stdinW.Close()
+		defer close(resize)
+		for {
+			msg, recvErr := stream.Recv()
+			if recvErr != nil {
+				return
+			}
+			switch {
+			case len(msg.GetStdinData()) > 0:
+				if _, werr := stdinW.Write(msg.GetStdinData()); werr != nil {
+					return
+				}
+			case msg.GetResize() != nil:
+				select {
+				case resize <- [2]uint32{msg.GetResize().GetRows(), msg.GetResize().GetCols()}:
+				default: // drop resizes if the consumer is momentarily behind
+				}
+			}
+		}
+	}()
+
+	stdout := &execWriter{stream: stream, stderr: false}
+	stderr := &execWriter{stream: stream, stderr: true}
+
+	code, err := execer.ExecInContainer(ctx, start.GetAppName(), command, start.GetTty(), stdinR, stdout, stderr, resize)
+	if err != nil {
+		return status.Errorf(codes.Internal, "exec failed: %v", err)
+	}
+	return stream.Send(&agentpb.ExecContainerResponse{
+		ResponseType: &agentpb.ExecContainerResponse_ExitCode{ExitCode: int32(code)},
+	})
+}
+
+// execWriter adapts a container exec output stream to io.Writer so the PTY's
+// stdout/stderr can be forwarded over gRPC.
+type execWriter struct {
+	stream grpc.BidiStreamingServer[agentpb.ExecContainerRequest, agentpb.ExecContainerResponse]
+	stderr bool
+}
+
+func (w *execWriter) Write(p []byte) (int, error) {
+	// Copy: the PTY may reuse its read buffer once Write returns.
+	buf := append([]byte(nil), p...)
+	var resp *agentpb.ExecContainerResponse
+	if w.stderr {
+		resp = &agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StderrData{StderrData: buf}}
+	} else {
+		resp = &agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StdoutData{StdoutData: buf}}
+	}
+	if err := w.stream.Send(resp); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopContainerRequest) (*agentpb.StopContainerResponse, error) {
 	appName := req.GetAppName()
 	// Validate before acquiring the mutex so that invalid names never reach the
