@@ -2,6 +2,7 @@ package oci
 
 import (
 	"errors"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -1611,5 +1612,65 @@ func TestApplyCamera_DeviceRulesOmitMknod(t *testing.T) {
 		if acc != "rw" {
 			t.Errorf("camera major %d Access = %q, want %q", major, acc, "rw")
 		}
+	}
+}
+
+func hasMount(spec *Spec, dest string) bool {
+	for _, m := range spec.Mounts {
+		if m.Destination == dest {
+			return true
+		}
+	}
+	return false
+}
+
+func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "s")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = sock
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("expected /run/wendy/agent.sock bind mount")
+	}
+	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("expected WENDY_AGENT_SOCKET env")
+	}
+}
+
+func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = filepath.Join(t.TempDir(), "missing.sock")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("must not mount a missing socket")
+	}
+}
+
+func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("non-admin app must not get the agent socket")
 	}
 }

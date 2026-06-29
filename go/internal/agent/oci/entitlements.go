@@ -103,6 +103,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 				didSetDeviceCapabilities = true
 				SetDeviceCapabilities(spec)
 			}
+		case appconfig.EntitlementAdmin:
+			applyAdmin(spec)
 		}
 	}
 	return nil
@@ -294,6 +296,25 @@ func applyDisplay(spec *Spec) {
 			"WAYLAND_DISPLAY=wayland-0",
 		)
 	}
+}
+
+// applyAdmin grants a container access to the wendy-agent's local control socket
+// (full gRPC, no mTLS). It is the entire trust boundary: only containers that
+// declare the admin entitlement get the socket, so anything with this can fully
+// control the device's apps. The mount is conditional on the host socket
+// existing so an app still starts if the agent socket is down (no-op-safe).
+func applyAdmin(spec *Spec) {
+	fi, err := os.Lstat(adminAgentSocketPath)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: "/run/wendy/agent.sock",
+		Source:      adminAgentSocketPath,
+		Type:        "bind",
+		Options:     []string{"rbind", "nosuid", "noexec"},
+	})
+	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock")
 }
 
 // applyNetwork configures the network namespace.
@@ -510,6 +531,11 @@ var lookupRenderGID = func() (uint32, bool) {
 	}
 	return uint32(gid), true
 }
+
+// adminAgentSocketPath is the host wendy-agent local control socket bind-mounted
+// into containers granted the admin entitlement. Behind a var so tests can point
+// it at a temp socket.
+var adminAgentSocketPath = "/run/wendy/agent.sock"
 
 // applyCamera adds camera/V4L2 device access, plus the additional kernel
 // device majors that libcamera (and on Jetson, nvargus/nvhost) require. The
