@@ -14,13 +14,13 @@ func TestClaudeOnDeviceExampleValidates(t *testing.T) {
 		t.Fatalf("claude-on-device wendy.json invalid: %v", err)
 	}
 
-	var admin, claudeCfg, workspace bool
+	var admin, home, workspace bool
 	for _, e := range cfg.Entitlements {
 		switch {
 		case e.Type == EntitlementAdmin:
 			admin = true
-		case e.Type == EntitlementPersist && e.Path == "/root/.claude":
-			claudeCfg = true
+		case e.Type == EntitlementPersist && e.Path == "/root":
+			home = true
 		case e.Type == EntitlementPersist && e.Path == "/workspace":
 			workspace = true
 		}
@@ -28,8 +28,8 @@ func TestClaudeOnDeviceExampleValidates(t *testing.T) {
 	if !admin {
 		t.Error("missing admin entitlement")
 	}
-	if !claudeCfg {
-		t.Error("missing persist mount for /root/.claude")
+	if !home {
+		t.Error("missing persist mount for /root (home: OAuth token + MCP config)")
 	}
 	if !workspace {
 		t.Error("missing persist mount for /workspace")

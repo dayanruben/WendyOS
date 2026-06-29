@@ -1,10 +1,23 @@
 {
   "appId": "sh.wendy.examples.claude-on-device",
-  "platform": "linux",
   "version": "1.0.0",
+  "platform": "linux",
   "entitlements": [
-    { "type": "admin" },
-    { "type": "persist", "name": "claude-config", "path": "/root/.claude" },
-    { "type": "persist", "name": "workspace", "path": "/workspace" }
+    {
+      "type": "admin"
+    },
+    {
+      "type": "persist",
+      "name": "home",
+      "path": "/root"
+    },
+    {
+      "type": "persist",
+      "name": "workspace",
+      "path": "/workspace"
+    },
+    {
+      "type": "network"
+    }
   ]
 }
