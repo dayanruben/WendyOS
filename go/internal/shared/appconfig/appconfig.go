@@ -44,6 +44,7 @@ const (
 	EntitlementInput     = "input"
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
+	EntitlementAdmin     = "admin"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -62,6 +63,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementInput,
 	EntitlementSerial,
 	EntitlementMCP,
+	EntitlementAdmin,
 }
 
 var deprecatedEntitlementReplacements = map[string]string{
@@ -84,6 +86,7 @@ var allowedKeys = map[string][]string{
 	EntitlementInput:     {"type"},
 	EntitlementSerial:    {"type", "device"},
 	EntitlementMCP:       {"type", "port"},
+	EntitlementAdmin:     {"type"},
 }
 
 // Platform constants identify the target hardware family.
@@ -348,6 +351,16 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if mcpCount > 1 {
 		return fmt.Errorf("at most one mcp entitlement is allowed in %s, found %d", prefix, mcpCount)
+	}
+
+	adminCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementAdmin {
+			adminCount++
+		}
+	}
+	if adminCount > 1 {
+		return fmt.Errorf("at most one admin entitlement is allowed in %s, found %d", prefix, adminCount)
 	}
 
 	return nil
