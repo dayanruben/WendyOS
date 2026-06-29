@@ -975,6 +975,14 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 }
 
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+	// An admin-entitled on-device container reaches the agent over its local
+	// unix socket (bind-mounted by the `admin` entitlement) with no mTLS. When
+	// WENDY_AGENT_SOCKET is set, route every command through it and skip all
+	// discovery/mTLS logic. Empty/unset => unchanged off-device behavior.
+	if sock := os.Getenv("WENDY_AGENT_SOCKET"); sock != "" {
+		conn, err := grpcclient.ConnectUnix(ctx, sock)
+		return conn, nil, err
+	}
 	plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	allCerts := loadAllCLICerts()
