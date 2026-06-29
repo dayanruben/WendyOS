@@ -143,6 +143,59 @@ type ServiceConfig struct {
 	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
+// ComponentConfig describes one placed component of a fleet app (WDY-1755). A
+// wendy.json with a non-empty Components map is a "fleet manifest": each
+// component is built from its own context and placed independently — fanned out
+// to a device group (the edge tier) or run once centrally (the central tier).
+// Per-component Entitlements/Readiness/Hooks/Frameworks/Resources mirror the
+// single-app fields; in fleet mode they live here rather than at the top level.
+type ComponentConfig struct {
+	// Context is the build context directory, relative to wendy.json. Required.
+	Context      string            `json:"context"`
+	Target       *ComponentTarget  `json:"target,omitempty"`
+	Expose       *ComponentExpose  `json:"expose,omitempty"`
+	Discovers    []DiscoverRef     `json:"discovers,omitempty"`
+	Entitlements []Entitlement     `json:"entitlements,omitempty"`
+	Readiness    *ReadinessConfig  `json:"readiness,omitempty"`
+	Hooks        *HooksConfig      `json:"hooks,omitempty"`
+	Frameworks   *FrameworksConfig `json:"frameworks,omitempty"`
+	Resources    *ResourceLimits   `json:"resources,omitempty"`
+}
+
+// ComponentTarget places a component. Exactly one of Group or Central must be
+// set: Group fans the component out to every device in a named device group;
+// Central runs it once (on an edge device, a separate host, or the cloud).
+type ComponentTarget struct {
+	Group   string `json:"group,omitempty"`
+	Central bool   `json:"central,omitempty"`
+}
+
+// ComponentExpose declares the network endpoint a component serves so the
+// platform can advertise it for cross-device discovery. Named "expose" rather
+// than "service" to avoid collision with the multi-container Services map.
+type ComponentExpose struct {
+	Name string `json:"name,omitempty"`
+	Port int    `json:"port"`
+	Path string `json:"path,omitempty"`
+}
+
+// DiscoverRef wires one component's live endpoints into another. The resolved
+// peer list is injected into the consuming container as a JSON snapshot under
+// the env var named by As, plus a live discovery API under WENDY_DISCOVERY_URL.
+type DiscoverRef struct {
+	Component string `json:"component"`
+	As        string `json:"as"`
+}
+
+// DiscoveryURLEnvVar is the env var the platform auto-injects into any component
+// that declares a "discovers" entry, pointing at a local discovery API the app
+// can poll/subscribe to for live membership. It is reserved: a discovers[].as
+// may not reuse it.
+const DiscoveryURLEnvVar = "WENDY_DISCOVERY_URL"
+
+// envVarNamePattern matches a POSIX-portable environment variable name.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
 	AppID string `json:"appId"`
@@ -175,6 +228,16 @@ type AppConfig struct {
 	// Resources optionally caps the app's CPU/memory/PID usage. For
 	// multi-service apps it is the default; a service may override it.
 	Resources *ResourceLimits `json:"resources,omitempty"`
+	// Components, when non-empty, makes this a fleet manifest (WDY-1755): a map
+	// of placed components fanned out to device groups and/or run centrally.
+	// Mutually exclusive with the single-app top-level fields.
+	Components map[string]*ComponentConfig `json:"components,omitempty"`
+}
+
+// IsFleet reports whether this is a fleet manifest, i.e. it declares a
+// components map rather than a single deployable app.
+func (c *AppConfig) IsFleet() bool {
+	return len(c.Components) > 0
 }
 
 // ContainerName returns the container identifier for this app config.
@@ -491,6 +554,176 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if c.IsFleet() {
+		if err := c.validateComponents(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// singleAppFieldsSet returns the names of any top-level single-app fields that
+// are set. These are not permitted alongside a fleet "components" map — in
+// fleet mode each component carries its own build/runtime config.
+func (c *AppConfig) singleAppFieldsSet() []string {
+	var set []string
+	if c.ServiceName != "" {
+		set = append(set, "serviceName")
+	}
+	if c.Run != nil {
+		set = append(set, "run")
+	}
+	if len(c.Entitlements) > 0 {
+		set = append(set, "entitlements")
+	}
+	if c.Readiness != nil {
+		set = append(set, "readiness")
+	}
+	if c.Hooks != nil {
+		set = append(set, "hooks")
+	}
+	if c.Python != nil {
+		set = append(set, "python")
+	}
+	if c.Xcode != nil {
+		set = append(set, "xcode")
+	}
+	if len(c.Files) > 0 {
+		set = append(set, "files")
+	}
+	if c.Brewfile != "" {
+		set = append(set, "brewfile")
+	}
+	if c.Isolation != "" {
+		set = append(set, "isolation")
+	}
+	if c.Frameworks != nil {
+		set = append(set, "frameworks")
+	}
+	if c.Resources != nil {
+		set = append(set, "resources")
+	}
+	if len(c.Services) > 0 {
+		set = append(set, "services")
+	}
+	sort.Strings(set)
+	return set
+}
+
+// validateComponents validates a fleet manifest's components map: top-level
+// mutual exclusivity, per-component placement/build config, and discovers
+// wiring. Called only when IsFleet() is true.
+func (c *AppConfig) validateComponents() error {
+	if conflicting := c.singleAppFieldsSet(); len(conflicting) > 0 {
+		return fmt.Errorf("a fleet manifest (with \"components\") must not also set single-app field(s): %s — move them into the relevant component", strings.Join(conflicting, ", "))
+	}
+
+	for name, comp := range c.Components {
+		if comp == nil {
+			return fmt.Errorf("components[%q]: must not be null", name)
+		}
+		if comp.Context == "" {
+			return fmt.Errorf("components[%q]: context is required", name)
+		}
+		if filepath.IsAbs(comp.Context) {
+			return fmt.Errorf("components[%q]: context must be a relative path", name)
+		}
+		if cleaned := filepath.Clean(comp.Context); strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("components[%q]: context must not contain '..' components", name)
+		}
+
+		if err := validateComponentTarget(name, comp.Target); err != nil {
+			return err
+		}
+		if err := validateComponentExpose(name, comp.Expose); err != nil {
+			return err
+		}
+		if err := validateEntitlements(comp.Entitlements, fmt.Sprintf("components[%q].entitlement", name)); err != nil {
+			return err
+		}
+		if comp.Readiness != nil {
+			if comp.Readiness.TCPSocket != nil {
+				port := comp.Readiness.TCPSocket.Port
+				if port < 1 || port > 65535 {
+					return fmt.Errorf("components[%q].readiness.tcpSocket.port must be between 1 and 65535, got %d", name, port)
+				}
+			}
+			if comp.Readiness.TimeoutSeconds < 0 {
+				return fmt.Errorf("components[%q].readiness.timeoutSeconds must not be negative, got %d", name, comp.Readiness.TimeoutSeconds)
+			}
+		}
+		if comp.Frameworks != nil {
+			if err := validateROS2Config(fmt.Sprintf("components[%q].frameworks.ros2", name), comp.Frameworks.ROS2); err != nil {
+				return err
+			}
+		}
+		if err := comp.Resources.validate(fmt.Sprintf("components[%q].resources", name)); err != nil {
+			return err
+		}
+	}
+
+	// discovers wiring is validated in a second pass so it can reference any
+	// declared component regardless of map iteration order.
+	for name, comp := range c.Components {
+		for i, d := range comp.Discovers {
+			if d.Component == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: component is required", name, i)
+			}
+			target, ok := c.Components[d.Component]
+			if !ok {
+				return fmt.Errorf("components[%q].discovers[%d]: references unknown component %q", name, i, d.Component)
+			}
+			if target.Target == nil || target.Target.Group == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: %q is not a group target — only group (edge) components can be discovered", name, i, d.Component)
+			}
+			if d.As == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: as (env var name) is required", name, i)
+			}
+			if d.As == DiscoveryURLEnvVar {
+				return fmt.Errorf("components[%q].discovers[%d]: as must not be %q (reserved, auto-injected)", name, i, DiscoveryURLEnvVar)
+			}
+			if !envVarNamePattern.MatchString(d.As) {
+				return fmt.Errorf("components[%q].discovers[%d]: as %q is not a valid environment variable name", name, i, d.As)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateComponentTarget checks that a component declares exactly one
+// placement: a non-empty group, or central:true.
+func validateComponentTarget(name string, t *ComponentTarget) error {
+	if t == nil {
+		return fmt.Errorf("components[%q]: target is required (\"group\" or \"central\")", name)
+	}
+	hasGroup := t.Group != ""
+	if hasGroup && t.Central {
+		return fmt.Errorf("components[%q].target: set exactly one of \"group\" or \"central\", not both", name)
+	}
+	if !hasGroup && !t.Central {
+		return fmt.Errorf("components[%q].target: must set \"group\" (edge) or \"central\"", name)
+	}
+	return nil
+}
+
+// validateComponentExpose checks an optional exposed endpoint declaration.
+func validateComponentExpose(name string, e *ComponentExpose) error {
+	if e == nil {
+		return nil
+	}
+	if e.Port < 1 || e.Port > 65535 {
+		return fmt.Errorf("components[%q].expose.port must be between 1 and 65535, got %d", name, e.Port)
+	}
+	if e.Name != "" {
+		if err := ValidateServiceName(e.Name); err != nil {
+			return fmt.Errorf("components[%q].expose.name: %w", name, err)
+		}
+	}
+	if e.Path != "" && !strings.HasPrefix(e.Path, "/") {
+		return fmt.Errorf("components[%q].expose.path must start with '/', got %q", name, e.Path)
+	}
 	return nil
 }
 
@@ -646,6 +879,22 @@ func ValidateJSON(data []byte) []string {
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
+			}
+		}
+	}
+
+	// Validate component-level entitlements and frameworks for fleet manifests.
+	if componentsRaw, ok := raw["components"]; ok && len(componentsRaw) > 0 {
+		var componentEntries map[string]json.RawMessage
+		if err := json.Unmarshal(componentsRaw, &componentEntries); err == nil {
+			for name, compRaw := range componentEntries {
+				var comp map[string]json.RawMessage
+				if err := json.Unmarshal(compRaw, &comp); err != nil {
+					continue
+				}
+				prefix := fmt.Sprintf("components[%q].entitlement", name)
+				warnings = append(warnings, validateEntitlementsJSON(comp["entitlements"], prefix)...)
+				warnings = append(warnings, validateFrameworksJSON(comp["frameworks"], fmt.Sprintf("components[%q].frameworks", name))...)
 			}
 		}
 	}
