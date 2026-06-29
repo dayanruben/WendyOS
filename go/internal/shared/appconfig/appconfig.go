@@ -44,7 +44,10 @@ const (
 	EntitlementInput     = "input"
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
-	EntitlementAdmin     = "admin"
+	// EntitlementAdmin grants full, unauthenticated local control of the agent
+	// via its local unix socket — the most security-sensitive entitlement.
+	// See entitlements.md for the blast radius.
+	EntitlementAdmin = "admin"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.

@@ -47,7 +47,7 @@ listener. B (Swift client) and C (deploy) are separate specs.
 
 ### 2. `applyAdmin` (OCI)
 `go/internal/agent/oci/entitlements.go`, wired into the `ApplyEntitlements`
-switch, following the `applyDisplay` pattern:
+switch, following the `applyAudio`/`applyGPU` pattern:
 - Bind-mount host `/run/wendy/agent.sock` → container `/run/wendy/agent.sock`
   (`rbind,nosuid,noexec`; **not** `nodev` is irrelevant for a socket).
 - `spec.Process.Env += "WENDY_AGENT_SOCKET=/run/wendy/agent.sock"`.
