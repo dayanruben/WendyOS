@@ -1,0 +1,10 @@
+{
+  "appId": "sh.wendy.examples.claude-on-device",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "admin" },
+    { "type": "persist", "name": "claude-config", "path": "/root/.claude" },
+    { "type": "persist", "name": "workspace", "path": "/workspace" }
+  ]
+}
