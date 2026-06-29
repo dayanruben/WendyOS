@@ -76,14 +76,19 @@ func (fakeAgentServer) GetAgentVersion(context.Context, *agentpb.GetAgentVersion
 }
 
 func TestConnectUnix_DialsUDSWithoutTLS(t *testing.T) {
-	dir := t.TempDir()
+	// Short temp dir: t.TempDir() can exceed the unix-socket sun_path limit
+	// (~104 bytes on macOS) -> bind "invalid argument". Matches localsocket_test.go.
+	dir, err := os.MkdirTemp("/tmp", "wsk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "agent.sock")
 
 	lis, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(sock) })
 
 	srv := grpc.NewServer()
 	agentpb.RegisterWendyAgentServiceServer(srv, fakeAgentServer{})
@@ -203,7 +208,13 @@ func (versionOnlyAgent) GetAgentVersion(context.Context, *agentpb.GetAgentVersio
 }
 
 func TestConnectWithAutoTLS_UsesAgentSocketEnv(t *testing.T) {
-	dir := t.TempDir()
+	// Short temp dir to stay under the unix-socket sun_path limit on macOS
+	// (see localsocket_test.go for the convention).
+	dir, err := os.MkdirTemp("/tmp", "wsk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "agent.sock")
 	lis, err := net.Listen("unix", sock)
 	if err != nil {
