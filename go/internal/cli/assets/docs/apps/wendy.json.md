@@ -344,6 +344,29 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 > **Note:** The `mcp` entitlement is typically combined with `{ "type": "network", "mode": "host" }` so that the agent can reach the container's MCP port over loopback.
 
+### `display`
+
+Present to a locally-attached monitor as a Wayland client (GPU-accelerated) — the app or shell draws directly to the screen, no web browser involved.
+
+```json
+{ "type": "display" }
+```
+
+The container receives:
+
+- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`.
+- Membership in the `video` and `render` groups.
+- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
+
+On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images; on a headless image the entitlement is accepted but nothing renders |
+
+> **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+
 ---
 
 ## Compose-based projects
