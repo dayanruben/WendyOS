@@ -379,6 +379,8 @@ An app with `admin` can start, stop, and delete apps and read all device data lo
 
 > **Security:** `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
 
+A first-party use of `admin` is the **claude-on-device** app (`Examples/ClaudeOnDevice`): the Claude Code CLI runs in the container and drives the device through `WENDY_AGENT_SOCKET` — you reach it with `wendy device attach claude-on-device`. Because `admin` is unauthenticated full local control, the in-container agent (human or AI) can delete apps and trigger OS/agent updates, so deploy it only to trusted devices.
+
 ---
 
 ## Compose-based projects
