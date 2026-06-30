@@ -1490,11 +1490,26 @@ func ExcludeProviders(keys ...string) resolveOption {
 	}
 }
 
-// resolveTarget inspects the --device flag and returns either an external
+// resolveTarget resolves the target device and, for agent connections,
+// best-effort corrects a lagging device clock before the caller operates on it
+// (issue #1171). This is the single funnel every command uses to obtain a
+// device, so the clock fix applies to info, run, deploy, ros2 bag, etc.
+func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
+	sel, err := resolveTargetInner(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if sel != nil && sel.Agent != nil {
+		maybeFixClock(ctx, sel.Agent)
+	}
+	return sel, nil
+}
+
+// resolveTargetInner inspects the --device flag and returns either an external
 // provider device or falls back to the gRPC agent connection. If no device
 // is specified and no default is configured, an interactive device picker
 // is presented.
-func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
+func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
 	cfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
 	for _, o := range opts {
 		o(&cfg)
