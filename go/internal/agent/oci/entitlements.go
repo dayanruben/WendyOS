@@ -1118,11 +1118,76 @@ func applyBuild(spec *Spec) {
 	if spec.Process.Capabilities == nil {
 		spec.Process.Capabilities = &LinuxCapabilities{}
 	}
-	spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_SYS_ADMIN")
-	spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
-	spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_SYS_ADMIN")
-	spec.Process.Capabilities.Inheritable = appendUnique(spec.Process.Capabilities.Inheritable, "CAP_SYS_ADMIN")
+	// BuildKit's runc executor needs a full privileged capability set, not just
+	// CAP_SYS_ADMIN: nested-container setup, overlay/bind mounts, and the
+	// cgroup-v2 device controller (eBPF, needs CAP_BPF/CAP_PERFMON on kernel
+	// >=5.8) all require more. Granting the whole set matches what `--privileged`
+	// gives and what the entitlement already documents (privileged-equivalent);
+	// CAP_SYS_ADMIN alone is already escape-capable, so the rest add no new blast
+	// radius. The kernel-module/kexec SYSCALLS stay denied by seccomp regardless
+	// (relaxSeccompForBuild keeps those rules), so CAP_SYS_MODULE/CAP_SYS_BOOT are
+	// inert here — defense in depth.
+	for _, cap := range allLinuxCapabilities {
+		spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, cap)
+		spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, cap)
+		spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, cap)
+		spec.Process.Capabilities.Inheritable = appendUnique(spec.Process.Capabilities.Inheritable, cap)
+	}
 	relaxSeccompForBuild(spec)
+	relaxCgroupsForBuild(spec)
+}
+
+// allLinuxCapabilities is the full capability set a `--privileged` container
+// receives. The build entitlement grants it because BuildKit's nested runc
+// needs far more than CAP_SYS_ADMIN (notably CAP_BPF/CAP_PERFMON for the
+// cgroup-v2 device controller, CAP_NET_ADMIN, CAP_SYS_RESOURCE, etc.).
+var allLinuxCapabilities = []string{
+	"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER",
+	"CAP_FSETID", "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
+	"CAP_LINUX_IMMUTABLE", "CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST",
+	"CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_IPC_LOCK", "CAP_IPC_OWNER",
+	"CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_CHROOT", "CAP_SYS_PTRACE",
+	"CAP_SYS_PACCT", "CAP_SYS_ADMIN", "CAP_SYS_BOOT", "CAP_SYS_NICE",
+	"CAP_SYS_RESOURCE", "CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_MKNOD",
+	"CAP_LEASE", "CAP_AUDIT_WRITE", "CAP_AUDIT_CONTROL", "CAP_SETFCAP",
+	"CAP_MAC_OVERRIDE", "CAP_MAC_ADMIN", "CAP_SYSLOG", "CAP_WAKE_ALARM",
+	"CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ", "CAP_PERFMON", "CAP_BPF",
+	"CAP_CHECKPOINT_RESTORE",
+}
+
+// relaxCgroupsForBuild lets BuildKit's runc executor create the per-build-step
+// cgroup it needs. The hardened default mounts /sys/fs/cgroup read-only, so a
+// build step dies with "mkdir /sys/fs/cgroup/<name>: read-only file system".
+// Give the container its own cgroup namespace (so the writable mount is the
+// container's scoped cgroup subtree, not the host root) and drop "ro" from the
+// cgroup mount(s).
+func relaxCgroupsForBuild(spec *Spec) {
+	if spec.Linux == nil {
+		spec.Linux = &Linux{}
+	}
+	hasCgroupNS := false
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == "cgroup" {
+			hasCgroupNS = true
+			break
+		}
+	}
+	if !hasCgroupNS {
+		spec.Linux.Namespaces = append(spec.Linux.Namespaces, LinuxNamespace{Type: "cgroup"})
+	}
+	for i := range spec.Mounts {
+		if spec.Mounts[i].Destination != "/sys/fs/cgroup" {
+			continue
+		}
+		kept := spec.Mounts[i].Options[:0]
+		for _, o := range spec.Mounts[i].Options {
+			if o == "ro" {
+				continue // a mount with neither ro nor rw defaults to read-write
+			}
+			kept = append(kept, o)
+		}
+		spec.Mounts[i].Options = kept
+	}
 }
 
 // relaxSeccompForBuild removes only the seccomp deny rules that block the

@@ -1720,16 +1720,29 @@ func TestApplyEntitlements_Build_RelaxesSandbox(t *testing.T) {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
-	// CAP_SYS_ADMIN granted in all four sets BuildKit's runc executor needs.
+	// Full privileged capability set in all four sets BuildKit's runc executor
+	// needs — CAP_SYS_ADMIN for mounts, plus CAP_BPF/CAP_PERFMON for the cgroup-v2
+	// device controller (the build dies at the RUN step without them).
 	for _, set := range [][]string{
 		spec.Process.Capabilities.Bounding,
 		spec.Process.Capabilities.Effective,
 		spec.Process.Capabilities.Permitted,
 		spec.Process.Capabilities.Inheritable,
 	} {
-		if !slices.Contains(set, "CAP_SYS_ADMIN") {
-			t.Error("build entitlement must grant CAP_SYS_ADMIN in all capability sets")
+		for _, cap := range []string{"CAP_SYS_ADMIN", "CAP_BPF", "CAP_PERFMON", "CAP_NET_ADMIN"} {
+			if !slices.Contains(set, cap) {
+				t.Errorf("build entitlement must grant %s in all capability sets", cap)
+			}
 		}
+	}
+	// BuildKit's runc creates a per-step cgroup, so /sys/fs/cgroup must be
+	// writable (default profile mounts it read-only) and the container gets its
+	// own cgroup namespace.
+	if m, ok := mountForDest(spec, "/sys/fs/cgroup"); ok && slices.Contains(m.Options, "ro") {
+		t.Error("build entitlement must make /sys/fs/cgroup writable (no ro)")
+	}
+	if !hasNamespace(spec, "cgroup") {
+		t.Error("build entitlement must add a cgroup namespace")
 	}
 	// The namespace syscalls BuildKit needs are no longer denied...
 	if seccompDenies(spec, "unshare") {
