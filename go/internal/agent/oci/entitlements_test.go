@@ -1742,6 +1742,9 @@ func TestApplyEntitlements_Build_RelaxesSandbox(t *testing.T) {
 	if !seccompDenies(spec, "init_module") || !seccompDenies(spec, "kexec_load") {
 		t.Error("build entitlement must keep module-load / kexec denials")
 	}
+	if !seccompDenies(spec, "ptrace") {
+		t.Error("build entitlement must keep ptrace denied (only unshare is removed from that rule)")
+	}
 }
 
 func TestApplyEntitlements_NoBuild_LeavesSandboxHardened(t *testing.T) {

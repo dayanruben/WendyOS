@@ -1151,7 +1151,7 @@ func relaxSeccompForBuild(spec *Spec) {
 			}
 		}
 		// Remove "unshare" from this rule's names, keeping the rest (e.g. ptrace).
-		names := rule.Names[:0]
+		names := make([]string, 0, len(rule.Names))
 		for _, n := range rule.Names {
 			if n == "unshare" {
 				continue
