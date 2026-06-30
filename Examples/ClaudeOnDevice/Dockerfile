@@ -4,10 +4,20 @@
 # node:22-bookworm-slim is multi-arch; built for arm64 (the Jetson) via buildx.
 FROM node:22-bookworm-slim
 
-# git + ripgrep are used by Claude Code; ca-certificates for the Anthropic API.
+# git + ripgrep are used by Claude Code; ca-certificates for the Anthropic API;
+# curl is used below to download the BuildKit release tarball.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates ripgrep less \
+  && apt-get install -y --no-install-recommends git ca-certificates ripgrep less curl \
   && rm -rf /var/lib/apt/lists/*
+
+# BuildKit (buildkitd + buildctl + buildkit-runc) for on-device image builds —
+# no Docker daemon required. Pinned release, arm64.
+ARG BUILDKIT_VERSION=v0.16.0
+RUN curl -fsSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-arm64.tar.gz" \
+      | tar -xz -C /usr/local bin/buildkitd bin/buildctl bin/buildkit-runc \
+  && /usr/local/bin/buildkitd --version
+# buildctl reaches the in-container daemon over this socket (init.sh starts it).
+ENV BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock
 
 # Claude Code CLI.
 RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code

@@ -18,6 +18,14 @@
     },
     {
       "type": "network"
+    },
+    {
+      "type": "build"
+    },
+    {
+      "type": "persist",
+      "name": "buildkit-cache",
+      "path": "/var/lib/buildkit"
     }
   ]
 }
