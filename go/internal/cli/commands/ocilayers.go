@@ -546,6 +546,9 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 // It mirrors the flag/cache/env setup of buildAndPushImage but skips registry
 // push entirely.
 func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest string, stdout, stderr io.Writer) error {
+	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
+		builder = imageBuilderBuildkit
+	}
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err

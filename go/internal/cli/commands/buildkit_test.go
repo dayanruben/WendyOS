@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"os/exec"
 	"slices"
 	"testing"
 )
@@ -57,5 +58,30 @@ func TestRedactBuildctlArgsForLog(t *testing.T) {
 func TestBuildkitRejectsFlagInjectionBuildArg(t *testing.T) {
 	if _, err := sortedValidatedBuildArgKeys(map[string]string{"FOO": "-rm-rf"}); err == nil {
 		t.Fatal("expected a build-arg value starting with '-' to be rejected")
+	}
+}
+
+func TestShouldUseBuildkitOnDevice(t *testing.T) {
+	origLook := imageBuilderLookPath
+	t.Cleanup(func() { imageBuilderLookPath = origLook })
+
+	// On-device (socket set) + docker absent → use buildkit.
+	t.Setenv("WENDY_AGENT_SOCKET", "/run/wendy/agent/agent.sock")
+	imageBuilderLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	if !shouldUseBuildkitOnDevice() {
+		t.Error("on-device with no docker should select buildkit")
+	}
+
+	// docker present → do not auto-select (let docker handle it).
+	imageBuilderLookPath = func(string) (string, error) { return "/usr/bin/docker", nil }
+	if shouldUseBuildkitOnDevice() {
+		t.Error("docker present must not auto-select buildkit")
+	}
+
+	// Off-device (no socket) → never auto-select, regardless of docker.
+	t.Setenv("WENDY_AGENT_SOCKET", "")
+	imageBuilderLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	if shouldUseBuildkitOnDevice() {
+		t.Error("off-device must not auto-select buildkit")
 	}
 }

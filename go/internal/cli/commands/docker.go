@@ -87,6 +87,20 @@ func shouldAutoAttemptAppleContainerBuilder() bool {
 	return imageBuilderHostGOOS() == "darwin" && imageBuilderHostGOARCH() == "arm64"
 }
 
+// shouldUseBuildkitOnDevice reports whether an unspecified builder should default
+// to BuildKit: true only when running inside the device (WENDY_AGENT_SOCKET set)
+// and Docker is unavailable. Off-device, or when docker exists, behavior is
+// unchanged.
+func shouldUseBuildkitOnDevice() bool {
+	if os.Getenv("WENDY_AGENT_SOCKET") == "" {
+		return false
+	}
+	if _, err := imageBuilderLookPath("docker"); err == nil {
+		return false
+	}
+	return true
+}
+
 func logAppleContainerFallback(w io.Writer, _ error) {
 	fmt.Fprintln(w, "[WARN] Apple Container unavailable or failed; falling back to Docker. Use --builder apple-container to require Apple Container.")
 }
