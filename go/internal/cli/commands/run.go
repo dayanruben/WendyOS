@@ -1493,6 +1493,14 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// real error behind an unrelated builder-setup failure. Surface the
 			// actionable build error directly instead of falling back. (#1166)
 			return err
+		} else if shouldUseBuildkitOnDevice() {
+			// On-device (inside the agent container: WENDY_AGENT_SOCKET set, no
+			// Docker), the registry-push fallback below cannot run — it shells out
+			// to the Docker CLI, which is absent. Chunk-diff over the agent socket
+			// is the only supported on-device deploy path, so surface ITS real
+			// error instead of masking it behind a guaranteed "docker CLI is not on
+			// PATH" failure from the fallback.
+			return fmt.Errorf("on-device deploy failed and no Docker fallback is possible inside the container; the chunk-diff error was: %w", err)
 		} else {
 			cliLogln("Fast deploy unavailable; using registry push.")
 		}
