@@ -19,14 +19,23 @@ trusted, first-party devices.**
 
 ## Build & deploy (from an amd64 dev host)
 
-1. **Deploy a new-enough agent first.** The `ExecContainer` PTY RPC and the
-   `admin` socket only exist in an agent built from the claude-on-device branch.
-   Update the device's agent before deploying this app:
+> **Both the agent and the staged CLI below must be built from this branch
+> (`jo/claude-on-device-sp2`).** The on-device builder is split across both: the
+> agent applies the `build` entitlement (relaxing the sandbox for BuildKit) and
+> only this branch's `appconfig` even recognizes `{"type":"build"}` — an older
+> agent would reject this app's `wendy.json`. The CLI carries the BuildKit build
+> backend it auto-selects on the device. Mixing an old binary with this app
+> silently loses on-device building.
+
+1. **Deploy a new-enough agent first.** The `ExecContainer` PTY RPC, the `admin`
+   socket, and the `build` entitlement (on-device BuildKit) only exist in an agent
+   built from this branch. Update the device's agent before deploying this app:
    ```
    wendy device update --binary <path-to-arm64-wendy-agent> --device <host>
    ```
-2. **Stage the arm64 `wendy` CLI** into this directory as `wendy-linux-arm64`
-   (built from the same branch, so it understands `WENDY_AGENT_SOCKET`):
+2. **Stage the arm64 `wendy` CLI** into this directory as `wendy-linux-arm64`,
+   built from this branch so it understands `WENDY_AGENT_SOCKET` **and** ships the
+   BuildKit build backend (auto-selected on the device):
    ```
    GOOS=linux GOARCH=arm64 go build -o Examples/ClaudeOnDevice/wendy-linux-arm64 ./go/cmd/wendy
    ```
