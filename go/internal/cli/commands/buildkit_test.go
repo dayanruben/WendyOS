@@ -45,4 +45,17 @@ func TestRedactBuildctlArgsForLog(t *testing.T) {
 	if !slices.Contains(out, "build-arg:TOKEN=<redacted>") {
 		t.Fatalf("expected redacted build-arg, got %v", out)
 	}
+	// Non-build-arg tokens must be preserved unchanged.
+	if !slices.Contains(out, "--output") {
+		t.Fatalf("--output token missing after redaction, got %v", out)
+	}
+	if !slices.Contains(out, "type=oci,dest=/x") {
+		t.Fatalf("output value token missing after redaction, got %v", out)
+	}
+}
+
+func TestBuildkitRejectsFlagInjectionBuildArg(t *testing.T) {
+	if _, err := sortedValidatedBuildArgKeys(map[string]string{"FOO": "-rm-rf"}); err == nil {
+		t.Fatal("expected a build-arg value starting with '-' to be rejected")
+	}
 }

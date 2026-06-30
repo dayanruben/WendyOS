@@ -525,6 +525,9 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 		dfDir = filepath.Dir(resolved)
 		dfName = filepath.Base(resolved)
 	}
+	if _, err := sortedValidatedBuildArgKeys(buildArgs); err != nil {
+		return err
+	}
 	args := buildkitOCIArgs(cwd, dfDir, dfName, platform, buildArgs, dest)
 	fmt.Fprintf(stderr, "[buildkit] starting OCI export: buildctl %s\n", strings.Join(redactBuildctlArgsForLog(args), " "))
 	cmd := exec.CommandContext(ctx, "buildctl", args...)
