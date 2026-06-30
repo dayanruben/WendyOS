@@ -192,6 +192,7 @@ func main() {
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
+	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
@@ -273,6 +274,10 @@ func main() {
 			defer wg.Done()
 			monitor.Run(ctx)
 		}()
+		// Re-launch apps that should run after a reboot (per their restart
+		// policy, minus user-stopped ones) now that the monitor is running.
+		// Done in its own goroutine so agent startup isn't blocked on container I/O.
+		go monitor.ReconcileBootContainers(ctx)
 	}
 
 	if containerdClient != nil {
@@ -398,6 +403,7 @@ func main() {
 		agentpb.RegisterWendyProvisioningServiceServer(srv, provisioningSvc)
 		agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
 		agentpbv2.RegisterWendyDeviceInfoServiceServer(srv, deviceInfoSvc)
+		agentpbv2.RegisterWendyTimeSyncServiceServer(srv, timeSyncSvc)
 		agentpbv2.RegisterWendyWiFiServiceServer(srv, wifiSvc)
 		agentpbv2.RegisterWendyBluetoothServiceServer(srv, bluetoothSvc)
 		agentpbv2.RegisterWendyAgentUpdateServiceServer(srv, agentUpdateSvc)
@@ -530,8 +536,9 @@ func main() {
 	}
 
 	// Plaintext gRPC server — only needed until the device is provisioned.
-	// Once provisioned the mTLS server handles all gRPC traffic and the plaintext
-	// port is shut down so unprovisioned clients cannot access device services.
+	// Once provisioned, the mTLS server handles remote gRPC traffic and this
+	// plaintext port is shut down. The local unix socket (/run/wendy/agent.sock)
+	// remains active for on-device containers with the admin entitlement.
 	var agentServer *grpc.Server
 	if !alreadyProvisioned {
 		agentServer = grpc.NewServer(
