@@ -465,6 +465,8 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 
 func boolPtr(b bool) *bool { return &b }
 
+func int32Ptr(i int32) *int32 { return &i }
+
 func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
