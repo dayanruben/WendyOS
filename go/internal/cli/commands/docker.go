@@ -48,6 +48,7 @@ var (
 const (
 	imageBuilderDocker         = "docker"
 	imageBuilderAppleContainer = "apple-container"
+	imageBuilderBuildkit       = "buildkit"
 )
 
 var buildDockerProjectWithDocker = buildDockerProject
@@ -60,8 +61,10 @@ func normalizeImageBuilder(builder string) (string, error) {
 		return imageBuilderDocker, nil
 	case imageBuilderAppleContainer:
 		return imageBuilderAppleContainer, nil
+	case imageBuilderBuildkit:
+		return imageBuilderBuildkit, nil
 	default:
-		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker or apple-container", builder)
+		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker, apple-container, or buildkit", builder)
 	}
 }
 
@@ -69,6 +72,8 @@ func imageBuilderDisplayName(builder string) string {
 	switch builder {
 	case imageBuilderAppleContainer:
 		return "Apple Container"
+	case imageBuilderBuildkit:
+		return "BuildKit"
 	default:
 		return "Docker"
 	}

@@ -465,6 +465,78 @@ func isImageBuildFailure(err error) bool {
 	return errors.As(err, &bErr)
 }
 
+// buildkitOCIArgs builds the buildctl argument vector (excluding the leading
+// "buildctl") for a Dockerfile build that exports an OCI-layout tar to dest.
+// Build-arg keys are sorted for a reproducible command line.
+func buildkitOCIArgs(contextDir, dockerfileDir, dockerfileName, platform string, buildArgs map[string]string, dest string) []string {
+	args := []string{
+		"build",
+		"--frontend", "dockerfile.v0",
+		"--local", "context=" + contextDir,
+		"--local", "dockerfile=" + dockerfileDir,
+	}
+	if dockerfileName != "" {
+		args = append(args, "--opt", "filename="+dockerfileName)
+	}
+	if platform != "" {
+		args = append(args, "--opt", "platform="+platform)
+	}
+	keys := make([]string, 0, len(buildArgs))
+	for k := range buildArgs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--opt", "build-arg:"+k+"="+buildArgs[k])
+	}
+	args = append(args, "--output", "type=oci,dest="+dest)
+	return args
+}
+
+// redactBuildctlArgsForLog masks build-arg values in a buildctl command line
+// (the key is kept). buildctl passes build args as "build-arg:KEY=VALUE" tokens.
+func redactBuildctlArgsForLog(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i, a := range out {
+		const p = "build-arg:"
+		if strings.HasPrefix(a, p) {
+			if k, _, ok := strings.Cut(a[len(p):], "="); ok && k != "" {
+				out[i] = p + k + "=<redacted>"
+			}
+		}
+	}
+	return out
+}
+
+// buildImageToOCILayoutWithBuildkit builds the image with buildctl against the
+// in-container buildkitd (its address comes from BUILDKIT_HOST in the container
+// env) and exports it as an OCI-layout tar at dest for the chunk-diff deploy
+// path. This is the no-Docker on-device builder; it mirrors the Apple-Container
+// backend's contract (produce the tar, no registry push).
+func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, stdout, stderr io.Writer) error {
+	dfDir := cwd
+	dfName := ""
+	if dockerfile != "" {
+		resolved, err := confinedDockerfilePath(cwd, dockerfile)
+		if err != nil {
+			return err
+		}
+		dfDir = filepath.Dir(resolved)
+		dfName = filepath.Base(resolved)
+	}
+	args := buildkitOCIArgs(cwd, dfDir, dfName, platform, buildArgs, dest)
+	fmt.Fprintf(stderr, "[buildkit] starting OCI export: buildctl %s\n", strings.Join(redactBuildctlArgsForLog(args), " "))
+	cmd := exec.CommandContext(ctx, "buildctl", args...)
+	cmd.Dir = cwd
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return &imageBuildFailedError{fmt.Errorf("buildctl build (OCI export) failed: %w", err)}
+	}
+	return nil
+}
+
 // buildImageToOCILayout builds an OCI-layout tar to dest for the chunk-diff
 // deploy path. When builder is apple-container, it uses the Apple Container CLI;
 // otherwise it runs `docker buildx build` with `--output type=oci,dest=<dest>`.
@@ -477,6 +549,9 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	}
 	if normalized == imageBuilderAppleContainer {
 		return buildImageToOCILayoutWithAppleContainer(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)
+	}
+	if normalized == imageBuilderBuildkit {
+		return buildImageToOCILayoutWithBuildkit(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)
 	}
 
 	// Sub-phase timing (gated on WENDY_TIMING) to split the "build (oci export)"
