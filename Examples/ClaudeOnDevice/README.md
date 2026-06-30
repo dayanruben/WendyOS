@@ -59,3 +59,31 @@ wendy device attach <other-app> -- /bin/sh
 
 `wendy-linux-arm64` is intentionally git-ignored — it is a build artifact you
 stage locally, not source.
+
+## Building apps on the device
+
+This app bundles BuildKit (`buildkitd` + `buildctl`), so Claude can build and
+deploy apps **from the device itself** — no laptop, no Docker. Inside an attached
+session, edit an app under `/workspace` and run:
+
+```
+wendy run --yes
+```
+
+Because `WENDY_AGENT_SOCKET` is set and there is no Docker daemon, the CLI
+auto-selects the BuildKit backend: `buildctl` builds an OCI image against the
+in-container `buildkitd`, and the image is pushed into the device's containerd over
+the local agent socket (the same chunk-diff path a laptop uses). The build cache
+persists across restarts in the `/var/lib/buildkit` volume.
+
+If builds fail with an overlayfs error on your device kernel, set
+`BUILDKIT_SNAPSHOTTER=native` in the container environment (slower, but avoids
+overlayfs-on-overlayfs).
+
+### ⚠️ The `build` entitlement is privileged-equivalent
+
+On-device building requires the `build` entitlement, which grants `CAP_SYS_ADMIN`
+and the namespace syscalls a nested builder needs — a **container→host escape
+surface**. In this app it stacks on `admin` (already full device control), so it
+does not widen device control, but it does add host-escape capability. Deploy only
+to trusted, first-party devices.
