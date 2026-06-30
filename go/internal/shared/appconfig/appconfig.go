@@ -44,7 +44,7 @@ const (
 	EntitlementInput     = "input"
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
-	EntitlementDisplay = "display"
+	EntitlementDisplay   = "display"
 	// EntitlementAdmin grants full, unauthenticated local control of the agent
 	// via its local unix socket — the most security-sensitive entitlement.
 	// See entitlements.md for the blast radius.
