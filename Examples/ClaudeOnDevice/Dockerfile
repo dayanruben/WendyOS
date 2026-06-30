@@ -15,7 +15,11 @@ RUN apt-get update \
 ARG BUILDKIT_VERSION=v0.16.0
 RUN curl -fsSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-arm64.tar.gz" \
       | tar -xz -C /usr/local bin/buildkitd bin/buildctl bin/buildkit-runc \
-  && /usr/local/bin/buildkitd --version
+  && test -x /usr/local/bin/buildctl && test -x /usr/local/bin/buildkitd
+# NOTE: do NOT run `buildkitd --version` here — when this image is cross-built for
+# arm64 on an amd64 host, that executes the arm64 daemon under QEMU and can abort
+# the build, leaving the device on a stale (buildkit-less) image. A file check is
+# enough; the daemon is exercised at runtime by init.sh.
 # buildctl reaches the in-container daemon over this socket (init.sh starts it).
 ENV BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock
 
