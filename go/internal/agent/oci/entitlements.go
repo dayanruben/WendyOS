@@ -105,6 +105,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			}
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
+		case appconfig.EntitlementBuild:
+			applyBuild(spec)
 		}
 	}
 	return nil
@@ -1103,4 +1105,64 @@ func replaceMount(spec *Spec, mount Mount) {
 		}
 	}
 	spec.Mounts = append(spec.Mounts, mount)
+}
+
+// applyBuild relaxes the hardened container profile just enough to run a nested
+// container image builder (BuildKit) in-container: it adds CAP_SYS_ADMIN (mount /
+// pivot_root / namespace creation for BuildKit's runc executor) and un-denies the
+// unshare + clone(CLONE_NEWUSER) syscalls the default seccomp profile blocks. The
+// module-load and kexec denials are deliberately KEPT (relaxSeccompForBuild), so
+// the grant is scoped to what BuildKit needs. This is privileged-equivalent — see
+// the security note in entitlements.md.
+func applyBuild(spec *Spec) {
+	if spec.Process.Capabilities == nil {
+		spec.Process.Capabilities = &LinuxCapabilities{}
+	}
+	spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_SYS_ADMIN")
+	spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_SYS_ADMIN")
+	spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_SYS_ADMIN")
+	spec.Process.Capabilities.Inheritable = appendUnique(spec.Process.Capabilities.Inheritable, "CAP_SYS_ADMIN")
+	relaxSeccompForBuild(spec)
+}
+
+// relaxSeccompForBuild removes only the seccomp deny rules that block the
+// namespace syscalls a nested builder needs: it drops "unshare" from any deny
+// rule (the default profile denies ["ptrace","unshare"] together, so ptrace stays
+// denied) and removes the dedicated clone(CLONE_NEWUSER) deny rule. Every other
+// rule — notably the kernel-module and kexec denials — is left untouched.
+func relaxSeccompForBuild(spec *Spec) {
+	if spec.Linux == nil || spec.Linux.Seccomp == nil {
+		return
+	}
+	const cloneNewuser = uint64(0x10000000) // CLONE_NEWUSER
+	kept := spec.Linux.Seccomp.Syscalls[:0]
+	for _, rule := range spec.Linux.Seccomp.Syscalls {
+		// Drop the dedicated clone(CLONE_NEWUSER) deny rule.
+		if len(rule.Names) == 1 && rule.Names[0] == "clone" {
+			isNewuserRule := false
+			for _, a := range rule.Args {
+				if a.Value == cloneNewuser {
+					isNewuserRule = true
+					break
+				}
+			}
+			if isNewuserRule {
+				continue
+			}
+		}
+		// Remove "unshare" from this rule's names, keeping the rest (e.g. ptrace).
+		names := rule.Names[:0]
+		for _, n := range rule.Names {
+			if n == "unshare" {
+				continue
+			}
+			names = append(names, n)
+		}
+		rule.Names = names
+		if len(rule.Names) == 0 {
+			continue // the rule only covered unshare
+		}
+		kept = append(kept, rule)
+	}
+	spec.Linux.Seccomp.Syscalls = kept
 }

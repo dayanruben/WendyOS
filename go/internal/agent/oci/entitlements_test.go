@@ -1692,3 +1692,68 @@ func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
 		t.Error("non-admin app must not get the agent socket")
 	}
 }
+
+func seccompDenies(spec *Spec, syscall string) bool {
+	if spec.Linux == nil || spec.Linux.Seccomp == nil {
+		return false
+	}
+	for _, r := range spec.Linux.Seccomp.Syscalls {
+		if r.Action != ActErrno {
+			continue
+		}
+		for _, n := range r.Names {
+			if n == syscall {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestApplyEntitlements_Build_RelaxesSandbox(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementBuild}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// CAP_SYS_ADMIN granted in all four sets BuildKit's runc executor needs.
+	for _, set := range [][]string{
+		spec.Process.Capabilities.Bounding,
+		spec.Process.Capabilities.Effective,
+		spec.Process.Capabilities.Permitted,
+		spec.Process.Capabilities.Inheritable,
+	} {
+		if !slices.Contains(set, "CAP_SYS_ADMIN") {
+			t.Error("build entitlement must grant CAP_SYS_ADMIN in all capability sets")
+		}
+	}
+	// The namespace syscalls BuildKit needs are no longer denied...
+	if seccompDenies(spec, "unshare") {
+		t.Error("build entitlement must un-deny unshare")
+	}
+	if seccompDenies(spec, "clone") {
+		t.Error("build entitlement must remove the clone(CLONE_NEWUSER) deny rule")
+	}
+	// ...but the kernel-attack-surface denials are KEPT.
+	if !seccompDenies(spec, "init_module") || !seccompDenies(spec, "kexec_load") {
+		t.Error("build entitlement must keep module-load / kexec denials")
+	}
+}
+
+func TestApplyEntitlements_NoBuild_LeavesSandboxHardened(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test-app"} // no entitlements
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+	if hasCapability(spec, "CAP_SYS_ADMIN") {
+		t.Error("a spec without build must not gain CAP_SYS_ADMIN")
+	}
+	if !seccompDenies(spec, "unshare") || !seccompDenies(spec, "clone") {
+		t.Error("a spec without build must keep the default unshare/clone denials")
+	}
+}
