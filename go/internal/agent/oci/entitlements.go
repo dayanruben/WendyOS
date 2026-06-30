@@ -303,18 +303,27 @@ func applyDisplay(spec *Spec) {
 // declare the admin entitlement get the socket, so anything with this can fully
 // control the device's apps. The mount is conditional on the host socket
 // existing so an app still starts if the agent socket is down (no-op-safe).
+//
+// The socket's parent *directory* is mounted, not the socket file. A file
+// bind-mount pins a single inode, but localsocket.Listen unlinks and recreates
+// the socket (a fresh inode) on every agent start. Mounting the file would
+// strand a long-lived container on the deleted inode after an agent restart
+// (every dial → connection refused). Mounting the directory lets the container
+// resolve the socket name live on each dial, so a restart is transparent. The
+// socket lives in its own directory so this exposes nothing else under
+// /run/wendy. Read-only: connecting to the socket needs no write to the dir.
 func applyAdmin(spec *Spec) {
 	fi, err := os.Lstat(adminAgentSocketPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {
 		return
 	}
 	spec.Mounts = append(spec.Mounts, Mount{
-		Destination: "/run/wendy/agent.sock",
-		Source:      adminAgentSocketPath,
+		Destination: ctrAgentSocketDir,
+		Source:      filepath.Dir(adminAgentSocketPath),
 		Type:        "bind",
-		Options:     []string{"rbind", "nosuid", "noexec"},
+		Options:     []string{"rbind", "nosuid", "noexec", "ro"},
 	})
-	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock")
+	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET="+ctrAgentSocketPath)
 }
 
 // applyNetwork configures the network namespace.
@@ -532,10 +541,19 @@ var lookupRenderGID = func() (uint32, bool) {
 	return uint32(gid), true
 }
 
-// adminAgentSocketPath is the host wendy-agent local control socket bind-mounted
-// into containers granted the admin entitlement. Behind a var so tests can point
-// it at a temp socket.
-var adminAgentSocketPath = "/run/wendy/agent.sock"
+// adminAgentSocketPath is the host wendy-agent local control socket exposed to
+// containers granted the admin entitlement. It lives in its own directory
+// (/run/wendy/agent) so applyAdmin can bind-mount that directory rather than the
+// socket file — see applyAdmin for why. Behind a var so tests can point it at a
+// temp socket.
+var adminAgentSocketPath = "/run/wendy/agent/agent.sock"
+
+// ctrAgentSocketDir / ctrAgentSocketPath are the in-container destinations for
+// the admin socket directory mount and the socket within it (WENDY_AGENT_SOCKET).
+const (
+	ctrAgentSocketDir  = "/run/wendy/agent"
+	ctrAgentSocketPath = "/run/wendy/agent/agent.sock"
+)
 
 // applyCamera adds camera/V4L2 device access, plus the additional kernel
 // device majors that libcamera (and on Jetson, nvargus/nvhost) require. The

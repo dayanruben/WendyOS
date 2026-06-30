@@ -578,7 +578,9 @@ func main() {
 		)
 		registerAllServices(localSocketServer)
 
-		const localSocketPath = "/run/wendy/agent.sock"
+		// In its own directory so the admin entitlement can bind-mount the
+		// directory (not the socket file) into containers — see oci.applyAdmin.
+		const localSocketPath = "/run/wendy/agent/agent.sock"
 		localLis, err := localsocket.Listen(localSocketPath)
 		if err != nil {
 			logger.Error("Failed to listen on local control socket", zap.Error(err))

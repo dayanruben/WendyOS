@@ -369,7 +369,7 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 ### `admin`
 
-Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.
+Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent/agent.sock`, exposed as `WENDY_AGENT_SOCKET` — always read the env var rather than hard-coding the path) — with **no authentication**.
 
 ```json
 { "type": "admin" }

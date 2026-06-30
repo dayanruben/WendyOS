@@ -1641,11 +1641,29 @@ func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if !hasMount(spec, "/run/wendy/agent.sock") {
-		t.Error("expected /run/wendy/agent.sock bind mount")
+	// The socket is exposed by bind-mounting its parent *directory*, not the
+	// socket file. A file bind-mount pins one inode; localsocket.Listen unlinks
+	// and recreates the socket (new inode) on every agent start, so a file mount
+	// strands a long-lived container on a deleted inode after an agent restart.
+	// A directory mount resolves the socket name live on each dial.
+	const ctrDir = "/run/wendy/agent"
+	if !hasMount(spec, ctrDir) {
+		t.Fatalf("expected %s directory bind mount", ctrDir)
 	}
-	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
-		t.Error("expected WENDY_AGENT_SOCKET env")
+	if hasMount(spec, "/run/wendy/agent/agent.sock") {
+		t.Error("must mount the directory, not the socket file")
+	}
+	var mounted *Mount
+	for i := range spec.Mounts {
+		if spec.Mounts[i].Destination == ctrDir {
+			mounted = &spec.Mounts[i]
+		}
+	}
+	if mounted.Source != filepath.Dir(sock) {
+		t.Errorf("mount source = %q, want socket parent dir %q", mounted.Source, filepath.Dir(sock))
+	}
+	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent/agent.sock") {
+		t.Error("expected WENDY_AGENT_SOCKET to point at the in-container socket path")
 	}
 }
 
@@ -1659,7 +1677,7 @@ func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if hasMount(spec, "/run/wendy/agent.sock") {
+	if hasMount(spec, "/run/wendy/agent") {
 		t.Error("must not mount a missing socket")
 	}
 }
@@ -1670,7 +1688,7 @@ func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if hasMount(spec, "/run/wendy/agent.sock") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+	if hasMount(spec, "/run/wendy/agent") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent/agent.sock") {
 		t.Error("non-admin app must not get the agent socket")
 	}
 }
