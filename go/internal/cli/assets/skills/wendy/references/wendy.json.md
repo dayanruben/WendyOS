@@ -150,7 +150,7 @@ Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
 
 The container receives:
 - `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`.
-- Membership in the `video` and `render` groups.
+- Membership in the `video` group, plus the `render` group when the host has one.
 - The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
 
 On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
@@ -164,7 +164,7 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 ### Admin Entitlement
 
-Grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.
+Grants the container the wendy-agent's full gRPC over a local unix socket, exposed as `WENDY_AGENT_SOCKET` (`/run/wendy/agent/agent.sock`) — with no authentication.
 
 ```json
 { "type": "admin" }
