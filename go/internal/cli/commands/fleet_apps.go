@@ -8,36 +8,43 @@ import (
 	"sort"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
-// fleetAppsMaxConcurrency bounds how many device tunnels we open at once when
-// gathering inventory across a group.
+// fleetAppsMaxConcurrency bounds how many device connections we open at once
+// when gathering inventory across a group.
 const fleetAppsMaxConcurrency = 8
 
 func newFleetAppsCmd() *cobra.Command {
 	var group string
 	var cloudGRPC, brokerURL string
+	var lan bool
+	var timeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "apps",
-		Short: "List the apps running across a group (or the whole org)",
-		Long: "Fans out to every device in a group (or all enrolled devices when --group is\n" +
-			"omitted) and prints one row per app: which device it runs on, its version, and\n" +
-			"its state. Devices that can't be reached are reported inline rather than failing\n" +
-			"the whole command.",
+		Short: "List the apps running across a group (or every device)",
+		Long: "Fans out to every device in a group (or all devices when --group is omitted)\n" +
+			"and prints one row per app: which device it runs on, its version, and its\n" +
+			"state. Devices that can't be reached are reported inline rather than failing\n" +
+			"the whole command.\n\n" +
+			"With --lan the group is resolved over the local network via mDNS instead of the\n" +
+			"cloud: a group is a glob over device names (e.g. 'camera-*' or 'camera'), no\n" +
+			"enrollment or cloud session required.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runFleetApps(cmd.Context(), group, cloudGRPC, brokerURL)
+			return runFleetApps(cmd.Context(), group, cloudGRPC, brokerURL, lan, timeout)
 		},
 	}
-	cmd.Flags().StringVar(&group, "group", "", "Limit to devices in this group (default: all enrolled devices)")
+	cmd.Flags().StringVar(&group, "group", "", "Limit to devices in this group (default: all devices)")
+	cmd.Flags().BoolVar(&lan, "lan", false, "Resolve the group over the LAN (mDNS) instead of the cloud")
+	cmd.Flags().DurationVar(&timeout, "discover-timeout", fleetLANDiscoverTimeout, "How long to browse for LAN devices (with --lan)")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is set via 'wendy auth use')")
 	cmd.Flags().StringVar(&brokerURL, "broker-url", os.Getenv("WENDY_BROKER_URL"), "Tunnel broker host:port")
 	return cmd
@@ -48,7 +55,6 @@ func newFleetAppsCmd() *cobra.Command {
 // device that could not be reached.
 type fleetAppRow struct {
 	Device  string `json:"device"`
-	AssetID int32  `json:"assetId"`
 	App     string `json:"app,omitempty"`
 	Version string `json:"version,omitempty"`
 	State   string `json:"state,omitempty"`
@@ -56,31 +62,22 @@ type fleetAppRow struct {
 	Error   string `json:"error,omitempty"`
 }
 
-func runFleetApps(ctx context.Context, group, cloudGRPC, brokerURL string) error {
-	if group != "" {
-		if err := validateGroupName(group); err != nil {
-			return err
-		}
-	}
-	auth, err := pickAuthEntry(cloudGRPC)
+func runFleetApps(ctx context.Context, group, cloudGRPC, brokerURL string, lan bool, timeout time.Duration) error {
+	targets, err := resolveFleetTargets(ctx, group, lan, cloudGRPC, brokerURL, timeout)
 	if err != nil {
 		return err
 	}
-	assets, err := fetchCloudAssetsFiltered(ctx, auth, false)
-	if err != nil {
-		return err
-	}
-	if group != "" {
-		assets = assetsInGroup(assets, group)
-	}
-	if len(assets) == 0 {
+	if len(targets) == 0 {
 		if group != "" {
 			return fmt.Errorf("group %q has no devices", group)
+		}
+		if lan {
+			return fmt.Errorf("no WendyOS devices found on the LAN")
 		}
 		return fmt.Errorf("no enrolled devices found for this org")
 	}
 
-	rows := gatherFleetApps(ctx, auth, assets, brokerURL)
+	rows := gatherFleetApps(ctx, targets)
 	sortFleetAppRows(rows)
 
 	if jsonOutput || !isInteractiveTerminal() {
@@ -99,10 +96,10 @@ func runFleetApps(ctx context.Context, group, cloudGRPC, brokerURL string) error
 	return tw.Flush()
 }
 
-// gatherFleetApps queries every asset's container list concurrently and flattens
-// the result into per-app rows. A device that errors contributes a single row
-// with its Error set; one bad device never fails the whole sweep.
-func gatherFleetApps(ctx context.Context, auth *config.AuthConfig, assets []*cloudpb.Asset, brokerURL string) []fleetAppRow {
+// gatherFleetApps queries every target's container list concurrently and
+// flattens the result into per-app rows. A device that errors contributes a
+// single row with its Error set; one bad device never fails the whole sweep.
+func gatherFleetApps(ctx context.Context, targets []fleetTarget) []fleetAppRow {
 	var (
 		mu   sync.Mutex
 		rows []fleetAppRow
@@ -110,25 +107,24 @@ func gatherFleetApps(ctx context.Context, auth *config.AuthConfig, assets []*clo
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(fleetAppsMaxConcurrency)
 
-	for _, asset := range assets {
-		asset := asset
+	for _, target := range targets {
+		target := target
 		g.Go(func() error {
-			containers, err := listAssetContainers(ctx, auth, asset, brokerURL)
+			containers, err := listTargetContainers(ctx, target)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				rows = append(rows, fleetAppRow{Device: asset.GetName(), AssetID: asset.GetId(), Error: err.Error()})
+				rows = append(rows, fleetAppRow{Device: target.Name, Error: err.Error()})
 				return nil
 			}
 			if len(containers) == 0 {
 				// Reachable but no apps — still worth a row so the device shows up.
-				rows = append(rows, fleetAppRow{Device: asset.GetName(), AssetID: asset.GetId(), App: "—", State: "—"})
+				rows = append(rows, fleetAppRow{Device: target.Name, App: "—", State: "—"})
 				return nil
 			}
 			for _, c := range containers {
 				rows = append(rows, fleetAppRow{
-					Device:  asset.GetName(),
-					AssetID: asset.GetId(),
+					Device:  target.Name,
 					App:     c.GetAppName(),
 					Version: c.GetAppVersion(),
 					State:   runningStateString(c.GetRunningState()),
@@ -142,14 +138,18 @@ func gatherFleetApps(ctx context.Context, auth *config.AuthConfig, assets []*clo
 	return rows
 }
 
-// listAssetContainers opens a tunnel to one asset and drains its container list.
-func listAssetContainers(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) ([]*agentpb.AppContainer, error) {
-	conn, err := connectCloudAsset(ctx, auth, asset, brokerURL)
+// listTargetContainers connects to one target and drains its container list.
+func listTargetContainers(ctx context.Context, target fleetTarget) ([]*agentpb.AppContainer, error) {
+	conn, err := target.connect(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("connecting: %w", err)
 	}
-	defer conn.Close()
+	defer conn.Conn.Close()
+	return listContainersOnConn(ctx, conn)
+}
 
+// listContainersOnConn drains the agent's container list over an open connection.
+func listContainersOnConn(ctx context.Context, conn *grpcclient.AgentConnection) ([]*agentpb.AppContainer, error) {
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("listing containers: %w", err)
