@@ -8,6 +8,7 @@ import {
   cliWingetCommand,
   InstallCommand,
 } from '@/components/docs/install-command';
+import { withBasePath } from '@/lib/shared';
 
 type CliPlatform = 'unix' | 'windows';
 
@@ -55,7 +56,7 @@ export function GetStartedSection() {
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-fd-muted-foreground">
             Plug in an NVIDIA Jetson or Raspberry Pi over USB and start deploying in seconds.{' '}
             <a
-              href="/installation/wendy-agent-macos"
+              href={withBasePath('/installation/wendy-agent-macos/')}
               className="font-medium text-wendy-seafoam no-underline transition-colors hover:text-wendy-seafoam-hover"
             >
               Wendy for macOS
@@ -128,7 +129,7 @@ export function GetStartedSection() {
               Configure your local tools, editor, and first device connection.
             </p>
             <a
-              href="/installation/developer-machine-setup"
+              href={withBasePath('/installation/developer-machine-setup/')}
               className="mt-3 inline-flex items-center gap-2 bg-fd-primary px-4 py-2 text-sm font-medium text-fd-primary-foreground no-underline transition-transform hover:translate-x-0.5"
             >
               Open setup guide
