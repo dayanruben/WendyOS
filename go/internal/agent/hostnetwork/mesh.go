@@ -43,22 +43,6 @@ func InitMeshChain() error {
 	return nil
 }
 
-// TeardownMeshChain removes the FORWARD jump rule and deletes the WENDY-MESH
-// chain. It is idempotent: attempting to remove a rule or chain that is
-// already absent is treated as success. Any per-container ACCEPT rules the
-// CNI plugin has not yet cleaned up will cause the chain deletion to fail
-// (iptables refuses to delete a non-empty chain that is still referenced),
-// which is surfaced to the caller as an error rather than silently flushed.
-func TeardownMeshChain() error {
-	if err := deleteForwardJumpIfPresent(MeshChainName); err != nil {
-		return fmt.Errorf("hostnetwork: remove FORWARD jump to %s: %w", MeshChainName, err)
-	}
-	if err := deleteChainIfPresent(MeshChainName); err != nil {
-		return fmt.Errorf("hostnetwork: delete chain %s: %w", MeshChainName, err)
-	}
-	return nil
-}
-
 // ensureChain creates the named filter-table chain if it does not already
 // exist. `iptables -N <chain>` exits non-zero with "Chain already exists" on
 // stderr when the chain is present, which is treated as success.
@@ -104,39 +88,6 @@ func forwardJumpExists(chain string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("iptables -C FORWARD -j %s: %w (%s)", chain, err, strings.TrimSpace(string(out)))
-}
-
-// deleteForwardJumpIfPresent removes the FORWARD jump rule if it exists,
-// treating an already-absent rule as success.
-func deleteForwardJumpIfPresent(chain string) error {
-	exists, err := forwardJumpExists(chain)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-	out, err := exec.Command("iptables", "-t", "filter", "-D", "FORWARD", "-j", chain).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("iptables -D FORWARD -j %s: %w (%s)", chain, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// deleteChainIfPresent flushes and deletes the named chain if it exists,
-// treating an already-absent chain as success.
-func deleteChainIfPresent(chain string) error {
-	if err := exec.Command("iptables", "-t", "filter", "-S", chain).Run(); err != nil {
-		// Chain doesn't exist (or isn't inspectable); nothing to tear down.
-		return nil
-	}
-	if out, err := exec.Command("iptables", "-t", "filter", "-F", chain).CombinedOutput(); err != nil {
-		return fmt.Errorf("iptables -F %s: %w (%s)", chain, err, strings.TrimSpace(string(out)))
-	}
-	if out, err := exec.Command("iptables", "-t", "filter", "-X", chain).CombinedOutput(); err != nil {
-		return fmt.Errorf("iptables -X %s: %w (%s)", chain, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 // exitCode extracts the process exit code from an error returned by
