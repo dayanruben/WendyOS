@@ -769,13 +769,15 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [determine-version, build, build-go-macos, build-agent-macos-app, package-linux, package-windows, test-templates, integration-tests]
+    needs: [determine-version, build, build-go-macos, build-agent-macos-app, sbom-source, sbom-binaries, package-linux, package-windows, test-templates, integration-tests]
     if: |
       always() &&
       needs.determine-version.result == 'success' &&
       needs.build.result == 'success' &&
       needs.build-go-macos.result == 'success' &&
       needs.build-agent-macos-app.result == 'success' &&
+      needs.sbom-source.result == 'success' &&
+      needs.sbom-binaries.result == 'success' &&
       needs.package-linux.result == 'success' &&
       needs.package-windows.result == 'success' &&
       needs.test-templates.result == 'success' &&
@@ -792,7 +794,7 @@ jobs:
           # Create a newline-delimited list of release files
           {
             echo 'FILES<<EOF'
-            find . -name "*.tar.gz" -o -name "*.zip" -o -name "*.msi" -o -name "*.deb" -o -name "*.rpm" | sort
+            find . -name "*.tar.gz" -o -name "*.zip" -o -name "*.msi" -o -name "*.deb" -o -name "*.rpm" -o -name "*.spdx.json" | sort
             echo 'EOF'
           } >> $GITHUB_ENV
       - name: Create Release
