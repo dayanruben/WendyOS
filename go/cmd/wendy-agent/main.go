@@ -31,6 +31,7 @@ import (
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
@@ -165,6 +166,15 @@ func main() {
 	} else {
 		containerdClient = ctrdClient
 		defer ctrdClient.Close()
+	}
+
+	// Ensure the host-side WENDY-MESH iptables chain exists so the wendy-mesh
+	// CNI plugin has a chain to append per-container ACCEPT rules into.
+	// Best-effort/non-fatal: containers that don't use the mesh network mode
+	// must still work even if this fails (non-Linux dev host, missing
+	// iptables binary, insufficient privileges, etc).
+	if err := hostnetwork.InitMeshChain(); err != nil {
+		logger.Warn("failed to init mesh chain", zap.Error(err))
 	}
 
 	logManager := services.NewContainerLogManager(logger, telemetryBuf)
