@@ -7,8 +7,11 @@ SCRIPT="$HERE/../generate-sbom.sh"
 command -v syft >/dev/null 2>&1 || { echo "SKIP: syft not installed"; exit 0; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# Build a real wendy binary to catalog.
-( cd "$ROOT/go" && CGO_ENABLED=0 go build -o "$TMP/wendy" ./cmd/wendy )
+# Build a real wendy binary to catalog. Mirror CI: macOS build-go-macos job
+# uses CGO_ENABLED=1 (ble_darwin.go / bluetooth_darwin.go need cgo), Linux
+# uses CGO_ENABLED=0.
+if [[ "$(uname -s)" == "Darwin" ]]; then CGO="1"; else CGO="0"; fi
+( cd "$ROOT/go" && CGO_ENABLED="$CGO" go build -o "$TMP/wendy" ./cmd/wendy )
 
 bash "$SCRIPT" binary "$TMP/wendy" "$TMP/wendy.spdx.json"
 jq -e '.spdxVersion and (.packages | length > 0)' "$TMP/wendy.spdx.json" >/dev/null \
