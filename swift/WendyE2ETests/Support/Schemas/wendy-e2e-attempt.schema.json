@@ -38,14 +38,13 @@
     "github": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "workflow", "runID", "runAttempt", "job", "actor", "sha"],
+      "required": ["repository", "workflow", "runID", "runAttempt", "job", "sha"],
       "properties": {
         "repository": { "type": ["string", "null"] },
         "workflow": { "type": ["string", "null"] },
         "runID": { "type": ["string", "null"] },
         "runAttempt": { "type": ["string", "null"] },
         "job": { "type": ["string", "null"] },
-        "actor": { "type": ["string", "null"] },
         "sha": { "type": ["string", "null"] }
       }
     },
@@ -61,7 +60,9 @@
         "agentAddress": { "type": ["string", "null"] },
         "agentUser": { "type": ["string", "null"] },
         "transport": { "type": ["string", "null"] },
-        "agentInfo": true
+        "agentInfo": {
+          "description": "Optional agent response captured for preflight debugging; shape may evolve with the agent API."
+        }
       }
     },
     "paths": {

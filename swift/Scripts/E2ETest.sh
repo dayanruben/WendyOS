@@ -106,7 +106,7 @@ normalize_isolation() {
 normalize_timeout_seconds() {
   local name="$1"
   local value="$2"
-  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+  if [[ ! "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
     echo "ERROR: $name must be a non-negative integer number of seconds." >&2
     exit 64
   fi
@@ -324,6 +324,10 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --test-timeout)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "ERROR: --test-timeout requires a numeric argument." >&2
+        exit 64
+      fi
       TEST_TIMEOUT_SECONDS="$2"
       shift 2
       ;;
@@ -1004,6 +1008,7 @@ except subprocess.TimeoutExpired:
     print(f"::error::{message}", flush=True)
     print(f"==> {message}", flush=True)
     try:
+        # start_new_session=True calls setsid(), so the child PID is also its process group ID.
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
@@ -1017,7 +1022,10 @@ except subprocess.TimeoutExpired:
         except ProcessLookupError:
             pass
         killed_with = "SIGKILL"
-        process.wait()
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            print("==> WARNING: Swift E2E test process did not exit after SIGKILL", flush=True)
 
     os.makedirs(os.path.dirname(timeout_path), exist_ok=True)
     with open(timeout_path, "w", encoding="utf-8") as handle:
@@ -1083,7 +1091,6 @@ write_attempt_info() {
     printf '    "runID": '; json_string_or_null "${GITHUB_RUN_ID:-}"; echo ","
     printf '    "runAttempt": '; json_string_or_null "${GITHUB_RUN_ATTEMPT:-}"; echo ","
     printf '    "job": '; json_string_or_null "${GITHUB_JOB:-}"; echo ","
-    printf '    "actor": '; json_string_or_null "${GITHUB_ACTOR:-}"; echo ","
     printf '    "sha": '; json_string_or_null "$github_sha"; echo
     echo '  },'
     echo '  "target": {'

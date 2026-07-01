@@ -125,7 +125,7 @@ runs:
         require_match AGENT_OS "$AGENT_OS" '^[A-Za-z0-9._-]{1,40}$'
         require_match TRANSPORT "$TRANSPORT" '^[A-Za-z0-9._-]{1,40}$'
         require_match MANAGED_AGENT "$MANAGED_AGENT" '^(true|false)$'
-        require_match TEST_TIMEOUT_MINUTES "$TEST_TIMEOUT_MINUTES" '^[0-9]{1,4}$'
+        require_match TEST_TIMEOUT_MINUTES "$TEST_TIMEOUT_MINUTES" '^(0|[1-9][0-9]{0,3})$'
         if (( 10#$TEST_TIMEOUT_MINUTES > 1440 )); then
           echo "ERROR: invalid TEST_TIMEOUT_MINUTES" >&2
           exit 64
@@ -212,7 +212,7 @@ runs:
         Require-Match AGENT_OS $env:AGENT_OS '^[A-Za-z0-9._-]{1,40}$'
         Require-Match TRANSPORT $env:TRANSPORT '^[A-Za-z0-9._-]{1,40}$'
         Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
-        Require-Match TEST_TIMEOUT_MINUTES $env:TEST_TIMEOUT_MINUTES '^[0-9]{1,4}$'
+        Require-Match TEST_TIMEOUT_MINUTES $env:TEST_TIMEOUT_MINUTES '^(0|[1-9][0-9]{0,3})$'
         if ([int]$env:TEST_TIMEOUT_MINUTES -gt 1440) { throw 'invalid TEST_TIMEOUT_MINUTES' }
         Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
         Reject-Newline TESTS $env:TESTS
@@ -312,7 +312,6 @@ runs:
                 "runID": os.environ.get("GITHUB_RUN_ID"),
                 "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "job": os.environ.get("GITHUB_JOB"),
-                "actor": os.environ.get("GITHUB_ACTOR"),
                 "sha": os.environ.get("GITHUB_SHA"),
             },
             "target": {
