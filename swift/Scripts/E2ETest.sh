@@ -910,7 +910,7 @@ prepare_managed_agent_auth_fixture() {
   local auth_dir="$RUN_DIR/managed-agent/cli-auth"
   mkdir -p "$auth_dir"
   CLI_AUTH_CONFIG_PATH="$auth_dir/config.json"
-  printf '{}\n' > "$CLI_AUTH_CONFIG_PATH"
+  printf '{"completionPromptDismissed":true}\n' > "$CLI_AUTH_CONFIG_PATH"
   chmod 600 "$CLI_AUTH_CONFIG_PATH" 2>/dev/null || true
 }
 
