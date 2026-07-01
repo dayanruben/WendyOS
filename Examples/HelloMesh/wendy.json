@@ -1,0 +1,18 @@
+{
+    "appId": "sh.wendy.examples.hellomesh",
+    "platform": "linux",
+    "version": "1.0.0",
+    "isolation": "isolated",
+    "services": {
+        "client": {
+            "context": "./client",
+            "entitlements": [
+                {
+                    "type": "network",
+                    "mode": "mesh",
+                    "serviceCIDR": "10.99.0.0/16"
+                }
+            ]
+        }
+    }
+}
