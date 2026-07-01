@@ -91,12 +91,29 @@
             "type": { "const": "network" },
             "mode": {
               "type": "string",
-              "enum": ["host", "host-admin", "none"],
-              "description": "Network mode. \"host\" shares the host network stack (visibility only); \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking."
+              "enum": ["host", "host-admin", "none", "mesh"],
+              "description": "Network mode. \"host\" shares the host network stack (visibility only); \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking; \"mesh\" chains the wendy-mesh CNI plugin, giving the container its own network namespace with a route to a mesh service CIDR."
+            },
+            "serviceCIDR": {
+              "type": "string",
+              "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$",
+              "description": "The mesh service CIDR the container may reach. Required when mode is \"mesh\"; invalid for any other mode."
             }
           },
           "required": ["type"],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "if": {
+            "properties": { "mode": { "const": "mesh" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["serviceCIDR"]
+          },
+          "else": {
+            "properties": {
+              "serviceCIDR": false
+            }
+          }
         },
         {
           "properties": {
