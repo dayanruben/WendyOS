@@ -120,6 +120,26 @@ func lanGroupDevices(ctx context.Context, group string, timeout time.Duration) (
 	return out, nil
 }
 
+// lanDevicesForTags discovers LAN devices and returns those whose name matches
+// any of the given tags (each a glob, e.g. "camera-*"). A device that matches
+// more than one tag appears once.
+func lanDevicesForTags(ctx context.Context, tags []string, timeout time.Duration) ([]models.LANDevice, error) {
+	devices, err := discoverFleetLAN(ctx, timeout)
+	if err != nil {
+		return nil, err
+	}
+	var out []models.LANDevice
+	for _, dev := range devices {
+		for _, tag := range tags {
+			if matchesGroupPattern(dev, tag) {
+				out = append(out, dev)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 // targetForDevice wraps a discovered LAN device as a connectable fleet target.
 func targetForDevice(dev models.LANDevice) fleetTarget {
 	addr := preferredLANAddress(dev)

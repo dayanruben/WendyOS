@@ -143,31 +143,23 @@ type ServiceConfig struct {
 	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
-// ComponentConfig describes one placed component of a fleet app (WDY-1755). A
-// wendy.json with a non-empty Components map is a "fleet manifest": each
-// component is built from its own context and placed independently — fanned out
-// to a device group (the edge tier) or run once centrally (the central tier).
-// Per-component Entitlements/Readiness/Hooks/Frameworks/Resources mirror the
-// single-app fields; in fleet mode they live here rather than at the top level.
+// ComponentConfig references one app of a fleet (WDY-1755/1776). The fleet
+// manifest describes topology, not app config: each component points at an app
+// directory (Path) whose own wendy.json defines the app's build/runtime config,
+// and lists the device Tags the app deploys to. There is no group/central
+// distinction — "central" is just a conventional tag.
 type ComponentConfig struct {
-	// Context is the build context directory, relative to wendy.json. Required.
-	Context      string            `json:"context"`
-	Target       *ComponentTarget  `json:"target,omitempty"`
-	Expose       *ComponentExpose  `json:"expose,omitempty"`
-	Discovers    []DiscoverRef     `json:"discovers,omitempty"`
-	Entitlements []Entitlement     `json:"entitlements,omitempty"`
-	Readiness    *ReadinessConfig  `json:"readiness,omitempty"`
-	Hooks        *HooksConfig      `json:"hooks,omitempty"`
-	Frameworks   *FrameworksConfig `json:"frameworks,omitempty"`
-	Resources    *ResourceLimits   `json:"resources,omitempty"`
-}
-
-// ComponentTarget places a component. Exactly one of Group or Central must be
-// set: Group fans the component out to every device in a named device group;
-// Central runs it once (on an edge device, a separate host, or the cloud).
-type ComponentTarget struct {
-	Group   string `json:"group,omitempty"`
-	Central bool   `json:"central,omitempty"`
+	// Path is the app directory, relative to wendy-fleet.json. It must contain a
+	// wendy.json defining the app. Required.
+	Path string `json:"path"`
+	// Tags select the devices this component deploys to: a device matches when
+	// any tag matches its name (glob, e.g. "camera-*"). Required, non-empty.
+	Tags []string `json:"tags"`
+	// Expose declares the endpoint this component serves, for cross-component
+	// discovery. Interim — WDY-1777 moves discovery to mDNS advertising.
+	Expose *ComponentExpose `json:"expose,omitempty"`
+	// Discovers wires another component's live endpoints into this one.
+	Discovers []DiscoverRef `json:"discovers,omitempty"`
 }
 
 // ComponentExpose declares the network endpoint a component serves so the
@@ -553,14 +545,13 @@ func (c *AppConfig) Validate() error {
 // placement/topology file kept separate from a project's single-app wendy.json.
 const FleetManifestFileName = "wendy-fleet.json"
 
-// FleetManifest is the parsed wendy-fleet.json: the fleet's identity plus which
-// components exist and where each is placed (fanned out to a device group, or
-// run once centrally). It lives in its own file so a project's single-app
-// wendy.json and its fleet topology stay separate.
+// FleetManifest is the parsed wendy-fleet.json: which components (apps) the
+// fleet is made of and, for each, the device tags it deploys to. It is topology
+// only — each component's build/runtime config lives in its app's own
+// wendy.json — kept in a separate file from any single-app wendy.json.
 type FleetManifest struct {
-	AppID      string                      `json:"appId"`
-	Version    string                      `json:"version,omitempty"`
-	Platform   string                      `json:"platform,omitempty"`
+	// AppID is an optional fleet-level label; each app carries its own appId.
+	AppID      string                      `json:"appId,omitempty"`
 	Components map[string]*ComponentConfig `json:"components"`
 }
 
@@ -585,12 +576,11 @@ func ParseFleetManifest(data []byte) (*FleetManifest, error) {
 	return &m, nil
 }
 
-// Validate checks a fleet manifest: identity, per-component placement/build
-// config, and discovers wiring.
+// Validate checks a fleet manifest: each component references an app directory,
+// lists the device tags it deploys to, and any discovers wiring is resolvable.
+// Per-app build/runtime config is validated separately when the app's own
+// wendy.json is loaded.
 func (m *FleetManifest) Validate() error {
-	if m.AppID == "" {
-		return fmt.Errorf("appId is required")
-	}
 	if len(m.Components) == 0 {
 		return fmt.Errorf("a fleet manifest must declare at least one component")
 	}
@@ -599,42 +589,24 @@ func (m *FleetManifest) Validate() error {
 		if comp == nil {
 			return fmt.Errorf("components[%q]: must not be null", name)
 		}
-		if comp.Context == "" {
-			return fmt.Errorf("components[%q]: context is required", name)
+		if comp.Path == "" {
+			return fmt.Errorf("components[%q]: path is required (the app directory)", name)
 		}
-		if filepath.IsAbs(comp.Context) {
-			return fmt.Errorf("components[%q]: context must be a relative path", name)
+		if filepath.IsAbs(comp.Path) {
+			return fmt.Errorf("components[%q]: path must be relative", name)
 		}
-		if cleaned := filepath.Clean(comp.Context); strings.HasPrefix(cleaned, "..") {
-			return fmt.Errorf("components[%q]: context must not contain '..' components", name)
+		if cleaned := filepath.Clean(comp.Path); strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("components[%q]: path must not contain '..' components", name)
 		}
-
-		if err := validateComponentTarget(name, comp.Target); err != nil {
-			return err
+		if len(comp.Tags) == 0 {
+			return fmt.Errorf("components[%q]: at least one tag is required (the devices to deploy to)", name)
+		}
+		for i, tag := range comp.Tags {
+			if strings.TrimSpace(tag) == "" {
+				return fmt.Errorf("components[%q].tags[%d]: must not be empty", name, i)
+			}
 		}
 		if err := validateComponentExpose(name, comp.Expose); err != nil {
-			return err
-		}
-		if err := validateEntitlements(comp.Entitlements, fmt.Sprintf("components[%q].entitlement", name)); err != nil {
-			return err
-		}
-		if comp.Readiness != nil {
-			if comp.Readiness.TCPSocket != nil {
-				port := comp.Readiness.TCPSocket.Port
-				if port < 1 || port > 65535 {
-					return fmt.Errorf("components[%q].readiness.tcpSocket.port must be between 1 and 65535, got %d", name, port)
-				}
-			}
-			if comp.Readiness.TimeoutSeconds < 0 {
-				return fmt.Errorf("components[%q].readiness.timeoutSeconds must not be negative, got %d", name, comp.Readiness.TimeoutSeconds)
-			}
-		}
-		if comp.Frameworks != nil {
-			if err := validateROS2Config(fmt.Sprintf("components[%q].frameworks.ros2", name), comp.Frameworks.ROS2); err != nil {
-				return err
-			}
-		}
-		if err := comp.Resources.validate(fmt.Sprintf("components[%q].resources", name)); err != nil {
 			return err
 		}
 	}
@@ -650,8 +622,8 @@ func (m *FleetManifest) Validate() error {
 			if !ok {
 				return fmt.Errorf("components[%q].discovers[%d]: references unknown component %q", name, i, d.Component)
 			}
-			if target.Target == nil || target.Target.Group == "" {
-				return fmt.Errorf("components[%q].discovers[%d]: %q is not a group target — only group (edge) components can be discovered", name, i, d.Component)
+			if target.Expose == nil {
+				return fmt.Errorf("components[%q].discovers[%d]: %q declares no \"expose\" endpoint to discover", name, i, d.Component)
 			}
 			if d.As == "" {
 				return fmt.Errorf("components[%q].discovers[%d]: as (env var name) is required", name, i)
@@ -665,22 +637,6 @@ func (m *FleetManifest) Validate() error {
 		}
 	}
 
-	return nil
-}
-
-// validateComponentTarget checks that a component declares exactly one
-// placement: a non-empty group, or central:true.
-func validateComponentTarget(name string, t *ComponentTarget) error {
-	if t == nil {
-		return fmt.Errorf("components[%q]: target is required (\"group\" or \"central\")", name)
-	}
-	hasGroup := t.Group != ""
-	if hasGroup && t.Central {
-		return fmt.Errorf("components[%q].target: set exactly one of \"group\" or \"central\", not both", name)
-	}
-	if !hasGroup && !t.Central {
-		return fmt.Errorf("components[%q].target: must set \"group\" (edge) or \"central\"", name)
-	}
 	return nil
 }
 

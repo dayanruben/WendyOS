@@ -62,7 +62,7 @@ func TestPeerHostPrefersIP(t *testing.T) {
 
 func TestComputePeers(t *testing.T) {
 	comp := &appconfig.ComponentConfig{
-		Target: &appconfig.ComponentTarget{Group: "camera-*"},
+		Tags:   []string{"camera-*"},
 		Expose: &appconfig.ComponentExpose{Port: 8000, Path: "/stream"},
 	}
 	devices := []models.LANDevice{
@@ -89,21 +89,21 @@ func TestDiscoveryEnv(t *testing.T) {
 		AppID: "sh.wendy.fleet",
 		Components: map[string]*appconfig.ComponentConfig{
 			"camera": {
-				Context: "camera",
-				Target:  &appconfig.ComponentTarget{Group: "camera-*"},
-				Expose:  &appconfig.ComponentExpose{Port: 8000, Path: "/stream"},
+				Path:   "camera",
+				Tags:   []string{"camera-*"},
+				Expose: &appconfig.ComponentExpose{Port: 8000, Path: "/stream"},
 			},
 			"dashboard": {
-				Context:   "dashboard",
-				Target:    &appconfig.ComponentTarget{Central: true},
+				Path:      "dashboard",
+				Tags:      []string{"central"},
 				Discovers: []appconfig.DiscoverRef{{Component: "camera", As: "WENDY_FLEET_PEERS"}},
 			},
 		},
 	}
-	edge := map[string][]models.LANDevice{
+	matched := map[string][]models.LANDevice{
 		"camera": {dev("wendyos-camera-01.local", "Camera 01", "10.0.0.4")},
 	}
-	env, err := discoveryEnv(manifest.Components["dashboard"], manifest, edge)
+	env, err := discoveryEnv(manifest.Components["dashboard"], manifest, matched)
 	if err != nil {
 		t.Fatalf("discoveryEnv error: %v", err)
 	}
@@ -126,36 +126,18 @@ func TestDiscoveryEnv(t *testing.T) {
 func TestDiscoveryEnvErrors(t *testing.T) {
 	manifest := &appconfig.FleetManifest{
 		Components: map[string]*appconfig.ComponentConfig{
-			"noexpose": {Context: "x", Target: &appconfig.ComponentTarget{Group: "g"}},
+			"noexpose": {Path: "x", Tags: []string{"g"}},
 		},
 	}
 	// Unknown referenced component.
-	central := &appconfig.ComponentConfig{Discovers: []appconfig.DiscoverRef{{Component: "missing", As: "X"}}}
-	if _, err := discoveryEnv(central, manifest, nil); err == nil {
+	consumer := &appconfig.ComponentConfig{Discovers: []appconfig.DiscoverRef{{Component: "missing", As: "X"}}}
+	if _, err := discoveryEnv(consumer, manifest, nil); err == nil {
 		t.Error("expected error for unknown discovered component")
 	}
 	// Referenced component without an expose endpoint.
-	central = &appconfig.ComponentConfig{Discovers: []appconfig.DiscoverRef{{Component: "noexpose", As: "X"}}}
-	if _, err := discoveryEnv(central, manifest, nil); err == nil {
+	consumer = &appconfig.ComponentConfig{Discovers: []appconfig.DiscoverRef{{Component: "noexpose", As: "X"}}}
+	if _, err := discoveryEnv(consumer, manifest, nil); err == nil {
 		t.Error("expected error for discovered component without expose")
-	}
-}
-
-func TestComponentAppConfig(t *testing.T) {
-	manifest := &appconfig.FleetManifest{AppID: "sh.wendy.fleet", Version: "0.1.0", Platform: "linux"}
-	comp := &appconfig.ComponentConfig{
-		Context:      "camera",
-		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "host"}},
-	}
-	got := componentAppConfig(manifest, "camera", comp)
-	if got.AppID != "sh.wendy.fleet.camera" {
-		t.Errorf("AppID = %q, want sh.wendy.fleet.camera", got.AppID)
-	}
-	if got.Version != "0.1.0" || got.Platform != "linux" {
-		t.Errorf("version/platform not carried: %+v", got)
-	}
-	if len(got.Entitlements) != 1 || got.Entitlements[0].Mode != "host" {
-		t.Errorf("entitlements not carried: %+v", got.Entitlements)
 	}
 }
 
