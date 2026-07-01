@@ -4,6 +4,7 @@ package appconfig
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -77,7 +78,7 @@ var deprecatedEntitlementReplacements = map[string]string{
 
 // allowedKeys maps each entitlement type to the set of JSON keys that are valid for it.
 var allowedKeys = map[string][]string{
-	EntitlementNetwork:   {"type", "mode", "ports"},
+	EntitlementNetwork:   {"type", "mode", "ports", "serviceCIDR"},
 	EntitlementBluetooth: {"type", "mode"},
 	EntitlementVideo:     {"type", "mode", "allowlist"},
 	EntitlementGPU:       {"type"},
@@ -257,6 +258,10 @@ type Entitlement struct {
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
 	Port      int           `json:"port,omitempty"`      // MCP
+	// ServiceCIDR is the mesh service CIDR policy for network mode "mesh".
+	// The agent derives the gateway from the bridge subnet separately; this
+	// field only carries the service CIDR policy.
+	ServiceCIDR string `json:"serviceCIDR,omitempty"` // Network (mesh mode)
 }
 
 // DeprecatedEntitlementReplacement reports the preferred replacement for a deprecated entitlement type.
@@ -308,8 +313,18 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 
 		switch e.Type {
 		case EntitlementNetwork:
-			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" {
-				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", or \"none\", got %q", prefix, i, e.Mode)
+			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" && e.Mode != "mesh" {
+				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", \"none\", or \"mesh\", got %q", prefix, i, e.Mode)
+			}
+			if e.Mode == "mesh" {
+				if e.ServiceCIDR == "" {
+					return fmt.Errorf("%s[%d]: network mode \"mesh\" requires a serviceCIDR", prefix, i)
+				}
+				if _, _, err := net.ParseCIDR(e.ServiceCIDR); err != nil {
+					return fmt.Errorf("%s[%d]: network serviceCIDR must be a valid CIDR, got %q", prefix, i, e.ServiceCIDR)
+				}
+			} else if e.ServiceCIDR != "" {
+				return fmt.Errorf("%s[%d]: network serviceCIDR is only valid with mode \"mesh\", got mode %q", prefix, i, e.Mode)
 			}
 		case EntitlementPersist:
 			if e.Name == "" {
