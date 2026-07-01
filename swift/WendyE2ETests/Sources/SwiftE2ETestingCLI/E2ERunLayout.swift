@@ -11,6 +11,7 @@ let e2eSourceIndexFileName = "source-index.md"
 
 private let e2eAttemptJSONMaxBytes = 1_048_576
 private let e2eAttemptXUnitMaxBytes = 50 * 1_048_576
+private let e2eAttemptMessageMaxCharacters = 2_048
 
 func e2eAttemptArtifactsRootURL(in runURL: URL) -> URL {
     runURL.appendingPathComponent(e2eAttemptArtifactsDirectoryName, isDirectory: true)
@@ -89,9 +90,17 @@ private func e2eAttemptTimeoutDetail(at attemptURL: URL) -> String? {
         let message = object["message"] as? String,
         !message.isEmpty
     {
-        return message
+        return e2eBoundedMessage(message)
     }
     return "Swift E2E attempt timed out"
+}
+
+private func e2eBoundedMessage(_ message: String) -> String {
+    let normalized = message
+        .replacingOccurrences(of: "\r", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    guard normalized.count > e2eAttemptMessageMaxCharacters else { return normalized }
+    return String(normalized.prefix(e2eAttemptMessageMaxCharacters)) + "…"
 }
 
 private func e2eAttemptXUnitProblem(at attemptURL: URL) -> String? {

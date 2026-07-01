@@ -38,13 +38,14 @@
     "github": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "workflow", "runID", "runAttempt", "job", "sha"],
+      "required": ["repository", "workflow", "runID", "runAttempt", "job", "actor", "sha"],
       "properties": {
         "repository": { "type": ["string", "null"] },
         "workflow": { "type": ["string", "null"] },
         "runID": { "type": ["string", "null"] },
         "runAttempt": { "type": ["string", "null"] },
         "job": { "type": ["string", "null"] },
+        "actor": { "type": ["string", "null"] },
         "sha": { "type": ["string", "null"] }
       }
     },

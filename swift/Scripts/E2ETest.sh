@@ -910,6 +910,9 @@ prepare_managed_agent_auth_fixture() {
   local auth_dir="$RUN_DIR/managed-agent/cli-auth"
   mkdir -p "$auth_dir"
   CLI_AUTH_CONFIG_PATH="$auth_dir/config.json"
+  # Managed E2Es run with throwaway HOME directories. Pre-dismiss only the
+  # ambient shell-completion install prompt so PTY-backed command tests do not
+  # block after printing their real command output.
   printf '{"completionPromptDismissed":true}\n' > "$CLI_AUTH_CONFIG_PATH"
   chmod 600 "$CLI_AUTH_CONFIG_PATH" 2>/dev/null || true
 }
@@ -992,6 +995,10 @@ def utc_now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def github_annotation_escape(value):
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 timeout_seconds = int(sys.argv[1])
 timeout_path = sys.argv[2]
 command = sys.argv[3:]
@@ -1005,7 +1012,7 @@ except subprocess.TimeoutExpired:
         f"Swift E2E test process exceeded {timeout_seconds} seconds and was "
         "terminated before the GitHub Actions job timeout."
     )
-    print(f"::error::{message}", flush=True)
+    print(f"::error::{github_annotation_escape(message)}", flush=True)
     print(f"==> {message}", flush=True)
     try:
         # start_new_session=True calls setsid(), so the child PID is also its process group ID.
@@ -1091,6 +1098,7 @@ write_attempt_info() {
     printf '    "runID": '; json_string_or_null "${GITHUB_RUN_ID:-}"; echo ","
     printf '    "runAttempt": '; json_string_or_null "${GITHUB_RUN_ATTEMPT:-}"; echo ","
     printf '    "job": '; json_string_or_null "${GITHUB_JOB:-}"; echo ","
+    printf '    "actor": '; json_string_or_null "${GITHUB_ACTOR:-}"; echo ","
     printf '    "sha": '; json_string_or_null "$github_sha"; echo
     echo '  },'
     echo '  "target": {'
@@ -1236,6 +1244,8 @@ echo "    Managed agent: $MANAGED_AGENT"
 set +e
 (
   cd "$PACKAGE_DIR"
+  # Export is intentional: run_swift_test_with_timeout launches python3, which
+  # inherits this environment before spawning swift test.
   export "${SWIFT_TEST_ENV[@]}"
   run_swift_test_with_timeout \
     "$TEST_TIMEOUT_SECONDS" \

@@ -213,7 +213,7 @@ runs:
         Require-Match TRANSPORT $env:TRANSPORT '^[A-Za-z0-9._-]{1,40}$'
         Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
         Require-Match TEST_TIMEOUT_MINUTES $env:TEST_TIMEOUT_MINUTES '^(0|[1-9][0-9]{0,3})$'
-        if ([int]$env:TEST_TIMEOUT_MINUTES -gt 1440) { throw 'invalid TEST_TIMEOUT_MINUTES' }
+        if ([long]$env:TEST_TIMEOUT_MINUTES -gt 1440) { throw 'invalid TEST_TIMEOUT_MINUTES' }
         Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
         Reject-Newline TESTS $env:TESTS
         if (-not (Test-DeviceAddress $env:DEVICE_ADDRESS)) {
@@ -229,7 +229,7 @@ runs:
         Write-OutputValue cli_os $env:CLI_OS
         Write-OutputValue agent_os $env:AGENT_OS
         Write-OutputValue transport $env:TRANSPORT
-        Write-OutputValue test_timeout_seconds ([string]([int]$env:TEST_TIMEOUT_MINUTES * 60))
+        Write-OutputValue test_timeout_seconds ([string]([long]$env:TEST_TIMEOUT_MINUTES * 60))
 
     - name: Compute Swift E2E run ID (Unix)
       if: runner.os != 'Windows'
@@ -312,6 +312,7 @@ runs:
                 "runID": os.environ.get("GITHUB_RUN_ID"),
                 "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "job": os.environ.get("GITHUB_JOB"),
+                "actor": os.environ.get("GITHUB_ACTOR"),
                 "sha": os.environ.get("GITHUB_SHA"),
             },
             "target": {
