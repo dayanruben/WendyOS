@@ -1140,10 +1140,15 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	if isolation == "isolated" && serviceName != "" && netnsRef != nil {
 		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
-		cleanupNetns()
 		if cniErr != nil {
+			cleanupNetns()
 			c.logger.Error("CNI ADD failed", zap.String("app_id", appID), zap.Error(cniErr))
 		} else {
+			// netnsPath (the bind-mount) must stay mounted through mesh egress
+			// setup below, which needs a live netns to install the service-CIDR
+			// route via nsenter (SetMeshRoute). It is unmounted at the end of
+			// this branch, after mesh wiring has had a chance to use it.
+			defer cleanupNetns()
 			c.mu.Lock()
 			// Guard against a concurrent StopContainer that may have deleted
 			// c.appIsolation[appID] during the window between CNI ADD and this
@@ -1173,6 +1178,25 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			}
 			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
 			c.mu.Unlock()
+
+			// Mesh egress (fail-closed): a container with the network/mesh
+			// entitlement must never start believing it has mesh egress it
+			// does not actually have. applyMeshEgress is a complete no-op for
+			// apps without that entitlement. Entitlements are read back from
+			// the container's own labels (written at create time via
+			// wendyLabels/BuildEntitlementAnnotations) rather than threaded
+			// through as a parameter, since StartContainer is only given an
+			// app/container name by its callers.
+			var entitlements []appconfig.Entitlement
+			if labels, lerr := container.Labels(ctx); lerr == nil {
+				entitlements = parseEntitlementsFromAnnotations(labels)
+			}
+			if meshErr := c.applyMeshEgress(entitlements, appID, netnsPath, ip); meshErr != nil {
+				c.logger.Error("mesh egress setup failed; failing container start",
+					zap.String("app_id", appID), zap.Error(meshErr))
+				_, _ = task.Delete(ctx, containerd.WithProcessKill)
+				return nil, fmt.Errorf("mesh egress setup failed for app %q: %w", appID, meshErr)
+			}
 		}
 	}
 
@@ -2067,6 +2091,30 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 			c.logger.Warn("CNI DEL failed during stop (non-fatal)",
 				zap.String("container_id", containerID), zap.Error(cniErr))
 		}
+
+		// Mesh egress teardown: remove the host iptables rule installed by
+		// applyMeshEgress at start (StartContainer). teardownMeshEgress is a
+		// no-op for apps without the network/mesh entitlement. The netns route
+		// itself needs no cleanup — it is destroyed with the namespace when the
+		// task exits below.
+		//
+		// The container's IP is recovered from c.serviceIPs (populated by
+		// recordServiceIP after CNI ADD, keyed by appID/serviceName), not from
+		// the CNI host-local IPAM on-disk state — that state lives under
+		// cniStateDir/<appID> keyed by allocated IP, not by containerID, so
+		// recovering "this container's IP" from it would require an extra
+		// reverse-index the plugin does not provide as a stable public format.
+		// c.serviceIPs already carries exactly this mapping for isolated
+		// multi-service apps (the only apps that reach this branch), so it is
+		// used here instead of introducing a second, redundant IP-recovery path.
+		var entitlements []appconfig.Entitlement
+		if labels, lerr := container.Labels(ctx); lerr == nil {
+			entitlements = parseEntitlementsFromAnnotations(labels)
+		}
+		c.mu.Lock()
+		ip := c.serviceIPs[appID][svcName]
+		c.mu.Unlock()
+		c.teardownMeshEgress(entitlements, appID, ip)
 	}
 
 	// Send SIGTERM first for graceful shutdown.

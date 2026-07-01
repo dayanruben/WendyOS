@@ -109,6 +109,44 @@ func TestRemoveMeshRuleWhenAbsentIsNotError(t *testing.T) {
 	}
 }
 
+// TestAddMeshRuleSurfacesRealIPTablesError covers C3a-review Minor #2: a
+// genuinely broken iptables invocation (here, a serviceCIDR that iptables
+// itself rejects as an unparsable host/network specification, exit code 2)
+// must surface as an error from AddMeshRule, not be silently treated as "rule
+// absent" (exit code 1, the only code meshRuleExists/AddMeshRule should ever
+// swallow).
+func TestAddMeshRuleSurfacesRealIPTablesError(t *testing.T) {
+	meshRuleFixture(t)
+
+	const containerIP = "10.88.0.11"
+	const malformedCIDR = "not-a-cidr"
+
+	err := AddMeshRule(containerIP, malformedCIDR)
+	if err == nil {
+		t.Fatal("AddMeshRule with a malformed serviceCIDR: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "iptables") {
+		t.Fatalf("AddMeshRule error does not look like a surfaced iptables failure: %v", err)
+	}
+}
+
+// TestRemoveMeshRuleSurfacesRealIPTablesError mirrors the Add case for
+// RemoveMeshRule (C3a-review Minor #2).
+func TestRemoveMeshRuleSurfacesRealIPTablesError(t *testing.T) {
+	meshRuleFixture(t)
+
+	const containerIP = "10.88.0.12"
+	const malformedCIDR = "not-a-cidr"
+
+	err := RemoveMeshRule(containerIP, malformedCIDR)
+	if err == nil {
+		t.Fatal("RemoveMeshRule with a malformed serviceCIDR: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "iptables") {
+		t.Fatalf("RemoveMeshRule error does not look like a surfaced iptables failure: %v", err)
+	}
+}
+
 // requireNetnsTools skips unless running as root with ip/nsenter available,
 // since SetMeshRoute manipulates a real network namespace.
 func requireNetnsTools(t *testing.T) {
