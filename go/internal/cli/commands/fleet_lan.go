@@ -10,9 +10,29 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
+
+// cloudTargetsForTags returns one connectable cloud target per enrolled asset
+// carrying any of the given tags (assigned via 'wendy fleet group add').
+func cloudTargetsForTags(auth *config.AuthConfig, assets []*cloudpb.Asset, tags []string, brokerURL string) []fleetTarget {
+	matched := assetsWithAnyTag(assets, tags)
+	targets := make([]fleetTarget, 0, len(matched))
+	for _, asset := range matched {
+		asset := asset
+		targets = append(targets, fleetTarget{
+			Name: asset.GetName(),
+			ID:   fmt.Sprintf("%d", asset.GetId()),
+			connect: func(ctx context.Context) (*grpcclient.AgentConnection, error) {
+				return connectCloudAsset(ctx, auth, asset, brokerURL)
+			},
+		})
+	}
+	return targets
+}
 
 // fleetLANDiscoverTimeout is the default mDNS browse window for a fleet
 // operation when no explicit timeout is given.

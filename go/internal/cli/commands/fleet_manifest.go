@@ -25,30 +25,48 @@ type fleetPeer struct {
 	Status string `json:"status"`
 }
 
-// runFleetManifest deploys a wendy-fleet.json across the LAN. Each component
-// references an app directory (its own wendy.json holds the build/runtime
-// config) and lists device tags; the component is deployed to every LAN device
-// whose name matches one of those tags. A component whose tags match no device
-// (e.g. a "central" dashboard) is deployed to --central if given, otherwise its
-// peer snapshot is printed so the operator can run it themselves.
+// runFleetManifest deploys a wendy-fleet.json. Each component references an app
+// directory (its own wendy.json holds the build/runtime config) and lists tags.
+//
+// By default components are placed by CLOUD asset tags (assigned with
+// 'wendy fleet group add') and deployed over the cloud tunnel. With --lan they
+// are placed by matching device names over mDNS instead. Cross-component
+// discovery (discovers -> WENDY_FLEET_PEERS) is wired in LAN mode; over the
+// cloud it needs per-peer reachability (the mesh, WDY-1778) and is deferred, so
+// cloud mode does placement only.
 func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, manifest *appconfig.FleetManifest, lan bool, central, cloudGRPC, brokerURL string, timeout time.Duration) error {
-	if !lan {
-		return fmt.Errorf("fleet manifests are LAN-only for now; re-run with --lan")
-	}
+	// Resolve targets per component from the chosen backend. In LAN mode also
+	// keep the matched devices, for the discovery snapshot.
+	targetsByComp := make(map[string][]fleetTarget, len(manifest.Components))
+	lanDevices := make(map[string][]models.LANDevice)
 
-	// Resolve the devices matching each component's tags once (reused for both
-	// deploy and the discovery snapshot).
-	matched := make(map[string][]models.LANDevice, len(manifest.Components))
-	for name, comp := range manifest.Components {
-		devs, err := lanDevicesForTags(ctx, comp.Tags, timeout)
+	if lan {
+		for name, comp := range manifest.Components {
+			devs, err := lanDevicesForTags(ctx, comp.Tags, timeout)
+			if err != nil {
+				return err
+			}
+			lanDevices[name] = devs
+			for _, dev := range devs {
+				targetsByComp[name] = append(targetsByComp[name], targetForDevice(dev))
+			}
+		}
+	} else {
+		auth, err := pickAuthEntry(cloudGRPC)
 		if err != nil {
 			return err
 		}
-		matched[name] = devs
+		assets, err := fetchCloudAssetsFiltered(ctx, auth, false)
+		if err != nil {
+			return err
+		}
+		for name, comp := range manifest.Components {
+			targetsByComp[name] = cloudTargetsForTags(auth, assets, comp.Tags, brokerURL)
+		}
 	}
 
-	// Deploy producers (no discovers) before consumers (with discovers) so the
-	// discovered endpoints are already up when a consumer starts.
+	// Producers (no discovers) before consumers (with discovers) so discovered
+	// endpoints are up first.
 	var producers, consumers []string
 	for name, comp := range manifest.Components {
 		if len(comp.Discovers) > 0 {
@@ -63,53 +81,56 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, m
 	for _, name := range append(producers, consumers...) {
 		comp := manifest.Components[name]
 		appDir := filepath.Join(projectCwd, comp.Path)
-
 		appCfg, err := loadComponentApp(appDir, opts)
 		if err != nil {
 			return fmt.Errorf("component %q: %w", name, err)
 		}
 
-		env, err := discoveryEnv(comp, manifest, matched)
-		if err != nil {
-			return fmt.Errorf("component %q: %w", name, err)
-		}
 		compOpts := opts
-		if len(env) > 0 {
-			compOpts.env = env
-			// Env injection rides on CreateContainerRequest.Env, carried by the
-			// registry (chunk-off) create path; force it so peers aren't dropped.
-			compOpts.chunking = chunkingOff
+		var lanEnv []string
+		if len(comp.Discovers) > 0 {
+			if lan {
+				lanEnv, err = discoveryEnv(comp, manifest, lanDevices)
+				if err != nil {
+					return fmt.Errorf("component %q: %w", name, err)
+				}
+				if len(lanEnv) > 0 {
+					// Env injection rides on CreateContainerRequest.Env, carried by
+					// the registry (chunk-off) create path; force it so peers aren't
+					// dropped.
+					compOpts.env = lanEnv
+					compOpts.chunking = chunkingOff
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "  note: %q declares discovers; cross-device discovery over the cloud is deferred to the mesh (WDY-1778) — deploying placement only\n", name)
+			}
 		}
 
-		devices := matched[name]
-		if len(devices) == 0 {
-			if central != "" {
+		targets := targetsByComp[name]
+		if len(targets) == 0 {
+			// LAN: a component matching no device can run on --central, or (if it
+			// consumes discovery) off-fleet — print how to run it.
+			if lan && central != "" {
 				dev, derr := resolveCentralDevice(ctx, central, timeout)
 				if derr != nil {
 					return derr
 				}
-				fmt.Printf("\n=== component %q (tags %v matched no device) → --central %s ===\n", name, comp.Tags, deviceShortName(dev))
+				fmt.Printf("\n=== component %q (no device matched %v) → --central %s ===\n", name, comp.Tags, deviceShortName(dev))
 				if err := deployToTarget(ctx, targetForDevice(dev), appDir, appCfg, compOpts); err != nil {
 					return fmt.Errorf("component %q on %s: %w", name, deviceShortName(dev), err)
 				}
 				continue
 			}
-			// Nothing matched and no --central: if it consumes discovery it's a
-			// central-style app meant to run off-fleet — print how to run it.
-			fmt.Printf("\n=== component %q (tags %v matched no LAN device) ===\n", name, comp.Tags)
-			if len(comp.Discovers) > 0 {
-				printCentralInstructions(name, comp, env)
-			} else {
-				fmt.Fprintf(os.Stderr, "  warning: no devices matched tags %v; skipping %q\n", comp.Tags, name)
+			if lan && len(comp.Discovers) > 0 {
+				fmt.Printf("\n=== component %q (no device matched %v) ===\n", name, comp.Tags)
+				printCentralInstructions(name, comp, lanEnv)
+				continue
 			}
+			fmt.Fprintf(os.Stderr, "  warning: no devices carry tags %v for %q; assign with 'wendy fleet group add <tag> <device>' and re-run\n", comp.Tags, name)
 			continue
 		}
 
-		fmt.Printf("\n=== component %q → tags %v (%d device(s)) ===\n", name, comp.Tags, len(devices))
-		targets := make([]fleetTarget, 0, len(devices))
-		for _, dev := range devices {
-			targets = append(targets, targetForDevice(dev))
-		}
+		fmt.Printf("\n=== component %q → tags %v (%d device(s)) ===\n", name, comp.Tags, len(targets))
 		if _, failures := deployToTargets(ctx, targets, appDir, appCfg, compOpts); failures > 0 && !opts.keepGoing {
 			return fmt.Errorf("component %q: %d device(s) failed", name, failures)
 		}

@@ -82,6 +82,25 @@ func assetsInGroup(assets []*cloudpb.Asset, group string) []*cloudpb.Asset {
 	return out
 }
 
+// assetsWithAnyTag returns the assets carrying any of the given tags (exact
+// match — cloud tags are assigned labels, not globs), preserving input order.
+func assetsWithAnyTag(assets []*cloudpb.Asset, tags []string) []*cloudpb.Asset {
+	want := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		want[t] = true
+	}
+	var out []*cloudpb.Asset
+	for _, a := range assets {
+		for _, t := range a.GetTags() {
+			if want[t] {
+				out = append(out, a)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func newFleetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fleet",
