@@ -96,8 +96,7 @@
             },
             "serviceCIDR": {
               "type": "string",
-              "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$",
-              "description": "The mesh service CIDR the container may reach. Required when mode is \"mesh\"; invalid for any other mode."
+              "description": "The mesh service CIDR the container may reach (must be a valid CIDR, IPv4 or IPv6). Required when mode is \"mesh\"; invalid for any other mode."
             }
           },
           "required": ["type"],

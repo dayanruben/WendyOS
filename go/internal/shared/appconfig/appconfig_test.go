@@ -178,6 +178,11 @@ func TestValidate_NetworkMeshMode(t *testing.T) {
 			ent:     Entitlement{Type: EntitlementNetwork, Mode: "none", ServiceCIDR: "10.42.0.0/16"},
 			wantErr: true,
 		},
+		{
+			name:    "serviceCIDR on host-admin mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host-admin", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
