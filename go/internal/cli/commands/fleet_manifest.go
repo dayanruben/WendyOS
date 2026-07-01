@@ -24,17 +24,17 @@ type fleetPeer struct {
 	Status string `json:"status"`
 }
 
-// runFleetManifest deploys a fleet manifest (a wendy.json with a components map)
-// across the LAN: each "group" component fans out to the devices matching its
-// pattern, and each "central" component is deployed once — to --central, or, if
-// omitted, its peer snapshot is printed so the operator can run it themselves.
-func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, appCfg *appconfig.AppConfig, lan bool, central, cloudGRPC, brokerURL string, timeout time.Duration) error {
+// runFleetManifest deploys a wendy-fleet.json across the LAN: each "group"
+// component fans out to the devices matching its pattern, and each "central"
+// component is deployed once — to --central, or, if omitted, its peer snapshot
+// is printed so the operator can run it themselves.
+func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, manifest *appconfig.FleetManifest, lan bool, central, cloudGRPC, brokerURL string, timeout time.Duration) error {
 	if !lan {
 		return fmt.Errorf("fleet manifests are LAN-only for now; re-run with --lan")
 	}
 
 	var edgeNames, centralNames []string
-	for name, comp := range appCfg.Components {
+	for name, comp := range manifest.Components {
 		if comp.Target != nil && comp.Target.Central {
 			centralNames = append(centralNames, name)
 		} else {
@@ -48,7 +48,7 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, a
 	// deploy and the central component's discovery snapshot.
 	edgeDevices := make(map[string][]models.LANDevice, len(edgeNames))
 	for _, name := range edgeNames {
-		comp := appCfg.Components[name]
+		comp := manifest.Components[name]
 		devices, err := lanGroupDevices(ctx, comp.Target.Group, timeout)
 		if err != nil {
 			return err
@@ -62,11 +62,11 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, a
 	// 1. Edge components first, so their endpoints exist before a central
 	//    component starts discovering them.
 	for _, name := range edgeNames {
-		comp := appCfg.Components[name]
+		comp := manifest.Components[name]
 		devices := edgeDevices[name]
 		fmt.Printf("\n=== edge component %q → group %q (%d device(s)) ===\n", name, comp.Target.Group, len(devices))
 
-		compCfg := componentAppConfig(appCfg, name, comp)
+		compCfg := componentAppConfig(manifest, name, comp)
 		compCwd := filepath.Join(projectCwd, comp.Context)
 		targets := make([]fleetTarget, 0, len(devices))
 		for _, dev := range devices {
@@ -79,11 +79,11 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, a
 
 	// 2. Central components, with discovered peers injected as env vars.
 	for _, name := range centralNames {
-		comp := appCfg.Components[name]
-		compCfg := componentAppConfig(appCfg, name, comp)
+		comp := manifest.Components[name]
+		compCfg := componentAppConfig(manifest, name, comp)
 		compCwd := filepath.Join(projectCwd, comp.Context)
 
-		env, err := discoveryEnv(comp, appCfg, edgeDevices)
+		env, err := discoveryEnv(comp, manifest, edgeDevices)
 		if err != nil {
 			return fmt.Errorf("component %q: %w", name, err)
 		}
@@ -117,11 +117,11 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, a
 // componentAppConfig projects one fleet component into a standalone AppConfig
 // the single-device deploy pipeline understands. The app id is namespaced by
 // component so two components never collide on one device.
-func componentAppConfig(appCfg *appconfig.AppConfig, name string, comp *appconfig.ComponentConfig) *appconfig.AppConfig {
+func componentAppConfig(manifest *appconfig.FleetManifest, name string, comp *appconfig.ComponentConfig) *appconfig.AppConfig {
 	return &appconfig.AppConfig{
-		AppID:        appCfg.AppID + "." + name,
-		Version:      appCfg.Version,
-		Platform:     appCfg.Platform,
+		AppID:        manifest.AppID + "." + name,
+		Version:      manifest.Version,
+		Platform:     manifest.Platform,
 		Entitlements: comp.Entitlements,
 		Readiness:    comp.Readiness,
 		Hooks:        comp.Hooks,
@@ -133,10 +133,10 @@ func componentAppConfig(appCfg *appconfig.AppConfig, name string, comp *appconfi
 // discoveryEnv builds the env vars injected into a central component for its
 // declared discovers: each named var carries a JSON snapshot of the referenced
 // component's live peer endpoints.
-func discoveryEnv(central *appconfig.ComponentConfig, appCfg *appconfig.AppConfig, edgeDevices map[string][]models.LANDevice) ([]string, error) {
+func discoveryEnv(central *appconfig.ComponentConfig, manifest *appconfig.FleetManifest, edgeDevices map[string][]models.LANDevice) ([]string, error) {
 	var env []string
 	for _, d := range central.Discovers {
-		ref, ok := appCfg.Components[d.Component]
+		ref, ok := manifest.Components[d.Component]
 		if !ok {
 			return nil, fmt.Errorf("discovers references unknown component %q", d.Component)
 		}

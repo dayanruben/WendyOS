@@ -228,16 +228,6 @@ type AppConfig struct {
 	// Resources optionally caps the app's CPU/memory/PID usage. For
 	// multi-service apps it is the default; a service may override it.
 	Resources *ResourceLimits `json:"resources,omitempty"`
-	// Components, when non-empty, makes this a fleet manifest (WDY-1755): a map
-	// of placed components fanned out to device groups and/or run centrally.
-	// Mutually exclusive with the single-app top-level fields.
-	Components map[string]*ComponentConfig `json:"components,omitempty"`
-}
-
-// IsFleet reports whether this is a fleet manifest, i.e. it declares a
-// components map rather than a single deployable app.
-func (c *AppConfig) IsFleet() bool {
-	return len(c.Components) > 0
 }
 
 // ContainerName returns the container identifier for this app config.
@@ -554,72 +544,58 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
-	if c.IsFleet() {
-		if err := c.validateComponents(); err != nil {
-			return err
-		}
-	}
 
 	return nil
 }
 
-// singleAppFieldsSet returns the names of any top-level single-app fields that
-// are set. These are not permitted alongside a fleet "components" map — in
-// fleet mode each component carries its own build/runtime config.
-func (c *AppConfig) singleAppFieldsSet() []string {
-	var set []string
-	if c.ServiceName != "" {
-		set = append(set, "serviceName")
-	}
-	if c.Run != nil {
-		set = append(set, "run")
-	}
-	if len(c.Entitlements) > 0 {
-		set = append(set, "entitlements")
-	}
-	if c.Readiness != nil {
-		set = append(set, "readiness")
-	}
-	if c.Hooks != nil {
-		set = append(set, "hooks")
-	}
-	if c.Python != nil {
-		set = append(set, "python")
-	}
-	if c.Xcode != nil {
-		set = append(set, "xcode")
-	}
-	if len(c.Files) > 0 {
-		set = append(set, "files")
-	}
-	if c.Brewfile != "" {
-		set = append(set, "brewfile")
-	}
-	if c.Isolation != "" {
-		set = append(set, "isolation")
-	}
-	if c.Frameworks != nil {
-		set = append(set, "frameworks")
-	}
-	if c.Resources != nil {
-		set = append(set, "resources")
-	}
-	if len(c.Services) > 0 {
-		set = append(set, "services")
-	}
-	sort.Strings(set)
-	return set
+
+// FleetManifestFileName is the conventional filename for a fleet manifest — a
+// placement/topology file kept separate from a project's single-app wendy.json.
+const FleetManifestFileName = "wendy-fleet.json"
+
+// FleetManifest is the parsed wendy-fleet.json: the fleet's identity plus which
+// components exist and where each is placed (fanned out to a device group, or
+// run once centrally). It lives in its own file so a project's single-app
+// wendy.json and its fleet topology stay separate.
+type FleetManifest struct {
+	AppID      string                      `json:"appId"`
+	Version    string                      `json:"version,omitempty"`
+	Platform   string                      `json:"platform,omitempty"`
+	Components map[string]*ComponentConfig `json:"components"`
 }
 
-// validateComponents validates a fleet manifest's components map: top-level
-// mutual exclusivity, per-component placement/build config, and discovers
-// wiring. Called only when IsFleet() is true.
-func (c *AppConfig) validateComponents() error {
-	if conflicting := c.singleAppFieldsSet(); len(conflicting) > 0 {
-		return fmt.Errorf("a fleet manifest (with \"components\") must not also set single-app field(s): %s — move them into the relevant component", strings.Join(conflicting, ", "))
+// LoadFleetManifest reads and validates a wendy-fleet.json from disk.
+func LoadFleetManifest(path string) (*FleetManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFleetManifest(data)
+}
+
+// ParseFleetManifest parses and validates a fleet manifest from raw JSON.
+func ParseFleetManifest(data []byte) (*FleetManifest, error) {
+	var m FleetManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", FleetManifestFileName, err)
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// Validate checks a fleet manifest: identity, per-component placement/build
+// config, and discovers wiring.
+func (m *FleetManifest) Validate() error {
+	if m.AppID == "" {
+		return fmt.Errorf("appId is required")
+	}
+	if len(m.Components) == 0 {
+		return fmt.Errorf("a fleet manifest must declare at least one component")
 	}
 
-	for name, comp := range c.Components {
+	for name, comp := range m.Components {
 		if comp == nil {
 			return fmt.Errorf("components[%q]: must not be null", name)
 		}
@@ -665,12 +641,12 @@ func (c *AppConfig) validateComponents() error {
 
 	// discovers wiring is validated in a second pass so it can reference any
 	// declared component regardless of map iteration order.
-	for name, comp := range c.Components {
+	for name, comp := range m.Components {
 		for i, d := range comp.Discovers {
 			if d.Component == "" {
 				return fmt.Errorf("components[%q].discovers[%d]: component is required", name, i)
 			}
-			target, ok := c.Components[d.Component]
+			target, ok := m.Components[d.Component]
 			if !ok {
 				return fmt.Errorf("components[%q].discovers[%d]: references unknown component %q", name, i, d.Component)
 			}

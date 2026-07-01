@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WendyOS fleet manifest (wendy-fleet.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["appId", "components"],
+  "description": "A fleet placement/topology manifest kept separate from a project's single-app wendy.json: which components exist and where each is placed. The Go parser (appconfig.FleetManifest) is the source of truth; the per-component entitlements/readiness/hooks/frameworks/resources shapes mirror wendy.schema.json and are validated there.",
+  "properties": {
+    "appId": { "type": "string", "minLength": 1, "description": "Reverse-DNS fleet identifier; each component deploys as \"<appId>.<componentName>\"." },
+    "version": { "type": "string", "description": "Fleet version." },
+    "platform": { "type": "string", "description": "Target platform, e.g. \"linux/arm64\"." },
+    "components": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Placed components, each fanned out to a device group (edge tier) or run once centrally (central tier).",
+      "additionalProperties": { "$ref": "#/$defs/component" }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context", "target"],
+      "description": "A single placed component of a fleet app.",
+      "properties": {
+        "context": { "type": "string", "minLength": 1, "description": "Build context directory relative to wendy-fleet.json." },
+        "target": { "$ref": "#/$defs/componentTarget" },
+        "expose": { "$ref": "#/$defs/componentExpose" },
+        "discovers": {
+          "type": "array",
+          "description": "Other components whose live endpoints are injected into this component.",
+          "items": { "$ref": "#/$defs/discoverRef" }
+        },
+        "entitlements": { "type": "array", "items": { "type": "object" } },
+        "readiness": { "type": "object" },
+        "hooks": { "type": "object" },
+        "frameworks": { "type": "object" },
+        "resources": { "type": "object" }
+      }
+    },
+    "componentTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where a component runs. Set exactly one of \"group\" or \"central\".",
+      "properties": {
+        "group": { "type": "string", "minLength": 1, "description": "Fan the component out to every device in this named device group (edge tier)." },
+        "central": { "type": "boolean", "description": "Run the component once (central tier) — on an edge device, a separate host, or the cloud." }
+      },
+      "oneOf": [
+        { "required": ["group"], "not": { "required": ["central"] } },
+        { "required": ["central"], "not": { "required": ["group"] } }
+      ]
+    },
+    "componentExpose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "description": "The network endpoint this component serves, advertised for cross-device discovery.",
+      "properties": {
+        "name": { "type": "string", "description": "Optional endpoint name." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Port the component listens on." },
+        "path": { "type": "string", "pattern": "^/", "description": "Optional URL path the component serves (e.g. \"/stream\"). The advertised discovery URL is the origin (scheme://host:port); consumers append their own paths." }
+      }
+    },
+    "discoverRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "as"],
+      "description": "Inject another (group/edge) component's live endpoints into this component.",
+      "properties": {
+        "component": { "type": "string", "minLength": 1, "description": "Name of the group component to discover." },
+        "as": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Environment variable to receive the JSON peer snapshot. WENDY_DISCOVERY_URL (live API) is auto-injected and reserved." }
+      }
+    }
+  }
+}

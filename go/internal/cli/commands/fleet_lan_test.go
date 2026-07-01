@@ -85,7 +85,7 @@ func TestComputePeers(t *testing.T) {
 }
 
 func TestDiscoveryEnv(t *testing.T) {
-	appCfg := &appconfig.AppConfig{
+	manifest := &appconfig.FleetManifest{
 		AppID: "sh.wendy.fleet",
 		Components: map[string]*appconfig.ComponentConfig{
 			"camera": {
@@ -103,7 +103,7 @@ func TestDiscoveryEnv(t *testing.T) {
 	edge := map[string][]models.LANDevice{
 		"camera": {dev("wendyos-camera-01.local", "Camera 01", "10.0.0.4")},
 	}
-	env, err := discoveryEnv(appCfg.Components["dashboard"], appCfg, edge)
+	env, err := discoveryEnv(manifest.Components["dashboard"], manifest, edge)
 	if err != nil {
 		t.Fatalf("discoveryEnv error: %v", err)
 	}
@@ -124,30 +124,30 @@ func TestDiscoveryEnv(t *testing.T) {
 }
 
 func TestDiscoveryEnvErrors(t *testing.T) {
-	appCfg := &appconfig.AppConfig{
+	manifest := &appconfig.FleetManifest{
 		Components: map[string]*appconfig.ComponentConfig{
 			"noexpose": {Context: "x", Target: &appconfig.ComponentTarget{Group: "g"}},
 		},
 	}
 	// Unknown referenced component.
 	central := &appconfig.ComponentConfig{Discovers: []appconfig.DiscoverRef{{Component: "missing", As: "X"}}}
-	if _, err := discoveryEnv(central, appCfg, nil); err == nil {
+	if _, err := discoveryEnv(central, manifest, nil); err == nil {
 		t.Error("expected error for unknown discovered component")
 	}
 	// Referenced component without an expose endpoint.
 	central = &appconfig.ComponentConfig{Discovers: []appconfig.DiscoverRef{{Component: "noexpose", As: "X"}}}
-	if _, err := discoveryEnv(central, appCfg, nil); err == nil {
+	if _, err := discoveryEnv(central, manifest, nil); err == nil {
 		t.Error("expected error for discovered component without expose")
 	}
 }
 
 func TestComponentAppConfig(t *testing.T) {
-	appCfg := &appconfig.AppConfig{AppID: "sh.wendy.fleet", Version: "0.1.0", Platform: "linux"}
+	manifest := &appconfig.FleetManifest{AppID: "sh.wendy.fleet", Version: "0.1.0", Platform: "linux"}
 	comp := &appconfig.ComponentConfig{
 		Context:      "camera",
 		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "host"}},
 	}
-	got := componentAppConfig(appCfg, "camera", comp)
+	got := componentAppConfig(manifest, "camera", comp)
 	if got.AppID != "sh.wendy.fleet.camera" {
 		t.Errorf("AppID = %q, want sh.wendy.fleet.camera", got.AppID)
 	}

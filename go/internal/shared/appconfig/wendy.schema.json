@@ -78,69 +78,9 @@
       "type": "object",
       "description": "Per-service build and runtime configuration for a multi-service app.",
       "additionalProperties": { "$ref": "#/$defs/service" }
-    },
-    "components": {
-      "type": "object",
-      "description": "Fleet manifest: a map of placed components, each fanned out to a device group (edge tier) or run once centrally (central tier). When set, the single-app top-level fields (run, services, entitlements, readiness, hooks, files, python, xcode, brewfile, isolation, resources) must not also be set — they move into each component.",
-      "additionalProperties": { "$ref": "#/$defs/component" }
     }
   },
   "$defs": {
-    "component": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["context", "target"],
-      "description": "A single placed component of a fleet app.",
-      "properties": {
-        "context": { "type": "string", "minLength": 1, "description": "Build context directory relative to wendy.json." },
-        "target": { "$ref": "#/$defs/componentTarget" },
-        "expose": { "$ref": "#/$defs/componentExpose" },
-        "discovers": {
-          "type": "array",
-          "description": "Other components whose live endpoints are injected into this component.",
-          "items": { "$ref": "#/$defs/discoverRef" }
-        },
-        "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
-        "readiness": { "$ref": "#/$defs/readiness" },
-        "hooks": { "$ref": "#/$defs/hooks" },
-        "frameworks": { "$ref": "#/$defs/frameworks" },
-        "resources": { "$ref": "#/$defs/resourceLimits" }
-      }
-    },
-    "componentTarget": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Where a component runs. Set exactly one of \"group\" or \"central\".",
-      "properties": {
-        "group": { "type": "string", "minLength": 1, "description": "Fan the component out to every device in this named device group (edge tier)." },
-        "central": { "type": "boolean", "description": "Run the component once (central tier) — on an edge device, a separate host, or the cloud." }
-      },
-      "oneOf": [
-        { "required": ["group"], "not": { "required": ["central"] } },
-        { "required": ["central"], "not": { "required": ["group"] } }
-      ]
-    },
-    "componentExpose": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["port"],
-      "description": "The network endpoint this component serves, advertised for cross-device discovery.",
-      "properties": {
-        "name": { "type": "string", "description": "Optional endpoint name." },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Port the component listens on." },
-        "path": { "type": "string", "pattern": "^/", "description": "Optional URL path the platform folds into the advertised endpoint URL (e.g. \"/stream\")." }
-      }
-    },
-    "discoverRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["component", "as"],
-      "description": "Inject another (group/edge) component's live endpoints into this component.",
-      "properties": {
-        "component": { "type": "string", "minLength": 1, "description": "Name of the group component to discover." },
-        "as": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Environment variable to receive the JSON peer snapshot. WENDY_DISCOVERY_URL (live API) is auto-injected and reserved." }
-      }
-    },
     "entitlement": {
       "type": "object",
       "required": ["type"],

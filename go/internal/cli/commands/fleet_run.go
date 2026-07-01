@@ -87,13 +87,27 @@ func runFleetRun(ctx context.Context, opts runOptions, group, cloudGRPC, brokerU
 	if err != nil {
 		return fmt.Errorf("resolving working directory: %w", err)
 	}
+
+	// A wendy-fleet.json drives a placement-aware fleet deploy: each component
+	// is built from its own context and placed by its own target. It's a
+	// separate file from any single-app wendy.json.
+	fleetPath := filepath.Join(cwd, appconfig.FleetManifestFileName)
+	if _, statErr := os.Stat(fleetPath); statErr == nil {
+		manifest, mErr := appconfig.LoadFleetManifest(fleetPath)
+		if mErr != nil {
+			return fmt.Errorf("loading %s: %w", appconfig.FleetManifestFileName, mErr)
+		}
+		return runFleetManifest(ctx, opts, cwd, manifest, lan, central, cloudGRPC, brokerURL, timeout)
+	}
+
+	// Single-project fan-out: deploy this project's wendy.json to a --group.
 	cfgPath := filepath.Join(cwd, "wendy.json")
 	missing, err := appConfigFileMissing(cfgPath)
 	if err != nil {
 		return fmt.Errorf("checking wendy.json: %w", err)
 	}
 	if missing {
-		return fmt.Errorf("no wendy.json in %s — 'wendy fleet run' deploys an existing project to a group", cwd)
+		return fmt.Errorf("no wendy.json or %s in %s — 'wendy fleet run' deploys a project to a group, or a fleet manifest across components", appconfig.FleetManifestFileName, cwd)
 	}
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
 	if err != nil {
@@ -104,12 +118,6 @@ func runFleetRun(ctx context.Context, opts runOptions, group, cloudGRPC, brokerU
 	}
 	if err := warnAppConfigFile(cfgPath); err != nil {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
-	}
-
-	// A fleet manifest (components map) places each component by its own target;
-	// the single-project --group flag does not apply.
-	if appCfg.IsFleet() {
-		return runFleetManifest(ctx, opts, cwd, appCfg, lan, central, cloudGRPC, brokerURL, timeout)
 	}
 
 	if opts.debug {

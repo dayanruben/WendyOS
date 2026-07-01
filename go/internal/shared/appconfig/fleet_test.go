@@ -2,22 +2,21 @@ package appconfig
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
-// cameraFleetJSON mirrors the camera-fleet template's wendy.json (templates
-// PR #59) with template variables rendered to concrete values. It is the
-// canonical valid fleet manifest and acts as the acceptance fixture for the
-// Phase 1 schema work (WDY-1755).
+// cameraFleetJSON mirrors the camera-fleet template's wendy-fleet.json
+// (templates PR #59) with template variables rendered to concrete values. It is
+// the canonical valid fleet manifest and acts as the acceptance fixture for the
+// fleet placement schema (WDY-1755).
 const cameraFleetJSON = `{
   "appId": "sh.wendy.examples.camerafleet",
   "version": "0.1.0",
-  "platform": "linux",
+  "platform": "linux/arm64",
   "components": {
     "camera": {
       "context": "camera",
-      "target": { "group": "cameras" },
+      "target": { "group": "camera-*" },
       "expose": { "name": "usbcam", "port": 8000, "path": "/stream" },
       "entitlements": [
         { "type": "network", "mode": "host" },
@@ -37,27 +36,24 @@ const cameraFleetJSON = `{
 }`
 
 func TestFleetManifest_Valid(t *testing.T) {
-	cfg, err := LoadFromBytes([]byte(cameraFleetJSON))
+	m, err := ParseFleetManifest([]byte(cameraFleetJSON))
 	if err != nil {
-		t.Fatalf("LoadFromBytes: %v", err)
+		t.Fatalf("ParseFleetManifest: %v", err)
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+	if m.AppID != "sh.wendy.examples.camerafleet" {
+		t.Errorf("appId = %q", m.AppID)
 	}
-	if !cfg.IsFleet() {
-		t.Fatal("IsFleet() = false, want true")
+	if len(m.Components) != 2 {
+		t.Fatalf("got %d components, want 2", len(m.Components))
 	}
-	if len(cfg.Components) != 2 {
-		t.Fatalf("got %d components, want 2", len(cfg.Components))
-	}
-	cam := cfg.Components["camera"]
-	if cam == nil || cam.Target == nil || cam.Target.Group != "cameras" {
+	cam := m.Components["camera"]
+	if cam == nil || cam.Target == nil || cam.Target.Group != "camera-*" {
 		t.Fatalf("camera component target group not parsed: %+v", cam)
 	}
 	if cam.Expose == nil || cam.Expose.Port != 8000 || cam.Expose.Path != "/stream" {
 		t.Fatalf("camera expose not parsed: %+v", cam.Expose)
 	}
-	dash := cfg.Components["dashboard"]
+	dash := m.Components["dashboard"]
 	if dash == nil || dash.Target == nil || !dash.Target.Central {
 		t.Fatalf("dashboard component target central not parsed: %+v", dash)
 	}
@@ -66,47 +62,12 @@ func TestFleetManifest_Valid(t *testing.T) {
 	}
 }
 
-func TestIsFleet_SingleApp(t *testing.T) {
-	cfg, err := LoadFromBytes([]byte(`{"appId":"sh.wendy.app","entitlements":[{"type":"gpu"}]}`))
-	if err != nil {
-		t.Fatalf("LoadFromBytes: %v", err)
+func TestFleetManifest_RequiresAppIDAndComponents(t *testing.T) {
+	if _, err := ParseFleetManifest([]byte(`{"components":{"c":{"context":"c","target":{"central":true}}}}`)); err == nil {
+		t.Error("expected error for missing appId")
 	}
-	if cfg.IsFleet() {
-		t.Fatal("IsFleet() = true for single-app config, want false")
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("single-app Validate regressed: %v", err)
-	}
-}
-
-func TestFleetManifest_RejectsSingleAppFields(t *testing.T) {
-	tests := []struct {
-		name      string
-		extra     string
-		wantField string
-	}{
-		{"services", `"services": { "a": { "context": "a" } },`, "services"},
-		{"entitlements", `"entitlements": [ { "type": "gpu" } ],`, "entitlements"},
-		{"run", `"run": { "args": ["x"] },`, "run"},
-		{"isolation", `"isolation": "shared-ipc",`, "isolation"},
-		{"resources", `"resources": { "cpus": "1" },`, "resources"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			raw := `{"appId":"sh.wendy.app",` + tt.extra +
-				`"components":{"c":{"context":"c","target":{"central":true}}}}`
-			cfg, err := LoadFromBytes([]byte(raw))
-			if err != nil {
-				t.Fatalf("LoadFromBytes: %v", err)
-			}
-			err = cfg.Validate()
-			if err == nil {
-				t.Fatalf("expected mutual-exclusivity error for %q", tt.wantField)
-			}
-			if !strings.Contains(err.Error(), tt.wantField) {
-				t.Errorf("error %q does not mention conflicting field %q", err, tt.wantField)
-			}
-		})
+	if _, err := ParseFleetManifest([]byte(`{"appId":"sh.wendy.app","components":{}}`)); err == nil {
+		t.Error("expected error for empty components")
 	}
 }
 
@@ -131,16 +92,12 @@ func TestComponentTarget_Validation(t *testing.T) {
 			}
 			comp += `}`
 			raw := `{"appId":"sh.wendy.app","components":{"c":` + comp + `}}`
-			cfg, err := LoadFromBytes([]byte(raw))
-			if err != nil {
-				t.Fatalf("LoadFromBytes: %v", err)
-			}
-			err = cfg.Validate()
+			_, err := ParseFleetManifest([]byte(raw))
 			if tt.ok && err != nil {
-				t.Errorf("Validate: unexpected error: %v", err)
+				t.Errorf("unexpected error: %v", err)
 			}
 			if !tt.ok && err == nil {
-				t.Error("Validate: expected error, got nil")
+				t.Error("expected error, got nil")
 			}
 		})
 	}
@@ -161,16 +118,12 @@ func TestComponentExpose_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			raw := `{"appId":"sh.wendy.app","components":{"c":{"context":"c","target":{"group":"g"},"expose":` + tt.expose + `}}}`
-			cfg, err := LoadFromBytes([]byte(raw))
-			if err != nil {
-				t.Fatalf("LoadFromBytes: %v", err)
-			}
-			err = cfg.Validate()
+			_, err := ParseFleetManifest([]byte(raw))
 			if tt.ok && err != nil {
-				t.Errorf("Validate: unexpected error: %v", err)
+				t.Errorf("unexpected error: %v", err)
 			}
 			if !tt.ok && err == nil {
-				t.Error("Validate: expected error, got nil")
+				t.Error("expected error, got nil")
 			}
 		})
 	}
@@ -196,16 +149,12 @@ func TestDiscovers_Validation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := LoadFromBytes([]byte(build(tt.discovers)))
-			if err != nil {
-				t.Fatalf("LoadFromBytes: %v", err)
-			}
-			err = cfg.Validate()
+			_, err := ParseFleetManifest([]byte(build(tt.discovers)))
 			if tt.ok && err != nil {
-				t.Errorf("Validate: unexpected error: %v", err)
+				t.Errorf("unexpected error: %v", err)
 			}
 			if !tt.ok && err == nil {
-				t.Error("Validate: expected error, got nil")
+				t.Error("expected error, got nil")
 			}
 		})
 	}
@@ -216,44 +165,36 @@ func TestDiscovers_RejectsDiscoveringCentral(t *testing.T) {
 	raw := `{"appId":"sh.wendy.app","components":{` +
 		`"a":{"context":"a","target":{"central":true}},` +
 		`"b":{"context":"b","target":{"central":true},"discovers":[{"component":"a","as":"PEERS"}]}}}`
-	cfg, err := LoadFromBytes([]byte(raw))
-	if err != nil {
-		t.Fatalf("LoadFromBytes: %v", err)
-	}
-	if err := cfg.Validate(); err == nil {
+	if _, err := ParseFleetManifest([]byte(raw)); err == nil {
 		t.Fatal("expected error discovering a non-group component, got nil")
 	}
 }
 
-func TestFleetManifest_ComponentEntitlementWarnings(t *testing.T) {
-	// An unknown key on a component-level entitlement should surface as a warning.
-	raw := `{"appId":"sh.wendy.app","components":{"cam":{"context":"cam","target":{"group":"g"},` +
-		`"entitlements":[{"type":"gpu","bogus":true}]}}}`
-	warnings := ValidateJSON([]byte(raw))
-	found := false
-	for _, w := range warnings {
-		if strings.Contains(w, `components["cam"].entitlement`) && strings.Contains(w, "bogus") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected a component entitlement warning about 'bogus', got %v", warnings)
-	}
-}
-
-func TestSchemaJSON_HasComponents(t *testing.T) {
+func TestFleetSchemaJSON_HasComponents(t *testing.T) {
 	var schema map[string]any
-	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
-		t.Fatalf("schema is not valid JSON: %v", err)
+	if err := json.Unmarshal([]byte(FleetSchemaJSON), &schema); err != nil {
+		t.Fatalf("fleet schema is not valid JSON: %v", err)
 	}
 	props, _ := schema["properties"].(map[string]any)
 	if _, ok := props["components"]; !ok {
-		t.Error("schema missing top-level 'components' property")
+		t.Error("fleet schema missing top-level 'components' property")
 	}
 	defs, _ := schema["$defs"].(map[string]any)
 	for _, def := range []string{"component", "componentTarget", "componentExpose", "discoverRef"} {
 		if _, ok := defs[def]; !ok {
-			t.Errorf("schema missing $defs.%s", def)
+			t.Errorf("fleet schema missing $defs.%s", def)
+		}
+	}
+}
+
+func TestWendySchemaJSON_NoLongerHasComponents(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	if props, _ := schema["properties"].(map[string]any); props != nil {
+		if _, ok := props["components"]; ok {
+			t.Error("wendy.schema.json still has a 'components' property; it moved to wendy-fleet.schema.json")
 		}
 	}
 }
