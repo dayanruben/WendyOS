@@ -2,9 +2,11 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"text/tabwriter"
@@ -14,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -24,25 +27,26 @@ const fleetAppsMaxConcurrency = 8
 func newFleetAppsCmd() *cobra.Command {
 	var group string
 	var cloudGRPC, brokerURL string
-	var lan bool
+	var lan, all bool
 	var timeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "apps",
-		Short: "List the apps running across a group (or every device)",
-		Long: "Fans out to every device in a group (or all devices when --group is omitted)\n" +
-			"and prints one row per app: which device it runs on, its version, and its\n" +
-			"state. Devices that can't be reached are reported inline rather than failing\n" +
-			"the whole command.\n\n" +
-			"With --lan the group is resolved over the local network via mDNS instead of the\n" +
-			"cloud: a group is a glob over device names (e.g. 'camera-*' or 'camera'), no\n" +
-			"enrollment or cloud session required.",
+		Short: "List this fleet's apps across its devices (or every app with --all)",
+		Long: "Prints one row per app: which device it runs on, its version, and its state.\n" +
+			"Devices that can't be reached are reported inline rather than failing the sweep.\n\n" +
+			"Run inside a fleet project (a directory with a wendy-fleet.json) and it scopes to\n" +
+			"that fleet's own components, on the devices its tags match. Pass --all to instead\n" +
+			"list every app on the matched devices, or --group <glob> to pick devices directly.\n\n" +
+			"With --lan the devices are resolved over the local network via mDNS (a glob over\n" +
+			"device names, e.g. 'camera-*'); no enrollment or cloud session required.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runFleetApps(cmd.Context(), group, cloudGRPC, brokerURL, lan, timeout)
+			return runFleetApps(cmd.Context(), group, cloudGRPC, brokerURL, lan, all, timeout)
 		},
 	}
-	cmd.Flags().StringVar(&group, "group", "", "Limit to devices in this group (default: all devices)")
+	cmd.Flags().StringVar(&group, "group", "", "Limit to devices matching this group/glob (default: the fleet's devices, or all)")
+	cmd.Flags().BoolVar(&all, "all", false, "List every app on the matched devices, not just this fleet's components")
 	cmd.Flags().BoolVar(&lan, "lan", false, "Resolve the group over the LAN (mDNS) instead of the cloud")
 	cmd.Flags().DurationVar(&timeout, "discover-timeout", fleetLANDiscoverTimeout, "How long to browse for LAN devices (with --lan)")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is set via 'wendy auth use')")
@@ -62,10 +66,27 @@ type fleetAppRow struct {
 	Error   string `json:"error,omitempty"`
 }
 
-func runFleetApps(ctx context.Context, group, cloudGRPC, brokerURL string, lan bool, timeout time.Duration) error {
-	targets, err := resolveFleetTargets(ctx, group, lan, cloudGRPC, brokerURL, timeout)
-	if err != nil {
-		return err
+func runFleetApps(ctx context.Context, group, cloudGRPC, brokerURL string, lan, all bool, timeout time.Duration) error {
+	// When run inside a fleet project, scope to that fleet's own components (and,
+	// unless --group picks devices, to the devices its tags match). --all opts
+	// back into the full per-device inventory.
+	fleetApps, fleetTags := localFleetScope()
+
+	var targets []fleetTarget
+	var err error
+	if lan && group == "" && len(fleetTags) > 0 {
+		devices, dErr := lanDevicesForTags(ctx, fleetTags, timeout)
+		if dErr != nil {
+			return dErr
+		}
+		for _, dev := range devices {
+			targets = append(targets, targetForDevice(dev))
+		}
+	} else {
+		targets, err = resolveFleetTargets(ctx, group, lan, cloudGRPC, brokerURL, timeout)
+		if err != nil {
+			return err
+		}
 	}
 	if len(targets) == 0 {
 		if group != "" {
@@ -78,6 +99,9 @@ func runFleetApps(ctx context.Context, group, cloudGRPC, brokerURL string, lan b
 	}
 
 	rows := gatherFleetApps(ctx, targets)
+	if len(fleetApps) > 0 && !all {
+		rows = filterFleetAppRows(rows, fleetApps)
+	}
 	sortFleetAppRows(rows)
 
 	if jsonOutput || !isInteractiveTerminal() {
@@ -192,4 +216,52 @@ func dash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// localFleetScope loads a wendy-fleet.json from the current directory (a fleet
+// project) if present, returning the set of its component app ids and the union
+// of their device tags. Both are empty when there is no manifest here.
+func localFleetScope() (appIDs map[string]bool, tags []string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, nil
+	}
+	manifest, err := appconfig.LoadFleetManifest(filepath.Join(cwd, appconfig.FleetManifestFileName))
+	if err != nil {
+		return nil, nil
+	}
+	appIDs = map[string]bool{}
+	tagSet := map[string]bool{}
+	for _, comp := range manifest.Components {
+		for _, t := range comp.Tags {
+			tagSet[t] = true
+		}
+		// Each component's own wendy.json carries its app id.
+		data, rerr := os.ReadFile(filepath.Join(cwd, comp.Path, "wendy.json"))
+		if rerr != nil {
+			continue
+		}
+		var app struct {
+			AppID string `json:"appId"`
+		}
+		if json.Unmarshal(data, &app) == nil && app.AppID != "" {
+			appIDs[app.AppID] = true
+		}
+	}
+	for t := range tagSet {
+		tags = append(tags, t)
+	}
+	return appIDs, tags
+}
+
+// filterFleetAppRows keeps only rows whose app is in keep, plus unreachable rows
+// (Error set) so connection failures still surface.
+func filterFleetAppRows(rows []fleetAppRow, keep map[string]bool) []fleetAppRow {
+	out := make([]fleetAppRow, 0, len(rows))
+	for _, r := range rows {
+		if r.Error != "" || keep[r.App] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
