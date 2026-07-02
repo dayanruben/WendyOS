@@ -225,6 +225,7 @@ func NewRootCmd() *cobra.Command {
 		// Hidden
 		bleCheckCmd,
 		bmapWriteCmd,
+		newT234WriteCmd(),
 		newUSBSetupHiddenCmd(),
 		watchCmd,
 		buildCmd,
