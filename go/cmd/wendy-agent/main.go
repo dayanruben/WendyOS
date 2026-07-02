@@ -34,6 +34,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
@@ -166,6 +167,11 @@ func main() {
 	} else {
 		containerdClient = ctrdClient
 		defer ctrdClient.Close()
+
+		// Inject the shared mesh DNS server so applyMeshEgress/teardownMeshEgress
+		// can resolve peer-device names for containers on the mesh network mode.
+		meshDNS := mesh.NewDNSServer(logger, "127.0.0.53:53")
+		ctrdClient.SetMeshDNS(meshDNS)
 	}
 
 	// Ensure the host-side WENDY-MESH iptables chain exists so the wendy-mesh
@@ -175,6 +181,12 @@ func main() {
 	// iptables binary, insufficient privileges, etc).
 	if err := hostnetwork.InitMeshChain(); err != nil {
 		logger.Warn("failed to init mesh chain", zap.Error(err))
+	}
+	// Same non-fatal treatment for the NAT chain that redirects mesh VIP
+	// traffic to the local mesh proxy (started below, once cert material is
+	// in scope).
+	if err := hostnetwork.InitMeshNATChain(); err != nil {
+		logger.Warn("failed to init mesh nat chain", zap.Error(err))
 	}
 
 	logManager := services.NewContainerLogManager(logger, telemetryBuf)
@@ -200,6 +212,11 @@ func main() {
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
+	// Serving side of the LAN-direct mesh path (MeshDial). Needs only logger +
+	// configPath, so it's constructed here — well before registerAllServices
+	// below closes over it — unlike the mesh dialer/proxy (client side), which
+	// need cert material that's only in scope much later.
+	meshSvc := services.NewMeshService(logger, configPath)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
 	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
@@ -422,6 +439,7 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
@@ -527,6 +545,24 @@ func main() {
 		keyData[i] = 0
 	}
 	alreadyProvisioned := certPEM != "" && keyPEM != ""
+
+	// Client side of the mesh data plane: dials peers LAN-direct or via the
+	// cloud tunnel broker, fed by whatever REDIRECTed VIP connections the nat
+	// chain above sends to ProxyPort. Constructed here — the first point where
+	// cert material (certPEM/chainPEM/keyPEM, just above) and provisioning
+	// info are both in scope — rather than gated on alreadyProvisioned: on an
+	// unenrolled device brokerURL/cert fields are empty, so DialDevice simply
+	// fails closed at runtime with a clear error instead of never starting.
+	cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+	brokerURL := os.Getenv("WENDY_BROKER_URL")
+	if brokerURL == "" {
+		brokerURL = brokerURLForCloudHost(cloudHost)
+	}
+	meshDialer := services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
+	meshProxy := mesh.NewProxy(logger, meshDialer)
+	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
+		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
+	}
 
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
