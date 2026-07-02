@@ -3,12 +3,19 @@ package containerd
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
+
+// meshResolvConfDir holds per-app resolv.conf files pointing meshed
+// containers at the mesh DNS server on their bridge gateway.
+const meshResolvConfDir = "/run/wendy/mesh"
 
 // findMeshEntitlement returns the network entitlement with mode "mesh" from
 // entitlements, if one is present. Apps without the mesh entitlement (no
@@ -66,6 +73,34 @@ func meshGateway(appID string) (string, error) {
 type meshEgressParams struct {
 	gateway string
 	cidr    string
+}
+
+// writeMeshResolvConfIn writes the resolv.conf for one app under baseDir and
+// returns its path. Split from writeMeshResolvConf for testability: tests
+// pass a temp directory instead of the real meshResolvConfDir, which lives
+// under /run and is not writable in a non-root test sandbox.
+func writeMeshResolvConfIn(baseDir, appID string) (string, error) {
+	gw, err := meshGateway(appID)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(baseDir, appID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "resolv.conf")
+	content := fmt.Sprintf("nameserver %s\noptions ndots:1\n", gw)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// writeMeshResolvConf writes appID's resolv.conf under the real
+// meshResolvConfDir. Called from the container create path to produce the
+// file bind-mounted into meshed containers at /etc/resolv.conf.
+func writeMeshResolvConf(appID string) (string, error) {
+	return writeMeshResolvConfIn(meshResolvConfDir, appID)
 }
 
 // resolveMeshEgress checks entitlements for a network/mesh entry and, if
@@ -128,6 +163,32 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, appID, ne
 		return fmt.Errorf("mesh egress: adding iptables rule for app %q: %w", appID, err)
 	}
 
+	if err := hostnetwork.AddMeshRedirect(ip, params.cidr, mesh.ProxyPort); err != nil {
+		// Roll back what we installed; the start must fail closed. The
+		// DNS listener has not been touched yet at this point (EnsureListener
+		// runs after this check succeeds), so there is nothing to release here.
+		if rmErr := hostnetwork.RemoveMeshRule(ip, params.cidr); rmErr != nil {
+			c.logger.Warn("mesh egress: rollback of ACCEPT rule after failed REDIRECT rule also failed",
+				zap.String("app_id", appID), zap.String("ip", ip), zap.Error(rmErr))
+		}
+		return fmt.Errorf("mesh egress: adding REDIRECT rule for app %q: %w", appID, err)
+	}
+
+	// DNS is best-effort: without it, device-N.cloud.wendy.dev hostnames fail
+	// to resolve but VIP literals still work over the REDIRECT/route wired
+	// above, so a DNS listener failure must not fail container start.
+	// EnsureListener is the last fallible step in this function — nothing
+	// below can fail once it returns, so there is no rollback path in this
+	// function that needs to release it; the paired ReleaseListener lives in
+	// teardownMeshEgress, invoked unconditionally from stopOne for every
+	// container that reaches a running state.
+	if c.meshDNS != nil {
+		if err := c.meshDNS.EnsureListener(params.gateway); err != nil {
+			c.logger.Warn("mesh: DNS listener unavailable; device-N hostnames will not resolve",
+				zap.String("app_id", appID), zap.String("gateway", params.gateway), zap.Error(err))
+		}
+	}
+
 	c.logger.Info("mesh egress applied",
 		zap.String("app_id", appID), zap.String("ip", ip), zap.String("service_cidr", params.cidr))
 	return nil
@@ -159,5 +220,25 @@ func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, appID,
 	if err := hostnetwork.RemoveMeshRule(ip, cidr); err != nil {
 		c.logger.Warn("mesh egress teardown: RemoveMeshRule failed (non-fatal)",
 			zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
+	}
+	if err := hostnetwork.RemoveMeshRedirect(ip, cidr, mesh.ProxyPort); err != nil {
+		c.logger.Warn("mesh egress teardown: RemoveMeshRedirect failed (non-fatal)",
+			zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
+	}
+	// Pairs with the EnsureListener call in applyMeshEgress: every container
+	// whose start reached EnsureListener (mesh entitlement present, route +
+	// ACCEPT + REDIRECT all installed) ends up here exactly once via stopOne,
+	// so this release exactly balances that one increment. If EnsureListener
+	// itself failed (no refcount bump), ReleaseListener on an unknown gateway
+	// is a documented no-op, so calling it unconditionally here is safe either
+	// way. Recomputing the gateway is safe: meshGateway is idempotent and
+	// returns the same value applyMeshEgress used to acquire the listener.
+	if c.meshDNS != nil {
+		if gw, err := meshGateway(appID); err == nil {
+			c.meshDNS.ReleaseListener(gw)
+		} else {
+			c.logger.Warn("mesh egress teardown: could not derive gateway to release DNS listener (non-fatal, listener may leak until agent restart)",
+				zap.String("app_id", appID), zap.Error(err))
+		}
 	}
 }

@@ -37,6 +37,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -93,7 +94,21 @@ type Client struct {
 	// Defaults to "overlayfs" when supported; falls back to "native" on kernels
 	// that do not support overlay mounts (e.g. nested container environments).
 	snapshotter string
+
+	// meshDNS is the shared mesh DNS server, injected once at agent startup
+	// via SetMeshDNS. nil when mesh DNS is unavailable (e.g. build without
+	// the mesh feature, or startup failed to bind); mesh_wiring.go treats a
+	// nil meshDNS as "DNS best-effort unavailable" and skips it without
+	// failing container start — VIP literals still work without it.
+	meshDNS *mesh.DNSServer
 }
+
+// SetMeshDNS injects the shared mesh DNS server used by applyMeshEgress and
+// teardownMeshEgress to manage per-gateway listeners. Called once from
+// main.go at agent startup, before any containers start. Not protected by
+// c.mu: it is set once during single-threaded startup before the Client is
+// exposed to concurrent callers.
+func (c *Client) SetMeshDNS(d *mesh.DNSServer) { c.meshDNS = d }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
 	if address == "" {
@@ -821,6 +836,25 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			return fmt.Errorf("initialising hosts file for %s: %w", appID, err)
 		}
 		localoci.InjectHostsMount(spec, hostsPath)
+	}
+
+	// Inject a read-only /etc/resolv.conf bind-mount for meshed containers so
+	// device-N.cloud.wendy.dev hostnames resolve via the mesh DNS listener on
+	// this app's bridge gateway. appCfg.Entitlements is the same per-service
+	// entitlement slice ApplyEntitlements above already consumed (entCfg is a
+	// shallow copy of appCfg), so this sees exactly the entitlements this
+	// specific service was granted. Isolation is required because meshGateway
+	// depends on the per-app CNI bridge subnet, which only exists for isolated
+	// apps (StartContainer only runs CNI ADD when isolation=="isolated"); a
+	// resolv.conf writer failure only degrades DNS (VIP literals still work
+	// via the REDIRECT rule applied at start), so it is logged, not fatal.
+	if _, ok := findMeshEntitlement(appCfg.Entitlements); ok && appCfg.Isolation == "isolated" {
+		if resolvPath, err := writeMeshResolvConf(appID); err == nil {
+			localoci.InjectResolvMount(spec, resolvPath)
+		} else {
+			c.logger.Warn("mesh: resolv.conf setup failed; container keeps image resolv.conf",
+				zap.String("app_id", appID), zap.Error(err))
+		}
 	}
 
 	// Apply isolation-specific namespace and shm settings for shared-namespace groups.

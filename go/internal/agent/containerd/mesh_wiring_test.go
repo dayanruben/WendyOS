@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"net"
+	"os"
 	"reflect"
 	"testing"
 
@@ -268,4 +269,33 @@ func TestResolveMeshEgress(t *testing.T) {
 			t.Fatal("resolveMeshEgress: ok should be true (mesh entitlement was found) even though params resolution failed")
 		}
 	})
+}
+
+// TestWriteMeshResolvConf verifies the per-app resolv.conf content and that it
+// points at the same gateway meshGateway derives independently, so a meshed
+// container's DNS listener address always matches its resolv.conf nameserver.
+//
+// withTempSubnetRegistry redirects the CNI subnet registry (as the other
+// tests in this file do) so meshGateway never touches the real
+// /run/wendy/cni state, which is not writable in a non-root test sandbox.
+func TestWriteMeshResolvConf(t *testing.T) {
+	withTempSubnetRegistry(t)
+
+	dir := t.TempDir()
+	path, err := writeMeshResolvConfIn(dir, "myapp")
+	if err != nil {
+		t.Fatalf("writeMeshResolvConfIn: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw, err := meshGateway("myapp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "nameserver " + gw + "\noptions ndots:1\n"
+	if string(data) != want {
+		t.Fatalf("resolv.conf = %q, want %q", data, want)
+	}
 }
