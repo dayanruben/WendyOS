@@ -145,13 +145,13 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) error {
 }
 
 func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, metadata.MD, error) {
-	return brokerDialOpts(c.orgID, c.assetID, c.chainPEM)
+	return brokerDialOpts(c.logger, c.orgID, c.assetID, c.chainPEM)
 }
 
 // brokerDialOpts returns gRPC dial options and identity metadata for any
 // agent-originated connection to the tunnel broker. Shared by the presence
 // client (serving side) and the mesh dialer (dialing side).
-func brokerDialOpts(orgID, assetID int32, chainPEM string) ([]grpc.DialOption, metadata.MD, error) {
+func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, chainPEM string) ([]grpc.DialOption, metadata.MD, error) {
 	// The broker uses tls.NoClientCert because Go's TLS library rejects ML-DSA
 	// client certs (produced by pki-core) at the parsing stage regardless of
 	// ClientAuth level. Identity is verified via the XFCC header at the application
@@ -181,6 +181,12 @@ func brokerDialOpts(orgID, assetID int32, chainPEM string) ([]grpc.DialOption, m
 				Intermediates: intermediates,
 				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 			})
+			if err != nil {
+				logger.Warn("broker TLS chain verification failed",
+					zap.String("subject", cs.PeerCertificates[0].Subject.String()),
+					zap.Error(err),
+				)
+			}
 			return err
 		},
 	}

@@ -127,6 +127,104 @@ func TestDialDeviceCachesNegativeOutcome(t *testing.T) {
 	}
 }
 
+// TestDialDeviceReturnsWhenCtxExpires proves DialDevice propagates its ctx
+// into the dial path so a caller's dial budget (mesh.Proxy passes 15s)
+// actually bounds a stuck dial.
+func TestDialDeviceReturnsWhenCtxExpires(t *testing.T) {
+	d, p := testDialer()
+	p.lanAddr = "" // force the broker path
+	d.dialBroker = func(ctx context.Context, deviceID int32, port uint16) (net.Conn, error) {
+		<-ctx.Done() // a well-behaved dial blocks until the caller's ctx expires
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := d.DialDevice(ctx, 215, 8080); err == nil {
+		t.Fatal("expected error from expired ctx")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("DialDevice took %v, want prompt return on ctx expiry", elapsed)
+	}
+}
+
+// TestDialBoundContext covers the two phases of a mesh dial's stream context:
+// before established() the caller's ctx bounds it (dial budget); after
+// established() the stream must outlive the caller's ctx.
+func TestDialBoundContext(t *testing.T) {
+	t.Run("caller cancel propagates before established", func(t *testing.T) {
+		ctx, cancelCaller := context.WithCancel(context.Background())
+		sctx, cancel, _ := dialBoundContext(ctx)
+		defer cancel()
+		cancelCaller()
+		select {
+		case <-sctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("stream ctx not cancelled by caller ctx during dial phase")
+		}
+	})
+
+	t.Run("established stream survives caller cancel", func(t *testing.T) {
+		ctx, cancelCaller := context.WithCancel(context.Background())
+		sctx, cancel, established := dialBoundContext(ctx)
+		established()
+		cancelCaller()
+		select {
+		case <-sctx.Done():
+			t.Fatal("stream ctx cancelled by caller ctx after established")
+		case <-time.After(50 * time.Millisecond):
+		}
+		cancel()
+		select {
+		case <-sctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("stream ctx not cancelled by its own cancel")
+		}
+	})
+}
+
+// TestMeshDialBrokerHonorsDialContext runs the REAL broker dial path against
+// a listener that accepts TCP but never speaks, proving the connect/open
+// phase is bounded by the caller's ctx instead of hanging forever.
+func TestMeshDialBrokerHonorsDialContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c) // hold open, never complete a handshake
+			mu.Unlock()
+		}
+	}()
+	defer func() {
+		mu.Lock()
+		for _, c := range held {
+			c.Close()
+		}
+		mu.Unlock()
+	}()
+
+	d := NewMeshDialer(zap.NewNop(), ln.Addr().String(), 7, 100, "", "", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := d.dialBroker(ctx, 215, 8080); err == nil {
+		t.Fatal("expected error dialing a silent broker")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("broker dial took %v, want it bounded by the 100ms ctx", elapsed)
+	}
+}
+
 // --- streamNetConn CloseWrite contract (Task 4 review requirement) ---
 
 // fakeTunnelStream is a tunnelStream test double that records sent frames and
@@ -239,5 +337,63 @@ func TestStreamNetConnCloseWriteHalfClosesAndKeepsReading(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if teardowns != 1 {
 		t.Fatalf("teardowns = %d, want 1", teardowns)
+	}
+	// Close must be idempotent.
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if teardowns != 1 {
+		t.Fatalf("teardowns after second Close = %d, want 1", teardowns)
+	}
+}
+
+// TestStreamNetConnInboundHalfCloseKeepsWrites is the reviewer's regression
+// scenario: a peer that half-closes its response direction must NOT truncate
+// our upload direction. Reads drain the buffered data then return io.EOF;
+// Writes keep flowing onto the stream.
+func TestStreamNetConnInboundHalfCloseKeepsWrites(t *testing.T) {
+	stream := newFakeTunnelStream()
+	conn := streamNetConn(stream, func() {})
+	defer conn.Close()
+
+	// Peer sends final data with half_close set.
+	stream.recvCh <- fakeFrame{payload: []byte("resp"), halfClose: true}
+
+	buf := make([]byte, 16)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(buf[:n]) != "resp" {
+		t.Fatalf("Read = %q, want %q", buf[:n], "resp")
+	}
+	if _, err := conn.Read(buf); err != io.EOF {
+		t.Fatalf("Read after inbound half-close = %v, want io.EOF", err)
+	}
+
+	// Upload direction must still work.
+	if _, err := conn.Write([]byte("upload")); err != nil {
+		t.Fatalf("Write after inbound half-close: %v", err)
+	}
+	var uploaded bool
+	for _, fr := range stream.sentFrames() {
+		if string(fr.payload) == "upload" && !fr.halfClose {
+			uploaded = true
+		}
+	}
+	if !uploaded {
+		t.Fatalf("upload frame not sent after inbound half-close; frames=%+v", stream.sentFrames())
+	}
+
+	// And our own CloseWrite still half-closes cleanly afterwards.
+	cw := conn.(interface{ CloseWrite() error })
+	if err := cw.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+	stream.mu.Lock()
+	closeSends := stream.closeSends
+	stream.mu.Unlock()
+	if closeSends == 0 {
+		t.Fatal("CloseWrite did not call closeSend on the stream")
 	}
 }
