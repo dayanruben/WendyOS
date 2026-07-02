@@ -427,8 +427,8 @@ func TestMeshResolvMountSource(t *testing.T) {
 	}{
 		{name: "no mounts", mounts: nil, wantOK: false},
 		{
-			name:   "resolv mount under baseDir matches",
-			mounts: []specs.Mount{{Destination: "/etc/resolv.conf", Source: base + "/app1/resolv.conf"}},
+			name:       "resolv mount under baseDir matches",
+			mounts:     []specs.Mount{{Destination: "/etc/resolv.conf", Source: base + "/app1/resolv.conf"}},
 			wantSource: base + "/app1/resolv.conf", wantOK: true,
 		},
 		{
