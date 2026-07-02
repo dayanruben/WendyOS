@@ -32,13 +32,24 @@ type MeshService struct {
 	agentpbv2.UnimplementedWendyMeshServiceServer
 	logger           *zap.Logger
 	meshDisabledPath string
-	dialLocal        func(addr string, timeout time.Duration) (net.Conn, error) // swapped in tests
+	// expectedOrgID is this device's own org, used to enforce that a MeshDial
+	// caller belongs to the same org even when the server's mTLS org
+	// interceptor is disabled (WENDY_MTLS_ORG_ENFORCEMENT=off). <= 0 means the
+	// device could not determine its own org; see assetIdentityFromContext.
+	expectedOrgID int32
+	dialLocal     func(addr string, timeout time.Duration) (net.Conn, error) // swapped in tests
 }
 
-func NewMeshService(logger *zap.Logger, configPath string) *MeshService {
+// NewMeshService builds the serving side of the LAN-direct mesh path.
+// expectedOrgID is this device's own org (the same value passed to
+// mtls.NewServer as expectedOrg); pass <= 0 when the device cannot determine
+// its own org (main.go forces mTLS org enforcement off in that case too) —
+// MeshService then skips its own-org check rather than reject every caller.
+func NewMeshService(logger *zap.Logger, configPath string, expectedOrgID int32) *MeshService {
 	return &MeshService{
 		logger:           logger,
 		meshDisabledPath: filepath.Join(configPath, meshDisabledFile),
+		expectedOrgID:    expectedOrgID,
 		dialLocal: func(addr string, timeout time.Duration) (net.Conn, error) {
 			return net.DialTimeout("tcp", addr, timeout)
 		},
@@ -46,7 +57,7 @@ func NewMeshService(logger *zap.Logger, configPath string) *MeshService {
 }
 
 func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer) error {
-	ident, err := assetIdentityFromContext(stream.Context())
+	ident, err := s.assetIdentityFromContext(stream.Context())
 	if err != nil {
 		return err
 	}
@@ -79,10 +90,17 @@ func (s *MeshService) MeshDial(stream agentpbv2.WendyMeshService_MeshDialServer)
 }
 
 // assetIdentityFromContext requires an mTLS peer whose leaf certificate
-// carries a wendy asset identity. Org equality against this device's org is
-// already enforced by the server's mandatory mTLS interceptors; this adds the
-// asset-vs-user distinction those interceptors don't check.
-func assetIdentityFromContext(ctx context.Context) (certs.WendyIdentity, error) {
+// carries a wendy asset identity belonging to this device's own org.
+//
+// Org equality is also enforced by the server's mandatory mTLS interceptors,
+// but only when WENDY_MTLS_ORG_ENFORCEMENT is not "off" — an operator can
+// disable that enforcement, and the design requires MeshDial to reject
+// cross-org callers regardless (spec: "MeshDial rejects user certificates,
+// cross-org asset certificates, and flag-off orgs with PermissionDenied").
+// MeshService must therefore not delegate org equality to the interceptor;
+// this method checks it directly. It also adds the asset-vs-user distinction
+// the interceptors don't check.
+func (s *MeshService) assetIdentityFromContext(ctx context.Context) (certs.WendyIdentity, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
 		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires mTLS")
@@ -97,6 +115,13 @@ func assetIdentityFromContext(ctx context.Context) (certs.WendyIdentity, error) 
 	}
 	if ident.EntityType != "asset" {
 		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires an asset certificate")
+	}
+	// expectedOrgID <= 0 means this device could not determine its own org
+	// (main.go forces mTLS org enforcement off for the same reason): there is
+	// nothing meaningful to compare against, so skip the check rather than
+	// reject every caller. Still requires the asset check above.
+	if s.expectedOrgID > 0 && ident.OrgID != s.expectedOrgID {
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "mesh dial requires a same-organization asset certificate")
 	}
 	return ident, nil
 }

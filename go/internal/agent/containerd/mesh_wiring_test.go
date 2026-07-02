@@ -333,6 +333,64 @@ func TestWriteMeshResolvConf(t *testing.T) {
 	}
 }
 
+// TestRecreateMeshResolvConfIn covers reboot resilience for meshed containers'
+// resolv.conf bind-mount source (C-final-review Fix 1): /etc/resolv.conf is
+// bind-mounted from a tmpfs path baked into the OCI spec once at
+// CreateContainerWithProgress time, but a reboot wipes tmpfs while containerd
+// keeps the container definition (and its spec's mount list) around.
+// ReconcileBootContainers restarts surviving containers via StartContainer
+// directly — never CreateContainer — so without recreating the file before
+// the runtime processes the spec's mounts, a meshed container's task creation
+// fails outright and it never starts again after a reboot.
+func TestRecreateMeshResolvConfIn(t *testing.T) {
+	withTempSubnetRegistry(t)
+
+	meshEnts := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
+	}
+
+	t.Run("recreates a deleted resolv.conf for a meshed app", func(t *testing.T) {
+		dir := t.TempDir()
+		path, err := writeMeshResolvConfIn(dir, "myapp")
+		if err != nil {
+			t.Fatalf("writeMeshResolvConfIn: %v", err)
+		}
+		// Simulate a reboot wiping tmpfs: the container/task definition survives
+		// (that's containerd's job), but the bind-mount source is gone.
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("os.Remove: %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("precondition: resolv.conf should be gone, stat err = %v", err)
+		}
+
+		ok, err := recreateMeshResolvConfIn(dir, meshEnts, "myapp")
+		if err != nil {
+			t.Fatalf("recreateMeshResolvConfIn: %v", err)
+		}
+		if !ok {
+			t.Fatal("recreateMeshResolvConfIn: ok = false, want true for meshed app")
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("resolv.conf was not recreated: %v", err)
+		}
+	})
+
+	t.Run("no-op for an app without the mesh entitlement", func(t *testing.T) {
+		dir := t.TempDir()
+		ok, err := recreateMeshResolvConfIn(dir, nil, "otherapp")
+		if err != nil {
+			t.Fatalf("recreateMeshResolvConfIn: unexpected error: %v", err)
+		}
+		if ok {
+			t.Fatal("recreateMeshResolvConfIn: ok = true, want false without mesh entitlement")
+		}
+		if _, err := os.Stat(filepath.Join(dir, "otherapp", "resolv.conf")); !os.IsNotExist(err) {
+			t.Fatalf("recreateMeshResolvConfIn must not create a file for a non-meshed app, stat err = %v", err)
+		}
+	})
+}
+
 // fakeMeshDNS is a recording implementation of the meshDNSService seam used
 // by ensureMeshDNS/releaseMeshDNS, letting tests assert Ensure/Release
 // pairing without binding real UDP listeners.
@@ -411,6 +469,51 @@ func TestMeshDNSRefcountGuard(t *testing.T) {
 	c.releaseMeshDNS(appID+"_b", appID)
 	if _, r := fake.counts(); r != 1 {
 		t.Fatalf("double teardown must not over-release: got %d releases, want 1", r)
+	}
+}
+
+// TestEnsureMeshDNSIsIdempotentPerContainer covers the monitor-restart
+// scenario (C-final-review Fix 3): restartSingle calls StartContainer
+// directly, with no intervening stopOne/teardownMeshEgress to release the
+// container's held listener reference first. Without a same-container guard,
+// ensureMeshDNS would call EnsureListener a second time (refs++) while
+// meshDNSHeld[name] was already true, so the paired release in
+// teardownMeshEgress would only ever bring the refcount down by one,
+// permanently leaking one reference (and, on the underlying real DNS server,
+// the listener itself) per restart.
+func TestEnsureMeshDNSIsIdempotentPerContainer(t *testing.T) {
+	withTempSubnetRegistry(t)
+
+	appID := "com.example.restartguard"
+	containerName := appID + "_svc"
+	gw, err := meshGateway(appID)
+	if err != nil {
+		t.Fatalf("meshGateway: %v", err)
+	}
+
+	fake := &fakeMeshDNS{}
+	c := &Client{logger: zap.NewNop(), meshDNS: fake}
+
+	// First start: acquires the listener.
+	c.ensureMeshDNS(containerName, gw)
+	if e, r := fake.counts(); e != 1 || r != 0 {
+		t.Fatalf("after first ensure: ensures=%d releases=%d, want 1/0", e, r)
+	}
+
+	// Monitor restart calls StartContainer directly (no stopOne/teardown in
+	// between), so ensureMeshDNS runs again for the same container name while
+	// meshDNSHeld[containerName] is still true. This must be a no-op: the
+	// listener is already held for this container.
+	c.ensureMeshDNS(containerName, gw)
+	if e, r := fake.counts(); e != 1 || r != 0 {
+		t.Fatalf("after re-ensure without teardown: ensures=%d releases=%d, want 1/0 (must not double-acquire)", e, r)
+	}
+
+	// A single teardown must still release exactly the one refcount actually
+	// held, leaving nothing stranded.
+	c.releaseMeshDNS(containerName, appID)
+	if _, r := fake.counts(); r != 1 {
+		t.Fatalf("release after re-ensure: got %d releases, want 1", r)
 	}
 }
 

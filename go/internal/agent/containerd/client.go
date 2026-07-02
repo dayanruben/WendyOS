@@ -1091,6 +1091,21 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		}
 	}
 
+	// Reboot resilience for meshed containers (C-final-review Fix 1): the
+	// container's OCI spec bind-mounts /etc/resolv.conf from a tmpfs path
+	// written once at CreateContainerWithProgress time. containerd persists
+	// the container/spec across a reboot but /run does not survive it, and
+	// ReconcileBootContainers reaches this function directly (never
+	// CreateContainer) to bring surviving containers back — so the source
+	// must be recreated here, before container.NewTask below processes the
+	// spec's mounts, or the runtime's bind mount fails and the container never
+	// starts again. Labels are read again (cheap; already fetched once above
+	// for appID/serviceName correction) so this sees the same entitlements
+	// CreateContainerWithProgress wrote via wendyLabels/BuildEntitlementAnnotations.
+	if labels, lerr := container.Labels(ctx); lerr == nil {
+		c.recreateMeshResolvConfForStart(parseEntitlementsFromAnnotations(labels), appID)
+	}
+
 	if restartPolicy != nil {
 		if err := c.applyRestartPolicyLabel(ctx, container, restartPolicy); err != nil {
 			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)

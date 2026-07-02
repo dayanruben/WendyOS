@@ -19,7 +19,7 @@ func testDialer() (*MeshDialer, *dialerProbes) {
 		p.lookups++
 		return p.lanAddr, p.lanAddr != ""
 	}
-	d.dialLAN = func(ctx context.Context, hostport string, port uint16) (net.Conn, error) {
+	d.dialLAN = func(ctx context.Context, hostport string, deviceID int32, port uint16) (net.Conn, error) {
 		p.lanDials++
 		if p.lanErr != nil {
 			return nil, p.lanErr
@@ -140,7 +140,7 @@ func TestUpdateIdentitySwapsSnapshotAndClearsLANCache(t *testing.T) {
 		p.lookups++
 		return p.lanAddr, p.lanAddr != ""
 	}
-	d.dialLAN = func(ctx context.Context, hostport string, port uint16) (net.Conn, error) {
+	d.dialLAN = func(ctx context.Context, hostport string, deviceID int32, port uint16) (net.Conn, error) {
 		p.lanDials++
 		a, _ := net.Pipe()
 		return a, nil

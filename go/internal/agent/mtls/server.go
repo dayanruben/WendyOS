@@ -132,3 +132,50 @@ func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*
 		VerifyPeerCertificate: base.VerifyPeerCertificate,
 	}, nil
 }
+
+// NewClientTLSConfigExpectingPeer is like NewClientTLSConfig but additionally
+// pins the expected peer identity, closing the mesh LAN-dial spoofing gap:
+// mDNS advertises a device's cloud asset ID over an unauthenticated TXT
+// record (discoverOnLAN), so chain validity alone — what NewClientTLSConfig
+// checks — only proves the peer holds a cert signed by a trusted CA, not that
+// it is the specific device the caller intended to reach. Any other
+// same-CA-issued cert (a different asset in the same org, or a user cert)
+// could otherwise impersonate the mDNS-advertised target and MITM the
+// connection. The returned config's VerifyPeerCertificate runs the normal
+// chain check first, then requires the peer leaf to parse as a wendy asset
+// identity matching wantOrgID and wantAssetID exactly.
+func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, wantOrgID int32, wantAssetID string) (*tls.Config, error) {
+	base, err := NewClientTLSConfig(certPEM, chainPEM, keyPEM, logger)
+	if err != nil {
+		return nil, err
+	}
+	chainVerify := base.VerifyPeerCertificate
+	base.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if err := chainVerify(rawCerts, verifiedChains); err != nil {
+			return err
+		}
+		if len(rawCerts) == 0 {
+			return errors.New("mtls: no peer certificate presented")
+		}
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("mtls: parsing peer certificate: %w", err)
+		}
+		ident, found, err := certs.IdentityFromCert(leaf)
+		if err != nil {
+			return fmt.Errorf("mtls: parsing peer wendy identity: %w", err)
+		}
+		if !found {
+			return errors.New("mtls: peer certificate carries no wendy identity")
+		}
+		if ident.EntityType != "asset" {
+			return fmt.Errorf("mtls: expected peer asset %s in org %d, got entity type %q", wantAssetID, wantOrgID, ident.EntityType)
+		}
+		if ident.OrgID != wantOrgID || ident.EntityID != wantAssetID {
+			return fmt.Errorf("mtls: expected peer asset %s in org %d, got asset %s in org %d",
+				wantAssetID, wantOrgID, ident.EntityID, ident.OrgID)
+		}
+		return nil
+	}
+	return base, nil
+}

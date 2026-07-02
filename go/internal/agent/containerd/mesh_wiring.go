@@ -43,6 +43,21 @@ func (c *Client) ensureMeshDNS(containerName, gateway string) {
 	if c.meshDNS == nil {
 		return
 	}
+	// Idempotent per container: the monitor's restartSingle calls
+	// StartContainer directly with no intervening stopOne/teardownMeshEgress,
+	// so applyMeshEgress (and therefore this function) can run a second time
+	// for a container whose listener reference is already held. Without this
+	// guard EnsureListener would be called again (refs++) while
+	// meshDNSHeld[containerName] was already true, and the single paired
+	// release in teardownMeshEgress would only ever bring the refcount back
+	// down by one — permanently leaking a reference (and, on the real DNS
+	// server, the listener) on every restart that skips teardown.
+	c.meshMu.Lock()
+	alreadyHeld := c.meshDNSHeld[containerName]
+	c.meshMu.Unlock()
+	if alreadyHeld {
+		return
+	}
 	if err := c.meshDNS.EnsureListener(gateway); err != nil {
 		c.logger.Warn("mesh: DNS listener unavailable; device-N hostnames will not resolve",
 			zap.String("container", containerName), zap.String("gateway", gateway), zap.Error(err))
@@ -198,6 +213,52 @@ func writeMeshResolvConfIn(baseDir, appID string) (string, error) {
 // file bind-mounted into meshed containers at /etc/resolv.conf.
 func writeMeshResolvConf(appID string) (string, error) {
 	return writeMeshResolvConfIn(meshResolvConfDir, appID)
+}
+
+// recreateMeshResolvConfIn rewrites appID's mesh resolv.conf under baseDir
+// whenever entitlements grant the mesh network mode, returning ok == false as
+// a complete no-op for apps that don't need it. Pure/containerd-free (baseDir
+// is injected) so this is unit-testable without touching /run — mirrors the
+// writeMeshResolvConf/writeMeshResolvConfIn split.
+//
+// This is the reboot-resilience fix for meshed containers (C-final-review Fix
+// 1): /etc/resolv.conf is bind-mounted from this same path, baked into the
+// OCI spec once at CreateContainerWithProgress time. containerd persists the
+// container definition (and its spec's mount list) across a reboot, but /run
+// is tmpfs, so the file written at create time is gone. ReconcileBootContainers
+// restarts surviving containers via StartContainer directly — never
+// CreateContainer — and the runtime processes the spec's bind mounts as part
+// of container.NewTask, so a missing source there fails task creation
+// outright: a meshed container would never start again after a reboot
+// without recreating the file first. See recreateMeshResolvConfForStart for
+// the call site.
+func recreateMeshResolvConfIn(baseDir string, entitlements []appconfig.Entitlement, appID string) (ok bool, err error) {
+	if _, found := findMeshEntitlement(entitlements); !found {
+		return false, nil
+	}
+	if _, err := writeMeshResolvConfIn(baseDir, appID); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// recreateMeshResolvConfForStart is StartContainer's reboot-resilience hook:
+// called with appID's label-derived entitlements before container.NewTask, it
+// re-derives and rewrites the mesh resolv.conf so the bind-mount source
+// exists by the time the runtime processes it. Deliberately gated only on the
+// mesh entitlement — not on c.getIsolation(appID) — because appIsolation is
+// an in-memory cache populated only by CreateContainerWithProgress and is
+// empty after every agent process restart, including the very reboot this
+// exists to survive; checking it here would silently defeat the fix for
+// exactly the scenario it targets. Best-effort like the rest of mesh wiring:
+// a failure only logs a warning (the container may fail to start, or fall
+// back to the image's baked-in resolv.conf if the mount was never wired at
+// create time) and never blocks a non-mesh container's start.
+func (c *Client) recreateMeshResolvConfForStart(entitlements []appconfig.Entitlement, appID string) {
+	if _, err := recreateMeshResolvConfIn(meshResolvConfDir, entitlements, appID); err != nil {
+		c.logger.Warn("mesh: could not recreate resolv.conf before container start",
+			zap.String("app_id", appID), zap.Error(err))
+	}
 }
 
 // resolveMeshEgress checks entitlements for a network/mesh entry and, if

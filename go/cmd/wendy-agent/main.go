@@ -212,11 +212,6 @@ func main() {
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
-	// Serving side of the LAN-direct mesh path (MeshDial). Needs only logger +
-	// configPath, so it's constructed here — well before registerAllServices
-	// below closes over it — unlike the mesh dialer/proxy (client side), which
-	// need cert material that's only in scope much later.
-	meshSvc := services.NewMeshService(logger, configPath)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
 	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
@@ -423,6 +418,22 @@ func main() {
 	var mtlsMu sync.Mutex
 
 	registerAllServices := func(srv *grpc.Server) {
+		// MeshService's own-org check (assetIdentityFromContext / MeshDial)
+		// must reflect this device's *current* org, not a value captured once
+		// at process start: a live BLE-provisioning event updates
+		// provisioningSvc's state without restarting the agent, and a stale
+		// org (e.g. 0/unknown from an unprovisioned boot) would silently
+		// disable the check for the rest of the process's life. Read fresh
+		// here instead of caching a package-level meshSvc; registerAllServices
+		// runs at most once per concrete server (plaintext agentServer, the
+		// local control socket, and the mTLS server), so this is at most a
+		// handful of cheap constructions over the process lifetime, not a hot
+		// path. orgID == 0 (never provisioned) intentionally matches the mTLS
+		// org interceptor's grace behavior: MeshService skips the org-equality
+		// check rather than reject every caller.
+		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
+		meshSvc := services.NewMeshService(logger, configPath, orgID)
+
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 		agentpb.RegisterWendyAudioServiceServer(srv, audioSvc)

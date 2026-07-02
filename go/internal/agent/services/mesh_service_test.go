@@ -119,10 +119,16 @@ func (f *ctxAwareMeshDialStream) Send(d *agentpbv2.MeshDialData) error {
 	}
 }
 
+// testOrgID is the device's own org used by newMeshServiceForTest; every
+// existing fixture cert in this file carries "urn:wendy:org:7:...", so this
+// must stay 7 for the pre-existing tests to keep passing under the new
+// same-org check.
+const testOrgID = 7
+
 func newMeshServiceForTest(t *testing.T) (*MeshService, string) {
 	t.Helper()
 	dir := t.TempDir()
-	return NewMeshService(zap.NewNop(), dir), dir
+	return NewMeshService(zap.NewNop(), dir, testOrgID), dir
 }
 
 func TestMeshDialRejectsUserCert(t *testing.T) {
@@ -131,6 +137,38 @@ func TestMeshDialRejectsUserCert(t *testing.T) {
 	err := svc.MeshDial(stream)
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("err = %v, want PermissionDenied", err)
+	}
+}
+
+// TestMeshDialRejectsCrossOrgAsset covers the gap the mTLS org interceptor
+// leaves open when disabled (WENDY_MTLS_ORG_ENFORCEMENT=off, C-final-review
+// Fix 4): MeshService must independently enforce same-org, not delegate
+// solely to the interceptor. A same-CA asset certificate from a different org
+// than this device's own must be rejected even though it is a valid,
+// non-expired asset certificate.
+func TestMeshDialRejectsCrossOrgAsset(t *testing.T) {
+	svc, _ := newMeshServiceForTest(t)
+	stream := &fakeMeshDialStream{ctx: ctxWithPeerCert(certWithURN(t, "urn:wendy:org:9:asset:215"))}
+	if status.Code(svc.MeshDial(stream)) != codes.PermissionDenied {
+		t.Fatal("want PermissionDenied for an asset certificate from a different org")
+	}
+}
+
+// TestMeshDialSkipsOrgCheckWhenDeviceOrgUnknown mirrors the mTLS
+// interceptor's grace behavior: main.go forces org enforcement off when this
+// device could not determine its own org from its certificate (expectedOrgID
+// <= 0), because there is nothing meaningful to compare against. MeshService
+// must skip its own-org check in that case rather than reject every caller —
+// the request must still fail on other grounds (port 0) to prove the org gate
+// was skipped, not that the whole call short-circuited to success.
+func TestMeshDialSkipsOrgCheckWhenDeviceOrgUnknown(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewMeshService(zap.NewNop(), dir, 0)
+	in := make(chan *agentpbv2.MeshDialMessage, 1)
+	in <- &agentpbv2.MeshDialMessage{Content: &agentpbv2.MeshDialMessage_Open{Open: &agentpbv2.MeshDialOpen{Port: 0}}}
+	stream := &fakeMeshDialStream{ctx: ctxWithPeerCert(certWithURN(t, "urn:wendy:org:42:asset:215")), in: in}
+	if status.Code(svc.MeshDial(stream)) != codes.InvalidArgument {
+		t.Fatal("want InvalidArgument for port 0 (org check must be skipped, not rejected, when device org is unknown)")
 	}
 }
 

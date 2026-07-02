@@ -52,7 +52,7 @@ type MeshDialer struct {
 
 	// Seams (overridden in tests).
 	lanLookup  func(ctx context.Context, assetID int32) (hostport string, ok bool)
-	dialLAN    func(ctx context.Context, hostport string, port uint16) (net.Conn, error)
+	dialLAN    func(ctx context.Context, hostport string, deviceID int32, port uint16) (net.Conn, error)
 	dialBroker func(ctx context.Context, deviceID int32, port uint16) (net.Conn, error)
 	now        func() time.Time
 
@@ -122,7 +122,7 @@ func (d *MeshDialer) identity() meshIdentity {
 // dialing only; the returned conn has an independent lifetime.
 func (d *MeshDialer) DialDevice(ctx context.Context, deviceID int32, port uint16) (net.Conn, error) {
 	if hostport, ok := d.lanAddr(ctx, deviceID); ok {
-		conn, err := d.dialLAN(ctx, hostport, port)
+		conn, err := d.dialLAN(ctx, hostport, deviceID, port)
 		if err == nil {
 			return conn, nil
 		}
@@ -186,9 +186,17 @@ func dialBoundContext(ctx context.Context) (sctx context.Context, cancel context
 // stream for one TCP connection. ctx bounds connecting and opening the
 // stream; once established the stream survives past ctx, and Close on the
 // returned conn tears it down.
-func (d *MeshDialer) meshDialLAN(ctx context.Context, hostport string, port uint16) (net.Conn, error) {
+//
+// deviceID pins the expected peer identity (org + asset ID) on the TLS
+// handshake itself: hostport comes from discoverOnLAN, which trusts an
+// unauthenticated mDNS TXT record (assetid) to pick the peer to dial. Without
+// pinning, chain validity alone would let any other device holding a cert
+// signed by the same CA — a different asset in the same org, say — answer at
+// that address and be treated as deviceID, MITMing the connection.
+func (d *MeshDialer) meshDialLAN(ctx context.Context, hostport string, deviceID int32, port uint16) (net.Conn, error) {
 	ident := d.identity()
-	tlsCfg, err := mtls.NewClientTLSConfig(ident.certPEM, ident.chainPEM, ident.keyPEM, d.logger)
+	tlsCfg, err := mtls.NewClientTLSConfigExpectingPeer(ident.certPEM, ident.chainPEM, ident.keyPEM, d.logger,
+		ident.orgID, strconv.Itoa(int(deviceID)))
 	if err != nil {
 		return nil, fmt.Errorf("mesh: client TLS config: %w", err)
 	}
