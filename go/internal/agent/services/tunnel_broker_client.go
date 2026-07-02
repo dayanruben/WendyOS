@@ -145,6 +145,13 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) error {
 }
 
 func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, metadata.MD, error) {
+	return brokerDialOpts(c.orgID, c.assetID, c.chainPEM)
+}
+
+// brokerDialOpts returns gRPC dial options and identity metadata for any
+// agent-originated connection to the tunnel broker. Shared by the presence
+// client (serving side) and the mesh dialer (dialing side).
+func brokerDialOpts(orgID, assetID int32, chainPEM string) ([]grpc.DialOption, metadata.MD, error) {
 	// The broker uses tls.NoClientCert because Go's TLS library rejects ML-DSA
 	// client certs (produced by pki-core) at the parsing stage regardless of
 	// ClientAuth level. Identity is verified via the XFCC header at the application
@@ -156,7 +163,7 @@ func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, metadata.MD, er
 	if err != nil {
 		caPool = x509.NewCertPool()
 	}
-	if c.chainPEM != "" && !caPool.AppendCertsFromPEM([]byte(c.chainPEM)) {
+	if chainPEM != "" && !caPool.AppendCertsFromPEM([]byte(chainPEM)) {
 		return nil, metadata.MD{}, fmt.Errorf("no valid CA certificates in chainPEM")
 	}
 	tlsCfg := &tls.Config{
@@ -174,16 +181,10 @@ func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, metadata.MD, er
 				Intermediates: intermediates,
 				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 			})
-			if err != nil {
-				c.logger.Warn("broker TLS chain verification failed",
-					zap.String("subject", cs.PeerCertificates[0].Subject.String()),
-					zap.Error(err),
-				)
-			}
 			return err
 		},
 	}
-	certHeader := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", c.orgID, c.assetID)
+	certHeader := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
 	md := metadata.Pairs(
 		"x-wendy-client-cert", certHeader,
 		"x-forwarded-client-cert", certHeader,
