@@ -52,37 +52,60 @@ wendy run
 Environment variables `client/app.py` reads:
 
 ```bash
-MESH_TARGET=10.99.0.10:8080   # host:port inside serviceCIDR (default)
-POLL_INTERVAL=5               # seconds between polls (default)
+MESH_TARGET=device-1.cloud.wendy.dev:8080   # mesh hostname:port (default: device-1)
+POLL_INTERVAL=5                              # seconds between polls (default)
 ```
 
 Logs look like:
 
 ```
-[hello-mesh] starting; polling http://10.99.0.10:8080/ every 5s over the mesh
-[hello-mesh] OK 200 from 10.99.0.10:8080: 'hello from device B'
+[hello-mesh] starting; polling http://device-1.cloud.wendy.dev:8080/ every 5s over the mesh
+[hello-mesh] OK 200 from device-1.cloud.wendy.dev:8080: 'hello from device B'
 ```
 
-## Current status (read this)
+## How to use it
 
-The **foundation** wires the entitlement to the route + firewall rule above —
-that is what this example exercises. The **data plane** that actually
-*publishes* a peer's service into the mesh CIDR (service-proxy / VIP listeners,
-peer mTLS over the Cloud PKI, LAN-first-then-broker rendezvous) is a separate,
-in-progress piece.
+The mesh data plane is now implemented. Polling `device-<assetID>.cloud.wendy.dev:8080` reaches host port 8080 on that device — LAN-direct when both devices are on the same network, or relayed via the cloud broker when needed.
 
-Until that lands, `MESH_TARGET` won't answer and you'll see:
-
-```
-[hello-mesh] no response from 10.99.0.10:8080: <timeout/connection refused>
-```
-
-That log is the useful signal at this stage: it confirms the container **has**
-the mesh entitlement, route, and firewall ACCEPT rule in place (traffic leaves
-the container toward the gateway) — there's simply nothing serving that address
-yet. To verify the plumbing directly, on the device host:
+**Find your device's asset ID:**
 
 ```bash
-iptables -S WENDY-MESH                    # ACCEPT rule for the container's /32 → 10.99.0.0/16
+# Option 1: List devices in your org
+wendy cloud discover
+
+# Option 2: Check the cloud dashboard (dashboard.wendy.dev)
+```
+
+Once you have the asset ID (e.g., `abc123xyz`), set:
+
+```bash
+MESH_TARGET=device-abc123xyz.cloud.wendy.dev:8080 wendy run
+```
+
+On success, logs will show:
+
+```
+[hello-mesh] OK 200 from device-abc123xyz.cloud.wendy.dev:8080: 'hello from device B'
+```
+
+**Control plane notes:**
+
+- **Organization-level**: Mesh is **enabled by default**. Org admins can disable it organization-wide via the cloud API.
+- **Device-level**: A device-local `mesh-disabled` file in the agent config directory (`/etc/wendy-agent/`) disables mesh serving on that device.
+- **Cloud relay**: LAN-direct peering works on this branch. Cloud relay fallback requires a cloud-side update (not yet shipped).
+
+## Debugging the plumbing
+
+To verify the mesh entitlement, route, and firewall rules are in place:
+
+```bash
+# ACCEPT rule for the container's IP → mesh serviceCIDR
+iptables -S WENDY-MESH
+
+# REDIRECT rule (NAT table) that intercepts mesh traffic
+iptables -t nat -S WENDY-MESH
+
+# Inside the container's network namespace:
+# (substitute the container PID from `docker inspect <container>` or similar)
 nsenter -t <container-pid> -n ip route    # 10.99.0.0/16 via <bridge gateway>
 ```

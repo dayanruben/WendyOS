@@ -20,7 +20,7 @@ import urllib.request
 
 # A host:port inside the mesh serviceCIDR (see wendy.json). Point this at a
 # service another device publishes into the mesh.
-TARGET = os.environ.get("MESH_TARGET", "10.99.0.10:8080")
+TARGET = os.environ.get("MESH_TARGET", "device-1.cloud.wendy.dev:8080")
 INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 URL = f"http://{TARGET}/"
 
