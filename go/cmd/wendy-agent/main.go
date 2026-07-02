@@ -659,7 +659,16 @@ func main() {
 		keyPEM := string(keyData)
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		// Refresh the mesh dialer with the fresh identity — like the mTLS
+		// server and tunnel broker above, it consumes cert material, and BLE
+		// first-boot enrollment happens while the agent is running, so the
+		// boot-time snapshot is empty on virtually every new device.
+		freshBrokerURL := os.Getenv("WENDY_BROKER_URL")
+		if freshBrokerURL == "" {
+			freshBrokerURL = brokerURLForCloudHost(cloudHost)
+		}
+		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
@@ -755,6 +764,7 @@ func main() {
 	logger.Info("Received signal, shutting down", zap.String("signal", sig.String()))
 
 	cancel()
+	_ = meshProxy.Close()
 	if agentServer != nil {
 		agentServer.GracefulStop()
 	}

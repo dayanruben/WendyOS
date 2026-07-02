@@ -127,6 +127,63 @@ func TestDialDeviceCachesNegativeOutcome(t *testing.T) {
 	}
 }
 
+// TestUpdateIdentitySwapsSnapshotAndClearsLANCache covers the live
+// re-provisioning path: a dialer constructed unenrolled (empty identity) must
+// pick up the fresh identity from UpdateIdentity — dials read the snapshot at
+// dial time, not construction time — and the LAN outcome cache must be
+// dropped, since re-enrollment can change org and stale positive entries
+// could dial peers the new identity cannot authenticate against.
+func TestUpdateIdentitySwapsSnapshotAndClearsLANCache(t *testing.T) {
+	p := &dialerProbes{}
+	d := NewMeshDialer(zap.NewNop(), "", 0, 0, "", "", "")
+	d.lanLookup = func(ctx context.Context, assetID int32) (string, bool) {
+		p.lookups++
+		return p.lanAddr, p.lanAddr != ""
+	}
+	d.dialLAN = func(ctx context.Context, hostport string, port uint16) (net.Conn, error) {
+		p.lanDials++
+		a, _ := net.Pipe()
+		return a, nil
+	}
+
+	// Boot-time snapshot on an unenrolled device is all-empty.
+	if got := d.identity(); got != (meshIdentity{}) {
+		t.Fatalf("initial identity = %+v, want zero value", got)
+	}
+
+	// Prime the LAN cache with a positive entry.
+	p.lanAddr = "192.168.1.50:50052"
+	conn, err := d.DialDevice(context.Background(), 215, 8080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	if p.lookups != 1 {
+		t.Fatalf("lookups = %d, want 1", p.lookups)
+	}
+
+	d.UpdateIdentity("broker.example:443", 7, 100, "CERT", "KEY", "CHAIN")
+
+	want := meshIdentity{
+		brokerURL: "broker.example:443",
+		orgID:     7, assetID: 100,
+		certPEM: "CERT", keyPEM: "KEY", chainPEM: "CHAIN",
+	}
+	if got := d.identity(); got != want {
+		t.Fatalf("identity after UpdateIdentity = %+v, want %+v", got, want)
+	}
+
+	// The cached LAN outcome must be gone: the next dial re-runs discovery.
+	conn, err = d.DialDevice(context.Background(), 215, 8080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	if p.lookups != 2 {
+		t.Fatalf("lookups after UpdateIdentity = %d, want 2 (cache cleared)", p.lookups)
+	}
+}
+
 // TestDialDeviceReturnsWhenCtxExpires proves DialDevice propagates its ctx
 // into the dial path so a caller's dial budget (mesh.Proxy passes 15s)
 // actually bounds a stuck dial.

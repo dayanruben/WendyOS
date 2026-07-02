@@ -32,16 +32,23 @@ const (
 	lanCacheTTL = 60 * time.Second
 )
 
-// MeshDialer implements mesh.PeerDialer: LAN-direct MeshDial when the peer is
-// discoverable locally, cloud-broker ClientTunnel otherwise.
-type MeshDialer struct {
-	logger    *zap.Logger
+// meshIdentity is the dialer's mTLS asset identity plus broker coordinates,
+// held as one value behind MeshDialer.mu so every dial reads a consistent
+// snapshot and UpdateIdentity can swap it wholesale when the device is
+// (re-)provisioned while the agent is running.
+type meshIdentity struct {
 	brokerURL string
 	orgID     int32
 	assetID   int32
 	certPEM   string
 	keyPEM    string
 	chainPEM  string
+}
+
+// MeshDialer implements mesh.PeerDialer: LAN-direct MeshDial when the peer is
+// discoverable locally, cloud-broker ClientTunnel otherwise.
+type MeshDialer struct {
+	logger *zap.Logger
 
 	// Seams (overridden in tests).
 	lanLookup  func(ctx context.Context, assetID int32) (hostport string, ok bool)
@@ -50,6 +57,7 @@ type MeshDialer struct {
 	now        func() time.Time
 
 	mu    sync.Mutex
+	ident meshIdentity
 	cache map[int32]lanCacheEntry
 }
 
@@ -63,20 +71,51 @@ type lanCacheEntry struct {
 // and to authenticate to the cloud tunnel broker.
 func NewMeshDialer(logger *zap.Logger, brokerURL string, orgID, assetID int32, certPEM, keyPEM, chainPEM string) *MeshDialer {
 	d := &MeshDialer{
-		logger:    logger,
+		logger: logger,
+		ident: meshIdentity{
+			brokerURL: brokerURL,
+			orgID:     orgID,
+			assetID:   assetID,
+			certPEM:   certPEM,
+			keyPEM:    keyPEM,
+			chainPEM:  chainPEM,
+		},
+		now:   time.Now,
+		cache: make(map[int32]lanCacheEntry),
+	}
+	d.lanLookup = d.discoverOnLAN
+	d.dialLAN = d.meshDialLAN
+	d.dialBroker = d.meshDialBroker
+	return d
+}
+
+// UpdateIdentity swaps the dialer's identity snapshot; subsequent dials use
+// the new values while in-flight dials finish with the snapshot they read.
+// Called from the OnProvisioned callback so a device enrolled while the agent
+// is running (the normal BLE first-boot flow) gets a working mesh without a
+// restart. The LAN outcome cache is cleared too: re-enrollment may move the
+// device to a different org, and stale positive entries could point at peers
+// the new identity can no longer authenticate against.
+func (d *MeshDialer) UpdateIdentity(brokerURL string, orgID, assetID int32, certPEM, keyPEM, chainPEM string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ident = meshIdentity{
 		brokerURL: brokerURL,
 		orgID:     orgID,
 		assetID:   assetID,
 		certPEM:   certPEM,
 		keyPEM:    keyPEM,
 		chainPEM:  chainPEM,
-		now:       time.Now,
-		cache:     make(map[int32]lanCacheEntry),
 	}
-	d.lanLookup = d.discoverOnLAN
-	d.dialLAN = d.meshDialLAN
-	d.dialBroker = d.meshDialBroker
-	return d
+	d.cache = make(map[int32]lanCacheEntry)
+}
+
+// identity returns a consistent snapshot of the dialer's identity. The lock
+// is held only for the copy — never across network I/O.
+func (d *MeshDialer) identity() meshIdentity {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.ident
 }
 
 // DialDevice opens a byte stream to port on the given mesh device. ctx bounds
@@ -148,7 +187,8 @@ func dialBoundContext(ctx context.Context) (sctx context.Context, cancel context
 // stream; once established the stream survives past ctx, and Close on the
 // returned conn tears it down.
 func (d *MeshDialer) meshDialLAN(ctx context.Context, hostport string, port uint16) (net.Conn, error) {
-	tlsCfg, err := mtls.NewClientTLSConfig(d.certPEM, d.chainPEM, d.keyPEM, d.logger)
+	ident := d.identity()
+	tlsCfg, err := mtls.NewClientTLSConfig(ident.certPEM, ident.chainPEM, ident.keyPEM, d.logger)
 	if err != nil {
 		return nil, fmt.Errorf("mesh: client TLS config: %w", err)
 	}
@@ -179,11 +219,12 @@ func (d *MeshDialer) meshDialLAN(ctx context.Context, hostport string, port uint
 // the CLI uses, from the other kind of caller. ctx bounds connecting and
 // opening the tunnel; once established the stream survives past ctx.
 func (d *MeshDialer) meshDialBroker(ctx context.Context, deviceID int32, port uint16) (net.Conn, error) {
-	opts, md, err := brokerDialOpts(d.logger, d.orgID, d.assetID, d.chainPEM)
+	ident := d.identity()
+	opts, md, err := brokerDialOpts(d.logger, ident.orgID, ident.assetID, ident.chainPEM)
 	if err != nil {
 		return nil, err
 	}
-	cc, err := grpc.NewClient(d.brokerURL, opts...)
+	cc, err := grpc.NewClient(ident.brokerURL, opts...)
 	if err != nil {
 		return nil, err
 	}
