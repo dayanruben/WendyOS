@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -198,14 +199,16 @@ func applyGPU(spec *Spec, logger *zap.Logger) {
 		// major-195 nodes in the container. Whole-major rule: 195 is the
 		// statically reserved NVIDIA major, and the real nodes' minors are
 		// unknowable here by definition.
-		logger.Warn("GPU entitlement: no live NVIDIA device nodes found; using static major-195 fallback list")
-		for _, devPath := range []string{
+		staticPaths := []string{
 			"/dev/nvidia0",
 			"/dev/nvidiactl",
 			"/dev/nvidia-uvm",
 			"/dev/nvidia-uvm-tools",
 			"/dev/nvidia-modeset",
-		} {
+		}
+		logger.Warn("GPU entitlement: no live NVIDIA device nodes found; using static major-195 fallback list",
+			zap.Strings("paths", staticPaths))
+		for _, devPath := range staticPaths {
 			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
 				Path:  devPath,
 				Type:  "c",
@@ -234,9 +237,22 @@ func applyGPU(spec *Spec, logger *zap.Logger) {
 		// recorded here — the host path is never re-opened by the runtime on
 		// this (root) path, so a post-scan swap of the host node cannot
 		// change what the container receives.
+		majors := map[int64]bool{}
+		for _, n := range nodes {
+			majors[n.major] = true
+		}
+		majorList := make([]int64, 0, len(majors))
+		for m := range majors {
+			majorList = append(majorList, m)
+		}
+		sort.Slice(majorList, func(i, j int) bool { return majorList[i] < majorList[j] })
+		// Audit summary at Info; per-node detail at Debug so exact device
+		// topology doesn't reach shared log streams by default.
+		logger.Info("GPU entitlement: granting discovered NVIDIA device nodes",
+			zap.Int("nodes", len(nodes)), zap.Int64s("majors", majorList))
 		seen := map[[2]int64]bool{}
 		for _, n := range nodes {
-			logger.Info("GPU entitlement: granting discovered NVIDIA device node",
+			logger.Debug("GPU entitlement: granting discovered NVIDIA device node",
 				zap.String("path", n.path), zap.Int64("major", n.major), zap.Int64("minor", n.minor))
 			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
 				Path:  n.path,
