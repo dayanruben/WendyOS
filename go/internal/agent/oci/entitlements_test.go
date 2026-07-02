@@ -1851,7 +1851,8 @@ func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
 	// name must not be granted to the container.
 	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
 		"nvidia0":                     {195, 0},
-		"nvidia-evil":                 {8, 0}, // e.g. a block-ish major smuggled behind a char node
+		"nvidia":                      {195, 3}, // bare "nvidia" is not a real node name
+		"nvidia-evil":                 {8, 0},   // e.g. a block-ish major smuggled behind a char node
 		"nvidia-caps/nvidia-backdoor": {501, 99},
 	})
 
@@ -1859,6 +1860,9 @@ func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
 
 	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-evil")); ok {
 		t.Error("GPU entitlement granted a node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia")); ok {
+		t.Error("GPU entitlement granted the bare 'nvidia' name")
 	}
 	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-caps", "nvidia-backdoor")); ok {
 		t.Error("GPU entitlement granted a caps node with an unexpected name")

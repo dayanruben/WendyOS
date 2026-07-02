@@ -229,6 +229,11 @@ func applyGPU(spec *Spec, logger *zap.Logger) {
 		// into the container below (no hotplug re-minting on this path).
 		// Access is "rw", not "rwm": the container only opens the nodes, so
 		// the mknod bit is withheld as least privilege.
+		// Note on TOCTOU scope: spec.Linux.Devices entries are mknod'd by the
+		// runtime inside the container's own /dev tmpfs from the major:minor
+		// recorded here — the host path is never re-opened by the runtime on
+		// this (root) path, so a post-scan swap of the host node cannot
+		// change what the container receives.
 		seen := map[[2]int64]bool{}
 		for _, n := range nodes {
 			logger.Info("GPU entitlement: granting discovered NVIDIA device node",
@@ -280,7 +285,7 @@ var nvidiaDeviceGlobs = []string{"/dev/nvidia*", "/dev/nvidia-caps/*"}
 // grant from the globs above. Glob results are host filesystem input; an
 // unexpected name (say, a planted /dev/nvidia-evil char device) is rejected
 // and logged rather than silently handed to the container.
-var nvidiaDeviceNameRe = regexp.MustCompile(`^(nvidia[0-9]*|nvidiactl|nvidia-uvm|nvidia-uvm-tools|nvidia-modeset|nvidia-cap[0-9]+)$`)
+var nvidiaDeviceNameRe = regexp.MustCompile(`^(nvidia[0-9]+|nvidiactl|nvidia-uvm|nvidia-uvm-tools|nvidia-modeset|nvidia-cap[0-9]+)$`)
 
 type nvidiaDeviceNode struct {
 	path         string
