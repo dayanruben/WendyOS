@@ -3,8 +3,12 @@ package containerd
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+
+	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
@@ -297,5 +301,157 @@ func TestWriteMeshResolvConf(t *testing.T) {
 	want := "nameserver " + gw + "\noptions ndots:1\n"
 	if string(data) != want {
 		t.Fatalf("resolv.conf = %q, want %q", data, want)
+	}
+
+	// Overwrite an existing file (sibling-service create rewrites the same
+	// appID-keyed path while a running sibling may have it bind-mounted): the
+	// write must go through a temp-file + rename so the mounted file is never
+	// observed truncated, and the final content must be intact.
+	path2, err := writeMeshResolvConfIn(dir, "myapp")
+	if err != nil {
+		t.Fatalf("writeMeshResolvConfIn (overwrite): %v", err)
+	}
+	if path2 != path {
+		t.Fatalf("overwrite returned different path: %q vs %q", path2, path)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("resolv.conf after overwrite = %q, want %q", data, want)
+	}
+	// No stray temp files may be left behind next to the mounted file.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "resolv.conf" {
+			t.Fatalf("unexpected leftover file %q next to resolv.conf", e.Name())
+		}
+	}
+}
+
+// fakeMeshDNS is a recording implementation of the meshDNSService seam used
+// by ensureMeshDNS/releaseMeshDNS, letting tests assert Ensure/Release
+// pairing without binding real UDP listeners.
+type fakeMeshDNS struct {
+	mu         sync.Mutex
+	failEnsure bool
+	ensures    []string
+	releases   []string
+}
+
+func (f *fakeMeshDNS) EnsureListener(gatewayIP string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failEnsure {
+		return os.ErrPermission
+	}
+	f.ensures = append(f.ensures, gatewayIP)
+	return nil
+}
+
+func (f *fakeMeshDNS) ReleaseListener(gatewayIP string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releases = append(f.releases, gatewayIP)
+}
+
+func (f *fakeMeshDNS) counts() (ensures, releases int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.ensures), len(f.releases)
+}
+
+// TestMeshDNSRefcountGuard covers the sibling-imbalance scenario: two
+// services of one app share a single gateway listener. Service A's
+// EnsureListener fails, sibling B's succeeds. A's teardown must NOT call
+// ReleaseListener (that would decrement B's live refcount); B's must release
+// exactly once, and a second teardown of B (stopOne-then-deleteOne double
+// teardown) must be a no-op.
+func TestMeshDNSRefcountGuard(t *testing.T) {
+	withTempSubnetRegistry(t)
+
+	appID := "com.example.refguard"
+	gw, err := meshGateway(appID)
+	if err != nil {
+		t.Fatalf("meshGateway: %v", err)
+	}
+
+	fake := &fakeMeshDNS{}
+	c := &Client{logger: zap.NewNop(), meshDNS: fake}
+
+	// Service A: ensure fails — no refcount was taken.
+	fake.failEnsure = true
+	c.ensureMeshDNS(appID+"_a", gw)
+	fake.failEnsure = false
+
+	// Service B: ensure succeeds — one refcount held.
+	c.ensureMeshDNS(appID+"_b", gw)
+
+	if e, r := fake.counts(); e != 1 || r != 0 {
+		t.Fatalf("after ensures: ensures=%d releases=%d, want 1/0", e, r)
+	}
+
+	// A's teardown must not release the listener B holds.
+	c.releaseMeshDNS(appID+"_a", appID)
+	if _, r := fake.counts(); r != 0 {
+		t.Fatalf("release after failed ensure must be a no-op, got %d releases", r)
+	}
+
+	// B's teardown releases exactly once.
+	c.releaseMeshDNS(appID+"_b", appID)
+	if _, r := fake.counts(); r != 1 {
+		t.Fatalf("release after successful ensure: got %d releases, want 1", r)
+	}
+
+	// Double teardown (stopOne then deleteOne) must not over-release.
+	c.releaseMeshDNS(appID+"_b", appID)
+	if _, r := fake.counts(); r != 1 {
+		t.Fatalf("double teardown must not over-release: got %d releases, want 1", r)
+	}
+}
+
+// TestTeardownMeshEgressReleasesHeldListener exercises the full
+// teardownMeshEgress path a delete-without-stop takes: a held DNS listener
+// is released even when the container IP could not be recovered (ip == ""),
+// and a container that never acquired one releases nothing.
+func TestTeardownMeshEgressReleasesHeldListener(t *testing.T) {
+	withTempSubnetRegistry(t)
+
+	appID := "com.example.delrelease"
+	containerName := appID + "_svc"
+	gw, err := meshGateway(appID)
+	if err != nil {
+		t.Fatalf("meshGateway: %v", err)
+	}
+
+	fake := &fakeMeshDNS{}
+	c := &Client{logger: zap.NewNop(), meshDNS: fake}
+	meshEnts := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
+	}
+
+	// Simulate a successful start's DNS acquisition, then a delete path that
+	// lost the IP (serviceIPs entry already gone): the listener must still be
+	// released.
+	c.ensureMeshDNS(containerName, gw)
+	c.teardownMeshEgress(meshEnts, containerName, appID, "")
+	if _, r := fake.counts(); r != 1 {
+		t.Fatalf("teardown of held listener: got %d releases, want 1", r)
+	}
+
+	// A container without the mesh entitlement must not touch the listener.
+	c.teardownMeshEgress(nil, containerName, appID, "")
+	if _, r := fake.counts(); r != 1 {
+		t.Fatalf("teardown without mesh entitlement must not release: got %d releases, want 1", r)
+	}
+
+	// A meshed container whose ensure never happened must not release.
+	c.teardownMeshEgress(meshEnts, appID+"_other", appID, "")
+	if _, r := fake.counts(); r != 1 {
+		t.Fatalf("teardown of never-held listener must not release: got %d releases, want 1", r)
 	}
 }

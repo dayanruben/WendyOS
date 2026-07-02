@@ -17,6 +17,73 @@ import (
 // containers at the mesh DNS server on their bridge gateway.
 const meshResolvConfDir = "/run/wendy/mesh"
 
+// meshDNSService is the seam through which the container lifecycle manages
+// per-gateway mesh DNS listeners. Satisfied by *mesh.DNSServer in production
+// (injected via SetMeshDNS) and by a recording fake in tests, so the
+// Ensure/Release pairing invariant is unit-testable without binding UDP
+// listeners or running iptables.
+type meshDNSService interface {
+	EnsureListener(gatewayIP string) error
+	ReleaseListener(gatewayIP string)
+}
+
+// Compile-time check that the real DNS server satisfies the seam.
+var _ meshDNSService = (*mesh.DNSServer)(nil)
+
+// ensureMeshDNS acquires one DNS-listener reference for containerName's
+// gateway and records the acquisition in c.meshDNSHeld, so releaseMeshDNS
+// only ever balances refcounts this exact container actually took. Without
+// the held map, a container whose EnsureListener failed would still release
+// on teardown and decrement a refcount owned by a sibling service sharing
+// the same gateway, prematurely killing the sibling's listener.
+//
+// Best-effort: a failure only logs a warning (device-N hostnames won't
+// resolve; VIP literals still work) and takes no refcount.
+func (c *Client) ensureMeshDNS(containerName, gateway string) {
+	if c.meshDNS == nil {
+		return
+	}
+	if err := c.meshDNS.EnsureListener(gateway); err != nil {
+		c.logger.Warn("mesh: DNS listener unavailable; device-N hostnames will not resolve",
+			zap.String("container", containerName), zap.String("gateway", gateway), zap.Error(err))
+		return
+	}
+	c.meshMu.Lock()
+	if c.meshDNSHeld == nil {
+		c.meshDNSHeld = make(map[string]bool)
+	}
+	c.meshDNSHeld[containerName] = true
+	c.meshMu.Unlock()
+}
+
+// releaseMeshDNS drops the DNS-listener reference containerName holds, if
+// any. It is idempotent: the held-map entry is consumed on the first call,
+// so a container torn down twice (stopOne followed by deleteOne) releases
+// exactly once, and a container whose EnsureListener never succeeded
+// releases nothing. Guarded by meshMu (not c.mu) because deleteOne runs
+// with c.mu already held by DeleteContainer, while stopOne runs without it.
+func (c *Client) releaseMeshDNS(containerName, appID string) {
+	if c.meshDNS == nil {
+		return
+	}
+	c.meshMu.Lock()
+	held := c.meshDNSHeld[containerName]
+	delete(c.meshDNSHeld, containerName)
+	c.meshMu.Unlock()
+	if !held {
+		return
+	}
+	// Recomputing the gateway is safe: meshGateway is idempotent and returns
+	// the same value ensureMeshDNS used to acquire the listener.
+	gw, err := meshGateway(appID)
+	if err != nil {
+		c.logger.Warn("mesh: could not derive gateway to release DNS listener (non-fatal, listener may leak until agent restart)",
+			zap.String("container", containerName), zap.String("app_id", appID), zap.Error(err))
+		return
+	}
+	c.meshDNS.ReleaseListener(gw)
+}
+
 // findMeshEntitlement returns the network entitlement with mode "mesh" from
 // entitlements, if one is present. Apps without the mesh entitlement (no
 // network entitlement, or network mode host/host-admin/none) get ok == false,
@@ -79,6 +146,12 @@ type meshEgressParams struct {
 // returns its path. Split from writeMeshResolvConf for testability: tests
 // pass a temp directory instead of the real meshResolvConfDir, which lives
 // under /run and is not writable in a non-root test sandbox.
+//
+// The write is atomic (temp file + os.Rename, mirroring writeHostsFile):
+// every sibling-service create rewrites the same appID-keyed file while a
+// running sibling may have it bind-mounted at /etc/resolv.conf, so a plain
+// truncating write could expose a zero-byte resolv.conf mid-write and break
+// the sibling's DNS until the next write completed (NIST-SI-10).
 func writeMeshResolvConfIn(baseDir, appID string) (string, error) {
 	gw, err := meshGateway(appID)
 	if err != nil {
@@ -90,8 +163,32 @@ func writeMeshResolvConfIn(baseDir, appID string) (string, error) {
 	}
 	path := filepath.Join(dir, "resolv.conf")
 	content := fmt.Sprintf("nameserver %s\noptions ndots:1\n", gw)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", err
+
+	tmp, err := os.CreateTemp(dir, ".resolv-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("creating temp resolv.conf: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", fmt.Errorf("writing temp resolv.conf: %w", err)
+	}
+	// Chmod via the open fd before Close: CreateTemp creates 0600, but the
+	// file must be world-readable for arbitrary container users, and the
+	// fd-based chmod leaves no TOCTOU window before the rename (NIST-SI-10).
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", fmt.Errorf("chmod temp resolv.conf: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", fmt.Errorf("closing temp resolv.conf: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return "", fmt.Errorf("renaming resolv.conf into place: %w", err)
 	}
 	return path, nil
 }
@@ -135,7 +232,11 @@ func resolveMeshEgress(entitlements []appconfig.Entitlement, appID string) (para
 // back (the rule, if the route succeeded but the rule failed) so a meshed
 // container never runs believing it has egress it does not actually have.
 // The caller MUST fail container start on a non-nil error.
-func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, appID, netnsPath, ip string) error {
+//
+// containerName is the containerd container ID ({appID}_{serviceName}); it
+// keys the DNS-listener held map so teardown releases exactly the refcounts
+// this container took (see ensureMeshDNS/releaseMeshDNS).
+func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, containerName, appID, netnsPath, ip string) error {
 	params, ok, err := resolveMeshEgress(entitlements, appID)
 	if err != nil {
 		return fmt.Errorf("mesh egress: %w", err)
@@ -177,68 +278,59 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, appID, ne
 	// DNS is best-effort: without it, device-N.cloud.wendy.dev hostnames fail
 	// to resolve but VIP literals still work over the REDIRECT/route wired
 	// above, so a DNS listener failure must not fail container start.
-	// EnsureListener is the last fallible step in this function — nothing
+	// ensureMeshDNS is the last fallible step in this function — nothing
 	// below can fail once it returns, so there is no rollback path in this
-	// function that needs to release it; the paired ReleaseListener lives in
-	// teardownMeshEgress, invoked unconditionally from stopOne for every
-	// container that reaches a running state.
-	if c.meshDNS != nil {
-		if err := c.meshDNS.EnsureListener(params.gateway); err != nil {
-			c.logger.Warn("mesh: DNS listener unavailable; device-N hostnames will not resolve",
-				zap.String("app_id", appID), zap.String("gateway", params.gateway), zap.Error(err))
-		}
-	}
+	// function that needs to release it; the paired release lives in
+	// teardownMeshEgress (invoked from stopOne and deleteOne) and only fires
+	// for containers whose acquisition actually succeeded (held map).
+	c.ensureMeshDNS(containerName, params.gateway)
 
 	c.logger.Info("mesh egress applied",
 		zap.String("app_id", appID), zap.String("ip", ip), zap.String("service_cidr", params.cidr))
 	return nil
 }
 
-// teardownMeshEgress removes the host iptables rule installed by
-// applyMeshEgress for a stopping container. It is a no-op for apps without
-// the mesh entitlement, and a no-op if ip is empty (the container's IP could
+// teardownMeshEgress removes the host iptables rules (ACCEPT + REDIRECT)
+// installed by applyMeshEgress and releases the container's DNS-listener
+// reference. It is a complete no-op for apps without the mesh entitlement.
+// The iptables removals are skipped if ip is empty (the container's IP could
 // not be recovered — see stopOne for how it is normally recovered from
-// c.serviceIPs). The netns route needs no explicit cleanup: it is destroyed
-// automatically when the network namespace is torn down with the container.
+// c.serviceIPs), but the DNS release still runs: it is keyed by
+// containerName via the held map, not by IP, so a lost IP must not strand a
+// listener refcount. The netns route needs no explicit cleanup: it is
+// destroyed automatically when the network namespace is torn down with the
+// container.
+//
+// Idempotent: rule removals tolerate already-absent rules, and the DNS
+// release consumes the held-map entry on first call, so running stopOne and
+// then deleteOne for the same container releases exactly once.
 //
 // Errors are logged but not returned — mirroring CNIDel's best-effort
 // contract, so a host-side iptables failure never blocks a container stop.
-func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, appID, ip string) {
-	if ip == "" {
-		return
-	}
+func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, containerName, appID, ip string) {
 	ent, found := findMeshEntitlement(entitlements)
 	if !found {
 		return
 	}
-	cidr, err := normalizeCIDR(ent.ServiceCIDR)
-	if err != nil {
-		c.logger.Warn("mesh egress teardown: invalid serviceCIDR in entitlement, skipping rule removal",
-			zap.String("app_id", appID), zap.Error(err))
-		return
-	}
-	if err := hostnetwork.RemoveMeshRule(ip, cidr); err != nil {
-		c.logger.Warn("mesh egress teardown: RemoveMeshRule failed (non-fatal)",
-			zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
-	}
-	if err := hostnetwork.RemoveMeshRedirect(ip, cidr, mesh.ProxyPort); err != nil {
-		c.logger.Warn("mesh egress teardown: RemoveMeshRedirect failed (non-fatal)",
-			zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
-	}
-	// Pairs with the EnsureListener call in applyMeshEgress: every container
-	// whose start reached EnsureListener (mesh entitlement present, route +
-	// ACCEPT + REDIRECT all installed) ends up here exactly once via stopOne,
-	// so this release exactly balances that one increment. If EnsureListener
-	// itself failed (no refcount bump), ReleaseListener on an unknown gateway
-	// is a documented no-op, so calling it unconditionally here is safe either
-	// way. Recomputing the gateway is safe: meshGateway is idempotent and
-	// returns the same value applyMeshEgress used to acquire the listener.
-	if c.meshDNS != nil {
-		if gw, err := meshGateway(appID); err == nil {
-			c.meshDNS.ReleaseListener(gw)
-		} else {
-			c.logger.Warn("mesh egress teardown: could not derive gateway to release DNS listener (non-fatal, listener may leak until agent restart)",
+	if ip != "" {
+		cidr, err := normalizeCIDR(ent.ServiceCIDR)
+		if err != nil {
+			c.logger.Warn("mesh egress teardown: invalid serviceCIDR in entitlement, skipping rule removal",
 				zap.String("app_id", appID), zap.Error(err))
+		} else {
+			if err := hostnetwork.RemoveMeshRule(ip, cidr); err != nil {
+				c.logger.Warn("mesh egress teardown: RemoveMeshRule failed (non-fatal)",
+					zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
+			}
+			if err := hostnetwork.RemoveMeshRedirect(ip, cidr, mesh.ProxyPort); err != nil {
+				c.logger.Warn("mesh egress teardown: RemoveMeshRedirect failed (non-fatal)",
+					zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
+			}
 		}
 	}
+	// Pairs with ensureMeshDNS in applyMeshEgress: releases exactly the
+	// refcount this container acquired, or nothing if it never acquired one
+	// (held-map guard — see releaseMeshDNS for the sibling-imbalance and
+	// double-teardown rationale).
+	c.releaseMeshDNS(containerName, appID)
 }

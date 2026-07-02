@@ -95,20 +95,39 @@ type Client struct {
 	// that do not support overlay mounts (e.g. nested container environments).
 	snapshotter string
 
-	// meshDNS is the shared mesh DNS server, injected once at agent startup
+	// meshDNS is the shared mesh DNS service, injected once at agent startup
 	// via SetMeshDNS. nil when mesh DNS is unavailable (e.g. build without
 	// the mesh feature, or startup failed to bind); mesh_wiring.go treats a
 	// nil meshDNS as "DNS best-effort unavailable" and skips it without
 	// failing container start — VIP literals still work without it.
-	meshDNS *mesh.DNSServer
+	// Interface-typed (meshDNSService, mesh_wiring.go) so tests can inject a
+	// recording fake and assert the Ensure/Release pairing invariant.
+	meshDNS meshDNSService
+
+	// meshDNSHeld tracks, per containerd container ID, whether that container
+	// successfully acquired a DNS-listener reference (ensureMeshDNS). It is
+	// the guard that keeps Ensure/Release balanced when sibling services
+	// share one gateway listener and when a container is torn down twice
+	// (stopOne then deleteOne). Guarded by meshMu, NOT c.mu: deleteOne runs
+	// with c.mu already held by DeleteContainer, so touching this map under
+	// c.mu would deadlock there, while stopOne runs without c.mu held.
+	meshMu      sync.Mutex
+	meshDNSHeld map[string]bool
 }
 
 // SetMeshDNS injects the shared mesh DNS server used by applyMeshEgress and
 // teardownMeshEgress to manage per-gateway listeners. Called once from
 // main.go at agent startup, before any containers start. Not protected by
 // c.mu: it is set once during single-threaded startup before the Client is
-// exposed to concurrent callers.
-func (c *Client) SetMeshDNS(d *mesh.DNSServer) { c.meshDNS = d }
+// exposed to concurrent callers. A nil server is ignored so the field stays
+// a nil interface (a non-nil interface wrapping a nil *mesh.DNSServer would
+// defeat the `c.meshDNS == nil` availability checks in mesh_wiring.go).
+func (c *Client) SetMeshDNS(d *mesh.DNSServer) {
+	if d == nil {
+		return
+	}
+	c.meshDNS = d
+}
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
 	if address == "" {
@@ -1225,7 +1244,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			if labels, lerr := container.Labels(ctx); lerr == nil {
 				entitlements = parseEntitlementsFromAnnotations(labels)
 			}
-			if meshErr := c.applyMeshEgress(entitlements, appID, netnsPath, ip); meshErr != nil {
+			if meshErr := c.applyMeshEgress(entitlements, appName, appID, netnsPath, ip); meshErr != nil {
 				c.logger.Error("mesh egress setup failed; failing container start",
 					zap.String("app_id", appID), zap.Error(meshErr))
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
@@ -2148,7 +2167,7 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 		c.mu.Lock()
 		ip := c.serviceIPs[appID][svcName]
 		c.mu.Unlock()
-		c.teardownMeshEgress(entitlements, appID, ip)
+		c.teardownMeshEgress(entitlements, containerID, appID, ip)
 	}
 
 	// Send SIGTERM first for graceful shutdown.
@@ -2388,6 +2407,25 @@ func ensureSharedSHM(appID string) (string, error) {
 // can batch image deletions across services. ctx must have the namespace set
 // and the caller must hold c.mu.
 func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantImg bool) (imgName string, err error) {
+	// Mesh egress teardown for delete-without-stop: `wendy device apps remove`
+	// on a RUNNING meshed app goes DeleteContainer → deleteOne without ever
+	// passing through stopOne, which would otherwise leak the DNS-listener
+	// refcount and the ACCEPT/REDIRECT iptables rules for this container's IP
+	// until agent restart. Mirrors the stopOne teardown block; safe to run
+	// after a stop too — teardownMeshEgress is idempotent (rule removal
+	// tolerates absent rules; the DNS release is guarded by the held map, so
+	// a stopOne-then-deleteOne sequence releases exactly once).
+	// c.serviceIPs is read without locking because deleteOne's only caller,
+	// DeleteContainer, holds c.mu for its full duration.
+	if appID, svcName, parseErr := ParseContainerName(ctr.ID()); parseErr == nil && svcName != "" {
+		var entitlements []appconfig.Entitlement
+		if labels, lerr := ctr.Labels(ctx); lerr == nil {
+			entitlements = parseEntitlementsFromAnnotations(labels)
+		}
+		ip := c.serviceIPs[appID][svcName]
+		c.teardownMeshEgress(entitlements, ctr.ID(), appID, ip)
+	}
+
 	if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
 		_ = task.Kill(ctx, syscall.SIGKILL)
 		_, _ = task.Delete(ctx, containerd.WithProcessKill)
