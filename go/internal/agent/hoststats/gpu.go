@@ -91,34 +91,46 @@ func ParseNvidiaSMI(csv string) []GPUStat {
 }
 
 var (
-	tegraGR3DRe  = regexp.MustCompile(`GR3D_FREQ (\d+)%`)
-	tegraGPUTemp = regexp.MustCompile(`GPU@([\d.]+)C`)
-	tegraGPUPwr  = regexp.MustCompile(`VDD_GPU_SOC (\d+)mW`)
+	tegraGR3DRe = regexp.MustCompile(`GR3D_FREQ (\d+)%`)
+	// JetPack ≤6 prints "GPU@48C"; JetPack 7 (Thor) prints "gpu@62.906C".
+	tegraGPUTemp = regexp.MustCompile(`(?i)\bGPU@([\d.]+)C`)
+	// JetPack ≤6 names the GPU power rail VDD_GPU_SOC; JetPack 7 (Thor)
+	// renamed it to VDD_GPU. The CPU rail (VDD_CPU_SOC_MSS) matches neither.
+	tegraGPUPwr = regexp.MustCompile(`\bVDD_GPU(?:_SOC)? (\d+)mW`)
 )
 
 // ParseTegrastats extracts the integrated-GPU utilization (GR3D_FREQ) and, when
 // present, GPU temperature and power from a single tegrastats line. Jetson uses
-// unified memory, so per-GPU memory is left zero (not applicable). Returns no
-// entries when the line has no GR3D_FREQ field.
+// unified memory, so per-GPU memory is left zero (not applicable).
+//
+// JetPack 7 (Thor) tegrastats has no GR3D_FREQ field at all, so utilization is
+// NOT a gate: a line with only GPU temperature/power still yields an entry
+// (utilization reads 0 — the price of a degraded fallback). Returns no entries
+// only when the line has none of the GPU fields.
 func ParseTegrastats(line string) []GPUStat {
-	m := tegraGR3DRe.FindStringSubmatch(line)
-	if m == nil {
-		return nil
-	}
 	g := GPUStat{Name: "Integrated GPU"}
-	if v, err := strconv.ParseFloat(m[1], 64); err == nil {
-		g.UtilPercent = v
+	found := false
+	if m := tegraGR3DRe.FindStringSubmatch(line); m != nil {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			g.UtilPercent = v
+			found = true
+		}
 	}
 	if t := tegraGPUTemp.FindStringSubmatch(line); t != nil {
 		if v, err := strconv.ParseFloat(t[1], 64); err == nil {
 			g.TempC = &v
+			found = true
 		}
 	}
 	if p := tegraGPUPwr.FindStringSubmatch(line); p != nil {
 		if mw, err := strconv.ParseFloat(p[1], 64); err == nil {
 			w := mw / 1000.0
 			g.PowerW = &w
+			found = true
 		}
+	}
+	if !found {
+		return nil
 	}
 	return []GPUStat{g}
 }
