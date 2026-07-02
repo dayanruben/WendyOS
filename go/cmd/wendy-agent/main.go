@@ -531,7 +531,8 @@ func main() {
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum)
+		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
@@ -622,7 +623,8 @@ func main() {
 		keyPEM := string(keyData)
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum)
+		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
 			logger.Info("Device provisioned — shutting down plaintext gRPC port", zap.String("port", agentPort))
