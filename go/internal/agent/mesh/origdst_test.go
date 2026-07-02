@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"testing"
 )
 
@@ -14,5 +15,14 @@ func TestAddrPortFromSockaddrIn(t *testing.T) {
 	got := addrPortFromSockaddrIn(b[:])
 	if got.String() != "10.99.0.215:8080" {
 		t.Fatalf("got %s, want 10.99.0.215:8080", got)
+	}
+}
+
+func TestAddrPortFromSockaddrInShortInput(t *testing.T) {
+	for _, n := range []int{0, 1, 4, 7} {
+		got := addrPortFromSockaddrIn(make([]byte, n))
+		if got != (netip.AddrPort{}) {
+			t.Fatalf("len(b)=%d: got %v, want zero netip.AddrPort", n, got)
+		}
 	}
 }

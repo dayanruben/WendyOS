@@ -100,6 +100,16 @@ func (p *Proxy) handleConn(conn net.Conn) {
 
 // relayBytes splices two connections until both directions finish,
 // propagating half-closes where the transport supports them.
+//
+// When one direction's copy finishes, dst must always receive some signal
+// that no more data is coming - otherwise a peer waiting for our EOF before
+// finishing its own side can leave the opposite io.Copy blocked forever,
+// leaking the goroutine and its file descriptor. PeerDialer connections are
+// expected to implement CloseWrite for a clean half-close; conns without it
+// (e.g. a net.Pipe-backed tunnel conn) are fully closed instead once the
+// opposite direction finishes. A full close can truncate any in-flight data
+// still travelling the other way, but that tradeoff is accepted here since
+// it guarantees the relay never leaks.
 func relayBytes(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
@@ -107,6 +117,8 @@ func relayBytes(a, b net.Conn) {
 		type closeWriter interface{ CloseWrite() error }
 		if cw, ok := dst.(closeWriter); ok {
 			_ = cw.CloseWrite()
+		} else {
+			_ = dst.Close()
 		}
 		done <- struct{}{}
 	}
