@@ -4,6 +4,7 @@ package mtls
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"time"
 
@@ -106,4 +107,27 @@ func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFl
 	}
 	opts = append(opts, extraOpts...)
 	return grpc.NewServer(opts...), nil
+}
+
+// NewClientTLSConfig returns a TLS config for one agent dialing another
+// agent's mTLS port (mesh LAN path): it presents this device's asset
+// certificate and verifies the peer's chain with the same custom verifier the
+// server side uses (Go's built-in verification can't handle ML-DSA chains).
+// Hostname verification is intentionally skipped — device certs carry wendy
+// URN SANs, not DNS names.
+func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*tls.Config, error) {
+	base, err := NewTLSConfig(certPEM, chainPEM, keyPEM, logger, time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	if base.VerifyPeerCertificate == nil {
+		// InsecureSkipVerify below is only safe because the custom verifier
+		// replaces Go's built-in one; never hand out a config without it.
+		return nil, errors.New("mtls: base TLS config has no peer verifier")
+	}
+	return &tls.Config{
+		Certificates:          base.Certificates,
+		InsecureSkipVerify:    true, // verification is NOT disabled: VerifyPeerCertificate below performs the full (ML-DSA-aware) chain check
+		VerifyPeerCertificate: base.VerifyPeerCertificate,
+	}, nil
 }
