@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -342,14 +343,15 @@ func TestWriteMeshResolvConf(t *testing.T) {
 // directly — never CreateContainer — so without recreating the file before
 // the runtime processes the spec's mounts, a meshed container's task creation
 // fails outright and it never starts again after a reboot.
+//
+// The gate is the persisted OCI spec mount itself, NOT the mesh entitlement
+// (round-2 leak fix): entitlement gating fired for mesh-entitled-but-NON-
+// isolated apps too, which have no /etc/resolv.conf mesh mount and no bridge,
+// so every StartContainer call would have run meshGateway → allocateSubnet
+// and leaked a permanent, never-released /run/wendy/cni/subnets.json entry.
 func TestRecreateMeshResolvConfIn(t *testing.T) {
-	withTempSubnetRegistry(t)
-
-	meshEnts := []appconfig.Entitlement{
-		{Type: appconfig.EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
-	}
-
-	t.Run("recreates a deleted resolv.conf for a meshed app", func(t *testing.T) {
+	t.Run("recreates a deleted resolv.conf when the spec has the mesh mount", func(t *testing.T) {
+		withTempSubnetRegistry(t)
 		dir := t.TempDir()
 		path, err := writeMeshResolvConfIn(dir, "myapp")
 		if err != nil {
@@ -364,31 +366,99 @@ func TestRecreateMeshResolvConfIn(t *testing.T) {
 			t.Fatalf("precondition: resolv.conf should be gone, stat err = %v", err)
 		}
 
-		ok, err := recreateMeshResolvConfIn(dir, meshEnts, "myapp")
+		// The persisted spec still carries the create-time mesh mount, whose
+		// Source is exactly the path we must recreate.
+		mounts := []specs.Mount{
+			{Destination: "/etc/hosts", Source: "/run/wendy/hosts/myapp", Type: "bind"},
+			{Destination: "/etc/resolv.conf", Source: path, Type: "bind"},
+		}
+		ok, err := recreateMeshResolvConfIn(dir, mounts)
 		if err != nil {
 			t.Fatalf("recreateMeshResolvConfIn: %v", err)
 		}
 		if !ok {
-			t.Fatal("recreateMeshResolvConfIn: ok = false, want true for meshed app")
+			t.Fatal("recreateMeshResolvConfIn: ok = false, want true when the spec has the mesh resolv mount")
 		}
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("resolv.conf was not recreated: %v", err)
 		}
 	})
 
-	t.Run("no-op for an app without the mesh entitlement", func(t *testing.T) {
+	t.Run("no-op and no subnet allocation when the spec has no mesh resolv mount", func(t *testing.T) {
+		withTempSubnetRegistry(t)
 		dir := t.TempDir()
-		ok, err := recreateMeshResolvConfIn(dir, nil, "otherapp")
+		// A mesh-entitled but NON-isolated app never gets a /etc/resolv.conf
+		// mesh mount injected at create time (InjectResolvMount is gated on
+		// isolation=="isolated"), so its persisted spec has no such mount.
+		mounts := []specs.Mount{
+			{Destination: "/etc/hosts", Source: "/run/wendy/hosts/plainapp", Type: "bind"},
+			// A resolv.conf mount from the image or some other source that is
+			// NOT under meshResolvConfDir must not be treated as the mesh mount.
+			{Destination: "/etc/resolv.conf", Source: "/some/other/resolv.conf", Type: "bind"},
+		}
+		ok, err := recreateMeshResolvConfIn(dir, mounts)
 		if err != nil {
 			t.Fatalf("recreateMeshResolvConfIn: unexpected error: %v", err)
 		}
 		if ok {
-			t.Fatal("recreateMeshResolvConfIn: ok = true, want false without mesh entitlement")
+			t.Fatal("recreateMeshResolvConfIn: ok = true, want false when no mesh resolv mount is present")
 		}
-		if _, err := os.Stat(filepath.Join(dir, "otherapp", "resolv.conf")); !os.IsNotExist(err) {
-			t.Fatalf("recreateMeshResolvConfIn must not create a file for a non-meshed app, stat err = %v", err)
+		// Leak guard: the mount-absent path must never touch the subnet
+		// registry (no meshGateway → allocateSubnet call). withTempSubnetRegistry
+		// points cniSubnetRegistryPath at a path that does not yet exist;
+		// allocateSubnet is the only thing that creates it, so its continued
+		// absence proves no allocation happened.
+		if _, err := os.Stat(cniSubnetRegistryPath); !os.IsNotExist(err) {
+			t.Fatalf("subnet registry was touched by a no-op recreate (leak); stat err = %v", err)
 		}
 	})
+}
+
+// TestMeshResolvMountSource verifies the pure matcher that gates the reboot
+// recreate strictly on the create-time mesh mount: destination
+// /etc/resolv.conf with a Source under baseDir.
+func TestMeshResolvMountSource(t *testing.T) {
+	base := "/run/wendy/mesh"
+	tests := []struct {
+		name       string
+		mounts     []specs.Mount
+		wantSource string
+		wantOK     bool
+	}{
+		{name: "no mounts", mounts: nil, wantOK: false},
+		{
+			name:   "resolv mount under baseDir matches",
+			mounts: []specs.Mount{{Destination: "/etc/resolv.conf", Source: base + "/app1/resolv.conf"}},
+			wantSource: base + "/app1/resolv.conf", wantOK: true,
+		},
+		{
+			name:   "resolv mount outside baseDir does not match",
+			mounts: []specs.Mount{{Destination: "/etc/resolv.conf", Source: "/etc/resolv.conf"}},
+			wantOK: false,
+		},
+		{
+			name:   "hosts mount under baseDir does not match (wrong destination)",
+			mounts: []specs.Mount{{Destination: "/etc/hosts", Source: base + "/app1/hosts"}},
+			wantOK: false,
+		},
+		{
+			name: "baseDir prefix must be path-segment bounded",
+			// A sibling dir sharing the baseDir string prefix must not match.
+			mounts: []specs.Mount{{Destination: "/etc/resolv.conf", Source: base + "-evil/resolv.conf"}},
+			wantOK: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src, ok := meshResolvMountSource(tc.mounts, base)
+			if ok != tc.wantOK {
+				t.Fatalf("meshResolvMountSource ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && src != tc.wantSource {
+				t.Fatalf("meshResolvMountSource source = %q, want %q", src, tc.wantSource)
+			}
+		})
+	}
 }
 
 // fakeMeshDNS is a recording implementation of the meshDNSService seam used

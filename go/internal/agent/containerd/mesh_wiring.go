@@ -5,7 +5,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
@@ -215,27 +217,59 @@ func writeMeshResolvConf(appID string) (string, error) {
 	return writeMeshResolvConfIn(meshResolvConfDir, appID)
 }
 
-// recreateMeshResolvConfIn rewrites appID's mesh resolv.conf under baseDir
-// whenever entitlements grant the mesh network mode, returning ok == false as
-// a complete no-op for apps that don't need it. Pure/containerd-free (baseDir
-// is injected) so this is unit-testable without touching /run — mirrors the
-// writeMeshResolvConf/writeMeshResolvConfIn split.
+// meshResolvMountSource returns the Source of the create-time mesh resolv.conf
+// bind mount in mounts — a mount whose Destination is /etc/resolv.conf and
+// whose Source lives under baseDir (meshResolvConfDir in production) — if one
+// is present. It is the exact, leak-free signal that a container was created
+// with mesh DNS wiring: InjectResolvMount adds precisely this mount, and only
+// for isolated meshed apps (CreateContainerWithProgress gates it on
+// findMeshEntitlement && Isolation=="isolated"). The baseDir prefix match is
+// path-segment bounded (baseDir + separator) so a sibling directory sharing
+// baseDir's string prefix cannot spoof a match, and a resolv.conf mount from
+// the image or elsewhere (Source outside baseDir) is correctly ignored.
+func meshResolvMountSource(mounts []specs.Mount, baseDir string) (source string, ok bool) {
+	prefix := baseDir + string(os.PathSeparator)
+	for _, m := range mounts {
+		if m.Destination == "/etc/resolv.conf" && strings.HasPrefix(m.Source, prefix) {
+			return m.Source, true
+		}
+	}
+	return "", false
+}
+
+// recreateMeshResolvConfIn rewrites the mesh resolv.conf bind-mount source for
+// a container whose persisted OCI spec still carries the create-time mesh
+// mount (see meshResolvMountSource), returning ok == false as a complete no-op
+// otherwise. The appID is derived from the mount Source itself
+// (baseDir/<appID>/resolv.conf), so the file recreated is exactly the path the
+// spec's mount points at. Pure/containerd-free (baseDir + mounts injected) so
+// this is unit-testable without touching /run.
 //
 // This is the reboot-resilience fix for meshed containers (C-final-review Fix
-// 1): /etc/resolv.conf is bind-mounted from this same path, baked into the
-// OCI spec once at CreateContainerWithProgress time. containerd persists the
-// container definition (and its spec's mount list) across a reboot, but /run
-// is tmpfs, so the file written at create time is gone. ReconcileBootContainers
-// restarts surviving containers via StartContainer directly — never
-// CreateContainer — and the runtime processes the spec's bind mounts as part
-// of container.NewTask, so a missing source there fails task creation
-// outright: a meshed container would never start again after a reboot
-// without recreating the file first. See recreateMeshResolvConfForStart for
-// the call site.
-func recreateMeshResolvConfIn(baseDir string, entitlements []appconfig.Entitlement, appID string) (ok bool, err error) {
-	if _, found := findMeshEntitlement(entitlements); !found {
+// 1): /etc/resolv.conf is bind-mounted from this path, baked into the OCI spec
+// once at CreateContainerWithProgress time. containerd persists the container
+// definition (and its spec's mount list) across a reboot, but /run is tmpfs,
+// so the file written at create time is gone. ReconcileBootContainers restarts
+// surviving containers via StartContainer directly — never CreateContainer —
+// and the runtime processes the spec's bind mounts as part of
+// container.NewTask, so a missing source there fails task creation outright: a
+// meshed container would never start again after a reboot without recreating
+// the file first.
+//
+// The gate is the spec mount, NOT the mesh entitlement (round-2 leak fix): a
+// mesh-entitled-but-NON-isolated app has the entitlement but no
+// /etc/resolv.conf mesh mount and no bridge, so entitlement gating would have
+// run meshGateway → allocateSubnet on every StartContainer and leaked a
+// permanent, never-released subnet-registry entry for an app that never gets a
+// bridge. Keying on the mount fires only for containers actually created with
+// the mount — leak-free and matching create-time exactly.
+func recreateMeshResolvConfIn(baseDir string, mounts []specs.Mount) (ok bool, err error) {
+	source, found := meshResolvMountSource(mounts, baseDir)
+	if !found {
 		return false, nil
 	}
+	// source == baseDir/<appID>/resolv.conf, so the parent dir's base is appID.
+	appID := filepath.Base(filepath.Dir(source))
 	if _, err := writeMeshResolvConfIn(baseDir, appID); err != nil {
 		return true, err
 	}
@@ -243,21 +277,19 @@ func recreateMeshResolvConfIn(baseDir string, entitlements []appconfig.Entitleme
 }
 
 // recreateMeshResolvConfForStart is StartContainer's reboot-resilience hook:
-// called with appID's label-derived entitlements before container.NewTask, it
-// re-derives and rewrites the mesh resolv.conf so the bind-mount source
-// exists by the time the runtime processes it. Deliberately gated only on the
-// mesh entitlement — not on c.getIsolation(appID) — because appIsolation is
-// an in-memory cache populated only by CreateContainerWithProgress and is
-// empty after every agent process restart, including the very reboot this
-// exists to survive; checking it here would silently defeat the fix for
-// exactly the scenario it targets. Best-effort like the rest of mesh wiring:
-// a failure only logs a warning (the container may fail to start, or fall
-// back to the image's baked-in resolv.conf if the mount was never wired at
-// create time) and never blocks a non-mesh container's start.
-func (c *Client) recreateMeshResolvConfForStart(entitlements []appconfig.Entitlement, appID string) {
-	if _, err := recreateMeshResolvConfIn(meshResolvConfDir, entitlements, appID); err != nil {
-		c.logger.Warn("mesh: could not recreate resolv.conf before container start",
-			zap.String("app_id", appID), zap.Error(err))
+// called with the container's persisted OCI spec mounts before
+// container.NewTask, it recreates the mesh resolv.conf bind-mount source so it
+// exists by the time the runtime processes the mount. Gating on the spec mount
+// (not c.getIsolation(appID), which reads an in-memory cache empty after every
+// agent restart — the very reboot this exists to survive — and not the mesh
+// entitlement, which over-fires for non-isolated apps and leaks subnet
+// registry entries) keys the work on exactly the containers created with the
+// mount. Best-effort like the rest of mesh wiring: a failure only logs a
+// warning (the container may fail to start, or fall back to the image's
+// resolv.conf) and never blocks a non-mesh container's start.
+func (c *Client) recreateMeshResolvConfForStart(mounts []specs.Mount) {
+	if _, err := recreateMeshResolvConfIn(meshResolvConfDir, mounts); err != nil {
+		c.logger.Warn("mesh: could not recreate resolv.conf before container start", zap.Error(err))
 	}
 }
 

@@ -125,6 +125,31 @@ certificates, cross-org asset certificates, and flag-off orgs with
 - `mesh_enabled` defaulting to ON means same-org devices can dial each other as
   soon as both run mesh-capable software; org admins opt out via the API.
 
+## Known limitation: reboot
+
+After a device reboot (or any agent process restart), a meshed container is
+brought back by `ReconcileBootContainers` → `StartContainer`, not by a fresh
+`CreateContainer`. Two things follow:
+
+- **Fixed:** the container's `/etc/resolv.conf` bind-mount source (under the
+  tmpfs `/run/wendy/mesh/<appID>/`) is wiped by the reboot but the OCI spec
+  still references it, which would fail `container.NewTask`. `StartContainer`
+  now recreates that source before task creation whenever the persisted spec
+  carries the mesh resolv mount, so the container starts.
+- **Not yet fixed (tracked separately):** the container does **not**
+  re-establish CNI networking or mesh egress on the reconcile path. The
+  `c.appIsolation` map that `StartContainer` reads via `getIsolation(appID)`
+  to decide whether to run CNI ADD + `applyMeshEgress` is an in-memory cache
+  with a single write site (`CreateContainerWithProgress`); it is never
+  reconstructed on the reboot/reconcile path, so after a reboot the isolation
+  is seen as `""` and the whole CNI-ADD + mesh-egress block is skipped. This
+  affects all isolated containers, not just meshed ones, and needs an
+  `appIsolation`-persistence fix that is a separate, cross-cutting effort.
+
+Until that lands, restoring mesh networking after a reboot requires
+re-creating the app (`wendy run`), which takes the full `CreateContainer`
+path and re-populates `appIsolation`.
+
 ## Out of scope (v1)
 
 UDP, per-device allowlists, service-name discovery (host:port only), dashboard

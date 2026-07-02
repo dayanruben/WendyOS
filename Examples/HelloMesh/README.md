@@ -94,6 +94,7 @@ On success, logs will show:
 - **Organization-level**: Mesh is **enabled by default**. It will be controllable org-wide (admins can disable it via the cloud API) once the cloud-side update ships.
 - **Device-level**: A device-local `mesh-disabled` file in the agent config directory (`/etc/wendy-agent/`) disables mesh serving on that device.
 - **Cloud relay**: LAN-direct peering works on this branch, but **both** devices must run this branch's agent — the serving side's `MeshDial` RPC is new, so dialing an older-agent peer fails. Cloud relay fallback requires a cloud-side update (not yet shipped).
+- **After an agent restart/reboot**, re-run `wendy run` (recreate) to restore mesh networking — the reconcile path recreates the container's resolv.conf so it starts, but does not yet rewire CNI networking/mesh egress.
 
 ## Debugging the plumbing
 

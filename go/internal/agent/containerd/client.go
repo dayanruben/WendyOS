@@ -1099,11 +1099,14 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// CreateContainer) to bring surviving containers back — so the source
 	// must be recreated here, before container.NewTask below processes the
 	// spec's mounts, or the runtime's bind mount fails and the container never
-	// starts again. Labels are read again (cheap; already fetched once above
-	// for appID/serviceName correction) so this sees the same entitlements
-	// CreateContainerWithProgress wrote via wendyLabels/BuildEntitlementAnnotations.
-	if labels, lerr := container.Labels(ctx); lerr == nil {
-		c.recreateMeshResolvConfForStart(parseEntitlementsFromAnnotations(labels), appID)
+	// starts again. The gate is the persisted spec's mesh resolv.conf mount
+	// itself (leak-free — see recreateMeshResolvConfForStart), so a Spec load
+	// failure just skips the hook.
+	if spec, serr := container.Spec(ctx); serr == nil {
+		c.recreateMeshResolvConfForStart(spec.Mounts)
+	} else {
+		c.logger.Warn("mesh: could not load container spec to recreate resolv.conf before start",
+			zap.String("app_name", appName), zap.Error(serr))
 	}
 
 	if restartPolicy != nil {
