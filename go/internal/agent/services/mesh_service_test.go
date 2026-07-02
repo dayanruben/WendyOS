@@ -56,7 +56,11 @@ func certWithURN(t *testing.T, urn string) *x509.Certificate {
 }
 
 func ctxWithPeerCert(cert *x509.Certificate) context.Context {
-	return peer.NewContext(context.Background(), &peer.Peer{
+	return ctxWithPeerCertFrom(context.Background(), cert)
+}
+
+func ctxWithPeerCertFrom(parent context.Context, cert *x509.Certificate) context.Context {
+	return peer.NewContext(parent, &peer.Peer{
 		AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}},
 	})
 }
@@ -80,6 +84,39 @@ func (f *fakeMeshDialStream) Recv() (*agentpbv2.MeshDialMessage, error) {
 func (f *fakeMeshDialStream) Send(d *agentpbv2.MeshDialData) error {
 	f.out <- d
 	return nil
+}
+
+// ctxAwareMeshDialStream mimics a real gRPC server stream when the client's
+// stream/connection dies: Recv and Send unblock with the context error as
+// soon as the stream context is cancelled. No half-close frame is ever
+// delivered — cancellation is the only termination signal, modeling an
+// abrupt client disappearance.
+type ctxAwareMeshDialStream struct {
+	agentpbv2.WendyMeshService_MeshDialServer // panics if an unstubbed method is hit
+	ctx                                       context.Context
+	in                                        chan *agentpbv2.MeshDialMessage
+	out                                       chan *agentpbv2.MeshDialData
+}
+
+func (f *ctxAwareMeshDialStream) Context() context.Context { return f.ctx }
+func (f *ctxAwareMeshDialStream) Recv() (*agentpbv2.MeshDialMessage, error) {
+	select {
+	case m, ok := <-f.in:
+		if !ok {
+			return nil, io.EOF
+		}
+		return m, nil
+	case <-f.ctx.Done():
+		return nil, f.ctx.Err()
+	}
+}
+func (f *ctxAwareMeshDialStream) Send(d *agentpbv2.MeshDialData) error {
+	select {
+	case f.out <- d:
+		return nil
+	case <-f.ctx.Done():
+		return f.ctx.Err()
+	}
 }
 
 func newMeshServiceForTest(t *testing.T) (*MeshService, string) {
@@ -123,6 +160,72 @@ func TestMeshDialRequiresOpenFirst(t *testing.T) {
 	stream := &fakeMeshDialStream{ctx: ctxWithPeerCert(certWithURN(t, "urn:wendy:org:7:asset:215")), in: in}
 	if status.Code(svc.MeshDial(stream)) != codes.InvalidArgument {
 		t.Fatal("want InvalidArgument when first message is not open")
+	}
+}
+
+func TestMeshDialRejectsPortZero(t *testing.T) {
+	svc, _ := newMeshServiceForTest(t)
+	in := make(chan *agentpbv2.MeshDialMessage, 1)
+	in <- &agentpbv2.MeshDialMessage{Content: &agentpbv2.MeshDialMessage_Open{Open: &agentpbv2.MeshDialOpen{Port: 0}}}
+	stream := &fakeMeshDialStream{ctx: ctxWithPeerCert(certWithURN(t, "urn:wendy:org:7:asset:215")), in: in}
+	if status.Code(svc.MeshDial(stream)) != codes.InvalidArgument {
+		t.Fatal("want InvalidArgument for port 0")
+	}
+}
+
+// TestMeshDialUnblocksWhenClientStreamDies covers the abrupt-disconnect path:
+// the local service accepts but never writes or closes, so the local→stream
+// goroutine sits in a blocked conn.Read. When the client's stream dies (gRPC
+// cancels the stream context), MeshDial must still return instead of leaking
+// the handler, the goroutine, and the local socket.
+func TestMeshDialUnblocksWhenClientStreamDies(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- c // hold the conn open; never write, never close
+	}()
+
+	svc, _ := newMeshServiceForTest(t)
+	svc.dialLocal = func(_ string, timeout time.Duration) (net.Conn, error) {
+		return net.DialTimeout("tcp", ln.Addr().String(), timeout)
+	}
+
+	streamCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan *agentpbv2.MeshDialMessage, 1)
+	in <- &agentpbv2.MeshDialMessage{Content: &agentpbv2.MeshDialMessage_Open{Open: &agentpbv2.MeshDialOpen{Port: 8080}}}
+	stream := &ctxAwareMeshDialStream{
+		ctx: ctxWithPeerCertFrom(streamCtx, certWithURN(t, "urn:wendy:org:7:asset:215")),
+		in:  in,
+		out: make(chan *agentpbv2.MeshDialData, 4),
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- svc.MeshDial(stream) }()
+
+	// Wait until the relay has dialed the local service, so the local→stream
+	// goroutine is (about to be) parked in conn.Read before we kill the stream.
+	select {
+	case c := <-accepted:
+		defer c.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("MeshDial never dialed the local service")
+	}
+
+	cancel() // abrupt client death: gRPC cancels the stream context
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("MeshDial did not return after the client stream died")
 	}
 }
 

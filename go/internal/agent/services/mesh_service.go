@@ -111,6 +111,18 @@ func (s *MeshService) meshDisabled() bool {
 func (s *MeshService) relay(stream agentpbv2.WendyMeshService_MeshDialServer, conn net.Conn) error {
 	errCh := make(chan error, 2)
 
+	// Watcher: force-unblock a parked conn.Read when the stream dies. gRPC
+	// cancels the stream context both when the client's stream/connection
+	// dies abruptly and when this handler returns, so the local conn → stream
+	// goroutine can never stay blocked in Read forever (which would leak the
+	// goroutine, the local socket, and this handler). The graceful path
+	// (Recv EOF → CloseWrite below) still lets in-flight responses drain
+	// first; the extra Close on top of MeshDial's deferred one is harmless.
+	go func() {
+		<-stream.Context().Done()
+		conn.Close()
+	}()
+
 	go func() { // stream → local conn
 		for {
 			msg, err := stream.Recv()

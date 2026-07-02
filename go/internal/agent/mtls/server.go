@@ -127,6 +127,7 @@ func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*
 	}
 	return &tls.Config{
 		Certificates:          base.Certificates,
+		MinVersion:            base.MinVersion,
 		InsecureSkipVerify:    true, // verification is NOT disabled: VerifyPeerCertificate below performs the full (ML-DSA-aware) chain check
 		VerifyPeerCertificate: base.VerifyPeerCertificate,
 	}, nil
