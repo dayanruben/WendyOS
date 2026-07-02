@@ -20,12 +20,15 @@ const maxGPUToolOutput = 64 << 10 // 64 KiB
 const maxGPUNameLen = 64
 
 // GPUStat is a single GPU's instantaneous utilization snapshot.
+// Mem fields are nil when the sampler cannot report per-GPU memory — e.g.
+// Jetson unified memory, where nvidia-smi answers "[N/A]" because the GPU
+// shares host RAM. nil means "not applicable", which is different from 0.
 type GPUStat struct {
 	Index         uint32
 	Name          string
 	UtilPercent   float64
-	MemUsedBytes  int64
-	MemTotalBytes int64
+	MemUsedBytes  *int64
+	MemTotalBytes *int64
 	TempC         *float64
 	PowerW        *float64
 }
@@ -35,7 +38,8 @@ type GPUStat struct {
 //	nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw
 //	           --format=csv,noheader,nounits
 //
-// Memory fields are MiB. Missing/[N/A] numeric fields are treated as zero/nil.
+// Memory fields are MiB. Missing/[N/A] numeric fields are left nil so they
+// render as "not applicable" instead of a fake zero.
 func ParseNvidiaSMI(csv string) []GPUStat {
 	var out []GPUStat
 	for _, line := range strings.Split(csv, "\n") {
@@ -62,10 +66,12 @@ func ParseNvidiaSMI(csv string) []GPUStat {
 			g.UtilPercent = v
 		}
 		if v, err := strconv.ParseInt(f[3], 10, 64); err == nil {
-			g.MemUsedBytes = v * 1024 * 1024
+			used := v * 1024 * 1024
+			g.MemUsedBytes = &used
 		}
 		if v, err := strconv.ParseInt(f[4], 10, 64); err == nil {
-			g.MemTotalBytes = v * 1024 * 1024
+			total := v * 1024 * 1024
+			g.MemTotalBytes = &total
 		}
 		if len(f) > 5 {
 			if v, err := strconv.ParseFloat(f[5], 64); err == nil {
@@ -90,8 +96,8 @@ var (
 
 // ParseTegrastats extracts the integrated-GPU utilization (GR3D_FREQ) and, when
 // present, GPU temperature and power from a single tegrastats line. Jetson uses
-// unified memory, so per-GPU memory is left zero. Returns no entries when the
-// line has no GR3D_FREQ field.
+// unified memory, so per-GPU memory is left nil (not applicable). Returns no
+// entries when the line has no GR3D_FREQ field.
 func ParseTegrastats(line string) []GPUStat {
 	m := tegraGR3DRe.FindStringSubmatch(line)
 	if m == nil {

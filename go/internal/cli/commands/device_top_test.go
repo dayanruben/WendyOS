@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -124,5 +126,50 @@ func TestBuildTopJSON(t *testing.T) {
 	}
 	if out.Containers[0].CPUPercent <= 0 {
 		t.Errorf("container cpu%% = %v, want > 0", out.Containers[0].CPUPercent)
+	}
+}
+
+// Jetson unified memory: the agent leaves GPU mem fields unset because
+// nvidia-smi answers "[N/A]". The JSON must omit them (absent ≠ 0) and the
+// text renderers must say "shared" instead of "0 B / 0 B" (WDY-1808).
+func TestBuildTopJSON_GPUMemUnsetOmitted(t *testing.T) {
+	mkSample := func() topSample {
+		return topSample{
+			host: &agentpb.HostStats{
+				CpuCount: 2, MemTotalBytes: 200, MemAvailableBytes: 140,
+				Gpus: []*agentpb.GpuStats{{Name: "NVIDIA Thor", UtilPercent: 85}},
+			},
+		}
+	}
+	out := buildTopJSON(mkSample(), mkSample(), nil)
+	if len(out.Host.GPUs) != 1 {
+		t.Fatalf("gpus = %d, want 1", len(out.Host.GPUs))
+	}
+	g := out.Host.GPUs[0]
+	if g.MemUsedBytes != nil || g.MemTotalBytes != nil {
+		t.Errorf("gpu mem = %v/%v, want nil/nil", g.MemUsedBytes, g.MemTotalBytes)
+	}
+
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "memTotalBytes\":0") || strings.Contains(string(data), "memUsedBytes\":0") {
+		t.Errorf("JSON renders unset GPU memory as 0: %s", data)
+	}
+	// The host memory keys must be unaffected by the GPU omission.
+	if !strings.Contains(string(data), `"memTotalBytes":200`) {
+		t.Errorf("host memTotalBytes missing from JSON: %s", data)
+	}
+}
+
+func TestFormatGPUMem(t *testing.T) {
+	used, total := int64(1<<30), int64(6<<30)
+	got := formatGPUMem(&agentpb.GpuStats{MemUsedBytes: &used, MemTotalBytes: &total})
+	if !strings.Contains(got, "/") || strings.Contains(got, "shared") {
+		t.Errorf("formatGPUMem(set) = %q, want used / total", got)
+	}
+	if got := formatGPUMem(&agentpb.GpuStats{}); got != "shared" {
+		t.Errorf("formatGPUMem(unset) = %q, want %q", got, "shared")
 	}
 }

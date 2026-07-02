@@ -232,11 +232,14 @@ type topJSONThermal struct {
 }
 
 type topJSONGPU struct {
-	Index         uint32   `json:"index"`
-	Name          string   `json:"name"`
-	UtilPercent   float64  `json:"utilPercent"`
-	MemUsedBytes  int64    `json:"memUsedBytes"`
-	MemTotalBytes int64    `json:"memTotalBytes"`
+	Index       uint32  `json:"index"`
+	Name        string  `json:"name"`
+	UtilPercent float64 `json:"utilPercent"`
+	// Omitted when the device cannot report per-GPU memory (e.g. Jetson
+	// unified memory, where the GPU shares host RAM) — absent means "not
+	// applicable", never a real zero.
+	MemUsedBytes  *int64   `json:"memUsedBytes,omitempty"`
+	MemTotalBytes *int64   `json:"memTotalBytes,omitempty"`
 	TempC         *float64 `json:"tempC,omitempty"`
 	PowerW        *float64 `json:"powerW,omitempty"`
 }
@@ -265,8 +268,8 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				Index:         g.GetIndex(),
 				Name:          g.GetName(),
 				UtilPercent:   g.GetUtilPercent(),
-				MemUsedBytes:  g.GetMemUsedBytes(),
-				MemTotalBytes: g.GetMemTotalBytes(),
+				MemUsedBytes:  g.MemUsedBytes,
+				MemTotalBytes: g.MemTotalBytes,
 				TempC:         g.TempC,
 				PowerW:        g.PowerW,
 			})
@@ -298,6 +301,16 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 		})
 	}
 	return out
+}
+
+// formatGPUMem renders a GPU's memory as "used / total", or "shared" when the
+// device reports no per-GPU figure (Jetson unified memory: the GPU shares host
+// RAM, so nvidia-smi answers "[N/A]" — the host Mem line is the real number).
+func formatGPUMem(g *agentpb.GpuStats) string {
+	if g.MemTotalBytes == nil {
+		return "shared"
+	}
+	return fmt.Sprintf("%s / %s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
 }
 
 func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSON bool) error {
@@ -337,8 +350,8 @@ func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSO
 			formatBytes(cur.host.GetMemTotalBytes()-cur.host.GetMemAvailableBytes()),
 			formatBytes(cur.host.GetMemTotalBytes()))
 		for _, g := range cur.host.GetGpus() {
-			fmt.Printf("GPU%d %s: %.0f%%  %s / %s\n", g.GetIndex(), g.GetName(),
-				g.GetUtilPercent(), formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+			fmt.Printf("GPU%d %s: %.0f%%  %s\n", g.GetIndex(), g.GetName(),
+				g.GetUtilPercent(), formatGPUMem(g))
 		}
 		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
 			fmt.Printf("TEMP: %s\n", formatThermalZones(zones))
@@ -755,8 +768,12 @@ func (m topModel) View() string {
 
 		for _, g := range h.GetGpus() {
 			val := fmt.Sprintf("%.0f%%", g.GetUtilPercent())
-			if g.GetMemTotalBytes() > 0 {
+			if g.MemTotalBytes != nil {
 				val += fmt.Sprintf(" %s/%s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+			} else {
+				// No per-GPU figure exists (Jetson unified memory): the GPU
+				// shares host RAM — the Mem meter above is the real number.
+				val += " shared"
 			}
 			if g.TempC != nil {
 				val += fmt.Sprintf(" %.0f°C", *g.TempC)
