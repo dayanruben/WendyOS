@@ -18,8 +18,8 @@ import time
 import urllib.error
 import urllib.request
 
-# A host:port inside the mesh serviceCIDR (see wendy.json). Point this at a
-# service another device publishes into the mesh.
+# A mesh hostname:port. `device-<assetID>.cloud.wendy.dev:<port>` resolves
+# inside meshed containers and reaches that host port on the peer device.
 TARGET = os.environ.get("MESH_TARGET", "device-1.cloud.wendy.dev:8080")
 INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 URL = f"http://{TARGET}/"

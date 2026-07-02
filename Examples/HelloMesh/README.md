@@ -67,32 +67,33 @@ Logs look like:
 
 The mesh data plane is now implemented. Polling `device-<assetID>.cloud.wendy.dev:8080` reaches host port 8080 on that device — LAN-direct when both devices are on the same network, or relayed via the cloud broker when needed.
 
-**Find your device's asset ID:**
+**Find your device's asset ID** (a number, 1–65534):
 
 ```bash
-# Option 1: List devices in your org
-wendy cloud discover
+# Option 1: List devices in your org. The default table doesn't show the
+# asset ID — use --json (or the copy-JSON key) to read it.
+wendy cloud discover --json
 
 # Option 2: Check the cloud dashboard (dashboard.wendy.dev)
 ```
 
-Once you have the asset ID (e.g., `abc123xyz`), set:
+Once you have the asset ID (e.g., `215`), set:
 
 ```bash
-MESH_TARGET=device-abc123xyz.cloud.wendy.dev:8080 wendy run
+MESH_TARGET=device-215.cloud.wendy.dev:8080 wendy run
 ```
 
 On success, logs will show:
 
 ```
-[hello-mesh] OK 200 from device-abc123xyz.cloud.wendy.dev:8080: 'hello from device B'
+[hello-mesh] OK 200 from device-215.cloud.wendy.dev:8080: 'hello from device B'
 ```
 
 **Control plane notes:**
 
-- **Organization-level**: Mesh is **enabled by default**. Org admins can disable it organization-wide via the cloud API.
+- **Organization-level**: Mesh is **enabled by default**. It will be controllable org-wide (admins can disable it via the cloud API) once the cloud-side update ships.
 - **Device-level**: A device-local `mesh-disabled` file in the agent config directory (`/etc/wendy-agent/`) disables mesh serving on that device.
-- **Cloud relay**: LAN-direct peering works on this branch. Cloud relay fallback requires a cloud-side update (not yet shipped).
+- **Cloud relay**: LAN-direct peering works on this branch, but **both** devices must run this branch's agent — the serving side's `MeshDial` RPC is new, so dialing an older-agent peer fails. Cloud relay fallback requires a cloud-side update (not yet shipped).
 
 ## Debugging the plumbing
 
@@ -106,6 +107,6 @@ iptables -S WENDY-MESH
 iptables -t nat -S WENDY-MESH
 
 # Inside the container's network namespace:
-# (substitute the container PID from `docker inspect <container>` or similar)
+# (substitute the container PID from `nerdctl inspect <container>` or similar)
 nsenter -t <container-pid> -n ip route    # 10.99.0.0/16 via <bridge gateway>
 ```
