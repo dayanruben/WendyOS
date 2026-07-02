@@ -1779,13 +1779,30 @@ func TestApplyGPU_DerivesDevicesFromLiveNodes(t *testing.T) {
 		}
 	}
 
-	// One deduplicated rw (no mknod) allow rule per discovered major.
-	for _, major := range []int64{195, 487, 501} {
-		if got := countMajorRule(spec, major); got != 1 {
-			t.Errorf("major %d allow rules = %d, want exactly 1", major, got)
+	// One rw (no mknod) allow rule per discovered major:minor pair — never a
+	// whole-major rule: dynamic majors (487) come from a shared kernel pool,
+	// so an unscoped rule could cover unrelated drivers on another boot.
+	wantRules := map[[2]int64]bool{
+		{195, 0}: true, {195, 1}: true, {195, 255}: true, {195, 254}: true,
+		{487, 0}: true, {487, 1}: true, {501, 1}: true, {501, 2}: true,
+	}
+	gotRules := map[[2]int64]int{}
+	for _, d := range spec.Linux.Resources.Devices {
+		if !d.Allow || d.Major == nil {
+			continue
 		}
-		if acc, _ := majorRuleAccess(spec, major); acc != "rw" {
-			t.Errorf("major %d Access = %q, want %q (mknod must be withheld)", major, acc, "rw")
+		if d.Minor == nil {
+			t.Errorf("major %d rule has no minor; whole-major rules are forbidden on the derived path", *d.Major)
+			continue
+		}
+		if d.Access != "rw" {
+			t.Errorf("rule %d:%d Access = %q, want %q (mknod must be withheld)", *d.Major, *d.Minor, d.Access, "rw")
+		}
+		gotRules[[2]int64{*d.Major, *d.Minor}]++
+	}
+	for pair := range wantRules {
+		if gotRules[pair] != 1 {
+			t.Errorf("rule %d:%d count = %d, want exactly 1", pair[0], pair[1], gotRules[pair])
 		}
 	}
 
@@ -1826,5 +1843,32 @@ func TestApplyGPU_StaticFallbackWhenNoLiveNodes(t *testing.T) {
 	}
 	if got := countMajorRule(spec, 195); got != 1 {
 		t.Errorf("major 195 allow rules = %d, want exactly 1", got)
+	}
+}
+
+func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
+	// A character device planted under a matching glob but with a non-NVIDIA
+	// name must not be granted to the container.
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":                     {195, 0},
+		"nvidia-evil":                 {8, 0}, // e.g. a block-ish major smuggled behind a char node
+		"nvidia-caps/nvidia-backdoor": {501, 99},
+	})
+
+	spec := gpuSpec(t)
+
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-evil")); ok {
+		t.Error("GPU entitlement granted a node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-caps", "nvidia-backdoor")); ok {
+		t.Error("GPU entitlement granted a caps node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia0")); !ok {
+		t.Error("GPU entitlement dropped the legitimate nvidia0 node")
+	}
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == 8 {
+			t.Error("GPU entitlement emitted an allow rule for the rejected node's major")
+		}
 	}
 }
