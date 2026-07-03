@@ -626,6 +626,8 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
+	contextMonitor := newAppleContainerBuildContextMonitor(buildContext)
+	stdout = contextMonitor.wrapStream(stdout)
 
 	// Unique per-build tag: dest is a fresh wendy-oci-* tempdir, so concurrent
 	// invocations and watch cycles never collide on the temporary image.
@@ -655,9 +657,9 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	buildCmd := imageBuilderCommandContext(ctx, "container", args...)
 	buildCmd.Dir = buildContext
 	buildCmd.Stdout = stdout
-	buildCmd.Stderr = stderr
+	buildCmd.Stderr = stdout
 	if err := buildCmd.Run(); err != nil {
-		return &imageBuildFailedError{fmt.Errorf("container build (OCI layout) failed: %w", err)}
+		return &imageBuildFailedError{fmt.Errorf("container build (OCI layout) failed: %w", contextMonitor.wrapBuildError(err))}
 	}
 	// The image is in the store now — remove the temporary tag once we are done,
 	// even if the export below is cancelled.
