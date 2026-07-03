@@ -2,6 +2,10 @@
 
 Enrolls the connected device with Wendy Cloud (or a local [pki-core](../../../../pki/)) and provisions it with mTLS certificates.
 
+> **Note:** `wendy device enroll` is an advanced command and is not listed in
+> `wendy device --help`. It remains fully functional. For most setups, use
+> [`wendy device setup`](./setup.md) instead.
+
 ## Usage
 
 ```sh
@@ -10,9 +14,9 @@ wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
 
 ## Description
 
-`wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy auth login`](../auth/login.md) first.
+`wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
 
-The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name is fixed at enrollment time and cannot be changed afterward, so the command resolves it as follows:
+The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name can be changed later with `wendy device rename`, so the command resolves it as follows:
 
 1. **`--name <name>`** — always wins when provided.
 2. **Hostname default** — when `--name` is omitted and the device is reachable by hostname (e.g. `playful-reed.local`), the name defaults to that hostname with any `.local` suffix stripped (so `playful-reed.local` → `playful-reed`).
@@ -36,7 +40,7 @@ The enrolled device is registered in Wendy Cloud under a human-readable **name**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--name` | hostname (`.local` stripped) | Human-readable device name. Defaults to the device hostname when omitted; required when the device is reachable only by a bare IP address in a non-interactive environment. |
-| `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Required when multiple auth sessions exist. |
+| `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Overrides session selection; when omitted, the persisted default (set with `wendy auth use`) is used if available, otherwise an interactive picker appears. |
 
 ## Examples
 
@@ -57,3 +61,4 @@ wendy device enroll --device 192.168.1.11 --name lab-pi-01
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
 - [`wendy device provision`](./provision.md) — enroll against a self-hosted pki-core instead of Wendy Cloud.
+- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud.
