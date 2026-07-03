@@ -569,8 +569,14 @@ func main() {
 	if brokerURL == "" {
 		brokerURL = brokerURLForCloudHost(cloudHost)
 	}
-	meshDialer := services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
-	meshProxy := mesh.NewProxy(logger, meshDialer)
+	meshMetrics := services.NewMeshMetrics(telemetryBuf, logger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		meshMetrics.Collect(ctx)
+	}()
+	meshDialer := services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
+	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
 	}
