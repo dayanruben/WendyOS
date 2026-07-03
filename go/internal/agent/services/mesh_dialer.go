@@ -48,7 +48,8 @@ type meshIdentity struct {
 // MeshDialer implements mesh.PeerDialer: LAN-direct MeshDial when the peer is
 // discoverable locally, cloud-broker ClientTunnel otherwise.
 type MeshDialer struct {
-	logger *zap.Logger
+	logger  *zap.Logger
+	metrics *MeshMetrics
 
 	// Seams (overridden in tests).
 	lanLookup  func(ctx context.Context, assetID int32) (hostport string, ok bool)
@@ -68,10 +69,12 @@ type lanCacheEntry struct {
 
 // NewMeshDialer builds a MeshDialer. certPEM/keyPEM/chainPEM are this
 // device's mTLS asset identity, used both to dial peers directly on the LAN
-// and to authenticate to the cloud tunnel broker.
-func NewMeshDialer(logger *zap.Logger, brokerURL string, orgID, assetID int32, certPEM, keyPEM, chainPEM string) *MeshDialer {
+// and to authenticate to the cloud tunnel broker. metrics may be nil (e.g. in
+// tests); RecordDial no-ops on a nil *MeshMetrics.
+func NewMeshDialer(logger *zap.Logger, brokerURL string, orgID, assetID int32, certPEM, keyPEM, chainPEM string, metrics *MeshMetrics) *MeshDialer {
 	d := &MeshDialer{
-		logger: logger,
+		logger:  logger,
+		metrics: metrics,
 		ident: meshIdentity{
 			brokerURL: brokerURL,
 			orgID:     orgID,
@@ -119,17 +122,36 @@ func (d *MeshDialer) identity() meshIdentity {
 }
 
 // DialDevice opens a byte stream to port on the given mesh device. ctx bounds
-// dialing only; the returned conn has an independent lifetime.
-func (d *MeshDialer) DialDevice(ctx context.Context, deviceID int32, port uint16) (net.Conn, error) {
+// dialing only; the returned conn has an independent lifetime. It returns the
+// mode that succeeded ("lan-direct" or "relay") so callers (mesh.Proxy) can
+// label their own logs/metrics without re-deriving it; on error mode is "".
+//
+// DialDevice is the authority on dial mode/result/timing: it records
+// mesh.connections + mesh.dial.duration_ms for each leg it attempts (the
+// failed LAN leg included, when it falls back to the broker).
+func (d *MeshDialer) DialDevice(ctx context.Context, deviceID int32, port uint16) (net.Conn, string, error) {
 	if hostport, ok := d.lanAddr(ctx, deviceID); ok {
+		lanStart := d.now()
 		conn, err := d.dialLAN(ctx, hostport, deviceID, port)
+		durMs := float64(d.now().Sub(lanStart).Milliseconds())
 		if err == nil {
-			return conn, nil
+			d.metrics.RecordDial(deviceID, "lan-direct", "ok", durMs)
+			return conn, "lan-direct", nil
 		}
+		d.metrics.RecordDial(deviceID, "lan-direct", "error", durMs)
 		d.logger.Warn("mesh: LAN dial failed, falling back to cloud relay",
 			zap.Int32("device_id", deviceID), zap.String("lan_addr", hostport), zap.Error(err))
 	}
-	return d.dialBroker(ctx, deviceID, port)
+
+	brokerStart := d.now()
+	conn, err := d.dialBroker(ctx, deviceID, port)
+	durMs := float64(d.now().Sub(brokerStart).Milliseconds())
+	if err != nil {
+		d.metrics.RecordDial(deviceID, "relay", "error", durMs)
+		return nil, "", err
+	}
+	d.metrics.RecordDial(deviceID, "relay", "ok", durMs)
+	return conn, "relay", nil
 }
 
 // lanAddr resolves deviceID to a LAN hostport, consulting (and refreshing) the
