@@ -224,7 +224,10 @@ Represent `otel-localhost-only` as a Swift E2E test that checks the agent target
 from the CLI side:
 
 ```swift
-try await cli.sh("nc -z -w 3 \(agent.machine.address) 4317") { result in
+// Validate and quote every interpolated value; see the shell-safety helpers
+// in LegacyIntegrationTests.swift (validatedHost / shellQuote).
+let host = try Self.validatedHost(agent.machine.address)
+try await cli.sh("nc -z -w 3 \(Self.shellQuote(host)) 4317") { result in
     #expect(result.status.isFailure)
 }
 ```
@@ -255,11 +258,14 @@ struct `'wendy run app integration fixtures'` {
     @Test
     func `deploys the Python hello fixture`() async throws {
         try await self.scenario.run { cli, agent in
-            let agentAddress = agent.machine.address
+            // Validate and quote every interpolated value; see the
+            // shell-safety helpers in LegacyIntegrationTests.swift.
+            let agentAddress = try Self.validatedHost(agent.machine.address)
             let fixture = try AppIntegrationFixture.pythonHello.path(on: cli)
 
             try await cli.sh(
-                "wendy run --device \(agentAddress) --prefix \(fixture)"
+                "wendy run --device \(Self.shellQuote(agentAddress)) "
+                    + "--prefix \(Self.shellQuote(fixture))"
             ) { result in
                 #expect(result.status.isSuccess)
                 #expect(result.stderr.isEmpty)

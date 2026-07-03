@@ -332,7 +332,7 @@ struct `legacy integration tests` {
                 "run",
                 "--device", Self.validatedHost(device),
                 "--prefix", fixture,
-            ] + extraArguments)
+            ] + extraArguments.map(Self.validatedRunArgument))
     }
 
     private static func wendyCommand(_ arguments: [String]) throws -> ShellCommand {
@@ -364,12 +364,19 @@ struct `legacy integration tests` {
                 .path
     }
 
-    private static func path(_ first: String, _ rest: String...) -> String {
+    /// Joins path components onto a validated root. Components must be single
+    /// directory names — separators and traversal components are rejected so
+    /// a refactor that sources them from variables cannot escape the root.
+    private static func path(_ first: String, _ rest: String...) throws -> String {
         let separator = first.contains("\\") && !first.contains("/") ? "\\" : "/"
-        return rest.reduce(first) { path, component in
-            let suffix = component.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+        return try rest.reduce(first) { path, component in
+            guard component != "..", component != ".",
+                !component.contains("/"), !component.contains("\\")
+            else {
+                throw ShellSafetyError("path component contains unsupported characters")
+            }
             return path.hasSuffix("/") || path.hasSuffix("\\")
-                ? "\(path)\(suffix)" : "\(path)\(separator)\(suffix)"
+                ? "\(path)\(component)" : "\(path)\(separator)\(component)"
         }
     }
 
@@ -384,11 +391,15 @@ struct `legacy integration tests` {
     /// Accepts hostnames, IPv4, and IPv6 addresses (including bracketed forms
     /// and zone indices). Anything else — in particular whitespace, quotes,
     /// and shell metacharacters — is rejected before command construction.
+    /// The original scalars are validated, never a case-folded copy, so the
+    /// returned value is exactly what was checked.
     private static func validatedHost(_ value: String) throws -> String {
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.:%-[]")
-        guard !value.isEmpty,
-            value.lowercased().unicodeScalars.allSatisfy(allowed.contains)
-        else {
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyz"
+                + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                + "0123456789.:%-[]"
+        )
+        guard !value.isEmpty, value.unicodeScalars.allSatisfy(allowed.contains) else {
             throw ShellSafetyError("device address contains unsupported characters")
         }
         return value
@@ -399,6 +410,17 @@ struct `legacy integration tests` {
             throw ShellSafetyError("port \(port) is out of range")
         }
         return port
+    }
+
+    /// Extra `wendy run` arguments are flags and service names. Everything in
+    /// this suite is a string literal, but the allowlist keeps that true for
+    /// future callers: only lowercase alphanumerics and hyphens survive.
+    private static func validatedRunArgument(_ value: String) throws -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+        guard !value.isEmpty, value.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ShellSafetyError("run argument contains unsupported characters")
+        }
+        return value
     }
 
     /// Fixture names are directory names under `.github/ci-tests` and must
@@ -413,7 +435,10 @@ struct `legacy integration tests` {
 
     /// The repository root comes from `WENDY_E2E_CLI_REPO_DIR` or the
     /// compile-time source location. It must be an absolute path without
-    /// traversal components so fixture paths cannot escape the repository.
+    /// traversal components so fixture paths cannot escape the repository,
+    /// and it is restricted to characters expected in filesystem paths —
+    /// quotes and shell metacharacters are rejected outright rather than
+    /// left for the quoting layer to neutralize.
     private static func validatedRepositoryRoot(_ path: String) throws -> String {
         let isPosixAbsolute = path.hasPrefix("/")
         let isWindowsAbsolute = path.count >= 3
@@ -428,7 +453,14 @@ struct `legacy integration tests` {
             throw ShellSafetyError("repository root must not contain traversal components")
         }
 
-        try Self.validateShellArgument(path)
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyz"
+                + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                + "0123456789 ._:/\\-"
+        )
+        guard path.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ShellSafetyError("repository root contains unsupported characters")
+        }
         return path
     }
 
