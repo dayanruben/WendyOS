@@ -340,33 +340,39 @@ const maxHandshakeTimeoutRetries = 2
 // offerCertRefreshAndRetry's "enrolled timeout" branch, this runs
 // unconditionally (no interactive prompt, no jsonOutput gate) because
 // retrying a bare timeout has no side effects and no plausible downside — it
-// only ever repeats the same connect attempt. Returns (conn, true) only once
-// a retry connects; if every retry also times out (or the failure stops
-// looking like a timeout, e.g. the device now rejects the cert outright), the
-// caller falls through to its existing error handling — including the
-// interactive cert-refresh offer, so a persistently-unreachable device still
-// gets that diagnosis rather than hanging here indefinitely.
-func retryOnHandshakeTimeout(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
+// only ever repeats the same connect attempt.
+//
+// Returns (conn, nil, true) once a retry connects. On failure it returns
+// (nil, cause, false) where cause is the *freshest* error observed: if a retry
+// stops looking like a timeout (e.g. the device now rejects the cert outright),
+// that newer, more specific error is surfaced instead of the original timeout,
+// so the caller's downstream handling — including the interactive cert-refresh
+// offer — diagnoses the real failure rather than the flake. A persistently
+// timing-out or genuinely-unreachable device still fails in bounded time.
+func retryOnHandshakeTimeout(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, error, bool) {
 	if !isReachabilityTimeoutError(cause) || isCertRefreshableError(cause) {
-		return nil, false
+		return nil, cause, false
 	}
 	for attempt := 1; attempt <= maxHandshakeTimeoutRetries; attempt++ {
 		if ctx.Err() != nil {
-			return nil, false
+			return nil, cause, false
 		}
 		if !jsonOutput {
-			fmt.Fprintf(os.Stderr, "mTLS handshake timed out; retrying (%d/%d)...\n", attempt, maxHandshakeTimeoutRetries)
+			// The trigger is any timeout-class error (isReachabilityTimeoutError
+			// also matches a bare dial timeout to a down device), not strictly a
+			// handshake stall, so keep the wording generic.
+			fmt.Fprintf(os.Stderr, "connection timed out; retrying (%d/%d)...\n", attempt, maxHandshakeTimeoutRetries)
 		}
 		conn, err := retry()
 		if err == nil {
-			return conn, true
-		}
-		if !isReachabilityTimeoutError(err) || isCertRefreshableError(err) {
-			return nil, false
+			return conn, nil, true
 		}
 		cause = err
+		if !isReachabilityTimeoutError(err) || isCertRefreshableError(err) {
+			return nil, cause, false
+		}
 	}
-	return nil, false
+	return nil, cause, false
 }
 
 func (e provisionedAgentUnauthorizedError) Is(target error) bool {
@@ -834,9 +840,13 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
-			if retriedConn, ok := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
-			}); ok {
+			})
+			// retryOnHandshakeTimeout hands back the freshest error it saw, so a
+			// retry that revealed a more specific failure (e.g. a cert rejection)
+			// now drives the branches below instead of the original timeout.
+			if retried {
 				conn = retriedConn
 			} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)

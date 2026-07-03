@@ -31,15 +31,15 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 
 		wantConn := &grpcclient.AgentConnection{Host: "device.local"}
 		var calls int
-		conn, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
+		conn, err, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
 			calls++
 			if calls < 2 {
 				return nil, timeoutErr
 			}
 			return wantConn, nil
 		})
-		if !ok || conn != wantConn {
-			t.Fatalf("retryOnHandshakeTimeout() = (%v, %v), want (%v, true)", conn, ok, wantConn)
+		if !ok || conn != wantConn || err != nil {
+			t.Fatalf("retryOnHandshakeTimeout() = (%v, %v, %v), want (%v, nil, true)", conn, err, ok, wantConn)
 		}
 		if calls != 2 {
 			t.Fatalf("retry calls = %d, want 2", calls)
@@ -51,11 +51,11 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		defer restore()
 
 		wantConn := &grpcclient.AgentConnection{Host: "device.local"}
-		conn, ok := retryOnHandshakeTimeout(context.Background(), deadlineErr, func() (*grpcclient.AgentConnection, error) {
+		conn, err, ok := retryOnHandshakeTimeout(context.Background(), deadlineErr, func() (*grpcclient.AgentConnection, error) {
 			return wantConn, nil
 		})
-		if !ok || conn != wantConn {
-			t.Fatalf("retryOnHandshakeTimeout() = (%v, %v), want (%v, true)", conn, ok, wantConn)
+		if !ok || conn != wantConn || err != nil {
+			t.Fatalf("retryOnHandshakeTimeout() = (%v, %v, %v), want (%v, nil, true)", conn, err, ok, wantConn)
 		}
 	})
 
@@ -64,12 +64,15 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		defer restore()
 
 		var calls int
-		_, ok := retryOnHandshakeTimeout(context.Background(), certRejectedErr, func() (*grpcclient.AgentConnection, error) {
+		_, err, ok := retryOnHandshakeTimeout(context.Background(), certRejectedErr, func() (*grpcclient.AgentConnection, error) {
 			calls++
 			return nil, nil
 		})
 		if ok {
 			t.Fatal("expected ok=false for a certificate rejection")
+		}
+		if err != certRejectedErr {
+			t.Fatalf("returned error = %v, want the original cause %v passed through unchanged", err, certRejectedErr)
 		}
 		if calls != 0 {
 			t.Fatalf("retry calls = %d, want 0 (must not retry cert rejections)", calls)
@@ -81,12 +84,15 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		defer restore()
 
 		var calls int
-		_, ok := retryOnHandshakeTimeout(context.Background(), otherErr, func() (*grpcclient.AgentConnection, error) {
+		_, err, ok := retryOnHandshakeTimeout(context.Background(), otherErr, func() (*grpcclient.AgentConnection, error) {
 			calls++
 			return nil, nil
 		})
 		if ok {
 			t.Fatal("expected ok=false for an unrelated error")
+		}
+		if err != otherErr {
+			t.Fatalf("returned error = %v, want the original cause %v passed through unchanged", err, otherErr)
 		}
 		if calls != 0 {
 			t.Fatalf("retry calls = %d, want 0", calls)
@@ -98,12 +104,15 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		defer restore()
 
 		var calls int
-		_, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
+		_, err, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
 			calls++
 			return nil, timeoutErr
 		})
 		if ok {
 			t.Fatal("expected ok=false when every retry also times out")
+		}
+		if err != timeoutErr {
+			t.Fatalf("returned error = %v, want the last timeout %v", err, timeoutErr)
 		}
 		if calls != maxHandshakeTimeoutRetries {
 			t.Fatalf("retry calls = %d, want %d", calls, maxHandshakeTimeoutRetries)
@@ -115,12 +124,18 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		defer restore()
 
 		var calls int
-		_, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
+		_, err, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
 			calls++
 			return nil, certRejectedErr
 		})
 		if ok {
 			t.Fatal("expected ok=false once a retry reveals a genuine rejection")
+		}
+		// The fresher, more specific error must be surfaced so the caller's
+		// downstream handling (cert-refresh offer) diagnoses the real failure
+		// instead of the original timeout.
+		if err != certRejectedErr {
+			t.Fatalf("returned error = %v, want the fresher rejection %v surfaced to the caller", err, certRejectedErr)
 		}
 		if calls != 1 {
 			t.Fatalf("retry calls = %d, want 1 (must stop immediately on a non-timeout failure)", calls)
@@ -135,7 +150,7 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		cancel()
 
 		var calls int
-		_, ok := retryOnHandshakeTimeout(ctx, timeoutErr, func() (*grpcclient.AgentConnection, error) {
+		_, _, ok := retryOnHandshakeTimeout(ctx, timeoutErr, func() (*grpcclient.AgentConnection, error) {
 			calls++
 			return nil, nil
 		})
@@ -153,11 +168,11 @@ func TestRetryOnHandshakeTimeout(t *testing.T) {
 		jsonOutput = true
 
 		wantConn := &grpcclient.AgentConnection{Host: "device.local"}
-		conn, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
+		conn, err, ok := retryOnHandshakeTimeout(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
 			return wantConn, nil
 		})
-		if !ok || conn != wantConn {
-			t.Fatalf("retryOnHandshakeTimeout() = (%v, %v), want (%v, true)", conn, ok, wantConn)
+		if !ok || conn != wantConn || err != nil {
+			t.Fatalf("retryOnHandshakeTimeout() = (%v, %v, %v), want (%v, nil, true)", conn, err, ok, wantConn)
 		}
 	})
 }

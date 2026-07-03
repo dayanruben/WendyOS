@@ -430,15 +430,22 @@ func TestMTLSBudgetInvariants(t *testing.T) {
 	}
 
 	// A truly-unreachable device must still fail in a bounded time, not
-	// minutes: retryOnHandshakeTimeout only fires on top of a single
-	// connectWithAutoTLSDiagnostics attempt (at most a couple of
-	// mtlsProbeTimeout-bounded probes for the plaintext/mTLS address
-	// candidates), so the worst case is roughly
-	// (maxHandshakeTimeoutRetries+1) full attempts.
-	const maxSaneDirectConnectBudget = 60 * time.Second
-	worstCase := time.Duration(maxHandshakeTimeoutRetries+1) * 2 * mtlsProbeTimeout
-	if worstCase > maxSaneDirectConnectBudget {
-		t.Fatalf("worst-case direct-connect budget = %s ((retries+1) * addresses * mtlsProbeTimeout), want <= %s so a genuinely-down device fails in bounded time", worstCase, maxSaneDirectConnectBudget)
+	// minutes. Note the total is NOT a fixed wall-clock number: a single
+	// connectWithAutoTLSDiagnostics attempt probes 2 address candidates
+	// (plaintextAddr and port+1) for *each* stored certificate and then makes
+	// one agentPlaintextProbeTimeout-bounded plaintext probe, so the true worst
+	// case scales with len(loadAllCLICerts()). retryOnHandshakeTimeout only
+	// multiplies that by (maxHandshakeTimeoutRetries+1). Guard the two factors
+	// this change actually controls: the retry multiplier stays small, and a
+	// single-certificate attempt (the common case) stays well under a minute.
+	if maxHandshakeTimeoutRetries > 3 {
+		t.Fatalf("maxHandshakeTimeoutRetries = %d, want <= 3 so a genuinely-down device isn't retried into a multi-minute stall", maxHandshakeTimeoutRetries)
+	}
+	const maxSanePerCertBudget = 60 * time.Second
+	singleCertAttempt := 2*mtlsProbeTimeout + agentPlaintextProbeTimeout
+	worstCasePerCert := time.Duration(maxHandshakeTimeoutRetries+1) * singleCertAttempt
+	if worstCasePerCert > maxSanePerCertBudget {
+		t.Fatalf("worst-case per-certificate direct-connect budget = %s ((retries+1) * (2*mtlsProbeTimeout + agentPlaintextProbeTimeout)), want <= %s so a genuinely-down device with one stored cert fails in bounded time", worstCasePerCert, maxSanePerCertBudget)
 	}
 }
 
