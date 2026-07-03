@@ -132,6 +132,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
+			var memTotalBytes int64
+			var cpuCount uint32
 			var partitions []*agentpb.DiskPartition
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
@@ -169,6 +171,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuArch = resp.GetGpuArch()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
+				memTotalBytes = resp.GetMemTotalBytes()
+				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
 				netInterfaces = resp.GetNetworkInterfaces()
 			} else {
@@ -211,6 +215,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if diskUsedBytes != nil && diskTotalBytes != nil {
 					out["diskUsedBytes"] = *diskUsedBytes
 					out["diskTotalBytes"] = *diskTotalBytes
+				}
+				if memTotalBytes > 0 {
+					out["memTotalBytes"] = memTotalBytes
+				}
+				if cpuCount > 0 {
+					out["cpuCount"] = cpuCount
 				}
 				if len(partitions) > 0 {
 					parts := make([]map[string]any, len(partitions))
@@ -265,6 +275,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
 			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
 			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
+			if cpuCount > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("CPU Cores:"), tui.Value(fmt.Sprintf("%d", cpuCount)))
+			}
+			if memTotalBytes > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("Memory:"), tui.Value(formatBytes(memTotalBytes)))
+			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
