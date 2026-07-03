@@ -609,9 +609,9 @@ jobs:
           if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN}" ]]; then
             echo "==> Probing Claude Code subscription auth"
             # Probe output can quote fragments of the failing credential or the
-            # HTTP response; keep it out of the public Actions log.
+            # HTTP response; discard it entirely — only the exit status matters.
             if timeout 120 claude --model claude-haiku-4-5 --print 'Reply with: ok' \
-              > "${RUNNER_TEMP}/claude-auth-probe.log" 2>&1; then
+              > /dev/null 2>&1; then
               auth_mode="subscription"
               echo "Claude Code subscription auth verified."
             else
