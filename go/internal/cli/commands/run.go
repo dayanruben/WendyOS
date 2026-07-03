@@ -1531,17 +1531,35 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
 }
 
-// startAndStreamContainer handles the deploy/detach/attached lifecycle that is
-// shared between runSwiftWithAgent and runWithAgent. It creates the container,
-// optionally starts it, streams output, and manages readiness + postStart hooks.
-// resolveServiceEnv flattens the per-service `env` maps from wendy.json into
-// the "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may
-// reference host environment variables via ${VAR} (or $VAR); they are expanded
-// here, on the deploy host, since the agent has no access to this shell's
-// environment. An entry whose value expands to empty is dropped so the
-// container falls back to its own built-in default rather than receiving an
-// empty override. Output is sorted for deterministic requests; the agent
-// re-validates every entry (POSIX key, blocked prefixes) before applying it.
+// expandServiceEnv resolves one service's `env` map from wendy.json into the
+// "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may reference
+// host environment variables via ${VAR} (or $VAR); they are expanded here, on
+// the deploy host, since the agent has no access to this shell's environment.
+// An entry whose value expands to empty is dropped so the container falls
+// back to its own built-in default rather than receiving an empty override.
+// Output is sorted for deterministic requests; the agent re-validates every
+// entry (POSIX key, blocked prefixes) before applying it.
+func expandServiceEnv(svc *appconfig.ServiceConfig) []string {
+	if svc == nil || len(svc.Env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(svc.Env))
+	for k, v := range svc.Env {
+		if expanded := os.Expand(v, os.Getenv); expanded != "" {
+			out = append(out, k+"="+expanded)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolveServiceEnv merges expandServiceEnv across every service in appCfg,
+// for single-service deploy paths that build one CreateContainerRequest for
+// the whole app rather than one per service (see multibuild.go for the
+// per-service path, which calls expandServiceEnv directly).
 func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 	if appCfg == nil {
 		return nil
@@ -1555,14 +1573,9 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 
 	merged := map[string]string{}
 	for _, name := range svcNames {
-		svc := appCfg.Services[name]
-		if svc == nil {
-			continue
-		}
-		for k, v := range svc.Env {
-			if expanded := os.Expand(v, os.Getenv); expanded != "" {
-				merged[k] = expanded
-			}
+		for _, kv := range expandServiceEnv(appCfg.Services[name]) {
+			k, v, _ := strings.Cut(kv, "=")
+			merged[k] = v
 		}
 	}
 	if len(merged) == 0 {
@@ -1576,6 +1589,9 @@ func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 	return out
 }
 
+// startAndStreamContainer handles the deploy/detach/attached lifecycle that is
+// shared between runSwiftWithAgent and runWithAgent. It creates the container,
+// optionally starts it, streams output, and manages readiness + postStart hooks.
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
 	if opts.deploy {
 		_, err := conn.ContainerService.CreateContainer(ctx, createReq)
