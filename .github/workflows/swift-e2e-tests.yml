@@ -452,10 +452,24 @@ jobs:
           fi
 
           echo "==> Swift not preinstalled; installing via swiftly"
+          swiftly_version="1.1.3"
           architecture="$(uname -m)"
+          case "$architecture" in
+            x86_64)
+              swiftly_sha256="4c4adb7b7ad7910f38c52b94a938c309586fe395e1fe1538c397384ee36bfff0"
+              ;;
+            aarch64)
+              swiftly_sha256="cc4f912fff6c7f53704fc6d22f9e8ee7fdf6bd574ad276998f7502418bf5a45a"
+              ;;
+            *)
+              echo "::error::No pinned swiftly checksum for architecture: ${architecture}"
+              exit 1
+              ;;
+          esac
           temporary_dir="$(mktemp -d)"
-          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${architecture}.tar.gz" \
+          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${swiftly_version}-${architecture}.tar.gz" \
             -o "$temporary_dir/swiftly.tar.gz"
+          echo "${swiftly_sha256}  $temporary_dir/swiftly.tar.gz" | sha256sum --check --strict
           tar -xzf "$temporary_dir/swiftly.tar.gz" -C "$temporary_dir"
           (
             cd "$temporary_dir"
@@ -594,27 +608,28 @@ jobs:
 
           if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN}" ]]; then
             echo "==> Probing Claude Code subscription auth"
-            if probe_output="$(timeout 120 claude --model claude-haiku-4-5 --print 'Reply with: ok' 2>&1)"; then
+            # Probe output can quote fragments of the failing credential or the
+            # HTTP response; keep it out of the public Actions log.
+            if timeout 120 claude --model claude-haiku-4-5 --print 'Reply with: ok' \
+              > "${RUNNER_TEMP}/claude-auth-probe.log" 2>&1; then
               auth_mode="subscription"
               echo "Claude Code subscription auth verified."
             else
               failure_reason="CLAUDE_CODE_OAUTH_TOKEN is configured but failed an auth probe (expired or revoked?)"
               echo "::warning::Swift E2E AI review: ${failure_reason}."
-              printf '%s\n' "${probe_output}" | tail -n 5
             fi
           else
             failure_reason="CLAUDE_CODE_OAUTH_TOKEN secret is not configured"
             echo "::warning::Swift E2E AI review: ${failure_reason}."
           fi
 
-          if [[ "${auth_mode}" == "subscription" ]]; then
-            echo "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}" >> "$GITHUB_ENV"
-          elif [[ -n "${ANTHROPIC_API_KEY}" ]]; then
-            auth_mode="api-key"
-            echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> "$GITHUB_ENV"
-            echo "::warning::Swift E2E AI review: falling back to ANTHROPIC_API_KEY (per-token billing)."
-          else
-            echo "::warning::Swift E2E AI review: no ANTHROPIC_API_KEY fallback configured; the review will be skipped."
+          if [[ "${auth_mode}" != "subscription" ]]; then
+            if [[ -n "${ANTHROPIC_API_KEY}" ]]; then
+              auth_mode="api-key"
+              echo "::warning::Swift E2E AI review: falling back to ANTHROPIC_API_KEY (per-token billing)."
+            else
+              echo "::warning::Swift E2E AI review: no ANTHROPIC_API_KEY fallback configured; the review will be skipped."
+            fi
           fi
           echo "auth_mode=${auth_mode}" >> "$GITHUB_OUTPUT"
 
@@ -672,12 +687,12 @@ jobs:
                   ]
                 }
               ]
-            }' > "${RUNNER_TEMP}/slack-auth-warning.json"
-          curl --fail --silent --show-error \
-            -X POST \
-            -H 'Content-type: application/json' \
-            --data @"${RUNNER_TEMP}/slack-auth-warning.json" \
-            "${SLACK_WEBHOOK_URL}" \
+            }' \
+            | curl --fail --silent --show-error \
+                -X POST \
+                -H 'Content-type: application/json' \
+                --data @- \
+                "${SLACK_WEBHOOK_URL}" \
             || echo "::warning::Failed to post the Slack auth warning."
 
       - name: Verify AI review harness
@@ -702,6 +717,9 @@ jobs:
         shell: bash
         env:
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
+          # Expose exactly one credential, chosen by the auth probe above.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.review-auth.outputs.auth_mode == 'subscription' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          ANTHROPIC_API_KEY: ${{ steps.review-auth.outputs.auth_mode == 'api-key' && secrets.ANTHROPIC_API_KEY || '' }}
         run: |
           set -euo pipefail
           review_args=(--run-dir "${{ steps.e2e-run.outputs.run_dir }}")
