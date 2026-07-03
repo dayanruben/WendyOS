@@ -768,9 +768,21 @@ func templateNextSteps(cwd, destDir, appID string) []string {
 	return []string{"cd " + shellQuote(appID), "wendy run"}
 }
 
-// resolveInitDestAndID determines the destination directory and app ID for template flow.
-// In fully interactive mode it asks whether to initialize in the current directory
-// or create a new project subdirectory.
+// confirmInitCurrentDir and promptInitProjectName are variables so tests can
+// replace the Bubble Tea prompts with canned answers.
+var confirmInitCurrentDir = func() (bool, error) {
+	return tui.ConfirmDefaultYes("Initialize in the current directory?")
+}
+
+var promptInitProjectName = func() (string, error) {
+	return tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
+}
+
+// resolveInitDestAndID determines the destination directory and app ID for
+// the template flow. An explicit app ID (positional or --app-id) answers
+// both; otherwise the user is asked on an interactive terminal. Flags that
+// answer other questions (--target, entitlement flags, ...) never suppress
+// these prompts (WDY-1805).
 func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, error) {
 	// Explicit app ID provided: always create a new subdirectory.
 	if len(args) > 0 || opts.appIDSet {
@@ -781,28 +793,30 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 		return filepath.Join(cwd, appID), appID, nil
 	}
 
-	// Fully interactive (no directive flags): ask where to set up the project.
-	if !opts.targetSet && !opts.entitlementsSet && !opts.allEntitlements && !opts.noExtraEntitlements {
-		fmt.Println()
-		useCurrentDir, err := tui.ConfirmDefaultYes("Initialize in the current directory?")
-		if err != nil {
-			return "", "", err
-		}
-		if useCurrentDir {
-			return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
-		}
-
-		fmt.Println()
-		appID, err := tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
-		if err != nil {
-			return "", "", err
-		}
-		appID = strings.TrimSpace(appID)
-		return filepath.Join(cwd, appID), appID, nil
+	if !isInteractiveTerminal() {
+		return "", "", fmt.Errorf("an app ID is required when running non-interactively; pass --app-id or an [app-id] argument")
 	}
 
-	// Semi-interactive or non-interactive without explicit app ID: infer from cwd.
-	return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
+	fmt.Println()
+	useCurrentDir, err := confirmInitCurrentDir()
+	if err != nil {
+		return "", "", err
+	}
+	if useCurrentDir {
+		appID := strings.TrimSpace(filepath.Base(cwd))
+		if err := validateNewProjectName(appID); err != nil {
+			return "", "", fmt.Errorf("current directory name %q cannot be used as the app ID: %w; rerun with --app-id", appID, err)
+		}
+		return cwd, appID, nil
+	}
+
+	fmt.Println()
+	appID, err := promptInitProjectName()
+	if err != nil {
+		return "", "", err
+	}
+	appID = strings.TrimSpace(appID)
+	return filepath.Join(cwd, appID), appID, nil
 }
 
 func validateNewProjectName(value string) error {
