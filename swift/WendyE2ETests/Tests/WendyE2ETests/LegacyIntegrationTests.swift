@@ -156,9 +156,12 @@ struct `legacy integration tests` {
      */
     @Test
     func `python-multiservice`() async throws {
+        // The legacy fixtures pre-date CLI auth and `go/scripts/test-ci.sh`
+        // runs them unauthenticated; authenticated variants are tracked as a
+        // migration follow-up.
         try await self.scenario.run(authenticated: false) { cli, agent in
             let device = agent.machine.address
-            let fixture = Self.fixturePath("python-multiservice")
+            let fixture = try Self.fixturePath("python-multiservice")
 
             try await Self.assertWendyRunSucceeds(
                 on: cli,
@@ -173,7 +176,7 @@ struct `legacy integration tests` {
                 extraArguments: ["--deploy", "--service", "api"]
             )
 
-            let command = Self.wendyRunCommand(
+            let command = try Self.wendyRunCommand(
                 device: device,
                 fixture: fixture,
                 extraArguments: ["--deploy", "--service", "ghost"]
@@ -215,6 +218,9 @@ struct `legacy integration tests` {
      */
     @Test
     func `otel-localhost-only`() async throws {
+        // The legacy fixtures pre-date CLI auth and `go/scripts/test-ci.sh`
+        // runs them unauthenticated; authenticated variants are tracked as a
+        // migration follow-up.
         try await self.scenario.run(authenticated: false) { cli, agent in
             let device = agent.machine.address
 
@@ -230,6 +236,9 @@ struct `legacy integration tests` {
         extraArguments: [String] = [],
         requiresGPU: Bool = false
     ) async throws {
+        // The legacy fixtures pre-date CLI auth and `go/scripts/test-ci.sh`
+        // runs them unauthenticated; authenticated variants are tracked as a
+        // migration follow-up.
         try await self.scenario.run(authenticated: false) { cli, agent in
             let device = agent.machine.address
             if requiresGPU {
@@ -255,7 +264,7 @@ struct `legacy integration tests` {
         fixture: String,
         extraArguments: [String] = []
     ) async throws {
-        let command = Self.wendyRunCommand(
+        let command = try Self.wendyRunCommand(
             device: device,
             fixture: fixture,
             extraArguments: extraArguments
@@ -270,6 +279,9 @@ struct `legacy integration tests` {
         host: String,
         port: Int
     ) async throws {
+        let host = try Self.validatedHost(host)
+        let port = try Self.validatedPort(port)
+
         try await cli.sh(
             posix: "! nc -z -w 3 \(Self.shellQuote(host)) \(port) 2>/dev/null",
             power: """
@@ -285,8 +297,8 @@ struct `legacy integration tests` {
         on cli: WendyE2ESession,
         device: String
     ) async throws -> Bool {
-        let command = Self.wendyCommand([
-            "--device", device,
+        let command = try Self.wendyCommand([
+            "--device", Self.validatedHost(device),
             "device", "info",
             "--json",
         ])
@@ -303,6 +315,7 @@ struct `legacy integration tests` {
     }
 
     private static func recordSkip(on cli: WendyE2ESession, _ reason: String) async throws {
+        try Self.validateShellArgument(reason)
         try await cli.sh(
             posix: "printf '%s\\n' \(Self.shellQuote("SKIP: \(reason)"))",
             power: "Write-Output \(Self.powerShellQuote("SKIP: \(reason)"))"
@@ -313,23 +326,31 @@ struct `legacy integration tests` {
         device: String,
         fixture: String,
         extraArguments: [String] = []
-    ) -> ShellCommand {
-        Self.wendyCommand([
-            "run",
-            "--device", device,
-            "--prefix", fixture,
-        ] + extraArguments)
+    ) throws -> ShellCommand {
+        try Self.wendyCommand(
+            [
+                "run",
+                "--device", Self.validatedHost(device),
+                "--prefix", fixture,
+            ] + extraArguments)
     }
 
-    private static func wendyCommand(_ arguments: [String]) -> ShellCommand {
-        ShellCommand(
+    private static func wendyCommand(_ arguments: [String]) throws -> ShellCommand {
+        for argument in arguments {
+            try Self.validateShellArgument(argument)
+        }
+        return ShellCommand(
             posix: (["wendy"] + arguments.map(Self.shellQuote)).joined(separator: " "),
             power: (["wendy"] + arguments.map(Self.powerShellQuote)).joined(separator: " ")
         )
     }
 
-    private static func fixturePath(_ name: String) -> String {
-        Self.path(Self.repositoryRootPathOnCLIMachine, ".github", "ci-tests", name)
+    private static func fixturePath(_ name: String) throws -> String {
+        try Self.path(
+            Self.validatedRepositoryRoot(Self.repositoryRootPathOnCLIMachine),
+            ".github", "ci-tests",
+            Self.validatedFixtureName(name)
+        )
     }
 
     private static var repositoryRootPathOnCLIMachine: String {
@@ -352,12 +373,92 @@ struct `legacy integration tests` {
         }
     }
 
+    // MARK: - Shell Safety
+
+    /**
+     Values interpolated into remote shell commands are validated against
+     strict allowlists before they are quoted. Validation is the primary
+     defense; the single-quote wrappers below are only a second layer.
+     */
+
+    /// Accepts hostnames, IPv4, and IPv6 addresses (including bracketed forms
+    /// and zone indices). Anything else — in particular whitespace, quotes,
+    /// and shell metacharacters — is rejected before command construction.
+    private static func validatedHost(_ value: String) throws -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.:%-[]")
+        guard !value.isEmpty,
+            value.lowercased().unicodeScalars.allSatisfy(allowed.contains)
+        else {
+            throw ShellSafetyError("device address contains unsupported characters")
+        }
+        return value
+    }
+
+    private static func validatedPort(_ port: Int) throws -> Int {
+        guard (1...65535).contains(port) else {
+            throw ShellSafetyError("port \(port) is out of range")
+        }
+        return port
+    }
+
+    /// Fixture names are directory names under `.github/ci-tests` and must
+    /// never introduce separators or traversal components.
+    private static func validatedFixtureName(_ name: String) throws -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+        guard !name.isEmpty, name.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ShellSafetyError("fixture name contains unsupported characters")
+        }
+        return name
+    }
+
+    /// The repository root comes from `WENDY_E2E_CLI_REPO_DIR` or the
+    /// compile-time source location. It must be an absolute path without
+    /// traversal components so fixture paths cannot escape the repository.
+    private static func validatedRepositoryRoot(_ path: String) throws -> String {
+        let isPosixAbsolute = path.hasPrefix("/")
+        let isWindowsAbsolute = path.count >= 3
+            && path[path.index(path.startIndex, offsetBy: 1)] == ":"
+            && (path.hasPrefix("\(path.first!):\\") || path.hasPrefix("\(path.first!):/"))
+        guard isPosixAbsolute || isWindowsAbsolute else {
+            throw ShellSafetyError("repository root must be an absolute path")
+        }
+
+        let components = path.split(whereSeparator: { $0 == "/" || $0 == "\\" })
+        guard !components.contains("..") else {
+            throw ShellSafetyError("repository root must not contain traversal components")
+        }
+
+        try Self.validateShellArgument(path)
+        return path
+    }
+
+    /// Every argument is single-quoted for both shells, which neutralizes
+    /// spaces, quotes, and expansion. Control characters (newlines above all)
+    /// are the known bypass vector for quoted strings, so they are rejected
+    /// outright.
+    private static func validateShellArgument(_ value: String) throws {
+        let hasControlCharacters = value.unicodeScalars.contains { scalar in
+            scalar.properties.generalCategory == .control
+        }
+        guard !hasControlCharacters else {
+            throw ShellSafetyError("shell argument contains control characters")
+        }
+    }
+
     private static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func powerShellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
+    }
+
+    private struct ShellSafetyError: Error, CustomStringConvertible {
+        let description: String
+
+        init(_ description: String) {
+            self.description = description
+        }
     }
 
     private struct ShellCommand: Sendable {
