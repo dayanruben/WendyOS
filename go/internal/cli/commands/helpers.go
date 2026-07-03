@@ -41,15 +41,29 @@ const agentPlaintextProbeTimeout = 3 * time.Second
 
 // mtlsProbeTimeout bounds a single mTLS connect+probe. The dial target is
 // already an IP (resolveAddrOnce), so this only needs to cover TCP + TLS
-// handshake; keeping it tight stops an unreachable/plaintext-only mTLS port
+// handshake; keeping it bounded stops an unreachable/plaintext-only mTLS port
 // from stalling the connect before the plaintext fallback.
-const mtlsProbeTimeout = 3 * time.Second
+//
+// Provisioned devices authenticate with post-quantum ML-DSA certificates,
+// whose handshake is noticeably slower on constrained hardware (Jetson,
+// Raspberry Pi) than a classical ECDSA/RSA handshake — ~2.2s observed on a
+// quiet device, but under load (CPU contention from an app, concurrent
+// connects, etc.) it has been observed exceeding a 3s budget entirely. When
+// that happens the probe context is cancelled mid-handshake, the direct
+// device-connect path (connectAgentAtAddressWithProvisionedHint) reports it
+// as a timeout, and connectToAgent surfaces a misleading "Unauthorized" error
+// even though the device accepted the client certificate — it just didn't
+// finish in time. 7s gives comfortable headroom above the slowest handshakes
+// observed on hardware while still failing a truly-unreachable device in a
+// bounded time (see retryOnHandshakeTimeout for the belt-and-braces retry on
+// top of this budget).
+const mtlsProbeTimeout = 7 * time.Second
 
 // lanAddressProbeTimeout bounds a single candidate address in the discover/
 // picker version probe (resolveLANAgentVersion). It wraps connectWithAutoTLS,
 // whose successful path for a provisioned device costs a TCP+TLS handshake plus
-// one mtlsProbeTimeout GetAgentVersion probe (~2.2s observed). A budget shorter
-// than mtlsProbeTimeout therefore cancelled the mTLS probe before it could
+// one mtlsProbeTimeout GetAgentVersion probe. A budget shorter than
+// mtlsProbeTimeout therefore cancelled the mTLS probe before it could
 // answer, leaving provisioned rows — especially USB devices, probed via .local
 // first — stuck on the failure glyph even though `wendy device info` (which
 // connects with the un-capped root context) succeeded. Derive it from
@@ -279,6 +293,57 @@ func autoSyncTimeAndRetry(ctx context.Context, cause error, retry func() (*grpcc
 		return nil, false
 	}
 	return conn, true
+}
+
+// maxHandshakeTimeoutRetries bounds automatic retries of a direct device
+// connection that failed with a handshake-timeout-class error (see
+// isReachabilityTimeoutError) rather than a genuine rejection. Post-quantum
+// ML-DSA mTLS handshakes are slow enough on constrained hardware (Jetson,
+// Raspberry Pi) that even the widened mtlsProbeTimeout occasionally isn't
+// enough under load; retrying turns that one-in-a-few flake into a reliable
+// connect instead of surfacing a misleading "Unauthorized" error for a device
+// that is up and holds a perfectly valid certificate.
+const maxHandshakeTimeoutRetries = 2
+
+// retryOnHandshakeTimeout automatically retries a direct device connection up
+// to maxHandshakeTimeoutRetries times when cause is a transient mTLS
+// handshake timeout rather than a genuine certificate rejection. Unlike
+// offerCertRefreshAndRetry's "enrolled timeout" branch, this runs
+// unconditionally (no interactive prompt, no jsonOutput gate) because
+// retrying a bare timeout has no side effects and no plausible downside — it
+// only ever repeats the same connect attempt.
+//
+// Returns (conn, nil, true) once a retry connects. On failure it returns
+// (nil, cause, false) where cause is the *freshest* error observed: if a retry
+// stops looking like a timeout (e.g. the device now rejects the cert outright),
+// that newer, more specific error is surfaced instead of the original timeout,
+// so the caller's downstream handling — including the interactive cert-refresh
+// offer — diagnoses the real failure rather than the flake. A persistently
+// timing-out or genuinely-unreachable device still fails in bounded time.
+func retryOnHandshakeTimeout(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, error, bool) {
+	if !isReachabilityTimeoutError(cause) || isCertRefreshableError(cause) {
+		return nil, cause, false
+	}
+	for attempt := 1; attempt <= maxHandshakeTimeoutRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, cause, false
+		}
+		if !jsonOutput {
+			// The trigger is any timeout-class error (isReachabilityTimeoutError
+			// also matches a bare dial timeout to a down device), not strictly a
+			// handshake stall, so keep the wording generic.
+			fmt.Fprintf(os.Stderr, "connection timed out; retrying (%d/%d)...\n", attempt, maxHandshakeTimeoutRetries)
+		}
+		conn, err := retry()
+		if err == nil {
+			return conn, nil, true
+		}
+		cause = err
+		if !isReachabilityTimeoutError(err) || isCertRefreshableError(err) {
+			return nil, cause, false
+		}
+	}
+	return nil, cause, false
 }
 
 func (e provisionedAgentUnauthorizedError) Is(target error) bool {
@@ -746,7 +811,15 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
-			if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			})
+			// retryOnHandshakeTimeout hands back the freshest error it saw, so a
+			// retry that revealed a more specific failure (e.g. a cert rejection)
+			// now drives the branches below instead of the original timeout.
+			if retried {
+				conn = retriedConn
+			} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			}); ok {
 				conn = syncedConn
