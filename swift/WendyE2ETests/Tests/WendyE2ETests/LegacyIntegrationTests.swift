@@ -478,6 +478,15 @@ struct `legacy integration tests` {
             "--app", Self.validatedAppID(appID),
             "--tail", "50",
         ])
+        // The single-line wendy invocations are embedded in fixed multi-line
+        // templates below. Re-check the composed pieces so a future change to
+        // wendyCommand cannot smuggle a newline into the template, and no
+        // brace can terminate the PowerShell script block early.
+        guard !logs.posix.contains("\n"), !logs.power.contains("\n"),
+            !logs.power.contains("{"), !logs.power.contains("}")
+        else {
+            throw ShellSafetyError("composed device-logs command contains unsupported characters")
+        }
         return ShellCommand(
             posix: """
                 logfile=$(mktemp)
@@ -588,16 +597,17 @@ struct `legacy integration tests` {
      defense; the single-quote wrappers below are only a second layer.
      */
 
-    /// Accepts hostnames, IPv4, and IPv6 addresses (including bracketed forms
-    /// and zone indices). Anything else — in particular whitespace, quotes,
-    /// and shell metacharacters — is rejected before command construction.
-    /// The original scalars are validated, never a case-folded copy, so the
-    /// returned value is exactly what was checked.
+    /// Accepts hostnames, IPv4, and IPv6 addresses (including bracketed
+    /// forms). Anything else — in particular whitespace, quotes, and shell
+    /// metacharacters — is rejected before command construction. IPv6 zone
+    /// indices (`%`) are deliberately unsupported; CI targets never need
+    /// them. The original scalars are validated, never a case-folded copy,
+    /// so the returned value is exactly what was checked.
     private static func validatedHost(_ value: String) throws -> String {
         let allowed = CharacterSet(
             charactersIn: "abcdefghijklmnopqrstuvwxyz"
                 + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                + "0123456789.:%-[]"
+                + "0123456789.:-[]"
         )
         guard !value.isEmpty, value.unicodeScalars.allSatisfy(allowed.contains) else {
             throw ShellSafetyError("device address contains unsupported characters")
@@ -666,9 +676,15 @@ struct `legacy integration tests` {
     /// left for the quoting layer to neutralize.
     private static func validatedRepositoryRoot(_ path: String) throws -> String {
         let isPosixAbsolute = path.hasPrefix("/")
-        let isWindowsAbsolute = path.count >= 3
-            && path[path.index(path.startIndex, offsetBy: 1)] == ":"
-            && (path.hasPrefix("\(path.first!):\\") || path.hasPrefix("\(path.first!):/"))
+        let isWindowsAbsolute: Bool = {
+            guard path.count >= 3, let drive = path.unicodeScalars.first,
+                CharacterSet.letters.contains(drive)
+            else {
+                return false
+            }
+            let afterDrive = path.dropFirst()
+            return afterDrive.hasPrefix(":\\") || afterDrive.hasPrefix(":/")
+        }()
         guard isPosixAbsolute || isWindowsAbsolute else {
             throw ShellSafetyError("repository root must be an absolute path")
         }
@@ -695,14 +711,16 @@ struct `legacy integration tests` {
     /// Every argument is single-quoted for both shells, which neutralizes
     /// spaces, quotes, and expansion. Control and format characters (newlines
     /// and bidirectional overrides above all) are the known bypass vectors
-    /// for quoted strings, so they are rejected outright.
+    /// for quoted strings, so they are rejected outright, along with `$` and
+    /// backtick — the characters most likely to survive a quoting bug.
     private static func validateShellArgument(_ value: String) throws {
         let hasUnsafeCharacters = value.unicodeScalars.contains { scalar in
             scalar.properties.generalCategory == .control
                 || scalar.properties.generalCategory == .format
+                || scalar == "$" || scalar == "`"
         }
         guard !hasUnsafeCharacters else {
-            throw ShellSafetyError("shell argument contains control or format characters")
+            throw ShellSafetyError("shell argument contains unsupported characters")
         }
     }
 

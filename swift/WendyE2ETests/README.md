@@ -68,7 +68,10 @@ make e2e-test-macos DEVICE=mac-mini.local
 
 The `legacy integration tests` suite preserves parity with `go/scripts/test-ci.sh`
 by deploying fixtures from `.github/ci-tests/`. It is skipped by default because
-it requires Docker/buildx and a real WendyOS target.
+it requires Docker/buildx and a real WendyOS target. In CI, set
+`WENDY_E2E_LEGACY_INTEGRATION` only in protected, non-fork workflows: the suite
+deploys apps to a real device, so it must never run against untrusted pull
+requests.
 
 ```bash
 WENDY_E2E_LEGACY_INTEGRATION=true \
