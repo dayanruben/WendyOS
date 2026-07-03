@@ -116,6 +116,7 @@ func (p *Proxy) handleConn(conn net.Conn) {
 			zap.String("mesh.peer", strconv.Itoa(int(deviceID))),
 			zap.String("mesh.mode", mode),
 			zap.Uint32("mesh.port", uint32(dst.Port())),
+			zap.String("mesh.result", "error"),
 			zap.Error(err))
 		return
 	}
