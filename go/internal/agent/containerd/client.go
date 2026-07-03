@@ -714,8 +714,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Build environment variables.
-	// Order: image built-in env → user-provided env (from request) → Wendy system env → OTEL injection.
-	// Wendy vars appear last so they always win in OCI semantics (last KEY wins).
+	// Order: image built-in env → user-provided env (from request) → PATH/TERM
+	// defaults (only when absent) → Wendy system env → OTEL injection.
+	// WENDY_* vars appear last so they always win in OCI semantics (last KEY
+	// wins); PATH and TERM are generic fallbacks that must not clobber values
+	// the image or the caller already set (WDY-1825).
 	wendyEnv, err := buildContainerBaseEnv(appID, serviceName)
 	if err != nil {
 		return fmt.Errorf("building container env: %w", err)
@@ -728,6 +731,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		env = append(env, imageSpec.Config.Env...)
 	}
 	env = append(env, req.GetEnv()...)
+	env = appendFallbackEnv(env)
 	env = append(env, wendyEnv...)
 	env = append(env, buildROS2Env(appCfg, appID, serviceName)...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
@@ -1291,7 +1295,47 @@ var deviceHostnameWithSuffix = func() string {
 	return h + ".local"
 }
 
-// buildContainerBaseEnv builds the base environment variables for a container.
+// fallbackContainerEnv holds generic default env entries that are injected
+// only when neither the image config nor the caller defines the same key.
+// Unlike the WENDY_* identity vars (which are appended last so they always
+// win), these are plain fallbacks: appending them unconditionally after the
+// image env would silently clobber image-set values under OCI last-one-wins
+// semantics — e.g. CUDA images ship PATH=/usr/local/cuda/bin:… which a
+// trailing generic PATH discarded (WDY-1825).
+var fallbackContainerEnv = []string{
+	"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	"TERM=xterm",
+}
+
+// appendFallbackEnv appends each fallbackContainerEnv entry to env unless env
+// already defines the same key. It must be called after the image env and the
+// caller-supplied env have been merged.
+func appendFallbackEnv(env []string) []string {
+	for _, def := range fallbackContainerEnv {
+		key, _, _ := strings.Cut(def, "=")
+		if !envHasKey(env, key) {
+			env = append(env, def)
+		}
+	}
+	return env
+}
+
+// envHasKey reports whether env contains an entry that sets key (an exact
+// "KEY=" prefix match).
+func envHasKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildContainerBaseEnv builds the Wendy identity environment variables for a
+// container. These are appended after the image/user env so they always win
+// (last KEY wins in OCI semantics); generic defaults like PATH and TERM live
+// in fallbackContainerEnv instead so they never clobber image values.
 //
 // Precondition: appID must pass ValidateAppID and serviceName (when non-empty)
 // must pass ValidateServiceName. CreateContainerWithProgress enforces this at
@@ -1328,10 +1372,7 @@ func buildContainerBaseEnv(appID, serviceName string) ([]string, error) {
 		}
 	}
 
-	env := []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"TERM=xterm",
-	}
+	var env []string
 	deviceHost := deviceHostnameWithSuffix()
 	if serviceName != "" {
 		// Multi-service: hostname is the service name, not the device hostname.
