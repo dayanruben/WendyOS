@@ -235,11 +235,11 @@ type topJSONGPU struct {
 	Index       uint32  `json:"index"`
 	Name        string  `json:"name"`
 	UtilPercent float64 `json:"utilPercent"`
-	// Omitted when the device cannot report per-GPU memory (e.g. Jetson
-	// unified memory, where the GPU shares host RAM) — absent means "not
-	// applicable", never a real zero.
-	MemUsedBytes  *int64   `json:"memUsedBytes,omitempty"`
-	MemTotalBytes *int64   `json:"memTotalBytes,omitempty"`
+	// Omitted (zero) when the device cannot report per-GPU memory (e.g.
+	// Jetson unified memory, where the GPU shares host RAM) — absent means
+	// "not applicable", never a real size.
+	MemUsedBytes  int64    `json:"memUsedBytes,omitempty"`
+	MemTotalBytes int64    `json:"memTotalBytes,omitempty"`
 	TempC         *float64 `json:"tempC,omitempty"`
 	PowerW        *float64 `json:"powerW,omitempty"`
 }
@@ -268,8 +268,8 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				Index:         g.GetIndex(),
 				Name:          g.GetName(),
 				UtilPercent:   g.GetUtilPercent(),
-				MemUsedBytes:  g.MemUsedBytes,
-				MemTotalBytes: g.MemTotalBytes,
+				MemUsedBytes:  g.GetMemUsedBytes(),
+				MemTotalBytes: g.GetMemTotalBytes(),
 				TempC:         g.TempC,
 				PowerW:        g.PowerW,
 			})
@@ -307,7 +307,7 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 // device reports no per-GPU figure (Jetson unified memory: the GPU shares host
 // RAM, so nvidia-smi answers "[N/A]" — the host Mem line is the real number).
 func formatGPUMem(g *agentpb.GpuStats) string {
-	if g.MemTotalBytes == nil {
+	if g.GetMemTotalBytes() == 0 {
 		return "shared"
 	}
 	return fmt.Sprintf("%s / %s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
@@ -768,7 +768,7 @@ func (m topModel) View() string {
 
 		for _, g := range h.GetGpus() {
 			val := fmt.Sprintf("%.0f%%", g.GetUtilPercent())
-			if g.MemTotalBytes != nil {
+			if g.GetMemTotalBytes() > 0 {
 				val += fmt.Sprintf(" %s/%s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
 			} else {
 				// No per-GPU figure exists (Jetson unified memory): the GPU

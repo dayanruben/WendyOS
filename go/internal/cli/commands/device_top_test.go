@@ -129,9 +129,9 @@ func TestBuildTopJSON(t *testing.T) {
 	}
 }
 
-// Jetson unified memory: the agent leaves GPU mem fields unset because
-// nvidia-smi answers "[N/A]". The JSON must omit them (absent ≠ 0) and the
-// text renderers must say "shared" instead of "0 B / 0 B" (WDY-1808).
+// Jetson unified memory: the agent leaves GPU mem fields zero because
+// nvidia-smi answers "[N/A]". The JSON must omit them and the text renderers
+// must say "shared" instead of "0 B / 0 B" (WDY-1808).
 func TestBuildTopJSON_GPUMemUnsetOmitted(t *testing.T) {
 	mkSample := func() topSample {
 		return topSample{
@@ -146,8 +146,8 @@ func TestBuildTopJSON_GPUMemUnsetOmitted(t *testing.T) {
 		t.Fatalf("gpus = %d, want 1", len(out.Host.GPUs))
 	}
 	g := out.Host.GPUs[0]
-	if g.MemUsedBytes != nil || g.MemTotalBytes != nil {
-		t.Errorf("gpu mem = %v/%v, want nil/nil", g.MemUsedBytes, g.MemTotalBytes)
+	if g.MemUsedBytes != 0 || g.MemTotalBytes != 0 {
+		t.Errorf("gpu mem = %d/%d, want 0/0", g.MemUsedBytes, g.MemTotalBytes)
 	}
 
 	data, err := json.Marshal(out)
@@ -164,8 +164,7 @@ func TestBuildTopJSON_GPUMemUnsetOmitted(t *testing.T) {
 }
 
 func TestFormatGPUMem(t *testing.T) {
-	used, total := int64(1<<30), int64(6<<30)
-	got := formatGPUMem(&agentpb.GpuStats{MemUsedBytes: &used, MemTotalBytes: &total})
+	got := formatGPUMem(&agentpb.GpuStats{MemUsedBytes: 1 << 30, MemTotalBytes: 6 << 30})
 	if !strings.Contains(got, "/") || strings.Contains(got, "shared") {
 		t.Errorf("formatGPUMem(set) = %q, want used / total", got)
 	}
