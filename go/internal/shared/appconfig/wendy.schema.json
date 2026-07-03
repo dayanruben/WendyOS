@@ -97,6 +97,19 @@
             "serviceCIDR": {
               "type": "string",
               "description": "The mesh service CIDR the container may reach (must be a valid CIDR, IPv4 or IPv6). Required when mode is \"mesh\"; invalid for any other mode."
+            },
+            "ports": {
+              "type": "array",
+              "description": "Host→container port mappings to publish for this service (e.g. so mesh peers can reach a server it runs).",
+              "items": {
+                "type": "object",
+                "required": ["host", "container"],
+                "additionalProperties": false,
+                "properties": {
+                  "host": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Host port to publish on." },
+                  "container": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Container port to forward to." }
+                }
+              }
             }
           },
           "required": ["type"],
