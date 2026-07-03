@@ -408,6 +408,40 @@ func TestResolveLANAgentVersionAllowsMTLSHandshakeTime(t *testing.T) {
 	}
 }
 
+// TestMTLSBudgetInvariants guards the timeout-budget relationships explained
+// in the comments on mtlsProbeTimeout/lanAddressProbeTimeout, so a future edit
+// can't silently invert or shrink them below what a slow post-quantum ML-DSA
+// handshake on constrained hardware (Jetson, Raspberry Pi) needs. Regressing
+// any of these was the direct cause of two prior flakes: provisioned LAN rows
+// stuck on the failure glyph (PR #1297/#1309) and, most recently, direct
+// `wendy device` commands intermittently reporting a spurious "Unauthorized"
+// for a device that was actually up and holding a valid certificate.
+func TestMTLSBudgetInvariants(t *testing.T) {
+	const minTolerableHandshake = 6 * time.Second
+
+	if mtlsProbeTimeout < minTolerableHandshake {
+		t.Fatalf("mtlsProbeTimeout = %s, want >= %s to tolerate a slow ML-DSA handshake on constrained hardware", mtlsProbeTimeout, minTolerableHandshake)
+	}
+	if lanAddressProbeTimeout <= mtlsProbeTimeout {
+		t.Fatalf("lanAddressProbeTimeout (%s) must be strictly greater than mtlsProbeTimeout (%s), or a single mTLS probe can be cancelled before it answers", lanAddressProbeTimeout, mtlsProbeTimeout)
+	}
+	if headroom := lanAddressProbeTimeout - mtlsProbeTimeout; headroom < time.Second {
+		t.Fatalf("lanAddressProbeTimeout headroom over mtlsProbeTimeout = %s, want >= 1s so the two budgets can't converge to the point of flaking again", headroom)
+	}
+
+	// A truly-unreachable device must still fail in a bounded time, not
+	// minutes: retryOnHandshakeTimeout only fires on top of a single
+	// connectWithAutoTLSDiagnostics attempt (at most a couple of
+	// mtlsProbeTimeout-bounded probes for the plaintext/mTLS address
+	// candidates), so the worst case is roughly
+	// (maxHandshakeTimeoutRetries+1) full attempts.
+	const maxSaneDirectConnectBudget = 60 * time.Second
+	worstCase := time.Duration(maxHandshakeTimeoutRetries+1) * 2 * mtlsProbeTimeout
+	if worstCase > maxSaneDirectConnectBudget {
+		t.Fatalf("worst-case direct-connect budget = %s ((retries+1) * addresses * mtlsProbeTimeout), want <= %s so a genuinely-down device fails in bounded time", worstCase, maxSaneDirectConnectBudget)
+	}
+}
+
 // setTempConfig points HOME at a temp dir and writes cfg via config.Save so
 // the test uses the same serialisation path as production code. t.Setenv
 // automatically restores the original HOME when the test finishes.
