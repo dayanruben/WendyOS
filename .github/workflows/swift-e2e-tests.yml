@@ -45,6 +45,10 @@ on:
     secrets:
       WENDY_E2E_SLACK_WEBHOOK_URL:
         required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
 
 concurrency:
   group: swift-e2e-tests-${{ github.ref }}
@@ -423,12 +427,70 @@ jobs:
     needs:
       - swift-e2e-local-macos
       - swift-e2e-local-ubuntu
-    runs-on: [self-hosted, AI]
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CLAUDE_CODE_VERSION: '2.1.199'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+
+      - name: Ensure Swift toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in "$HOME/.swiftly/bin" "$HOME/.local/share/swiftly/bin" /usr/share/swift/usr/bin; do
+            if [[ -d "$dir" ]]; then
+              echo "$dir" >> "$GITHUB_PATH"
+              export PATH="$dir:$PATH"
+            fi
+          done
+          if command -v swift >/dev/null 2>&1; then
+            swift --version
+            exit 0
+          fi
+
+          echo "==> Swift not preinstalled; installing via swiftly"
+          architecture="$(uname -m)"
+          temporary_dir="$(mktemp -d)"
+          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${architecture}.tar.gz" \
+            -o "$temporary_dir/swiftly.tar.gz"
+          tar -xzf "$temporary_dir/swiftly.tar.gz" -C "$temporary_dir"
+          (
+            cd "$temporary_dir"
+            ./swiftly init --assume-yes --quiet-shell-followup --platform ubuntu24.04
+          )
+          swiftly_env="${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          # shellcheck disable=SC1090
+          . "$swiftly_env"
+          (
+            cd "$HOME"
+            swiftly install --use latest --assume-yes
+          )
+          rm -rf "$temporary_dir"
+          echo "${SWIFTLY_BIN_DIR:-$HOME/.local/share/swiftly/bin}" >> "$GITHUB_PATH"
+          swift --version
+
+      - name: Capture Swift toolchain version
+        id: swift-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(swift --version | head -n 1 | tr -cs '[:alnum:]._-' '-')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM package resolution
+        uses: actions/cache@v5
+        with:
+          path: |
+            swift/WendyE2ETests/.build/checkouts
+            swift/WendyE2ETests/.build/repositories
+            ~/.cache/org.swift.swiftpm
+          key: swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain.outputs.version }}-${{ hashFiles('swift/WendyE2ETests/Package.resolved') }}
+          restore-keys: |
+            swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain.outputs.version }}-
+            swift-e2e-swiftpm-${{ runner.os }}-
 
       - name: Compute Swift E2E run ID
         id: e2e-run
@@ -510,21 +572,113 @@ jobs:
             --output-dir "${RUNNER_TEMP}/wendy" \
             "${attempt_dirs[@]}"
 
-      - name: Configure self-hosted tool PATH
+      - name: Install Claude Code
         shell: bash
         run: |
           set -euo pipefail
-          for dir in \
-            /opt/homebrew/bin \
-            /usr/local/bin \
-            "$HOME/.local/bin" \
-            "$HOME/bin" \
-            "$HOME/.npm-global/bin"
-          do
-            if [[ -d "$dir" ]]; then
-              echo "$dir" >> "$GITHUB_PATH"
+          npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          claude --version
+
+      - name: Resolve AI review auth
+        id: review-auth
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
+          SLACK_WEBHOOK_URL: ${{ secrets.WENDY_E2E_SLACK_WEBHOOK_URL || '' }}
+        run: |
+          set -euo pipefail
+
+          auth_mode="none"
+          failure_reason=""
+
+          if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN}" ]]; then
+            echo "==> Probing Claude Code subscription auth"
+            if probe_output="$(timeout 120 claude --model claude-haiku-4-5 --print 'Reply with: ok' 2>&1)"; then
+              auth_mode="subscription"
+              echo "Claude Code subscription auth verified."
+            else
+              failure_reason="CLAUDE_CODE_OAUTH_TOKEN is configured but failed an auth probe (expired or revoked?)"
+              echo "::warning::Swift E2E AI review: ${failure_reason}."
+              printf '%s\n' "${probe_output}" | tail -n 5
             fi
-          done
+          else
+            failure_reason="CLAUDE_CODE_OAUTH_TOKEN secret is not configured"
+            echo "::warning::Swift E2E AI review: ${failure_reason}."
+          fi
+
+          if [[ "${auth_mode}" == "subscription" ]]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}" >> "$GITHUB_ENV"
+          elif [[ -n "${ANTHROPIC_API_KEY}" ]]; then
+            auth_mode="api-key"
+            echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> "$GITHUB_ENV"
+            echo "::warning::Swift E2E AI review: falling back to ANTHROPIC_API_KEY (per-token billing)."
+          else
+            echo "::warning::Swift E2E AI review: no ANTHROPIC_API_KEY fallback configured; the review will be skipped."
+          fi
+          echo "auth_mode=${auth_mode}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${auth_mode}" == "subscription" ]]; then
+            exit 0
+          fi
+          if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
+            echo "WENDY_E2E_SLACK_WEBHOOK_URL is not configured; skipping Slack auth warning."
+            exit 0
+          fi
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fallback_note="Falling back to ANTHROPIC_API_KEY (per-token billing)."
+          if [[ "${auth_mode}" == "none" ]]; then
+            fallback_note="No ANTHROPIC_API_KEY fallback configured either; the AI review was skipped."
+          fi
+          jq -n \
+            --arg reason "${failure_reason}" \
+            --arg fallback "${fallback_note}" \
+            --arg run_url "${run_url}" \
+            '{
+              attachments: [
+                {
+                  color: "#f59e0b",
+                  blocks: [
+                    {
+                      type: "header",
+                      text: {
+                        type: "plain_text",
+                        text: "⚠️ Swift E2E AI review subscription auth",
+                        emoji: true
+                      }
+                    },
+                    {
+                      type: "section",
+                      text: { type: "mrkdwn", text: "\($reason).\n\($fallback)" }
+                    },
+                    {
+                      type: "section",
+                      text: {
+                        type: "mrkdwn",
+                        text: "Runbook: run `claude setup-token` while signed in as ci@wendy.sh, then update the `CLAUDE_CODE_OAUTH_TOKEN` repository secret."
+                      }
+                    },
+                    {
+                      type: "actions",
+                      elements: [
+                        {
+                          type: "button",
+                          text: { type: "plain_text", text: "Open GitHub Actions" },
+                          url: $run_url
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }' > "${RUNNER_TEMP}/slack-auth-warning.json"
+          curl --fail --silent --show-error \
+            -X POST \
+            -H 'Content-type: application/json' \
+            --data @"${RUNNER_TEMP}/slack-auth-warning.json" \
+            "${SLACK_WEBHOOK_URL}" \
+            || echo "::warning::Failed to post the Slack auth warning."
 
       - name: Verify AI review harness
         shell: bash
