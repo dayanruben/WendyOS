@@ -459,6 +459,13 @@ private func codexSubscriptionConfigured() -> Bool {
 }
 
 private func claudeCodeSubscriptionConfigured() -> Bool {
+    // Ephemeral CI runners have no signed-in credentials file; they export a
+    // long-lived subscription token minted by `claude setup-token` instead.
+    let oauthToken = ProcessInfo.processInfo.environment["CLAUDE_CODE_OAUTH_TOKEN", default: ""]
+    if !oauthToken.isEmpty {
+        return true
+    }
+
     if claudeCredentialsContainSubscriptionAuth() {
         return true
     }
