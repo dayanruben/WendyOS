@@ -17,6 +17,7 @@ package flashengine
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -45,6 +46,11 @@ type Options struct {
 	// DryRun logs the nvdd/adb command stream without touching the device.
 	DryRun bool
 	Out    io.Writer
+	// Progress, when set, receives cumulative bytes pushed to the device against
+	// an estimated total (the sum of the plan's image file sizes). Transfer bytes
+	// only: device-side writes and verification don't advance it, and push
+	// retries or expanded sparse fill regions can overshoot the total.
+	Progress func(written, total int64)
 }
 
 // device-side paths.
@@ -71,8 +77,12 @@ type partition struct {
 	MD5      string
 }
 
-// Run performs the stage-2 flash.
-func Run(t Transport, opts Options) error {
+// Run performs the stage-2 flash. ctx aborts it between transport operations
+// (chunks are ≤10 MiB, so cancellation lands within seconds).
+func Run(ctx context.Context, t Transport, opts Options) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
@@ -84,7 +94,16 @@ func Run(t Transport, opts Options) error {
 	}
 	fmt.Fprintf(out, "Flashing %d partitions (dry-run=%v)\n", len(parts), opts.DryRun)
 
-	e := &engine{t: t, opts: opts, out: out}
+	// Estimated bytes to transfer, for Progress: the plan's image files summed
+	// per entry (A/B partitions push their image once each).
+	var total int64
+	for _, p := range parts {
+		if fi, err := os.Stat(filepath.Join(opts.FlashImagesDir, filepath.Base(p.FileName))); err == nil {
+			total += fi.Size()
+		}
+	}
+
+	e := &engine{ctx: ctx, t: t, opts: opts, out: out, progressTotal: total}
 
 	// Device setup: push nvdd and make it executable.
 	if err := e.setup(); err != nil {
@@ -107,9 +126,40 @@ func Run(t Transport, opts Options) error {
 }
 
 type engine struct {
+	ctx  context.Context
 	t    Transport
 	opts Options
 	out  io.Writer
+
+	// Progress accounting (single flash goroutine; no locking).
+	progressTotal   int64
+	progressWritten int64
+}
+
+// addProgress advances the transfer byte count and reports it. Called from the
+// counting reader wrapped around partition-image pushes (setup's nvdd push is
+// not counted — it isn't part of the estimated total).
+func (e *engine) addProgress(n int64) {
+	if e.opts.Progress == nil {
+		return
+	}
+	e.progressWritten += n
+	e.opts.Progress(e.progressWritten, e.progressTotal)
+}
+
+// countingReader reports bytes read from r (i.e. pushed to the device) to the
+// engine's progress accounting.
+type countingReader struct {
+	r io.Reader
+	e *engine
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.e.addProgress(int64(n))
+	}
+	return n, err
 }
 
 // setup pushes nvdd to the device and marks it executable.
@@ -336,6 +386,9 @@ func (e *engine) shellOut(cmd string) (string, error) {
 		e.logf("shell: %s", cmd)
 		return "", nil
 	}
+	if err := e.ctx.Err(); err != nil {
+		return "", err
+	}
 	return e.t.Shell(cmd)
 }
 
@@ -359,11 +412,14 @@ func (e *engine) push(localFile, remote string, mode int) error {
 	// attempt re-opens the file and a fresh sync stream.
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		if err := e.ctx.Err(); err != nil {
+			return err
+		}
 		f, err := os.Open(localFile)
 		if err != nil {
 			return err
 		}
-		err = e.t.Push(f, remote, mode)
+		err = e.t.Push(&countingReader{r: f, e: e}, remote, mode)
 		f.Close()
 		if err == nil {
 			return nil
@@ -380,7 +436,10 @@ func (e *engine) pushBytes(b []byte, remote string, mode int) error {
 	}
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := e.t.Push(bytes.NewReader(b), remote, mode); err == nil {
+		if err := e.ctx.Err(); err != nil {
+			return err
+		}
+		if err := e.t.Push(&countingReader{r: bytes.NewReader(b), e: e}, remote, mode); err == nil {
 			return nil
 		} else {
 			lastErr = err
