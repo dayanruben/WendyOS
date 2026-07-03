@@ -746,7 +746,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
-		Logger:             c.logger,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
