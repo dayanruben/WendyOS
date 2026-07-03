@@ -79,6 +79,12 @@ MESH_SELF=215 MESH_PEERS=1,2,215 wendy run
 full mesh hostnames (`device-215.cloud.wendy.dev:8080`). Bare IDs expand to
 `device-<id>.cloud.wendy.dev:8080`.
 
+Those `MESH_*` shell variables reach the container because the `node` service
+declares an `env` block in [`wendy.json`](./wendy.json) whose values reference
+`${MESH_PEERS}` etc.; `wendy run` expands them from your shell at deploy time.
+(An entry that expands to empty is dropped, so unset variables fall back to the
+app's built-in defaults.)
+
 **Find your devices' asset IDs** (numbers, 1–65534):
 
 ```bash

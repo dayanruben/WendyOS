@@ -15,7 +15,13 @@
                         { "host": 8080, "container": 8080 }
                     ]
                 }
-            ]
+            ],
+            "env": {
+                "MESH_PEERS": "${MESH_PEERS}",
+                "MESH_SELF": "${MESH_SELF}",
+                "NODE_NAME": "${NODE_NAME}",
+                "POLL_INTERVAL": "${POLL_INTERVAL}"
+            }
         }
     }
 }

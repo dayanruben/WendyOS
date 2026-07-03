@@ -204,3 +204,42 @@ func TestStartPostStartHook_NoHookReturnsNil(t *testing.T) {
 		t.Errorf("startPostStartHook() = %v, want nil for empty PostStart", cmd)
 	}
 }
+
+func TestResolveServiceEnv(t *testing.T) {
+	t.Setenv("MESH_PEERS", "259,260,261")
+	t.Setenv("MESH_SELF", "259")
+	// MESH_UNSET intentionally not set.
+
+	cfg := &appconfig.AppConfig{
+		Services: map[string]*appconfig.ServiceConfig{
+			"node": {Env: map[string]string{
+				"MESH_PEERS":    "${MESH_PEERS}", // host-expanded
+				"MESH_SELF":     "${MESH_SELF}",  // host-expanded
+				"MESH_UNSET":    "${MESH_UNSET}", // empty -> dropped
+				"POLL_INTERVAL": "5",             // literal
+			}},
+		},
+	}
+
+	got := resolveServiceEnv(cfg)
+	want := []string{
+		"MESH_PEERS=259,260,261",
+		"MESH_SELF=259",
+		"POLL_INTERVAL=5",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("resolveServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] { // output is sorted, so index-compare is stable
+			t.Fatalf("resolveServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+
+	if resolveServiceEnv(nil) != nil {
+		t.Fatal("resolveServiceEnv(nil) should be nil")
+	}
+	if resolveServiceEnv(&appconfig.AppConfig{}) != nil {
+		t.Fatal("resolveServiceEnv(no services) should be nil")
+	}
+}

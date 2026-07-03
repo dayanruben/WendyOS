@@ -439,7 +439,12 @@
         "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Service names this service starts after." },
         "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
         "frameworks": { "$ref": "#/$defs/frameworks" },
-        "resources": { "$ref": "#/$defs/resourceLimits" }
+        "resources": { "$ref": "#/$defs/resourceLimits" },
+        "env": {
+          "type": "object",
+          "description": "Environment variables to inject into the service's container. Values may reference host environment variables with ${VAR} (or $VAR), expanded by `wendy run` at deploy time; an entry whose value expands to empty is dropped so the container falls back to its own default.",
+          "additionalProperties": { "type": "string" }
+        }
       }
     },
     "resourceLimits": {
