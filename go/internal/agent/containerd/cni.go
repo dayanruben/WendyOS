@@ -35,6 +35,15 @@ const (
 	// /opt/cni/bin binary.
 	CNIBinDir = "/run/wendy/cni/bin"
 
+	// cniSystemPathDirs are appended to PATH (after CNIBinDir) for the bridge
+	// exec below. The vendored bridge plugin shells out to the real
+	// "iptables" for NAT/masquerade rules, which lives here, not in
+	// CNIBinDir. These are standard root-owned system directories — not
+	// writable by an unrelated/unprivileged process — so including them
+	// doesn't reopen the PATH-hijack risk that restricting PATH to CNIBinDir
+	// alone was guarding against (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
+	cniSystemPathDirs = ":/usr/sbin:/usr/bin:/sbin:/bin"
+
 	// selfExePath execs the exact inode of the currently-running process.
 	// Unlike a path such as /opt/cni/bin/bridge, this is TOCTOU-safe by
 	// construction — the kernel resolves it to the already-running agent
@@ -356,10 +365,14 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 		cmd.Env = []string{
 			// Explicit minimal environment — never inherit the agent's environment,
 			// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
-			// PATH and CNI_PATH are restricted to CNIBinDir, which contains only
-			// symlinks back to this agent binary — never a directory an
-			// unrelated process could write into (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
-			"PATH=" + CNIBinDir,
+			// CNI_PATH is restricted to CNIBinDir, which contains only symlinks
+			// back to this agent binary, so bridge/host-local delegation can
+			// never resolve to a third-party binary. PATH additionally includes
+			// the standard system sbin/bin directories (root-owned, not writable
+			// by unrelated processes, so this doesn't reopen the PATH-hijack risk
+			// CNIBinDir-only was guarding against) because the vendored bridge
+			// plugin shells out to the real "iptables" for NAT/masquerade rules.
+			"PATH=" + CNIBinDir + cniSystemPathDirs,
 			"CNI_COMMAND=ADD",
 			"CNI_CONTAINERID=" + containerID,
 			"CNI_NETNS=" + netnsPath,
@@ -532,9 +545,11 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
 		// Explicit minimal environment — never inherit the agent's environment
-		// (SOC2-CC6, NIST-SC-7). PATH/CNI_PATH restricted to CNIBinDir, which
-		// contains only symlinks back to this agent binary.
-		"PATH=" + CNIBinDir,
+		// (SOC2-CC6, NIST-SC-7). CNI_PATH restricted to CNIBinDir (symlinks back
+		// to this agent binary only). PATH additionally includes the standard
+		// system sbin/bin directories — see the matching comment in CNIAdd for
+		// why (the vendored bridge plugin shells out to "iptables").
+		"PATH=" + CNIBinDir + cniSystemPathDirs,
 		"CNI_COMMAND=DEL",
 		"CNI_CONTAINERID=" + containerID,
 		"CNI_NETNS=" + netnsPath,

@@ -66,10 +66,24 @@ func CmdCheck(args *skel.CmdArgs) error {
 	return nil
 }
 
-func CmdAdd(args *skel.CmdArgs) error {
+// Allocate runs the host-local IPAM allocation logic and returns the result
+// directly, WITHOUT printing it to stdout — unlike CmdAdd (which prints,
+// per the CNI plugin contract of being invoked as a standalone subprocess).
+// The bridge plugin (internal/agent/cni/bridge) calls this in-process instead
+// of exec'ing host-local as a second self-exec: the previous double self-exec
+// (agent -> bridge -> host-local, resolved through the same CNI_PATH
+// symlinks) captured host-local's subprocess exit status and stdout via
+// containernetworking/cni's RawExec, which on any nonzero exit status
+// unmarshals stdout into a CNI error struct — even when stdout holds a
+// perfectly valid SUCCESS result with no "code"/"msg" fields, which decodes
+// silently into a zero-valued {"code":0,"msg":""} error. This masked the
+// real failure and made every CNI ADD look identical regardless of cause.
+// Calling this Go function directly removes that subprocess/stdout boundary
+// entirely — there is no exit status or output stream to misinterpret.
+func Allocate(args *skel.CmdArgs) (*current.Result, string, error) {
 	ipamConf, confVersion, err := allocator.LoadIPAMConfig(args.StdinData, args.Args)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 
 	result := &current.Result{CNIVersion: current.ImplementedSpecVersion}
@@ -77,14 +91,14 @@ func CmdAdd(args *skel.CmdArgs) error {
 	if ipamConf.ResolvConf != "" {
 		dns, err := parseResolvConf(ipamConf.ResolvConf)
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		result.DNS = *dns
 	}
 
 	store, err := disk.New(ipamConf.Name, ipamConf.DataDir)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	defer store.Close()
 
@@ -119,7 +133,7 @@ func CmdAdd(args *skel.CmdArgs) error {
 			for _, alloc := range allocs {
 				_ = alloc.Release(args.ContainerID, args.IfName)
 			}
-			return fmt.Errorf("failed to allocate for range %d: %v", idx, err)
+			return nil, "", fmt.Errorf("failed to allocate for range %d: %v", idx, err)
 		}
 
 		allocs = append(allocs, allocator)
@@ -136,11 +150,19 @@ func CmdAdd(args *skel.CmdArgs) error {
 		for _, ip := range requestedIPs {
 			errstr = errstr + " " + ip.String()
 		}
-		return errors.New(errstr)
+		return nil, "", errors.New(errstr)
 	}
 
 	result.Routes = ipamConf.Routes
 
+	return result, confVersion, nil
+}
+
+func CmdAdd(args *skel.CmdArgs) error {
+	result, confVersion, err := Allocate(args)
+	if err != nil {
+		return err
+	}
 	return types.PrintResult(result, confVersion)
 }
 

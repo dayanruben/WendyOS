@@ -55,6 +55,8 @@ import (
 	"github.com/containernetworking/plugins/pkg/netlinksafe"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/containernetworking/plugins/pkg/utils/sysctl"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/cni/hostlocal"
 )
 
 // For testcases to force an error after IPAM has been performed
@@ -612,8 +614,22 @@ func CmdAdd(args *skel.CmdArgs) error {
 	}
 
 	if isLayer3 {
-		// run the IPAM plugin and get back the config to apply
-		r, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
+		// Allocate the IP in-process rather than exec'ing host-local as a
+		// second self-exec (agent -> bridge -> host-local, both hops
+		// resolving through the same CNI_PATH symlinks back to this binary).
+		// That double self-exec had a stdout-misinterpretation bug: the CNI
+		// invoke library's RawExec captures the subprocess's stdout/exit
+		// status, and on ANY nonzero exit it unmarshals stdout into a CNI
+		// error struct — even when stdout holds a fully valid SUCCESS
+		// result. A success result has no "code"/"msg" fields, so that
+		// unmarshal succeeds silently into a zero-valued {"code":0,"msg":""}
+		// error, which is exactly what every failing CNI ADD reported here
+		// regardless of the real cause. IPAM type is always "host-local" in
+		// this agent's own bridge config (buildBridgeCNIConfig) — there is no
+		// third-party IPAM plugin to support — so calling the vendored
+		// hostlocal package's Go function directly is equivalent and removes
+		// the subprocess/stdout boundary the bug lived in entirely.
+		ipamResult, _, err := hostlocal.Allocate(args)
 		if err != nil {
 			return err
 		}
@@ -621,15 +637,9 @@ func CmdAdd(args *skel.CmdArgs) error {
 		// release IP in case of failure
 		defer func() {
 			if !success {
-				ipam.ExecDel(n.IPAM.Type, args.StdinData)
+				_ = hostlocal.CmdDel(args)
 			}
 		}()
-
-		// Convert whatever the IPAM result was into the current Result type
-		ipamResult, err := current.NewResultFromResult(r)
-		if err != nil {
-			return err
-		}
 
 		result.IPs = ipamResult.IPs
 		result.Routes = ipamResult.Routes
@@ -795,7 +805,11 @@ func CmdDel(args *skel.CmdArgs) error {
 
 	ipamDel := func() error {
 		if isLayer3 {
-			if err := ipam.ExecDel(n.IPAM.Type, args.StdinData); err != nil {
+			// In-process call (see the Allocate doc-comment in
+			// internal/agent/cni/hostlocal for why: exec'ing host-local as a
+			// second self-exec here had the same stdout-misinterpretation
+			// failure mode as the ADD path).
+			if err := hostlocal.CmdDel(args); err != nil {
 				return err
 			}
 		}
