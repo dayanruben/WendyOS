@@ -148,6 +148,11 @@ type ServiceConfig struct {
 	Entitlements []Entitlement     `json:"entitlements,omitempty"`
 	DependsOn    []string          `json:"dependsOn,omitempty"`
 	Frameworks   *FrameworksConfig `json:"frameworks,omitempty"`
+	// Env are environment variables injected into this service's container.
+	// Values may reference host env vars via ${VAR}; `wendy run` expands them
+	// at deploy time (see resolveServiceEnv) and sends the result in the
+	// CreateContainerRequest, which the agent validates and applies.
+	Env map[string]string `json:"env,omitempty"`
 	// Resources optionally caps this service's CPU/memory/PID usage, overriding
 	// any app-level resources wholesale.
 	Resources *ResourceLimits `json:"resources,omitempty"`

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -1002,6 +1003,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
+		Env:           resolveServiceEnv(appCfg),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1523,6 +1525,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
+		Env:           resolveServiceEnv(appCfg),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1531,6 +1534,48 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
 // shared between runSwiftWithAgent and runWithAgent. It creates the container,
 // optionally starts it, streams output, and manages readiness + postStart hooks.
+// resolveServiceEnv flattens the per-service `env` maps from wendy.json into
+// the "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may
+// reference host environment variables via ${VAR} (or $VAR); they are expanded
+// here, on the deploy host, since the agent has no access to this shell's
+// environment. An entry whose value expands to empty is dropped so the
+// container falls back to its own built-in default rather than receiving an
+// empty override. Output is sorted for deterministic requests; the agent
+// re-validates every entry (POSIX key, blocked prefixes) before applying it.
+func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
+	if appCfg == nil {
+		return nil
+	}
+	// Sort service names so cross-service key collisions resolve deterministically.
+	svcNames := make([]string, 0, len(appCfg.Services))
+	for name := range appCfg.Services {
+		svcNames = append(svcNames, name)
+	}
+	sort.Strings(svcNames)
+
+	merged := map[string]string{}
+	for _, name := range svcNames {
+		svc := appCfg.Services[name]
+		if svc == nil {
+			continue
+		}
+		for k, v := range svc.Env {
+			if expanded := os.Expand(v, os.Getenv); expanded != "" {
+				merged[k] = expanded
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, createReq *agentpb.CreateContainerRequest, opts runOptions) error {
 	if opts.deploy {
 		_, err := conn.ContainerService.CreateContainer(ctx, createReq)
