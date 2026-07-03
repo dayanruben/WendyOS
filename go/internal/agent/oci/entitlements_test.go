@@ -1632,9 +1632,9 @@ func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	defer l.Close()
-	origPath := adminAgentSocketPath
-	t.Cleanup(func() { adminAgentSocketPath = origPath })
-	adminAgentSocketPath = sock
+	origPath := AdminAgentSocketHostPath
+	t.Cleanup(func() { AdminAgentSocketHostPath = origPath })
+	AdminAgentSocketHostPath = sock
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
@@ -1667,10 +1667,29 @@ func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 	}
 }
 
+// TestAdminAgentSocketPath_IsDiskBacked guards the fix for the reboot
+// socket-staleness bug. The admin socket is exposed by bind-mounting its parent
+// directory into the container; that bind mount pins the directory's inode.
+// tmpfs (/run) is wiped on every boot, so /run/wendy/agent gets a *new* inode
+// each reboot — stranding a container that survives on the orphaned old inode
+// (the socket then reads as ENOENT inside the container). A disk-backed
+// directory keeps a stable inode across reboots (and, under /var/lib/wendy,
+// across A/B OTA too), so the mount never goes stale.
+func TestAdminAgentSocketPath_IsDiskBacked(t *testing.T) {
+	if strings.HasPrefix(AdminAgentSocketHostPath, "/run/") {
+		t.Fatalf("admin socket %q is on tmpfs /run: its parent-directory inode is "+
+			"recreated on every boot, stranding the container's bind mount (ENOENT). "+
+			"Use a disk-backed path such as /var/lib/wendy/...", AdminAgentSocketHostPath)
+	}
+	if !strings.HasPrefix(AdminAgentSocketHostPath, "/var/lib/") {
+		t.Errorf("admin socket %q should live under a persistent /var/lib path", AdminAgentSocketHostPath)
+	}
+}
+
 func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
-	origPath := adminAgentSocketPath
-	t.Cleanup(func() { adminAgentSocketPath = origPath })
-	adminAgentSocketPath = filepath.Join(t.TempDir(), "missing.sock")
+	origPath := AdminAgentSocketHostPath
+	t.Cleanup(func() { AdminAgentSocketHostPath = origPath })
+	AdminAgentSocketHostPath = filepath.Join(t.TempDir(), "missing.sock")
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}

@@ -311,17 +311,23 @@ func applyDisplay(spec *Spec) {
 // the socket (a fresh inode) on every agent start. Mounting the file would
 // strand a long-lived container on the deleted inode after an agent restart
 // (every dial → connection refused). Mounting the directory lets the container
-// resolve the socket name live on each dial, so a restart is transparent. The
-// socket lives in its own directory so this exposes nothing else under
-// /run/wendy. Read-only: connecting to the socket needs no write to the dir.
+// resolve the socket name live on each dial, so a restart is transparent.
+//
+// A directory mount only survives *socket-file* churn, though — it still pins
+// the directory's inode. That is why the host directory lives on disk
+// (AdminAgentSocketHostPath, under /var/lib/wendy) rather than on tmpfs /run: a
+// /run directory is wiped and re-created with a fresh inode on every boot, which
+// would strand the mount on the orphaned pre-reboot inode (in-container dial →
+// ENOENT). See AdminAgentSocketHostPath. The socket lives in its own dedicated
+// directory so this exposes nothing else. Read-only: connecting needs no write.
 func applyAdmin(spec *Spec) {
-	fi, err := os.Lstat(adminAgentSocketPath)
+	fi, err := os.Lstat(AdminAgentSocketHostPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {
 		return
 	}
 	spec.Mounts = append(spec.Mounts, Mount{
 		Destination: ctrAgentSocketDir,
-		Source:      filepath.Dir(adminAgentSocketPath),
+		Source:      filepath.Dir(AdminAgentSocketHostPath),
 		Type:        "bind",
 		Options:     []string{"rbind", "nosuid", "noexec", "ro"},
 	})
@@ -543,12 +549,26 @@ var lookupRenderGID = func() (uint32, bool) {
 	return uint32(gid), true
 }
 
-// adminAgentSocketPath is the host wendy-agent local control socket exposed to
-// containers granted the admin entitlement. It lives in its own directory
-// (/run/wendy/agent) so applyAdmin can bind-mount that directory rather than the
-// socket file — see applyAdmin for why. Behind a var so tests can point it at a
-// temp socket.
-var adminAgentSocketPath = "/run/wendy/agent/agent.sock"
+// AdminAgentSocketHostPath is the host wendy-agent local control socket exposed
+// to containers granted the admin entitlement. It is the single source of truth
+// for the host socket location — the agent's local listener (main.go) uses it
+// too, so the path the agent serves and the path applyAdmin bind-mounts can
+// never drift apart.
+//
+// It lives in its own directory (…/agent-control) so applyAdmin can bind-mount
+// that directory rather than the socket file — see applyAdmin for why.
+//
+// It lives on the disk-backed, /data-persistent /var/lib/wendy tree, NOT on the
+// tmpfs /run: the admin bind mount pins the socket directory's inode, and tmpfs
+// is wiped (fresh inode) on every boot. A /run path therefore stranded a
+// long-lived admin container on the orphaned pre-reboot directory inode after a
+// reboot — the socket read as ENOENT inside the container even though the live
+// agent was serving one in the new /run directory. A disk-backed directory
+// keeps a stable inode across reboots (and, under /var/lib/wendy, across A/B OTA
+// too), so the mount never goes stale.
+//
+// Behind a var so tests can point it at a temp socket.
+var AdminAgentSocketHostPath = "/var/lib/wendy/agent-control/agent.sock"
 
 // ctrAgentSocketDir / ctrAgentSocketPath are the in-container destinations for
 // the admin socket directory mount and the socket within it (WENDY_AGENT_SOCKET).

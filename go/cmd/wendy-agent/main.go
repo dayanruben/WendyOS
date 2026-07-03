@@ -35,6 +35,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
@@ -585,9 +586,14 @@ func main() {
 		)
 		registerAllServices(localSocketServer)
 
-		// In its own directory so the admin entitlement can bind-mount the
-		// directory (not the socket file) into containers — see oci.applyAdmin.
-		const localSocketPath = "/run/wendy/agent/agent.sock"
+		// oci.AdminAgentSocketHostPath is the single source of truth for this
+		// path: the admin entitlement bind-mounts its parent directory into
+		// containers (see oci.applyAdmin), so the path we serve and the path we
+		// mount must never drift. It lives on the disk-backed /var/lib/wendy
+		// tree, not tmpfs /run, so its directory inode survives reboots — a /run
+		// path was wiped on every boot and stranded long-lived admin containers
+		// on the orphaned pre-reboot inode (in-container socket read as ENOENT).
+		localSocketPath := oci.AdminAgentSocketHostPath
 		localLis, err := localsocket.Listen(localSocketPath)
 		if err != nil {
 			logger.Error("Failed to listen on local control socket", zap.Error(err))
