@@ -545,11 +545,12 @@ struct `legacy integration tests` {
     }
 
     private static func fixturePath(_ name: String) throws -> String {
-        try Self.path(
-            Self.validatedRepositoryRoot(Self.repositoryRootPathOnCLIMachine),
-            ".github", "ci-tests",
-            Self.validatedFixtureName(name)
-        )
+        try Self.validatedFixturePath(
+            Self.path(
+                Self.validatedRepositoryRoot(Self.repositoryRootPathOnCLIMachine),
+                ".github", "ci-tests",
+                Self.validatedFixtureName(name)
+            ))
     }
 
     private static var repositoryRootPathOnCLIMachine: String {
@@ -630,6 +631,21 @@ struct `legacy integration tests` {
             throw ShellSafetyError("app identifier contains unsupported characters")
         }
         return value
+    }
+
+    /// Every component of a fixture path is validated individually, but the
+    /// joined result is held to the same character allowlist as the root so
+    /// the full string that reaches the shell is allowlisted end to end.
+    private static func validatedFixturePath(_ path: String) throws -> String {
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyz"
+                + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                + "0123456789._:/\\-"
+        )
+        guard path.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ShellSafetyError("fixture path contains unsupported characters")
+        }
+        return path
     }
 
     /// Fixture names are directory names under `.github/ci-tests` and must
