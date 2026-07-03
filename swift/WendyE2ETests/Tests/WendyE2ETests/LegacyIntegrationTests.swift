@@ -147,6 +147,59 @@ struct `legacy integration tests` {
         try await self.runFixture("python-no-unshare")
     }
 
+    /**
+     Builds and runs a Python fixture that calls the kernel-module and kexec
+     syscalls. The app passes only when the default seccomp profile denies
+     them with `EPERM` — these are host-escape primitives a normal application
+     container never needs.
+     */
+    @Test
+    func `python-no-kexec-module`() async throws {
+        try await self.runFixture("python-no-kexec-module")
+    }
+
+    /**
+     Builds and runs a Python fixture with the `host-admin` network mode. The
+     app verifies that `CAP_NET_ADMIN` is present in its effective capability
+     set, since `host-admin` is the explicit opt-in for reconfiguring host
+     networking.
+     */
+    @Test
+    func `python-network-host-admin`() async throws {
+        try await self.runFixture("python-network-host-admin")
+    }
+
+    /**
+     Builds and runs a Python fixture with plain `host` networking. The app
+     passes only when `CAP_NET_ADMIN` is absent, guarding against a regression
+     that re-couples the capability to plain host networking.
+     */
+    @Test
+    func `python-no-net-admin`() async throws {
+        try await self.runFixture("python-no-net-admin")
+    }
+
+    /**
+     Builds and runs a Python fixture that declares app-level resource limits
+     in `wendy.json`. The app reads its own cgroup and verifies the memory,
+     CPU, and pids ceilings were applied end-to-end.
+     */
+    @Test
+    func `python-resources`() async throws {
+        try await self.runFixture("python-resources")
+    }
+
+    /**
+     Builds and runs a Python fixture with a top-level `serviceName` in
+     `wendy.json`. The app verifies the `WENDY_HOSTNAME`, `WENDY_APP_GROUP`,
+     and `WENDY_APP_ID` environment variables follow the container-naming
+     convention.
+     */
+    @Test
+    func `python-servicename`() async throws {
+        try await self.runFixture("python-servicename")
+    }
+
     // MARK: - Multi-Service Fixtures
 
     /**
@@ -190,6 +243,43 @@ struct `legacy integration tests` {
         }
     }
 
+    /**
+     Deploys the legacy multi-service resource-limit fixture. The `db` service
+     inherits the app-level memory limit while `api` overrides it; each service
+     asserts its own cgroup limits and logs `<svc>: PASS`. The test reads the
+     device logs for both PASS lines, mirroring `go/scripts/test-ci.sh`, and
+     removes the app afterwards.
+     */
+    @Test
+    func `python-multiservice-resources`() async throws {
+        // The legacy fixtures pre-date CLI auth and `go/scripts/test-ci.sh`
+        // runs them unauthenticated; authenticated variants are tracked as a
+        // migration follow-up.
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let device = agent.machine.address
+            let fixture = try Self.fixturePath("python-multiservice-resources")
+            let appID = "sh.wendy.ci.python-multiservice-resources"
+
+            try await Self.assertWendyRunSucceeds(
+                on: cli,
+                device: device,
+                fixture: fixture,
+                extraArguments: ["--deploy"]
+            )
+
+            let logs = try Self.deviceLogsCommand(device: device, appID: appID)
+            try await cli.sh(posix: logs.posix, power: logs.power) { result in
+                let output = result.normalizedStdout
+
+                #expect(!output.localizedCaseInsensitiveContains("FAIL"))
+                #expect(output.contains("db: PASS"))
+                #expect(output.contains("api: PASS"))
+            }
+
+            try await Self.removeApp(on: cli, device: device, appID: appID)
+        }
+    }
+
     // MARK: - Compose Fixtures
 
     /**
@@ -208,6 +298,68 @@ struct `legacy integration tests` {
     @Test
     func `compose-images`() async throws {
         try await self.runFixture("compose-images", extraArguments: ["--detach"])
+    }
+
+    /**
+     Deploys the legacy Compose fixture that pairs a locally built service
+     with a public-image companion. The command runs detached, matching
+     `go/scripts/test-ci.sh`.
+     */
+    @Test
+    func `compose-companion`() async throws {
+        try await self.runFixture("compose-companion", extraArguments: ["--detach"])
+    }
+
+    // MARK: - Device Monitoring
+
+    /**
+     Deploys a long-running fixture, then verifies `wendy device top --json`
+     reports a host snapshot with non-zero CPU and memory totals and lists the
+     deployed container. The app is removed afterwards.
+     */
+    @Test
+    func `python-device-top`() async throws {
+        // The legacy fixtures pre-date CLI auth and `go/scripts/test-ci.sh`
+        // runs them unauthenticated; authenticated variants are tracked as a
+        // migration follow-up.
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let device = agent.machine.address
+            let fixture = try Self.fixturePath("python-device-top")
+            let appID = "sh.wendy.ci.python-device-top"
+
+            try await Self.assertWendyRunSucceeds(
+                on: cli,
+                device: device,
+                fixture: fixture,
+                extraArguments: ["--detach"]
+            )
+
+            let top = try Self.wendyCommand([
+                "device", "top",
+                "--device", Self.validatedHost(device),
+                "--json",
+            ])
+            try await cli.sh(posix: top.posix, power: top.power) { result in
+                #expect(result.status.isSuccess)
+
+                let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let data = stdout.data(using: .utf8),
+                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    Issue.record("'wendy device top --json' did not print a JSON object")
+                    return
+                }
+
+                let host = json["host"] as? [String: Any]
+                #expect((host?["cpuCount"] as? Int ?? 0) > 0)
+                #expect((host?["memTotalBytes"] as? Int ?? 0) > 0)
+
+                let containers = json["containers"] as? [[String: Any]] ?? []
+                #expect(containers.contains { ($0["name"] as? String) == appID })
+            }
+
+            try await Self.removeApp(on: cli, device: device, appID: appID)
+        }
     }
 
     // MARK: - Agent Exposure Policy
@@ -312,6 +464,53 @@ struct `legacy integration tests` {
 
             return json["hasGpu"] as? Bool ?? false
         }
+    }
+
+    /**
+     Reads recent device logs for an app with a bounded wall-clock wait,
+     because `wendy device logs` streams and never exits on its own. This
+     mirrors the background-reader pattern in `go/scripts/test-ci.sh`.
+     */
+    private static func deviceLogsCommand(device: String, appID: String) throws -> ShellCommand {
+        let logs = try Self.wendyCommand([
+            "device", "logs",
+            "--device", Self.validatedHost(device),
+            "--app", Self.validatedAppID(appID),
+            "--tail", "50",
+        ])
+        return ShellCommand(
+            posix: """
+                logfile=$(mktemp)
+                \(logs.posix) >"$logfile" 2>&1 &
+                logs_pid=$!
+                sleep 8
+                kill "$logs_pid" 2>/dev/null || true
+                wait "$logs_pid" 2>/dev/null || true
+                cat "$logfile"
+                rm -f "$logfile"
+                """,
+            power: """
+                $job = Start-Job -ScriptBlock { \(logs.power) 2>&1 | Out-String }
+                $null = Wait-Job -Job $job -Timeout 8
+                Stop-Job -Job $job
+                Receive-Job -Job $job
+                Remove-Job -Job $job -Force
+                """
+        )
+    }
+
+    private static func removeApp(
+        on cli: WendyE2ESession,
+        device: String,
+        appID: String
+    ) async throws {
+        let command = try Self.wendyCommand([
+            "device", "apps", "remove", Self.validatedAppID(appID),
+            "--device", Self.validatedHost(device),
+            "--force", "--cleanup",
+        ])
+        // Cleanup is best-effort, mirroring `|| true` in the shell driver.
+        try await cli.sh(posix: command.posix, power: command.power) { _ in }
     }
 
     private static func recordSkip(on cli: WendyE2ESession, _ reason: String) async throws {
@@ -423,6 +622,16 @@ struct `legacy integration tests` {
         return value
     }
 
+    /// App identifiers follow the reverse-DNS `sh.wendy.ci.<fixture>` shape:
+    /// lowercase alphanumerics, dots, and hyphens only.
+    private static func validatedAppID(_ value: String) throws -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-")
+        guard !value.isEmpty, value.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ShellSafetyError("app identifier contains unsupported characters")
+        }
+        return value
+    }
+
     /// Fixture names are directory names under `.github/ci-tests` and must
     /// never introduce separators or traversal components.
     private static func validatedFixtureName(_ name: String) throws -> String {
@@ -456,24 +665,28 @@ struct `legacy integration tests` {
         let allowed = CharacterSet(
             charactersIn: "abcdefghijklmnopqrstuvwxyz"
                 + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                + "0123456789 ._:/\\-"
+                + "0123456789._:/\\-"
         )
         guard path.unicodeScalars.allSatisfy(allowed.contains) else {
-            throw ShellSafetyError("repository root contains unsupported characters")
+            throw ShellSafetyError(
+                "repository root contains unsupported characters (spaces are not"
+                    + " supported; set WENDY_E2E_CLI_REPO_DIR to a space-free checkout)"
+            )
         }
         return path
     }
 
     /// Every argument is single-quoted for both shells, which neutralizes
-    /// spaces, quotes, and expansion. Control characters (newlines above all)
-    /// are the known bypass vector for quoted strings, so they are rejected
-    /// outright.
+    /// spaces, quotes, and expansion. Control and format characters (newlines
+    /// and bidirectional overrides above all) are the known bypass vectors
+    /// for quoted strings, so they are rejected outright.
     private static func validateShellArgument(_ value: String) throws {
-        let hasControlCharacters = value.unicodeScalars.contains { scalar in
+        let hasUnsafeCharacters = value.unicodeScalars.contains { scalar in
             scalar.properties.generalCategory == .control
+                || scalar.properties.generalCategory == .format
         }
-        guard !hasControlCharacters else {
-            throw ShellSafetyError("shell argument contains control characters")
+        guard !hasUnsafeCharacters else {
+            throw ShellSafetyError("shell argument contains control or format characters")
         }
     }
 
