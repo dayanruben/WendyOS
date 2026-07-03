@@ -5,6 +5,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 SCRIPT="$HERE/../generate-sbom.sh"
 command -v syft >/dev/null 2>&1 || { echo "SKIP: syft not installed"; exit 0; }
+# syft is the optional real tool (skip above); go + jq are hard prerequisites
+# for this test — fail with a clear message rather than a cryptic
+# "command not found" mid-run under set -e.
+for tool in go jq; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: required tool '$tool' not installed"; exit 1; }
+done
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # Build a real wendy binary to catalog. Mirror CI: macOS build-go-macos job

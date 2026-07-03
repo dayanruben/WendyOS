@@ -25,7 +25,9 @@ repo_root() {
   local rr=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --repo-root) rr="${2:-}"; shift 2 || true;;
+      --repo-root)
+        [[ $# -ge 2 ]] || { echo "error: --repo-root requires a value" >&2; exit 2; }
+        rr="$2"; shift 2;;
       *) shift;;
     esac
   done
@@ -68,12 +70,14 @@ case "$cmd" in
   swift)
     [[ $# -ge 1 ]] || usage
     out="$1"; shift
-    scan_swift "$out" "$(repo_root "$@")"
+    rr="$(repo_root "$@")"
+    scan_swift "$out" "$rr"
     ;;
   source)
     [[ $# -ge 1 ]] || usage
     out="$1"; shift
-    scan_source "$out" "$(repo_root "$@")"
+    rr="$(repo_root "$@")"
+    scan_source "$out" "$rr"
     ;;
   all)
     [[ $# -ge 3 ]] || usage

@@ -590,7 +590,7 @@ Download one binary archive artifact from the run and verify against the repo's 
 ```bash
 gh run download "$RUN" -n wendy-cli-linux-amd64-<version>.tar.gz -D /tmp/sbomcheck
 gh attestation verify /tmp/sbomcheck/wendy-cli-linux-amd64-<version>.tar.gz \
-  --repo wendylabsinc/wendy
+  --repo wendylabsinc/WendyOS
 ```
 
 Expected: `✓ Verification succeeded!` listing both a provenance and an SBOM attestation predicate.
@@ -640,13 +640,13 @@ Inspect one with any SPDX tool, e.g.:
 
 Download a release archive, then verify it was built by this repo's workflow:
 
-    gh attestation verify wendy-cli-linux-amd64-<version>.tar.gz --repo wendylabsinc/wendy
+    gh attestation verify wendy-cli-linux-amd64-<version>.tar.gz --repo wendylabsinc/WendyOS
 
 Or with cosign (attestations are Sigstore bundles):
 
     cosign verify-blob-attestation \
       --new-bundle-format \
-      --certificate-identity-regexp 'https://github.com/wendylabsinc/wendy/.github/workflows/build.yml@.*' \
+      --certificate-identity-regexp 'https://github.com/wendylabsinc/WendyOS/.github/workflows/build.yml@.*' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       wendy-cli-linux-amd64-<version>.tar.gz
 

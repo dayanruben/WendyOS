@@ -46,19 +46,27 @@ security page claim SBOM + signed releases with an honest, verifiable status.
 
 Single source of truth, runnable locally and in CI. Contract:
 
-- **Inputs:** `--binaries-dir <dir>` (directory of downloaded built binaries),
-  `--out-dir <dir>` (where SBOMs are written), `--version <version>`.
+- **Interface:** subcommands rather than global flags —
+  `binary <binary-path> <output-file>`, `swift <output-file> [--repo-root <dir>]`,
+  `source <output-file> [--repo-root <dir>]`, and `all <binaries-dir> <out-dir>
+  <version> [--repo-root <dir>]` (which fans out to all three). CI drives the
+  per-binary path with `binary` and the source/swift SBOMs with `source`/`swift`.
 - **Behavior:**
-  1. Per-binary: for each shipped binary found under `--binaries-dir`, run
-     `syft scan file:<binary> -o spdx-json` → `<artifact-name>-<version>.spdx.json`.
+  1. Per-binary (`binary`): for a shipped binary, run
+     `syft scan file:<binary> -o spdx-json` → the given output file. The `all`
+     subcommand applies this to every binary found under `<binaries-dir>`,
+     naming each `<artifact-name>-<version>.spdx.json`.
   2. Swift: `syft scan dir:swift -o spdx-json` → `wendy-swift-<version>.spdx.json`
      (reads both `Package.resolved` files).
   3. Whole-repo source: `syft scan dir:. -o spdx-json` with excludes for
      `./node_modules/**`, `**/.build/**`, `./Examples/**`, `./.git/**` →
      `wendy-source-<version>.spdx.json`.
-- **Output:** all `*.spdx.json` files in `--out-dir`; exits non-zero on any Syft failure
-  (no silent SBOM gaps).
-- **Syft version:** pinned (env `SYFT_VERSION`) so local and CI output match.
+- **Output:** the requested `*.spdx.json` file(s); exits non-zero on any Syft failure
+  (no silent SBOM gaps). The syft executable is `$SYFT_BIN`-indirected (default
+  `syft`) so tests can substitute a fake.
+- **Syft version:** pinned in CI via the `anchore/sbom-action/download-syft`
+  `syft-version` input (v1.18.1) so local and CI output match; the script itself
+  invokes whatever `$SYFT_BIN` resolves to.
 
 ### 2. New `sbom` job in `.github/workflows/build.yml`
 
@@ -69,8 +77,10 @@ Single source of truth, runnable locally and in CI. Contract:
   2. Download all built binary artifacts (`actions/download-artifact`, `merge-multiple`).
   3. Install Syft at the pinned version (pinned action or pinned release binary).
   4. Run `scripts/generate-sbom.sh` → SBOM files.
-  5. For each shipped binary: `actions/attest-sbom` (subject = binary, predicate = its SBOM)
-     and `actions/attest-build-provenance` (subject = binary).
+  5. For each shipped archive: `actions/attest-sbom` (subject = archive, predicate = its SBOM).
+     Build provenance is **not** attested here — `actions/attest-build-provenance` runs in
+     the `build` / `build-go-macos` jobs that actually produce each archive, so the
+     provenance reflects the real build environment rather than this downstream SBOM job.
   6. `actions/upload-artifact` the `*.spdx.json` files so the `release` job collects them.
 
 Runs on every build (nightly prereleases + stable publish). Attestation predicates are
@@ -94,13 +104,12 @@ always produced and bind to whatever release is created; release gating is uncha
 ## Data flow
 
 ```
-build / build-go-macos / build-agent-macos-app
-        │  (binaries as workflow artifacts)
+build / build-go-macos ── attest-build-provenance (SLSA v1, signed, Rekor)
+        │  (archives as workflow artifacts)
         ▼
    sbom job ── generate-sbom.sh ──► *.spdx.json
         │                              │
-        ├─ attest-sbom ────────────────┤ (binary digest ↔ SBOM, signed, Rekor)
-        ├─ attest-build-provenance ─────┘ (SLSA v1, signed, Rekor)
+        ├─ attest-sbom ────────────────┘ (archive digest ↔ SBOM, signed, Rekor)
         └─ upload-artifact (*.spdx.json)
         ▼
    release job ── attaches *.spdx.json as release assets

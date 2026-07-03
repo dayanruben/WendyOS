@@ -30,6 +30,10 @@ check "binary output is SPDX" 'grep -q spdxVersion "$TMP/bin.spdx.json"'
 rc=0; FAKE_SYFT_FAIL=1 "$SCRIPT" binary "$TMP/wendy" "$TMP/x.spdx.json" >/dev/null 2>&1 || rc=$?
 check "syft failure exits 1" '[ "$rc" -eq 1 ]'
 
+# --repo-root without a value is a usage error
+rc=0; "$SCRIPT" source "$TMP/x.spdx.json" --repo-root >/dev/null 2>&1 || rc=$?
+check "source --repo-root missing value exits 2" '[ "$rc" -eq 2 ]'
+
 # swift + source write output
 "$SCRIPT" swift "$TMP/swift.spdx.json" --repo-root "$TMP" >/dev/null 2>&1
 check "swift writes output" '[ -s "$TMP/swift.spdx.json" ]'
