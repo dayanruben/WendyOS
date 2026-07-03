@@ -97,6 +97,9 @@ func (p *BuildParser) Write(b []byte) (int, error) {
 // ParseBuildContextTransferBytes returns the byte count from a BuildKit plain
 // progress line such as "#4 transferring context: 2B".
 func ParseBuildContextTransferBytes(line string) (int64, bool) {
+	if len(line) > 512 {
+		return 0, false
+	}
 	m := buildContextTransferRe.FindStringSubmatch(line)
 	if m == nil {
 		return 0, false

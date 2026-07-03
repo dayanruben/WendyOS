@@ -122,7 +122,7 @@ func TestAppleContainerContextMonitorDiagnosesEmptyTmpTransfer(t *testing.T) {
 	m := &appleContainerBuildContextMonitor{
 		contextPath: "/tmp/ctxprobe",
 		pathInTmp:   true,
-		stats:       appleContainerContextStats{fileCount: 2, totalSize: 40},
+		stats:       appleContainerContextStats{fileCount: 2},
 	}
 	if _, err := m.Write([]byte("#4 [internal] load build context\n#4 transferring context: 2")); err != nil {
 		t.Fatal(err)

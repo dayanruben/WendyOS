@@ -18,13 +18,13 @@ const (
 	// projects as the /tmp builder regression.
 	appleContainerSuspiciousContextBytes = 2
 	appleContainerContextFileScanLimit   = 128
+	appleContainerContextLineLimit       = 64 << 10
 )
 
 var errAppleContainerContextScanDone = errors.New("apple-container context scan done")
 
 type appleContainerContextStats struct {
 	fileCount int
-	totalSize int64
 	truncated bool
 }
 
@@ -63,6 +63,9 @@ func (m *appleContainerBuildContextMonitor) Write(p []byte) (int, error) {
 		line := strings.TrimRight(string(m.line[:i]), "\r")
 		m.line = m.line[i+1:]
 		m.observeLine(line)
+	}
+	if len(m.line) > appleContainerContextLineLimit {
+		m.line = m.line[:0]
 	}
 	return len(p), nil
 }
@@ -113,9 +116,6 @@ func scanAppleContainerBuildContext(contextPath string) appleContainerContextSta
 			return nil
 		}
 		stats.fileCount++
-		if info, infoErr := d.Info(); infoErr == nil && info.Mode().IsRegular() {
-			stats.totalSize += info.Size()
-		}
 		if stats.fileCount >= appleContainerContextFileScanLimit {
 			stats.truncated = true
 			return errAppleContainerContextScanDone

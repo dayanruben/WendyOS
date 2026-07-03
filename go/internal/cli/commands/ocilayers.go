@@ -628,6 +628,7 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	}
 	contextMonitor := newAppleContainerBuildContextMonitor(buildContext)
 	stdout = contextMonitor.wrapStream(stdout)
+	stderr = contextMonitor.wrapStream(stderr)
 
 	// Unique per-build tag: dest is a fresh wendy-oci-* tempdir, so concurrent
 	// invocations and watch cycles never collide on the temporary image.
@@ -657,7 +658,7 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	buildCmd := imageBuilderCommandContext(ctx, "container", args...)
 	buildCmd.Dir = buildContext
 	buildCmd.Stdout = stdout
-	buildCmd.Stderr = stdout
+	buildCmd.Stderr = stderr
 	if err := buildCmd.Run(); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("container build (OCI layout) failed: %w", contextMonitor.wrapBuildError(err))}
 	}
