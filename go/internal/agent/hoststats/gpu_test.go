@@ -51,6 +51,9 @@ func TestParseTegrastats(t *testing.T) {
 	if g.PowerW == nil || *g.PowerW != 1.234 { // 1234 mW
 		t.Errorf("powerW = %v, want 1.234", g.PowerW)
 	}
+	if g.MemUsedBytes != 0 || g.MemTotalBytes != 0 {
+		t.Errorf("mem = %d/%d, want 0/0 (unified memory has no per-GPU figure)", g.MemUsedBytes, g.MemTotalBytes)
+	}
 }
 
 func TestParseTegrastatsNoGPUFields(t *testing.T) {
@@ -58,5 +61,32 @@ func TestParseTegrastatsNoGPUFields(t *testing.T) {
 	got := ParseTegrastats("RAM 100/200MB CPU [1%@100]")
 	if len(got) != 0 {
 		t.Errorf("got %d gpus, want 0", len(got))
+	}
+}
+
+func TestParseNvidiaSMIUnifiedMemoryNA(t *testing.T) {
+	// Jetson (unified memory): nvidia-smi answers "[N/A]" for both memory
+	// fields. They must stay zero (renderers treat 0 as "not applicable").
+	// Observed on a Jetson AGX Thor (JetPack 7.2), 2026-07-02.
+	csv := "0, NVIDIA Thor, 85, [N/A], [N/A], 62, 37.53\n"
+	got := ParseNvidiaSMI(csv)
+	if len(got) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(got))
+	}
+	g := got[0]
+	if g.MemUsedBytes != 0 {
+		t.Errorf("memUsed = %d, want 0 for [N/A]", g.MemUsedBytes)
+	}
+	if g.MemTotalBytes != 0 {
+		t.Errorf("memTotal = %d, want 0 for [N/A]", g.MemTotalBytes)
+	}
+	if g.UtilPercent != 85 {
+		t.Errorf("util = %v, want 85", g.UtilPercent)
+	}
+	if g.TempC == nil || *g.TempC != 62 {
+		t.Errorf("tempC = %v, want 62", g.TempC)
+	}
+	if g.PowerW == nil || *g.PowerW != 37.53 {
+		t.Errorf("powerW = %v, want 37.53", g.PowerW)
 	}
 }
