@@ -210,6 +210,15 @@ outer:
 // The kernel limit is 15 chars (IFNAMSIZ-1). Short appIDs that fit are embedded
 // directly; longer ones fall back to an 8-hex-digit SHA-256 prefix for uniform
 // distribution (birthday collision probability ~0.12% at 100 apps).
+// cniDuplicateAllocation reports whether a CNI plugin's stdout indicates the
+// host-local IPAM refused to re-allocate an IP the container already holds.
+// host-local emits code 999 with "duplicate allocation is not allowed" / "has
+// been allocated" in this case.
+func cniDuplicateAllocation(stdout string) bool {
+	return strings.Contains(stdout, "duplicate allocation is not allowed") ||
+		strings.Contains(stdout, "has been allocated")
+}
+
 func bridgeName(appID string) string {
 	const prefix = "wendy-br-"
 	if len(prefix)+len(appID) <= 15 {
@@ -334,45 +343,68 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 		return "", fmt.Errorf("CNI ADD: NUL byte in containerID or netnsPath rejected")
 	}
 
-	cmd := exec.CommandContext(ctx, selfExePath)
-	// argv0 "bridge" is what cniPluginName (cmd/wendy-agent) matches on to
-	// dispatch this re-exec of the agent into the vendored bridge plugin
-	// logic instead of starting the daemon.
-	cmd.Args = []string{"bridge"}
-	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
-	cmd.Stdin = strings.NewReader(cfgJSON)
-	cmd.Env = []string{
-		// Explicit minimal environment — never inherit the agent's environment,
-		// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
-		// PATH and CNI_PATH are restricted to CNIBinDir, which contains only
-		// symlinks back to this agent binary — never a directory an
-		// unrelated process could write into (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
-		"PATH=" + CNIBinDir,
-		"CNI_COMMAND=ADD",
-		"CNI_CONTAINERID=" + containerID,
-		"CNI_NETNS=" + netnsPath,
-		"CNI_IFNAME=eth0",
-		"CNI_PATH=" + CNIBinDir,
+	// runAddOnce execs the vendored bridge plugin (via self-exec) for one ADD
+	// attempt and returns its stdout, stderr, and run error.
+	runAddOnce := func() (stdoutStr, stderrStr string, runErr error) {
+		cmd := exec.CommandContext(ctx, selfExePath)
+		// argv0 "bridge" is what cniPluginName (cmd/wendy-agent) matches on to
+		// dispatch this re-exec of the agent into the vendored bridge plugin
+		// logic instead of starting the daemon.
+		cmd.Args = []string{"bridge"}
+		cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
+		cmd.Stdin = strings.NewReader(cfgJSON)
+		cmd.Env = []string{
+			// Explicit minimal environment — never inherit the agent's environment,
+			// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
+			// PATH and CNI_PATH are restricted to CNIBinDir, which contains only
+			// symlinks back to this agent binary — never a directory an
+			// unrelated process could write into (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
+			"PATH=" + CNIBinDir,
+			"CNI_COMMAND=ADD",
+			"CNI_CONTAINERID=" + containerID,
+			"CNI_NETNS=" + netnsPath,
+			"CNI_IFNAME=eth0",
+			"CNI_PATH=" + CNIBinDir,
+		}
+		// Bound stdout to cniStdoutLimit to guard against unbounded output
+		// exhausting agent memory.
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &limitedWriter{w: &stdoutBuf, remaining: cniStdoutLimit, cap: cniStdoutLimit}
+		cmd.Stderr = &stderrBuf
+		runErr = cmd.Run()
+		return stdoutBuf.String(), stderrBuf.String(), runErr
 	}
-	// Bound stdout to cniStdoutLimit to guard against unbounded output
-	// exhausting agent memory.
-	var stdoutBuf, stderr bytes.Buffer
-	cmd.Stdout = &limitedWriter{w: &stdoutBuf, remaining: cniStdoutLimit, cap: cniStdoutLimit}
-	cmd.Stderr = &stderr
 
-	if runErr := cmd.Run(); runErr != nil {
-		// Sanitize stderr before logging to prevent log injection from a rogue
-		// CNI binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
+	stdoutStr, stderrStr, runErr := runAddOnce()
+	// host-local refuses to re-allocate an IP a container already holds
+	// ("duplicate allocation is not allowed"). This happens when a prior ADD
+	// allocated an IP but the container later crashed/restarted and the
+	// monitor re-runs ADD without an intervening DEL. Release the stale lease
+	// with a DEL and retry once so container restarts are idempotent.
+	if runErr != nil && cniDuplicateAllocation(stdoutStr) {
+		c.logger.Warn("CNI ADD hit a stale IPAM lease; releasing and retrying",
+			zap.String("app_id", appID), zap.String("container_id", containerID))
+		_ = c.CNIDel(ctx, appID, containerID, netnsPath)
+		stdoutStr, stderrStr, runErr = runAddOnce()
+	}
+
+	if runErr != nil {
+		// Sanitize before logging to prevent log injection from a rogue CNI
+		// binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
+		// CNI plugins report errors as a JSON body on stdout (not stderr), so
+		// surface both — otherwise a plugin failure looks like a bare
+		// "exit status 1" with empty stderr and no cause.
 		c.logger.Warn("CNI ADD failed",
 			zap.String("app_id", appID),
 			zap.String("container_id", containerID),
-			zap.String("stderr", sanitizeForLog(stderr.String(), 512)),
+			zap.String("stdout", sanitizeForLog(stdoutStr, 1024)),
+			zap.String("stderr", sanitizeForLog(stderrStr, 512)),
 			zap.Error(runErr))
 		return "", fmt.Errorf("CNI ADD failed for %s/%s; see agent logs for details", appID, containerID)
 	}
 
 	var result cniResult
-	if err := json.Unmarshal(stdoutBuf.Bytes(), &result); err != nil {
+	if err := json.Unmarshal([]byte(stdoutStr), &result); err != nil {
 		return "", fmt.Errorf("parsing CNI ADD result for %s/%s: %w", appID, containerID, err)
 	}
 	if len(result.IPs) == 0 {
