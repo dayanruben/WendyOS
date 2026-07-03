@@ -22,7 +22,9 @@ import socketserver
 import subprocess
 
 WENDY = os.environ.get("WENDY_BIN", "wendy")
-GRPC = os.environ.get("WENDY_CLOUD_GRPC", "127.0.0.1:50051")
+# Empty (default) → query the CLI's own default session (set via `wendy auth use`).
+# Set WENDY_CLOUD_GRPC=<host:port> to force a specific local cloud endpoint.
+GRPC = os.environ.get("WENDY_CLOUD_GRPC", "").strip()
 PORT = int(os.environ.get("PORT", "8787"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,11 +34,13 @@ def vip(n: int) -> str:
 
 
 def fleet() -> dict:
+    cmd = [WENDY, "cloud", "discover", "--json"]
+    if GRPC:
+        cmd += ["--cloud-grpc", GRPC]
     try:
-        out = subprocess.run(
-            [WENDY, "cloud", "discover", "--cloud-grpc", GRPC, "--json"],
-            capture_output=True, text=True, timeout=20,
-        )
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if out.returncode != 0 and not out.stdout.strip():
+            return {"ok": False, "error": (out.stderr or "discover failed").strip()[:200], "devices": []}
         devices = json.loads(out.stdout or "[]")
         rows = [
             {"name": d.get("name", ""), "id": d.get("id", 0), "vip": vip(int(d.get("id", 0)))}
@@ -64,6 +68,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/":
             self.path = "/index.html"
         return super().do_GET()
+
+    def guess_type(self, path):
+        t = super().guess_type(path)
+        if t == "text/html":
+            return "text/html; charset=utf-8"
+        return t
 
     def log_message(self, *a):
         pass

@@ -1,3 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WendyOS Mesh — live</title>
 <style>
   :root{
@@ -118,11 +121,11 @@
       chips.innerHTML=ds.slice(0,6).map(d=>`<span class="chip"><b>${esc(d.name)}</b> <span class="v">${d.vip}</span></span>`).join('');
       lab.innerHTML=ds.map(d=>`<div class="dev"><div class="nm"><span class="dot"></span>${esc(d.name)}</div>
         <div class="vip">device-${d.id}.cloud.wendy.dev</div>
-        <div class="meta">cloud id ${d.id} · ${d.vip}</div></div>`).join('') || '<div class="dev"><div class="nm">no devices enrolled yet</div></div>';
+        <div class="meta">cloud id ${d.id} · ${d.vip}</div></div>`).join('') || '<div class="dev"><div class="nm">no devices from this cloud — point the CLI at your local cloud</div></div>';
       ts.textContent='updated '+new Date().toLocaleTimeString();
     }catch(e){
-      badge.className='badge offline'; badgetxt.textContent='live server offline';
-      chips.innerHTML='<span class="chip">run <b>python3 server.py</b> to go live</span>';
+      badge.className='badge offline'; badgetxt.textContent='live server unreachable';
+      chips.innerHTML='<span class="chip">start it: <b>WENDY_CLOUD_GRPC=&lt;local-grpc&gt; python3 server.py</b></span>';
       ts.textContent='';
     }
   }
