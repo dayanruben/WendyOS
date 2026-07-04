@@ -329,6 +329,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
+			Env:           expandServiceEnv(svc),
 		}
 
 		cliLogln("Creating container for service %s...", name)

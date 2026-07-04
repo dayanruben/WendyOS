@@ -243,3 +243,32 @@ func TestResolveServiceEnv(t *testing.T) {
 		t.Fatal("resolveServiceEnv(no services) should be nil")
 	}
 }
+
+func TestExpandServiceEnv(t *testing.T) {
+	t.Setenv("MESH_PEERS", "265,266,267")
+	// MESH_UNSET intentionally not set.
+
+	svc := &appconfig.ServiceConfig{Env: map[string]string{
+		"MESH_PEERS": "${MESH_PEERS}",
+		"MESH_UNSET": "${MESH_UNSET}",
+		"LITERAL":    "5",
+	}}
+
+	got := expandServiceEnv(svc)
+	want := []string{"LITERAL=5", "MESH_PEERS=265,266,267"}
+	if len(got) != len(want) {
+		t.Fatalf("expandServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expandServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+
+	if expandServiceEnv(nil) != nil {
+		t.Fatal("expandServiceEnv(nil) should be nil")
+	}
+	if expandServiceEnv(&appconfig.ServiceConfig{}) != nil {
+		t.Fatal("expandServiceEnv(no env) should be nil")
+	}
+}
