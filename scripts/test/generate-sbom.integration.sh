@@ -13,11 +13,14 @@ for tool in go jq; do
 done
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# Build a real wendy binary to catalog. Mirror CI: macOS build-go-macos job
-# uses CGO_ENABLED=1 (ble_darwin.go / bluetooth_darwin.go need cgo), Linux
-# uses CGO_ENABLED=0.
-if [[ "$(uname -s)" == "Darwin" ]]; then CGO="1"; else CGO="0"; fi
-( cd "$ROOT/go" && CGO_ENABLED="$CGO" go build -o "$TMP/wendy" ./cmd/wendy )
+# Build a real wendy binary to catalog. The CLI links libusb via cgo on both
+# macOS and Linux (Thor USB recovery flashing uses gousb, guarded by
+# `//go:build darwin || linux`), so CGO must be enabled — mirroring CI's
+# build-go-cli-linux / build-go-macos jobs, both of which build with
+# CGO_ENABLED=1 against libusb. libusb dev headers must be on PATH (the
+# sbom.yml workflow installs libusb-1.0-0-dev + pkg-config on Linux; macOS
+# runners have libusb via Homebrew).
+( cd "$ROOT/go" && CGO_ENABLED=1 go build -o "$TMP/wendy" ./cmd/wendy )
 
 bash "$SCRIPT" binary "$TMP/wendy" "$TMP/wendy.spdx.json"
 jq -e '.spdxVersion and (.packages | length > 0)' "$TMP/wendy.spdx.json" >/dev/null \

@@ -39,6 +39,13 @@ jobs:
         with:
           syft-version: v1.18.1
 
+      # The integration test compiles the wendy CLI, which links libusb via cgo
+      # (gousb, for Thor USB recovery flashing). Provide the libusb dev headers
+      # and pkg-config so CGO_ENABLED=1 `go build ./cmd/wendy` resolves
+      # `#cgo pkg-config: libusb-1.0`.
+      - name: Install libusb (cgo dependency of the CLI)
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev pkg-config
+
       - name: Unit tests (fake syft)
         run: bash scripts/test/generate-sbom.test.sh
 
