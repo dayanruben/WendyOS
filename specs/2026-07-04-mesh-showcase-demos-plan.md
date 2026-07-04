@@ -813,9 +813,9 @@ while true {
 ```dockerfile
 # MeshBeacon has to be built via a Dockerfile rather than the Swift
 # buildpack, and built from the wendy-app-sdk repo root rather than
-# probe/ alone — see wendy-app-sdk/Dockerfile (RemoteCamViewer's) for the
-# full explanation; this file is that same shape with only the --product
-# name and output binary name changed.
+# probe/ alone — see wendy-app-sdk/Dockerfile.remotecamviewer for the full
+# explanation; this file is that same shape with only the --product name
+# and output binary name changed.
 FROM swift:6.1-noble AS build
 WORKDIR /wendy-app-sdk
 COPY Package.swift Package.resolved* ./
@@ -911,17 +911,18 @@ Look for `"sending beacon"` on the tapped device and check whether the listener 
 
 Same as Step 5, in the other direction. Confirms the broadcast works symmetrically, not just from one device.
 
-- [ ] **Step 7: Restore `wendy-app-sdk/wendy.json` and `Dockerfile` to whatever they held before this task (they get overwritten by each demo's deploy — see Global Constraints)**
+- [ ] **Step 7: Restore `wendy-app-sdk/wendy.json` (a deploy overwrites it) and delete the transient `Dockerfile` copy (gitignored — see `.gitignore`'s comment on why the bare `Dockerfile` is never committed)**
 
 ```bash
 cd /Users/joannisorlandos/git/wendy/wendy-app-sdk
-git status wendy.json Dockerfile
+git status wendy.json
 ```
 
-If `git status` shows these as modified (not untracked — they're committed files RemoteCamViewer's own deploy already established this swap-before-deploy convention for), restore them:
+If `git status` shows `wendy.json` as modified, restore it:
 
 ```bash
-git checkout -- wendy.json Dockerfile
+git checkout -- wendy.json
+rm -f Dockerfile
 ```
 
 - [ ] **Step 8: Commit** (only if Step 5/6 needed a code fix — if verification passed on the first try, there is nothing new to commit here)
@@ -1178,7 +1179,7 @@ while true {
 ```dockerfile
 # MeshCounter has to be built via a Dockerfile rather than the Swift
 # buildpack, and built from the wendy-app-sdk repo root rather than probe/
-# alone — see wendy-app-sdk/Dockerfile (RemoteCamViewer's) for the full
+# alone — see wendy-app-sdk/Dockerfile.remotecamviewer for the full
 # explanation; this file is that same shape with only the --product name
 # and output binary name changed.
 FROM swift:6.1-noble AS build
@@ -1272,11 +1273,12 @@ wendy device logs --device wendyos-pi5-nvme.local --tail 20 --json
 
 A stuck/mismatched count with no errors logged on either side most likely means one direction's `MESH_PEERS` is wrong (check for a typo or a stale asset ID — rerun Step 1).
 
-- [ ] **Step 7: Restore `wendy-app-sdk/wendy.json` and `Dockerfile`**
+- [ ] **Step 7: Restore `wendy-app-sdk/wendy.json` and delete the transient `Dockerfile` copy (gitignored — see Task 4 Step 7's note)**
 
 ```bash
 cd /Users/joannisorlandos/git/wendy/wendy-app-sdk
-git checkout -- wendy.json Dockerfile
+git checkout -- wendy.json
+rm -f Dockerfile
 ```
 
 - [ ] **Step 8: Commit** (only if Step 5/6 needed a code fix)
