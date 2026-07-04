@@ -218,6 +218,57 @@ func TestHasOTABackend(t *testing.T) {
 	}
 }
 
+func TestOSUpdateStackMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		features    []string
+		artifactURL string
+		wantErr     bool
+		wantSubstr  string
+	}{
+		{
+			name:        "wendy artifact on a device that predates the wendyos-update stack requires a reflash",
+			features:    []string{"os-healthcheck"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+			wantErr:     true,
+			wantSubstr:  "reflash",
+		},
+		{
+			name:        "wendy artifact on a wendyos-update device is fine",
+			features:    []string{"wendyos-update"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+		{
+			name:        "unknown artifact extension is not constrained",
+			features:    []string{"os-healthcheck"},
+			artifactURL: "https://example.com/custom-artifact",
+		},
+		{
+			name:        "device without advertised backends is left to the agent",
+			features:    nil,
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &agentpb.GetAgentVersionResponse{Featureset: tc.features}
+			err := osUpdateStackMismatch(resp, tc.artifactURL)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("osUpdateStackMismatch() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("osUpdateStackMismatch() = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q should contain %q", err, tc.wantSubstr)
+			}
+		})
+	}
+}
+
 func TestProgressLabel(t *testing.T) {
 	tests := []struct {
 		phase   string

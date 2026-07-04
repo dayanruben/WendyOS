@@ -91,6 +91,38 @@ func hasOTABackend(versionResp *agentpb.GetAgentVersionResponse) bool {
 	return agentVersionHasFeature(versionResp, "wendyos-update")
 }
 
+// requiredOTAFeatureForArtifact maps an artifact URL to the featureset entry of
+// the only backend that can install it: .wendy → "wendyos-update", "" when the
+// extension is unknown. Mirrors the agent's requiredUpdaterForArtifact.
+func requiredOTAFeatureForArtifact(artifactURL string) string {
+	path := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		path = u.Path
+	}
+	if strings.HasSuffix(path, ".wendy") {
+		return "wendyos-update"
+	}
+	return ""
+}
+
+// osUpdateStackMismatch reports whether the artifact's OTA stack is one the
+// device cannot run, so the CLI can explain the situation instead of offering
+// an update that is guaranteed to fail on the device. A device that advertises
+// a featureset without the required backend is on an image that predates the
+// wendyos-update stack: its partition layout is incompatible, so no OTA can
+// cross it and the device must be reflashed. Devices that advertise no
+// featureset at all are left to the agent's own selection error (older agents
+// predate the featureset entries).
+func osUpdateStackMismatch(versionResp *agentpb.GetAgentVersionResponse, artifactURL string) error {
+	required := requiredOTAFeatureForArtifact(artifactURL)
+	if required == "" || len(versionResp.GetFeatureset()) == 0 || agentVersionHasFeature(versionResp, required) {
+		return nil
+	}
+	return errors.New("this OS update uses the wendyos-update stack, which this device does not support " +
+		"(its image predates the wendyos-update stack, and the partition layout is incompatible); " +
+		"reflash the device with a current WendyOS image to continue receiving OS updates")
+}
+
 // isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The
 // signals are WendyOS-specific and authoritative on their own: a "WendyOS-" os
 // version (from /etc/wendyos/version.txt) or a device type (from
@@ -300,6 +332,13 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 			if artifactURL == "" {
 				return fmt.Errorf("provide a local artifact path or --artifact-url")
+			}
+
+			// Refuse a doomed update before anything streams: a .wendy artifact
+			// cannot be installed by a device whose image predates the
+			// wendyos-update stack.
+			if err := osUpdateStackMismatch(versionResp, artifactURL); err != nil {
+				return err
 			}
 
 			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
