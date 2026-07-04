@@ -1050,12 +1050,20 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// Clean up any stale task from a previous run.
 	c.deleteStaleTask(ctx, container, appName)
 
+	// The task's IO pipeline must live as long as the task, not the RPC that
+	// started it: containerd's fifo package closes the FIFO fds when the
+	// creation context is canceled. Bound to the request context, a client
+	// disconnect (e.g. `wendy run --detach` returning) would orphan the
+	// container's stdout — the FIFO fills and the app blocks on its next
+	// write, freezing it minutes to hours later.
+	taskCtx := c.withNamespace(context.Background())
+
 	// Create pipes for stdout/stderr capture.
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 
 	// Create a new task with pipe-based stdio for programmatic capture.
-	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
+	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			// Orphaned task: exists in the containerd runtime but container.Task()
@@ -1068,7 +1076,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			} else {
 				container, err = c.client.LoadContainer(ctx, appName)
 				if err == nil {
-					task, err = container.NewTask(ctx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
+					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
 				}
 			}
 		}
@@ -1082,10 +1090,11 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		}
 	}
 
-	// Set up the wait channel before starting.
-	exitStatusCh, err := task.Wait(ctx)
+	// Set up the wait channel before starting. Uses taskCtx so the exit
+	// monitor — and with it the output pipeline — survives client disconnect.
+	exitStatusCh, err := task.Wait(taskCtx)
 	if err != nil {
-		_, _ = task.Delete(ctx)
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
@@ -1095,8 +1104,8 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	}
 
 	// Start the task.
-	if err := task.Start(ctx); err != nil {
-		_, _ = task.Delete(ctx)
+	if err := task.Start(taskCtx); err != nil {
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
@@ -1184,7 +1193,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
-	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
+	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
 }
@@ -1224,10 +1233,15 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 
 	c.deleteStaleTask(ctx, container, appName)
 
+	// See StartContainer: the IO pipeline must outlive the RPC, otherwise a
+	// client disconnect closes the FIFO readers and the app later freezes
+	// writing to a full stdout pipe.
+	taskCtx := c.withNamespace(context.Background())
+
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 
-	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
+	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			c.logger.Warn("Orphaned task detected, force-deleting and recreating container", zap.String("app_name", appName))
@@ -1237,7 +1251,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			} else {
 				container, err = c.client.LoadContainer(ctx, appName)
 				if err == nil {
-					task, err = container.NewTask(ctx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
+					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 				}
 			}
 		}
@@ -1251,9 +1265,9 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 		}
 	}
 
-	exitStatusCh, err := task.Wait(ctx)
+	exitStatusCh, err := task.Wait(taskCtx)
 	if err != nil {
-		_, _ = task.Delete(ctx)
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
@@ -1262,8 +1276,8 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
-	if err := task.Start(ctx); err != nil {
-		_, _ = task.Delete(ctx)
+	if err := task.Start(taskCtx); err != nil {
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
@@ -1279,7 +1293,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	c.mu.Unlock()
 
 	outputCh := make(chan services.ContainerOutput, 64)
-	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
+	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
 }
