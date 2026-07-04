@@ -174,6 +174,16 @@ func main() {
 		ctrdClient.SetMeshDNS(meshDNS)
 	}
 
+	// Pin the CNI bridge binary's digest on first boot (trust-on-first-use)
+	// so openAndVerifyCNIBinary's mandatory integrity check has a baseline to
+	// check against — without this, a freshly imaged/reinstalled device has
+	// no pinned digest and CNI ADD refuses to run for every isolated app.
+	// Best-effort/non-fatal: apps that don't use isolation must still work
+	// even if this fails.
+	if err := agentcontainerd.SeedCNIHashFileIfMissing(); err != nil {
+		logger.Warn("failed to seed CNI hash file", zap.Error(err))
+	}
+
 	// Ensure the host-side WENDY-MESH iptables chain exists so the wendy-mesh
 	// CNI plugin has a chain to append per-container ACCEPT rules into.
 	// Best-effort/non-fatal: containers that don't use the mesh network mode
@@ -187,6 +197,12 @@ func main() {
 	// in scope).
 	if err := hostnetwork.InitMeshNATChain(); err != nil {
 		logger.Warn("failed to init mesh nat chain", zap.Error(err))
+	}
+	// Same non-fatal treatment for the nat-table chain that forwards the
+	// agent's own loopback MeshDial dial into a meshed container's published
+	// port (see hostnetwork.MeshPortsChainName).
+	if err := hostnetwork.InitMeshPortsChain(); err != nil {
+		logger.Warn("failed to init mesh ports chain", zap.Error(err))
 	}
 
 	logManager := services.NewContainerLogManager(logger, telemetryBuf)

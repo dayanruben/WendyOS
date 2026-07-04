@@ -29,6 +29,17 @@ const (
 	cniStateDir  = "/run/wendy/cni"
 )
 
+// cniExecPATH is the PATH given to the CNI bridge plugin subprocess. The
+// bridge plugin shells out to the system `iptables` binary (for the
+// isolation/hairpin rules it installs) in addition to using CNI_PATH to
+// locate the host-local IPAM helper — /opt/cni/bin alone is not enough, so
+// the standard system binary directories are appended. Without this, every
+// CNI ADD failed with "failed to locate iptables: exec: \"iptables\":
+// executable file not found in $PATH", masked by the agent's log call not
+// having captured the plugin's stdout (see the stdout field added to the
+// "CNI ADD failed" log below) until this was diagnosed.
+const cniExecPATH = cniPluginDir + ":/usr/sbin:/usr/bin:/sbin:/bin"
+
 // serviceNamePattern is the allowlist for service names written into
 // /etc/hosts. Only ASCII alphanumeric, hyphen, and underscore are permitted to
 // prevent tab/newline/space injection that would corrupt the hosts file
@@ -335,6 +346,68 @@ func openAndVerifyCNIBinary() (*os.File, error) {
 	return f, nil
 }
 
+// SeedCNIHashFileIfMissing writes cniHashesPath pinning the digest of the
+// currently-installed CNI bridge binary, if the file does not already exist.
+// Trust-on-first-use, the same pattern SSH host keys use: the first agent
+// boot after install/reinstall establishes the pinned baseline, and
+// openAndVerifyCNIBinary's fixed-digest check on every subsequent CNI ADD
+// then catches any later tampering or supply-chain swap of the binary
+// (SOC2-CC6, NIST-SI-3). Never overwrites an existing file — an operator's
+// own pinned digest, or a digest that survived an attempted compromise,
+// always wins over re-seeding from whatever binary happens to be on disk
+// right now.
+func SeedCNIHashFileIfMissing() error {
+	if _, err := os.Stat(cniHashesPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking for existing %s: %w", cniHashesPath, err)
+	}
+
+	data, err := os.ReadFile(cniBridgeBin)
+	if err != nil {
+		return fmt.Errorf("reading %s to compute its digest: %w", cniBridgeBin, err)
+	}
+	sum := sha256.Sum256(data)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+
+	out, err := json.Marshal(map[string]string{"bridge": digest})
+	if err != nil {
+		return fmt.Errorf("marshaling seeded %s: %w", cniHashesPath, err)
+	}
+
+	dir := filepath.Dir(cniHashesPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+	// Atomic write (temp file + rename), mirroring writeMeshResolvConfIn: a
+	// crash mid-write must never leave a truncated, unparseable hash file
+	// that permanently locks out CNI until an operator notices and fixes it.
+	tmp, err := os.CreateTemp(dir, ".cni-hashes-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", cniHashesPath, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("writing temp %s: %w", cniHashesPath, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("chmod temp %s: %w", cniHashesPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("closing temp %s: %w", cniHashesPath, err)
+	}
+	if err := os.Rename(tmpName, cniHashesPath); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("renaming into place %s: %w", cniHashesPath, err)
+	}
+	return nil
+}
+
 // warnSubnetCollision checks whether the allocated /28 subnet overlaps with
 // any address already assigned to a network interface on this host. A collision
 // means two apps would share the same bridge subnet, causing routing conflicts.
@@ -424,11 +497,10 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	cmd.Env = []string{
 		// Explicit minimal environment — never inherit the agent's environment,
 		// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
-		// PATH restricted to /opt/cni/bin only: the bridge plugin and its IPAM
-		// subprocess (host-local) both live there; including system paths would
-		// allow a compromised /usr/bin to intercept IPAM exec calls (SOC2-CC6,
-		// NIST-SC-7, ISO27001-A.8).
-		"PATH=/opt/cni/bin",
+		// PATH includes cniPluginDir (bridge plugin + host-local IPAM helper) plus
+		// the standard system dirs, since the bridge plugin also shells out to the
+		// system iptables binary (see cniExecPATH).
+		"PATH=" + cniExecPATH,
 		"CNI_COMMAND=ADD",
 		"CNI_CONTAINERID=" + containerID,
 		"CNI_NETNS=" + netnsPath,
@@ -448,12 +520,17 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	runtime.KeepAlive(cniBin)
 	cniBin.Close()
 	if runErr != nil {
-		// Sanitize stderr before logging to prevent log injection from a rogue
-		// CNI binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
+		// Sanitize stderr/stdout before logging to prevent log injection from a
+		// rogue CNI binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6,
+		// NIST-SI-10). stdout matters here even on failure: the CNI spec requires
+		// a plugin to report its error as a JSON object on stdout (code/msg/
+		// details), not stderr — without logging it, every ADD failure showed
+		// only "exit status 1" with an empty stderr and no way to diagnose why.
 		c.logger.Warn("CNI ADD failed",
 			zap.String("app_id", appID),
 			zap.String("container_id", containerID),
 			zap.String("stderr", sanitizeForLog(stderr.String(), 512)),
+			zap.String("stdout", sanitizeForLog(stdoutBuf.String(), 512)),
 			zap.Error(runErr))
 		return "", fmt.Errorf("CNI ADD failed for %s/%s; see agent logs for details", appID, containerID)
 	}
@@ -595,9 +672,9 @@ func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath strin
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
 		// Explicit minimal environment — never inherit the agent's environment
-		// (SOC2-CC6, NIST-SC-7). PATH restricted to /opt/cni/bin only so the
-		// bridge plugin cannot resolve IPAM helpers from attacker-controlled paths.
-		"PATH=/opt/cni/bin",
+		// (SOC2-CC6, NIST-SC-7). See cniExecPATH: the bridge plugin also shells
+		// out to the system iptables binary during teardown.
+		"PATH=" + cniExecPATH,
 		"CNI_COMMAND=DEL",
 		"CNI_CONTAINERID=" + containerID,
 		"CNI_NETNS=" + netnsPath,

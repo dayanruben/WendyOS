@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,9 +186,36 @@ func (d *MeshDialer) discoverOnLAN(ctx context.Context, assetID int32) (string, 
 		return "", false
 	}
 	for _, dev := range devices.LANDevices {
-		if dev.AssetID == assetID && dev.IsMTLS && dev.IPAddress != "" {
-			return net.JoinHostPort(dev.IPAddress, strconv.Itoa(dev.Port)), true
+		if dev.AssetID != assetID || !dev.IsMTLS || dev.IPAddress == "" {
+			continue
 		}
+		// Some hosts' avahi/mDNS advertisements include a loopback address
+		// among their resolved AAAA/A records (e.g. a stray "::1 <hostname>"
+		// line in /etc/hosts gets published verbatim) — dialing that from a
+		// different physical device always reaches back into the DIALING
+		// device's own loopback instead of the peer, connect()ing (or
+		// refusing/timing out) against a totally unrelated local service.
+		// Skip it so the caller falls through to the cloud relay leg instead
+		// of retrying a hopeless local dial forever (found via RemoteCam demo
+		// debugging: repeated "dial tcp [::1]:50052: connect: connection
+		// refused" against the peer's own mTLS port number).
+		//
+		// dev.IPAddress is not always a numeric literal — some mDNS/avahi
+		// paths can hand back a bare hostname (e.g. "localhost"), which
+		// net.ParseIP silently returns nil for rather than resolving, letting
+		// a loopback hostname slip past a numeric-only check.
+		isLoopback := strings.EqualFold(dev.IPAddress, "localhost")
+		if !isLoopback {
+			if ip := net.ParseIP(dev.IPAddress); ip != nil && ip.IsLoopback() {
+				isLoopback = true
+			}
+		}
+		if isLoopback {
+			d.logger.Warn("mesh: ignoring loopback address in LAN discovery result",
+				zap.Int32("device_id", assetID), zap.String("ip", dev.IPAddress))
+			continue
+		}
+		return net.JoinHostPort(dev.IPAddress, strconv.Itoa(dev.Port)), true
 	}
 	return "", false
 }

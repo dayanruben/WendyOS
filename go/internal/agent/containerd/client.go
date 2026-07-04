@@ -1218,6 +1218,19 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
 		if cniErr != nil {
+			// Roll back any partial state the failed ADD left behind (e.g. a
+			// host-local IPAM allocation recorded before a later step, such as
+			// installing iptables rules, failed) — without this, the IPAM
+			// allocation for this exact container ID leaks and every future
+			// CNI ADD for the same appID/serviceName fails with "duplicate
+			// allocation is not allowed" until an agent restart or a renamed
+			// appID sidesteps it (found via repeated RemoteCam redeploy cycles).
+			// Best-effort: DEL is itself idempotent/safe against a partial or
+			// absent ADD, so a DEL failure here is logged, not fatal.
+			if delErr := c.CNIDel(ctx, appID, appName, netnsPath); delErr != nil {
+				c.logger.Warn("CNI DEL rollback after failed ADD also failed (non-fatal)",
+					zap.String(logfields.AppID, appID), zap.Error(delErr))
+			}
 			cleanupNetns()
 			c.logger.Error("CNI ADD failed", zap.String(logfields.AppID, appID), zap.Error(cniErr))
 		} else {
@@ -2452,7 +2465,9 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	// a stopOne-then-deleteOne sequence releases exactly once).
 	// c.serviceIPs is read without locking because deleteOne's only caller,
 	// DeleteContainer, holds c.mu for its full duration.
-	if appID, svcName, parseErr := ParseContainerName(ctr.ID()); parseErr == nil && svcName != "" {
+	appID, svcName, parseErr := ParseContainerName(ctr.ID())
+	isolatedSvc := parseErr == nil && svcName != ""
+	if isolatedSvc {
 		var entitlements []appconfig.Entitlement
 		if labels, lerr := ctr.Labels(ctx); lerr == nil {
 			entitlements = parseEntitlementsFromAnnotations(labels)
@@ -2462,6 +2477,21 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	}
 
 	if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
+		// CNI DEL while the task's network namespace still exists (mirrors
+		// stopOne): deleteOne is DeleteContainer's only path for a container
+		// that was never explicitly stopped first (`wendy device apps remove`
+		// on a running app), so without this the CNI bridge plugin's host-local
+		// IPAM allocation for this exact container ID leaks forever — the next
+		// create for the same appID/serviceName then fails CNI ADD with
+		// "duplicate allocation is not allowed" (WDY mesh: found via repeated
+		// remove+redeploy cycles during RemoteCam demo debugging).
+		if isolatedSvc {
+			netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+			if cniErr := c.CNIDel(ctx, appID, ctr.ID(), netnsPath); cniErr != nil {
+				c.logger.Warn("CNI DEL failed during delete (non-fatal)",
+					zap.String("container_id", ctr.ID()), zap.Error(cniErr))
+			}
+		}
 		_ = task.Kill(ctx, syscall.SIGKILL)
 		_, _ = task.Delete(ctx, containerd.WithProcessKill)
 	}

@@ -157,6 +157,7 @@ func meshGateway(appID string) (string, error) {
 type meshEgressParams struct {
 	gateway string
 	cidr    string
+	ports   []appconfig.PortMapping
 }
 
 // writeMeshResolvConfIn writes the resolv.conf for one app under baseDir and
@@ -310,7 +311,7 @@ func resolveMeshEgress(entitlements []appconfig.Entitlement, appID string) (para
 	if err != nil {
 		return meshEgressParams{}, true, fmt.Errorf("deriving mesh gateway: %w", err)
 	}
-	return meshEgressParams{gateway: gateway, cidr: cidr}, true, nil
+	return meshEgressParams{gateway: gateway, cidr: cidr, ports: ent.Ports}, true, nil
 }
 
 // applyMeshEgress wires mesh egress for a just-started container: a route
@@ -378,6 +379,29 @@ func (c *Client) applyMeshEgress(entitlements []appconfig.Entitlement, container
 	// for containers whose acquisition actually succeeded (held map).
 	c.ensureMeshDNS(containerName, params.gateway)
 
+	// Ingress port forwards are also best-effort, same rationale as DNS
+	// above: without one, a peer-initiated MeshDial for that port fails with
+	// "connection refused" (see MeshService.MeshDial), but every other mesh
+	// egress capability wired above still works, so a single iptables
+	// failure must not fail container start.
+	if len(params.ports) > 0 {
+		if err := hostnetwork.EnableRouteLocalnet(bridgeName(appID)); err != nil {
+			c.logger.Warn("mesh egress: could not enable route_localnet on bridge, ingress port forwards may silently drop replies",
+				zap.String("app_id", appID), zap.Error(err))
+		}
+	}
+	for _, pm := range params.ports {
+		if err := hostnetwork.AddIngressPortForward(pm.Host, ip, pm.Container); err != nil {
+			c.logger.Warn("mesh egress: could not install ingress port forward, peer MeshDial to this port will fail",
+				zap.String("app_id", appID), zap.String("ip", ip),
+				zap.Uint16("host_port", pm.Host), zap.Uint16("container_port", pm.Container), zap.Error(err))
+		} else {
+			c.logger.Info("mesh egress: ingress port forward installed",
+				zap.String("app_id", appID), zap.String("ip", ip),
+				zap.Uint16("host_port", pm.Host), zap.Uint16("container_port", pm.Container))
+		}
+	}
+
 	c.logger.Info("mesh egress applied",
 		zap.String("app_id", appID), zap.String("ip", ip), zap.String("service_cidr", params.cidr))
 	return nil
@@ -418,6 +442,13 @@ func (c *Client) teardownMeshEgress(entitlements []appconfig.Entitlement, contai
 			if err := hostnetwork.RemoveMeshRedirect(ip, cidr, mesh.ProxyPort); err != nil {
 				c.logger.Warn("mesh egress teardown: RemoveMeshRedirect failed (non-fatal)",
 					zap.String("app_id", appID), zap.String("ip", ip), zap.Error(err))
+			}
+		}
+		for _, pm := range ent.Ports {
+			if err := hostnetwork.RemoveIngressPortForward(pm.Host, ip, pm.Container); err != nil {
+				c.logger.Warn("mesh egress teardown: RemoveIngressPortForward failed (non-fatal)",
+					zap.String("app_id", appID), zap.String("ip", ip),
+					zap.Uint16("host_port", pm.Host), zap.Uint16("container_port", pm.Container), zap.Error(err))
 			}
 		}
 	}
