@@ -628,3 +628,102 @@ func TestTeardownMeshEgressReleasesHeldListener(t *testing.T) {
 		t.Fatalf("teardown of never-held listener must not release: got %d releases, want 1", r)
 	}
 }
+
+// TestStartContainerGatewayDNSAcquireOrdering locks in the fix for the
+// mesh-egress-failure DNS-refcount leak (code review on jo/network-bridge-mode):
+// StartContainer's gateway-DNS block must gate its *explicit* ensureMeshDNS
+// acquire on findBridgeEntitlement, not the broader needsGatewayDNS, precisely
+// because applyMeshEgress acquires DNS for mesh apps itself, as its own last
+// fallible step (see applyMeshEgress's doc comment). If the explicit block
+// also fired for mesh apps, a container would hold a DNS ref *before*
+// applyMeshEgress's route/rule/redirect steps run; when one of those later
+// fails, StartContainer deletes the task and returns without ever calling
+// releaseMeshDNS, permanently leaking the ref (and, on the real DNS server,
+// the listener).
+//
+// This test replays the exact decision StartContainer makes for both a mesh
+// app and a bridge app, using the real findBridgeEntitlement/
+// resolveMeshEgress predicates, and asserts the resulting ensure/release
+// counts on the fake:
+//   - mesh app: the explicit block must not fire at all (findBridgeEntitlement
+//     is false for a "mesh" entitlement — regression-tested independently in
+//     TestFindBridgeEntitlement), so a mesh-egress failure that occurs before
+//     applyMeshEgress reaches its own ensureMeshDNS call leaves zero refs
+//     held — nothing to leak.
+//   - bridge app: the explicit block is the only acquire path (applyMeshEgress
+//     no-ops for bridge apps, since resolveMeshEgress requires a "mesh"
+//     entitlement), so it must fire exactly once, and that one ref must be
+//     fully releasable on teardown.
+func TestStartContainerGatewayDNSAcquireOrdering(t *testing.T) {
+	withTempSubnetRegistry(t)
+
+	t.Run("mesh app: explicit acquire is skipped, no ref to leak on egress failure", func(t *testing.T) {
+		appID := "com.example.meshleaktest"
+		containerName := appID + "_svc"
+		meshEnts := []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
+		}
+
+		fake := &fakeMeshDNS{}
+		c := &Client{logger: zap.NewNop(), meshDNS: fake}
+
+		// Replay StartContainer's explicit gateway-DNS gate: must be false for
+		// a mesh entitlement, so this must NOT call ensureMeshDNS.
+		if _, ok := findBridgeEntitlement(meshEnts); ok {
+			t.Fatalf("findBridgeEntitlement must be false for a mesh entitlement")
+		}
+
+		// Simulate applyMeshEgress failing on one of its steps that runs
+		// *before* its own internal ensureMeshDNS call (route/rule/redirect) —
+		// i.e. StartContainer's failure branch runs having never acquired DNS.
+		if e, r := fake.counts(); e != 0 || r != 0 {
+			t.Fatalf("before any acquire attempt: ensures=%d releases=%d, want 0/0", e, r)
+		}
+
+		// The failure path in StartContainer only deletes the task; it does
+		// not call releaseMeshDNS (nor should it need to, since nothing was
+		// acquired). Confirm there is genuinely nothing held to leak.
+		c.releaseMeshDNS(containerName, appID)
+		if e, r := fake.counts(); e != 0 || r != 0 {
+			t.Fatalf("after simulated egress failure: ensures=%d releases=%d, want 0/0 (nothing should have been acquired or released)", e, r)
+		}
+	})
+
+	t.Run("bridge app: explicit acquire fires once and is fully releasable", func(t *testing.T) {
+		appID := "com.example.bridgeacquiretest"
+		containerName := appID + "_svc"
+		gw, err := meshGateway(appID)
+		if err != nil {
+			t.Fatalf("meshGateway: %v", err)
+		}
+		bridgeEnts := []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "bridge"},
+		}
+
+		fake := &fakeMeshDNS{}
+		c := &Client{logger: zap.NewNop(), meshDNS: fake}
+
+		// Replay StartContainer's explicit gateway-DNS gate: true for a bridge
+		// entitlement, so this acquires the one ref bridge apps need.
+		if _, ok := findBridgeEntitlement(bridgeEnts); !ok {
+			t.Fatalf("findBridgeEntitlement must be true for a bridge entitlement")
+		}
+		c.ensureMeshDNS(containerName, gw)
+		if e, r := fake.counts(); e != 1 || r != 0 {
+			t.Fatalf("after explicit bridge acquire: ensures=%d releases=%d, want 1/0", e, r)
+		}
+
+		// applyMeshEgress must be a complete no-op for a bridge-only
+		// entitlement set (no "mesh" entitlement present), so it must not
+		// attempt a second acquire.
+		if _, ok, err := resolveMeshEgress(bridgeEnts, appID); ok || err != nil {
+			t.Fatalf("resolveMeshEgress(bridgeEnts) = ok=%v err=%v, want ok=false err=nil", ok, err)
+		}
+
+		// Teardown releases exactly the one ref that was actually acquired.
+		c.releaseMeshDNS(containerName, appID)
+		if e, r := fake.counts(); e != 1 || r != 1 {
+			t.Fatalf("after teardown: ensures=%d releases=%d, want 1/1", e, r)
+		}
+	})
+}

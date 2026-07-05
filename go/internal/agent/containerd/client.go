@@ -886,9 +886,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// favor of an eventual isolated "bridge" default. This never affects
 	// container creation; it only informs.
 	if hasImplicitHostNetworkMode(entCfg.Entitlements) {
-		c.logger.Warn(fmt.Sprintf(
-			`app %q: network entitlement without an explicit "mode" currently uses host networking (ports are publicly reachable). This default will change to isolated "bridge" networking in a future release. Set "mode": "host" to keep host networking, or "mode": "bridge" for isolated networking with outbound internet.`,
-			appID))
+		c.logger.Warn(
+			`network entitlement without an explicit "mode" currently uses host networking (ports are publicly reachable). This default will change to isolated "bridge" networking in a future release. Set "mode": "host" to keep host networking, or "mode": "bridge" for isolated networking with outbound internet.`,
+			zap.String(logfields.AppID, appID))
 	}
 
 	// Set the cgroup path here — client.go is the sole authority so there is
@@ -1375,7 +1375,12 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			// empty and this whole block — including the concurrent-stop
 			// discard guard below, which is keyed on the isolated-group cache
 			// c.appIsolation and would misfire for a bridge app that never sets
-			// it — is skipped entirely for bridge mode.
+			// it — is skipped entirely for bridge mode. This is an accepted
+			// gap, not an oversight: a concurrent StopContainer racing a
+			// bridge-mode app's CNI ADD is left to self-heal via the CNI DEL
+			// issued at stop time (stopOne/deleteOne, gated by
+			// needsCNIBridgeWiring), instead of duplicating this guard for
+			// serviceName == "".
 			if serviceName != "" {
 				c.mu.Lock()
 				// Guard against a concurrent StopContainer that may have deleted
@@ -1408,16 +1413,29 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 				c.mu.Unlock()
 			}
 
-			// Gateway DNS listener: covers both meshed multi-service isolated
-			// apps and single-service bridge-mode apps (see needsGatewayDNS).
+			// Gateway DNS listener for single-service bridge-mode apps only
+			// (see needsGatewayDNS, findBridgeEntitlement). Meshed multi-service
+			// isolated apps are intentionally excluded here: applyMeshEgress
+			// below acquires their DNS listener itself, as its last fallible
+			// step, only after route/rule/redirect setup has already
+			// succeeded (see applyMeshEgress). Acquiring it here too, before
+			// applyMeshEgress runs, would hold a DNS-listener ref across a
+			// window where a later applyMeshEgress failure returns without
+			// ever releasing it (the failure path below only deletes the
+			// task) — a refcount leak. ensureMeshDNS is idempotent per
+			// container so this is not about avoiding a double-acquire; it is
+			// about keeping the mesh acquire ordered strictly after mesh
+			// egress's fallible steps, as applyMeshEgress's own comment
+			// requires.
+			//
 			// Best-effort — without it, DNS lookups fail inside the namespace
 			// but the container still starts (NAT egress by IP literal still
 			// works), mirroring the rest of this block's error handling.
-			if needsGatewayDNS(isolation, entitlements) {
+			if _, ok := findBridgeEntitlement(entitlements); ok {
 				if gw, gwErr := meshGateway(appID); gwErr == nil {
 					c.ensureMeshDNS(appName, gw)
 				} else {
-					c.logger.Warn("bridge/mesh: could not derive gateway for DNS listener",
+					c.logger.Warn("bridge: could not derive gateway for DNS listener",
 						zap.String(logfields.AppID, appID), zap.Error(gwErr))
 				}
 			}
@@ -2335,12 +2353,26 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	// block the stop path.
 	if appID, svcName, parseErr := ParseContainerName(containerID); parseErr == nil {
 		var entitlements []appconfig.Entitlement
-		if labels, lerr := container.Labels(ctx); lerr == nil {
-			entitlements = parseEntitlementsFromAnnotations(labels)
-		}
 		c.mu.Lock()
 		isolation := c.getIsolation(appID)
 		c.mu.Unlock()
+		if labels, lerr := container.Labels(ctx); lerr == nil {
+			entitlements = parseEntitlementsFromAnnotations(labels)
+			// Prefer this container's own persisted label
+			// (labelKeyIsolation, written at create) over the in-memory
+			// c.appIsolation cache. The cache is only best-effort rebuilt
+			// from container labels at agent boot (rebuildCachesFromLabels);
+			// if that warm-up missed this appID, c.getIsolation silently
+			// returns "" and needsCNIBridgeWiring below would wrongly skip
+			// CNI DEL / DNS-listener release / mesh egress teardown for a
+			// container that is actually isolated — leaking its IP,
+			// iptables rules, and DNS refcount until agent restart. The
+			// label is written once at create and never goes stale, so it
+			// is authoritative here even when the cache is not.
+			if iso, ok := labels[labelKeyIsolation]; ok {
+				isolation = iso
+			}
+		}
 
 		if needsCNIBridgeWiring(isolation, svcName, entitlements) {
 			netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
@@ -2624,20 +2656,28 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	// safe to run after a stop too — teardownMeshEgress and releaseMeshDNS are
 	// both idempotent (rule removal tolerates absent rules; the DNS release is
 	// guarded by the held map), so a stopOne-then-deleteOne sequence releases
-	// exactly once. c.serviceIPs and c.getIsolation are read without locking
-	// because deleteOne's only caller, DeleteContainer, holds c.mu for its
-	// full duration.
+	// exactly once. c.serviceIPs is read without locking because deleteOne's
+	// only caller, DeleteContainer, holds c.mu for its full duration.
+	// isolation is read from the container's own persisted label
+	// (labelKeyIsolation) rather than c.getIsolation's in-memory cache, for
+	// the same reason as stopOne above: the cache is only best-effort warmed
+	// at boot, and a miss there must not silently skip CNI DEL / DNS release
+	// / mesh teardown for a container that is actually isolated.
 	appID, svcName, parseErr := ParseContainerName(ctr.ID())
 	var entitlements []appconfig.Entitlement
+	isolation := c.getIsolation(appID)
 	needsBridge := false
 	if parseErr == nil {
 		if labels, lerr := ctr.Labels(ctx); lerr == nil {
 			entitlements = parseEntitlementsFromAnnotations(labels)
+			if iso, ok := labels[labelKeyIsolation]; ok {
+				isolation = iso
+			}
 		}
-		needsBridge = needsCNIBridgeWiring(c.getIsolation(appID), svcName, entitlements)
+		needsBridge = needsCNIBridgeWiring(isolation, svcName, entitlements)
 	}
 	if needsBridge {
-		if needsGatewayDNS(c.getIsolation(appID), entitlements) {
+		if needsGatewayDNS(isolation, entitlements) {
 			c.releaseMeshDNS(ctr.ID(), appID)
 		}
 		ip := c.serviceIPs[appID][svcName]
