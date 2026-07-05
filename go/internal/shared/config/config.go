@@ -109,6 +109,22 @@ func CacheDir() (string, error) {
 	return cacheDir, nil
 }
 
+// LogDir returns the directory for CLI-written log files (e.g. the Thor flash log),
+// creating it if needed.
+func LogDir() (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("determining log directory: %w", err)
+	}
+	logDir := filepath.Join(dir, "wendy", "logs")
+	// 0o700: flash logs can contain hardware identifiers (e.g. the device ECID),
+	// so keep them readable only by the owner.
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating log directory: %w", err)
+	}
+	return logDir, nil
+}
+
 // configPath returns the full path to config.json.
 func configPath() (string, error) {
 	dir, err := ConfigDir()

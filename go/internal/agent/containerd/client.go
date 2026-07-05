@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +40,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -197,6 +200,41 @@ func (c *Client) clearPrimaryPID(appID string) {
 // getIsolation returns the cached isolation mode for appID. Caller must hold c.mu.
 func (c *Client) getIsolation(appID string) string {
 	return c.appIsolation[appID]
+}
+
+// hydrateIsolation warms c.appIsolation[appID] from a persisted container
+// label (labelKeyIsolation) when the in-memory cache has no value for appID
+// yet. This repopulates the cache after an agent restart or device reboot,
+// when c.appIsolation starts out empty even though isolated containers were
+// created (and labelled) in a previous process lifetime. It is idempotent and
+// safe to call repeatedly: once a value is set — whether by
+// CreateContainerWithProgress or a prior hydrate — it is never overwritten,
+// so a live create-time value always wins over a (necessarily identical,
+// since the label was written at create time) rehydrated one.
+//
+// Acquires c.mu; callers that already hold c.mu must use
+// hydrateIsolationLocked instead.
+func (c *Client) hydrateIsolation(appID string, labels map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hydrateIsolationLocked(appID, labels)
+}
+
+// hydrateIsolationLocked is the lock-free core of hydrateIsolation. Caller
+// must hold c.mu.
+func (c *Client) hydrateIsolationLocked(appID string, labels map[string]string) {
+	if appID == "" {
+		return
+	}
+	if c.appIsolation == nil {
+		c.appIsolation = make(map[string]string)
+	}
+	if c.appIsolation[appID] != "" {
+		return // already set (live create or earlier hydrate) — never override
+	}
+	if v := labels[labelKeyIsolation]; v != "" {
+		c.appIsolation[appID] = v
+	}
 }
 
 // recordServiceIP stores the CNI-assigned IP for a service. Caller must hold c.mu.
@@ -535,13 +573,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	if err := appconfig.ValidateAppID(rawAppID); err != nil {
 		c.logger.Warn("CreateContainer rejected: invalid app ID",
-			zap.String("app_id", sanitizeForLog(rawAppID, 253)), zap.Error(err))
+			zap.String(logfields.AppID, sanitizeForLog(rawAppID, 253)), zap.Error(err))
 		return fmt.Errorf("invalid app ID: %w", err)
 	}
 	if rawServiceName != "" {
 		if err := appconfig.ValidateServiceName(rawServiceName); err != nil {
 			c.logger.Warn("CreateContainer rejected: invalid service name",
-				zap.String("app_id", sanitizeForLog(rawAppID, 253)),
+				zap.String(logfields.AppID, sanitizeForLog(rawAppID, 253)),
 				zap.String("service_name", sanitizeForLog(rawServiceName, 57)),
 				zap.Error(err))
 			return fmt.Errorf("invalid service name: %w", err)
@@ -574,7 +612,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	logFields := []zap.Field{
 		zap.String("container_name", containerName),
-		zap.String("app_id", appID),
+		zap.String(logfields.AppID, appID),
 		zap.String("image", imageName),
 	}
 	if serviceName != "" {
@@ -789,7 +827,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
-	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
+	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation)
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
@@ -836,7 +874,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		// NIST-SC-7, ISO27001-A.8).
 		if hasPrimary && !c.primaryTaskAlive(ctx, appID, primaryPID) {
 			c.logger.Info("Recorded primary for app group is stale; this service becomes the new primary",
-				zap.String("app_id", appID), zap.Uint32("stale_pid", primaryPID))
+				zap.String(logfields.AppID, appID), zap.Uint32("stale_pid", primaryPID))
 			c.clearPrimaryPID(appID)
 			hasPrimary = false
 		}
@@ -919,7 +957,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	createdFields := []zap.Field{
 		zap.String("container_name", containerName),
-		zap.String("app_id", appID),
+		zap.String(logfields.AppID, appID),
 		zap.String("image", imageName),
 		zap.String("version", version),
 	}
@@ -1037,6 +1075,10 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 				appID, serviceName = id, svc
 			}
 		}
+		// Defensive rehydrate: covers StartContainer calls not preceded by
+		// ListBootContainers (e.g. a direct restart of a single container).
+		// c.mu is already held here (muHeld), so use the lock-free core.
+		c.hydrateIsolationLocked(appID, labels)
 	}
 
 	if restartPolicy != nil {
@@ -1048,12 +1090,20 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// Clean up any stale task from a previous run.
 	c.deleteStaleTask(ctx, container, appName)
 
+	// The task's IO pipeline must live as long as the task, not the RPC that
+	// started it: containerd's fifo package closes the FIFO fds when the
+	// creation context is canceled. Bound to the request context, a client
+	// disconnect (e.g. `wendy run --detach` returning) would orphan the
+	// container's stdout — the FIFO fills and the app blocks on its next
+	// write, freezing it minutes to hours later.
+	taskCtx := c.withNamespace(context.Background())
+
 	// Create pipes for stdout/stderr capture.
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 
 	// Create a new task with pipe-based stdio for programmatic capture.
-	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
+	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			// Orphaned task: exists in the containerd runtime but container.Task()
@@ -1066,7 +1116,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			} else {
 				container, err = c.client.LoadContainer(ctx, appName)
 				if err == nil {
-					task, err = container.NewTask(ctx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
+					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(nil, stdoutW, stderrW)))
 				}
 			}
 		}
@@ -1075,28 +1125,32 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			stdoutW.Close()
 			stderrR.Close()
 			stderrW.Close()
+			c.recordStartFailure(ctx, appName, err)
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
 
-	// Set up the wait channel before starting.
-	exitStatusCh, err := task.Wait(ctx)
+	// Set up the wait channel before starting. Uses taskCtx so the exit
+	// monitor — and with it the output pipeline — survives client disconnect.
+	exitStatusCh, err := task.Wait(taskCtx)
 	if err != nil {
-		_, _ = task.Delete(ctx)
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
 	// Start the task.
-	if err := task.Start(ctx); err != nil {
-		_, _ = task.Delete(ctx)
+	if err := task.Start(taskCtx); err != nil {
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
@@ -1123,7 +1177,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		netnsRef, nsErr = os.Open(nsPath)
 		if nsErr != nil {
 			c.logger.Warn("could not anchor netns fd before mutex release; CNI ADD skipped",
-				zap.String("app_id", appID), zap.Error(nsErr))
+				zap.String(logfields.AppID, appID), zap.Error(nsErr))
 		}
 	}
 
@@ -1143,7 +1197,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
 		cleanupNetns()
 		if cniErr != nil {
-			c.logger.Error("CNI ADD failed", zap.String("app_id", appID), zap.Error(cniErr))
+			c.logger.Error("CNI ADD failed", zap.String(logfields.AppID, appID), zap.Error(cniErr))
 		} else {
 			c.mu.Lock()
 			// Guard against a concurrent StopContainer that may have deleted
@@ -1153,7 +1207,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			if c.appIsolation[appID] == "" {
 				c.mu.Unlock()
 				c.logger.Warn("CNI ADD: app already stopped before IP could be recorded, discarding IP",
-					zap.String("app_id", appID), zap.String("ip", ip))
+					zap.String(logfields.AppID, appID), zap.String("ip", ip))
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
 				return nil, fmt.Errorf("app %q stopped during CNI ADD; container not started", appID)
 			}
@@ -1167,7 +1221,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 					delete(c.serviceIPs[appID], serviceName)
 				}
 				c.logger.Error("security: appID produces unsafe hosts path",
-					zap.String("app_id", appID), zap.Error(pathErr))
+					zap.String(logfields.AppID, appID), zap.Error(pathErr))
 				c.mu.Unlock()
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
 				return nil, fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, pathErr)
@@ -1179,7 +1233,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
-	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
+	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
 }
@@ -1219,10 +1273,15 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 
 	c.deleteStaleTask(ctx, container, appName)
 
+	// See StartContainer: the IO pipeline must outlive the RPC, otherwise a
+	// client disconnect closes the FIFO readers and the app later freezes
+	// writing to a full stdout pipe.
+	taskCtx := c.withNamespace(context.Background())
+
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 
-	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
+	task, err := container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
 			c.logger.Warn("Orphaned task detected, force-deleting and recreating container", zap.String("app_name", appName))
@@ -1232,7 +1291,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			} else {
 				container, err = c.client.LoadContainer(ctx, appName)
 				if err == nil {
-					task, err = container.NewTask(ctx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
+					task, err = container.NewTask(taskCtx, cio.NewCreator(cio.WithStreams(stdin, stdoutW, stderrW)))
 				}
 			}
 		}
@@ -1241,26 +1300,29 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			stdoutW.Close()
 			stderrR.Close()
 			stderrW.Close()
+			c.recordStartFailure(ctx, appName, err)
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
 
-	exitStatusCh, err := task.Wait(ctx)
+	exitStatusCh, err := task.Wait(taskCtx)
 	if err != nil {
-		_, _ = task.Delete(ctx)
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
-	if err := task.Start(ctx); err != nil {
-		_, _ = task.Delete(ctx)
+	if err := task.Start(taskCtx); err != nil {
+		_, _ = task.Delete(taskCtx)
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
@@ -1271,7 +1333,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	c.mu.Unlock()
 
 	outputCh := make(chan services.ContainerOutput, 64)
-	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
+	go c.streamOutput(taskCtx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
 }
@@ -1879,7 +1941,7 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		name := ContainerName(appID, svc)
 		if serr := c.stopOne(ctx, name); serr != nil {
 			c.logger.Warn("RestartGroup: failed to stop group member (continuing)",
-				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 		}
 	}
 
@@ -1912,13 +1974,13 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		name := ContainerName(appID, svc)
 		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
 			c.logger.Error("RestartGroup: failed to refresh secondary namespaces",
-				zap.String("app_id", appID), zap.String("service", svc), zap.Error(rerr))
+				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(rerr))
 			continue
 		}
 		ch, serr := c.StartContainer(ctx, name, "", nil)
 		if serr != nil {
 			c.logger.Error("RestartGroup: failed to start secondary",
-				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 			continue
 		}
 		results[name] = ch
@@ -2060,13 +2122,14 @@ func (c *Client) streamOutput(
 
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
-	code, _, err := exitStatus.Result()
+	code, exitedAt, err := exitStatus.Result()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
 			// ended — e.g. `wendy run --detach` returned and tore down its
 			// deploy stream. The container keeps running; this is normal
-			// teardown, not a task failure, so don't log it as an error.
+			// teardown, not a task failure, so don't log it as an error — and
+			// crucially, don't record an exit: the container is still up.
 			c.logger.Debug("Stopped monitoring task exit (stream canceled)",
 				zap.String("app_name", appName),
 			)
@@ -2081,6 +2144,13 @@ func (c *Client) streamOutput(
 			zap.String("app_name", appName),
 			zap.Uint32("exit_code", code),
 		)
+		// Persist why this run ended so a stopped/crashed container can explain
+		// itself later (the task and this live stream are about to disappear).
+		// Detached context: the RPC ctx may be torn down the instant we return.
+		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		reason := classifyExit(code, taskOOMKilled(recCtx, task))
+		c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
+		cancel()
 	}
 
 	// Close the write ends to unblock readers.
@@ -2241,7 +2311,7 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	if len(ctrs) == 0 {
 		// Idempotent: already stopped / never created.
 		c.logger.Info("StopContainer: no containers found, already stopped",
-			zap.String("app_id", sanitizeForLog(appID, 253)))
+			zap.String(logfields.AppID, sanitizeForLog(appID, 253)))
 		c.mu.Unlock()
 		return nil
 	}
@@ -2339,7 +2409,7 @@ func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []cont
 	ordered, err := appconfig.ServiceTopoOrder(services)
 	if err != nil {
 		c.logger.Warn("resolveStopOrder: topo sort failed, using arbitrary order",
-			zap.String("app_id", appID), zap.Error(err))
+			zap.String(logfields.AppID, appID), zap.Error(err))
 		ids := make([]string, len(ctrs))
 		for i, ctr := range ctrs {
 			ids[i] = ctr.ID()
@@ -2500,6 +2570,21 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
 			continue
 		}
+
+		// Rehydrate c.appIsolation from the persisted label BEFORE the monitor's
+		// planRestartActions runs GroupRestartAppID/RestartGroup for this
+		// container, so the reboot restart path sees the isolation mode this
+		// container was created with instead of the empty in-memory default
+		// (WDY reboot-fix). Best-effort: an unlabelled or malformed appID just
+		// skips hydration for this one container; it must never fail the whole
+		// reconcile.
+		if appID := info.Labels[labelKeyAppID]; appID != "" && appconfig.ValidateAppID(appID) == nil {
+			c.hydrateIsolation(appID, info.Labels)
+		} else {
+			c.logger.Warn("ListBootContainers: missing/invalid app id label, skipping isolation hydration",
+				zap.String("id", ctr.ID()))
+		}
+
 		if info.Labels[labelKeyStoppedByUser] == "true" {
 			continue // user stopped it on purpose — stay down across reboot
 		}
@@ -2634,6 +2719,8 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
 		services     []serviceEntry
+		exitCode     int32
+		exitReason   string // "" until an exit label is seen for this app
 	}
 	grouped := make(map[string]*entry)
 	var order []string
@@ -2669,21 +2756,36 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		serviceName := info.Labels[labelKeyServiceName]
 
 		svc := serviceEntry{name: serviceName, runningState: runningState}
+		exitCode, exitReason, hasExit := parseExitLabels(info.Labels)
+		// A container the user deliberately stopped isn't a crash to report,
+		// even though its task exited (SIGTERM). The stopped-by-user mark wins.
+		if info.Labels[labelKeyStoppedByUser] == "true" {
+			hasExit = false
+		}
 
 		if e, ok := grouped[appID]; !ok {
 			order = append(order, appID)
-			grouped[appID] = &entry{
+			ne := &entry{
 				version:      appVersion,
 				runningState: runningState,
 				mcpPort:      mcpPort,
 				services:     []serviceEntry{svc},
 			}
+			if hasExit {
+				ne.exitCode, ne.exitReason = exitCode, exitReason
+			}
+			grouped[appID] = ne
 		} else {
 			if runningState == agentpb.AppRunningState_RUNNING {
 				e.runningState = agentpb.AppRunningState_RUNNING
 			}
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
+			}
+			// Keep the first exit reason seen for the app (multi-service apps
+			// aggregate; a single stopped service's cause is better than none).
+			if e.exitReason == "" && hasExit {
+				e.exitCode, e.exitReason = exitCode, exitReason
 			}
 			e.services = append(e.services, svc)
 		}
@@ -2718,15 +2820,82 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
-		result = append(result, &agentpb.AppContainer{
+		ac := &agentpb.AppContainer{
 			AppName:      appID,
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
 			Services:     services,
-		})
+		}
+		// Exit diagnostics are only meaningful for a stopped app; a running app
+		// may carry stale labels from a prior run, so don't surface them.
+		if e.runningState == agentpb.AppRunningState_STOPPED && e.exitReason != "" {
+			ac.ExitCode = e.exitCode
+			ac.TerminationReason = e.exitReason
+		}
+		result = append(result, ac)
 	}
 	return result, nil
+}
+
+// AppDeclaredVolumes maps every Wendy-managed app (bare appID) to the
+// persistent volume names its containers declare via persist entitlement
+// labels. Names are sanitized the same way applyPersist sanitizes them before
+// creating the host directory, so they match the directory names under
+// /var/lib/wendy/volumes. Multi-service apps are grouped under their appID
+// with the union of all services' declarations.
+//
+// This is the source of truth for volume ownership: volumes are shared across
+// apps by name, so a name may appear under several apps. Containers deployed
+// before entitlement labels existed carry no persist labels and contribute
+// nothing — callers must treat an app that is absent from the map as
+// "ownership unknown", not "owns nothing", and fail safe.
+func (c *Client) AppDeclaredVolumes(ctx context.Context) (map[string][]string, error) {
+	ctx = c.withNamespace(ctx)
+
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	declared := make(map[string]map[string]bool)
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			// Propagate rather than skip: a container we cannot inspect might
+			// declare a volume another app is about to delete, and callers rely
+			// on a complete map to protect shared volumes.
+			return nil, fmt.Errorf("getting container info for %q: %w", ctr.ID(), err)
+		}
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			appID = ctr.ID()
+		}
+		for _, ent := range parseEntitlementsFromAnnotations(info.Labels) {
+			if ent.Type != appconfig.EntitlementPersist {
+				continue
+			}
+			name := filepath.Base(ent.Name)
+			if name == "." || name == ".." || name == "/" || name == "" {
+				continue
+			}
+			if declared[appID] == nil {
+				declared[appID] = make(map[string]bool)
+			}
+			declared[appID][name] = true
+		}
+	}
+
+	out := make(map[string][]string, len(declared))
+	for app, names := range declared {
+		list := make([]string, 0, len(names))
+		for n := range names {
+			list = append(list, n)
+		}
+		sort.Strings(list)
+		out[app] = list
+	}
+	return out, nil
 }
 
 func (c *Client) GetContainerMCPPort(ctx context.Context, appName string) (uint32, error) {

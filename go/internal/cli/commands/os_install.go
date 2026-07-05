@@ -59,6 +59,7 @@ func newOSInstallCmd() *cobra.Command {
 	var noWifi bool
 	var deviceName string
 	var enrollCloudGRPC string
+	var prNumber int
 
 	cmd := &cobra.Command{
 		Use:   "install [image] [drive]",
@@ -89,6 +90,15 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if prNumber > 0 {
+				if nightly || versionFlag != "" || len(args) > 0 {
+					return fmt.Errorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
+				}
+				if deviceType == thorDeviceType {
+					return fmt.Errorf("--pr does not support jetson-agx-thor yet")
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
+			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
 			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
 				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
@@ -115,7 +125,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
 		},
 	}
 
@@ -134,6 +144,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "Set device name on first boot (e.g. brave-dolphin)")
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
 	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
+	cmd.Flags().IntVar(&prNumber, "pr", 0, "Install the image built by wendyos-builder PR #N (debug build; mutually exclusive with --nightly, --version, and positional [image] [drive])")
 
 	return cmd
 }
@@ -246,14 +257,28 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
 	}
+
+	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
+	// artifact and device selection — a separate path from the disk-image flow below.
+	if flagDeviceType == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
+	}
+
 	fmt.Println("Fetching available devices...")
 
-	// Fetch Linux devices from GCS manifest.
-	linuxDevices, err := getAvailableDevices()
+	// Fetch Linux devices from GCS manifest — the per-PR manifest when --pr is
+	// set, otherwise the standard release manifest.
+	var linuxDevices []deviceInfo
+	var err error
+	if prNumber > 0 {
+		linuxDevices, err = getAvailablePRDevices(prNumber)
+	} else {
+		linuxDevices, err = getAvailableDevices()
+	}
 	if err != nil {
 		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
 	}
@@ -291,7 +316,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	}
 
 	// When --device-type is not provided, also offer ESP32 entries in the picker.
-	if flagDeviceType == "" {
+	// Never under --pr: firmware isn't a PR build target and installESP32Firmware
+	// ignores prNumber, so offering ESP32 here would silently install release
+	// firmware instead of a PR build.
+	if flagDeviceType == "" && prNumber == 0 {
 		espVersion := "(latest)"
 		for _, esp := range []struct {
 			key, name, chip string
@@ -330,6 +358,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 				}
 			}
 			sort.Strings(available)
+			if prNumber > 0 {
+				return fmt.Errorf("device %q not built by PR %d (built: %s)", flagDeviceType, prNumber, strings.Join(available, ", "))
+			}
 			return fmt.Errorf("device type %q not found in manifest; available: %s", flagDeviceType, strings.Join(available, ", "))
 		}
 		selected = flagDeviceType
@@ -343,6 +374,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if err != nil {
 			return err
 		}
+	}
+
+	// Thor flashes over USB recovery via its flashpack, never to a drive. The
+	// interactive picker reaches here too (the flag is empty), so route it to
+	// installThor here as well — otherwise it falls through to the disk-image
+	// flow and dd's the wrong artifact onto an external drive.
+	if selected == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
 	}
 
 	device := deviceMap[selected]
@@ -882,11 +921,45 @@ func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64
 	return cl, true
 }
 
-// downloadImage downloads an OS image to a temp file with a progress bar.
-// If the server supports HTTP range requests, it downloads in parallel using
-// parallelDownloadWorkers concurrent connections. Falls back to a single
-// sequential stream otherwise.
+// downloadImage downloads an OS image to a temp file behind a standalone
+// progress-bar TUI. Prefer downloadImageInto when embedding the download inside
+// another progress UI (it takes a plain byte callback and owns no TUI).
 func downloadImage(img *imageInfo) (string, error) {
+	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
+	p := tui.NewProgressProgram(prog)
+	sendProgress := throttledProgress(p, 33*time.Millisecond)
+
+	type result struct {
+		path string
+		err  error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		path, err := downloadImageInto(img, sendProgress)
+		resC <- result{path, err}
+		p.Send(tui.ProgressDoneMsg{Err: err})
+	}()
+
+	if _, err := p.Run(); err != nil {
+		if r := <-resC; r.path != "" {
+			os.Remove(r.path)
+		}
+		return "", fmt.Errorf("progress TUI: %w", err)
+	}
+	r := <-resC
+	return r.path, r.err
+}
+
+// downloadImageInto downloads img to a temp file in the OS cache directory,
+// reporting progress via onProgress(downloaded, total). It runs synchronously
+// and owns no TUI, so callers can drive their own progress display (or pass a
+// nil-effect callback). On any error it removes the partial file. If the server
+// supports HTTP range requests it downloads in parallel across
+// parallelDownloadWorkers connections; otherwise it streams sequentially.
+func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64)) (string, error) {
+	if onProgress == nil {
+		onProgress = func(int64, int64) {}
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 
 	// Write directly into the OS cache directory so we never land in /tmp
@@ -900,77 +973,63 @@ func downloadImage(img *imageInfo) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tui.NewProgressProgram(prog)
-	sendProgress := throttledProgress(p, 33*time.Millisecond)
-
 	contentLength, supportsRanges := probeRangeSupport(client, img)
-
+	var dlErr error
 	if supportsRanges {
 		if err := tmpFile.Truncate(contentLength); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpFile.Name())
 			return "", fmt.Errorf("pre-allocating: %w", err)
 		}
-		go func() {
-			p.Send(tui.ProgressDoneMsg{Err: downloadParallel(client, img.DownloadURL, contentLength, tmpFile, sendProgress)})
-		}()
+		dlErr = downloadParallel(client, img.DownloadURL, contentLength, tmpFile, onProgress)
 	} else {
-		go func() {
-			resp, err := client.Get(img.DownloadURL)
-			if err != nil {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("downloading: %w", err)})
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("download returned status %d", resp.StatusCode)})
-				return
-			}
-			total := resp.ContentLength
-			if img.ImageSize > 0 {
-				total = img.ImageSize
-			}
-			buf := make([]byte, 1*1024*1024)
-			var downloaded int64
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-						p.Send(tui.ProgressDoneMsg{Err: writeErr})
-						return
-					}
-					downloaded += int64(n)
-					sendProgress(downloaded, total)
-				}
-				if readErr == io.EOF {
-					p.Send(tui.ProgressDoneMsg{})
-					return
-				}
-				if readErr != nil {
-					p.Send(tui.ProgressDoneMsg{Err: readErr})
-					return
-				}
-			}
-		}()
+		dlErr = downloadSequential(client, img, tmpFile, onProgress)
 	}
-
-	finalModel, err := p.Run()
-	if err != nil {
+	if dlErr != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("progress TUI: %w", err)
+		return "", dlErr
 	}
-
-	model := finalModel.(tui.ProgressModel)
-	if model.Err() != nil {
-		tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpFile.Name())
-		return "", model.Err()
+		return "", err
 	}
-
-	tmpFile.Close()
 	return tmpFile.Name(), nil
+}
+
+// downloadSequential streams img into dst over a single connection, reporting
+// progress via onProgress. Used when the server does not support range requests.
+func downloadSequential(client *http.Client, img *imageInfo, dst *os.File, onProgress func(downloaded, total int64)) error {
+	resp, err := client.Get(img.DownloadURL)
+	if err != nil {
+		return fmt.Errorf("downloading: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+	total := resp.ContentLength
+	if img.ImageSize > 0 {
+		total = img.ImageSize
+	}
+	buf := make([]byte, 1*1024*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			downloaded += int64(n)
+			onProgress(downloaded, total)
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func osCacheDir() (string, error) {
@@ -1157,7 +1216,7 @@ func streamZipImageEntry(zipPath string) (*imageStream, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(f.Name))
-		// .sdimg is the Mender A/B disk image RPi targets now produce.
+		// .sdimg is the A/B disk image RPi targets now produce.
 		if ext != ".img" && ext != ".raw" && ext != ".wic" && ext != ".sdimg" {
 			continue
 		}

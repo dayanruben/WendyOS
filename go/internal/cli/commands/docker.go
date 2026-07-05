@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -618,7 +617,7 @@ func generatePythonDockerfile(dir string, debug bool) (string, error) {
 	return dockerfilePath, nil
 }
 
-func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, swiftUseMTLS bool, toolchainStdout, toolchainStderr io.Writer) error {
+func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, swiftUseMTLS, debug bool, toolchainStdout, toolchainStderr io.Writer) error {
 	if err := ensureContainerPlugin(dir); err != nil {
 		return err
 	}
@@ -628,10 +627,21 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		return err
 	}
 
+	// Build release by default so on-device apps are optimized; debug only on
+	// explicit opt-in (matches the native swift-build path). The container plugin
+	// builds with `configuration: .inherit`, i.e. whatever `swift package` is told
+	// here — without this it defaulted to debug, shipping unoptimized binaries
+	// (e.g. a software renderer ran ~30x slower on device).
+	buildConfig := "release"
+	if debug {
+		buildConfig = "debug"
+	}
+
 	// registryAddr is always a plain-HTTP address: either the device's own
 	// unprovisioned registry or a local proxy that handles TLS on our behalf.
 	swiftArgs := []string{
 		"package",
+		"-c", buildConfig,
 		"--swift-sdk=" + sdk,
 		"--allow-network-connections=all",
 		"build-container-image",
@@ -780,11 +790,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		if !cliOnPath {
 			if !hasRuntime {
 				if isInteractiveTerminalFn() {
-					fmt.Print("Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'? [Y/n] ")
-					reader := bufio.NewReader(os.Stdin)
-					answer, _ := reader.ReadString('\n')
-					answer = strings.TrimSpace(strings.ToLower(answer))
-					if answer != "" && answer != "y" && answer != "yes" {
+					if !confirmFn("Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'?") {
 						return fmt.Errorf("Docker runtime app is not installed — install Docker Desktop, OrbStack, or Rancher Desktop")
 					}
 					fmt.Fprintf(os.Stderr, "[docker] Installing Docker Desktop via Homebrew...\n")
@@ -819,11 +825,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		}
 
 		if isInteractiveTerminalFn() {
-			fmt.Printf("Docker daemon is not running or is still starting for %s. Open it now? [Y/n] ", rt.name)
-			reader := bufio.NewReader(os.Stdin)
-			answer, _ := reader.ReadString('\n')
-			answer = strings.TrimSpace(strings.ToLower(answer))
-			if answer != "" && answer != "y" && answer != "yes" {
+			if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
 				return fmt.Errorf("docker daemon is not running — please start %s and try again", rt.name)
 			}
 		}
@@ -1602,11 +1604,12 @@ func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnec
 		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
-		// Prefer Apple Container whenever its CLI is available: start the system
-		// if it isn't running yet rather than silently falling back to Docker.
 		// Apple Container builds don't use buildx, so the local-cache key never
-		// applies; only the Docker fallback below consumes it.
-		if err := ensureAppleContainerSystem(ctx, false); err != nil {
+		// applies; only the Docker fallback below consumes it. The auto-attempt path
+		// must not prompt or start services as a side effect: if Apple Container is
+		// not already ready, fall back to Docker. Use --builder apple-container to
+		// require Apple Container and get the startup prompt.
+		if err := checkAppleContainerBuilder(ctx); err != nil {
 			logAppleContainerFallback(logOutput, err)
 		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
@@ -1664,6 +1667,8 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
+	contextMonitor := newAppleContainerBuildContextMonitor(buildContext)
+	streamOutput = contextMonitor.wrapStream(streamOutput)
 	// --progress plain emits the deterministic BuildKit log format (#N, DONE Ns,
 	// [stage N/M]) that the shared build parser understands; the default
 	// (--progress auto) renders an interactive [+] Building UI the parser cannot
@@ -1691,7 +1696,7 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	cmd.Stdout = streamOutput
 	cmd.Stderr = streamOutput
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("container build failed: %w", err)
+		return fmt.Errorf("container build failed: %w", contextMonitor.wrapBuildError(err))
 	}
 	return nil
 }
@@ -1762,7 +1767,7 @@ func ensureAppleContainerSystem(ctx context.Context, assumeYes bool) error {
 	}
 
 	if isInteractiveTerminalFn() && !assumeYes {
-		if !promptYesNoFn("Apple Container system is not running. Start it now? [Y/n] ") {
+		if !confirmFn("Apple Container system is not running. Start it now?") {
 			return appleContainerSystemStatus(ctx)
 		}
 	}
