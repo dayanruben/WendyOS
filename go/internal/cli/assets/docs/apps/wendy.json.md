@@ -190,19 +190,21 @@ IP networking access.
 ```json
 { "type": "network" }
 { "type": "network", "mode": "host" }
+{ "type": "network", "mode": "bridge" }
 ```
 
 | `mode` | Description |
 |--------|-------------|
-| *(omitted)* | Host networking (same as `"host"`) — the container binds directly on the device's network interfaces, so its ports are reachable from the LAN. |
+| *(omitted)* | **Currently the same as `"host"`** — shares the host network stack, so every port the app binds is reachable on the device's real interfaces (LAN/internet). This implicit default is **deprecated**: see the note below. |
 | `"host"` | Shares the host network stack (visibility: bind host ports, see interfaces). Does **not** grant the ability to reconfigure host networking. |
 | `"host-admin"` | Host networking **plus** `CAP_NET_ADMIN` — allows reconfiguring interfaces, routes, and netfilter. Only request this if your app genuinely manages the network; it is a high-privilege capability. |
-| `"mesh"` | Isolated network namespace; ports are private and reachable from other devices in the org by name (`device-<id>.cloud.wendy.dev`) via the mesh, not from the LAN directly. |
-| `"none"` | Networking fully disabled |
+| `"none"` | Networking fully disabled — no namespace connectivity of any kind. |
+| `"bridge"` | Isolated network namespace with a private IP, outbound internet via NAT, and working DNS — but **no** host/LAN-published ports. Use this for apps that need to reach the internet without exposing anything locally. Cross-device access to a bridge app is via a `mesh` entitlement, not this one. |
+| `"mesh"` | Isolated network namespace chained into the wendy-mesh CNI, with a route to a `serviceCIDR` (required for this mode — a valid CIDR string) so the app can reach other meshed devices/services. Optionally set `ports` (host→container mappings) so mesh peers can dial in. |
 
 > **Security note:** `CAP_NET_ADMIN` (host network reconfiguration) is granted only by `"host-admin"`, never by plain `"host"`. Apps that previously relied on `CAP_NET_ADMIN` under `"host"` must switch to `"host-admin"`.
 
-> **Port exposure:** With `host` / `host-admin` (and the current omitted default), a port your app binds on `0.0.0.0` is reachable from the device's network (LAN). With `"mesh"`, ports stay private (loopback + cross-device mesh). The agent logs a `WARN` when a host-network app is listening on a public address, so you can spot unintended exposure in `wendy device logs`.
+> **Deprecation notice:** an omitted `mode` maps to host networking today, and the agent logs a `WARN` at container create for any `network` entitlement without an explicit `mode`, flagging that its ports are publicly reachable. This default will change to isolated `"bridge"` networking in a future major release. If you want to keep host networking going forward, set `"mode": "host"` explicitly now; if you want isolated networking with outbound internet, opt in early with `"mode": "bridge"`.
 
 ### `gpu`
 
@@ -372,7 +374,7 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 ### `admin`
 
-Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent/agent.sock`, exposed as `WENDY_AGENT_SOCKET` — always read the env var rather than hard-coding the path) — with **no authentication**.
+Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.
 
 ```json
 { "type": "admin" }
@@ -381,8 +383,6 @@ Grants the container the wendy-agent's **full gRPC over a local unix socket** (`
 An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted **only** into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
 
 > **Security:** `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
-
-A first-party use of `admin` is the **claude-on-device** app (`Examples/ClaudeOnDevice`): the Claude Code CLI runs in the container and drives the device through `WENDY_AGENT_SOCKET` — you reach it with `wendy device attach claude-on-device`. Because `admin` is unauthenticated full local control, the in-container agent (human or AI) can delete apps and trigger OS/agent updates, so deploy it only to trusted devices.
 
 ---
 
