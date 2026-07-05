@@ -203,7 +203,17 @@ func (m *ContainerMonitor) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.checkContainers(ctx)
+			m.probeExposedPorts(ctx)
 		}
+	}
+}
+
+// probeExposedPorts asks the containerd client (if it supports it) to warn
+// about publicly-bound ports on running host-network apps. Optional capability,
+// mirroring the AppStateRebuilder hook.
+func (m *ContainerMonitor) probeExposedPorts(ctx context.Context) {
+	if p, ok := m.containerd.(services.PortExposureProber); ok {
+		p.WarnPubliclyExposedPorts(ctx)
 	}
 }
 

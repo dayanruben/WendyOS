@@ -27,6 +27,7 @@ type fakeContainerd struct {
 	stoppedByUser map[string]bool
 	migrateCalls  int
 	rebuildCalls  int
+	probeCalls    int
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -58,6 +59,12 @@ func (f *fakeContainerd) RebuildAppStateCaches(ctx context.Context) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rebuildCalls++
+}
+
+func (f *fakeContainerd) WarnPubliclyExposedPorts(ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probeCalls++
 }
 
 func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -292,5 +299,17 @@ func TestCheckContainers_LegacySingleContainer_NotRestarted(t *testing.T) {
 
 	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
 		t.Fatalf("StartContainer called for healthy legacy app: %v", calls)
+	}
+}
+
+func TestProbeExposedPortsInvokesProber(t *testing.T) {
+	f := &fakeContainerd{}
+	m := newMonitorWithClient(f)
+	m.probeExposedPorts(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.probeCalls != 1 {
+		t.Fatalf("WarnPubliclyExposedPorts called %d times, want 1", f.probeCalls)
 	}
 }

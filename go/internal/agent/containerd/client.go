@@ -74,6 +74,11 @@ type Client struct {
 	// Populated on CreateContainerWithProgress; read by StartContainer.
 	appIsolation map[string]string
 
+	// warnedExposures dedups public-port exposure warnings, keyed by
+	// exposureKey. Protected by mu. Rebuilt each probe so a vanished exposure
+	// is pruned (and re-warned if it returns).
+	warnedExposures map[string]struct{}
+
 	// serviceIPs maps appID → serviceName → IP for isolated-mode apps.
 	// Updated after each successful CNI ADD. Protected by mu.
 	serviceIPs map[string]map[string]string
@@ -329,6 +334,72 @@ func (c *Client) RebuildAppStateCaches(ctx context.Context) {
 	}
 	c.logger.Info("Rebuilt app-state caches from labels",
 		zap.Int("apps_isolation", len(isolation)), zap.Int("apps_services", len(servicesByApp)))
+}
+
+// WarnPubliclyExposedPorts scans running host-network apps and logs a WARN for
+// each newly-observed publicly-bound listening port, so operators notice a
+// service exposed on the device's real interfaces. Best-effort: any failure
+// logs and returns without affecting the caller. Deduped per
+// (appID, protocol, port, address); a vanished exposure is pruned so it warns
+// again if it reappears.
+func (c *Client) WarnPubliclyExposedPorts(ctx context.Context) {
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("port-exposure probe: listing containers failed", zap.Error(err))
+		return
+	}
+
+	// Gather unique host-network appIDs among running containers (outside the lock).
+	hostNetApps := make(map[string]struct{})
+	for _, ctr := range ctrs {
+		if !c.containerIsRunning(ctx, ctr) {
+			continue
+		}
+		info, infoErr := ctr.Info(ctx)
+		if infoErr != nil {
+			c.logger.Warn("port-exposure probe: reading container info failed",
+				zap.String("id", ctr.ID()), zap.Error(infoErr))
+			continue
+		}
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			continue
+		}
+		if entitlementsUseHostNetwork(parseEntitlementsFromAnnotations(info.Labels)) {
+			hostNetApps[appID] = struct{}{}
+		}
+	}
+
+	// Read each host-network app's listening ports (outside the lock).
+	portsByApp := make(map[string][]*agentpb.PortEntry, len(hostNetApps))
+	for appID := range hostNetApps {
+		ports, portErr := c.GetListeningPorts(ctx, appID)
+		if portErr != nil {
+			c.logger.Warn("port-exposure probe: reading listening ports failed",
+				zap.String(logfields.AppID, appID), zap.Error(portErr))
+			continue
+		}
+		portsByApp[appID] = ports
+	}
+
+	current := collectExposures(portsByApp)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	next := make(map[string]struct{}, len(current))
+	for key, e := range current {
+		next[key] = struct{}{}
+		if _, warned := c.warnedExposures[key]; warned {
+			continue
+		}
+		c.logger.Warn("app is listening on a publicly reachable address; the port is exposed on the device's network (network mode: host). For private cross-device access, use a \"mesh\" network entitlement.",
+			zap.String(logfields.AppID, e.appID),
+			zap.String("protocol", e.protocol),
+			zap.Uint32("port", e.port),
+			zap.String("bind_address", e.address))
+	}
+	c.warnedExposures = next
 }
 
 // isPubliclyBoundAddress reports whether a listening socket's bind address is

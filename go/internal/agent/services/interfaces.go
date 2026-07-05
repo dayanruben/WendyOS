@@ -135,6 +135,16 @@ type AppStateRebuilder interface {
 	RebuildAppStateCaches(ctx context.Context)
 }
 
+// PortExposureProber is the optional capability to scan running host-network
+// apps for publicly-bound listening ports and log a warning for each new
+// exposure. The container monitor calls it once per health tick; the
+// implementation dedups so a given exposure is logged once. Kept separate from
+// ContainerdClient so the large interface and its mocks stay untouched
+// (mirrors GroupRestarter / AppStateRebuilder).
+type PortExposureProber interface {
+	WarnPubliclyExposedPorts(ctx context.Context)
+}
+
 // Restart policy constants mirror container.RestartPolicy values and are used
 // as the policy argument to ContainerMonitorRegistrar.Register.
 const (
