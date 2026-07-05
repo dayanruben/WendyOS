@@ -246,6 +246,39 @@ func (c *Client) recordServiceIP(appID, serviceName, ip string) {
 	c.serviceIPs[appID][serviceName] = ip
 }
 
+// rebuildCachesFromLabels reconstructs the appIsolation and appServices caches
+// from a list of per-container label maps. Pure (no containerd calls, no lock)
+// so it is unit-testable without a live containerd, mirroring the
+// containerd-free split used for mesh resolv.conf recreation. A container with
+// no appID label is skipped; a blank isolation label yields no isolation entry
+// (non-isolated, the default). Only DependsOn is reconstructed for services —
+// it is the sole ServiceConfig field read after create (len + ServiceTopoOrder).
+func rebuildCachesFromLabels(containerLabels []map[string]string) (
+	isolation map[string]string,
+	servicesByApp map[string]map[string]*appconfig.ServiceConfig,
+) {
+	isolation = make(map[string]string)
+	servicesByApp = make(map[string]map[string]*appconfig.ServiceConfig)
+	for _, labels := range containerLabels {
+		appID := labels[labelKeyAppID]
+		if appID == "" {
+			continue
+		}
+		if iso := labels[labelKeyIsolation]; iso != "" {
+			isolation[appID] = iso
+		}
+		if svc := labels[labelKeyServiceName]; svc != "" {
+			if servicesByApp[appID] == nil {
+				servicesByApp[appID] = make(map[string]*appconfig.ServiceConfig)
+			}
+			servicesByApp[appID][svc] = &appconfig.ServiceConfig{
+				DependsOn: parseDependsOn(labels[labelKeyDependsOn]),
+			}
+		}
+	}
+	return isolation, servicesByApp
+}
+
 // ListLayers walks the content store and returns metadata for all layer blobs.
 func (c *Client) ListLayers(ctx context.Context) ([]*agentpb.LayerHeader, error) {
 	ctx = c.withNamespace(ctx)

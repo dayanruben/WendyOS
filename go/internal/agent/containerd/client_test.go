@@ -1078,3 +1078,42 @@ func TestRMWFromEnv(t *testing.T) {
 		t.Errorf("rmwFromEnv(nil) = %q, want empty", got)
 	}
 }
+
+func TestRebuildCachesFromLabels(t *testing.T) {
+	labels := []map[string]string{
+		// isolated single-service app
+		{labelKeyAppID: "cam", labelKeyServiceName: "cam", labelKeyIsolation: "isolated"},
+		// shared-namespace group: two services, one with a dependency
+		{labelKeyAppID: "stack", labelKeyServiceName: "web", labelKeyIsolation: "shared-network", labelKeyDependsOn: "db"},
+		{labelKeyAppID: "stack", labelKeyServiceName: "db", labelKeyIsolation: "shared-network"},
+		// non-isolated app: no isolation label
+		{labelKeyAppID: "plain", labelKeyServiceName: "plain"},
+		// junk row with no appID is ignored
+		{labelKeyServiceName: "orphan"},
+	}
+
+	isolation, services := rebuildCachesFromLabels(labels)
+
+	if isolation["cam"] != "isolated" {
+		t.Fatalf("cam isolation = %q, want isolated", isolation["cam"])
+	}
+	if isolation["stack"] != "shared-network" {
+		t.Fatalf("stack isolation = %q, want shared-network", isolation["stack"])
+	}
+	if _, ok := isolation["plain"]; ok {
+		t.Fatal("plain must not have an isolation entry")
+	}
+	if len(services["stack"]) != 2 {
+		t.Fatalf("stack services = %d, want 2", len(services["stack"]))
+	}
+	web := services["stack"]["web"]
+	if web == nil || len(web.DependsOn) != 1 || web.DependsOn[0] != "db" {
+		t.Fatalf("stack/web dependsOn = %+v, want [db]", web)
+	}
+	if db := services["stack"]["db"]; db == nil || len(db.DependsOn) != 0 {
+		t.Fatalf("stack/db dependsOn = %+v, want empty", db)
+	}
+	if _, ok := services[""]; ok {
+		t.Fatal("orphan row (no appID) must be ignored")
+	}
+}
