@@ -91,8 +91,8 @@
             "type": { "const": "network" },
             "mode": {
               "type": "string",
-              "enum": ["host", "host-admin", "none", "mesh"],
-              "description": "Network mode. \"host\" shares the host network stack (visibility only); \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking; \"mesh\" chains the wendy-mesh CNI plugin, giving the container its own network namespace with a route to a mesh service CIDR."
+              "enum": ["host", "host-admin", "none", "bridge", "mesh"],
+              "description": "Network mode. Omitted (and \"host\") shares the host network stack (visibility only) — this implicit default is deprecated and will change to \"bridge\" in a future release; \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking; \"bridge\" gives the container its own network namespace with a private IP and outbound internet via NAT, but no host-published ports; \"mesh\" chains the wendy-mesh CNI plugin, giving the container its own network namespace with a route to a mesh service CIDR."
             },
             "serviceCIDR": {
               "type": "string",

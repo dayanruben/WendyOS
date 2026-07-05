@@ -318,8 +318,8 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 
 		switch e.Type {
 		case EntitlementNetwork:
-			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" && e.Mode != "mesh" {
-				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", \"none\", or \"mesh\", got %q", prefix, i, e.Mode)
+			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" && e.Mode != "mesh" && e.Mode != "bridge" {
+				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", \"none\", \"bridge\", or \"mesh\", got %q", prefix, i, e.Mode)
 			}
 			if e.Mode == "mesh" {
 				if e.ServiceCIDR == "" {
