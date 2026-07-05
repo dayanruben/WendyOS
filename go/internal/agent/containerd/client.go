@@ -825,7 +825,16 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
-	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
+	// Persist isolation + this service's dependsOn so appIsolation/appServices
+	// can be rebuilt after an agent restart (RebuildAppStateCaches). Single-
+	// service apps have no Services entry, so dependsOn stays nil.
+	var dependsOn []string
+	if serviceName != "" && appCfg.Services != nil {
+		if sc := appCfg.Services[serviceName]; sc != nil {
+			dependsOn = sc.DependsOn
+		}
+	}
+	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
