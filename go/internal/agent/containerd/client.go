@@ -284,8 +284,8 @@ func rebuildCachesFromLabels(containerLabels []map[string]string) (
 // container-create time, so after an agent restart (reboot) they start empty
 // and StartContainer skips isolated-container wiring (CNI, /etc/hosts, mesh
 // egress). Best-effort: any failure logs and returns without blocking boot
-// recovery. Idempotent — merges into the caches, so it is safe to call more
-// than once and never clobbers a concurrently-created live entry.
+// recovery. Idempotent — fills only entries not already present; a
+// concurrently-created live entry always wins.
 func (c *Client) RebuildAppStateCaches(ctx context.Context) {
 	ctx = c.withNamespace(ctx)
 	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
@@ -314,13 +314,17 @@ func (c *Client) RebuildAppStateCaches(ctx context.Context) {
 		c.appIsolation = make(map[string]string)
 	}
 	for appID, iso := range isolation {
-		c.appIsolation[appID] = iso
+		if _, ok := c.appIsolation[appID]; !ok {
+			c.appIsolation[appID] = iso
+		}
 	}
 	if c.appServices == nil {
 		c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
 	}
 	for appID, svcs := range servicesByApp {
-		c.appServices[appID] = svcs
+		if _, ok := c.appServices[appID]; !ok {
+			c.appServices[appID] = svcs
+		}
 	}
 	c.logger.Info("Rebuilt app-state caches from labels",
 		zap.Int("apps_isolation", len(isolation)), zap.Int("apps_services", len(servicesByApp)))
