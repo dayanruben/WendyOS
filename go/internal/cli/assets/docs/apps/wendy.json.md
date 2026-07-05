@@ -190,16 +190,21 @@ IP networking access.
 ```json
 { "type": "network" }
 { "type": "network", "mode": "host" }
+{ "type": "network", "mode": "bridge" }
 ```
 
 | `mode` | Description |
 |--------|-------------|
-| *(omitted)* | Default isolated network |
+| *(omitted)* | **Currently the same as `"host"`** — shares the host network stack, so every port the app binds is reachable on the device's real interfaces (LAN/internet). This implicit default is **deprecated**: see the note below. |
 | `"host"` | Shares the host network stack (visibility: bind host ports, see interfaces). Does **not** grant the ability to reconfigure host networking. |
 | `"host-admin"` | Host networking **plus** `CAP_NET_ADMIN` — allows reconfiguring interfaces, routes, and netfilter. Only request this if your app genuinely manages the network; it is a high-privilege capability. |
-| `"none"` | Networking fully disabled |
+| `"none"` | Networking fully disabled — no namespace connectivity of any kind. |
+| `"bridge"` | Isolated network namespace with a private IP, outbound internet via NAT, and working DNS — but **no** host/LAN-published ports. Use this for apps that need to reach the internet without exposing anything locally. Cross-device access to a bridge app is via a `mesh` entitlement, not this one. |
+| `"mesh"` | Isolated network namespace chained into the wendy-mesh CNI, with a route to a `serviceCIDR` (required for this mode — a valid CIDR string) so the app can reach other meshed devices/services. Optionally set `ports` (host→container mappings) so mesh peers can dial in. |
 
 > **Security note:** `CAP_NET_ADMIN` (host network reconfiguration) is granted only by `"host-admin"`, never by plain `"host"`. Apps that previously relied on `CAP_NET_ADMIN` under `"host"` must switch to `"host-admin"`.
+
+> **Deprecation notice:** an omitted `mode` maps to host networking today, and the agent logs a `WARN` at container create for any `network` entitlement without an explicit `mode`, flagging that its ports are publicly reachable. This default will change to isolated `"bridge"` networking in a future major release. If you want to keep host networking going forward, set `"mode": "host"` explicitly now; if you want isolated networking with outbound internet, opt in early with `"mode": "bridge"`.
 
 ### `gpu`
 
