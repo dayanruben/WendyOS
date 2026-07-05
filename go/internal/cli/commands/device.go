@@ -1,9 +1,7 @@
 package commands
 
 import (
-	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -253,11 +251,11 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var latestVersion string
 			if checkUpdates {
-				release, err := fetchAgentRelease(prerelease)
+				v, _, err := resolveAgentVersion(prerelease)
 				if err != nil {
 					return fmt.Errorf("checking for updates: %w", err)
 				}
-				latestVersion = release.TagName
+				latestVersion = v
 			}
 
 			if jsonOutput {
@@ -1859,32 +1857,7 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("opening gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("reading tar: %w", err)
-		}
-
-		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(hdr.Name, "wendy-agent") {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, fmt.Errorf("reading binary from tar: %w", err)
-			}
-			return data, nil
-		}
-	}
-
-	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
+	return extractAgentFromTarGz(resp.Body)
 }
 
 // reconnectAgentAfterRestart re-establishes a connection to the SAME device
@@ -2200,42 +2173,24 @@ func newDeviceUpdateCmd() *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
-				releaseType := "stable"
-				if nightly {
-					releaseType = "nightly"
-				}
 				if !jsonOutput {
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s release...", releaseType)))
-				}
-
-				release, err := fetchAgentRelease(nightly)
-				if err != nil {
-					return fmt.Errorf("fetching release: %w", err)
-				}
-				if !jsonOutput {
-					fmt.Printf("%s %s\n", tui.Dim("Release:"), tui.Value(release.TagName))
-				}
-				expectedAgentVersion = release.TagName
-
-				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
-				assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-				var matchedAsset *githubReleaseAsset
-				for _, a := range release.Assets {
-					if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-						matchedAsset = &a
-						break
+					releaseType := "stable"
+					if nightly {
+						releaseType = "nightly"
 					}
-				}
-				if matchedAsset == nil {
-					return fmt.Errorf("no asset found for linux/%s in release %s", arch, release.TagName)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
 				}
 
-				if !jsonOutput {
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Downloading %s...", matchedAsset.Name)))
-				}
-				binaryData, err = downloadAgentBinary(*matchedAsset)
+				var source, resolvedVer string
+				binaryData, resolvedVer, source, err = resolveAgentBinary(arch, nightly)
 				if err != nil {
-					return fmt.Errorf("downloading binary: %w", err)
+					return fmt.Errorf("resolving agent binary: %w", err)
+				}
+				// Record the resolved version so an upload whose confirmation
+				// was lost to a mid-stream agent restart can still be verified.
+				expectedAgentVersion = resolvedVer
+				if !jsonOutput {
+					fmt.Printf("%s %s %s\n", tui.Dim("Release:"), tui.Value(resolvedVer), tui.Dim("(from "+source+")"))
 				}
 			}
 

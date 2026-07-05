@@ -1066,7 +1066,8 @@ func progressLabel(phase string, percent int32) string {
 }
 
 // ensureAgentUpToDate checks the agent version on the device against the latest
-// stable GitHub release. If the device is behind, it downloads the latest binary,
+// available version, resolved GCS-first with a GitHub releases fallback (see
+// resolveAgentVersion). If the device is behind, it downloads the latest binary,
 // uploads it (causing the agent to restart), waits for it to come back, and
 // returns a fresh connection. If the agent is already current or the check fails
 // non-fatally, the original connection is returned unchanged.
@@ -1076,7 +1077,7 @@ func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	fmt.Printf("Agent version: %s — checking for updates...\n", agentVer)
 
-	release, err := fetchAgentRelease(nightly)
+	latestVer, _, err := resolveAgentVersion(nightly)
 	if err != nil {
 		fmt.Printf("Could not check for agent updates: %v\n", err)
 		return conn, nil
@@ -1085,14 +1086,14 @@ func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// For nightly builds, update whenever the device isn't already running that
 	// exact tag — a semver comparison would incorrectly treat nightly pre-release
 	// tags as older than a stable release of the same base version.
-	alreadyCurrent := nightly && release.TagName == agentVer ||
-		!nightly && version.CompareVersions(release.TagName, agentVer) <= 0
+	alreadyCurrent := nightly && latestVer == agentVer ||
+		!nightly && version.CompareVersions(latestVer, agentVer) <= 0
 	if alreadyCurrent {
 		fmt.Printf("Agent is up to date (%s)\n", agentVer)
 		return conn, nil
 	}
 
-	fmt.Printf("Updating agent: %s → %s\n", agentVer, release.TagName)
+	fmt.Printf("Updating agent: %s → %s\n", agentVer, latestVer)
 	addr := hostPort(conn.Host, defaultAgentPort)
 	if err := performAgentUpdate(ctx, conn, arch, nightly); err != nil {
 		return nil, fmt.Errorf("agent update failed: %w", err)
