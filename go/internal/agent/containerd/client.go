@@ -157,19 +157,20 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 	snapshotter := probeSnapshotter(logger)
 
 	return &Client{
-		client:       c,
-		logger:       logger,
-		namespace:    "default",
-		proxyManager: proxyMgr,
-		appServices:  make(map[string]map[string]*appconfig.ServiceConfig),
-		primaryPIDs:  make(map[string]uint32),
-		appIsolation: make(map[string]string),
-		serviceIPs:   make(map[string]map[string]string),
-		appStopping:  make(map[string]bool),
-		ros2ExecRefs: make(map[string]int),
-		chunkIndex:   idx,
-		staging:      newStaging(defaultChunkStagingDir),
-		snapshotter:  snapshotter,
+		client:          c,
+		logger:          logger,
+		namespace:       "default",
+		proxyManager:    proxyMgr,
+		appServices:     make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:     make(map[string]uint32),
+		appIsolation:    make(map[string]string),
+		warnedExposures: make(map[string]struct{}),
+		serviceIPs:      make(map[string]map[string]string),
+		appStopping:     make(map[string]bool),
+		ros2ExecRefs:    make(map[string]int),
+		chunkIndex:      idx,
+		staging:         newStaging(defaultChunkStagingDir),
+		snapshotter:     snapshotter,
 	}, nil
 }
 
