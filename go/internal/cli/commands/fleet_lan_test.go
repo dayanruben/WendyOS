@@ -65,17 +65,18 @@ func TestComputePeers(t *testing.T) {
 		Tags:   []string{"camera-*"},
 		Expose: &appconfig.ComponentExpose{Port: 8000, Path: "/stream"},
 	}
-	devices := []models.LANDevice{
-		dev("wendyos-camera-01.local", "Camera 01", "10.0.0.4"),
-		dev("wendyos-camera-02.local", "Camera 02", ""),
-	}
-	peers := computePeers(comp, devices)
+	peers := computePeers(comp, []meshPeer{
+		{Name: "camera-01", AssetID: 42, Host: "10.0.0.4"},
+		{Name: "camera-02", AssetID: 0, Host: "wendyos-camera-02.local"},
+	})
 	if len(peers) != 2 {
 		t.Fatalf("computePeers returned %d peers, want 2", len(peers))
 	}
-	if peers[0].URL != "http://10.0.0.4:8000" {
+	// Known asset id -> mesh name (asset id wins over the LAN host).
+	if peers[0].URL != "http://device-42.cloud.wendy.dev:8000" {
 		t.Errorf("peer[0].URL = %q", peers[0].URL)
 	}
+	// Unknown asset id -> direct-LAN host fallback.
 	if peers[1].URL != "http://wendyos-camera-02.local:8000" {
 		t.Errorf("peer[1].URL = %q", peers[1].URL)
 	}
@@ -100,8 +101,8 @@ func TestDiscoveryEnv(t *testing.T) {
 			},
 		},
 	}
-	matched := map[string][]models.LANDevice{
-		"camera": {dev("wendyos-camera-01.local", "Camera 01", "10.0.0.4")},
+	matched := map[string][]meshPeer{
+		"camera": {{Name: "camera-01", AssetID: 42}},
 	}
 	env, err := discoveryEnv(manifest.Components["dashboard"], manifest, matched)
 	if err != nil {
@@ -118,7 +119,7 @@ func TestDiscoveryEnv(t *testing.T) {
 	if err := json.Unmarshal([]byte(env[0][len(prefix):]), &peers); err != nil {
 		t.Fatalf("env value is not valid JSON: %v", err)
 	}
-	if len(peers) != 1 || peers[0].URL != "http://10.0.0.4:8000" {
+	if len(peers) != 1 || peers[0].URL != "http://device-42.cloud.wendy.dev:8000" {
 		t.Errorf("peers = %+v", peers)
 	}
 }

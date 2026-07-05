@@ -25,20 +25,31 @@ type fleetPeer struct {
 	Status string `json:"status"`
 }
 
+// meshPeer is a discovered peer device for a component. When AssetID is known it
+// is addressed over the mesh as device-<AssetID>.cloud.wendy.dev (reachable
+// LAN-direct or cloud-relay); Host is a direct-LAN fallback for older agents
+// that don't advertise an asset id over mDNS.
+type meshPeer struct {
+	Name    string
+	AssetID int32
+	Host    string
+}
+
 // runFleetManifest deploys a wendy-fleet.json. Each component references an app
 // directory (its own wendy.json holds the build/runtime config) and lists tags.
 //
 // By default components are placed by CLOUD asset tags (assigned with
-// 'wendy fleet group add') and deployed over the cloud tunnel. With --lan they
-// are placed by matching device names over mDNS instead. Cross-component
-// discovery (discovers -> WENDY_FLEET_PEERS) is wired in LAN mode; over the
-// cloud it needs per-peer reachability (the mesh, WDY-1778) and is deferred, so
-// cloud mode does placement only.
+// 'wendy fleet group add') and deployed over the cloud tunnel; with --lan they
+// are placed by matching device names over mDNS. Cross-component discovery
+// (discovers -> WENDY_FLEET_PEERS) resolves peers to their mesh names
+// (device-<assetID>.cloud.wendy.dev), reachable LAN-direct or via cloud-relay by
+// Joannis's mesh — so discovery now works in both cloud and LAN mode. The
+// consuming component must run with a "mesh" network entitlement to reach them.
 func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, manifest *appconfig.FleetManifest, lan bool, central, cloudGRPC, brokerURL string, timeout time.Duration) error {
-	// Resolve targets per component from the chosen backend. In LAN mode also
-	// keep the matched devices, for the discovery snapshot.
+	// Resolve, per component, the deploy targets and the discovered peers (name +
+	// asset id, for mesh addressing).
 	targetsByComp := make(map[string][]fleetTarget, len(manifest.Components))
-	lanDevices := make(map[string][]models.LANDevice)
+	peersByComp := make(map[string][]meshPeer, len(manifest.Components))
 
 	if lan {
 		for name, comp := range manifest.Components {
@@ -46,9 +57,9 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, m
 			if err != nil {
 				return err
 			}
-			lanDevices[name] = devs
 			for _, dev := range devs {
 				targetsByComp[name] = append(targetsByComp[name], targetForDevice(dev))
+				peersByComp[name] = append(peersByComp[name], meshPeer{Name: deviceShortName(dev), AssetID: dev.AssetID, Host: peerHost(dev)})
 			}
 		}
 	} else {
@@ -62,6 +73,9 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, m
 		}
 		for name, comp := range manifest.Components {
 			targetsByComp[name] = cloudTargetsForTags(auth, assets, comp.Tags, brokerURL)
+			for _, a := range assetsWithAnyTag(assets, comp.Tags) {
+				peersByComp[name] = append(peersByComp[name], meshPeer{Name: a.GetName(), AssetID: a.GetId()})
+			}
 		}
 	}
 
@@ -87,22 +101,19 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, m
 		}
 
 		compOpts := opts
-		var lanEnv []string
+		var env []string
 		if len(comp.Discovers) > 0 {
-			if lan {
-				lanEnv, err = discoveryEnv(comp, manifest, lanDevices)
-				if err != nil {
-					return fmt.Errorf("component %q: %w", name, err)
-				}
-				if len(lanEnv) > 0 {
-					// Env injection rides on CreateContainerRequest.Env, carried by
-					// the registry (chunk-off) create path; force it so peers aren't
-					// dropped.
-					compOpts.env = lanEnv
-					compOpts.chunking = chunkingOff
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "  note: %q declares discovers; cross-device discovery over the cloud is deferred to the mesh (WDY-1778) — deploying placement only\n", name)
+			env, err = discoveryEnv(comp, manifest, peersByComp)
+			if err != nil {
+				return fmt.Errorf("component %q: %w", name, err)
+			}
+			if len(env) > 0 {
+				// Discovery env rides on CreateContainerRequest.Env, carried by the
+				// registry (chunk-off) create path; force it so peers aren't dropped.
+				// Peers are mesh names, so the consuming component needs a "mesh"
+				// network entitlement to reach them.
+				compOpts.env = env
+				compOpts.chunking = chunkingOff
 			}
 		}
 
@@ -123,7 +134,7 @@ func runFleetManifest(ctx context.Context, opts runOptions, projectCwd string, m
 			}
 			if lan && len(comp.Discovers) > 0 {
 				fmt.Printf("\n=== component %q (no device matched %v) ===\n", name, comp.Tags)
-				printCentralInstructions(name, comp, lanEnv)
+				printCentralInstructions(name, comp, env)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "  warning: no devices carry tags %v for %q; assign with 'wendy fleet group add <tag> <device>' and re-run\n", comp.Tags, name)
@@ -164,7 +175,7 @@ func loadComponentApp(appDir string, opts runOptions) (*appconfig.AppConfig, err
 // discoveryEnv builds the env vars injected into a component for its declared
 // discovers: each named var carries a JSON snapshot of the referenced
 // component's live peer endpoints (from the devices its tags matched).
-func discoveryEnv(consumer *appconfig.ComponentConfig, manifest *appconfig.FleetManifest, matched map[string][]models.LANDevice) ([]string, error) {
+func discoveryEnv(consumer *appconfig.ComponentConfig, manifest *appconfig.FleetManifest, peers map[string][]meshPeer) ([]string, error) {
 	var env []string
 	for _, d := range consumer.Discovers {
 		ref, ok := manifest.Components[d.Component]
@@ -174,7 +185,7 @@ func discoveryEnv(consumer *appconfig.ComponentConfig, manifest *appconfig.Fleet
 		if ref.Expose == nil {
 			return nil, fmt.Errorf("discovered component %q declares no 'expose' endpoint", d.Component)
 		}
-		data, err := json.Marshal(computePeers(ref, matched[d.Component]))
+		data, err := json.Marshal(computePeers(ref, peers[d.Component]))
 		if err != nil {
 			return nil, err
 		}
@@ -183,24 +194,31 @@ func discoveryEnv(consumer *appconfig.ComponentConfig, manifest *appconfig.Fleet
 	return env, nil
 }
 
-// computePeers turns a component's matched devices into peer endpoints using its
-// exposed port. url is the endpoint's base origin; consumers append their own
-// path (the discover contract — see the template dashboard's serve.py).
-func computePeers(comp *appconfig.ComponentConfig, devices []models.LANDevice) []fleetPeer {
+// computePeers turns a component's discovered peers into endpoint URLs using its
+// exposed port. A peer with a known asset id is addressed over the mesh
+// (device-<id>.cloud.wendy.dev), reachable LAN-direct or via cloud-relay;
+// otherwise it falls back to a direct-LAN host. url is the endpoint's base
+// origin; consumers append their own path (the discover contract — see the
+// template dashboard's serve.py).
+func computePeers(comp *appconfig.ComponentConfig, peers []meshPeer) []fleetPeer {
 	tag := ""
 	if len(comp.Tags) > 0 {
 		tag = comp.Tags[0]
 	}
-	peers := make([]fleetPeer, 0, len(devices))
-	for _, dev := range devices {
-		peers = append(peers, fleetPeer{
-			Name:   deviceShortName(dev),
-			URL:    fmt.Sprintf("http://%s:%d", peerHost(dev), comp.Expose.Port),
-			Group:  tag,
-			Status: "ready",
-		})
+	out := make([]fleetPeer, 0, len(peers))
+	for _, p := range peers {
+		var url string
+		switch {
+		case p.AssetID > 0:
+			url = fmt.Sprintf("http://device-%d.cloud.wendy.dev:%d", p.AssetID, comp.Expose.Port)
+		case p.Host != "":
+			url = fmt.Sprintf("http://%s:%d", p.Host, comp.Expose.Port)
+		default:
+			continue // no way to address this peer
+		}
+		out = append(out, fleetPeer{Name: p.Name, URL: url, Group: tag, Status: "ready"})
 	}
-	return peers
+	return out
 }
 
 // resolveCentralDevice resolves --central to exactly one LAN device.
