@@ -140,6 +140,16 @@ func TestGetAgentVersion(t *testing.T) {
 	if resp.CpuArchitecture != runtime.GOARCH {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
 	}
+	// RAM size and CPU core count come from /proc, so they are only
+	// guaranteed on Linux hosts (WDY-1809). Zero means "unknown".
+	if runtime.GOOS == "linux" {
+		if resp.MemTotalBytes <= 0 {
+			t.Errorf("memTotalBytes = %d, want > 0 on linux", resp.MemTotalBytes)
+		}
+		if resp.CpuCount == 0 {
+			t.Errorf("cpuCount = 0, want > 0 on linux")
+		}
+	}
 }
 
 func TestReadWendyOSVersionFromPrefersCurrentPath(t *testing.T) {
@@ -356,7 +366,7 @@ func TestUpdateAgent_LockExclusion(t *testing.T) {
 	installer.Unlock()
 }
 
-func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
+func TestUpdateOS_NonWendyOSFailsBeforeUpdate(t *testing.T) {
 	client, cleanup := startAgentServer(t,
 		&mockNetworkManager{},
 		&mockHardwareDiscoverer{},
@@ -366,7 +376,7 @@ func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
 	defer cleanup()
 
 	stream, err := client.UpdateOS(context.Background(), &agentpb.UpdateOSRequest{
-		ArtifactUrl: "http://example.invalid/update.mender",
+		ArtifactUrl: "http://example.invalid/update.wendy",
 	})
 	if err != nil {
 		t.Fatalf("UpdateOS: %v", err)
@@ -661,6 +671,41 @@ func TestGetOSUpdateStatus_ZeroFinalizedAt(t *testing.T) {
 	if resp.GetFinalizedAtUnix() != 0 {
 		t.Errorf("FinalizedAtUnix = %d, want 0 for unfinalized record", resp.GetFinalizedAtUnix())
 	}
+}
+
+// finishCommittedUpdate must schedule the restart before (and regardless of)
+// the ack: once the binary is committed, a client that already dropped its
+// transport must not leave the old agent running with the installer lock held
+// — that wedges every retry on "an update is already in progress" until a
+// manual reboot.
+func TestFinishCommittedUpdateRestartsEvenWhenAckFails(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("ack failure still schedules the restart and reports success", func(t *testing.T) {
+		exitScheduled := false
+		err := finishCommittedUpdate(logger,
+			func() error { return fmt.Errorf("transport is closing") },
+			func() { exitScheduled = true })
+		if err != nil {
+			t.Fatalf("finishCommittedUpdate = %v, want nil (the update is committed)", err)
+		}
+		if !exitScheduled {
+			t.Fatal("restart exit was not scheduled after a failed ack")
+		}
+	})
+
+	t.Run("restart is scheduled before the ack is attempted", func(t *testing.T) {
+		order := []string{}
+		err := finishCommittedUpdate(logger,
+			func() error { order = append(order, "ack"); return nil },
+			func() { order = append(order, "exit") })
+		if err != nil {
+			t.Fatalf("finishCommittedUpdate = %v, want nil", err)
+		}
+		if len(order) != 2 || order[0] != "exit" || order[1] != "ack" {
+			t.Fatalf("call order = %v, want [exit ack]", order)
+		}
+	})
 }
 
 // ---------- detectCUDAVersionIn ----------

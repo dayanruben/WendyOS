@@ -1,9 +1,7 @@
 package commands
 
 import (
-	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -93,8 +91,69 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("manage",
 		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
+		newDeviceListCmd(),
+		newDevicePushAgentCmd(),
 	)
 
+	return cmd
+}
+
+// newDeviceListCmd is a hidden alias for the top-level `wendy discover`
+// command, so `wendy device list` reaches the same device-discovery flow that
+// users may reach for out of habit. It reuses the discover command wholesale
+// (flags, JSON output, USB-setup pre-flight) and only renames it and hides it
+// from the `device` help listing.
+func newDeviceListCmd() *cobra.Command {
+	cmd := newDiscoverCmd()
+	cmd.Use = "list"
+	cmd.Aliases = []string{"ls"}
+	cmd.Hidden = true
+	return cmd
+}
+
+// newDevicePushAgentCmd uploads a locally-built agent binary to the device via
+// the same UpdateAgent RPC `wendy device update` uses, bypassing the GitHub
+// release fetch. Hidden: it is a developer/diagnostic tool for running a
+// patched agent on a device (e.g. to capture verbose engine diagnostics),
+// not part of the normal update workflow.
+func newDevicePushAgentCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "push-agent <path-to-agent-binary>",
+		Short:  "Upload a locally-built agent binary to the device (dev/diagnostic)",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			binaryData, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("reading agent binary %q: %w", args[0], err)
+			}
+
+			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			addr := hostPort(conn.Host, defaultAgentPort)
+
+			h := sha256.Sum256(binaryData)
+			fmt.Fprintf(os.Stderr, "Uploading %d bytes to %s...\n", len(binaryData), conn.Host)
+			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, hex.EncodeToString(h[:])); err != nil {
+				return fmt.Errorf("uploading agent: %w", err)
+			}
+			conn.Close()
+
+			fmt.Fprint(os.Stderr, "Waiting for agent to restart...")
+			newConn, err := waitForAgentRestart(ctx, addr)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, " failed.")
+				return fmt.Errorf("agent did not come back after update: %w", err)
+			}
+			defer newConn.Close()
+			fmt.Fprintln(os.Stderr, " ready.")
+			return nil
+		},
+	}
 	return cmd
 }
 
@@ -132,6 +191,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
+			var memTotalBytes int64
+			var cpuCount uint32
 			var partitions []*agentpb.DiskPartition
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
@@ -169,6 +230,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuArch = resp.GetGpuArch()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
+				memTotalBytes = resp.GetMemTotalBytes()
+				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
 				netInterfaces = resp.GetNetworkInterfaces()
 			} else {
@@ -188,11 +251,11 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var latestVersion string
 			if checkUpdates {
-				release, err := fetchAgentRelease(prerelease)
+				v, _, err := resolveAgentVersion(prerelease)
 				if err != nil {
 					return fmt.Errorf("checking for updates: %w", err)
 				}
-				latestVersion = release.TagName
+				latestVersion = v
 			}
 
 			if jsonOutput {
@@ -211,6 +274,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if diskUsedBytes != nil && diskTotalBytes != nil {
 					out["diskUsedBytes"] = *diskUsedBytes
 					out["diskTotalBytes"] = *diskTotalBytes
+				}
+				if memTotalBytes > 0 {
+					out["memTotalBytes"] = memTotalBytes
+				}
+				if cpuCount > 0 {
+					out["cpuCount"] = cpuCount
 				}
 				if len(partitions) > 0 {
 					parts := make([]map[string]any, len(partitions))
@@ -265,6 +334,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
 			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
 			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
+			if cpuCount > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("CPU Cores:"), tui.Value(fmt.Sprintf("%d", cpuCount)))
+			}
+			if memTotalBytes > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("Memory:"), tui.Value(formatBytes(memTotalBytes)))
+			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
@@ -475,10 +550,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Println("Device is not enrolled.")
 				if loadCLICert() == nil {
 					fmt.Println("You are not logged in to Wendy Cloud.")
-					fmt.Print("Log in now? [Y/n] ")
-					answer, _ := reader.ReadString('\n')
-					answer = strings.TrimSpace(strings.ToLower(answer))
-					if answer == "" || answer == "y" || answer == "yes" {
+					if confirmFn("Log in now?") {
 						if loginErr := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); loginErr != nil {
 							return fmt.Errorf("login failed: %w", loginErr)
 						}
@@ -599,11 +671,7 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 
 	fmt.Println("No WiFi connection detected on the device.")
-	fmt.Print("Set up WiFi before enrolling? [Y/n] ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	answer := strings.TrimSpace(strings.ToLower(line))
-	if answer != "" && answer != "y" && answer != "yes" {
+	if !confirmFn("Set up WiFi before enrolling?") {
 		return
 	}
 
@@ -796,11 +864,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					return fmt.Errorf("unenroll is destructive; pass --yes to confirm when not running interactively")
 				}
 				fmt.Printf("This will unenroll the device (org: %d, asset: %d) and delete its asset in Wendy Cloud.\n", orgID, assetID)
-				fmt.Print("Continue? [y/N] ")
-				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
-				answer := strings.TrimSpace(strings.ToLower(line))
-				if answer != "y" && answer != "yes" {
+				if !confirmDefaultNoFn("Continue?") {
 					fmt.Println("Aborted.")
 					return nil
 				}
@@ -1122,7 +1186,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
-	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches matching the filters before streaming live (0 = live only)")
 
 	return cmd
 }
@@ -1793,32 +1857,7 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("opening gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("reading tar: %w", err)
-		}
-
-		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(hdr.Name, "wendy-agent") {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, fmt.Errorf("reading binary from tar: %w", err)
-			}
-			return data, nil
-		}
-	}
-
-	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
+	return extractAgentFromTarGz(resp.Body)
 }
 
 // reconnectAgentAfterRestart re-establishes a connection to the SAME device
@@ -1889,16 +1928,27 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	defer conn.Close()
 
+	// The OS version running before this update, for the post-reboot outcome
+	// check (reportOSUpdateOutcome). The agent update just applied does not
+	// change the OS, so the version carried in preUpdateVersion is the
+	// pre-OS-update OS; the auto-select branch below refreshes it from the
+	// just-restarted agent.
+	preUpdateOSVersion := preUpdateVersion.GetOsVersion()
+
 	var otaURL string
 	if artifactURLOverride != "" {
 		// Explicit artifact: apply it as-is, no manifest lookup or version
-		// comparison (mirrors `os update --artifact-url`).
+		// comparison (mirrors `os update --artifact-url`). Still refuse a
+		// stack-mismatched artifact — it is guaranteed to fail on the device.
+		if err := osUpdateStackMismatch(preUpdateVersion, artifactURLOverride); err != nil {
+			return osUpdateOutcome{}, err
+		}
 		if !assumeYes {
 			if !isInteractiveTerminal() {
 				fmt.Printf("OS artifact specified (%s). Re-run with --yes to apply.\n", artifactURLOverride)
 				return osUpdateOutcome{}, nil
 			}
-			if !promptYesNoDefaultNoFn(fmt.Sprintf("Apply OS update from %s? [y/N] ", artifactURLOverride)) {
+			if !confirmDefaultNoFn(fmt.Sprintf("Apply OS update from %s?", artifactURLOverride)) {
 				fmt.Println("Skipping OS update.")
 				return osUpdateOutcome{}, nil
 			}
@@ -1927,12 +1977,28 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		}
 
 		currentOS := versionResp.GetOsVersion()
+		preUpdateOSVersion = currentOS
 		fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
 		if fromVer == "" {
 			fromVer = "unknown"
 		}
 
-		switch decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal()) {
+		decision := decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal())
+
+		// Don't offer an update the device is guaranteed to reject (e.g. a
+		// wendyos-update release for a device whose image predates the
+		// wendyos-update stack): explain instead of
+		// prompting. Checked after already-current so an up-to-date device is
+		// not warned about an artifact it would never install. Non-fatal — the
+		// agent update above already succeeded.
+		if decision != osActionAlreadyCurrent {
+			if err := osUpdateStackMismatch(versionResp, u); err != nil {
+				fmt.Printf("An OS update is available (%s), but it cannot be applied to this device: %v\n", latestVer, err)
+				return osUpdateOutcome{}, nil
+			}
+		}
+
+		switch decision {
 		case osActionAlreadyCurrent:
 			fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
 			return osUpdateOutcome{}, nil
@@ -1942,7 +2008,8 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
-			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
+			ensureDeviceWiFiForOSUpdate(ctx, conn)
+			if !confirmDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil
 			}
@@ -1963,7 +2030,70 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return osUpdateOutcome{applied: true}, err
 	}
 	fmt.Println("Device is back online.")
+	// The device coming back online does NOT mean the update stuck — a rollback
+	// also reboots and reconnects. Query the recorded outcome and surface a
+	// rollback as an error so `wendy device update` exits non-zero instead of
+	// silently reporting success (mirrors `wendy os update`).
+	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion); err != nil {
+		return osUpdateOutcome{applied: true, online: true}, err
+	}
 	return osUpdateOutcome{applied: true, online: true}, nil
+}
+
+// ensureDeviceWiFiForOSUpdate passively checks the device's WiFi before the
+// interactive OS-update prompt: the device downloads the OS image itself, so an
+// offline device fails the update with an opaque wendyos-update DNS error.
+// Connected → say nothing. Not connected → explain, then walk the user through
+// joining a network with the device-side scan picker + password prompt (the
+// same UX the installer uses). Best-effort throughout: a status error (older
+// agent, macOS target), an esc'd picker, or a failed join never blocks the
+// update prompt — a wired device is fine without WiFi.
+func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection) {
+	status, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
+	if err != nil || status.GetConnected() {
+		return
+	}
+
+	fmt.Println(tui.WarningMessage("This device is not connected to WiFi, and it downloads the OS image itself — without internet the update will fail."))
+	fmt.Println(tui.InfoMessage("Pick a network to connect it now (esc to skip if the device has wired internet)."))
+
+	ssid, err := pickWifiNetwork(ctx, &SelectedDevice{Agent: conn})
+	if err != nil {
+		if !errors.Is(err, ErrUserCancelled) {
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("WiFi selection failed: %v", err)))
+		}
+		return
+	}
+	// Offer the saved password from the macOS keychain first, exactly like the
+	// installer's WiFi flow; fall back to typing it.
+	password := ""
+	if supportsKeychainLookup {
+		if useKeychain, cerr := confirmKeychainLookup(ssid); cerr == nil && useKeychain {
+			if pw, kerr := lookupKeychainPassword(ssid); kerr == nil && pw != "" {
+				fmt.Println("Using saved password from keychain.")
+				password = pw
+			} else {
+				fmt.Println("Password not available from keychain.")
+			}
+		}
+	}
+	if password == "" {
+		password, err = promptWifiPassword(ssid)
+		if err != nil {
+			return
+		}
+	}
+
+	fmt.Println(tui.InfoMessage(fmt.Sprintf("Connecting the device to %s...", ssid)))
+	resp, err := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{Ssid: ssid, Password: password})
+	switch {
+	case err != nil:
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %v", ssid, err)))
+	case !resp.GetSuccess():
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %s", ssid, resp.GetErrorMessage())))
+	default:
+		cliSuccess("Device connected to %s.", ssid)
+	}
 }
 
 // shouldReapplyBinary reports whether `device update` should re-upload the
@@ -1990,7 +2120,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
-			"--artifact-url applies a specific OS (Mender) artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
+			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -2007,6 +2137,9 @@ func newDeviceUpdateCmd() *cobra.Command {
 			var preUpdateVersion *agentpb.GetAgentVersionResponse
 
 			var binaryData []byte
+			// Set on the auto-download path; used to verify an upload whose
+			// confirmation was lost when the agent restarted mid-stream.
+			var expectedAgentVersion string
 
 			if binaryPath != "" {
 				binaryData, err = os.ReadFile(binaryPath)
@@ -2047,41 +2180,24 @@ func newDeviceUpdateCmd() *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
-				releaseType := "stable"
-				if nightly {
-					releaseType = "nightly"
-				}
 				if !jsonOutput {
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s release...", releaseType)))
-				}
-
-				release, err := fetchAgentRelease(nightly)
-				if err != nil {
-					return fmt.Errorf("fetching release: %w", err)
-				}
-				if !jsonOutput {
-					fmt.Printf("%s %s\n", tui.Dim("Release:"), tui.Value(release.TagName))
-				}
-
-				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
-				assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-				var matchedAsset *githubReleaseAsset
-				for _, a := range release.Assets {
-					if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-						matchedAsset = &a
-						break
+					releaseType := "stable"
+					if nightly {
+						releaseType = "nightly"
 					}
-				}
-				if matchedAsset == nil {
-					return fmt.Errorf("no asset found for linux/%s in release %s", arch, release.TagName)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
 				}
 
-				if !jsonOutput {
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Downloading %s...", matchedAsset.Name)))
-				}
-				binaryData, err = downloadAgentBinary(*matchedAsset)
+				var source, resolvedVer string
+				binaryData, resolvedVer, source, err = resolveAgentBinary(arch, nightly)
 				if err != nil {
-					return fmt.Errorf("downloading binary: %w", err)
+					return fmt.Errorf("resolving agent binary: %w", err)
+				}
+				// Record the resolved version so an upload whose confirmation
+				// was lost to a mid-stream agent restart can still be verified.
+				expectedAgentVersion = resolvedVer
+				if !jsonOutput {
+					fmt.Printf("%s %s %s\n", tui.Dim("Release:"), tui.Value(resolvedVer), tui.Dim("(from "+source+")"))
 				}
 			}
 
@@ -2089,8 +2205,18 @@ func newDeviceUpdateCmd() *cobra.Command {
 			h := sha256.Sum256(binaryData)
 			sha256Hash := hex.EncodeToString(h[:])
 
+			// An unconfirmed upload is not a failure: the agent restarts the
+			// moment the binary lands, which can drop the stream before its
+			// ack arrives. Reconnect below and verify what the device runs.
+			unconfirmed := false
 			if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
-				return err
+				if !errors.Is(err, errAgentUpdateUnconfirmed) {
+					return err
+				}
+				unconfirmed = true
+				if !jsonOutput {
+					fmt.Println(tui.InfoMessage("The connection dropped before the agent confirmed the update — verifying what the device is running..."))
+				}
 			}
 
 			// Keep the connection to the just-restarted agent. maybeCheckOSUpdate
@@ -2105,6 +2231,21 @@ func newDeviceUpdateCmd() *cobra.Command {
 			conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
 			if err != nil {
 				return err
+			}
+
+			if unconfirmed {
+				verifyResp, verifyErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+				if verifyErr != nil {
+					return fmt.Errorf("could not verify the interrupted agent update: %w", verifyErr)
+				}
+				if !agentUpdateVerified(verifyResp.GetVersion(), expectedAgentVersion) {
+					return fmt.Errorf("the device still reports agent %s after the interrupted update (expected %s); "+
+						"the upload did not apply — re-run 'wendy device update'",
+						verifyResp.GetVersion(), expectedAgentVersion)
+				}
+				if !jsonOutput {
+					fmt.Printf("%s %s\n", tui.Dim("Verified agent version:"), tui.Value(verifyResp.GetVersion()))
+				}
 			}
 
 			if jsonOutput {
@@ -2155,7 +2296,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download); re-applied after an OS update so it survives the reboot")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
-	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS (Mender) artifact URL instead of the manifest's latest")
+	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS update artifact URL instead of the manifest's latest")
 
 	return cmd
 }
@@ -2283,7 +2424,9 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 		return errors.New("reconnected to a nil agent connection after the OS update")
 	}
 
-	if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
+	// An unconfirmed upload is expected here too — the agent restarts as the
+	// binary lands — and the wait below already verifies the agent returns.
+	if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil && !errors.Is(err, errAgentUpdateUnconfirmed) {
 		_ = conn.Close()
 		return err
 	}
@@ -2300,13 +2443,41 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 	return nil
 }
 
+// errAgentUpdateUnconfirmed means the update stream died before the agent
+// reported a verdict. This is NOT a failure signal: the agent restarts itself
+// as soon as the committed binary lands, which can tear down the connection
+// before its ack reaches us (a mid-send io.EOF is the usual symptom). Callers
+// should reconnect and verify what the device now runs instead of aborting.
+var errAgentUpdateUnconfirmed = errors.New("the connection was lost before the agent confirmed the update")
+
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
 	stream, err := agentService.UpdateAgent(ctx)
 	if err != nil {
 		return fmt.Errorf("starting agent update: %w", err)
 	}
 
-	// Send binary in chunks.
+	// Send errors are deliberately not returned: gRPC surfaces any broken
+	// stream as a bare io.EOF from Send whatever the real cause, and the agent
+	// may still have received everything (it commits and restarts, dropping
+	// the transport under us). The stream's terminal status from Recv is the
+	// authoritative outcome, so always drain it.
+	_ = sendAgentUpdate(stream, binaryData, sha256Hash)
+
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr != nil {
+			return agentUpdateTerminalError(recvErr)
+		}
+		if resp.GetUpdated() != nil {
+			return nil
+		}
+	}
+}
+
+// sendAgentUpdate streams the binary chunks and the final update command,
+// returning the first send error (used only to stop sending — the stream's
+// Recv terminal status is what callers act on).
+func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string) error {
 	const chunkSize = 64 * 1024
 	for offset := 0; offset < len(binaryData); offset += chunkSize {
 		end := offset + chunkSize
@@ -2321,11 +2492,10 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 				},
 			},
 		}); err != nil {
-			return fmt.Errorf("sending binary chunk: %w", err)
+			return err
 		}
 	}
 
-	// Send update control command with SHA256.
 	if err := stream.Send(&agentpb.UpdateAgentRequest{
 		RequestType: &agentpb.UpdateAgentRequest_Control{
 			Control: &agentpb.UpdateAgentRequest_ControlCommand{
@@ -2337,28 +2507,49 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 			},
 		},
 	}); err != nil {
-		return fmt.Errorf("sending update command: %w", err)
+		return err
 	}
 
-	if err := stream.CloseSend(); err != nil {
-		return fmt.Errorf("closing send: %w", err)
-	}
+	return stream.CloseSend()
+}
 
-	// Wait for the Updated response.
-	for {
-		resp, recvErr := stream.Recv()
-		if recvErr == io.EOF {
-			break
-		}
-		if recvErr != nil {
-			return fmt.Errorf("receiving update response: %w", recvErr)
-		}
-		if resp.GetUpdated() != nil {
-			return nil
-		}
+// agentUpdateTerminalError maps the update stream's terminal Recv error to
+// what the user is told. Transport-level drops (bare io.EOF, Unavailable,
+// Canceled) carry no verdict and map to errAgentUpdateUnconfirmed; a real
+// server status is surfaced with its message, with an actionable hint for the
+// stale-lock FailedPrecondition (an interrupted update on an older agent can
+// leave the lock held until the device is rebooted).
+func agentUpdateTerminalError(recvErr error) error {
+	if errors.Is(recvErr, io.EOF) {
+		return errAgentUpdateUnconfirmed
 	}
+	s, ok := status.FromError(recvErr)
+	if !ok {
+		return fmt.Errorf("receiving update response: %w", recvErr)
+	}
+	switch s.Code() {
+	case codes.Unavailable, codes.Canceled:
+		return fmt.Errorf("%w (%s)", errAgentUpdateUnconfirmed, s.Message())
+	case codes.FailedPrecondition:
+		return fmt.Errorf("%s — if this repeats, a previous update likely applied without the agent restarting; "+
+			"reboot the device to finish it, then retry", s.Message())
+	default:
+		return fmt.Errorf("agent rejected the update: %s", s.Message())
+	}
+}
 
-	return nil
+// agentUpdateVerified reports whether the version an agent reports after an
+// unconfirmed update proves the upload landed: the expected release version or
+// anything newer counts. An empty expectation (--binary uploads have no
+// release version) cannot be verified and is accepted.
+func agentUpdateVerified(reported, expected string) bool {
+	if expected == "" {
+		return true
+	}
+	if reported == "" {
+		return false
+	}
+	return version.CompareVersions(reported, expected) >= 0
 }
 
 func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {

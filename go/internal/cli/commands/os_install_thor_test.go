@@ -36,6 +36,28 @@ func TestUsbUdevRuleMatchesPackagedRule(t *testing.T) {
 	}
 }
 
+func TestUsbAccessHintLines(t *testing.T) {
+	// macOS: a claim-time seize denial. The device enumerated, so the guidance must
+	// point at the two fixes that work — running as root and re-entering recovery —
+	// not the Linux udev rule.
+	mac := strings.ToLower(strings.Join(usbAccessHintLines("darwin"), "\n"))
+	if !strings.Contains(mac, "sudo") {
+		t.Errorf("darwin hint should mention sudo, got:\n%s", mac)
+	}
+	if !strings.Contains(mac, "recovery mode") {
+		t.Errorf("darwin hint should tell the user to re-enter recovery mode, got:\n%s", mac)
+	}
+	if strings.Contains(mac, usbUdevRule) {
+		t.Errorf("darwin hint should not contain the Linux udev rule, got:\n%s", mac)
+	}
+
+	// Linux: keep the udev-rule guidance verbatim so the parity test stays meaningful.
+	lin := strings.Join(usbAccessHintLines("linux"), "\n")
+	if !strings.Contains(lin, usbUdevRule) {
+		t.Errorf("linux hint should contain the udev rule %q, got:\n%s", usbUdevRule, lin)
+	}
+}
+
 func TestStopADBServer(t *testing.T) {
 	// No server listening → no-op, false.
 	if stopADBServer("127.0.0.1:1") {
@@ -73,12 +95,16 @@ func TestStopADBServer(t *testing.T) {
 
 func TestByteProgress(t *testing.T) {
 	const gib = 1 << 30
-	if got := byteProgress(gib*3/2, gib*3); got != "1.5/3.0 GiB" {
-		t.Errorf("byteProgress = %q, want %q", got, "1.5/3.0 GiB")
+	if got := byteProgress(gib*3/2, gib*3); got != "50% · 1.5/3.0 GiB" {
+		t.Errorf("byteProgress = %q, want %q", got, "50% · 1.5/3.0 GiB")
 	}
-	// Unknown total: report only what's downloaded.
+	// Unknown total: report only what's transferred.
 	if got := byteProgress(gib/2, 0); got != "0.5 GiB" {
 		t.Errorf("byteProgress unknown total = %q, want %q", got, "0.5 GiB")
+	}
+	// At (or past) the estimated total the percent pins at 99: the ✓ marks done.
+	if got := byteProgress(gib*4, gib*3); got != "99% · 4.0/3.0 GiB" {
+		t.Errorf("byteProgress overshoot = %q, want %q", got, "99% · 4.0/3.0 GiB")
 	}
 }
 
@@ -109,6 +135,60 @@ func TestFlashpackCached(t *testing.T) {
 	}
 }
 
+func TestThorFlashpackSpaceNeeded(t *testing.T) {
+	dir := t.TempDir()
+	const version = "0.16.1"
+
+	// Nothing cached, no manifest info: unknown size, skip the check.
+	if got := thorFlashpackSpaceNeeded(dir, thorFlashPlan{version: version}); got != 0 {
+		t.Fatalf("unknown size should return 0, got %d", got)
+	}
+
+	// Nothing cached, manifest size known: download + extraction.
+	plan := thorFlashPlan{version: version, info: &thorFlashpackInfo{SizeBytes: 1000}}
+	if got := thorFlashpackSpaceNeeded(dir, plan); got != 3500 {
+		t.Fatalf("download+extract estimate = %d, want 3500", got)
+	}
+
+	// Tarball cached: extraction only, sized from the tarball on disk.
+	tarball := flashpack.TarballCachePath(dir, version)
+	if err := os.WriteFile(tarball, make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := thorFlashpackSpaceNeeded(dir, plan); got != 250 {
+		t.Fatalf("extract-only estimate = %d, want 250", got)
+	}
+
+	// Extracted tree present: nothing left to write.
+	if err := os.MkdirAll(filepath.Join(dir, flashpack.FlashpackName(version)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := thorFlashpackSpaceNeeded(dir, plan); got != 0 {
+		t.Fatalf("extracted tree should return 0, got %d", got)
+	}
+}
+
+func TestCheckThorDiskSpace(t *testing.T) {
+	dir := t.TempDir()
+	const version = "0.16.1"
+
+	// Plenty of room (tiny requirement) passes.
+	plan := thorFlashPlan{version: version, info: &thorFlashpackInfo{SizeBytes: 1}}
+	if err := checkThorDiskSpace(dir, plan); err != nil {
+		t.Fatalf("tiny flashpack should fit: %v", err)
+	}
+
+	// An absurd requirement fails with a readable message.
+	plan.info.SizeBytes = 1 << 60
+	err := checkThorDiskSpace(dir, plan)
+	if err == nil {
+		t.Fatal("1 EiB flashpack should not fit")
+	}
+	if !strings.Contains(err.Error(), "not enough free disk space") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
 func TestRunFlashStepsPlain_Sequencing(t *testing.T) {
 	// runFlashSteps falls back to the plain runner in a non-TTY test env.
 	var ran []int
@@ -127,7 +207,7 @@ func TestRunFlashStepsPlain_Sequencing(t *testing.T) {
 		}},
 	}
 
-	failedID, err := runFlashSteps("Flashing", steps)
+	failedID, err := runFlashSteps("Flashing", steps, func() {})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +235,7 @@ func TestRunFlashStepsPlain_StopsOnFailure(t *testing.T) {
 		}},
 	}
 
-	failedID, err := runFlashSteps("Flashing", steps)
+	failedID, err := runFlashSteps("Flashing", steps, func() {})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel", err)
 	}
