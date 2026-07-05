@@ -1117,3 +1117,76 @@ func TestRebuildCachesFromLabels(t *testing.T) {
 		t.Fatal("orphan row (no appID) must be ignored")
 	}
 }
+
+func TestEntitlementsUseHostNetwork(t *testing.T) {
+	host := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "host"}}
+	hostAdmin := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "host-admin"}}
+	omitted := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: ""}}
+	mesh := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "mesh"}}
+	none := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "none"}}
+	noNet := []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}}
+
+	for _, tc := range []struct {
+		name string
+		ents []appconfig.Entitlement
+		want bool
+	}{
+		{"host", host, true},
+		{"host-admin", hostAdmin, true},
+		{"omitted", omitted, true},
+		{"mesh", mesh, false},
+		{"none", none, false},
+		{"no network entitlement", noNet, false},
+	} {
+		if got := entitlementsUseHostNetwork(tc.ents); got != tc.want {
+			t.Errorf("%s: entitlementsUseHostNetwork = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestIsPubliclyBoundAddress(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		want bool
+	}{
+		{"0.0.0.0", true},          // IPv4 wildcard = all interfaces
+		{"::", true},               // IPv6 wildcard
+		{"192.168.1.10", true},     // specific non-loopback
+		{"127.0.0.1", false},       // IPv4 loopback
+		{"127.0.0.53", false},      // loopback range
+		{"::1", false},             // IPv6 loopback
+		{"", false},                // empty
+		{"garbage", false},         // unparseable
+	} {
+		if got := isPubliclyBoundAddress(tc.addr); got != tc.want {
+			t.Errorf("isPubliclyBoundAddress(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestCollectExposures(t *testing.T) {
+	portsByApp := map[string][]*agentpb.PortEntry{
+		"web": {
+			{Protocol: "tcp", Port: 8080, Address: "0.0.0.0"},   // public
+			{Protocol: "tcp", Port: 9000, Address: "127.0.0.1"}, // private, skipped
+		},
+		"api": {
+			{Protocol: "tcp", Port: 443, Address: "192.168.1.5"}, // public
+		},
+	}
+	got := collectExposures(portsByApp)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 exposures, got %d: %v", len(got), got)
+	}
+	if _, ok := got[exposureKey(exposedPort{appID: "web", protocol: "tcp", port: 8080, address: "0.0.0.0"})]; !ok {
+		t.Error("web:8080/0.0.0.0 should be an exposure")
+	}
+	if _, ok := got[exposureKey(exposedPort{appID: "api", protocol: "tcp", port: 443, address: "192.168.1.5"})]; !ok {
+		t.Error("api:443/192.168.1.5 should be an exposure")
+	}
+	for k := range got {
+		if strings.Contains(k, "9000") {
+			t.Errorf("loopback port 9000 must not be an exposure (key %q)", k)
+		}
+	}
+}

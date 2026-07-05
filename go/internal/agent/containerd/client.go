@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -328,6 +329,50 @@ func (c *Client) RebuildAppStateCaches(ctx context.Context) {
 	}
 	c.logger.Info("Rebuilt app-state caches from labels",
 		zap.Int("apps_isolation", len(isolation)), zap.Int("apps_services", len(servicesByApp)))
+}
+
+// isPubliclyBoundAddress reports whether a listening socket's bind address is
+// reachable from outside the host — a wildcard (0.0.0.0 / ::) or a specific
+// non-loopback interface address. Loopback (127.0.0.0/8, ::1) is private; an
+// empty or unparseable address is treated as not-public (we only warn on a
+// definite exposure).
+func isPubliclyBoundAddress(addr string) bool {
+	a, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	return !a.IsLoopback()
+}
+
+// exposedPort identifies one publicly-bound listening socket of an app, used as
+// the dedup unit for exposure warnings.
+type exposedPort struct {
+	appID    string
+	protocol string
+	port     uint32
+	address  string
+}
+
+// exposureKey is the stable dedup key for an exposedPort.
+func exposureKey(e exposedPort) string {
+	return fmt.Sprintf("%s|%s|%d|%s", e.appID, e.protocol, e.port, e.address)
+}
+
+// collectExposures returns the publicly-bound listening sockets across the given
+// host-network apps, keyed by exposureKey. Pure (no containerd, no lock) so it
+// is unit-testable; the caller supplies each host-network app's listening ports.
+func collectExposures(portsByApp map[string][]*agentpb.PortEntry) map[string]exposedPort {
+	out := make(map[string]exposedPort)
+	for appID, ports := range portsByApp {
+		for _, p := range ports {
+			if !isPubliclyBoundAddress(p.Address) {
+				continue
+			}
+			e := exposedPort{appID: appID, protocol: p.Protocol, port: p.Port, address: p.Address}
+			out[exposureKey(e)] = e
+		}
+	}
+	return out
 }
 
 // ListLayers walks the content store and returns metadata for all layer blobs.
@@ -1723,7 +1768,16 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 }
 
 func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
-	for _, e := range appCfg.Entitlements {
+	return entitlementsUseHostNetwork(appCfg.Entitlements)
+}
+
+// entitlementsUseHostNetwork reports whether the entitlements put the container
+// on the HOST network namespace — a network entitlement with mode host,
+// host-admin, or omitted (empty), matching applyNetwork's host-netns selection.
+// Such a container's non-loopback listening ports are reachable on the device's
+// real interfaces.
+func entitlementsUseHostNetwork(ents []appconfig.Entitlement) bool {
+	for _, e := range ents {
 		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "host-admin" || e.Mode == "") {
 			return true
 		}
