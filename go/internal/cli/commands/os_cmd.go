@@ -156,6 +156,17 @@ func osAlreadyCurrent(currentOSVersion, latestVersion string, nightly bool) bool
 		!nightly && version.CompareVersions(latestVersion, normalized) <= 0
 }
 
+// osUpdateShouldSkipAlreadyCurrent reports whether `os update`'s auto-detect
+// path should treat the device as already up to date and skip flashing. It
+// never short-circuits for --pr requests (prNumber > 0): a PR's resolved
+// version tag ("pr-N") is constant across rebuilds, so honoring
+// osAlreadyCurrent there would silently no-op a re-test after pushing a new
+// commit to the same PR and re-running `os update --pr N`. Non-PR behavior is
+// unchanged — it defers entirely to osAlreadyCurrent.
+func osUpdateShouldSkipAlreadyCurrent(prNumber int, currentOSVersion, latestVersion string, nightly bool) bool {
+	return prNumber == 0 && osAlreadyCurrent(currentOSVersion, latestVersion, nightly)
+}
+
 // osUpdateAction is the decision for the OS-update step of `device update`.
 type osUpdateAction int
 
@@ -186,6 +197,7 @@ func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, 
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
+	var prNumber int
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
@@ -204,6 +216,13 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
 				return fmt.Errorf("provide either a local artifact path or --artifact-url, not both")
+			}
+
+			if prNumber > 0 {
+				if len(args) > 0 || artifactURL != "" {
+					return fmt.Errorf("--pr cannot be combined with a local artifact path or --artifact-url")
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
 
 			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
@@ -254,10 +273,20 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 					if deviceType == "" {
 						return "", "", fmt.Errorf("device type not reported")
 					}
+					if prNumber > 0 {
+						return getPROTAInfoForDeviceType(prNumber, deviceType, storageMedium)
+					}
 					return getLatestOTAInfoForDeviceType(deviceType, storageMedium, nightly)
 				}()
 
 				if autoErr != nil {
+					// A --pr update must resolve to that PR's build or fail outright —
+					// falling back to the interactive (non-PR) device picker below would
+					// silently serve a stable/nightly artifact instead of the requested
+					// PR build.
+					if prNumber > 0 {
+						return autoErr
+					}
 					// Device type is missing or not in the update catalog — fall back to
 					// a device picker so the user can force the correct device type.
 					// The latest version (or latest nightly with --nightly) is then chosen
@@ -276,7 +305,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 					artifactURL = picked
 				} else {
 					if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
-						if osAlreadyCurrent(osVer, latestVer, nightly) {
+						if osUpdateShouldSkipAlreadyCurrent(prNumber, osVer, latestVer, nightly) {
 							fmt.Printf("OS is already at the latest version (%s).\n", osVer)
 							return nil
 						}
@@ -357,6 +386,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update to the image built by wendyos-builder PR #N (debug build; mutually exclusive with a positional artifact path and --artifact-url)")
 
 	return cmd
 }
