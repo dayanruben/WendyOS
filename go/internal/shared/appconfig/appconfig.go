@@ -158,6 +158,51 @@ type ServiceConfig struct {
 	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
+// ComponentConfig references one app of a fleet (WDY-1755/1776). The fleet
+// manifest describes topology, not app config: each component points at an app
+// directory (Path) whose own wendy.json defines the app's build/runtime config,
+// and lists the device Tags the app deploys to. There is no group/central
+// distinction — "central" is just a conventional tag.
+type ComponentConfig struct {
+	// Path is the app directory, relative to wendy-fleet.json. It must contain a
+	// wendy.json defining the app. Required.
+	Path string `json:"path"`
+	// Tags select the devices this component deploys to: a device matches when
+	// any tag matches its name (glob, e.g. "camera-*"). Required, non-empty.
+	Tags []string `json:"tags"`
+	// Expose declares the endpoint this component serves, for cross-component
+	// discovery. Interim — WDY-1777 moves discovery to mDNS advertising.
+	Expose *ComponentExpose `json:"expose,omitempty"`
+	// Discovers wires another component's live endpoints into this one.
+	Discovers []DiscoverRef `json:"discovers,omitempty"`
+}
+
+// ComponentExpose declares the network endpoint a component serves so the
+// platform can advertise it for cross-device discovery. Named "expose" rather
+// than "service" to avoid collision with the multi-container Services map.
+type ComponentExpose struct {
+	Name string `json:"name,omitempty"`
+	Port int    `json:"port"`
+	Path string `json:"path,omitempty"`
+}
+
+// DiscoverRef wires one component's live endpoints into another. The resolved
+// peer list is injected into the consuming container as a JSON snapshot under
+// the env var named by As, plus a live discovery API under WENDY_DISCOVERY_URL.
+type DiscoverRef struct {
+	Component string `json:"component"`
+	As        string `json:"as"`
+}
+
+// DiscoveryURLEnvVar is the env var the platform auto-injects into any component
+// that declares a "discovers" entry, pointing at a local discovery API the app
+// can poll/subscribe to for live membership. It is reserved: a discovers[].as
+// may not reuse it.
+const DiscoveryURLEnvVar = "WENDY_DISCOVERY_URL"
+
+// envVarNamePattern matches a POSIX-portable environment variable name.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
 	AppID string `json:"appId"`
@@ -540,6 +585,126 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+
+	return nil
+}
+
+
+// FleetManifestFileName is the conventional filename for a fleet manifest — a
+// placement/topology file kept separate from a project's single-app wendy.json.
+const FleetManifestFileName = "wendy-fleet.json"
+
+// FleetManifest is the parsed wendy-fleet.json: which components (apps) the
+// fleet is made of and, for each, the device tags it deploys to. It is topology
+// only — each component's build/runtime config lives in its app's own
+// wendy.json — kept in a separate file from any single-app wendy.json.
+type FleetManifest struct {
+	// AppID is an optional fleet-level label; each app carries its own appId.
+	AppID      string                      `json:"appId,omitempty"`
+	Components map[string]*ComponentConfig `json:"components"`
+}
+
+// LoadFleetManifest reads and validates a wendy-fleet.json from disk.
+func LoadFleetManifest(path string) (*FleetManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFleetManifest(data)
+}
+
+// ParseFleetManifest parses and validates a fleet manifest from raw JSON.
+func ParseFleetManifest(data []byte) (*FleetManifest, error) {
+	var m FleetManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", FleetManifestFileName, err)
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// Validate checks a fleet manifest: each component references an app directory,
+// lists the device tags it deploys to, and any discovers wiring is resolvable.
+// Per-app build/runtime config is validated separately when the app's own
+// wendy.json is loaded.
+func (m *FleetManifest) Validate() error {
+	if len(m.Components) == 0 {
+		return fmt.Errorf("a fleet manifest must declare at least one component")
+	}
+
+	for name, comp := range m.Components {
+		if comp == nil {
+			return fmt.Errorf("components[%q]: must not be null", name)
+		}
+		if comp.Path == "" {
+			return fmt.Errorf("components[%q]: path is required (the app directory)", name)
+		}
+		if filepath.IsAbs(comp.Path) {
+			return fmt.Errorf("components[%q]: path must be relative", name)
+		}
+		if cleaned := filepath.Clean(comp.Path); strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("components[%q]: path must not contain '..' components", name)
+		}
+		if len(comp.Tags) == 0 {
+			return fmt.Errorf("components[%q]: at least one tag is required (the devices to deploy to)", name)
+		}
+		for i, tag := range comp.Tags {
+			if strings.TrimSpace(tag) == "" {
+				return fmt.Errorf("components[%q].tags[%d]: must not be empty", name, i)
+			}
+		}
+		if err := validateComponentExpose(name, comp.Expose); err != nil {
+			return err
+		}
+	}
+
+	// discovers wiring is validated in a second pass so it can reference any
+	// declared component regardless of map iteration order.
+	for name, comp := range m.Components {
+		for i, d := range comp.Discovers {
+			if d.Component == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: component is required", name, i)
+			}
+			target, ok := m.Components[d.Component]
+			if !ok {
+				return fmt.Errorf("components[%q].discovers[%d]: references unknown component %q", name, i, d.Component)
+			}
+			if target.Expose == nil {
+				return fmt.Errorf("components[%q].discovers[%d]: %q declares no \"expose\" endpoint to discover", name, i, d.Component)
+			}
+			if d.As == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: as (env var name) is required", name, i)
+			}
+			if d.As == DiscoveryURLEnvVar {
+				return fmt.Errorf("components[%q].discovers[%d]: as must not be %q (reserved, auto-injected)", name, i, DiscoveryURLEnvVar)
+			}
+			if !envVarNamePattern.MatchString(d.As) {
+				return fmt.Errorf("components[%q].discovers[%d]: as %q is not a valid environment variable name", name, i, d.As)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateComponentExpose checks an optional exposed endpoint declaration.
+func validateComponentExpose(name string, e *ComponentExpose) error {
+	if e == nil {
+		return nil
+	}
+	if e.Port < 1 || e.Port > 65535 {
+		return fmt.Errorf("components[%q].expose.port must be between 1 and 65535, got %d", name, e.Port)
+	}
+	if e.Name != "" {
+		if err := ValidateServiceName(e.Name); err != nil {
+			return fmt.Errorf("components[%q].expose.name: %w", name, err)
+		}
+	}
+	if e.Path != "" && !strings.HasPrefix(e.Path, "/") {
+		return fmt.Errorf("components[%q].expose.path must start with '/', got %q", name, e.Path)
+	}
 	return nil
 }
 
@@ -695,6 +860,22 @@ func ValidateJSON(data []byte) []string {
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
+			}
+		}
+	}
+
+	// Validate component-level entitlements and frameworks for fleet manifests.
+	if componentsRaw, ok := raw["components"]; ok && len(componentsRaw) > 0 {
+		var componentEntries map[string]json.RawMessage
+		if err := json.Unmarshal(componentsRaw, &componentEntries); err == nil {
+			for name, compRaw := range componentEntries {
+				var comp map[string]json.RawMessage
+				if err := json.Unmarshal(compRaw, &comp); err != nil {
+					continue
+				}
+				prefix := fmt.Sprintf("components[%q].entitlement", name)
+				warnings = append(warnings, validateEntitlementsJSON(comp["entitlements"], prefix)...)
+				warnings = append(warnings, validateFrameworksJSON(comp["frameworks"], fmt.Sprintf("components[%q].frameworks", name))...)
 			}
 		}
 	}

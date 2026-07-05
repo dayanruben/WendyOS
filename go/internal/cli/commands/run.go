@@ -479,6 +479,10 @@ type runOptions struct {
 	keepGoing            bool
 	maxConcurrency       int
 	userArgs             []string
+	// env are extra KEY=VALUE environment variables injected into the container
+	// at create time (CreateContainerRequest.Env). Used by fleet deploys to wire
+	// cross-component discovery (e.g. WENDY_FLEET_PEERS) into a component.
+	env []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
@@ -1003,7 +1007,9 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
-		Env:           resolveServiceEnv(appCfg),
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env:           append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1525,7 +1531,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
-		Env:           resolveServiceEnv(appCfg),
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env:           append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
