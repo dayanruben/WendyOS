@@ -1519,6 +1519,9 @@ func openOSImageStream(deviceKey string, img *imageInfo) (*imageStream, error) {
 	if isGzipFile(cachePath) {
 		return streamGzipImage(cachePath)
 	}
+	if isZstdFile(cachePath) {
+		return streamZstdImage(cachePath)
+	}
 	return openRawImageStream(cachePath)
 }
 
@@ -1531,6 +1534,9 @@ func openLocalImageStream(imagePath string) (*imageStream, error) {
 	}
 	if isGzipFile(imagePath) {
 		return streamGzipImage(imagePath)
+	}
+	if isZstdFile(imagePath) {
+		return streamZstdImage(imagePath)
 	}
 	return openRawImageStream(imagePath)
 }
