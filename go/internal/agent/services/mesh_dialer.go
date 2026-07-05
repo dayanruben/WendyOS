@@ -31,7 +31,26 @@ const (
 	// the cloud relay; the outcome cache keeps repeat dials from re-paying it.
 	lanBudget   = 1 * time.Second
 	lanCacheTTL = 60 * time.Second
+
+	// meshDialTarget is the fixed gRPC target used for every LAN peer dial. The
+	// peer's real address is supplied out-of-band by meshDialContextDialer, so a
+	// resolved IP:port — including an IPv6 zone id such as "%wlan0" — is handed to
+	// net.Dialer verbatim and never flows through gRPC's target URL parser, which
+	// rejects the "%" zone separator as an invalid percent-escape (the failure that
+	// silently forced every zoned-IPv6 LAN dial onto the cloud relay).
+	meshDialTarget = "passthrough:///mesh-peer"
 )
+
+// meshDialContextDialer returns a gRPC dialer that connects to hostport
+// verbatim via the standard library, which is the only component that
+// understands IPv6 zone ids. hostport is the address MeshDialer resolved from
+// mDNS (a net.JoinHostPort result). The gRPC-supplied target argument is
+// ignored — meshDialTarget is a placeholder authority only.
+func meshDialContextDialer(hostport string) func(context.Context, string) (net.Conn, error) {
+	return func(ctx context.Context, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", hostport)
+	}
+}
 
 // meshIdentity is the dialer's mTLS asset identity plus broker coordinates,
 // held as one value behind MeshDialer.mu so every dial reads a consistent
@@ -250,7 +269,9 @@ func (d *MeshDialer) meshDialLAN(ctx context.Context, hostport string, deviceID 
 	if err != nil {
 		return nil, fmt.Errorf("mesh: client TLS config: %w", err)
 	}
-	cc, err := grpc.NewClient(hostport, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	cc, err := grpc.NewClient(meshDialTarget,
+		grpc.WithContextDialer(meshDialContextDialer(hostport)),
+		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	if err != nil {
 		return nil, err
 	}

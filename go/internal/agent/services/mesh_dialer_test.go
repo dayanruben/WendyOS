@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -539,5 +540,37 @@ func TestStreamNetConnInboundHalfCloseKeepsWrites(t *testing.T) {
 	stream.mu.Unlock()
 	if closeSends == 0 {
 		t.Fatal("CloseWrite did not call closeSend on the stream")
+	}
+}
+
+func TestMeshDialTargetCarriesNoAddress(t *testing.T) {
+	// The fixed gRPC target must embed no peer address: the address (which may
+	// contain an IPv6 zone "%") is supplied via the context dialer instead, so
+	// it never reaches gRPC's URL parser.
+	if !strings.HasPrefix(meshDialTarget, "passthrough:///") {
+		t.Fatalf("meshDialTarget must use the passthrough resolver, got %q", meshDialTarget)
+	}
+	if strings.ContainsAny(meshDialTarget, "%[") {
+		t.Fatalf("meshDialTarget must not embed an address/zone, got %q", meshDialTarget)
+	}
+}
+
+func TestMeshDialContextDialerDialsVerbatim(t *testing.T) {
+	// The dialer must connect to the exact hostport it was given, via the
+	// standard library (the only thing that understands IPv6 zone ids), and
+	// must ignore the gRPC target argument.
+	for _, host := range []string{"127.0.0.1", "[::1]"} {
+		ln, err := net.Listen("tcp", host+":0")
+		if err != nil {
+			t.Skipf("cannot listen on %s (unavailable in this env): %v", host, err)
+		}
+		dialer := meshDialContextDialer(ln.Addr().String())
+		conn, err := dialer(context.Background(), "grpc-target-should-be-ignored")
+		if err != nil {
+			ln.Close()
+			t.Fatalf("dialer(%s) error: %v", ln.Addr(), err)
+		}
+		conn.Close()
+		ln.Close()
 	}
 }
