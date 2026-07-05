@@ -148,6 +148,14 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 // Apps deployed with the default policy (unless-stopped) come back; apps
 // deployed with --no-restart, and apps the user explicitly stopped, stay down.
 func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
+	// Warm the isolation/service caches from persisted labels before anything
+	// starts a container: after a reboot these in-memory caches are empty, and
+	// StartContainer would otherwise skip CNI networking + mesh egress for
+	// isolated apps. Optional capability, mirroring GroupRestarter.
+	if r, ok := m.containerd.(services.AppStateRebuilder); ok {
+		r.RebuildAppStateCaches(ctx)
+	}
+
 	// One-time upgrade back-fill: apps stopped under an older agent carry no
 	// stopped-by-user mark, so without this the first post-upgrade boot would
 	// resurrect them. Runs once (persistent marker); must precede the listing

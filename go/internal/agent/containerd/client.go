@@ -279,6 +279,53 @@ func rebuildCachesFromLabels(containerLabels []map[string]string) (
 	return isolation, servicesByApp
 }
 
+// RebuildAppStateCaches repopulates the appIsolation and appServices caches
+// from persisted container labels. The maps are otherwise written only at
+// container-create time, so after an agent restart (reboot) they start empty
+// and StartContainer skips isolated-container wiring (CNI, /etc/hosts, mesh
+// egress). Best-effort: any failure logs and returns without blocking boot
+// recovery. Idempotent — merges into the caches, so it is safe to call more
+// than once and never clobbers a concurrently-created live entry.
+func (c *Client) RebuildAppStateCaches(ctx context.Context) {
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("rebuild app-state caches: listing containers failed", zap.Error(err))
+		return
+	}
+
+	// Read labels outside the lock — Info() is containerd I/O.
+	labelSets := make([]map[string]string, 0, len(ctrs))
+	for _, ctr := range ctrs {
+		info, infoErr := ctr.Info(ctx)
+		if infoErr != nil {
+			c.logger.Warn("rebuild app-state caches: reading container info failed",
+				zap.String("id", ctr.ID()), zap.Error(infoErr))
+			continue
+		}
+		labelSets = append(labelSets, info.Labels)
+	}
+
+	isolation, servicesByApp := rebuildCachesFromLabels(labelSets)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.appIsolation == nil {
+		c.appIsolation = make(map[string]string)
+	}
+	for appID, iso := range isolation {
+		c.appIsolation[appID] = iso
+	}
+	if c.appServices == nil {
+		c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
+	}
+	for appID, svcs := range servicesByApp {
+		c.appServices[appID] = svcs
+	}
+	c.logger.Info("Rebuilt app-state caches from labels",
+		zap.Int("apps_isolation", len(isolation)), zap.Int("apps_services", len(servicesByApp)))
+}
+
 // ListLayers walks the content store and returns metadata for all layer blobs.
 func (c *Client) ListLayers(ctx context.Context) ([]*agentpb.LayerHeader, error) {
 	ctx = c.withNamespace(ctx)

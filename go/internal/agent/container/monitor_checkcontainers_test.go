@@ -26,6 +26,7 @@ type fakeContainerd struct {
 	started       chan string // signalled (buffered) on each StartContainer
 	stoppedByUser map[string]bool
 	migrateCalls  int
+	rebuildCalls  int
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -51,6 +52,12 @@ func (f *fakeContainerd) MigrateStoppedByUserOnce(ctx context.Context) error {
 	defer f.mu.Unlock()
 	f.migrateCalls++
 	return nil
+}
+
+func (f *fakeContainerd) RebuildAppStateCaches(ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rebuildCalls++
 }
 
 func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -206,6 +213,18 @@ func TestReconcileBootContainers_RunsMigration(t *testing.T) {
 	fake.mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("MigrateStoppedByUserOnce called %d times, want 1", calls)
+	}
+}
+
+func TestReconcileBootContainers_RebuildsCaches(t *testing.T) {
+	f := &fakeContainerd{}
+	m := newMonitorWithClient(f)
+	m.ReconcileBootContainers(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rebuildCalls != 1 {
+		t.Fatalf("RebuildAppStateCaches called %d times, want 1", f.rebuildCalls)
 	}
 }
 

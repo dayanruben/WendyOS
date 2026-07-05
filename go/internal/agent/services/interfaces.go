@@ -123,6 +123,18 @@ type GroupRestarter interface {
 	RestartGroup(ctx context.Context, appID string) (map[string]<-chan ContainerOutput, error)
 }
 
+// AppStateRebuilder is the optional capability a ContainerdClient may provide to
+// rebuild its in-memory per-app caches (isolation mode + service graph) from
+// persisted container labels. ReconcileBootContainers type-asserts for it and
+// calls it before listing boot containers, so the caches are warm before any
+// StartContainer runs (an empty appIsolation after a reboot would otherwise make
+// StartContainer skip CNI networking + mesh egress for isolated apps). Kept
+// separate from ContainerdClient so the large interface and its mocks stay
+// untouched, mirroring GroupRestarter.
+type AppStateRebuilder interface {
+	RebuildAppStateCaches(ctx context.Context)
+}
+
 // Restart policy constants mirror container.RestartPolicy values and are used
 // as the policy argument to ContainerMonitorRegistrar.Register.
 const (
