@@ -4,10 +4,13 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -122,4 +125,63 @@ func buildSudoReexecArgs(self string, origArgs []string) []string {
 		args = append(args, "--device-type", thorDeviceType)
 	}
 	return args
+}
+
+// thorElevationReason is the one-line explanation printed just before the sudo
+// re-exec, tailored per platform.
+func thorElevationReason(goos string) string {
+	if goos == "darwin" {
+		return "Flashing a Jetson AGX Thor needs administrator access — it talks to the board's USB recovery device directly, which requires root on macOS."
+	}
+	return "Flashing a Jetson AGX Thor needs USB access to the board's recovery device.\n  Tip: install the udev rule once to skip sudo next time — `wendy device usb-setup`."
+}
+
+// errThorNeedsRoot is returned when a Thor flash needs elevation but cannot obtain
+// it here (no interactive terminal to prompt on, or no sudo on PATH). It carries
+// the exact command to re-run, plus the Linux udev alternative.
+func errThorNeedsRoot() error {
+	msg := "flashing a Jetson AGX Thor requires administrator access — it opens the board's USB recovery device directly, which needs root.\n" +
+		"  Re-run:  sudo wendy install --device-type " + thorDeviceType
+	if runtime.GOOS == "linux" {
+		msg += "\n  (or install the udev rule once with `wendy device usb-setup`, then no sudo)"
+	}
+	return errors.New(msg)
+}
+
+// ensureThorRootAccess guarantees the Thor flash has the root privileges it needs
+// to open the USB recovery device. When elevation is required and possible it
+// prints a reason and re-execs the command under sudo, replacing this process
+// (single-process, so the stage-2 abort-guard and signal handling are unchanged) —
+// it does not return in that case. It returns nil when the caller may proceed
+// (already root, or Linux udev access), or errThorNeedsRoot when elevation is
+// needed but impossible here.
+func ensureThorRootAccess() error {
+	switch thorElevationDecision(
+		runtime.GOOS,
+		os.Geteuid(),
+		hasWendyJetsonUdevRule(wendyJetsonUdevRulePaths),
+		isInteractiveTerminal(),
+	) {
+	case thorElevationProceed:
+		return nil
+	case thorElevationFailEarly:
+		return errThorNeedsRoot()
+	}
+
+	// thorElevationReexec: re-run the whole command under sudo.
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return errThorNeedsRoot() // no sudo to elevate with — instruct instead of failing to exec
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving wendy executable path for sudo re-exec: %w", err)
+	}
+
+	fmt.Println(thorElevationReason(runtime.GOOS))
+	fmt.Println("Re-running under sudo (you may be prompted for your password)…")
+
+	argv := append([]string{"sudo"}, buildSudoReexecArgs(self, os.Args[1:])...)
+	// syscall.Exec replaces this process image; on success it never returns.
+	return fmt.Errorf("re-executing under sudo: %w", syscall.Exec(sudo, argv, os.Environ()))
 }

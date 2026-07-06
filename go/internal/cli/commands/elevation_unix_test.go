@@ -74,6 +74,29 @@ func TestHasDeviceTypeFlag(t *testing.T) {
 	}
 }
 
+func TestErrThorNeedsRoot(t *testing.T) {
+	err := errThorNeedsRoot()
+	if err == nil {
+		t.Fatal("errThorNeedsRoot() must return a non-nil error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "administrator access") {
+		t.Errorf("error should explain the privilege need: %q", msg)
+	}
+	if !strings.Contains(msg, "sudo wendy install --device-type "+thorDeviceType) {
+		t.Errorf("error should give the exact re-run command: %q", msg)
+	}
+}
+
+func TestThorElevationReason(t *testing.T) {
+	if !strings.Contains(thorElevationReason("darwin"), "root on macOS") {
+		t.Errorf("darwin reason should mention macOS root: %q", thorElevationReason("darwin"))
+	}
+	if !strings.Contains(thorElevationReason("linux"), "wendy device usb-setup") {
+		t.Errorf("linux reason should mention the udev-setup tip: %q", thorElevationReason("linux"))
+	}
+}
+
 func TestBuildSudoReexecArgs(t *testing.T) {
 	self := "/usr/local/bin/wendy"
 
