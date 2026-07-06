@@ -1072,6 +1072,7 @@ func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stre
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}
+	s.applyRestartStatus(containers)
 
 	for _, c := range containers {
 		if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
@@ -1079,6 +1080,62 @@ func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stre
 		}
 	}
 	return nil
+}
+
+// applyRestartStatus merges the container monitor's live restart bookkeeping
+// into a containerd container listing. containerd only knows whether a task is
+// running right now, so a crash-looping app — dead in the ~10 s gaps between
+// automatic restarts — reads as an ordinary STOPPED with failure_count 0
+// (WDY-1826). This fills in failure_count and upgrades STOPPED to
+// CRASH_LOOPING for any app the monitor has already restarted and will keep
+// restarting. No-op when the monitor doesn't expose its bookkeeping.
+func (s *ContainerService) applyRestartStatus(containers []*agentpb.AppContainer) {
+	provider, ok := s.monitor.(RestartStatusProvider)
+	if !ok {
+		return
+	}
+	statuses := provider.RestartStatuses()
+	if len(statuses) == 0 {
+		return
+	}
+
+	for _, c := range containers {
+		var failures int
+		crashLooping := false
+
+		// Monitor state is keyed per container: bare appID for single-container
+		// apps, "{appID}_{serviceName}" for named services (see
+		// containerd.ContainerName). Aggregate across an app's members.
+		if svcs := c.GetServices(); len(svcs) > 0 {
+			for _, svc := range svcs {
+				name := c.GetAppName()
+				if svc.GetName() != "" {
+					name = c.GetAppName() + "_" + svc.GetName()
+				}
+				st, tracked := statuses[name]
+				if !tracked {
+					continue
+				}
+				failures += st.FailureCount
+				if st.WillRestart && st.FailureCount > 0 && svc.GetRunningState() != agentpb.AppRunningState_RUNNING {
+					crashLooping = true
+					svc.RunningState = agentpb.AppRunningState_CRASH_LOOPING
+				}
+			}
+		} else if st, tracked := statuses[c.GetAppName()]; tracked {
+			failures = st.FailureCount
+			crashLooping = st.WillRestart && st.FailureCount > 0 &&
+				c.GetRunningState() != agentpb.AppRunningState_RUNNING
+		}
+
+		c.FailureCount = uint32(failures) //nolint:gosec // failure counts are small non-negative ints
+		// Only upgrade the aggregate when the app isn't running: a group with one
+		// healthy and one crash-looping service stays RUNNING at the top level,
+		// with the crash loop visible on the service entry and failure_count.
+		if crashLooping && c.GetRunningState() == agentpb.AppRunningState_STOPPED {
+			c.RunningState = agentpb.AppRunningState_CRASH_LOOPING
+		}
+	}
 }
 
 // StreamMCP proxies a bidirectional gRPC stream to the container's MCP TCP port.

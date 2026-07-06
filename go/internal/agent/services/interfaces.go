@@ -151,6 +151,30 @@ type ContainerMonitorRegistrar interface {
 	ClearExplicitStop(appName string)
 }
 
+// RestartStatus is the container monitor's live bookkeeping for one monitored
+// container, keyed the same way the monitor registers state (bare appID, or
+// "{appID}_{serviceName}" for services-map apps).
+type RestartStatus struct {
+	// FailureCount is how many automatic restarts the monitor has performed.
+	FailureCount int
+	// WillRestart reports that the restart policy is still active for this
+	// container (not explicitly stopped, retry budget not exhausted): if the
+	// container is stopped, the monitor will start it again. Combined with
+	// FailureCount > 0 and a stopped container this is a crash loop.
+	WillRestart bool
+}
+
+// RestartStatusProvider is the optional capability a ContainerMonitorRegistrar
+// may provide to expose its restart bookkeeping. ListContainers type-asserts
+// for it so a crash-looping app can be reported as CRASH_LOOPING with its
+// failure count instead of a plain STOPPED (WDY-1826). A separate interface so
+// existing registrar fakes stay untouched (same pattern as GroupRestarter).
+type RestartStatusProvider interface {
+	// RestartStatuses returns the status of every monitored container, keyed by
+	// the monitored container name.
+	RestartStatuses() map[string]RestartStatus
+}
+
 type ContainerOutput struct {
 	Stdout []byte
 	Stderr []byte

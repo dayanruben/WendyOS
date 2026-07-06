@@ -362,7 +362,10 @@ func containerExitDetail(ctx context.Context, conn *grpcclient.AgentConnection, 
 		if c == nil || !strings.EqualFold(c.GetAppName(), appID) {
 			continue
 		}
-		if c.GetRunningState() == agentpb.AppRunningState_STOPPED {
+		// Anything that isn't running counts — a crash-looping app (WDY-1826)
+		// reports CRASH_LOOPING, not STOPPED, and its exit detail is exactly
+		// what a readiness failure needs to explain itself.
+		if c.GetRunningState() != agentpb.AppRunningState_RUNNING {
 			if s := terminationSummary(c.GetTerminationReason(), c.GetExitCode()); s != "" {
 				return "container " + s
 			}
