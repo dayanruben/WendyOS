@@ -137,6 +137,23 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	}
 }
 
+// RestartStatuses returns the monitor's per-container restart bookkeeping,
+// keyed by the monitored container name (bare appID, or "{appID}_{serviceName}"
+// for services-map apps). It implements services.RestartStatusProvider so the
+// container list can report a crash-looping app truthfully instead of STOPPED.
+func (m *ContainerMonitor) RestartStatuses() map[string]services.RestartStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]services.RestartStatus, len(m.states))
+	for name, state := range m.states {
+		out[name] = services.RestartStatus{
+			FailureCount: state.FailureCount,
+			WillRestart:  m.shouldRestart(state),
+		}
+	}
+	return out
+}
+
 // ReconcileBootContainers brings apps back after a device boot. containerd
 // keeps container definitions across a reboot but loses their tasks, so without
 // this every app sits stopped until manually started. It registers each

@@ -87,6 +87,12 @@ func (a *containerMonitorAdapter) ClearExplicitStop(appName string) {
 	a.m.ClearExplicitStop(appName)
 }
 
+// RestartStatuses exposes the monitor's restart bookkeeping so ListContainers
+// can report crash-looping apps truthfully (services.RestartStatusProvider).
+func (a *containerMonitorAdapter) RestartStatuses() map[string]services.RestartStatus {
+	return a.m.RestartStatuses()
+}
+
 func main() {
 	if handled, code := handleUtilityCommand(os.Args[1:]); handled {
 		os.Exit(code)
