@@ -145,10 +145,23 @@ For Raspberry Pi and Orin-class Jetson devices, the install path writes a disk i
 Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor` downloads the Thor flashpack, asks you to put the board into USB recovery mode, scans for the recovery-mode Jetson, then performs:
 
 1. **Stage 1 RCM boot** — sends the Thor recovery payload over USB.
-2. **Stage 2 partition flash** — flashes QSPI and the internal NVMe through the Thor flashing gadget.
+2. **Stage 2 partition flash** — flashes QSPI and the internal NVMe through the Thor flashing gadget. Expect around 25 minutes: USB transfers and device-side writes are deliberately serialized (concurrent USB access could crash the flash tooling, most notably on macOS), so this stage does not parallelize.
 3. **Power-cycle** — after a successful flash, power-cycle the Thor out of recovery mode to boot WendyOS.
 
 The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS and Linux; Windows returns an unsupported-platform error.
+
+### Stage 2 flash errors and recovery
+
+A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI prints a recovery guide when that is possible. In all of the cases below, the fix ends the same way: power-cycle the Thor back into USB recovery mode and re-run `wendy install`.
+
+| Error | Meaning |
+|---|---|
+| `No flash progress for 15m0s — assuming bootburn is stuck and aborting it.` | The stall watchdog killed a flash that moved no data and logged nothing for 15 minutes (a wedged flash would otherwise hang forever). |
+| `the wendy flash tooling crashed mid-write` | A flash helper process crashed; the full crash report is in the flash log. |
+| `a device-side write command failed mid-flash` | A write on the Thor itself failed (bad image, full or failing NVMe) — check the flash log's `Command failed` line for the specific cause before retrying. |
+| `USB access denied opening the flashing gadget` | Linux: install the wendy udev rule (USB vendor 0955) or run with sudo. macOS: quit whatever holds the gadget (e.g. `adb kill-server`). |
+
+Every failure prints the path of the full flash log (`thor-flash-<timestamp>.log`), which contains the complete tooling output.
 
 ### WiFi pre-configuration
 

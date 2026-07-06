@@ -16,21 +16,32 @@ import (
 
 // usbLockPath returns the flock file that serializes USB access across shim
 // processes: the one the parent flasher names in EnvADBLock, or a well-known
-// per-boot fallback. The fallback matters because setupADBShim permanently
-// links the cached flashpack bundle's adb to wendy, so shims can be spawned
-// outside flasher.Run's environment (e.g. re-running NVIDIA's scripts against
-// the cached bundle by hand) — those must serialize too, or the libusb claim
-// race returns.
+// fallback. The fallback matters because setupADBShim permanently links the
+// cached flashpack bundle's adb to wendy, so shims can be spawned outside
+// flasher.Run's environment (e.g. re-running NVIDIA's scripts against the
+// cached bundle by hand) — those must serialize too, or the libusb claim race
+// returns. It lives in the user's own cache dir rather than the world-writable
+// system temp dir, so on a shared host another user cannot pre-plant a symlink
+// or squat the well-known name (flashing often runs under sudo); a per-uid
+// temp-dir name is the last resort when the cache dir is unavailable.
 func usbLockPath() string {
 	if p := os.Getenv(flasher.EnvADBLock); p != "" {
 		return p
 	}
-	return filepath.Join(os.TempDir(), "wendy-adb-usb.lock")
+	if dir, err := os.UserCacheDir(); err == nil {
+		d := filepath.Join(dir, "wendy")
+		if os.MkdirAll(d, 0o755) == nil {
+			return filepath.Join(d, "adb-usb.lock")
+		}
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("wendy-adb-usb-%d.lock", os.Getuid()))
 }
 
-// openLockFile opens (creating if needed) the USB lock file.
+// openLockFile opens (creating if needed) the USB lock file. Read-only — flock
+// needs no write access, so the handle can't lose data on Close — and
+// O_NOFOLLOW, so a pre-planted symlink is refused instead of followed.
 func openLockFile() (*os.File, error) {
-	return os.OpenFile(usbLockPath(), os.O_RDWR|os.O_CREATE, 0o644)
+	return os.OpenFile(usbLockPath(), os.O_RDONLY|os.O_CREATE|unix.O_NOFOLLOW, 0o600)
 }
 
 // flockFile applies the flock operation how to f, retrying EINTR: a signal

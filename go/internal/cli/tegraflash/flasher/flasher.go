@@ -282,6 +282,11 @@ func Run(ctx context.Context, opts Options) error {
 				}
 				if stall.observe(now, pushAccum+lastPush, logSize) {
 					fmt.Fprintf(out, "No flash progress for %v — assuming bootburn is stuck and aborting it.\n", stallTimeout)
+					// Record the kill in the persisted flash log too: the
+					// progress stream is transient, and a post-mortem must be
+					// able to tell a watchdog kill from bootburn dying on its
+					// own.
+					fmt.Fprintf(logFile, "\n[wendy] stall watchdog: no push bytes or log output for %v after %s elapsed (%d bytes pushed) — killing bootburn\n", stallTimeout, elapsed(start), maxBytes)
 					stalledErr = fmt.Errorf("flash made no progress for %v (bootburn killed)", stallTimeout)
 					killProcessGroup(cmd)
 				}
@@ -312,11 +317,10 @@ func flashFailure(out io.Writer, logPath, took string, maxBytes int64, werr erro
 // before wedging) — is always the cause of this failure. Best-effort: an
 // unrecognized failure points the user at the log.
 func classifyFlashFailure(logPath string) string {
-	data, err := os.ReadFile(logPath)
+	full, err := readLogTail(logPath, maxClassifyLogBytes)
 	if err != nil {
 		return "see the log for details"
 	}
-	full := string(data)
 	tail := lastLines(full, 60)
 	switch {
 	// Check access errors before the generic timeout: a denied gadget also times
@@ -422,6 +426,28 @@ func summarizeFlashPlan(fileToFlash string) flashPlan {
 
 // elapsed formats time since start to whole seconds.
 func elapsed(start time.Time) time.Duration { return time.Since(start).Round(time.Second) }
+
+// maxClassifyLogBytes caps how much of the flash log classification loads.
+// Real flash logs measure tens of KB; the cap only guards against a runaway
+// bootburn producing an unboundedly large log. When over the cap the newest
+// bytes win — failure evidence accumulates at the end.
+const maxClassifyLogBytes = 32 << 20
+
+// readLogTail reads up to the last max bytes of the file at path.
+func readLogTail(path string, max int64) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() > max {
+		if _, err := f.Seek(fi.Size()-max, io.SeekStart); err != nil {
+			return "", err
+		}
+	}
+	data, err := io.ReadAll(f)
+	return string(data), err
+}
 
 // lastLines returns the last n lines of s (for error context).
 func lastLines(s string, n int) string {

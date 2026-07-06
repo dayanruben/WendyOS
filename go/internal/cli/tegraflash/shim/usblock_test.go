@@ -3,6 +3,7 @@
 package shim
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,17 +70,35 @@ func TestAcquireUSBLockCreatesFile(t *testing.T) {
 	}
 }
 
-// TestUSBLockPath verifies the env var wins and the env-less fallback lands on
-// a well-known temp path — shims spawned outside flasher.Run (the cached
-// bundle's adb is permanently linked to wendy) must still serialize.
+// TestUSBLockPath verifies the env var wins and the env-less fallback lands in
+// the user's own cache dir — shims spawned outside flasher.Run (the cached
+// bundle's adb is permanently linked to wendy) must still serialize, and the
+// world-writable system temp dir is only the last resort (another user could
+// pre-plant its well-known name).
 func TestUSBLockPath(t *testing.T) {
 	t.Setenv(flasher.EnvADBLock, "/p/lock")
 	if got := usbLockPath(); got != "/p/lock" {
 		t.Errorf("usbLockPath with env = %q, want /p/lock", got)
 	}
+
+	// Env unset, cache dir available: the lock lives under the user cache dir.
+	home := t.TempDir()
 	t.Setenv(flasher.EnvADBLock, "")
-	want := filepath.Join(os.TempDir(), "wendy-adb-usb.lock")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", "") // linux: force UserCacheDir onto HOME
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir with HOME set: %v", err)
+	}
+	want := filepath.Join(cache, "wendy", "adb-usb.lock")
 	if got := usbLockPath(); got != want {
-		t.Errorf("usbLockPath fallback = %q, want %q", got, want)
+		t.Errorf("usbLockPath cache fallback = %q, want %q", got, want)
+	}
+
+	// No cache dir resolvable: last resort is a per-uid temp path.
+	t.Setenv("HOME", "")
+	want = filepath.Join(os.TempDir(), fmt.Sprintf("wendy-adb-usb-%d.lock", os.Getuid()))
+	if got := usbLockPath(); got != want {
+		t.Errorf("usbLockPath temp fallback = %q, want %q", got, want)
 	}
 }
