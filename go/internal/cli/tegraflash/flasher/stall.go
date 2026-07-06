@@ -3,13 +3,16 @@ package flasher
 import "time"
 
 // stallTimeout is how long Run tolerates neither push bytes nor flash-log
-// output changing before it declares bootburn wedged and kills it. The whole
-// flash takes ~15 minutes; the longest legitimate joint-silent window is one
-// device-side op with the peer shim lock-blocked (a multi-GiB blkdiscard, md5
-// verify, or the end-of-flash resize2fs — single-digit minutes on NVMe), so 10
-// minutes leaves ~3x margin while still bounding a genuine deadlock (e.g.
-// bootburn's pusher blocked forever on its writer queue after the writer died).
-const stallTimeout = 10 * time.Minute
+// output changing before it declares bootburn wedged and kills it. Partition
+// writes are chunked (each 10 MiB chunk is a push, so progress keeps moving);
+// the only monolithic silent windows are single device-side ops with the peer
+// shim lock-blocked (a multi-GiB blkdiscard, md5 verify, or the end-of-flash
+// resize2fs — single-digit minutes on NVMe, measured within a ~23-minute total
+// flash). The costs are asymmetric: a genuine deadlock is permanent so a later
+// kill only delays the diagnosis, while a false kill interrupts partition
+// writes and can leave the device unbootable — so err well above the longest
+// legitimate window.
+const stallTimeout = 15 * time.Minute
 
 // stallDetector detects a wedged bootburn: neither the shim's push byte
 // counter nor the flash log has changed for a full window. Both signals go

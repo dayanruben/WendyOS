@@ -8,101 +8,78 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flasher"
 )
 
-func unlock(t *testing.T, f *os.File) {
-	t.Helper()
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_UN); err != nil {
-		t.Fatalf("unlock: %v", err)
-	}
-	f.Close()
-}
-
-// TestFlockPathSerializes verifies that a second flockPath (modeling a second
-// shim process — flock treats each open file description independently) signals
-// onWait, blocks while the first holds the lock, and acquires once released.
-func TestFlockPathSerializes(t *testing.T) {
+// TestAcquireUSBLockSerializes verifies that a second acquisition (modeling a
+// second shim process — flock treats each open file description independently)
+// blocks while the first holds the lock and acquires once released.
+func TestAcquireUSBLockSerializes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usb.lock")
+	t.Setenv(flasher.EnvADBLock, path)
 
-	first, err := flockPath(path, func() { t.Error("first flockPath should not wait") })
-	if err != nil {
-		t.Fatalf("first flockPath: %v", err)
-	}
+	release := acquireUSBLock()
 
-	waited := make(chan struct{})
-	acquired := make(chan *os.File)
-	errs := make(chan error, 1)
-	go func() {
-		f, err := flockPath(path, func() { close(waited) })
-		if err != nil {
-			errs <- err
-			return
-		}
-		acquired <- f
-	}()
+	acquired := make(chan func())
+	go func() { acquired <- acquireUSBLock() }()
 
-	select {
-	case <-waited:
-	case err := <-errs:
-		t.Fatalf("second flockPath: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("second flockPath never signaled it was waiting")
-	}
 	select {
 	case <-acquired:
-		t.Fatal("second flockPath acquired while the first still held the lock")
+		t.Fatal("second acquireUSBLock succeeded while the first still held the lock")
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	unlock(t, first)
+	release()
 	select {
-	case f := <-acquired:
-		unlock(t, f)
-	case err := <-errs:
-		t.Fatalf("second flockPath after release: %v", err)
+	case release2 := <-acquired:
+		release2()
 	case <-time.After(2 * time.Second):
-		t.Fatal("second flockPath did not acquire after the first released")
+		t.Fatal("second acquireUSBLock did not acquire after the first released")
 	}
 }
 
-func TestFlockPathCreatesFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "does-not-exist-yet.lock")
-	f, err := flockPath(path, nil)
-	if err != nil {
-		t.Fatalf("flockPath: %v", err)
+// TestTryAcquireUSBLock verifies the non-blocking variant: busy while a peer
+// holds the lock, acquired once it is free.
+func TestTryAcquireUSBLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usb.lock")
+	t.Setenv(flasher.EnvADBLock, path)
+
+	release := acquireUSBLock()
+	if _, busy := tryAcquireUSBLock(); !busy {
+		t.Fatal("tryAcquireUSBLock acquired a held lock")
 	}
-	defer unlock(t, f)
+
+	release()
+	release2, busy := tryAcquireUSBLock()
+	if busy {
+		t.Fatal("tryAcquireUSBLock reported busy on a free lock")
+	}
+	release2()
+}
+
+// TestAcquireUSBLockCreatesFile verifies the lock file is created on demand.
+func TestAcquireUSBLockCreatesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist-yet.lock")
+	t.Setenv(flasher.EnvADBLock, path)
+
+	release := acquireUSBLock()
+	defer release()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("lock file not created: %v", err)
 	}
 }
 
-// TestAcquireUSBLockNoEnv verifies the env-less no-op contract: callers outside
-// flasher.Run (no WENDY_ADB_LOCK) keep the old unserialized behavior.
-func TestAcquireUSBLockNoEnv(t *testing.T) {
+// TestUSBLockPath verifies the env var wins and the env-less fallback lands on
+// a well-known temp path — shims spawned outside flasher.Run (the cached
+// bundle's adb is permanently linked to wendy) must still serialize.
+func TestUSBLockPath(t *testing.T) {
+	t.Setenv(flasher.EnvADBLock, "/p/lock")
+	if got := usbLockPath(); got != "/p/lock" {
+		t.Errorf("usbLockPath with env = %q, want /p/lock", got)
+	}
 	t.Setenv(flasher.EnvADBLock, "")
-	release := acquireUSBLock()
-	if release == nil {
-		t.Fatal("release func is nil")
+	want := filepath.Join(os.TempDir(), "wendy-adb-usb.lock")
+	if got := usbLockPath(); got != want {
+		t.Errorf("usbLockPath fallback = %q, want %q", got, want)
 	}
-	release() // must be callable
-}
-
-// TestAcquireUSBLockRelease verifies release actually unlocks: a fresh flock on
-// the same path succeeds immediately afterwards.
-func TestAcquireUSBLockRelease(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "usb.lock")
-	t.Setenv(flasher.EnvADBLock, path)
-
-	release := acquireUSBLock()
-	release()
-
-	f, err := flockPath(path, func() { t.Error("lock still held after release") })
-	if err != nil {
-		t.Fatalf("flockPath after release: %v", err)
-	}
-	unlock(t, f)
 }

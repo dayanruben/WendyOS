@@ -105,10 +105,15 @@ func waitForDevice() {
 	deadline := time.Now().Add(60 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		// Lock per attempt, not across the whole poll loop: bootburn can run
-		// wait-for-device around real push/shell work, and holding the lock
-		// for up to 60s would starve those ops.
-		release := acquireUSBLock()
+		// Never block on the USB lock here: bootburn wraps wait-for-device in
+		// its own `timeout`, which would SIGKILL a probe stuck behind a peer's
+		// long device-side op. A sibling shim holding the lock is actively
+		// mid-op with the flashing gadget, so the device is necessarily
+		// present — report success instead of probing.
+		release, busy := tryAcquireUSBLock()
+		if busy {
+			return
+		}
 		d, err := adb.Open()
 		if err == nil {
 			d.Close()
