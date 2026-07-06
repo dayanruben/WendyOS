@@ -105,11 +105,17 @@ func waitForDevice() {
 	deadline := time.Now().Add(60 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
+		// Lock per attempt, not across the whole poll loop: bootburn can run
+		// wait-for-device around real push/shell work, and holding the lock
+		// for up to 60s would starve those ops.
+		release := acquireUSBLock()
 		d, err := adb.Open()
 		if err == nil {
 			d.Close()
+			release()
 			return
 		}
+		release()
 		// Surface why each attempt failed; bootburn's `timeout` may SIGKILL us
 		// before the loop ends, so log as we go rather than only at the end.
 		lastErr = err
@@ -136,6 +142,10 @@ func doPush(rest []string) {
 		os.Exit(1)
 	}
 	defer file.Close()
+	// Serialize the claim + push against concurrent shims. LIFO defers release
+	// the USB interface (d.Close) before unblocking the peer (release).
+	release := acquireUSBLock()
+	defer release()
 	d := openADB()
 	defer d.Close()
 	// Match adb: pushing a file to a directory writes <dir>/<basename>, and the
@@ -191,6 +201,12 @@ func (p *progressReader) flush() {
 }
 
 func doShell(rest []string) {
+	// The lock is held for the whole command, including long device-side ops
+	// (blkdiscard, nvdd, resize2fs): the ADB transport is a single multiplexed
+	// connection on one exclusively-claimed interface, so there is nothing safe
+	// for a peer shim to do concurrently anyway.
+	release := acquireUSBLock()
+	defer release()
 	d := openADB()
 	defer d.Close()
 	out, err := d.Shell(strings.Join(rest, " "))
@@ -208,6 +224,9 @@ func doShell(rest []string) {
 
 // runLsusb supports `lsusb -d <vid>:` (the only form bootburn uses, in
 // CheckUSBServiceInit) and exits 0 iff a USB device with that vendor id is present.
+// It deliberately takes no USB lock: VendorPresent only enumerates descriptors
+// (its OpenDevices filter always returns false, so no device is opened or
+// claimed), and enumeration is safe alongside another shim's claim.
 func runLsusb(args []string) {
 	vid := ""
 	for i := 0; i < len(args); i++ {
