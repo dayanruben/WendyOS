@@ -98,6 +98,8 @@ Use `--service <name>` to build and run only a specific service and its transiti
 
 See [Multi-Service Apps with `wendy.json`](../../../apps/wendy-services.md) for a full walkthrough.
 
+> **Note:** Every multi-service run rebuilds and re-pushes each service — the push-skip optimisation is currently inactive for multi-service deployments. See [Push-skip content verification](#push-skip-content-verification) for why.
+
 > **Headless Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Headless Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
 
 ## Compose projects
@@ -191,6 +193,23 @@ period.
 > **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
 
 Any value other than `auto`, `force`, or `off` is rejected with an error before the build starts.
+
+## Push-skip content verification
+
+When a detached run (`--detach`) finds that nothing has changed since the last successful deploy to this device, `wendy run` can skip the build and push entirely and just ensure the existing container is running. So this never leaves the device on stale or partial content, the skip is content-verified — it happens only when **all** of the following hold:
+
+1. The build inputs (context, Dockerfile/Containerfile, platform, and build-args) hash the same as the last deploy.
+2. A local deploy record for this app on this device exists and lists the image layer diff IDs that were deployed.
+3. The device confirms it still holds every one of those recorded layers.
+
+If any check fails — an older agent that cannot answer the layer query, a layer garbage-collected on the device, a partial push, or a locally rebuilt base image that never changed the input hash — `wendy run` falls back to a full build and push, recording fresh layer IDs on success.
+
+Deploy records written before this version carry no layer IDs, so they cannot be verified and never skip. In practice:
+
+- The first deploy after upgrading always does a full build and push.
+- A legacy record (or any record without verifiable layer IDs) is treated as unverifiable rather than skipped, so you see a full rebuild with unchanged inputs instead of a silent skip onto possibly-stale content.
+
+> **Note:** Push-skip is currently inactive for multi-service deployments. Registry-push content cannot be verified via layer diff IDs, so every multi-service run rebuilds and re-pushes each service; a registry-digest pre-check to restore the optimisation is planned. Setting `WENDY_PUSH_SKIP=0` disables the multi-service push-skip planner (it does not affect the single-service fast path above). Because that planner is inactive today, the override has no observable effect and is reserved for when multi-service push-skip returns.
 
 ## postStart hooks
 
