@@ -167,15 +167,23 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 }
 
 // planServicePushSkips decides, per service, whether its build+push can be
-// skipped because the build inputs are unchanged since the last successful push
-// to this device AND the device still has that service's container (so the image
-// is in the device registry). It returns the skip set and the freshly computed
-// per-service input hashes, so the caller can persist fingerprints for the
-// services it actually builds. Best-effort throughout: any error for a service
-// (or WENDY_PUSH_SKIP=0) just means "don't skip it". The single buildkitd content
-// store and the device registry are unaffected; a wrong "present" guess at worst
-// surfaces as a normal create-time pull failure (hardened with a registry digest
-// check in a follow-up, WDY-1692).
+// skipped. A skip is only permitted when ALL of the following hold: the build
+// inputs are unchanged since the last successful push to this device, the
+// device still has that service's container, AND the device's content store
+// still holds every layer we recorded pushing (deviceHasAllLayers). It returns
+// the skip set and the freshly computed per-service input hashes, so the caller
+// can persist fingerprints for the services it actually builds.
+//
+// The layer-presence check is the fix for WDY-1824: an unchanged input hash and
+// a present container do not prove the device still has the pushed image content
+// (blobs can be GC'd, a push can half-complete, or a rebuilt local base image
+// never changes the hash), so skipping on those alone could leave the device
+// running a stale/partial image while the CLI reports success. Fingerprints
+// written by a push path that doesn't surface diff IDs carry none, so
+// deviceHasAllLayers fails closed and the service is rebuilt+pushed.
+//
+// Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
+// means "don't skip it".
 func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
@@ -201,6 +209,12 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 			continue
 		}
 		if !present[strings.ToLower(multiServiceContainerName(appID, name))] {
+			continue
+		}
+		// Container presence is not enough: confirm the device still holds the
+		// image content we pushed. Without this a skip can leave a stale/partial
+		// image running while we report success (WDY-1824).
+		if !deviceHasAllLayers(ctx, conn, fp.LayerDiffIDs) {
 			continue
 		}
 		skip[name] = true
