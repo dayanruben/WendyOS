@@ -127,6 +127,31 @@ func buildSudoReexecArgs(self string, origArgs []string) []string {
 	return args
 }
 
+// pinCacheDirEnv returns environ with XDG_CACHE_HOME set to cacheBase so the
+// sudo-elevated re-exec resolves the same wendy cache directory — and reuses the
+// already-downloaded flashpack — even when a distro's sudoers forces HOME=/root
+// (always_set_home), which would otherwise send os.UserCacheDir() to /root/.cache
+// on Linux. cacheBase is the invoking user's os.UserCacheDir(). XDG_CACHE_HOME is
+// already in thorSudoPreserveEnv, so sudo passes it through. Harmless on macOS,
+// where os.UserCacheDir() ignores XDG_CACHE_HOME.
+func pinCacheDirEnv(environ []string, cacheBase string) []string {
+	const key = "XDG_CACHE_HOME="
+	out := make([]string, 0, len(environ)+1)
+	replaced := false
+	for _, e := range environ {
+		if strings.HasPrefix(e, key) {
+			out = append(out, key+cacheBase)
+			replaced = true
+			continue
+		}
+		out = append(out, e)
+	}
+	if !replaced {
+		out = append(out, key+cacheBase)
+	}
+	return out
+}
+
 // thorElevationReason is the one-line explanation printed just before the sudo
 // re-exec, tailored per platform.
 func thorElevationReason(goos string) string {
@@ -182,6 +207,12 @@ func ensureThorRootAccess() error {
 	fmt.Println("Re-running under sudo (you may be prompted for your password)…")
 
 	argv := append([]string{"sudo"}, buildSudoReexecArgs(self, os.Args[1:])...)
+	// Pin XDG_CACHE_HOME to this (unprivileged) user's cache base so the elevated
+	// run reuses the already-downloaded flashpack even if sudo rewrites HOME.
+	env := os.Environ()
+	if base, cerr := os.UserCacheDir(); cerr == nil {
+		env = pinCacheDirEnv(env, base)
+	}
 	// syscall.Exec replaces this process image; on success it never returns.
-	return fmt.Errorf("re-executing under sudo: %w", syscall.Exec(sudo, argv, os.Environ()))
+	return fmt.Errorf("re-executing under sudo: %w", syscall.Exec(sudo, argv, env))
 }

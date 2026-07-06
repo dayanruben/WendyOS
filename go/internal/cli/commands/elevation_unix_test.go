@@ -128,3 +128,40 @@ func TestBuildSudoReexecArgs(t *testing.T) {
 		t.Errorf("device-type duplicated for equals form: %v", got)
 	}
 }
+
+func TestPinCacheDirEnv(t *testing.T) {
+	base := "/home/alice/.cache"
+
+	// XDG_CACHE_HOME absent -> appended.
+	got := pinCacheDirEnv([]string{"HOME=/home/alice", "PATH=/usr/bin"}, base)
+	if !containsEnv(got, "XDG_CACHE_HOME="+base) {
+		t.Errorf("XDG_CACHE_HOME not pinned when absent: %v", got)
+	}
+	if !containsEnv(got, "HOME=/home/alice") || !containsEnv(got, "PATH=/usr/bin") {
+		t.Errorf("existing env vars not preserved: %v", got)
+	}
+
+	// XDG_CACHE_HOME present -> overridden, exactly once.
+	got = pinCacheDirEnv([]string{"XDG_CACHE_HOME=/old", "HOME=/home/alice"}, base)
+	n := 0
+	for _, e := range got {
+		if strings.HasPrefix(e, "XDG_CACHE_HOME=") {
+			n++
+			if e != "XDG_CACHE_HOME="+base {
+				t.Errorf("XDG_CACHE_HOME not overridden: %q", e)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("want exactly one XDG_CACHE_HOME entry, got %d: %v", n, got)
+	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
