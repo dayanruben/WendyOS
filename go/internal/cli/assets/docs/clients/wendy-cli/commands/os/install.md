@@ -150,6 +150,16 @@ Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor`
 
 The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS and Linux; Windows returns an unsupported-platform error.
 
+### Privileges
+
+Thor flashing talks to the board's USB recovery device directly (an in-process libusb handle), so — unlike the SD/NVMe disk-image path, which shells out to `sudo` only for the disk write — the **whole command must run as root**.
+
+`wendy install` handles this for you: when it is not already running as root it re-executes itself under `sudo` **before** the recovery briefing, so you are prompted for your password up front rather than hitting a permission error partway through the flash. The elevated run reuses the already-downloaded flashpack (no re-download) and skips straight to the Thor flow.
+
+- **macOS** — always elevates when not run as root; the OS binds its own driver to the recovery device, so there is no non-root path.
+- **Linux** — if the wendy udev rule (`70-wendy-jetson.rules`, installed by the deb/rpm package or `wendy device usb-setup`) is present, the flash runs as your user with **no prompt**. Otherwise it re-execs under `sudo`.
+- **Non-interactive** (CI, piped input) — the CLI cannot prompt for a password, so it exits with instructions to re-run under `sudo` (Linux: or install the udev rule) instead of hanging.
+
 ### WiFi pre-configuration
 
 ```sh
