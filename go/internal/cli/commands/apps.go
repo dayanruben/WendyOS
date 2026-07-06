@@ -25,8 +25,9 @@ import (
 
 var (
 	// Styled icons for static (non-interactive) table output.
-	stateIconRunning = lipgloss.NewStyle().Foreground(tui.Emerald400).Render("●")
-	stateIconStopped = lipgloss.NewStyle().Foreground(tui.ColorDim).Render("●")
+	stateIconRunning   = lipgloss.NewStyle().Foreground(tui.Emerald400).Render("●")
+	stateIconStopped   = lipgloss.NewStyle().Foreground(tui.ColorDim).Render("●")
+	stateIconCrashLoop = lipgloss.NewStyle().Foreground(tui.Red500).Render("↻")
 )
 
 func newAppsCmd() *cobra.Command {
@@ -640,6 +641,8 @@ func stateIcon(state string) string {
 	switch strings.ToLower(state) {
 	case "running":
 		return stateIconRunning
+	case "crash_looping":
+		return stateIconCrashLoop
 	default:
 		return stateIconStopped
 	}
@@ -649,6 +652,8 @@ func stateIconPlain(state string) string {
 	switch strings.ToLower(state) {
 	case "running":
 		return "●"
+	case "crash_looping":
+		return "↻"
 	default:
 		return "○"
 	}
