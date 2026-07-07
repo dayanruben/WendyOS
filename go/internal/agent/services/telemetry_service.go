@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
@@ -578,13 +579,31 @@ func matchResourceAttributes(resource *otelpb.Resource, serviceName *string, app
 			if serviceName != nil && val == *serviceName {
 				return true
 			}
-			if appName != nil && val == *appName {
+			if appName != nil && resourceBelongsToApp(val, *appName) {
 				return true
 			}
 			return false
 		}
 	}
 	return false
+}
+
+// resourceBelongsToApp reports whether a telemetry resource's service.name
+// belongs to the given app: either the bare appID, or a per-service container
+// name "{appID}_{serviceName}" (see containerd.ContainerName). Output the
+// container monitor captures while restart-looping a services-map app is
+// published under the container name, so an --app filter that only matched the
+// bare appID made crash output unreachable (WDY-1826). The suffix must be a
+// valid service name so an unrelated app that merely shares the prefix (e.g.
+// "myapp_V2" for --app myapp) is not swept in.
+func resourceBelongsToApp(resourceService, appName string) bool {
+	if resourceService == appName {
+		return true
+	}
+	if !strings.HasPrefix(resourceService, appName+"_") {
+		return false
+	}
+	return appconfig.ValidateServiceName(resourceService[len(appName)+1:]) == nil
 }
 
 func resourceServiceName(resource *otelpb.Resource) string {

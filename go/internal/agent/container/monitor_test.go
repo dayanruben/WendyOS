@@ -384,3 +384,39 @@ func TestContainerMonitor_Register_And_Unregister(t *testing.T) {
 	}
 	m.mu.Unlock()
 }
+
+func TestContainerMonitor_RestartStatuses(t *testing.T) {
+	m := newTestMonitor()
+
+	// Actively restart-looping app: unless-stopped policy, several failures.
+	m.Register("crashloop", RestartUnlessStopped, 0)
+	// Explicitly stopped app: policy present but user stopped it, so it will not
+	// be restarted and must not read as crash-looping.
+	m.Register("stopped-by-user", RestartUnlessStopped, 0)
+	m.MarkExplicitStop("stopped-by-user")
+
+	m.mu.Lock()
+	m.states["crashloop"].FailureCount = 40
+	m.mu.Unlock()
+
+	statuses := m.RestartStatuses()
+
+	crash, ok := statuses["crashloop"]
+	if !ok {
+		t.Fatal("crashloop missing from RestartStatuses")
+	}
+	if crash.FailureCount != 40 {
+		t.Errorf("crashloop FailureCount = %d, want 40", crash.FailureCount)
+	}
+	if !crash.WillRestart {
+		t.Error("crashloop WillRestart = false, want true")
+	}
+
+	stopped, ok := statuses["stopped-by-user"]
+	if !ok {
+		t.Fatal("stopped-by-user missing from RestartStatuses")
+	}
+	if stopped.WillRestart {
+		t.Error("stopped-by-user WillRestart = true, want false (explicit stop)")
+	}
+}

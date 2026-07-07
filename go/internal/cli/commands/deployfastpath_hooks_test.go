@@ -28,12 +28,27 @@ type fastPathContainerClient struct {
 	state      agentpb.AppRunningState
 	startCtx   context.Context
 	startCalls int
+	// presentLayers is the set of diff IDs the device reports holding via
+	// QueryLayers. The fast path only skips when every recorded layer is present
+	// (WDY-1824), so tests that expect a skip must list the fingerprint's layers
+	// here; leaving one out simulates a device missing that content.
+	presentLayers map[string]bool
 }
 
 func (f *fastPathContainerClient) ListContainers(_ context.Context, _ *agentpb.ListContainersRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.ListContainersResponse], error) {
 	return &fakeListContainersStream{resp: &agentpb.ListContainersResponse{
 		Container: &agentpb.AppContainer{AppName: f.appName, RunningState: f.state},
 	}}, nil
+}
+
+func (f *fastPathContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLayersRequest, _ ...grpc.CallOption) (*agentpb.QueryLayersResponse, error) {
+	resp := &agentpb.QueryLayersResponse{}
+	for _, id := range in.GetDiffIds() {
+		if f.presentLayers[id] {
+			resp.Present = append(resp.Present, &agentpb.PresentLayer{DiffId: id, Size: 1})
+		}
+	}
+	return resp, nil
 }
 
 func (f *fastPathContainerClient) StartContainer(ctx context.Context, _ *agentpb.StartContainerRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], error) {
@@ -122,8 +137,9 @@ func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
 		appID     = "fastpath-app"
 		deviceKey = "testdevice"
 		inputHash = "sha256:deadbeef"
+		layerID   = "sha256:layer0"
 	)
-	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash})
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, LayerDiffIDs: []string{layerID}})
 
 	sentinel := filepath.Join(t.TempDir(), "poststart-cli-ran")
 	const agentHook = "wendy-agent utils open-browser http://localhost:3000"
@@ -137,7 +153,7 @@ func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
 		},
 	}
 
-	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_STOPPED}
+	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_STOPPED, presentLayers: map[string]bool{layerID: true}}
 	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
 
 	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, inputHash, runOptions{detach: true})
@@ -213,8 +229,9 @@ func TestTryDeployFastPath_RunningFiresHostPostStartHook(t *testing.T) {
 		appID     = "fastpath-app"
 		deviceKey = "testdevice"
 		inputHash = "sha256:deadbeef"
+		layerID   = "sha256:layer0"
 	)
-	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash})
+	saveDeployFingerprint(appID, deviceKey, deployFingerprint{InputHash: inputHash, LayerDiffIDs: []string{layerID}})
 
 	sentinel := filepath.Join(t.TempDir(), "poststart-cli-ran")
 	appCfg := &appconfig.AppConfig{
@@ -224,7 +241,7 @@ func TestTryDeployFastPath_RunningFiresHostPostStartHook(t *testing.T) {
 		},
 	}
 
-	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_RUNNING}
+	fake := &fastPathContainerClient{appName: appID, state: agentpb.AppRunningState_RUNNING, presentLayers: map[string]bool{layerID: true}}
 	conn := &grpcclient.AgentConnection{Host: "localhost", ContainerService: fake}
 
 	done, err := tryDeployFastPath(context.Background(), conn, appCfg, deviceKey, inputHash, runOptions{detach: true})

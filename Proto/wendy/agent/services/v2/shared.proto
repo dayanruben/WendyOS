@@ -18,6 +18,10 @@ enum AppRunningState {
     APP_RUNNING_STATE_UNSPECIFIED = 0;
     APP_RUNNING_STATE_STOPPED = 1;
     APP_RUNNING_STATE_RUNNING = 2;
+    // Not running right now, but the agent's restart policy is actively
+    // restart-looping the app (auto-restarted at least once, will be started
+    // again). See failure_count and exit_code/termination_reason.
+    APP_RUNNING_STATE_CRASH_LOOPING = 3;
 }
 
 message AppContainer {

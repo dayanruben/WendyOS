@@ -74,6 +74,13 @@ public nonisolated enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable 
   public typealias RawValue = Int
   case stopped // = 0
   case running // = 1
+
+  /// The app is not running right now, but the agent's restart policy is
+  /// actively restart-looping it: it has already been auto-restarted at least
+  /// once (see failure_count) and will be started again. Reported instead of
+  /// STOPPED so a crash loop is visible rather than masquerading as an
+  /// ordinary stop; exit_code/termination_reason carry the last crash's cause.
+  case crashLooping // = 2
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -84,6 +91,7 @@ public nonisolated enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable 
     switch rawValue {
     case 0: self = .stopped
     case 1: self = .running
+    case 2: self = .crashLooping
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -92,6 +100,7 @@ public nonisolated enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable 
     switch self {
     case .stopped: return 0
     case .running: return 1
+    case .crashLooping: return 2
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -100,6 +109,7 @@ public nonisolated enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable 
   public static let allCases: [AppRunningState] = [
     .stopped,
     .running,
+    .crashLooping,
   ]
 
 }
@@ -179,7 +189,7 @@ nonisolated extension RestartPolicyMode: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension AppRunningState: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STOPPED\0\u{1}RUNNING\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STOPPED\0\u{1}RUNNING\0\u{1}CRASH_LOOPING\0")
 }
 
 nonisolated extension RestartPolicy: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {

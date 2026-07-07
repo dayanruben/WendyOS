@@ -1908,6 +1908,13 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	if !isWendyOSUpdateTarget(preUpdateVersion) || !hasOTABackend(preUpdateVersion) {
 		return osUpdateOutcome{}, nil
 	}
+	// A pre-0.17.0 device cannot apply the new OTA artifact format and must be
+	// reflashed. Refuse the OS step (so `device update` exits non-zero) while the
+	// agent-binary update the caller already performed still stands — a --binary
+	// dev agent lands, only the incompatible OS OTA is blocked.
+	if err := requireReflashableOSVersion(preUpdateVersion.GetOsVersion()); err != nil {
+		return osUpdateOutcome{}, err
+	}
 
 	// Any OS work needs a live connection to the just-restarted agent. Reconnect
 	// to the SAME device (priorConn pins the cloud asset by id, so this can't

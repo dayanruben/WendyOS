@@ -38,6 +38,39 @@ func TestOSAlreadyCurrent(t *testing.T) {
 	}
 }
 
+func TestRequireReflashableOSVersion(t *testing.T) {
+	tests := []struct {
+		name      string
+		osVersion string
+		wantErr   bool
+	}{
+		{"pre-0.17 blocked", "WendyOS-0.16.0", true},
+		{"pre-0.17 nightly blocked", "WendyOS-0.16.0-nightly", true},
+		{"pre-0.17 without prefix blocked", "0.16.0", true},
+		{"much older blocked", "WendyOS-0.10.4", true},
+		{"two-component older blocked", "WendyOS-0.16", true},
+		{"exactly 0.17.0 allowed", "WendyOS-0.17.0", false},
+		{"0.17.0 nightly allowed", "WendyOS-0.17.0-nightly", false},
+		{"patch newer allowed", "WendyOS-0.17.1", false},
+		{"minor newer allowed", "WendyOS-0.18.0", false},
+		{"dev allowed", "dev", false},
+		{"dev suffix allowed", "2026.06.30-133859-dev", false},
+		{"empty allowed", "", false},
+		{"unparseable allowed", "garbage", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireReflashableOSVersion(tc.osVersion)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("requireReflashableOSVersion(%q) err = %v, wantErr = %v", tc.osVersion, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "wendy os install") {
+				t.Errorf("error message should point to `wendy os install`, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestOSUpdateShouldSkipAlreadyCurrent pins the fix for the `os update --pr N`
 // re-flash bug: a PR's resolved version tag ("pr-N") is constant across
 // rebuilds, so before this fix a second `update --pr N` after pushing a new

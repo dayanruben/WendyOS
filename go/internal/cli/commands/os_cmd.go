@@ -49,6 +49,12 @@ const (
 	wendyOSMissingUpdaterMessage    = "This WendyOS image does not support OTA updates because the wendyos-update engine was not found on the device. Reinstall or upgrade to a WendyOS image with OTA support."
 )
 
+// firstWendyOSUpdateVersion is the first WendyOS release whose OTA update system
+// is incompatible with the pre-0.17.0 stack. A device older than this cannot be
+// updated over the air — its update backend does not understand the new
+// artifact format — and must be reflashed with `wendy os install`.
+const firstWendyOSUpdateVersion = "0.17.0"
+
 func validateOSUpdateIdentity(versionResp *agentpb.GetAgentVersionResponse) error {
 	if isWendyOSUpdateTarget(versionResp) {
 		return nil
@@ -79,6 +85,32 @@ func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error 
 	}
 	if !hasOTABackend(versionResp) {
 		return errors.New(wendyOSMissingUpdaterMessage)
+	}
+	return nil
+}
+
+// requireReflashableOSVersion returns a reflash-guidance error when the device's
+// current WendyOS version predates firstWendyOSUpdateVersion, whose OTA format
+// the older update stack cannot apply. Both `wendy os update` and
+// `wendy device update` call it before attempting any OTA, so a stranded device
+// is refused loudly instead of failing mid-stream.
+//
+// It fails open: the "WendyOS-" display prefix is stripped, and a dev build (see
+// version.IsDev) or an empty/unparseable version is allowed through. Only a
+// version that clearly parses as older than 0.17.0 is blocked, so dev/CI images
+// are never stranded. CompareVersions splits on "."/"-", so "0.16.0-nightly"
+// sorts below 0.17.0 (blocked) while "0.17.0-nightly" sorts at/above it (allowed).
+func requireReflashableOSVersion(osVersion string) error {
+	normalized := strings.TrimPrefix(osVersion, "WendyOS-")
+	if normalized == "" || version.IsDev(normalized) {
+		return nil
+	}
+	if version.CompareVersions(normalized, firstWendyOSUpdateVersion) < 0 {
+		return fmt.Errorf(
+			"this device runs WendyOS %s. WendyOS %s introduces a new update system "+
+				"with no backward compatibility, so it cannot be updated over the air.\n"+
+				"Reflash it with `wendy os install` to continue receiving updates.",
+			normalized, firstWendyOSUpdateVersion)
 	}
 	return nil
 }
@@ -240,6 +272,14 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				return fmt.Errorf("querying device version: %w", err)
 			}
 			if err := validateOSUpdateIdentity(versionResp); err != nil {
+				return err
+			}
+			// Refuse OTA on a pre-0.17.0 device before touching the agent: its
+			// update stack cannot apply the new artifact format, so a reflash is
+			// the only path forward. Checked here (before ensureAgentUpToDate and
+			// any artifact resolution) so it covers auto, --artifact-url, and
+			// local-path updates without wasting an agent update.
+			if err := requireReflashableOSVersion(versionResp.GetOsVersion()); err != nil {
 				return err
 			}
 
