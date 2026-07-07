@@ -69,7 +69,9 @@ Most USB HID devices (scanners, keyboards) should use `input`. You only need `us
 
 The USB entitlement allows the container to access USB devices.
 
-## Serial
+## Serial / UART
+
+**UART access is the `serial` entitlement.** In Wendy, talking to a device over a UART means opening its serial tty node, and that is exactly what `serial` grants — so if you're looking for "UART," this is the section. It is **USB-serial only** (`ttyACM*`/`ttyUSB*`): on-board UARTs (`ttyAMA*`, `ttyS*`) are intentionally not supported, because `ttyS` shares its kernel major with a board's system-console UART and exposing it would add attack surface for no peripheral benefit. To reach a USB device with a raw protocol instead of a tty, see [USB](#usb); for HID event devices, see [Input](#input).
 
 The serial entitlement grants a container access to a serial tty node so it can `open()` a port such as `/dev/ttyACM0` or `/dev/ttyUSB0`. The motivating case is USB-serial peripherals — for example the LeRobot SO-101 arm, whose Feetech bus servos are driven over a USB-serial adapter via `pyserial`.
 
@@ -101,6 +103,61 @@ The container receives:
 Use `serial` for serial ports and `usb` for raw USB protocols — they expose different device majors. The SO-101's `/dev/ttyACM0` is reached with `serial`, not `usb`.
 
 > **Security note:** the cgroup rule is scoped to the named device's exact `major:minor`, so — unlike a whole-major grant — it never exposes other devices that share the major (e.g. other `ttyACM*`/`ttyUSB*` adapters on the host). The entitlement is USB-only, so it can never reach an on-board console UART. See *Replug behavior* above for why a reconnect needs a redeploy.
+
+## SPI
+
+The SPI entitlement grants a container access to the host's SPI buses so it can talk to SPI peripherals (displays, ADCs, sensors, radios) through the `spidev` user-space interface at `/dev/spidev<bus>.<chipselect>`.
+
+```json
+{
+    "type": "spi"
+}
+```
+
+The entitlement takes no options — it grants access to the SPI subsystem as a whole.
+
+The container receives:
+- A bind mount of every `/dev/spidev*.*` node present on the host at deploy time (e.g. `/dev/spidev0.0`, `/dev/spidev0.1`)
+- Membership in the `spi` group, when that group exists on the host, for device permissions
+- A cgroup device rule allowing the SPI major (153) with `rw` access (no `mknod`)
+
+### Bus and chip-select numbering
+
+`spidev` nodes are named `spidev<bus>.<chipselect>`. The bus is the SPI controller and the chip-select picks which device on that bus you address — so `/dev/spidev0.0` is bus 0, chip-select 0, and `/dev/spidev0.1` is bus 0, chip-select 1. Your app opens the specific node for the peripheral it drives.
+
+### Enabling SPI on the board
+
+The `spidev` nodes only exist if SPI is enabled in the board's device tree — otherwise `/dev/spidev*` is absent and there is nothing to bind. On Raspberry Pi, enable it in `/boot/firmware/config.txt`:
+
+```
+dtparam=spi=on
+```
+
+then reboot. Confirm the nodes exist before deploying:
+
+```
+ls /dev/spidev*
+# /dev/spidev0.0  /dev/spidev0.1
+```
+
+> The nodes are bind-mounted as they exist **at deploy time**. If you enable SPI (or wire up a device that adds a new `spidev` node) after the app is already running, **redeploy the app** (`wendy run`) so Wendy re-scans `/dev` and mounts the new node.
+
+### Example
+
+A minimal read/write with Python's [`spidev`](https://pypi.org/project/spidev/):
+
+```python
+import spidev
+
+spi = spidev.SpiDev()
+spi.open(0, 0)              # /dev/spidev0.0 — bus 0, chip-select 0
+spi.max_speed_hz = 1_000_000
+resp = spi.xfer2([0x01, 0x02, 0x03])
+print(resp)
+spi.close()
+```
+
+> **Security note:** unlike `serial` and `i2c` — which are scoped to a single named node's exact `major:minor` — `spi` is a **whole-major** grant. An app that declares it can open **every** SPI bus on the host, not just one. This is deliberate: the entitlement exposes the SPI subsystem rather than an individual bus, and a host can present many `spidev*.*` nodes whose minors are not known ahead of time. Grant it only to apps you trust with all of the device's SPI buses.
 
 ## Persist
 
