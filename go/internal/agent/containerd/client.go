@@ -1614,6 +1614,15 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 				}
 				_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
 				c.mu.Unlock()
+			} else if _, ok := findMeshEntitlement(entitlements); ok {
+				// Single-service mesh app (serviceName == ""): record the
+				// CNI-assigned IP under the empty service key so
+				// teardownMeshEgress (stopOne/deleteOne) can find it to remove
+				// this container's ingress port-forward. No sibling services
+				// means no /etc/hosts and no isolated-group guard (WDY-1853).
+				c.mu.Lock()
+				c.recordServiceIP(appID, serviceName, ip)
+				c.mu.Unlock()
 			}
 
 			// Gateway DNS listener for single-service bridge-mode apps only

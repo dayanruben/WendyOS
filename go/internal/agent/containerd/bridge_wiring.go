@@ -19,20 +19,33 @@ func findBridgeEntitlement(entitlements []appconfig.Entitlement) (ent appconfig.
 
 // needsCNIBridgeWiring is the single predicate that decides whether a
 // container's networking requires attachment to the per-app CNI bridge (ADD
-// on start, DEL on stop): either a service within a multi-service isolated
-// app group (isolation == "isolated" && serviceName != ""), which already
-// relies on the bridge for its CNI-assigned IP and cross-service /etc/hosts
-// resolution, or a single-service app whose network entitlement mode is
-// "bridge" (isolated namespace + NAT egress, no /etc/hosts).
+// on start, DEL on stop): a service within a multi-service isolated app group
+// (isolation == "isolated" && serviceName != ""), which relies on the bridge
+// for its CNI-assigned IP and cross-service /etc/hosts resolution; a
+// single-service isolated app with a "mesh" entitlement, whose mesh
+// reachability (ingress DNAT + egress route + gateway DNS) all hangs off the
+// per-app bridge/netns; or a single-service app whose network entitlement mode
+// is "bridge" (isolated namespace + NAT egress, no /etc/hosts).
 //
 // Both StartContainer (CNI ADD) and stopOne/deleteOne (CNI DEL) call this
 // exact function so the two sides of the wiring can never drift apart (see
 // specs/2026-07-05-network-bridge-default-design.md, "factor the shared
-// block"). Host, none, mesh-without-isolation, and apps with neither
-// condition all return false.
+// block"). Host, none, mesh-without-isolation, and apps with none of these
+// conditions all return false. This stays aligned with needsGatewayDNS, which
+// already recognises the single-service isolated mesh case (WDY-1853).
 func needsCNIBridgeWiring(isolation, serviceName string, entitlements []appconfig.Entitlement) bool {
 	if isolation == "isolated" && serviceName != "" {
 		return true
+	}
+	// A single-service isolated app with a "mesh" entitlement (top-level
+	// entitlements, serviceName == "") still needs the bridge. Without this it
+	// deploys and runs but is silently unreachable over the mesh — no netns, no
+	// ingress DNAT (WDY-1853). Gated on isolation because mesh requires the
+	// container's own network namespace.
+	if isolation == "isolated" {
+		if _, ok := findMeshEntitlement(entitlements); ok {
+			return true
+		}
 	}
 	_, ok := findBridgeEntitlement(entitlements)
 	return ok

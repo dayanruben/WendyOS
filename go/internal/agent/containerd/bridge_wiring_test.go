@@ -135,6 +135,20 @@ func TestNeedsCNIBridgeWiring(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:         "single-service isolated mesh app (WDY-1853)",
+			isolation:    "isolated",
+			serviceName:  "",
+			entitlements: meshEnt,
+			want:         true,
+		},
+		{
+			name:         "mesh without isolation excluded",
+			isolation:    "",
+			serviceName:  "",
+			entitlements: meshEnt,
+			want:         false,
+		},
+		{
 			name:         "no isolation, no serviceName, no entitlements excluded",
 			isolation:    "",
 			serviceName:  "",
