@@ -639,6 +639,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Self-enroll from a token staged by agent.sh (Linux Desktop install).
+	// Best-effort and non-blocking: a cloud outage must never delay the agent
+	// coming up locally (mDNS discovery still works unenrolled).
+	go provisioningSvc.ApplyEnrollmentFile(context.Background())
+
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
 		otelPort = p
