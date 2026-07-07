@@ -14,19 +14,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch from NVIDIA's Jetson-optimized wheels FIRST
-# These are pre-compiled for ARM64 and optimized for Jetson with CUDA 12.6
-# This leverages CDI-mapped CUDA/cuDNN from the host system
-# Pin specific versions to ensure we get the CUDA-enabled builds
-# NOTE: Jetson AI Lab PyTorch may not depend on numpy or vendors it internally
+# PyTorch: NVIDIA's JetPack-6 / CUDA-12.6 ARM64 wheels.
+#
+# WHY CUDA 12 on a CUDA-13 (JetPack 7 / WendyOS 0.17) Orin: the CUDA-13 "sbsa" wheels are
+# compiled only for Thor (sm_110) / Spark (sm_121) and have NO kernels for Orin (sm_87),
+# so they load but crash on the first GPU op with "no kernel image is available for
+# execution on the device". The CUDA-12.6 jp6 wheels DO include sm_87, and CUDA 12.6 runs
+# on the JetPack-7 GPU driver via backward compatibility.
 RUN pip3 install --no-cache-dir \
     torch==2.8.0 \
     torchvision==0.23.0 \
     torchaudio==2.8.0 \
     --index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
 
+# Bundle the CUDA-12 runtime into the image. On JetPack 7, CDI injects the CUDA *13*
+# runtime, whose sonames (libcudart.so.13, ...) do not satisfy these CUDA-12 wheels
+# (libcudart.so.12, ...). Ship the matching CUDA-12 libraries via pip, collect them in a
+# single dir, and put that dir FIRST on the loader path so torch uses the CUDA-12 copies
+# consistently — not the CDI-injected CUDA-13 ones for any shared soname (e.g.
+# libcudnn.so.9). The GPU *driver* (libcuda.so.1) still comes from CDI/host.
+RUN pip3 install --no-cache-dir \
+    nvidia-cuda-runtime-cu12 \
+    nvidia-cuda-nvrtc-cu12 \
+    nvidia-cuda-cupti-cu12 \
+    nvidia-cublas-cu12 \
+    nvidia-cudnn-cu12 \
+    nvidia-cufft-cu12 \
+    nvidia-curand-cu12 \
+    nvidia-cusolver-cu12 \
+    nvidia-cusparse-cu12 \
+    nvidia-cusparselt-cu12 \
+    nvidia-nccl-cu12 \
+    nvidia-nvtx-cu12 \
+    nvidia-nvjitlink-cu12 \
+    && mkdir -p /opt/cuda12/lib \
+    && find /usr/local/lib/python3.10/dist-packages/nvidia -name '*.so*' -exec ln -sf {} /opt/cuda12/lib/ \; \
+    && echo /opt/cuda12/lib > /etc/ld.so.conf.d/000-cuda12.conf \
+    && ldconfig
+ENV LD_LIBRARY_PATH=/opt/cuda12/lib
 
 # Install scientific Python packages with pinned numpy version
+# (the JetPack-6 PyTorch wheel was compiled against NumPy 1.x)
 RUN pip3 install --no-cache-dir \
     numpy==1.26.4 \
     scipy \
@@ -51,4 +79,3 @@ ENV PYTHONUNBUFFERED=1
 # Default command - run bash to keep container alive
 # CMD ["bash", "-c", "while true; do sleep 1000; done"]
 CMD ["python3", "gpu-test.py"]
-

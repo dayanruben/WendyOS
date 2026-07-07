@@ -19,6 +19,19 @@ Uses `distilbert/distilgpt2`:
 
 This model is small enough to run efficiently on Jetson Orin Nano (8GB) while still demonstrating GPU-accelerated inference.
 
+## Requirements
+
+Runs GPU-accelerated on **NVIDIA Jetson Orin across WendyOS / JetPack 6 and 7** (verified on
+an Orin Nano running WendyOS 0.17 / JetPack 7).
+
+The example uses the JetPack-6 / **CUDA 12.6** PyTorch wheel — the only prebuilt PyTorch that
+ships kernels for Orin's `sm_87` GPU. On WendyOS 0.17 (JetPack 7) the host provides CUDA 13,
+so the image **bundles the CUDA-12 runtime** and puts it first on the loader path; CUDA 12.6
+runs on the JetPack-7 GPU driver via backward compatibility. (The CUDA-13 `sbsa` PyTorch
+wheels are built only for Thor/Spark `sm_110`/`sm_121` and have no Orin kernels — they load
+but crash with *"no kernel image is available for execution on the device"*.) Bundling CUDA
+12 makes the image larger (~2 GB) but keeps GPU acceleration working on JetPack 7.
+
 ## Running
 
 ```bash
@@ -80,7 +93,7 @@ PyTorch Version: 2.8.0
 CUDA Built: 12.6
 CUDA Available: True
 CUDA Version: 12.6
-cuDNN Version: 90100
+cuDNN Version: 92400
 GPU Count: 1
 GPU Name: Orin (nvgpu)
 GPU Memory: 7.32 GB
@@ -153,10 +166,24 @@ If you see "Failed to resolve 'huggingface.co'" errors:
 
 2. **Device connectivity** - Verify the Jetson has internet access
 
+### `no kernel image is available for execution on the device`
+
+PyTorch has no GPU kernels for the device's compute capability. This happens if you swap in
+the CUDA-13 `sbsa` PyTorch wheels — they include only Thor/Spark (`sm_110`/`sm_121`) kernels,
+not Orin's `sm_87`. Use the JetPack-6 / CUDA-12.6 wheel (as this example does), which
+includes `sm_87`.
+
+### `libcudart.so.12: cannot open shared object file`
+
+The CUDA-12 runtime is missing. On JetPack 7 the host provides CUDA 13, so this example
+bundles the CUDA-12 libraries (`nvidia-*-cu12`) into the image. Rebuild if you see this after
+editing the image.
+
 ## Technical Details
 
-- **PyTorch**: 2.8.0 from [Jetson AI Lab PyPI](https://pypi.jetson-ai-lab.io) (CUDA 12.6)
-- **NumPy**: 1.26.4 (pinned for PyTorch compatibility)
+- **PyTorch**: 2.8.0 from [Jetson AI Lab PyPI](https://pypi.jetson-ai-lab.io/jp6/cu126/) (CUDA 12.6; includes Orin `sm_87` kernels)
+- **CUDA runtime**: CUDA 12.6 (`nvidia-*-cu12` wheels) bundled into the image and placed first on `LD_LIBRARY_PATH`, so it runs on JetPack 7's CUDA-13 GPU driver via backward compatibility
+- **NumPy**: 1.26.4 (pinned; the JetPack-6 PyTorch wheel was compiled against NumPy 1.x)
 - **Transformers**: Latest from PyPI
 - **Flask**: Web server for interactive interface
 - **Precision**: float16 on GPU, float32 on CPU
