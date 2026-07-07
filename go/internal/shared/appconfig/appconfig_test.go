@@ -124,6 +124,127 @@ func TestValidate_NetworkHostAdminMode(t *testing.T) {
 	}
 }
 
+// TestValidate_NetworkMeshMode covers the "mesh" network mode added for the
+// wendy-mesh CNI chaining feature: mesh mode requires a valid, non-empty
+// serviceCIDR, and serviceCIDR must not be set on any other mode.
+func TestValidate_NetworkMeshMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		ent     Entitlement
+		wantErr bool
+	}{
+		{
+			name:    "mesh mode with valid serviceCIDR is valid",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: false,
+		},
+		{
+			name:    "mesh mode with missing serviceCIDR errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh"},
+			wantErr: true,
+		},
+		{
+			name:    "mesh mode with invalid serviceCIDR errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "not-a-cidr"},
+			wantErr: true,
+		},
+		{
+			name:    "mesh mode with non-CIDR IP errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.42.0.1"},
+			wantErr: true,
+		},
+		{
+			name:    "host mode still valid without serviceCIDR",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host"},
+			wantErr: false,
+		},
+		{
+			name:    "host-admin mode still valid without serviceCIDR",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host-admin"},
+			wantErr: false,
+		},
+		{
+			name:    "none mode still valid without serviceCIDR",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "none"},
+			wantErr: false,
+		},
+		{
+			name:    "serviceCIDR on host mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+		{
+			name:    "serviceCIDR on none mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "none", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+		{
+			name:    "serviceCIDR on host-admin mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host-admin", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{tt.ent},
+			}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Errorf("Validate() expected error for %+v, got nil", tt.ent)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Validate() unexpected error for %+v: %v", tt.ent, err)
+			}
+		})
+	}
+}
+
+// TestValidate_NetworkBridgeMode covers the "bridge" network mode added by
+// specs/2026-07-05-network-bridge-default-design.md: an isolated network
+// namespace with NAT egress. Unlike "mesh", "bridge" takes no serviceCIDR.
+func TestValidate_NetworkBridgeMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		ent     Entitlement
+		wantErr bool
+	}{
+		{
+			name:    "bridge mode without serviceCIDR is valid",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "bridge"},
+			wantErr: false,
+		},
+		{
+			name:    "serviceCIDR on bridge mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "bridge", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+		{
+			name:    "an unrelated unknown mode is still rejected",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "bridged"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{tt.ent},
+			}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Errorf("Validate() expected error for %+v, got nil", tt.ent)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Validate() unexpected error for %+v: %v", tt.ent, err)
+			}
+		})
+	}
+}
+
 func TestValidate_MissingAppID(t *testing.T) {
 	cfg := &AppConfig{}
 	err := cfg.Validate()
@@ -1420,7 +1541,7 @@ func TestServiceConfigValidation(t *testing.T) {
 				"svc": {
 					Context: "svc",
 					Entitlements: []Entitlement{
-						{Type: EntitlementNetwork, Mode: "bridge"},
+						{Type: EntitlementNetwork, Mode: "bogus"},
 					},
 				},
 			},
@@ -1431,6 +1552,23 @@ func TestServiceConfigValidation(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "mode") {
 			t.Fatalf("expected error to mention mode, got: %v", err)
+		}
+	})
+
+	t.Run("network entitlement bridge mode in service is valid", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementNetwork, Mode: "bridge"},
+					},
+				},
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() rejected bridge network mode in service: %v", err)
 		}
 	})
 

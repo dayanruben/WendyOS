@@ -26,6 +26,8 @@ type fakeContainerd struct {
 	started       chan string // signalled (buffered) on each StartContainer
 	stoppedByUser map[string]bool
 	migrateCalls  int
+	rebuildCalls  int
+	probeCalls    int
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -51,6 +53,18 @@ func (f *fakeContainerd) MigrateStoppedByUserOnce(ctx context.Context) error {
 	defer f.mu.Unlock()
 	f.migrateCalls++
 	return nil
+}
+
+func (f *fakeContainerd) RebuildAppStateCaches(ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rebuildCalls++
+}
+
+func (f *fakeContainerd) WarnPubliclyExposedPorts(ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probeCalls++
 }
 
 func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -209,6 +223,18 @@ func TestReconcileBootContainers_RunsMigration(t *testing.T) {
 	}
 }
 
+func TestReconcileBootContainers_RebuildsCaches(t *testing.T) {
+	f := &fakeContainerd{}
+	m := newMonitorWithClient(f)
+	m.ReconcileBootContainers(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rebuildCalls != 1 {
+		t.Fatalf("RebuildAppStateCaches called %d times, want 1", f.rebuildCalls)
+	}
+}
+
 func TestReconcileBootContainers_NothingToDo(t *testing.T) {
 	fake := &fakeContainerd{
 		started: make(chan string, 1),
@@ -273,5 +299,17 @@ func TestCheckContainers_LegacySingleContainer_NotRestarted(t *testing.T) {
 
 	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
 		t.Fatalf("StartContainer called for healthy legacy app: %v", calls)
+	}
+}
+
+func TestProbeExposedPortsInvokesProber(t *testing.T) {
+	f := &fakeContainerd{}
+	m := newMonitorWithClient(f)
+	m.probeExposedPorts(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.probeCalls != 1 {
+		t.Fatalf("WarnPubliclyExposedPorts called %d times, want 1", f.probeCalls)
 	}
 }
