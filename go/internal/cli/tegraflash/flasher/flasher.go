@@ -32,9 +32,10 @@ import (
 	"time"
 )
 
-// estFlashDuration is a rough estimate shown to the user. Measured ~15.4 min on a
-// jetson-agx-thor devkit (NVMe) over USB; the rootfs A/B writes dominate.
-const estFlashDuration = "around 15 minutes"
+// estFlashDuration is a rough estimate shown to the user. Measured ~23 min on a
+// jetson-agx-thor devkit (NVMe) over USB with the shim's USB lock serializing
+// pushes and device-side writes; the rootfs A/B writes dominate.
+const estFlashDuration = "around 25 minutes"
 
 // ErrGadgetUnreachable is returned when the flash fails before a single byte is
 // written — i.e. bootburn never established ADB with the initrd-flash gadget. The
@@ -46,6 +47,13 @@ var ErrGadgetUnreachable = errors.New("flashing gadget never came up over USB (A
 // (cumulative for the current push, reset per push). Run points the shim at a temp
 // file via this env var and polls it to display transfer throughput.
 const EnvADBProgress = "WENDY_ADB_PROGRESS"
+
+// EnvADBLock names the file the adb shim flock()s (exclusive, blocking) before
+// claiming the USB ADB interface. bootburn runs a chunk pusher and a partition
+// writer concurrently, each spawning short-lived adb shims; unserialized claims
+// of the same interface race inside libusb's darwin backend and can SIGSEGV the
+// shim mid-flash. Run creates the file and points shims at it via this env var.
+const EnvADBLock = "WENDY_ADB_LOCK"
 
 //go:embed stage2_flash.py
 var stage2Driver []byte
@@ -170,11 +178,23 @@ func Run(ctx context.Context, opts Options) error {
 		defer os.Remove(progressPath)
 	}
 
+	// The adb shims serialize their USB interface claims on this flock file;
+	// without it bootburn's concurrent push/write adb processes race libusb and
+	// can SIGSEGV. Correctness-critical (unlike the cosmetic progress file), so
+	// a temp-file failure fails the flash.
+	lockFile, err := os.CreateTemp("", "thor-flash-usblock-*")
+	if err != nil {
+		return fmt.Errorf("creating USB serialization lock file: %w", err)
+	}
+	lockPath := lockFile.Name()
+	lockFile.Close()
+	defer os.Remove(lockPath)
+
 	cmd := exec.Command(python, args...)
 	cmd.Dir = bootburnDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort, progressPath)
+	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort, progressPath, lockPath)
 	setProcessGroup(cmd)
 
 	// Up-front plan from FileToFlash.txt, so the (long, mostly silent) write reads
@@ -205,6 +225,11 @@ func Run(ctx context.Context, opts Options) error {
 	// new push started and the previous one's final count is banked.
 	var pushAccum, lastPush int64
 	lastHeartbeat := start
+	// stalledErr, once set, records that the stall watchdog killed bootburn;
+	// the done arm below then reports it in place of the uninformative
+	// kill-induced wait error ("signal: killed").
+	var stalledErr error
+	stall := newStallDetector(stallTimeout, start)
 	for {
 		select {
 		case <-ctx.Done():
@@ -217,8 +242,13 @@ func Run(ctx context.Context, opts Options) error {
 				maxBytes = n
 			}
 			if werr != nil {
+				if stalledErr != nil {
+					werr = stalledErr
+				}
 				return flashFailure(out, logPath, elapsed(start).String(), maxBytes, werr)
 			}
+			// A clean exit wins even if the watchdog fired in the same tick:
+			// the flash finishing is the truth, not the fabricated stall.
 			fmt.Fprintf(out, "Partitions written in %s.\n", elapsed(start))
 			return nil
 		case now := <-tick.C:
@@ -238,6 +268,29 @@ func Run(ctx context.Context, opts Options) error {
 				lastHeartbeat = now
 				fmt.Fprintf(out, "  … still flashing (%s elapsed)\n", elapsed(start))
 			}
+			// A wedged bootburn (e.g. its pusher blocked forever on the writer
+			// queue after the writer child died) moves no bytes AND logs
+			// nothing; kill it after stallTimeout instead of spinning forever.
+			// Gated on the progress file existing — without it the push-byte
+			// signal is permanently zero and the watchdog would be judging on
+			// log growth alone, which legitimately pauses during long
+			// device-side ops. The done arm above reaps and reports.
+			if stalledErr == nil && progressPath != "" {
+				logSize := int64(-1) // "unknown" is a stable value, not fake progress
+				if fi, serr := os.Stat(logPath); serr == nil {
+					logSize = fi.Size()
+				}
+				if stall.observe(now, pushAccum+lastPush, logSize) {
+					fmt.Fprintf(out, "No flash progress for %v — assuming bootburn is stuck and aborting it.\n", stallTimeout)
+					// Record the kill in the persisted flash log too: the
+					// progress stream is transient, and a post-mortem must be
+					// able to tell a watchdog kill from bootburn dying on its
+					// own.
+					fmt.Fprintf(logFile, "\n[wendy] stall watchdog: no push bytes or log output for %v after %s elapsed (%d bytes pushed) — killing bootburn\n", stallTimeout, elapsed(start), maxBytes)
+					stalledErr = fmt.Errorf("flash made no progress for %v (bootburn killed)", stallTimeout)
+					killProcessGroup(cmd)
+				}
+			}
 		}
 	}
 }
@@ -255,10 +308,20 @@ func flashFailure(out io.Writer, logPath, took string, maxBytes int64, werr erro
 	return fmt.Errorf("bootburn flash failed after writing data (full log: %s): %w", logPath, werr)
 }
 
-// classifyFlashFailure turns the tail of the bootburn log into a one-line human
-// reason. Best-effort: an unrecognized failure points the user at the log.
+// classifyFlashFailure turns the bootburn log into a one-line human reason.
+// Generic markers are matched only against the last 60 lines (most-recent
+// evidence wins; an image filename earlier in the log can't trip them), while
+// crash markers are searched in the whole log: a crashed shim or failed write
+// is terminal for bootburn, so its evidence — which can sit hundreds of lines
+// up (a Go crash dump alone exceeds 60 lines, and the pusher logs more chunks
+// before wedging) — is always the cause of this failure. Best-effort: an
+// unrecognized failure points the user at the log.
 func classifyFlashFailure(logPath string) string {
-	tail := tailFile(logPath, 60)
+	full, err := readLogTail(logPath, maxClassifyLogBytes)
+	if err != nil {
+		return "see the log for details"
+	}
+	tail := lastLines(full, 60)
 	switch {
 	// Check access errors before the generic timeout: a denied gadget also times
 	// out, and the wait-for-device retries log the access-denied reason. Match
@@ -268,6 +331,16 @@ func classifyFlashFailure(logPath string) string {
 	case strings.Contains(tail, "USB access denied opening the flashing gadget"),
 		strings.Contains(tail, "bad access [code"):
 		return "USB access denied opening the flashing gadget — on Linux install the wendy udev rule (USB vendor 0955) or run with sudo; on macOS quit whatever holds the gadget (e.g. `adb kill-server`)"
+	// A crashed shim beats everything below: it is the most precise diagnosis,
+	// and the collateral markers (a failed nvdd command, ADB timeouts) are its
+	// symptoms, not the cause.
+	case strings.Contains(full, "SIGSEGV"), strings.Contains(full, "segmentation violation"):
+		return "the wendy flash tooling crashed mid-write — power-cycle the Thor back into recovery mode and re-run the flash"
+	// bootburn aborts on the first failed device-side write. nvdd fails for
+	// device-side reasons (write error, bad image, full or failing disk), so
+	// point at the log's own diagnosis rather than guessing a cause.
+	case strings.Contains(full, "Command failed: /tmp/nvdd"):
+		return "a device-side write command failed mid-flash (see the log's \"Command failed\" line) — power-cycle the Thor back into recovery mode and re-run the flash"
 	case strings.Contains(tail, "ADB_TIMEOUT"), strings.Contains(tail, "adb wait-for-device"):
 		return "the flashing gadget never came up over USB (ADB timeout)"
 	case strings.Contains(tail, "No such file"), strings.Contains(tail, "not found"):
@@ -354,13 +427,31 @@ func summarizeFlashPlan(fileToFlash string) flashPlan {
 // elapsed formats time since start to whole seconds.
 func elapsed(start time.Time) time.Duration { return time.Since(start).Round(time.Second) }
 
-// tailFile returns the last n lines of a file (best-effort, for error context).
-func tailFile(path string, n int) string {
-	data, err := os.ReadFile(path)
+// maxClassifyLogBytes caps how much of the flash log classification loads.
+// Real flash logs measure tens of KB; the cap only guards against a runaway
+// bootburn producing an unboundedly large log. When over the cap the newest
+// bytes win — failure evidence accumulates at the end.
+const maxClassifyLogBytes = 32 << 20
+
+// readLogTail reads up to the last max bytes of the file at path.
+func readLogTail(path string, max int64) (string, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() > max {
+		if _, err := f.Seek(fi.Size()-max, io.SeekStart); err != nil {
+			return "", err
+		}
+	}
+	data, err := io.ReadAll(f)
+	return string(data), err
+}
+
+// lastLines returns the last n lines of s (for error context).
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -368,10 +459,11 @@ func tailFile(path string, n int) string {
 }
 
 // envWithADB returns the environment with adbDir prepended to PATH, pyDir prepended
-// to PYTHONPATH, WENDY_ADB_PATH set to adbPort, and EnvADBProgress set to
-// progressPath (each only when non-empty). The adb shim inherits WENDY_ADB_PATH to
-// target the selected device and EnvADBProgress to report transfer progress.
-func envWithADB(adbDir, pyDir, adbPort, progressPath string) []string {
+// to PYTHONPATH, WENDY_ADB_PATH set to adbPort, EnvADBProgress set to progressPath,
+// and EnvADBLock set to lockPath (each only when non-empty). The adb shim inherits
+// WENDY_ADB_PATH to target the selected device, EnvADBProgress to report transfer
+// progress, and EnvADBLock to serialize USB claims against concurrent shims.
+func envWithADB(adbDir, pyDir, adbPort, progressPath, lockPath string) []string {
 	env := os.Environ()
 	if adbDir != "" {
 		if abs, err := filepath.Abs(adbDir); err == nil {
@@ -387,6 +479,9 @@ func envWithADB(adbDir, pyDir, adbPort, progressPath string) []string {
 	}
 	if progressPath != "" {
 		env = append(env, EnvADBProgress+"="+progressPath)
+	}
+	if lockPath != "" {
+		env = append(env, EnvADBLock+"="+lockPath)
 	}
 	return env
 }

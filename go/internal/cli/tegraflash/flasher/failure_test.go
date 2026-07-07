@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,46 @@ func TestClassifyFlashFailure(t *testing.T) {
 	}
 	if got := classifyFlashFailure(write("some other unexpected explosion")); got != "see the log for details" {
 		t.Errorf("default classify = %q", got)
+	}
+
+	const crashReason = "the wendy flash tooling crashed mid-write — power-cycle the Thor back into recovery mode and re-run the flash"
+	const nvddReason = "a device-side write command failed mid-flash (see the log's \"Command failed\" line) — power-cycle the Thor back into recovery mode and re-run the flash"
+
+	// The two real-world mid-write failure signatures: a shim's Go runtime
+	// SIGSEGV banner, and bootburn's writer reporting its nvdd command failed
+	// (ANSI-wrapped) — the latter gets its own cause-neutral message since
+	// nvdd also fails for device-side reasons (write error, bad image).
+	sigsegv := "SIGSEGV: segmentation violation\nPC=0x1014e7a28 m=0 sigcode=2 addr=0x0\nsignal arrived during cgo execution\n"
+	if got := classifyFlashFailure(write(sigsegv)); got != crashReason {
+		t.Errorf("SIGSEGV classify = %q", got)
+	}
+	nvdd := "\x1b[01;31mCommand failed: /tmp/nvdd --inputbin=/tmp/nvme0n1_3_0 --partsize 5619712 --device /dev/nvme0n1 --startoffset=2473766912 --l4t\x1b[0m\n"
+	if got := classifyFlashFailure(write(nvdd)); got != nvddReason {
+		t.Errorf("nvdd failure classify = %q", got)
+	}
+
+	// Crash evidence can sit far above the last 60 lines (the Go goroutine
+	// dump plus bootburn's per-chunk logging push it up); crash markers are
+	// searched in the whole log.
+	filler := strings.Repeat("goroutine frame / FileWritten - 10485760 chunk line\n", 100)
+	if got := classifyFlashFailure(write(sigsegv + filler)); got != crashReason {
+		t.Errorf("deep SIGSEGV classify = %q", got)
+	}
+
+	// Precedence: access-denied stays first (it has the more actionable fix)...
+	both := "USB access denied opening the flashing gadget: blah\nSIGSEGV: segmentation violation\n"
+	if got := classifyFlashFailure(write(both)); !strings.HasPrefix(got, "USB access denied") {
+		t.Errorf("access-denied should beat crash, got %q", got)
+	}
+	// ...a crash beats the failed nvdd command it caused...
+	crashAndNvdd := sigsegv + nvdd
+	if got := classifyFlashFailure(write(crashAndNvdd)); got != crashReason {
+		t.Errorf("crash should beat nvdd failure, got %q", got)
+	}
+	// ...and both beat the generic ADB timeout (the more precise diagnosis).
+	crashAndTimeout := "SIGSEGV: segmentation violation\n${s_ERROR_ADB_TIMEOUT}\n"
+	if got := classifyFlashFailure(write(crashAndTimeout)); got != crashReason {
+		t.Errorf("crash should beat adb timeout, got %q", got)
 	}
 }
 
