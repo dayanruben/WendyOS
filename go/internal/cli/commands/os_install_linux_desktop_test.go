@@ -4,6 +4,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -59,5 +60,114 @@ func TestInstallLinuxDesktop_SkipMode_PrintsPlain(t *testing.T) {
 	}
 	if !strings.Contains(out, "curl -fsSL https://install.wendy.dev/agent.sh | bash") {
 		t.Fatalf("expected plain instructions:\n%s", out)
+	}
+}
+
+func stubLinuxDesktopSingleSessionConfig(t *testing.T) {
+	t.Helper()
+	origLoad := linuxDesktopConfigLoad
+	linuxDesktopConfigLoad = func() (*config.Config, error) {
+		return &config.Config{
+			Auth: []config.AuthConfig{
+				{
+					CloudGRPC: "cloud.wendy.sh:443",
+					Certificates: []config.CertificateInfo{
+						{OrganizationID: 7},
+					},
+				},
+			},
+		}, nil
+	}
+	t.Cleanup(func() { linuxDesktopConfigLoad = origLoad })
+
+	origResolveOrg := resolveOrgFn
+	resolveOrgFn = func(_ context.Context, _ *config.AuthConfig, _ bool) (OrgResolution, error) {
+		return OrgResolution{ID: 7, Name: "Acme"}, nil
+	}
+	t.Cleanup(func() { resolveOrgFn = origResolveOrg })
+}
+
+func TestInstallLinuxDesktop_EnrolledPrintsToken(t *testing.T) {
+	stubLinuxDesktopSingleSessionConfig(t)
+
+	var gotDeviceName string
+	var gotOrgID int32
+	origTok := linuxDesktopTokenFn
+	linuxDesktopTokenFn = func(_ context.Context, _ *config.AuthConfig, deviceName string, orgID int32) (string, time.Time, error) {
+		gotDeviceName = deviceName
+		gotOrgID = orgID
+		return "tok-xyz", time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC), nil
+	}
+	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
+
+	out := captureStdout(t, func() {
+		if err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box"); err != nil {
+			t.Fatalf("installLinuxDesktop: %v", err)
+		}
+	})
+
+	if gotDeviceName != "my-box" {
+		t.Fatalf("token fn deviceName = %q, want %q", gotDeviceName, "my-box")
+	}
+	if gotOrgID != 7 {
+		t.Fatalf("token fn orgID = %d, want 7", gotOrgID)
+	}
+	for _, want := range []string{
+		"WENDY_ENROLLMENT_TOKEN=tok-xyz",
+		"WENDY_CLOUD_HOST=cloud.wendy.sh:443",
+		"Acme",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output to contain %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestInstallLinuxDesktop_EnrolledValidatesDeviceName pins down Finding 1
+// concretely: the enroll path must route deviceName through
+// resolveDeviceName (so an interactive user gets validated/prompted for a
+// name) rather than handing the raw flag straight to the token minter. A
+// syntactically invalid name is rejected by resolveDeviceName's validation
+// before linuxDesktopTokenFn is ever reached; prior to the fix the raw value
+// sailed through unchecked and the token fn stub below would have been
+// called.
+func TestInstallLinuxDesktop_EnrolledValidatesDeviceName(t *testing.T) {
+	stubLinuxDesktopSingleSessionConfig(t)
+
+	called := false
+	origTok := linuxDesktopTokenFn
+	linuxDesktopTokenFn = func(_ context.Context, _ *config.AuthConfig, _ string, _ int32) (string, time.Time, error) {
+		called = true
+		return "should-not-be-used", time.Time{}, nil
+	}
+	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
+
+	err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "BadName")
+	if err == nil {
+		t.Fatal("expected an error for an invalid --device-name, got nil")
+	}
+	if !strings.Contains(err.Error(), "device name") {
+		t.Fatalf("expected error to mention device name validation, got: %v", err)
+	}
+	if called {
+		t.Fatal("token fn must not be called when the device name fails validation")
+	}
+}
+
+func TestInstallLinuxDesktop_ForcedNonInteractive_TokenError(t *testing.T) {
+	stubLinuxDesktopSingleSessionConfig(t)
+
+	origTok := linuxDesktopTokenFn
+	linuxDesktopTokenFn = func(_ context.Context, _ *config.AuthConfig, _ string, _ int32) (string, time.Time, error) {
+		return "", time.Time{}, errors.New("boom")
+	}
+	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
+
+	err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected error to contain %q, got: %v", "boom", err)
 	}
 }

@@ -48,6 +48,10 @@ func renderLinuxDesktopInstructions(token, cloudHost, orgName string, expiresAt 
 // without dialing Wendy Cloud.
 var linuxDesktopTokenFn = createLinuxDesktopToken
 
+// linuxDesktopConfigLoad is a stub point so tests can replace config loading
+// without reading ~/.wendy/config.json from disk.
+var linuxDesktopConfigLoad = config.Load
+
 // installLinuxDesktop prints agent.sh install instructions for turning an
 // existing Linux machine into a managed Wendy device. When the user is logged
 // in and does not decline, it mints a short-lived enrollment token and prints
@@ -55,7 +59,7 @@ var linuxDesktopTokenFn = createLinuxDesktopToken
 func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName string) error {
 	interactive := isInteractiveTerminal()
 
-	cfg, err := config.Load()
+	cfg, err := linuxDesktopConfigLoad()
 	if err != nil {
 		cfg = &config.Config{} // treat an unreadable config as "not logged in"
 	}
@@ -100,7 +104,11 @@ func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceNa
 				}
 				fmt.Fprintf(os.Stdout, "Cannot resolve organization: %v\n", oErr)
 			} else {
-				tok, exp, tErr := linuxDesktopTokenFn(ctx, auth, deviceName, org.ID)
+				provName, nErr := resolveDeviceName(deviceName)
+				if nErr != nil {
+					return nErr
+				}
+				tok, exp, tErr := linuxDesktopTokenFn(ctx, auth, provName, org.ID)
 				if tErr != nil {
 					if !interactive {
 						return fmt.Errorf("--pre-enroll: creating enrollment token: %w", tErr)
