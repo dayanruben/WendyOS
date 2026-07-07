@@ -153,11 +153,14 @@ stage_enrollment() {
     return 0
   fi
   $SUDO mkdir -p /etc/wendy-agent
-  # Write via a heredoc through tee so the token is not echoed to stdout.
-  # The values are JSON-encoded assuming no embedded quotes/backslashes (tokens
-  # are base64url + dots; cloud host is a hostname[:port]).
-  printf '{"token":"%s","cloudHost":"%s"}\n' "$token" "$cloud_host" \
-    | $SUDO tee /etc/wendy-agent/enrollment.json >/dev/null
+  # Write via printf | tee (not a heredoc) so the token is not echoed to
+  # stdout. The values are JSON-encoded assuming no embedded quotes/backslashes
+  # (tokens are base64url + dots; cloud host is a hostname[:port]).
+  # Create the file 0600 from birth (umask in the subshell applies to the
+  # file tee creates), so the bearer token is never world-readable. The
+  # chmod below is a defensive backstop, not the sole protection.
+  ( umask 077; printf '{"token":"%s","cloudHost":"%s"}\n' "$token" "$cloud_host" \
+      | $SUDO tee /etc/wendy-agent/enrollment.json >/dev/null )
   $SUDO chmod 600 /etc/wendy-agent/enrollment.json
   echo "Enrollment token staged; the device will enroll on startup."
   # Nudge an already-running (package-installed) agent to re-read it.
