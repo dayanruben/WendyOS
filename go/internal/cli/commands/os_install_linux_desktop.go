@@ -44,6 +44,33 @@ func renderLinuxDesktopInstructions(token, cloudHost, orgName string, expiresAt 
 	return b.String()
 }
 
+// linuxDesktopCommand returns the runnable, single-line agent.sh install
+// command — the form copied to the clipboard so it pastes and runs directly.
+// The multi-line display form lives in renderLinuxDesktopInstructions.
+func linuxDesktopCommand(token, cloudHost string) string {
+	if token == "" {
+		return fmt.Sprintf("curl -fsSL %s | bash", linuxDesktopAgentURL)
+	}
+	return fmt.Sprintf("curl -fsSL %s | WENDY_ENROLLMENT_TOKEN=%s WENDY_CLOUD_HOST=%s bash",
+		linuxDesktopAgentURL, token, cloudHost)
+}
+
+// copyLinuxDesktopCommand copies the runnable install command to the clipboard
+// and prints a confirmation, returning whether it succeeded. It is a
+// best-effort convenience: it no-ops when not attached to an interactive
+// terminal, and a clipboard failure (no tool, headless host) is silently
+// ignored rather than surfaced as an error.
+func copyLinuxDesktopCommand(token, cloudHost string, interactive bool) bool {
+	if !interactive {
+		return false
+	}
+	if err := clipboardWriter(linuxDesktopCommand(token, cloudHost)); err != nil {
+		return false
+	}
+	fmt.Fprintln(os.Stdout, "\n✓ Copied the command to your clipboard.")
+	return true
+}
+
 // linuxDesktopTokenFn is a stub point so tests can replace token minting
 // without dialing Wendy Cloud.
 var linuxDesktopTokenFn = createLinuxDesktopToken
@@ -122,6 +149,7 @@ func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceNa
 	}
 
 	fmt.Fprint(os.Stdout, renderLinuxDesktopInstructions(token, cloudHost, orgName, expiresAt))
+	copyLinuxDesktopCommand(token, cloudHost, interactive)
 	return nil
 }
 

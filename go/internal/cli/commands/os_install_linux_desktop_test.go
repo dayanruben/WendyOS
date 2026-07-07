@@ -154,6 +154,69 @@ func TestInstallLinuxDesktop_EnrolledValidatesDeviceName(t *testing.T) {
 	}
 }
 
+func TestLinuxDesktopCommand(t *testing.T) {
+	if got := linuxDesktopCommand("", ""); got != "curl -fsSL https://install.wendy.dev/agent.sh | bash" {
+		t.Fatalf("plain command = %q", got)
+	}
+	got := linuxDesktopCommand("tok-abc", "cloud.wendy.sh:443")
+	want := "curl -fsSL https://install.wendy.dev/agent.sh | WENDY_ENROLLMENT_TOKEN=tok-abc WENDY_CLOUD_HOST=cloud.wendy.sh:443 bash"
+	if got != want {
+		t.Fatalf("enrolled command\n got: %q\nwant: %q", got, want)
+	}
+	// The copyable command must be a single line so it pastes and runs directly.
+	if strings.ContainsAny(got, "\n\\") {
+		t.Fatalf("copyable command must be a single line without continuations: %q", got)
+	}
+}
+
+func TestCopyLinuxDesktopCommand_Interactive(t *testing.T) {
+	var copied string
+	orig := clipboardWriter
+	clipboardWriter = func(s string) error { copied = s; return nil }
+	t.Cleanup(func() { clipboardWriter = orig })
+
+	out := captureStdout(t, func() {
+		if !copyLinuxDesktopCommand("tok-xyz", "cloud.wendy.sh:443", true) {
+			t.Fatal("expected copyLinuxDesktopCommand to report success")
+		}
+	})
+	if copied != linuxDesktopCommand("tok-xyz", "cloud.wendy.sh:443") {
+		t.Fatalf("clipboard got %q", copied)
+	}
+	if !strings.Contains(out, "clipboard") {
+		t.Fatalf("expected a copied-to-clipboard hint, got:\n%s", out)
+	}
+}
+
+func TestCopyLinuxDesktopCommand_NonInteractive(t *testing.T) {
+	called := false
+	orig := clipboardWriter
+	clipboardWriter = func(string) error { called = true; return nil }
+	t.Cleanup(func() { clipboardWriter = orig })
+
+	if copyLinuxDesktopCommand("tok", "host", false) {
+		t.Fatal("must not report success when non-interactive")
+	}
+	if called {
+		t.Fatal("must not touch the clipboard when non-interactive")
+	}
+}
+
+func TestCopyLinuxDesktopCommand_ClipboardFailure(t *testing.T) {
+	orig := clipboardWriter
+	clipboardWriter = func(string) error { return errors.New("no clipboard tool") }
+	t.Cleanup(func() { clipboardWriter = orig })
+
+	out := captureStdout(t, func() {
+		if copyLinuxDesktopCommand("tok", "host", true) {
+			t.Fatal("must not report success when the clipboard write fails")
+		}
+	})
+	if strings.Contains(out, "clipboard") {
+		t.Fatalf("must not claim it copied when the write failed:\n%s", out)
+	}
+}
+
 func TestInstallLinuxDesktop_ForcedNonInteractive_TokenError(t *testing.T) {
 	stubLinuxDesktopSingleSessionConfig(t)
 
