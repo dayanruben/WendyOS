@@ -20,7 +20,7 @@ wendy install --nightly
 # Linux: non-interactive with all flags
 wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 --force
 
-# Jetson AGX Thor: flash over USB recovery (macOS and Linux)
+# Jetson AGX Thor: flash over USB recovery (macOS, Linux, and Windows)
 wendy install --device-type jetson-agx-thor
 
 # Direct install from a local image (Linux only)
@@ -148,7 +148,7 @@ Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor`
 2. **Stage 2 partition flash** — flashes QSPI and the internal NVMe through the Thor flashing gadget.
 3. **Power-cycle** — after a successful flash, power-cycle the Thor out of recovery mode to boot WendyOS.
 
-The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS and Linux; Windows returns an unsupported-platform error.
+The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS, Linux, and Windows. On Windows, the first flash installs a WinUSB driver for the Jetson recovery device — expect a one-time administrator (UAC) prompt.
 
 ### WiFi pre-configuration
 
