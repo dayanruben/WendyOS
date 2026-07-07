@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -77,9 +76,18 @@ func runDeviceAttach(cmd *cobra.Command, app string, execCmd []string) error {
 		return fmt.Errorf("opening exec stream: %w", err)
 	}
 
+	// gRPC forbids concurrent SendMsg on one stream, so the initial start frame,
+	// the resize watcher, and the stdin pump all send through this lock.
+	var sendMu sync.Mutex
+	send := func(req *agentpb.ExecContainerRequest) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(req)
+	}
+
 	fd := int(os.Stdin.Fd())
 	rows, cols := termSize(fd)
-	if err := stream.Send(buildExecStart(app, execCmd, rows, cols)); err != nil {
+	if err := send(buildExecStart(app, execCmd, rows, cols)); err != nil {
 		return fmt.Errorf("sending exec start: %w", err)
 	}
 
@@ -90,14 +98,15 @@ func runDeviceAttach(cmd *cobra.Command, app string, execCmd []string) error {
 		}
 	}
 
-	// SIGWINCH -> resize frames.
+	// Terminal resize -> resize frames. Only wired up on Unix (SIGWINCH);
+	// a no-op on Windows, which has no equivalent signal.
 	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
+	stopResize := notifyTerminalResize(winch)
+	defer stopResize()
 	go func() {
 		for range winch {
 			r, c := termSize(fd)
-			_ = stream.Send(winSizeFrame(r, c))
+			_ = send(winSizeFrame(r, c))
 		}
 	}()
 
@@ -107,12 +116,14 @@ func runDeviceAttach(cmd *cobra.Command, app string, execCmd []string) error {
 		for {
 			n, rerr := os.Stdin.Read(buf)
 			if n > 0 {
-				_ = stream.Send(&agentpb.ExecContainerRequest{
+				_ = send(&agentpb.ExecContainerRequest{
 					RequestType: &agentpb.ExecContainerRequest_StdinData{StdinData: append([]byte(nil), buf[:n]...)},
 				})
 			}
 			if rerr != nil {
+				sendMu.Lock()
 				_ = stream.CloseSend()
+				sendMu.Unlock()
 				return
 			}
 		}

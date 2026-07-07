@@ -747,22 +747,43 @@ func (s *ContainerService) ExecContainer(stream grpc.BidiStreamingServer[agentpb
 		}
 	}()
 
-	stdout := &execWriter{stream: stream, stderr: false}
-	stderr := &execWriter{stream: stream, stderr: true}
+	// gRPC forbids concurrent SendMsg on one stream. In non-TTY mode containerd
+	// copies stdout and stderr on separate goroutines, and the final exit_code
+	// frame below is sent from this goroutine, so every send is serialized
+	// through one lock.
+	sender := &execSender{stream: stream}
+	stdout := &execWriter{sender: sender, stderr: false}
+	stderr := &execWriter{sender: sender, stderr: true}
 
 	code, err := execer.ExecInContainer(ctx, start.GetAppName(), command, start.GetTty(), stdinR, stdout, stderr, resize)
 	if err != nil {
 		return status.Errorf(codes.Internal, "exec failed: %v", err)
 	}
-	return stream.Send(&agentpb.ExecContainerResponse{
+	// ExecInContainer drains stdout/stderr before returning, so the exit_code
+	// frame is guaranteed to follow the last output frame on the ordered stream.
+	return sender.send(&agentpb.ExecContainerResponse{
 		ResponseType: &agentpb.ExecContainerResponse_ExitCode{ExitCode: int32(code)},
 	})
+}
+
+// execSender serializes every Send on the exec bidi stream: gRPC does not allow
+// concurrent SendMsg, and the stdout writer, stderr writer, and exit_code frame
+// can all originate from different goroutines.
+type execSender struct {
+	stream grpc.BidiStreamingServer[agentpb.ExecContainerRequest, agentpb.ExecContainerResponse]
+	mu     sync.Mutex
+}
+
+func (s *execSender) send(resp *agentpb.ExecContainerResponse) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream.Send(resp)
 }
 
 // execWriter adapts a container exec output stream to io.Writer so the PTY's
 // stdout/stderr can be forwarded over gRPC.
 type execWriter struct {
-	stream grpc.BidiStreamingServer[agentpb.ExecContainerRequest, agentpb.ExecContainerResponse]
+	sender *execSender
 	stderr bool
 }
 
@@ -775,7 +796,7 @@ func (w *execWriter) Write(p []byte) (int, error) {
 	} else {
 		resp = &agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StdoutData{StdoutData: buf}}
 	}
-	if err := w.stream.Send(resp); err != nil {
+	if err := w.sender.send(resp); err != nil {
 		return 0, err
 	}
 	return len(p), nil

@@ -22,10 +22,15 @@ trusted, first-party devices.**
 > **Both the agent and the staged CLI below must be built from this branch
 > (`jo/claude-on-device-sp2`).** The on-device builder is split across both: the
 > agent applies the `build` entitlement (relaxing the sandbox for BuildKit) and
-> only this branch's `appconfig` even recognizes `{"type":"build"}` — an older
-> agent would reject this app's `wendy.json`. The CLI carries the BuildKit build
-> backend it auto-selects on the device. Mixing an old binary with this app
-> silently loses on-device building.
+> the CLI carries the BuildKit build backend it auto-selects on the device.
+> Mixing an old binary with this app silently loses on-device building — and does
+> so quietly, because neither side hard-fails:
+>
+> - An **older agent** applies entitlements best-effort (it just skips any type it
+>   doesn't recognize), so it starts the container but never relaxes
+>   caps/seccomp/cgroups for `build`. BuildKit then fails at runtime.
+> - An **older CLI** validates `wendy.json` strictly and rejects `{"type":"build"}`
+>   as an unknown entitlement type before it ever deploys.
 
 1. **Deploy a new-enough agent first.** The `ExecContainer` PTY RPC, the `admin`
    socket, and the `build` entitlement (on-device BuildKit) only exist in an agent

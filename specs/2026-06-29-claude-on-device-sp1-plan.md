@@ -4,7 +4,8 @@
 
 **Goal:** Run the Claude Code CLI in an `admin`-entitled container on a Jetson and let it operate & debug the device over the local agent socket — via a wendy-CLI unix-socket transport, a new PTY-capable `ExecContainer` RPC + `wendy device attach`, and a `claude-on-device` app.
 
-**Architecture:** Three layers. (1) The wendy CLI gains a `WENDY_AGENT_SOCKET` transport so every command can talk to the agent over `/run/wendy/agent.sock` (no mTLS). (2) The agent gains a docker-`exec -it`-style `ExecContainer` bidi RPC that runs a process in a container with a containerd PTY + window resize; a new `wendy device attach` subcommand drives it from a raw terminal. (3) A first-party `claude-on-device` app bundles Claude Code + the wendy CLI, declares `{"type":"admin"}`, and persists `/root/.claude`.
+**Architecture:** Three layers. (1) The wendy CLI gains a `WENDY_AGENT_SOCKET` transport so every command can talk to the agent over the bind-mounted socket at
+`/run/wendy/agent/agent.sock` (host path `/var/lib/wendy/agent-control/agent.sock`; no mTLS). (2) The agent gains a docker-`exec -it`-style `ExecContainer` bidi RPC that runs a process in a container with a containerd PTY + window resize; a new `wendy device attach` subcommand drives it from a raw terminal. (3) A first-party `claude-on-device` app bundles Claude Code + the wendy CLI, declares `{"type":"admin"}`, and persists `/root/.claude`.
 
 **Tech Stack:** Go 1.x (module `github.com/wendylabsinc/wendy`, source under `go/`), gRPC + protoc (regen via `cd go && make proto`), containerd v2 client (`task.Exec`, `cio`), `golang.org/x/term`, Docker/buildx for the app image.
 

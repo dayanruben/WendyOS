@@ -1431,6 +1431,12 @@ func (c *Client) ExecInContainer(ctx context.Context, appName string, command []
 
 	select {
 	case st := <-statusC:
+		// Block until containerd's stdout/stderr copy goroutines have drained so
+		// the caller can send its final frame (e.g. an exit code) only after the
+		// last output byte, not racing in-flight output.
+		if pio := proc.IO(); pio != nil {
+			pio.Wait()
+		}
 		return int(st.ExitCode()), st.Error()
 	case <-ctx.Done():
 		_ = proc.Kill(ctx, syscall.SIGKILL)

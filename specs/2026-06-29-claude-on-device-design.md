@@ -5,9 +5,11 @@
 **Depends on:** PR #1239 (`admin` entitlement + agent local unix-socket gRPC),
 **already merged to `main`** (verified present in this worktree: `EntitlementAdmin`
 in appconfig, `applyAdmin` in oci/entitlements, `internal/agent/localsocket`, and the
-`{"type":"admin"}` schema entry). The agent serves its full gRPC surface on
-`/run/wendy/agent.sock`, and `{"type":"admin"}` bind-mounts that socket into a
-container and sets `WENDY_AGENT_SOCKET`.
+`{"type":"admin"}` schema entry). The agent serves its full gRPC surface on a
+host socket (`oci.AdminAgentSocketHostPath` = `/var/lib/wendy/agent-control/agent.sock`),
+and `{"type":"admin"}` bind-mounts that socket into the container at
+`/run/wendy/agent/agent.sock` and sets `WENDY_AGENT_SOCKET` (consumers should
+read the env var rather than hard-coding the path).
 **Followed by:** Sub-project 2 — on-device image builder (`wendy run` builds on the
 Jetson). Out of scope here.
 
@@ -94,9 +96,9 @@ A Wendy app (its own directory; ships as a sample/first-party app).
 - Entrypoint: a long-lived idle (e.g. `sleep infinity`) so the container stays up
   and `wendy device attach` execs `claude` into it with a fresh PTY on demand.
 - `wendy.json`: declares `{"type":"admin"}` (and nothing else network-facing in
-  SP1). The entitlement bind-mounts `/run/wendy/agent.sock` and sets
-  `WENDY_AGENT_SOCKET`, so the in-container `wendy` reaches the local agent with no
-  configuration and no certs.
+  SP1). The entitlement bind-mounts the host socket into the container at
+  `/run/wendy/agent/agent.sock` and sets `WENDY_AGENT_SOCKET`, so the in-container
+  `wendy` reaches the local agent with no configuration and no certs.
 - Persistent volume(s): `/root/.claude` (OAuth token + Claude config, survives
   restarts) and `/workspace` (Claude's working directory).
 
@@ -123,7 +125,7 @@ wendy device attach claude-on-device
                                    claude (TUI) running in container
                                      │  wendy <cmd>  (WENDY_AGENT_SOCKET set)
                                      ▼
-                                   /run/wendy/agent.sock (bind-mounted by `admin`)
+                                   /run/wendy/agent/agent.sock (bind-mounted by `admin`)
                                      │ plain h2c, no mTLS  (PR #1239)
                                      ▼
                                    wendy-agent localSrv → full service set
