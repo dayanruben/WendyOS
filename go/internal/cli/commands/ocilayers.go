@@ -530,6 +530,11 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 	}
 	args := buildkitOCIArgs(cwd, dfDir, dfName, platform, buildArgs, dest)
 	fmt.Fprintf(stderr, "[buildkit] starting OCI export: buildctl %s\n", strings.Join(redactBuildctlArgsForLog(args), " "))
+	// NOTE: redactBuildctlArgsForLog only masks values in the log line above.
+	// The unredacted `--opt build-arg:KEY=VALUE` tokens are still placed in
+	// buildctl's argv (below) and are visible in the host process table
+	// (/proc/<pid>/cmdline). Build args are NOT a secret channel — never pass
+	// credentials via --build-arg; use buildctl's `--secret` for those.
 	cmd := exec.CommandContext(ctx, "buildctl", args...)
 	cmd.Dir = cwd
 	cmd.Stdout = stdout

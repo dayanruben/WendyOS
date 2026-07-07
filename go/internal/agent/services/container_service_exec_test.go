@@ -6,6 +6,9 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -49,6 +52,30 @@ func (m *execTestMock) ExecInContainer(_ context.Context, appName string, comman
 		}
 	}
 	return 7, nil
+}
+
+func TestExecContainer_RejectsEmptyCommand(t *testing.T) {
+	// Exec over the admin socket runs arbitrary commands in any container, so the
+	// handler must not fall back to a default shell — an ExecStart with no command
+	// is rejected before any exec is attempted.
+	mock := &execTestMock{mockContainerdClient: &mockContainerdClient{}}
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	stream, err := client.ExecContainer(context.Background())
+	if err != nil {
+		t.Fatalf("ExecContainer: %v", err)
+	}
+	if err := stream.Send(&agentpb.ExecContainerRequest{RequestType: &agentpb.ExecContainerRequest_Start{
+		Start: &agentpb.ExecContainerRequest_ExecStart{AppName: "myapp"}, // no Command
+	}}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	_ = stream.CloseSend()
+
+	if _, rerr := stream.Recv(); status.Code(rerr) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for empty command, got %v", rerr)
+	}
 }
 
 func TestExecContainer_EchoesStdinAppliesResizeAndReturnsExit(t *testing.T) {

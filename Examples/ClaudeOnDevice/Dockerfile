@@ -11,10 +11,19 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # BuildKit (buildkitd + buildctl + buildkit-runc) for on-device image builds —
-# no Docker daemon required. Pinned release, arm64.
+# no Docker daemon required. Pinned release, arm64. The tarball SHA-256 is
+# verified before extraction: buildkitd runs with the privileged `build`
+# capability set, so a tampered binary (compromised release asset, CDN, or a
+# MITM behind a rogue CA) would have immediate host-escape reach. Bump
+# BUILDKIT_SHA256 alongside BUILDKIT_VERSION (it is the sha256 of the
+# linux-arm64 release tarball).
 ARG BUILDKIT_VERSION=v0.16.0
-RUN curl -fsSL "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-arm64.tar.gz" \
-      | tar -xz -C /usr/local bin/buildkitd bin/buildctl bin/buildkit-runc \
+ARG BUILDKIT_SHA256=1b70bb7955ddda66537d4bf9aa540e79e79e19aa989901613da58f5f133a53ef
+RUN curl -fsSL -o /tmp/buildkit.tar.gz \
+      "https://github.com/moby/buildkit/releases/download/${BUILDKIT_VERSION}/buildkit-${BUILDKIT_VERSION}.linux-arm64.tar.gz" \
+  && echo "${BUILDKIT_SHA256}  /tmp/buildkit.tar.gz" | sha256sum -c - \
+  && tar -xz -C /usr/local -f /tmp/buildkit.tar.gz bin/buildkitd bin/buildctl bin/buildkit-runc \
+  && rm /tmp/buildkit.tar.gz \
   && test -x /usr/local/bin/buildctl && test -x /usr/local/bin/buildkitd
 # NOTE: do NOT run `buildkitd --version` here — when this image is cross-built for
 # arm64 on an amd64 host, that executes the arm64 daemon under QEMU and can abort

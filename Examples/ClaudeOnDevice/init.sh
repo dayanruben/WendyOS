@@ -28,10 +28,14 @@ mkdir -p /run/buildkit /var/lib/buildkit
 
 BUILDKITD_PID=""
 
+# buildkitd output goes to this container's own stderr (fd 2 of PID 1), i.e. the
+# container log stream, rather than an unbounded /var/log file: the container
+# runtime's log driver bounds and rotates it, so a chatty or misbehaving daemon
+# can't fill the writable layer / persist volume and wedge the container.
 start_buildkitd() {
   buildkitd \
     ${BUILDKIT_SNAPSHOTTER:+--oci-worker-snapshotter="$BUILDKIT_SNAPSHOTTER"} \
-    >/var/log/buildkitd.log 2>&1 &
+    >&2 2>&1 &
   BUILDKITD_PID=$!
 }
 

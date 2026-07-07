@@ -13,9 +13,17 @@ The `admin` entitlement bind-mounts the agent's control socket into this
 container with **no authentication** — the entitlement mount is the entire trust
 boundary. Anything running here can start/stop/**delete** any app, read all
 telemetry, exec into any container, and trigger **OS/agent updates** — i.e. it
-can brick or wipe the device if adversarially prompted. Your Claude.ai OAuth
-token is also stored on the device (`/root/.claude` volume). **Deploy only to
+can brick or wipe the device if adversarially prompted. **Deploy only to
 trusted, first-party devices.**
+
+Your Claude.ai OAuth token is stored **unencrypted at rest** in the persisted
+`/root` volume, protected only by the container's root UID and the device's
+filesystem — there is no encryption and no key sealing (e.g. TPM). Treat
+physical or root access to the device as equivalent to exposure of that token,
+and **run `claude logout` before decommissioning, reassigning, or reflashing a
+device** so a stale credential isn't left behind on disk. The token also
+outlives the container: `wendy device apps remove` deletes the container but not
+the persist volume.
 
 ## Build & deploy (from an amd64 dev host)
 

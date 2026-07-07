@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -711,9 +712,22 @@ func (s *ContainerService) ExecContainer(stream grpc.BidiStreamingServer[agentpb
 		return status.Error(codes.InvalidArgument, "first message must be ExecStart with app_name")
 	}
 	command := start.GetCommand()
+	// Require an explicit command rather than defaulting to a shell: exec over
+	// the admin socket runs arbitrary commands in any container, so a caller
+	// should have to name what it runs (the wendy CLI always sends one — `claude`
+	// or the command after `--`).
 	if len(command) == 0 {
-		command = []string{"/bin/sh"}
+		return status.Error(codes.InvalidArgument, "ExecStart requires a non-empty command")
 	}
+
+	// Audit: this RPC is effectively `docker exec` into any running workload via
+	// the unauthenticated admin socket. Log every invocation and its outcome so
+	// there is a forensic trail of what ran where.
+	s.logger.Info("container exec started",
+		zap.String("app_name", start.GetAppName()),
+		zap.Strings("command", command),
+		zap.Bool("tty", start.GetTty()))
+	execStartedAt := time.Now()
 
 	ctx := stream.Context()
 	stdinR, stdinW := io.Pipe()
@@ -757,8 +771,16 @@ func (s *ContainerService) ExecContainer(stream grpc.BidiStreamingServer[agentpb
 
 	code, err := execer.ExecInContainer(ctx, start.GetAppName(), command, start.GetTty(), stdinR, stdout, stderr, resize)
 	if err != nil {
+		s.logger.Warn("container exec failed",
+			zap.String("app_name", start.GetAppName()),
+			zap.Duration("duration", time.Since(execStartedAt)),
+			zap.Error(err))
 		return status.Errorf(codes.Internal, "exec failed: %v", err)
 	}
+	s.logger.Info("container exec completed",
+		zap.String("app_name", start.GetAppName()),
+		zap.Int("exit_code", code),
+		zap.Duration("duration", time.Since(execStartedAt)))
 	// ExecInContainer drains stdout/stderr before returning, so the exit_code
 	// frame is guaranteed to follow the last output frame on the ordered stream.
 	return sender.send(&agentpb.ExecContainerResponse{
