@@ -47,6 +47,7 @@ var (
 const (
 	imageBuilderDocker         = "docker"
 	imageBuilderAppleContainer = "apple-container"
+	imageBuilderBuildkit       = "buildkit"
 )
 
 var buildDockerProjectWithDocker = buildDockerProject
@@ -59,8 +60,10 @@ func normalizeImageBuilder(builder string) (string, error) {
 		return imageBuilderDocker, nil
 	case imageBuilderAppleContainer:
 		return imageBuilderAppleContainer, nil
+	case imageBuilderBuildkit:
+		return imageBuilderBuildkit, nil
 	default:
-		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker or apple-container", builder)
+		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker, apple-container, or buildkit", builder)
 	}
 }
 
@@ -68,6 +71,8 @@ func imageBuilderDisplayName(builder string) string {
 	switch builder {
 	case imageBuilderAppleContainer:
 		return "Apple Container"
+	case imageBuilderBuildkit:
+		return "BuildKit"
 	default:
 		return "Docker"
 	}
@@ -79,6 +84,20 @@ func imageBuilderWasExplicit(builder string) bool {
 
 func shouldAutoAttemptAppleContainerBuilder() bool {
 	return imageBuilderHostGOOS() == "darwin" && imageBuilderHostGOARCH() == "arm64"
+}
+
+// shouldUseBuildkitOnDevice reports whether an unspecified builder should default
+// to BuildKit: true only when running inside the device (WENDY_AGENT_SOCKET set)
+// and Docker is unavailable. Off-device, or when docker exists, behavior is
+// unchanged.
+func shouldUseBuildkitOnDevice() bool {
+	if os.Getenv("WENDY_AGENT_SOCKET") == "" {
+		return false
+	}
+	if _, err := imageBuilderLookPath("docker"); err == nil {
+		return false
+	}
+	return true
 }
 
 func logAppleContainerFallback(w io.Writer, _ error) {

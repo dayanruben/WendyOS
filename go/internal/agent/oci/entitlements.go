@@ -106,6 +106,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			}
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
+		case appconfig.EntitlementBuild:
+			applyBuild(spec)
 		}
 	}
 	return nil
@@ -414,18 +416,33 @@ func applyDisplay(spec *Spec) {
 // declare the admin entitlement get the socket, so anything with this can fully
 // control the device's apps. The mount is conditional on the host socket
 // existing so an app still starts if the agent socket is down (no-op-safe).
+//
+// The socket's parent *directory* is mounted, not the socket file. A file
+// bind-mount pins a single inode, but localsocket.Listen unlinks and recreates
+// the socket (a fresh inode) on every agent start. Mounting the file would
+// strand a long-lived container on the deleted inode after an agent restart
+// (every dial → connection refused). Mounting the directory lets the container
+// resolve the socket name live on each dial, so a restart is transparent.
+//
+// A directory mount only survives *socket-file* churn, though — it still pins
+// the directory's inode. That is why the host directory lives on disk
+// (AdminAgentSocketHostPath, under /var/lib/wendy) rather than on tmpfs /run: a
+// /run directory is wiped and re-created with a fresh inode on every boot, which
+// would strand the mount on the orphaned pre-reboot inode (in-container dial →
+// ENOENT). See AdminAgentSocketHostPath. The socket lives in its own dedicated
+// directory so this exposes nothing else. Read-only: connecting needs no write.
 func applyAdmin(spec *Spec) {
-	fi, err := os.Lstat(adminAgentSocketPath)
+	fi, err := os.Lstat(AdminAgentSocketHostPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {
 		return
 	}
 	spec.Mounts = append(spec.Mounts, Mount{
-		Destination: "/run/wendy/agent.sock",
-		Source:      adminAgentSocketPath,
+		Destination: ctrAgentSocketDir,
+		Source:      filepath.Dir(AdminAgentSocketHostPath),
 		Type:        "bind",
-		Options:     []string{"rbind", "nosuid", "noexec"},
+		Options:     []string{"rbind", "nosuid", "noexec", "ro"},
 	})
-	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock")
+	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET="+ctrAgentSocketPath)
 }
 
 // applyNetwork configures the network namespace.
@@ -643,10 +660,33 @@ var lookupRenderGID = func() (uint32, bool) {
 	return uint32(gid), true
 }
 
-// adminAgentSocketPath is the host wendy-agent local control socket bind-mounted
-// into containers granted the admin entitlement. Behind a var so tests can point
-// it at a temp socket.
-var adminAgentSocketPath = "/run/wendy/agent.sock"
+// AdminAgentSocketHostPath is the host wendy-agent local control socket exposed
+// to containers granted the admin entitlement. It is the single source of truth
+// for the host socket location — the agent's local listener (main.go) uses it
+// too, so the path the agent serves and the path applyAdmin bind-mounts can
+// never drift apart.
+//
+// It lives in its own directory (…/agent-control) so applyAdmin can bind-mount
+// that directory rather than the socket file — see applyAdmin for why.
+//
+// It lives on the disk-backed, /data-persistent /var/lib/wendy tree, NOT on the
+// tmpfs /run: the admin bind mount pins the socket directory's inode, and tmpfs
+// is wiped (fresh inode) on every boot. A /run path therefore stranded a
+// long-lived admin container on the orphaned pre-reboot directory inode after a
+// reboot — the socket read as ENOENT inside the container even though the live
+// agent was serving one in the new /run directory. A disk-backed directory
+// keeps a stable inode across reboots (and, under /var/lib/wendy, across A/B OTA
+// too), so the mount never goes stale.
+//
+// Behind a var so tests can point it at a temp socket.
+var AdminAgentSocketHostPath = "/var/lib/wendy/agent-control/agent.sock"
+
+// ctrAgentSocketDir / ctrAgentSocketPath are the in-container destinations for
+// the admin socket directory mount and the socket within it (WENDY_AGENT_SOCKET).
+const (
+	ctrAgentSocketDir  = "/run/wendy/agent"
+	ctrAgentSocketPath = "/run/wendy/agent/agent.sock"
+)
 
 // applyCamera adds camera/V4L2 device access, plus the additional kernel
 // device majors that libcamera (and on Jetson, nvargus/nvhost) require. The
@@ -1196,4 +1236,129 @@ func replaceMount(spec *Spec, mount Mount) {
 		}
 	}
 	spec.Mounts = append(spec.Mounts, mount)
+}
+
+// applyBuild relaxes the hardened container profile just enough to run a nested
+// container image builder (BuildKit) in-container: it adds CAP_SYS_ADMIN (mount /
+// pivot_root / namespace creation for BuildKit's runc executor) and un-denies the
+// unshare + clone(CLONE_NEWUSER) syscalls the default seccomp profile blocks. The
+// module-load and kexec denials are deliberately KEPT (relaxSeccompForBuild), so
+// the grant is scoped to what BuildKit needs. This is privileged-equivalent — see
+// the security note in entitlements.md.
+func applyBuild(spec *Spec) {
+	if spec.Process.Capabilities == nil {
+		spec.Process.Capabilities = &LinuxCapabilities{}
+	}
+	// BuildKit's runc executor needs a full privileged capability set, not just
+	// CAP_SYS_ADMIN: nested-container setup, overlay/bind mounts, and the
+	// cgroup-v2 device controller (eBPF, needs CAP_BPF/CAP_PERFMON on kernel
+	// >=5.8) all require more. Granting the whole set matches what `--privileged`
+	// gives and what the entitlement already documents (privileged-equivalent);
+	// CAP_SYS_ADMIN alone is already escape-capable, so the rest add no new blast
+	// radius. The kernel-module/kexec SYSCALLS stay denied by seccomp regardless
+	// (relaxSeccompForBuild keeps those rules), so CAP_SYS_MODULE/CAP_SYS_BOOT are
+	// inert here — defense in depth.
+	for _, cap := range allLinuxCapabilities {
+		spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, cap)
+		spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, cap)
+		spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, cap)
+		spec.Process.Capabilities.Inheritable = appendUnique(spec.Process.Capabilities.Inheritable, cap)
+	}
+	relaxSeccompForBuild(spec)
+	relaxCgroupsForBuild(spec)
+}
+
+// allLinuxCapabilities is the full capability set a `--privileged` container
+// receives. The build entitlement grants it because BuildKit's nested runc
+// needs far more than CAP_SYS_ADMIN (notably CAP_BPF/CAP_PERFMON for the
+// cgroup-v2 device controller, CAP_NET_ADMIN, CAP_SYS_RESOURCE, etc.).
+var allLinuxCapabilities = []string{
+	"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER",
+	"CAP_FSETID", "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
+	"CAP_LINUX_IMMUTABLE", "CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST",
+	"CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_IPC_LOCK", "CAP_IPC_OWNER",
+	"CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_CHROOT", "CAP_SYS_PTRACE",
+	"CAP_SYS_PACCT", "CAP_SYS_ADMIN", "CAP_SYS_BOOT", "CAP_SYS_NICE",
+	"CAP_SYS_RESOURCE", "CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_MKNOD",
+	"CAP_LEASE", "CAP_AUDIT_WRITE", "CAP_AUDIT_CONTROL", "CAP_SETFCAP",
+	"CAP_MAC_OVERRIDE", "CAP_MAC_ADMIN", "CAP_SYSLOG", "CAP_WAKE_ALARM",
+	"CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ", "CAP_PERFMON", "CAP_BPF",
+	"CAP_CHECKPOINT_RESTORE",
+}
+
+// relaxCgroupsForBuild lets BuildKit's runc executor create the per-build-step
+// cgroup it needs. The hardened default mounts /sys/fs/cgroup read-only, so a
+// build step dies with "mkdir /sys/fs/cgroup/<name>: read-only file system".
+// Give the container its own cgroup namespace (so the writable mount is the
+// container's scoped cgroup subtree, not the host root) and drop "ro" from the
+// cgroup mount(s).
+func relaxCgroupsForBuild(spec *Spec) {
+	if spec.Linux == nil {
+		spec.Linux = &Linux{}
+	}
+	hasCgroupNS := false
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == "cgroup" {
+			hasCgroupNS = true
+			break
+		}
+	}
+	if !hasCgroupNS {
+		spec.Linux.Namespaces = append(spec.Linux.Namespaces, LinuxNamespace{Type: "cgroup"})
+	}
+	for i := range spec.Mounts {
+		if spec.Mounts[i].Destination != "/sys/fs/cgroup" {
+			continue
+		}
+		kept := spec.Mounts[i].Options[:0]
+		for _, o := range spec.Mounts[i].Options {
+			if o == "ro" {
+				continue // a mount with neither ro nor rw defaults to read-write
+			}
+			kept = append(kept, o)
+		}
+		spec.Mounts[i].Options = kept
+	}
+}
+
+// relaxSeccompForBuild removes only the seccomp deny rules that block the
+// namespace syscalls a nested builder needs: it drops "unshare" from any deny
+// rule (the default profile denies ["ptrace","unshare"] together, so ptrace stays
+// denied) and removes the dedicated clone(CLONE_NEWUSER) deny rule. Every other
+// rule — notably the kernel-module and kexec denials — is left untouched.
+func relaxSeccompForBuild(spec *Spec) {
+	if spec.Linux == nil || spec.Linux.Seccomp == nil {
+		return
+	}
+	const cloneNewuser = uint64(0x10000000) // CLONE_NEWUSER
+	kept := spec.Linux.Seccomp.Syscalls[:0]
+	for _, rule := range spec.Linux.Seccomp.Syscalls {
+		// Drop the dedicated clone(CLONE_NEWUSER) deny rule.
+		if len(rule.Names) == 1 && rule.Names[0] == "clone" {
+			isNewuserRule := false
+			for _, a := range rule.Args {
+				if a.Value == cloneNewuser {
+					isNewuserRule = true
+					break
+				}
+			}
+			if isNewuserRule {
+				continue
+			}
+		}
+		// Remove "unshare" from this rule's names, keeping the rest (e.g. ptrace).
+		names := make([]string, 0, len(rule.Names))
+		for _, n := range rule.Names {
+			if n == "unshare" {
+				continue
+			}
+			names = append(names, n)
+		}
+		rule.Names = names
+		if len(rule.Names) == 0 {
+			continue // the rule only covered unshare
+		}
+		kept = append(kept, rule)
+	}
+	spec.Linux.Seccomp.Syscalls = kept
 }
