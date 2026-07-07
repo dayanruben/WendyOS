@@ -285,7 +285,7 @@ I2C bus access.
 
 ### `serial`
 
-Serial tty device access — e.g. a USB-serial adapter or servo bus (`pyserial`/termios).
+Serial tty (UART) device access — e.g. a USB-serial adapter or servo bus (`pyserial`/termios). This is how apps do **UART**. See the [Serial / UART guide](../device/entitlements.md#serial--uart).
 
 ```json
 { "type": "serial", "device": "ttyACM0" }
@@ -310,11 +310,13 @@ GPIO pin access.
 
 ### `spi`
 
-SPI device access.
+SPI device access via `spidev` (`/dev/spidev<bus>.<chipselect>`). Takes no options — grants the SPI subsystem as a whole. See the [SPI guide](../device/entitlements.md#spi).
 
 ```json
 { "type": "spi" }
 ```
+
+> **Security note:** unlike `serial`/`i2c` (scoped to one node's `major:minor`), `spi` is a **whole-major** grant — an app with it can reach every SPI bus on the host.
 
 ### `input`
 
