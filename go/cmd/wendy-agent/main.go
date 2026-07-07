@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -181,16 +182,6 @@ func main() {
 		ctrdClient.SetMeshDNS(meshDNS)
 	}
 
-	// Pin the CNI bridge binary's digest on first boot (trust-on-first-use)
-	// so openAndVerifyCNIBinary's mandatory integrity check has a baseline to
-	// check against — without this, a freshly imaged/reinstalled device has
-	// no pinned digest and CNI ADD refuses to run for every isolated app.
-	// Best-effort/non-fatal: apps that don't use isolation must still work
-	// even if this fails.
-	if err := agentcontainerd.SeedCNIHashFileIfMissing(); err != nil {
-		logger.Warn("failed to seed CNI hash file", zap.Error(err))
-	}
-
 	// Ensure the host-side WENDY-MESH iptables chain exists so the wendy-mesh
 	// CNI plugin has a chain to append per-container ACCEPT rules into.
 	// Best-effort/non-fatal: containers that don't use the mesh network mode
@@ -210,6 +201,15 @@ func main() {
 	// port (see hostnetwork.MeshPortsChainName).
 	if err := hostnetwork.InitMeshPortsChain(); err != nil {
 		logger.Warn("failed to init mesh ports chain", zap.Error(err))
+	}
+
+	// Populate the CNI bin dir with symlinks back at this binary so isolated
+	// apps' bridge networking self-execs instead of depending on a
+	// third-party /opt/cni/bin plugin (see CNIAdd/CNIDel in
+	// internal/agent/containerd/cni.go and cniPluginName above). Only
+	// meaningful on Linux, where containerd/CNI networking is used.
+	if runtime.GOOS == "linux" {
+		ensureCNIBinDir(logger)
 	}
 
 	logManager := services.NewContainerLogManager(logger, telemetryBuf)
@@ -904,6 +904,43 @@ func deviceOrgFromCertPEM(certPEM string) (int32, bool) {
 	return org, true
 }
 
+// ensureCNIBinDir (re)creates agentcontainerd.CNIBinDir with "bridge" and
+// "host-local" symlinks pointing at this running binary's own executable
+// path. The vendored bridge CNI plugin (internal/agent/cni/bridge) delegates
+// IPAM by exec'ing "host-local" from its CNI_PATH; CNIAdd/CNIDel
+// (internal/agent/containerd/cni.go) set CNI_PATH to this directory, so that
+// delegated exec resolves back into the agent itself — cniPluginName then
+// recognises the "host-local" argv0 and dispatches to the vendored
+// hostlocal package — instead of a third-party binary. This removes the
+// need for a pinned digest: there is no third-party binary in the exec path
+// to pin (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
+//
+// Best-effort: failures are logged as warnings, not fatal, since isolated
+// app networking is not required for the agent to otherwise function.
+func ensureCNIBinDir(logger *zap.Logger) {
+	selfPath, err := os.Executable()
+	if err != nil {
+		logger.Warn("CNI bin dir: could not resolve agent executable path; isolated app networking will be unavailable", zap.Error(err))
+		return
+	}
+	if err := os.MkdirAll(agentcontainerd.CNIBinDir, 0o755); err != nil {
+		logger.Warn("CNI bin dir: mkdir failed", zap.String("dir", agentcontainerd.CNIBinDir), zap.Error(err))
+		return
+	}
+	for _, name := range []string{"bridge", "host-local"} {
+		link := filepath.Join(agentcontainerd.CNIBinDir, name)
+		// Idempotent: remove any stale symlink (e.g. left pointing at a
+		// previous agent binary path after an OTA update) before recreating.
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			logger.Warn("CNI bin dir: could not remove stale symlink", zap.String("link", link), zap.Error(err))
+			continue
+		}
+		if err := os.Symlink(selfPath, link); err != nil {
+			logger.Warn("CNI bin dir: could not create symlink", zap.String("link", link), zap.String("target", selfPath), zap.Error(err))
+		}
+	}
+}
+
 func brokerURLForCloudHost(cloudHost string) string {
 	host, port, err := net.SplitHostPort(cloudHost)
 	if err == nil {
@@ -916,6 +953,15 @@ func brokerURLForCloudHost(cloudHost string) string {
 }
 
 func handleUtilityCommand(args []string) (bool, int) {
+	// CNI dispatch takes precedence over everything else, including the
+	// len(args) == 0 case below: the vendored bridge plugin's IPAM
+	// delegation invokes this binary as bare argv0 "host-local" with no
+	// arguments, reading CNI_COMMAND from the environment instead (see
+	// cniPluginName and cni_exec_linux.go).
+	if name := cniPluginName(args, filepath.Base(os.Args[0])); name != "" {
+		return true, runCNIPlugin(name)
+	}
+
 	if len(args) == 0 {
 		return false, 0
 	}
