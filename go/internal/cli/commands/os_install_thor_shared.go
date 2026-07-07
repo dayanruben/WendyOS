@@ -7,6 +7,7 @@ package commands
 // os_install_thor_hw_{unix,windows}.go.
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -248,17 +249,20 @@ func checkThorDiskSpace(cacheDir string, plan thorFlashPlan) error {
 
 func downloadAndExtractFlashpack(cacheDir string, plan thorFlashPlan, detail func(string)) (*flashpack.Flashpack, bool, error) {
 	if !plan.cached {
+		// Every manifest entry carries a flashpack checksum; a missing one means a
+		// broken (or tampered-with) manifest, so refuse rather than skip verification.
+		if plan.info.Checksum == "" {
+			return nil, false, fmt.Errorf("manifest entry for %s has no flashpack checksum — refusing to install an unverifiable download", plan.version)
+		}
 		img := &imageInfo{DownloadURL: plan.info.URL, ImageSize: plan.info.SizeBytes, Version: plan.version}
 		tmp, err := downloadImageInto(img, throttledDetail(detail, byteProgress))
 		if err != nil {
 			return nil, false, fmt.Errorf("downloading flashpack: %w", err)
 		}
-		if plan.info.Checksum != "" {
-			detail("verifying")
-			if err := verifySHA256(tmp, plan.info.Checksum); err != nil {
-				os.Remove(tmp)
-				return nil, false, err
-			}
+		detail("verifying")
+		if err := verifySHA256(tmp, plan.info.Checksum); err != nil {
+			os.Remove(tmp)
+			return nil, false, err
 		}
 		if err := os.Rename(tmp, flashpack.TarballCachePath(cacheDir, plan.version)); err != nil {
 			os.Remove(tmp)
@@ -459,15 +463,11 @@ func waitForThorRecovery[T any](scan func() ([]T, error)) ([]T, error) {
 
 // readQuit reads a line and reports whether the user asked to quit (q/quit).
 func readQuit() bool {
-	var s string
-	if _, err := fmt.Scanln(&s); err != nil {
-		// Treat empty (bare Enter) as continue; EOF as quit.
-		if errors.Is(err, io.EOF) {
-			return true
-		}
-		return false
+	s := bufio.NewScanner(os.Stdin)
+	if !s.Scan() {
+		return true // EOF (e.g. closed stdin) — don't loop forever
 	}
-	switch strings.ToLower(strings.TrimSpace(s)) {
+	switch strings.ToLower(strings.TrimSpace(s.Text())) {
 	case "q", "quit":
 		return true
 	default:

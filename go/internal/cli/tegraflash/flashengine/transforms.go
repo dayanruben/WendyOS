@@ -95,6 +95,7 @@ func (e *engine) writeTemp(tag string, data []byte) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	e.tempFiles = append(e.tempFiles, f.Name())
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return "", "", err

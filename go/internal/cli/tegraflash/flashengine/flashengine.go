@@ -104,6 +104,7 @@ func Run(ctx context.Context, t Transport, opts Options) error {
 	}
 
 	e := &engine{ctx: ctx, t: t, opts: opts, out: out, progressTotal: total}
+	defer e.removeTempFiles()
 
 	// Device setup: push nvdd and make it executable.
 	if err := e.setup(); err != nil {
@@ -134,6 +135,15 @@ type engine struct {
 	// Progress accounting (single flash goroutine; no locking).
 	progressTotal   int64
 	progressWritten int64
+
+	// tempFiles holds transform outputs (writeTemp), removed when Run returns.
+	tempFiles []string
+}
+
+func (e *engine) removeTempFiles() {
+	for _, p := range e.tempFiles {
+		os.Remove(p)
+	}
 }
 
 // addProgress advances the transfer byte count and reports it. Called from the
