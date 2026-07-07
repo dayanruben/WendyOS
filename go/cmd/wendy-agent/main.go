@@ -35,6 +35,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
@@ -591,7 +592,14 @@ func main() {
 		)
 		registerAllServices(localSocketServer)
 
-		const localSocketPath = "/run/wendy/agent.sock"
+		// oci.AdminAgentSocketHostPath is the single source of truth for this
+		// path: the admin entitlement bind-mounts its parent directory into
+		// containers (see oci.applyAdmin), so the path we serve and the path we
+		// mount must never drift. It lives on the disk-backed /var/lib/wendy
+		// tree, not tmpfs /run, so its directory inode survives reboots — a /run
+		// path was wiped on every boot and stranded long-lived admin containers
+		// on the orphaned pre-reboot inode (in-container socket read as ENOENT).
+		localSocketPath := oci.AdminAgentSocketHostPath
 		localLis, err := localsocket.Listen(localSocketPath)
 		if err != nil {
 			logger.Error("Failed to listen on local control socket", zap.Error(err))
@@ -638,6 +646,11 @@ func main() {
 		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
 		os.Exit(0)
 	}
+
+	// Self-enroll from a token staged by agent.sh (Linux Desktop install).
+	// Best-effort and non-blocking: a cloud outage must never delay the agent
+	// coming up locally (mDNS discovery still works unenrolled).
+	go provisioningSvc.ApplyEnrollmentFile(context.Background())
 
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {

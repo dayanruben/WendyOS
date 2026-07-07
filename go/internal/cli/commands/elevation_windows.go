@@ -166,3 +166,9 @@ func elevationHint() string {
 // keepElevationAlive is a no-op on Windows: UAC elevation is process-wide and
 // does not expire, so there is no credential cache to refresh.
 func keepElevationAlive(_ context.Context) {}
+
+// ensureThorRootAccess is a no-op on Windows. The Thor flash's up-front root
+// requirement (WDY-1843) is a macOS/Linux concern — Windows elevates via UAC
+// when thorPrepareHost installs the WinUSB driver, so there is nothing to do
+// here. Provided so the cross-platform installThor flow compiles on Windows.
+func ensureThorRootAccess() error { return nil }

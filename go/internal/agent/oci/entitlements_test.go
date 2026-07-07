@@ -1633,34 +1633,71 @@ func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	defer l.Close()
-	origPath := adminAgentSocketPath
-	t.Cleanup(func() { adminAgentSocketPath = origPath })
-	adminAgentSocketPath = sock
+	origPath := AdminAgentSocketHostPath
+	t.Cleanup(func() { AdminAgentSocketHostPath = origPath })
+	AdminAgentSocketHostPath = sock
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if !hasMount(spec, "/run/wendy/agent.sock") {
-		t.Error("expected /run/wendy/agent.sock bind mount")
+	// The socket is exposed by bind-mounting its parent *directory*, not the
+	// socket file. A file bind-mount pins one inode; localsocket.Listen unlinks
+	// and recreates the socket (new inode) on every agent start, so a file mount
+	// strands a long-lived container on a deleted inode after an agent restart.
+	// A directory mount resolves the socket name live on each dial.
+	const ctrDir = "/run/wendy/agent"
+	if !hasMount(spec, ctrDir) {
+		t.Fatalf("expected %s directory bind mount", ctrDir)
 	}
-	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
-		t.Error("expected WENDY_AGENT_SOCKET env")
+	if hasMount(spec, "/run/wendy/agent/agent.sock") {
+		t.Error("must mount the directory, not the socket file")
+	}
+	var mounted *Mount
+	for i := range spec.Mounts {
+		if spec.Mounts[i].Destination == ctrDir {
+			mounted = &spec.Mounts[i]
+		}
+	}
+	if mounted.Source != filepath.Dir(sock) {
+		t.Errorf("mount source = %q, want socket parent dir %q", mounted.Source, filepath.Dir(sock))
+	}
+	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent/agent.sock") {
+		t.Error("expected WENDY_AGENT_SOCKET to point at the in-container socket path")
+	}
+}
+
+// TestAdminAgentSocketPath_IsDiskBacked guards the fix for the reboot
+// socket-staleness bug. The admin socket is exposed by bind-mounting its parent
+// directory into the container; that bind mount pins the directory's inode.
+// tmpfs (/run) is wiped on every boot, so /run/wendy/agent gets a *new* inode
+// each reboot — stranding a container that survives on the orphaned old inode
+// (the socket then reads as ENOENT inside the container). A disk-backed
+// directory keeps a stable inode across reboots (and, under /var/lib/wendy,
+// across A/B OTA too), so the mount never goes stale.
+func TestAdminAgentSocketPath_IsDiskBacked(t *testing.T) {
+	if strings.HasPrefix(AdminAgentSocketHostPath, "/run/") {
+		t.Fatalf("admin socket %q is on tmpfs /run: its parent-directory inode is "+
+			"recreated on every boot, stranding the container's bind mount (ENOENT). "+
+			"Use a disk-backed path such as /var/lib/wendy/...", AdminAgentSocketHostPath)
+	}
+	if !strings.HasPrefix(AdminAgentSocketHostPath, "/var/lib/") {
+		t.Errorf("admin socket %q should live under a persistent /var/lib path", AdminAgentSocketHostPath)
 	}
 }
 
 func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
-	origPath := adminAgentSocketPath
-	t.Cleanup(func() { adminAgentSocketPath = origPath })
-	adminAgentSocketPath = filepath.Join(t.TempDir(), "missing.sock")
+	origPath := AdminAgentSocketHostPath
+	t.Cleanup(func() { AdminAgentSocketHostPath = origPath })
+	AdminAgentSocketHostPath = filepath.Join(t.TempDir(), "missing.sock")
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if hasMount(spec, "/run/wendy/agent.sock") {
+	if hasMount(spec, "/run/wendy/agent") {
 		t.Error("must not mount a missing socket")
 	}
 }
@@ -1671,8 +1708,89 @@ func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if hasMount(spec, "/run/wendy/agent.sock") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+	if hasMount(spec, "/run/wendy/agent") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent/agent.sock") {
 		t.Error("non-admin app must not get the agent socket")
+	}
+}
+
+func seccompDenies(spec *Spec, syscall string) bool {
+	if spec.Linux == nil || spec.Linux.Seccomp == nil {
+		return false
+	}
+	for _, r := range spec.Linux.Seccomp.Syscalls {
+		if r.Action != ActErrno {
+			continue
+		}
+		for _, n := range r.Names {
+			if n == syscall {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestApplyEntitlements_Build_RelaxesSandbox(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementBuild}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// Full privileged capability set in all four sets BuildKit's runc executor
+	// needs — CAP_SYS_ADMIN for mounts, plus CAP_BPF/CAP_PERFMON for the cgroup-v2
+	// device controller (the build dies at the RUN step without them).
+	for _, set := range [][]string{
+		spec.Process.Capabilities.Bounding,
+		spec.Process.Capabilities.Effective,
+		spec.Process.Capabilities.Permitted,
+		spec.Process.Capabilities.Inheritable,
+	} {
+		for _, cap := range []string{"CAP_SYS_ADMIN", "CAP_BPF", "CAP_PERFMON", "CAP_NET_ADMIN"} {
+			if !slices.Contains(set, cap) {
+				t.Errorf("build entitlement must grant %s in all capability sets", cap)
+			}
+		}
+	}
+	// BuildKit's runc creates a per-step cgroup, so /sys/fs/cgroup must be
+	// writable (default profile mounts it read-only) and the container gets its
+	// own cgroup namespace.
+	if m, ok := mountForDest(spec, "/sys/fs/cgroup"); ok && slices.Contains(m.Options, "ro") {
+		t.Error("build entitlement must make /sys/fs/cgroup writable (no ro)")
+	}
+	if !hasNamespace(spec, "cgroup") {
+		t.Error("build entitlement must add a cgroup namespace")
+	}
+	// The namespace syscalls BuildKit needs are no longer denied...
+	if seccompDenies(spec, "unshare") {
+		t.Error("build entitlement must un-deny unshare")
+	}
+	if seccompDenies(spec, "clone") {
+		t.Error("build entitlement must remove the clone(CLONE_NEWUSER) deny rule")
+	}
+	// ...but the kernel-attack-surface denials are KEPT.
+	if !seccompDenies(spec, "init_module") || !seccompDenies(spec, "kexec_load") {
+		t.Error("build entitlement must keep module-load / kexec denials")
+	}
+	if !seccompDenies(spec, "ptrace") {
+		t.Error("build entitlement must keep ptrace denied (only unshare is removed from that rule)")
+	}
+}
+
+func TestApplyEntitlements_NoBuild_LeavesSandboxHardened(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test-app"} // no entitlements
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+	if hasCapability(spec, "CAP_SYS_ADMIN") {
+		t.Error("a spec without build must not gain CAP_SYS_ADMIN")
+	}
+	if !seccompDenies(spec, "unshare") || !seccompDenies(spec, "clone") {
+		t.Error("a spec without build must keep the default unshare/clone denials")
 	}
 }
 

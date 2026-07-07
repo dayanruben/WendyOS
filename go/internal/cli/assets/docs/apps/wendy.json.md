@@ -285,7 +285,7 @@ I2C bus access.
 
 ### `serial`
 
-Serial tty device access — e.g. a USB-serial adapter or servo bus (`pyserial`/termios).
+Serial tty (UART) device access — e.g. a USB-serial adapter or servo bus (`pyserial`/termios). This is how apps do **UART**. See the [Serial / UART guide](../device/entitlements.md#serial--uart).
 
 ```json
 { "type": "serial", "device": "ttyACM0" }
@@ -310,11 +310,13 @@ GPIO pin access.
 
 ### `spi`
 
-SPI device access.
+SPI device access via `spidev` (`/dev/spidev<bus>.<chipselect>`). Takes no options — grants the SPI subsystem as a whole. See the [SPI guide](../device/entitlements.md#spi).
 
 ```json
 { "type": "spi" }
 ```
+
+> **Security note:** unlike `serial`/`i2c` (scoped to one node's `major:minor`), `spi` is a **whole-major** grant — an app with it can reach every SPI bus on the host.
 
 ### `input`
 
@@ -369,7 +371,7 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 ### `admin`
 
-Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.
+Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent/agent.sock`, exposed as `WENDY_AGENT_SOCKET` — always read the env var rather than hard-coding the path) — with **no authentication**.
 
 ```json
 { "type": "admin" }
@@ -378,6 +380,8 @@ Grants the container the wendy-agent's **full gRPC over a local unix socket** (`
 An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted **only** into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
 
 > **Security:** `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
+
+A first-party use of `admin` is the **claude-on-device** app (`Examples/ClaudeOnDevice`): the Claude Code CLI runs in the container and drives the device through `WENDY_AGENT_SOCKET` — you reach it with `wendy device attach claude-on-device`. Because `admin` is unauthenticated full local control, the in-container agent (human or AI) can delete apps and trigger OS/agent updates, so deploy it only to trusted devices.
 
 ---
 

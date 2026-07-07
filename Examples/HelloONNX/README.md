@@ -31,10 +31,17 @@ import onnxruntime as ort
 ort.set_default_logger_severity(3)  # suppress WARNING and below
 ```
 
-## Installation (ONNX Runtime GPU for JetPack 6.x)
+## Installation (ONNX Runtime GPU on Orin, JetPack 6 / 7)
+
+Uses NVIDIA's JetPack-6 / CUDA-12.6 `onnxruntime-gpu` wheel — the prebuilt build that
+includes kernels for Orin's `sm_87` GPU. On JetPack 7 (WendyOS 0.17) the host provides
+CUDA 13, so the image also **bundles the CUDA-12 runtime** (`nvidia-*-cu12`) and puts it
+first on `LD_LIBRARY_PATH`; CUDA 12.6 runs on the JetPack-7 GPU driver via backward
+compatibility. (The CUDA-13 `sbsa` builds are Thor/Spark `sm_110`/`sm_121` only — no Orin
+kernels.) See the Dockerfile for the exact CUDA-12 packages.
 
 ```dockerfile
-# onnxruntime-gpu wheel from Jetson AI Lab — CDI provides CUDA at runtime
+# onnxruntime-gpu wheel from Jetson AI Lab (JetPack 6 / CUDA 12.6, includes Orin sm_87)
 RUN pip3 install --no-cache-dir onnxruntime-gpu \
     --index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
 

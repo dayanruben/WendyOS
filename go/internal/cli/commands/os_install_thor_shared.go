@@ -56,6 +56,16 @@ type thorDevice struct {
 // BuildKit-style step list. Stage-2 is the shared Go engine (flashengine) on all
 // platforms.
 func installThor(ctx context.Context, version string, nightly, force bool) error {
+	// Thor's USB recovery access is an in-process libusb handle, so the whole
+	// process must be root on macOS/Linux — caching the sudo timestamp is not
+	// enough. Elevate up front, before the briefing, so a missing-permission
+	// failure never surprises the user mid-flash (WDY-1843). On a successful sudo
+	// re-exec this replaces the process and does not return. Windows elevates
+	// separately via UAC when it installs the WinUSB driver (thorPrepareHost).
+	if err := ensureThorRootAccess(); err != nil {
+		return err
+	}
+
 	cacheDir, err := osCacheDir()
 	if err != nil {
 		return fmt.Errorf("resolving cache dir: %w", err)

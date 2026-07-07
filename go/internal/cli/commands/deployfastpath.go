@@ -38,6 +38,17 @@ type deployFingerprint struct {
 	// AppVersion is the wendy.json version at deploy time, used as a cheap
 	// cross-check against the version the device reports.
 	AppVersion string `json:"appVersion,omitempty"`
+	// LayerDiffIDs are the uncompressed layer diff IDs of the image content that
+	// was actually pushed to this device on the last successful deploy. A skip is
+	// only permitted when the device still holds every one of these layers (see
+	// deviceHasAllLayers): an unchanged input hash alone does not prove the device
+	// still has the content — blobs can be GC'd, a partial push can leave the
+	// manifest without its blobs, or the local base image can be rebuilt without
+	// changing the hash. Verifying the layers are present closes the WDY-1824 hole
+	// where the CLI skipped the push and reported success while the device kept
+	// running a stale/partial image. Empty (e.g. recorded by a path that doesn't
+	// surface diff IDs) means "cannot verify" → never skip.
+	LayerDiffIDs []string `json:"layerDiffIds,omitempty"`
 }
 
 // deployFingerprintPath returns the on-disk location for an app+device
@@ -298,6 +309,15 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 
+	// Unchanged inputs are necessary but not sufficient: the device must still
+	// hold the image content we pushed last time. Without this check a skip can
+	// leave the device running a stale/partial image while the CLI reports
+	// success (WDY-1824) — e.g. blobs GC'd, a half-completed push, or a rebuilt
+	// local base image that never changed the input hash.
+	if !deviceHasAllLayers(ctx, conn, fp.LayerDiffIDs) {
+		return false, nil
+	}
+
 	state, found, err := lookupAppState(ctx, conn, appCfg.AppID)
 	if err != nil || !found {
 		// Device unreachable for the query or app no longer present — rebuild.
@@ -384,6 +404,37 @@ func warnReadiness(ctx context.Context, conn *grpcclient.AgentConnection, appID 
 		msg += " — " + d
 	}
 	cliLogln("Warning: %s", msg)
+}
+
+// deviceHasAllLayers reports whether the device's content store still holds
+// every one of diffIDs — i.e. the actual image blobs, not just a container
+// record or a registry tag. It is the content check that gates every push-skip
+// (WDY-1824): the local fingerprint only proves the inputs are unchanged since
+// we last pushed, never that the device still has what we pushed.
+//
+// It is deliberately fail-closed: an empty diffID list (we never recorded what
+// was deployed, so we cannot verify it), an agent too old for QueryLayers
+// (Unimplemented), any RPC error, or a single missing layer all return false so
+// the caller falls back to a real build+push. Only a device that confirms every
+// layer is present authorizes a skip.
+func deviceHasAllLayers(ctx context.Context, conn *grpcclient.AgentConnection, diffIDs []string) bool {
+	if len(diffIDs) == 0 {
+		return false
+	}
+	resp, err := conn.ContainerService.QueryLayers(ctx, &agentpb.QueryLayersRequest{DiffIds: diffIDs})
+	if err != nil {
+		return false
+	}
+	present := make(map[string]bool, len(resp.GetPresent()))
+	for _, p := range resp.GetPresent() {
+		present[p.GetDiffId()] = true
+	}
+	for _, id := range diffIDs {
+		if !present[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // lookupAppState queries the device for the running state of a single app.

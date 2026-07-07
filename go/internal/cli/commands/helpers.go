@@ -959,6 +959,11 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		o(&cfg)
 	}
 
+	// Admin-entitled on-device container: dial the local socket, skip discovery.
+	if conn, ok, err := dialAgentSocketIfSet(ctx); ok {
+		return conn, err
+	}
+
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
 		conn, err := connectToCloudAgent(ctx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)
 		if err != nil {
@@ -1233,6 +1238,14 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 }
 
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+	// An admin-entitled on-device container reaches the agent over its local
+	// unix socket (bind-mounted by the `admin` entitlement) with no mTLS. When
+	// WENDY_AGENT_SOCKET is set, route every command through it and skip all
+	// discovery/mTLS logic. Empty/unset => unchanged off-device behavior.
+	if sock := os.Getenv("WENDY_AGENT_SOCKET"); sock != "" {
+		conn, err := grpcclient.ConnectUnix(ctx, sock)
+		return conn, nil, err
+	}
 	plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	allCerts := loadAllCLICerts()
@@ -1753,6 +1766,21 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 	return sel, nil
 }
 
+// dialAgentSocketIfSet returns a connection to the local agent unix socket when
+// WENDY_AGENT_SOCKET is set — the admin-entitled on-device container case, where
+// the socket is bind-mounted in and there is no device PKI / discovery to do. It
+// reports ok=true whenever the env var is set (even if the dial errors), so
+// callers short-circuit ALL discovery/mTLS logic rather than falling through to
+// mDNS. The socket is the entire trust boundary (see the admin entitlement).
+func dialAgentSocketIfSet(ctx context.Context) (conn *grpcclient.AgentConnection, ok bool, err error) {
+	sock := os.Getenv("WENDY_AGENT_SOCKET")
+	if sock == "" {
+		return nil, false, nil
+	}
+	conn, err = grpcclient.ConnectUnix(ctx, sock)
+	return conn, true, err
+}
+
 // resolveTargetInner inspects the --device flag and returns either an external
 // provider device or falls back to the gRPC agent connection. If no device
 // is specified and no default is configured, an interactive device picker
@@ -1761,6 +1789,15 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	cfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	// An admin-entitled on-device container reaches the agent over its local
+	// unix socket; skip all discovery/selection when WENDY_AGENT_SOCKET is set.
+	if conn, ok, err := dialAgentSocketIfSet(ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return &SelectedDevice{Agent: conn}, nil
 	}
 
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {

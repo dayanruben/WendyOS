@@ -553,7 +553,7 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
-	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
@@ -1488,9 +1488,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
 	if !opts.deploy && opts.chunking != chunkingOff {
-		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
-				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version})
+				// Record the layer diff IDs we deployed so the next run's fast path
+				// can verify the device still holds this content before skipping the
+				// build (WDY-1824).
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
 		} else if ctx.Err() != nil {
@@ -1509,6 +1512,14 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// real error behind an unrelated builder-setup failure. Surface the
 			// actionable build error directly instead of falling back. (#1166)
 			return err
+		} else if shouldUseBuildkitOnDevice() {
+			// On-device (inside the agent container: WENDY_AGENT_SOCKET set, no
+			// Docker), the registry-push fallback below cannot run — it shells out
+			// to the Docker CLI, which is absent. Chunk-diff over the agent socket
+			// is the only supported on-device deploy path, so surface ITS real
+			// error instead of masking it behind a guaranteed "docker CLI is not on
+			// PATH" failure from the fallback.
+			return fmt.Errorf("on-device deploy failed and no Docker fallback is possible inside the container; the chunk-diff error was: %w", err)
 		} else {
 			cliLogln("Fast deploy unavailable; using registry push.")
 		}
@@ -1954,12 +1965,15 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
-// calls RunContainer with the resulting layer headers.
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) error {
+// calls RunContainer with the resulting layer headers. On success it returns the
+// uncompressed layer diff IDs it deployed, so the caller can record them in the
+// deploy fingerprint and later verify the device still holds this content before
+// skipping a rebuild (WDY-1824).
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
 	tmp, err := os.MkdirTemp("", "wendy-oci-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 	ociTar := filepath.Join(tmp, "image.tar")
@@ -1973,32 +1987,32 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			if ctx.Err() == nil {
 				_, _ = os.Stderr.Write(buildLog.Bytes())
 			}
-			return err
+			return nil, err
 		}
 	} else {
 		if err := runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	mark("build (oci export)")
 	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mark("read+decompress layers")
 
 	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
 	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mark("chunk+query+write")
 
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
@@ -2014,9 +2028,26 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:      opts.userArgs,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = streamRunContainer(ctx, conn, stream, appCfg, opts)
+	if err := streamRunContainer(ctx, conn, stream, appCfg, opts); err != nil {
+		mark("runcontainer (assemble+create+start[+readiness])")
+		return nil, err
+	}
 	mark("runcontainer (assemble+create+start[+readiness])")
-	return err
+	return layerDiffIDs(headers), nil
+}
+
+// layerDiffIDs extracts the ordered uncompressed diff IDs from the reassembly
+// headers that were deployed, for recording in the deploy fingerprint. Each
+// header's DiffId is the same content identity QueryLayers reports, so the next
+// run can verify the device still holds every layer before skipping (WDY-1824).
+func layerDiffIDs(headers []*agentpb.RunContainerLayerHeader) []string {
+	ids := make([]string, 0, len(headers))
+	for _, h := range headers {
+		if id := h.GetDiffId(); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }

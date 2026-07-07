@@ -341,6 +341,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 				Value:       esp.key,
 			})
 		}
+
+		items = append(items, tui.PickerItem{
+			Name:        "Linux Desktop",
+			Description: "Install wendy-agent on an existing Linux machine",
+			Section:     "Linux Desktop",
+			SortKey:     "2_linux_desktop",
+			Value:       linuxDesktopValue,
+		})
 	}
 
 	// Resolve device — use flag or interactive picker.
@@ -382,6 +390,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// flow and dd's the wrong artifact onto an external drive.
 	if selected == thorDeviceType {
 		return installThor(ctx, flagVersion, nightly, force)
+	}
+
+	if selected == linuxDesktopValue {
+		return installLinuxDesktop(ctx, preOpts, deviceName)
 	}
 
 	device := deviceMap[selected]
@@ -663,6 +675,13 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	writeModel := writeFinal.(tui.ProgressModel)
 	if primaryErr := writeModel.Err(); primaryErr != nil {
+		// User cancellation is not a write failure: don't classify it, and
+		// don't start a full-image fallback write on a flash the user just
+		// cancelled (same handling as the measure step above).
+		if errors.Is(primaryErr, context.Canceled) {
+			return primaryErr
+		}
+
 		// Frame the primary (fast-path) error with the offset it reached. This
 		// error is never discarded again below — it is the real failure, and
 		// WDY-1841 was caused by dropping it in favor of the fallback's error.
@@ -1578,6 +1597,9 @@ func openOSImageStream(deviceKey string, img *imageInfo) (*imageStream, error) {
 	if isGzipFile(cachePath) {
 		return streamGzipImage(cachePath)
 	}
+	if isZstdFile(cachePath) {
+		return streamZstdImage(cachePath)
+	}
 	return openRawImageStream(cachePath)
 }
 
@@ -1590,6 +1612,9 @@ func openLocalImageStream(imagePath string) (*imageStream, error) {
 	}
 	if isGzipFile(imagePath) {
 		return streamGzipImage(imagePath)
+	}
+	if isZstdFile(imagePath) {
+		return streamZstdImage(imagePath)
 	}
 	return openRawImageStream(imagePath)
 }
