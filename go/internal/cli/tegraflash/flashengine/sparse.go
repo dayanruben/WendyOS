@@ -56,6 +56,11 @@ func (e *engine) writeSparse(p partition, localFile string) error {
 	}
 	fmt.Fprintf(e.out, "  sparse: %d chunks, block=%d, blocks=%d\n", h.TotalChunks, h.BlockSize, h.TotalBlocks)
 
+	// Discard the target region first (bootburn SendSparseFile): skipped DONTCARE
+	// and zero-FILL chunks are only correct if the underlying blocks read back as
+	// zeros. Failure is tolerated like bootburn (slower, but writes still land).
+	e.shellTolerant(fmt.Sprintf("blkdiscard -f %s -o %d -l %d", p.Device, p.Start, p.Size))
+
 	base := "simg"
 	var written int64 // bytes advanced within the partition
 	for i := uint32(0); i < h.TotalChunks; i++ {

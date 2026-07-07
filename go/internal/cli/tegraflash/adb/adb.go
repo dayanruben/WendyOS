@@ -79,6 +79,7 @@ type Device struct {
 	in     *gousb.InEndpoint
 	out    *gousb.OutEndpoint
 	nextID uint32
+	rbuf   []byte // buffered bulk-IN bytes read past a message boundary, not yet consumed
 	// Banner is the device identity string from the CNXN reply.
 	Banner string
 	// shellV2 is set when the device advertises the shell_v2 feature; its legacy
@@ -347,46 +348,55 @@ func (d *Device) readMsg() (cmd, arg0, arg1 uint32, data []byte, err error) {
 
 // readMsgTimeout is readMsg with an explicit per-transfer timeout, so the CNXN
 // handshake can use a short bound while data transfers keep the long ioTimeout.
+// Bytes read past this message's end are retained in d.rbuf for the next call
+// rather than discarded — adbd messages can coalesce into one bulk transfer
+// (e.g. a payload that is an exact packet-size multiple rides together with the
+// next header), and dropping the tail would desync the stream.
 func (d *Device) readMsgTimeout(timeout time.Duration) (cmd, arg0, arg1 uint32, data []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Read into a full max-packet buffer (a sub-packet read length can error on
-	// macOS IOKit). adbd writes the header as its own transfer, so this returns 24.
-	hdr := make([]byte, 512)
-	n, e := d.in.ReadContext(ctx, hdr)
-	if e != nil {
-		err = e
+	if err = d.fill(24, timeout); err != nil {
 		return
 	}
-	if n < 24 {
-		err = fmt.Errorf("short ADB header (%d bytes)", n)
-		return
-	}
+	hdr := d.rbuf[:24]
 	cmd = binary.LittleEndian.Uint32(hdr[0:])
 	arg0 = binary.LittleEndian.Uint32(hdr[4:])
 	arg1 = binary.LittleEndian.Uint32(hdr[8:])
 	dlen := binary.LittleEndian.Uint32(hdr[12:])
 	// The length comes from the device; bound it so a malformed/oversized header
-	// can't drive an unbounded allocation in the reassembly loop below. ADB payloads
-	// never exceed the negotiated max.
+	// can't drive an unbounded allocation. ADB payloads never exceed the
+	// negotiated max.
 	if dlen > maxPayload {
 		err = fmt.Errorf("ADB payload too large: %d bytes (max %d)", dlen, maxPayload)
 		return
 	}
-
-	got := append([]byte{}, hdr[24:n]...) // any payload that rode with the header
-	for uint32(len(got)) < dlen {
-		buf := make([]byte, syncDataMax)
-		m, re := d.in.ReadContext(ctx, buf)
-		if re != nil {
-			err = re
-			return
-		}
-		got = append(got, buf[:m]...)
+	if err = d.fill(24+int(dlen), timeout); err != nil {
+		return
 	}
-	data = got[:dlen]
+	data = append([]byte(nil), d.rbuf[24:24+dlen]...)
+	d.rbuf = d.rbuf[24+dlen:]
+	if len(d.rbuf) == 0 {
+		d.rbuf = nil // release the backing array once fully consumed
+	}
 	return
+}
+
+// fill ensures d.rbuf holds at least n bytes, reading more from the bulk IN
+// endpoint. Reads use a full 64 KiB buffer (a multiple of the max packet size —
+// sub-packet read lengths can error on macOS IOKit).
+func (d *Device) fill(n int, timeout time.Duration) error {
+	for len(d.rbuf) < n {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		buf := make([]byte, syncDataMax)
+		m, err := d.in.ReadContext(ctx, buf)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if m == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		d.rbuf = append(d.rbuf, buf[:m]...)
+	}
+	return nil
 }
 
 // Shell runs command on the device and returns its combined stdout+stderr. If the
@@ -407,9 +417,12 @@ func (d *Device) Shell(command string) (string, error) {
 	}
 	var out []byte
 	for {
-		cmd, a0, _, data, err := d.readMsg()
+		cmd, a0, a1, data, err := d.readMsg()
 		if err != nil {
 			return string(out), err
+		}
+		if a1 != local {
+			continue // stale message addressed to a previous stream
 		}
 		switch cmd {
 		case cmdOKAY:
@@ -456,9 +469,12 @@ func (d *Device) shellV2Run(service string) (string, error) {
 			}
 			buf = buf[5+length:]
 		}
-		cmd, a0, _, data, err := d.readMsg()
+		cmd, a0, a1, data, err := d.readMsg()
 		if err != nil {
 			return string(out), err
+		}
+		if a1 != local {
+			continue // stale message addressed to a previous stream
 		}
 		switch cmd {
 		case cmdWRTE:
@@ -468,10 +484,16 @@ func (d *Device) shellV2Run(service string) (string, error) {
 			}
 		case cmdCLSE:
 			_ = d.writeMsg(cmdCLSE, local, a0, nil)
-			if exit > 0 {
+			switch {
+			case exit > 0:
 				return string(out), &ExitError{Code: exit}
+			case exit < 0:
+				// Stream closed without an exit-status packet: abnormal for shell_v2
+				// (a killed/OOM'd command, or a truncated stream). Do not report success.
+				return string(out), fmt.Errorf("shell stream closed without an exit status")
+			default:
+				return string(out), nil
 			}
-			return string(out), nil
 		}
 	}
 }
@@ -497,9 +519,12 @@ func (d *Device) Push(r io.Reader, remotePath string, mode int) error {
 			return err
 		}
 		for {
-			cmd, a0, _, _, err := d.readMsg()
+			cmd, a0, a1, _, err := d.readMsg()
 			if err != nil {
 				return err
+			}
+			if a1 != local {
+				continue // stale message addressed to a previous stream
 			}
 			switch cmd {
 			case cmdOKAY:
@@ -542,19 +567,25 @@ func (d *Device) Push(r io.Reader, remotePath string, mode int) error {
 	}
 
 	// The device reports the result as a WRTE: "OKAY" or "FAIL"+len+msg.
-	cmd, a0, _, pd, err := d.readMsg()
-	if err != nil {
-		return fmt.Errorf("reading sync result: %w", err)
-	}
-	if cmd == cmdWRTE {
-		_ = d.writeMsg(cmdOKAY, local, a0, nil)
-		if len(pd) >= 4 && string(pd[0:4]) == "FAIL" {
-			msg := ""
-			if len(pd) > 8 {
-				msg = string(pd[8:])
-			}
-			return fmt.Errorf("push rejected: %s", msg)
+	for {
+		cmd, a0, a1, pd, err := d.readMsg()
+		if err != nil {
+			return fmt.Errorf("reading sync result: %w", err)
 		}
+		if a1 != local {
+			continue // stale message addressed to a previous stream
+		}
+		if cmd == cmdWRTE {
+			_ = d.writeMsg(cmdOKAY, local, a0, nil)
+			if len(pd) >= 4 && string(pd[0:4]) == "FAIL" {
+				msg := ""
+				if len(pd) > 8 {
+					msg = string(pd[8:])
+				}
+				return fmt.Errorf("push rejected: %s", msg)
+			}
+		}
+		break
 	}
 	_ = d.writeMsg(cmdCLSE, local, remote, nil)
 	return nil
@@ -576,9 +607,12 @@ func (d *Device) Stat(remotePath string) (mode uint32, err error) {
 		return 0, err
 	}
 	for {
-		cmd, a0, _, data, err := d.readMsg()
+		cmd, a0, a1, data, err := d.readMsg()
 		if err != nil {
 			return 0, err
+		}
+		if a1 != local {
+			continue // stale message addressed to a previous stream
 		}
 		switch cmd {
 		case cmdWRTE:

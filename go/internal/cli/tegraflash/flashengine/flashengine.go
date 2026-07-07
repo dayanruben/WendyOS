@@ -387,7 +387,12 @@ func (e *engine) resizeFS(p partition) error {
 // ---- transport helpers (respect DryRun) ----
 
 func (e *engine) shell(cmd string) error {
-	_, err := e.shellOut(cmd)
+	out, err := e.shellOut(cmd)
+	if err != nil {
+		if s := strings.TrimSpace(out); s != "" {
+			return fmt.Errorf("%w\n%s", err, s)
+		}
+	}
 	return err
 }
 
@@ -435,6 +440,7 @@ func (e *engine) push(localFile, remote string, mode int) error {
 			return nil
 		}
 		lastErr = err
+		e.logf("push %s attempt %d/3 failed: %v", remote, attempt+1, err)
 	}
 	return lastErr
 }
@@ -453,6 +459,7 @@ func (e *engine) pushBytes(b []byte, remote string, mode int) error {
 			return nil
 		} else {
 			lastErr = err
+			e.logf("push %s attempt %d/3 failed: %v", remote, attempt+1, err)
 		}
 	}
 	return lastErr
