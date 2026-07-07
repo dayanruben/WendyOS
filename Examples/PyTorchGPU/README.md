@@ -14,9 +14,15 @@ This example demonstrates GPU access via CDI (Container Device Interface) using 
 
 Uses `ubuntu:22.04` (~100MB) instead of dustynv/l4t-pytorch (~8GB+)
 
-PyTorch wheel is pre-built by NVIDIA for Jetson with CUDA support.
+The PyTorch wheel is NVIDIA's JetPack-6 / **CUDA 12.6** ARM64 build, which includes kernels
+for Orin's `sm_87` GPU. The image also **bundles the CUDA-12 runtime** so it runs on
+JetPack 7 (WendyOS 0.17), whose host CUDA is 13 — CUDA 12.6 runs on the JetPack-7 GPU driver
+via backward compatibility. Only the GPU **driver** comes from CDI at runtime.
 
-**All CUDA/cuDNN libraries are provided by CDI at runtime!**
+> **Why CUDA 12 on JetPack 7:** the CUDA-13 `sbsa` wheels are built only for Thor/Spark
+> (`sm_110`/`sm_121`) and have no Orin `sm_87` kernels — they crash with *"no kernel image
+> is available"*. CUDA 12.6 is the only prebuilt PyTorch that runs on Orin. Works
+> GPU-accelerated on JetPack 6 and 7.
 
 ## PyTorch Installation Reference
 
@@ -29,7 +35,6 @@ RUN pip3 install --no-cache-dir \
     torch==2.8.0 \
     torchvision==0.23.0 \
     torchaudio==2.8.0 \
-    torch-tensorrt==2.8.0+cu126 \
     --index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
 ```
 
@@ -67,7 +72,7 @@ CUDA Libraries (from CDI mounts):
 PyTorch GPU Test
 ======================================================================
 ✓ PyTorch imported successfully
-  PyTorch version: 2.1.0a0+41361538.nv23.06
+  PyTorch version: 2.8.0
 
 CUDA Available: True
 Number of GPUs: 1
@@ -100,7 +105,7 @@ GPU Computation Results:
 **Symptoms:**
 ```
 PyTorch successfully imported
-Version: 2.9.0+cpu  # Wrong! Should be 2.8.0
+Version: 2.8.0+cpu  # Wrong! Should be the CUDA build (2.8.0), not +cpu
 CUDA Available: False
 ```
 
