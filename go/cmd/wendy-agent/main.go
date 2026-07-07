@@ -31,8 +31,10 @@ import (
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
@@ -172,6 +174,42 @@ func main() {
 	} else {
 		containerdClient = ctrdClient
 		defer ctrdClient.Close()
+
+		// Inject the shared mesh DNS server so applyMeshEgress/teardownMeshEgress
+		// can resolve peer-device names for containers on the mesh network mode.
+		meshDNS := mesh.NewDNSServer(logger, "127.0.0.53:53")
+		ctrdClient.SetMeshDNS(meshDNS)
+	}
+
+	// Pin the CNI bridge binary's digest on first boot (trust-on-first-use)
+	// so openAndVerifyCNIBinary's mandatory integrity check has a baseline to
+	// check against — without this, a freshly imaged/reinstalled device has
+	// no pinned digest and CNI ADD refuses to run for every isolated app.
+	// Best-effort/non-fatal: apps that don't use isolation must still work
+	// even if this fails.
+	if err := agentcontainerd.SeedCNIHashFileIfMissing(); err != nil {
+		logger.Warn("failed to seed CNI hash file", zap.Error(err))
+	}
+
+	// Ensure the host-side WENDY-MESH iptables chain exists so the wendy-mesh
+	// CNI plugin has a chain to append per-container ACCEPT rules into.
+	// Best-effort/non-fatal: containers that don't use the mesh network mode
+	// must still work even if this fails (non-Linux dev host, missing
+	// iptables binary, insufficient privileges, etc).
+	if err := hostnetwork.InitMeshChain(); err != nil {
+		logger.Warn("failed to init mesh chain", zap.Error(err))
+	}
+	// Same non-fatal treatment for the NAT chain that redirects mesh VIP
+	// traffic to the local mesh proxy (started below, once cert material is
+	// in scope).
+	if err := hostnetwork.InitMeshNATChain(); err != nil {
+		logger.Warn("failed to init mesh nat chain", zap.Error(err))
+	}
+	// Same non-fatal treatment for the nat-table chain that forwards the
+	// agent's own loopback MeshDial dial into a meshed container's published
+	// port (see hostnetwork.MeshPortsChainName).
+	if err := hostnetwork.InitMeshPortsChain(); err != nil {
+		logger.Warn("failed to init mesh ports chain", zap.Error(err))
 	}
 
 	logManager := services.NewContainerLogManager(logger, telemetryBuf)
@@ -403,6 +441,22 @@ func main() {
 	var mtlsMu sync.Mutex
 
 	registerAllServices := func(srv *grpc.Server) {
+		// MeshService's own-org check (assetIdentityFromContext / MeshDial)
+		// must reflect this device's *current* org, not a value captured once
+		// at process start: a live BLE-provisioning event updates
+		// provisioningSvc's state without restarting the agent, and a stale
+		// org (e.g. 0/unknown from an unprovisioned boot) would silently
+		// disable the check for the rest of the process's life. Read fresh
+		// here instead of caching a package-level meshSvc; registerAllServices
+		// runs at most once per concrete server (plaintext agentServer, the
+		// local control socket, and the mTLS server), so this is at most a
+		// handful of cheap constructions over the process lifetime, not a hot
+		// path. orgID == 0 (never provisioned) intentionally matches the mTLS
+		// org interceptor's grace behavior: MeshService skips the org-equality
+		// check rather than reject every caller.
+		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
+		meshSvc := services.NewMeshService(logger, configPath, orgID)
+
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 		agentpb.RegisterWendyAudioServiceServer(srv, audioSvc)
@@ -419,6 +473,7 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
@@ -525,10 +580,35 @@ func main() {
 	}
 	alreadyProvisioned := certPEM != "" && keyPEM != ""
 
+	// Client side of the mesh data plane: dials peers LAN-direct or via the
+	// cloud tunnel broker, fed by whatever REDIRECTed VIP connections the nat
+	// chain above sends to ProxyPort. Constructed here — the first point where
+	// cert material (certPEM/chainPEM/keyPEM, just above) and provisioning
+	// info are both in scope — rather than gated on alreadyProvisioned: on an
+	// unenrolled device brokerURL/cert fields are empty, so DialDevice simply
+	// fails closed at runtime with a clear error instead of never starting.
+	cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+	brokerURL := os.Getenv("WENDY_BROKER_URL")
+	if brokerURL == "" {
+		brokerURL = brokerURLForCloudHost(cloudHost)
+	}
+	meshMetrics := services.NewMeshMetrics(telemetryBuf, logger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		meshMetrics.Collect(ctx)
+	}()
+	meshDialer := services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
+	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
+	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
+		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
+	}
+
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum)
+		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
@@ -626,7 +706,17 @@ func main() {
 		keyPEM := string(keyData)
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum)
+		cloudHost, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		// Refresh the mesh dialer with the fresh identity — like the mTLS
+		// server and tunnel broker above, it consumes cert material, and BLE
+		// first-boot enrollment happens while the agent is running, so the
+		// boot-time snapshot is empty on virtually every new device.
+		freshBrokerURL := os.Getenv("WENDY_BROKER_URL")
+		if freshBrokerURL == "" {
+			freshBrokerURL = brokerURLForCloudHost(cloudHost)
+		}
+		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
 			logger.Info("Device provisioned — shutting down plaintext gRPC port", zap.String("port", agentPort))
@@ -726,6 +816,7 @@ func main() {
 	logger.Info("Received signal, shutting down", zap.String("signal", sig.String()))
 
 	cancel()
+	_ = meshProxy.Close()
 	if agentServer != nil {
 		agentServer.GracefulStop()
 	}

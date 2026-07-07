@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -158,6 +159,9 @@ func lanDeviceDiscoveryScore(dev models.LANDevice) int {
 	if dev.IPAddress != "" {
 		score++
 	}
+	if isRoutableLANAddress(dev.IPAddress) {
+		score++
+	}
 	if dev.Port != 0 {
 		score++
 	}
@@ -171,4 +175,23 @@ func lanDeviceDiscoveryScore(dev models.LANDevice) int {
 		score++
 	}
 	return score
+}
+
+// isRoutableLANAddress reports whether addr is a directly dialable address —
+// all IPv4 (including 169.254.0.0/16 link-local) or non-link-local IPv6 —
+// as opposed to an IPv6 link-local unicast address (fe80::/10), which needs a
+// zone id and is a poor default dial target. A "%zone" suffix is stripped
+// before parsing; an empty or unparseable address is treated as non-routable.
+func isRoutableLANAddress(addr string) bool {
+	if i := strings.IndexByte(addr, '%'); i >= 0 {
+		addr = addr[:i]
+	}
+	a, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	if a.Is4() || a.Is4In6() {
+		return true
+	}
+	return !a.IsLinkLocalUnicast()
 }

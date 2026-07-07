@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
+	"github.com/wendylabsinc/wendy/go/internal/agent/mesh"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -73,6 +75,11 @@ type Client struct {
 	// Populated on CreateContainerWithProgress; read by StartContainer.
 	appIsolation map[string]string
 
+	// warnedExposures dedups public-port exposure warnings, keyed by
+	// exposureKey. Protected by mu. Rebuilt each probe so a vanished exposure
+	// is pruned (and re-warned if it returns).
+	warnedExposures map[string]struct{}
+
 	// serviceIPs maps appID → serviceName → IP for isolated-mode apps.
 	// Updated after each successful CNI ADD. Protected by mu.
 	serviceIPs map[string]map[string]string
@@ -97,6 +104,39 @@ type Client struct {
 	// Defaults to "overlayfs" when supported; falls back to "native" on kernels
 	// that do not support overlay mounts (e.g. nested container environments).
 	snapshotter string
+
+	// meshDNS is the shared mesh DNS service, injected once at agent startup
+	// via SetMeshDNS. nil when mesh DNS is unavailable (e.g. build without
+	// the mesh feature, or startup failed to bind); mesh_wiring.go treats a
+	// nil meshDNS as "DNS best-effort unavailable" and skips it without
+	// failing container start — VIP literals still work without it.
+	// Interface-typed (meshDNSService, mesh_wiring.go) so tests can inject a
+	// recording fake and assert the Ensure/Release pairing invariant.
+	meshDNS meshDNSService
+
+	// meshDNSHeld tracks, per containerd container ID, whether that container
+	// successfully acquired a DNS-listener reference (ensureMeshDNS). It is
+	// the guard that keeps Ensure/Release balanced when sibling services
+	// share one gateway listener and when a container is torn down twice
+	// (stopOne then deleteOne). Guarded by meshMu, NOT c.mu: deleteOne runs
+	// with c.mu already held by DeleteContainer, so touching this map under
+	// c.mu would deadlock there, while stopOne runs without c.mu held.
+	meshMu      sync.Mutex
+	meshDNSHeld map[string]bool
+}
+
+// SetMeshDNS injects the shared mesh DNS server used by applyMeshEgress and
+// teardownMeshEgress to manage per-gateway listeners. Called once from
+// main.go at agent startup, before any containers start. Not protected by
+// c.mu: it is set once during single-threaded startup before the Client is
+// exposed to concurrent callers. A nil server is ignored so the field stays
+// a nil interface (a non-nil interface wrapping a nil *mesh.DNSServer would
+// defeat the `c.meshDNS == nil` availability checks in mesh_wiring.go).
+func (c *Client) SetMeshDNS(d *mesh.DNSServer) {
+	if d == nil {
+		return
+	}
+	c.meshDNS = d
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -118,19 +158,20 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 	snapshotter := probeSnapshotter(logger)
 
 	return &Client{
-		client:       c,
-		logger:       logger,
-		namespace:    "default",
-		proxyManager: proxyMgr,
-		appServices:  make(map[string]map[string]*appconfig.ServiceConfig),
-		primaryPIDs:  make(map[string]uint32),
-		appIsolation: make(map[string]string),
-		serviceIPs:   make(map[string]map[string]string),
-		appStopping:  make(map[string]bool),
-		ros2ExecRefs: make(map[string]int),
-		chunkIndex:   idx,
-		staging:      newStaging(defaultChunkStagingDir),
-		snapshotter:  snapshotter,
+		client:          c,
+		logger:          logger,
+		namespace:       "default",
+		proxyManager:    proxyMgr,
+		appServices:     make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:     make(map[string]uint32),
+		appIsolation:    make(map[string]string),
+		warnedExposures: make(map[string]struct{}),
+		serviceIPs:      make(map[string]map[string]string),
+		appStopping:     make(map[string]bool),
+		ros2ExecRefs:    make(map[string]int),
+		chunkIndex:      idx,
+		staging:         newStaging(defaultChunkStagingDir),
+		snapshotter:     snapshotter,
 	}, nil
 }
 
@@ -246,6 +287,200 @@ func (c *Client) recordServiceIP(appID, serviceName, ip string) {
 		c.serviceIPs[appID] = make(map[string]string)
 	}
 	c.serviceIPs[appID][serviceName] = ip
+}
+
+// rebuildCachesFromLabels reconstructs the appIsolation and appServices caches
+// from a list of per-container label maps. Pure (no containerd calls, no lock)
+// so it is unit-testable without a live containerd, mirroring the
+// containerd-free split used for mesh resolv.conf recreation. A container with
+// no appID label is skipped; a blank isolation label yields no isolation entry
+// (non-isolated, the default). Only DependsOn is reconstructed for services —
+// it is the sole ServiceConfig field read after create (len + ServiceTopoOrder).
+func rebuildCachesFromLabels(containerLabels []map[string]string) (
+	isolation map[string]string,
+	servicesByApp map[string]map[string]*appconfig.ServiceConfig,
+) {
+	isolation = make(map[string]string)
+	servicesByApp = make(map[string]map[string]*appconfig.ServiceConfig)
+	for _, labels := range containerLabels {
+		appID := labels[labelKeyAppID]
+		if appID == "" {
+			continue
+		}
+		if iso := labels[labelKeyIsolation]; iso != "" {
+			isolation[appID] = iso
+		}
+		if svc := labels[labelKeyServiceName]; svc != "" {
+			if servicesByApp[appID] == nil {
+				servicesByApp[appID] = make(map[string]*appconfig.ServiceConfig)
+			}
+			servicesByApp[appID][svc] = &appconfig.ServiceConfig{
+				DependsOn: parseDependsOn(labels[labelKeyDependsOn]),
+			}
+		}
+	}
+	return isolation, servicesByApp
+}
+
+// RebuildAppStateCaches repopulates the appIsolation and appServices caches
+// from persisted container labels. The maps are otherwise written only at
+// container-create time, so after an agent restart (reboot) they start empty
+// and StartContainer skips isolated-container wiring (CNI, /etc/hosts, mesh
+// egress). Best-effort: any failure logs and returns without blocking boot
+// recovery. Idempotent — fills only entries not already present; a
+// concurrently-created live entry always wins.
+func (c *Client) RebuildAppStateCaches(ctx context.Context) {
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("rebuild app-state caches: listing containers failed", zap.Error(err))
+		return
+	}
+
+	// Read labels outside the lock — Info() is containerd I/O.
+	labelSets := make([]map[string]string, 0, len(ctrs))
+	for _, ctr := range ctrs {
+		info, infoErr := ctr.Info(ctx)
+		if infoErr != nil {
+			c.logger.Warn("rebuild app-state caches: reading container info failed",
+				zap.String("id", ctr.ID()), zap.Error(infoErr))
+			continue
+		}
+		labelSets = append(labelSets, info.Labels)
+	}
+
+	isolation, servicesByApp := rebuildCachesFromLabels(labelSets)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.appIsolation == nil {
+		c.appIsolation = make(map[string]string)
+	}
+	for appID, iso := range isolation {
+		if _, ok := c.appIsolation[appID]; !ok {
+			c.appIsolation[appID] = iso
+		}
+	}
+	if c.appServices == nil {
+		c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
+	}
+	for appID, svcs := range servicesByApp {
+		if _, ok := c.appServices[appID]; !ok {
+			c.appServices[appID] = svcs
+		}
+	}
+	c.logger.Info("Rebuilt app-state caches from labels",
+		zap.Int("apps_isolation", len(isolation)), zap.Int("apps_services", len(servicesByApp)))
+}
+
+// WarnPubliclyExposedPorts scans running host-network apps and logs a WARN for
+// each newly-observed publicly-bound listening port, so operators notice a
+// service exposed on the device's real interfaces. Best-effort: any failure
+// logs and returns without affecting the caller. Deduped per
+// (appID, protocol, port, address); a vanished exposure is pruned so it warns
+// again if it reappears.
+func (c *Client) WarnPubliclyExposedPorts(ctx context.Context) {
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("port-exposure probe: listing containers failed", zap.Error(err))
+		return
+	}
+
+	// Gather unique host-network appIDs among running containers (outside the lock).
+	hostNetApps := make(map[string]struct{})
+	for _, ctr := range ctrs {
+		if !c.containerIsRunning(ctx, ctr) {
+			continue
+		}
+		info, infoErr := ctr.Info(ctx)
+		if infoErr != nil {
+			c.logger.Warn("port-exposure probe: reading container info failed",
+				zap.String("id", ctr.ID()), zap.Error(infoErr))
+			continue
+		}
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			continue
+		}
+		if entitlementsUseHostNetwork(parseEntitlementsFromAnnotations(info.Labels)) {
+			hostNetApps[appID] = struct{}{}
+		}
+	}
+
+	// Read each host-network app's listening ports (outside the lock).
+	portsByApp := make(map[string][]*agentpb.PortEntry, len(hostNetApps))
+	for appID := range hostNetApps {
+		ports, portErr := c.GetListeningPorts(ctx, appID)
+		if portErr != nil {
+			c.logger.Warn("port-exposure probe: reading listening ports failed",
+				zap.String(logfields.AppID, appID), zap.Error(portErr))
+			continue
+		}
+		portsByApp[appID] = ports
+	}
+
+	current := collectExposures(portsByApp)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	next := make(map[string]struct{}, len(current))
+	for key, e := range current {
+		next[key] = struct{}{}
+		if _, warned := c.warnedExposures[key]; warned {
+			continue
+		}
+		c.logger.Warn("app is listening on a publicly reachable address; the port is exposed on the device's network (network mode: host). For private cross-device access, use a \"mesh\" network entitlement.",
+			zap.String(logfields.AppID, e.appID),
+			zap.String("protocol", e.protocol),
+			zap.Uint32("port", e.port),
+			zap.String("bind_address", e.address))
+	}
+	c.warnedExposures = next
+}
+
+// isPubliclyBoundAddress reports whether a listening socket's bind address is
+// reachable from outside the host — a wildcard (0.0.0.0 / ::) or a specific
+// non-loopback interface address. Loopback (127.0.0.0/8, ::1) is private; an
+// empty or unparseable address is treated as not-public (we only warn on a
+// definite exposure).
+func isPubliclyBoundAddress(addr string) bool {
+	a, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	return !a.IsLoopback()
+}
+
+// exposedPort identifies one publicly-bound listening socket of an app, used as
+// the dedup unit for exposure warnings.
+type exposedPort struct {
+	appID    string
+	protocol string
+	port     uint32
+	address  string
+}
+
+// exposureKey is the stable dedup key for an exposedPort.
+func exposureKey(e exposedPort) string {
+	return fmt.Sprintf("%s|%s|%d|%s", e.appID, e.protocol, e.port, e.address)
+}
+
+// collectExposures returns the publicly-bound listening sockets across the given
+// host-network apps, keyed by exposureKey. Pure (no containerd, no lock) so it
+// is unit-testable; the caller supplies each host-network app's listening ports.
+func collectExposures(portsByApp map[string][]*agentpb.PortEntry) map[string]exposedPort {
+	out := make(map[string]exposedPort)
+	for appID, ports := range portsByApp {
+		for _, p := range ports {
+			if !isPubliclyBoundAddress(p.Address) {
+				continue
+			}
+			e := exposedPort{appID: appID, protocol: p.Protocol, port: p.Port, address: p.Address}
+			out[exposureKey(e)] = e
+		}
+	}
+	return out
 }
 
 // ListLayers walks the content store and returns metadata for all layer blobs.
@@ -844,7 +1079,16 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
-	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation)
+	// Persist isolation + this service's dependsOn so appIsolation/appServices
+	// can be rebuilt after an agent restart (RebuildAppStateCaches). Single-
+	// service apps have no Services entry, so dependsOn stays nil.
+	var dependsOn []string
+	if serviceName != "" && appCfg.Services != nil {
+		if sc := appCfg.Services[serviceName]; sc != nil {
+			dependsOn = sc.DependsOn
+		}
+	}
+	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
@@ -877,6 +1121,25 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			return fmt.Errorf("initialising hosts file for %s: %w", appID, err)
 		}
 		localoci.InjectHostsMount(spec, hostsPath)
+	}
+
+	// Inject a read-only /etc/resolv.conf bind-mount for meshed containers so
+	// device-N.cloud.wendy.dev hostnames resolve via the mesh DNS listener on
+	// this app's bridge gateway. appCfg.Entitlements is the same per-service
+	// entitlement slice ApplyEntitlements above already consumed (entCfg is a
+	// shallow copy of appCfg), so this sees exactly the entitlements this
+	// specific service was granted. Isolation is required because meshGateway
+	// depends on the per-app CNI bridge subnet, which only exists for isolated
+	// apps (StartContainer only runs CNI ADD when isolation=="isolated"); a
+	// resolv.conf writer failure only degrades DNS (VIP literals still work
+	// via the REDIRECT rule applied at start), so it is logged, not fatal.
+	if _, ok := findMeshEntitlement(appCfg.Entitlements); ok && appCfg.Isolation == "isolated" {
+		if resolvPath, err := writeMeshResolvConf(appID); err == nil {
+			localoci.InjectResolvMount(spec, resolvPath)
+		} else {
+			c.logger.Warn("mesh: resolv.conf setup failed; container keeps image resolv.conf",
+				zap.String("app_id", appID), zap.Error(err))
+		}
 	}
 
 	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
@@ -1098,6 +1361,24 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		c.hydrateIsolationLocked(appID, labels)
 	}
 
+	// Reboot resilience for meshed containers (C-final-review Fix 1): the
+	// container's OCI spec bind-mounts /etc/resolv.conf from a tmpfs path
+	// written once at CreateContainerWithProgress time. containerd persists
+	// the container/spec across a reboot but /run does not survive it, and
+	// ReconcileBootContainers reaches this function directly (never
+	// CreateContainer) to bring surviving containers back — so the source
+	// must be recreated here, before container.NewTask below processes the
+	// spec's mounts, or the runtime's bind mount fails and the container never
+	// starts again. The gate is the persisted spec's mesh resolv.conf mount
+	// itself (leak-free — see recreateMeshResolvConfForStart), so a Spec load
+	// failure just skips the hook.
+	if spec, serr := container.Spec(ctx); serr == nil {
+		c.recreateMeshResolvConfForStart(spec.Mounts)
+	} else {
+		c.logger.Warn("mesh: could not load container spec to recreate resolv.conf before start",
+			zap.String("app_name", appName), zap.Error(serr))
+	}
+
 	if restartPolicy != nil {
 		if err := c.applyRestartPolicyLabel(ctx, container, restartPolicy); err != nil {
 			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)
@@ -1211,11 +1492,49 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// On Linux the bind-mount is used; on other platforms the fd path is the fallback.
 	if isolation == "isolated" && serviceName != "" && netnsRef != nil {
 		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
+		// Release any stale host-local IPAM reservation for this container ID
+		// before ADD (WDY-1834). The CNI allocation is keyed by container ID
+		// (== appName, which is stable across restart/redeploy), and
+		// deleteStaleTask above removes the old containerd task but NOT the CNI
+		// reservation. A previous teardown can be skipped entirely — the health
+		// monitor's restartSingle path calls StartContainer with no intervening
+		// stopOne/CNIDel — or fail (a bridge-plugin DEL error leaves the
+		// host-local allocation behind). Either way the next ADD for the same
+		// container ID collides with "duplicate allocation is not allowed",
+		// leaving the container with no mesh netns: its resolv.conf gateway is
+		// unreachable (DNS "Temporary failure in name resolution") and the
+		// ingress DNAT points at an IP nothing answers on ("no route to host").
+		// CNIDel is idempotent and best-effort — a no-op on a clean first deploy
+		// (the fresh netns has no eth0 to remove and host-local has no
+		// reservation for this ID) — so a pre-ADD DEL makes ADD collision-proof
+		// no matter how the previous instance was (or wasn't) torn down.
+		if delErr := c.CNIDel(ctx, appID, appName, netnsPath); delErr != nil {
+			c.logger.Warn("CNI DEL before ADD (stale-allocation reclaim) failed (non-fatal)",
+				zap.String(logfields.AppID, appID), zap.Error(delErr))
+		}
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
-		cleanupNetns()
 		if cniErr != nil {
+			// Roll back any partial state the failed ADD left behind (e.g. a
+			// host-local IPAM allocation recorded before a later step, such as
+			// installing iptables rules, failed) — without this, the IPAM
+			// allocation for this exact container ID leaks and every future
+			// CNI ADD for the same appID/serviceName fails with "duplicate
+			// allocation is not allowed" until an agent restart or a renamed
+			// appID sidesteps it (found via repeated RemoteCam redeploy cycles).
+			// Best-effort: DEL is itself idempotent/safe against a partial or
+			// absent ADD, so a DEL failure here is logged, not fatal.
+			if delErr := c.CNIDel(ctx, appID, appName, netnsPath); delErr != nil {
+				c.logger.Warn("CNI DEL rollback after failed ADD also failed (non-fatal)",
+					zap.String(logfields.AppID, appID), zap.Error(delErr))
+			}
+			cleanupNetns()
 			c.logger.Error("CNI ADD failed", zap.String(logfields.AppID, appID), zap.Error(cniErr))
 		} else {
+			// netnsPath (the bind-mount) must stay mounted through mesh egress
+			// setup below, which needs a live netns to install the service-CIDR
+			// route via nsenter (SetMeshRoute). It is unmounted at the end of
+			// this branch, after mesh wiring has had a chance to use it.
+			defer cleanupNetns()
 			c.mu.Lock()
 			// Guard against a concurrent StopContainer that may have deleted
 			// c.appIsolation[appID] during the window between CNI ADD and this
@@ -1245,6 +1564,25 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			}
 			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
 			c.mu.Unlock()
+
+			// Mesh egress (fail-closed): a container with the network/mesh
+			// entitlement must never start believing it has mesh egress it
+			// does not actually have. applyMeshEgress is a complete no-op for
+			// apps without that entitlement. Entitlements are read back from
+			// the container's own labels (written at create time via
+			// wendyLabels/BuildEntitlementAnnotations) rather than threaded
+			// through as a parameter, since StartContainer is only given an
+			// app/container name by its callers.
+			var entitlements []appconfig.Entitlement
+			if labels, lerr := container.Labels(ctx); lerr == nil {
+				entitlements = parseEntitlementsFromAnnotations(labels)
+			}
+			if meshErr := c.applyMeshEgress(entitlements, appName, appID, netnsPath, ip); meshErr != nil {
+				c.logger.Error("mesh egress setup failed; failing container start",
+					zap.String("app_id", appID), zap.Error(meshErr))
+				_, _ = task.Delete(ctx, containerd.WithProcessKill)
+				return nil, fmt.Errorf("mesh egress setup failed for app %q: %w", appID, meshErr)
+			}
 		}
 	}
 
@@ -1737,7 +2075,16 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 }
 
 func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
-	for _, e := range appCfg.Entitlements {
+	return entitlementsUseHostNetwork(appCfg.Entitlements)
+}
+
+// entitlementsUseHostNetwork reports whether the entitlements put the container
+// on the HOST network namespace — a network entitlement with mode host,
+// host-admin, or omitted (empty), matching applyNetwork's host-netns selection.
+// Such a container's non-loopback listening ports are reachable on the device's
+// real interfaces.
+func entitlementsUseHostNetwork(ents []appconfig.Entitlement) bool {
+	for _, e := range ents {
 		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "host-admin" || e.Mode == "") {
 			return true
 		}
@@ -2295,6 +2642,30 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 			c.logger.Warn("CNI DEL failed during stop (non-fatal)",
 				zap.String("container_id", containerID), zap.Error(cniErr))
 		}
+
+		// Mesh egress teardown: remove the host iptables rule installed by
+		// applyMeshEgress at start (StartContainer). teardownMeshEgress is a
+		// no-op for apps without the network/mesh entitlement. The netns route
+		// itself needs no cleanup — it is destroyed with the namespace when the
+		// task exits below.
+		//
+		// The container's IP is recovered from c.serviceIPs (populated by
+		// recordServiceIP after CNI ADD, keyed by appID/serviceName), not from
+		// the CNI host-local IPAM on-disk state — that state lives under
+		// cniStateDir/<appID> keyed by allocated IP, not by containerID, so
+		// recovering "this container's IP" from it would require an extra
+		// reverse-index the plugin does not provide as a stable public format.
+		// c.serviceIPs already carries exactly this mapping for isolated
+		// multi-service apps (the only apps that reach this branch), so it is
+		// used here instead of introducing a second, redundant IP-recovery path.
+		var entitlements []appconfig.Entitlement
+		if labels, lerr := container.Labels(ctx); lerr == nil {
+			entitlements = parseEntitlementsFromAnnotations(labels)
+		}
+		c.mu.Lock()
+		ip := c.serviceIPs[appID][svcName]
+		c.mu.Unlock()
+		c.teardownMeshEgress(entitlements, containerID, appID, ip)
 	}
 
 	// SIGTERM the whole process group for graceful shutdown, escalating to
@@ -2500,7 +2871,43 @@ func ensureSharedSHM(appID string) (string, error) {
 // can batch image deletions across services. ctx must have the namespace set
 // and the caller must hold c.mu.
 func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantImg bool) (imgName string, err error) {
+	// Mesh egress teardown for delete-without-stop: `wendy device apps remove`
+	// on a RUNNING meshed app goes DeleteContainer → deleteOne without ever
+	// passing through stopOne, which would otherwise leak the DNS-listener
+	// refcount and the ACCEPT/REDIRECT iptables rules for this container's IP
+	// until agent restart. Mirrors the stopOne teardown block; safe to run
+	// after a stop too — teardownMeshEgress is idempotent (rule removal
+	// tolerates absent rules; the DNS release is guarded by the held map, so
+	// a stopOne-then-deleteOne sequence releases exactly once).
+	// c.serviceIPs is read without locking because deleteOne's only caller,
+	// DeleteContainer, holds c.mu for its full duration.
+	appID, svcName, parseErr := ParseContainerName(ctr.ID())
+	isolatedSvc := parseErr == nil && svcName != ""
+	if isolatedSvc {
+		var entitlements []appconfig.Entitlement
+		if labels, lerr := ctr.Labels(ctx); lerr == nil {
+			entitlements = parseEntitlementsFromAnnotations(labels)
+		}
+		ip := c.serviceIPs[appID][svcName]
+		c.teardownMeshEgress(entitlements, ctr.ID(), appID, ip)
+	}
+
 	if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
+		// CNI DEL while the task's network namespace still exists (mirrors
+		// stopOne): deleteOne is DeleteContainer's only path for a container
+		// that was never explicitly stopped first (`wendy device apps remove`
+		// on a running app), so without this the CNI bridge plugin's host-local
+		// IPAM allocation for this exact container ID leaks forever — the next
+		// create for the same appID/serviceName then fails CNI ADD with
+		// "duplicate allocation is not allowed" (WDY mesh: found via repeated
+		// remove+redeploy cycles during RemoteCam demo debugging).
+		if isolatedSvc {
+			netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+			if cniErr := c.CNIDel(ctx, appID, ctr.ID(), netnsPath); cniErr != nil {
+				c.logger.Warn("CNI DEL failed during delete (non-fatal)",
+					zap.String("container_id", ctr.ID()), zap.Error(cniErr))
+			}
+		}
 		if termErr := c.terminateTask(ctx, task, ctr.ID(), syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
 			// Keep going: the container Delete below surfaces a meaningful
 			// error if the task record is truly stuck, but log the root cause

@@ -194,12 +194,15 @@ IP networking access.
 
 | `mode` | Description |
 |--------|-------------|
-| *(omitted)* | Default isolated network |
+| *(omitted)* | Host networking (same as `"host"`) — the container binds directly on the device's network interfaces, so its ports are reachable from the LAN. |
 | `"host"` | Shares the host network stack (visibility: bind host ports, see interfaces). Does **not** grant the ability to reconfigure host networking. |
 | `"host-admin"` | Host networking **plus** `CAP_NET_ADMIN` — allows reconfiguring interfaces, routes, and netfilter. Only request this if your app genuinely manages the network; it is a high-privilege capability. |
+| `"mesh"` | Isolated network namespace; ports are private and reachable from other devices in the org by name (`device-<id>.cloud.wendy.dev`) via the mesh, not from the LAN directly. |
 | `"none"` | Networking fully disabled |
 
 > **Security note:** `CAP_NET_ADMIN` (host network reconfiguration) is granted only by `"host-admin"`, never by plain `"host"`. Apps that previously relied on `CAP_NET_ADMIN` under `"host"` must switch to `"host-admin"`.
+
+> **Port exposure:** With `host` / `host-admin` (and the current omitted default), a port your app binds on `0.0.0.0` is reachable from the device's network (LAN). With `"mesh"`, ports stay private (loopback + cross-device mesh). The agent logs a `WARN` when a host-network app is listening on a public address, so you can spot unintended exposure in `wendy device logs`.
 
 ### `gpu`
 
