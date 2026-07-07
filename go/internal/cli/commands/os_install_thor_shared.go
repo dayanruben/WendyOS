@@ -4,7 +4,7 @@ package commands
 // partition flash (package flashengine) is shared across Windows, macOS and
 // Linux; only stage-1 RCM boot, recovery-device enumeration, and the ADB
 // transport differ per platform, provided by the thor*Host hooks implemented in
-// os_install_thor_hw_{darwin_linux,windows}.go.
+// os_install_thor_hw_{unix,windows}.go.
 
 import (
 	"context"
