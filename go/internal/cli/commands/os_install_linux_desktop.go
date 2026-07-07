@@ -3,9 +3,19 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -32,4 +42,121 @@ func renderLinuxDesktopInstructions(token, cloudHost, orgName string, expiresAt 
 	fmt.Fprintf(&b, "This enrollment token expires at %s (about 1 hour). Run the command before then.\n", expiresAt.Format(time.RFC1123))
 	fmt.Fprintf(&b, "After it boots, run `wendy discover` to find the device.\n")
 	return b.String()
+}
+
+// linuxDesktopTokenFn is a stub point so tests can replace token minting
+// without dialing Wendy Cloud.
+var linuxDesktopTokenFn = createLinuxDesktopToken
+
+// installLinuxDesktop prints agent.sh install instructions for turning an
+// existing Linux machine into a managed Wendy device. When the user is logged
+// in and does not decline, it mints a short-lived enrollment token and prints
+// the pre-enrollment one-liner. It never writes a drive or downloads an image.
+func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName string) error {
+	interactive := isInteractiveTerminal()
+
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{} // treat an unreadable config as "not logged in"
+	}
+
+	enroll := false
+	switch preOpts.mode {
+	case preEnrollSkip:
+		enroll = false
+	case preEnrollForced:
+		enroll = true
+	case preEnrollAuto:
+		if interactive && len(cfg.Auth) > 0 {
+			ok, cErr := confirmPreEnroll()
+			if cErr != nil {
+				return cErr
+			}
+			enroll = ok
+		}
+	}
+
+	var token, cloudHost, orgName string
+	var expiresAt time.Time
+	if enroll {
+		auth, aErr := selectEnrollmentAuth(cfg, preOpts.cloudGRPC, interactive)
+		if aErr != nil {
+			if errors.Is(aErr, ErrUserCancelled) {
+				return aErr
+			}
+			if !interactive {
+				return fmt.Errorf("--pre-enroll: %w", aErr)
+			}
+			fmt.Fprintf(os.Stdout, "Cannot pre-enroll: %v\n", aErr)
+			// fall through to plain instructions
+		} else if auth != nil {
+			org, oErr := resolveOrg(ctx, auth, false)
+			if oErr != nil {
+				if errors.Is(oErr, ErrUserCancelled) {
+					return oErr
+				}
+				if !interactive {
+					return fmt.Errorf("--pre-enroll: resolving organization: %w", oErr)
+				}
+				fmt.Fprintf(os.Stdout, "Cannot resolve organization: %v\n", oErr)
+			} else {
+				tok, exp, tErr := linuxDesktopTokenFn(ctx, auth, deviceName, org.ID)
+				if tErr != nil {
+					if !interactive {
+						return fmt.Errorf("--pre-enroll: creating enrollment token: %w", tErr)
+					}
+					fmt.Fprintf(os.Stdout, "Could not create enrollment token: %v\n", tErr)
+				} else {
+					token, cloudHost, orgName, expiresAt = tok, auth.CloudGRPC, org.Name, exp
+				}
+			}
+		}
+	}
+
+	fmt.Fprint(os.Stdout, renderLinuxDesktopInstructions(token, cloudHost, orgName, expiresAt))
+	return nil
+}
+
+// createLinuxDesktopToken mints a short-lived asset enrollment token for org.
+// The CLI does NOT issue a certificate — only the token is handed to the
+// device, which self-enrolls. Mirrors the cloud dial in preEnrollDevice.
+func createLinuxDesktopToken(ctx context.Context, auth *config.AuthConfig, deviceName string, orgID int32) (string, time.Time, error) {
+	if len(auth.Certificates) == 0 {
+		return "", time.Time{}, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+	}
+	cert := auth.Certificates[0]
+
+	var transportOpt grpc.DialOption
+	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		tlsCfg, err := certs.LoadTLSConfig(cert.PemCertificate, cert.PemCertificateChain, cert.PemPrivateKey, "")
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("loading TLS config: %w", err)
+		}
+		transportOpt = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+	} else {
+		transportOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+
+	conn, err := grpc.NewClient(auth.CloudGRPC, transportOpt)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("connecting to cloud: %w", err)
+	}
+	defer conn.Close()
+
+	if orgID == 0 {
+		orgID = int32(cert.OrganizationID)
+	}
+	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudContext(ctx, auth), &cloudpb.CreateAssetEnrollmentTokenRequest{
+		OrganizationId: orgID,
+		Name:           deviceName,
+		TtlSeconds:     3600,
+	})
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("creating enrollment token: %w", err)
+	}
+	var expiresAt time.Time
+	if resp.GetExpiresAt() != nil {
+		expiresAt = resp.GetExpiresAt().AsTime()
+	}
+	return resp.GetEnrollmentToken(), expiresAt, nil
 }

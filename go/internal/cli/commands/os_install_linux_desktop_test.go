@@ -3,9 +3,12 @@
 package commands
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func TestRenderLinuxDesktopInstructions_Plain(t *testing.T) {
@@ -33,5 +36,28 @@ func TestRenderLinuxDesktopInstructions_Enrolled(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("enrolled output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestInstallLinuxDesktop_SkipMode_PrintsPlain(t *testing.T) {
+	// preEnrollSkip must never mint a token, even if a token fn is present.
+	called := false
+	origTok := linuxDesktopTokenFn
+	linuxDesktopTokenFn = func(_ context.Context, _ *config.AuthConfig, _ string, _ int32) (string, time.Time, error) {
+		called = true
+		return "should-not-be-used", time.Time{}, nil
+	}
+	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
+
+	out := captureStdout(t, func() {
+		if err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollSkip}, ""); err != nil {
+			t.Fatalf("installLinuxDesktop: %v", err)
+		}
+	})
+	if called {
+		t.Fatal("token fn must not be called in skip mode")
+	}
+	if !strings.Contains(out, "curl -fsSL https://install.wendy.dev/agent.sh | bash") {
+		t.Fatalf("expected plain instructions:\n%s", out)
 	}
 }

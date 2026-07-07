@@ -341,6 +341,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 				Value:       esp.key,
 			})
 		}
+
+		items = append(items, tui.PickerItem{
+			Name:        "Linux Desktop",
+			Description: "Install wendy-agent on an existing Linux machine",
+			Section:     "Linux Desktop",
+			SortKey:     "2_linux_desktop",
+			Value:       linuxDesktopValue,
+		})
 	}
 
 	// Resolve device — use flag or interactive picker.
@@ -382,6 +390,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// flow and dd's the wrong artifact onto an external drive.
 	if selected == thorDeviceType {
 		return installThor(ctx, flagVersion, nightly, force)
+	}
+
+	if selected == linuxDesktopValue {
+		return installLinuxDesktop(ctx, preOpts, deviceName)
 	}
 
 	device := deviceMap[selected]
