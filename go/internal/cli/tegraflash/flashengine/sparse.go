@@ -48,6 +48,13 @@ func (e *engine) writeSparse(p partition, localFile string) error {
 	if h.Magic != sparseMagic {
 		return fmt.Errorf("not a sparse image (magic 0x%08x)", h.Magic)
 	}
+	// The whole-file/chunked paths guard against an image larger than the partition
+	// before dispatch, but there fileSize is the compressed sparse size; guard the
+	// expanded size here so a wrong manifest Size can't stream writes past the
+	// partition into the next one.
+	if expanded := int64(h.TotalBlocks) * int64(h.BlockSize); expanded > p.Size {
+		return fmt.Errorf("sparse image expands to %d bytes, larger than partition %s (%d)", expanded, p.Name, p.Size)
+	}
 	// Skip any extra file-header bytes beyond the 28 we read.
 	if int(h.FileHdrSize) > 28 {
 		if _, err := f.Seek(int64(h.FileHdrSize), io.SeekStart); err != nil {

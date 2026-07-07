@@ -84,9 +84,12 @@ func pickThorRecoveryDevice() (thorDevice, error) {
 }
 
 // thorIsUSBAccessErr reports whether err is the OS denying wendy access to the
-// Jetson's USB device (rcm.ErrUSBAccess), which routes into usbAccessHintBox.
+// Jetson's USB device, which routes into usbAccessHintBox. This covers both the
+// recovery-device scan (rcm.ErrUSBAccess) and opening the re-enumerated flashing
+// gadget (adb.ErrUSBAccess) — the gadget has its own PID, so a udev rule covering
+// only the recovery PIDs fails here even after a clean stage 1.
 func thorIsUSBAccessErr(err error) bool {
-	return errors.Is(err, rcm.ErrUSBAccess)
+	return errors.Is(err, rcm.ErrUSBAccess) || errors.Is(err, adb.ErrUSBAccess)
 }
 
 // diskAvailBytes reports the bytes available to the user on the volume holding
@@ -135,6 +138,10 @@ func thorOpenGadget(dev thorDevice, out io.Writer) (flashengine.Transport, func(
 		lastErr = err
 		time.Sleep(time.Second)
 	}
-	// Nothing was written yet, so signal the "gadget unreachable, Thor is safe" path.
+	// Nothing was written yet either way. A permission denial gets the USB-access
+	// guidance (udev rule / sudo); anything else is the calmer "gadget unreachable".
+	if errors.Is(lastErr, adb.ErrUSBAccess) {
+		return nil, nil, lastErr
+	}
 	return nil, nil, fmt.Errorf("%w (over ADB): %v", errGadgetUnreachable, lastErr)
 }

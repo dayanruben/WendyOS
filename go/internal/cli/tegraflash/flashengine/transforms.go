@@ -75,7 +75,11 @@ func (e *engine) transformBadPage(p partition, localFile string) (string, string
 	if len(data) >= badPageCopyLen {
 		return "", "", fmt.Errorf("unexpected bad-page size %d (want < %d)", len(data), badPageCopyLen)
 	}
-	copies := int(p.Size / badPageCopyLen)
+	// Round up so the replicated copies fill the whole partition (bootburn appends
+	// copies until it reaches p.Size). For an aligned p.Size this equals p.Size/len;
+	// a non-multiple would overshoot and is rejected by flashPartition's
+	// fileSize > p.Size guard, matching bootburn.
+	copies := int((p.Size + badPageCopyLen - 1) / badPageCopyLen)
 	if copies < 1 {
 		copies = 1
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashengine"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 // Step IDs for the flashing progress list.
@@ -105,10 +106,24 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 	flashCtx, cancelFlash := context.WithCancel(ctx)
 	defer cancelFlash()
 
-	var (
-		fp          *flashpack.Flashpack
-		closeGadget func()
-	)
+	// Persist the full flash output to a log file (in addition to whatever the UI
+	// shows) so a failure has a durable post-mortem/support artifact. Best-effort:
+	// a log we can't open never blocks the flash.
+	var logW io.Writer = io.Discard
+	var logPath string
+	if dir, derr := config.LogDir(); derr == nil {
+		logPath = filepath.Join(dir, "thor-flash-"+time.Now().Format("20060102-150405")+".log")
+		if lf, lerr := os.Create(logPath); lerr == nil {
+			defer lf.Close()
+			fmt.Fprintf(lf, "wendy os install — Jetson AGX Thor — WendyOS %s\n\n", plan.version)
+			logW = lf
+			defer func() { fmt.Println(tui.Dim("Full flash log: " + logPath)) }()
+		} else {
+			logPath = ""
+		}
+	}
+
+	var fp *flashpack.Flashpack
 	steps := []flashStep{
 		{id: stepDownload, label: "Download flashpack", run: func(out io.Writer, detail func(string)) (bool, error) {
 			resolved, cached, err := downloadAndExtractFlashpack(cacheDir, plan, detail)
@@ -125,7 +140,12 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 				if err != nil {
 					return false, err
 				}
-				closeGadget = closer
+				// The gadget is owned entirely by this worker goroutine: close it
+				// here when the step returns, never from the main goroutine. On a
+				// ctrl+c cancel the worker can outlive runFlashSteps' grace window,
+				// and closing the transport from main would race with (and close it
+				// under) an in-flight USB transfer.
+				defer closer()
 				return false, flashengine.Run(flashCtx, transport, flashengine.Options{
 					FlashImagesDir: filepath.Join(fp.FlashWorkspaceDir(), "flash-images"),
 					NvddLocalPath:  filepath.Join(fp.BundleDir(), "unified_flash", "tools", "flashtools", "flash", "nvdd"),
@@ -138,10 +158,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 			}},
 	}
 
-	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps, cancelFlash)
-	if closeGadget != nil {
-		closeGadget()
-	}
+	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps, cancelFlash, logW)
 	if err != nil {
 		switch {
 		case errors.Is(err, tui.ErrCancelled):
@@ -303,9 +320,9 @@ type flashStep struct {
 	run          func(out io.Writer, detail func(string)) (cached bool, err error)
 }
 
-func runFlashSteps(title string, steps []flashStep, cancelWork func()) (int, error) {
+func runFlashSteps(title string, steps []flashStep, cancelWork func(), logW io.Writer) (int, error) {
 	if !isInteractiveTerminal() {
-		return runFlashStepsPlain(title, steps)
+		return runFlashStepsPlain(title, steps, logW)
 	}
 	m := tui.NewStepsModel(title)
 	prog := tui.NewProgressProgram(m)
@@ -324,10 +341,13 @@ func runFlashSteps(title string, steps []flashStep, cancelWork func()) (int, err
 		var failVerbose []byte
 		for _, s := range steps {
 			buf := &boundedBuffer{max: maxRawBuildCapture}
+			// The step's raw output goes to the bounded in-memory buffer (dumped to
+			// stdout on failure) and, unbounded, to the persistent log file.
+			out := io.MultiWriter(buf, logW)
 			curID.Store(int32(s.id))
 			prog.Send(tui.StepAbortGuardMsg{Warning: s.abortWarning})
 			prog.Send(tui.StepStartMsg{ID: s.id, Label: s.label})
-			cached, err := s.run(buf, func(d string) { prog.Send(tui.StepDetailMsg{ID: s.id, Detail: d}) })
+			cached, err := s.run(out, func(d string) { prog.Send(tui.StepDetailMsg{ID: s.id, Detail: d}) })
 			if err != nil {
 				prog.Send(tui.StepFailMsg{ID: s.id})
 				failedID, runErr, failVerbose = s.id, err, buf.Bytes()
@@ -361,11 +381,18 @@ func runFlashSteps(title string, steps []flashStep, cancelWork func()) (int, err
 	return res.failedID, res.err
 }
 
-func runFlashStepsPlain(title string, steps []flashStep) (int, error) {
+func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, error) {
 	fmt.Println(title)
 	for _, s := range steps {
 		fmt.Printf("==> %s\n", s.label)
-		cached, err := s.run(os.Stdout, func(string) {})
+		out := io.MultiWriter(os.Stdout, logW)
+		// A non-interactive flash has no live progress UI, and the multi-minute
+		// rootfs write produces no output; a periodic heartbeat keeps CI/SSH
+		// idle-output timeouts from killing the process mid-write.
+		done := make(chan struct{})
+		go stepHeartbeat(out, s.label, done)
+		cached, err := s.run(out, func(string) {})
+		close(done)
 		if err != nil {
 			return s.id, err
 		}
@@ -374,6 +401,21 @@ func runFlashStepsPlain(title string, steps []flashStep) (int, error) {
 		}
 	}
 	return -1, nil
+}
+
+// stepHeartbeat prints a periodic "still in progress" line until done is closed.
+func stepHeartbeat(w io.Writer, label string, done <-chan struct{}) {
+	start := time.Now()
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			fmt.Fprintf(w, "    … %s still in progress (%s elapsed)\n", label, time.Since(start).Round(time.Second))
+		}
+	}
 }
 
 func throttledDetail(detail func(string), format func(downloaded, total int64) string) func(downloaded, total int64) {

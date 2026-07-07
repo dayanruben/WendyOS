@@ -10,6 +10,7 @@ package winusb
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -17,12 +18,32 @@ import (
 
 // USBDevice is an open WinUSB handle to a Jetson device.
 type USBDevice struct {
-	handle       windows.Handle // CreateFile handle to the device path
-	winusb       uintptr        // WINUSB_INTERFACE_HANDLE
-	inPipe       uint8          // bulk IN endpoint address (0 if none)
-	outPipe      uint8          // bulk OUT endpoint address (0 if none)
-	outMaxPacket uint16         // OUT pipe wMaxPacketSize (for end-of-transfer ZLP framing)
+	handle         windows.Handle // CreateFile handle to the device path
+	winusb         uintptr        // WINUSB_INTERFACE_HANDLE
+	inPipe         uint8          // bulk IN endpoint address (0 if none)
+	outPipe        uint8          // bulk OUT endpoint address (0 if none)
+	outMaxPacket   uint16         // OUT pipe wMaxPacketSize (for end-of-transfer ZLP framing)
+	curInTimeoutMs uint32         // last IN-pipe transfer timeout set, to avoid redundant policy calls
 }
+
+// Read implements adbproto.Transport: one bulk-IN transfer bounded by timeout.
+// The IN pipe's transfer-timeout policy is (re)set only when the requested bound
+// changes, so a steady stream of reads at one timeout doesn't re-arm it each time.
+func (d *USBDevice) Read(p []byte, timeout time.Duration) (int, error) {
+	ms := uint32(timeout.Milliseconds())
+	if ms == 0 {
+		ms = 1 // 0 would mean "wait forever" to WinUSB; keep a real bound
+	}
+	if ms != d.curInTimeoutMs {
+		d.setPipeTimeout(d.inPipe, ms)
+		d.curInTimeoutMs = ms
+	}
+	return d.ReadBulk(p)
+}
+
+// Write implements adbproto.Transport: a bulk-OUT transfer with no end-of-transfer
+// ZLP (ADB is length-prefixed; writeBulkChunked never appends one).
+func (d *USBDevice) Write(p []byte) error { return d.writeBulkChunked(p) }
 
 // bulkChunk bounds a single WinUsb_WritePipe. WinUSB rejects/aborts large single
 // transfers, so images are sent in chunks. 16 KiB matches the proven macOS/Linux
@@ -264,7 +285,10 @@ func (d *USBDevice) OutMaxPacket() uint16 { return d.outMaxPacket }
 
 // SetReadTimeout overrides the IN-pipe transfer timeout (ms). Used by the RCM
 // stage-1 path to bound its tolerant status reads.
-func (d *USBDevice) SetReadTimeout(ms uint32) { d.setPipeTimeout(d.inPipe, ms) }
+func (d *USBDevice) SetReadTimeout(ms uint32) {
+	d.setPipeTimeout(d.inPipe, ms)
+	d.curInTimeoutMs = ms
+}
 
 // setPipeTimeout sets PIPE_TRANSFER_TIMEOUT (ms; 0 = infinite) on a pipe.
 func (d *USBDevice) setPipeTimeout(pipeID uint8, ms uint32) {
