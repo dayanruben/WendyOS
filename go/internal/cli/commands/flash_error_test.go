@@ -115,6 +115,11 @@ func TestCombineFlashFailure_BothErrorsPresent(t *testing.T) {
 	if !errors.Is(combined, primaryCause) {
 		t.Fatalf("combined error dropped the primary cause: %v", combined)
 	}
+	// The fallback must stay in the chain too — a context.Canceled from a
+	// cancelled fallback has to remain errors.Is-matchable upstream.
+	if !errors.Is(combined, fallback) {
+		t.Fatalf("combined error dropped the fallback cause: %v", combined)
+	}
 	// Primary (real failure) present, with offset.
 	if !strings.Contains(msg, "seekable block-map write failed") || !strings.Contains(msg, "input/output error") {
 		t.Errorf("combined error %q missing the primary failure", msg)

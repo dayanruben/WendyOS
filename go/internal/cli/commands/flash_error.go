@@ -76,10 +76,11 @@ func framePrimaryFlashError(label string, written, total int64, primaryErr error
 }
 
 // combineFlashFailure builds the error returned when the fast path failed and
-// the full-image dd fallback also failed: both errors, clearly labeled, with
-// the primary (real) error preserved in the chain and the fallback's appended.
+// the full-image dd fallback also failed: both errors, clearly labeled, and
+// both preserved in the errors.Is chain (e.g. a context.Canceled from a
+// cancelled fallback must stay matchable upstream).
 func combineFlashFailure(primary, fallback error) error {
-	return fmt.Errorf("%w; full-image fallback also failed: %v", primary, fallback)
+	return fmt.Errorf("%w; full-image fallback also failed: %w", primary, fallback)
 }
 
 // flashDeviceFailureHint is appended to a device-level flash failure. The dd

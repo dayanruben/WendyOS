@@ -663,6 +663,13 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	writeModel := writeFinal.(tui.ProgressModel)
 	if primaryErr := writeModel.Err(); primaryErr != nil {
+		// User cancellation is not a write failure: don't classify it, and
+		// don't start a full-image fallback write on a flash the user just
+		// cancelled (same handling as the measure step above).
+		if errors.Is(primaryErr, context.Canceled) {
+			return primaryErr
+		}
+
 		// Frame the primary (fast-path) error with the offset it reached. This
 		// error is never discarded again below — it is the real failure, and
 		// WDY-1841 was caused by dropping it in favor of the fallback's error.
