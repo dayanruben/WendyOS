@@ -438,3 +438,39 @@ func TestEventNameFor(t *testing.T) {
 		}
 	}
 }
+
+func TestMilestoneFor(t *testing.T) {
+	cases := []struct {
+		path    string
+		success bool
+		want    string
+	}{
+		{"wendy discover", true, "discover_success"},
+		{"wendy init", true, "init_success"},
+		{"wendy run", true, "first_deploy_success"},
+		{"wendy cloud login", true, "auth_success"},
+		{"wendy auth login", true, "auth_success"},
+		{"wendy run", false, ""},
+		{"wendy device info", true, ""},
+	}
+	for _, c := range cases {
+		if got := milestoneFor(c.path, c.success); got != c.want {
+			t.Errorf("milestoneFor(%q, %v) = %q, want %q", c.path, c.success, got, c.want)
+		}
+	}
+}
+
+func TestIsSetupCommand(t *testing.T) {
+	setup := []string{"wendy completion install", "wendy __complete", "wendy help", "wendy analytics disable"}
+	real := []string{"wendy run", "wendy discover", "wendy device info"}
+	for _, p := range setup {
+		if !isSetupCommand(p) {
+			t.Errorf("isSetupCommand(%q) = false, want true", p)
+		}
+	}
+	for _, p := range real {
+		if isSetupCommand(p) {
+			t.Errorf("isSetupCommand(%q) = true, want false", p)
+		}
+	}
+}

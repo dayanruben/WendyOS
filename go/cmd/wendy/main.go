@@ -75,6 +75,19 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		props["error_class"] = errorClass(err)
 	}
 	analytics.Track(event, props)
+
+	// Activation milestones (one-time per install, best-effort). first_run and
+	// first_real_command are only counted for genuine invocations, not the
+	// Homebrew install artifact.
+	if event == "command_executed" {
+		analytics.TrackMilestoneOnce("first_run")
+		if !isSetupCommand(path) {
+			analytics.TrackMilestoneOnce("first_real_command")
+		}
+	}
+	if m := milestoneFor(path, err == nil); m != "" {
+		analytics.TrackMilestoneOnce(m)
+	}
 }
 
 func commandRoot(c *cobra.Command) string {
@@ -98,6 +111,41 @@ func eventNameFor(commandPath string, homebrew bool) string {
 		return "install_completed"
 	}
 	return "command_executed"
+}
+
+// isSetupCommand reports whether a command path is a meta/setup command that
+// does not represent deliberate product use. The first "real" command is the
+// first invocation whose path is not one of these.
+func isSetupCommand(path string) bool {
+	switch path {
+	case "wendy completion install",
+		"wendy completion bash", "wendy completion zsh",
+		"wendy completion fish", "wendy completion powershell",
+		"wendy __complete", "wendy __completeNoDesc",
+		"wendy __ble-check", "wendy help":
+		return true
+	}
+	return strings.HasPrefix(path, "wendy analytics") ||
+		strings.HasPrefix(path, "wendy cache")
+}
+
+// milestoneFor maps a successful command invocation to a one-time activation
+// milestone event name, or "" if the command is not a milestone.
+func milestoneFor(commandPath string, success bool) string {
+	if !success {
+		return ""
+	}
+	switch commandPath {
+	case "wendy discover":
+		return "discover_success"
+	case "wendy init":
+		return "init_success"
+	case "wendy run":
+		return "first_deploy_success"
+	case "wendy cloud login", "wendy auth login":
+		return "auth_success"
+	}
+	return ""
 }
 
 // errorClass maps an execution error to a bounded enum suitable for analytics.
