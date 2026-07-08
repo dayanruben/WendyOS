@@ -166,7 +166,7 @@ func TestWaitForReadiness_ContextCancelled(t *testing.T) {
 
 func TestStartPostStartHook_NilHooks(t *testing.T) {
 	cfg := &appconfig.AppConfig{AppID: "test"}
-	cmd := startPostStartHook(context.Background(), cfg, "localhost")
+	cmd := startPostStartHook(context.Background(), cfg, "localhost", "")
 	if cmd != nil {
 		t.Error("expected nil cmd for nil hooks")
 	}
@@ -179,9 +179,36 @@ func TestStartPostStartHook_EmptyCLI(t *testing.T) {
 			PostStart: &appconfig.HookCommand{Agent: "echo agent-only"},
 		},
 	}
-	cmd := startPostStartHook(context.Background(), cfg, "localhost")
+	cmd := startPostStartHook(context.Background(), cfg, "localhost", "")
 	if cmd != nil {
 		t.Error("expected nil cmd when CLI is empty")
+	}
+}
+
+// TestExpandHookEnv_ServiceName verifies WENDY_SERVICE_NAME expands in both
+// Unix and Windows placeholder forms, and expands to the empty string for
+// single-container apps (which pass serviceName == "") rather than being left
+// verbatim — matching how WENDY_HOSTNAME/WENDY_APP_ID already behave.
+func TestExpandHookEnv_ServiceName(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		serviceName string
+		want        string
+	}{
+		{"unix style", "echo ${WENDY_SERVICE_NAME}", "worker", "echo worker"},
+		{"windows style", "echo %WENDY_SERVICE_NAME%", "worker", "echo worker"},
+		{"empty serviceName expands to empty, unix", "[${WENDY_SERVICE_NAME}]", "", "[]"},
+		{"empty serviceName expands to empty, windows", "[%WENDY_SERVICE_NAME%]", "", "[]"},
+		{"mixed with hostname and appID", "%WENDY_SERVICE_NAME%@${WENDY_HOSTNAME}/${WENDY_APP_ID}", "worker", "worker@device.local/com.example.app"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := expandHookEnv(tc.input, "device.local", "com.example.app", tc.serviceName)
+			if got != tc.want {
+				t.Errorf("expandHookEnv(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 

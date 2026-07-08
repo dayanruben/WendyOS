@@ -1598,7 +1598,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 		announceReachableURL(ctx, conn, appCfg)
 		// Fire-and-forget: post-start hook outlives the CLI process.
-		startPostStartHook(context.Background(), appCfg, conn.Host)
+		startPostStartHook(context.Background(), appCfg, conn.Host, appCfg.ServiceName)
 		return nil
 	}
 
@@ -1636,7 +1636,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	}
 
 	// Post-start hook tied to runCtx so Ctrl+C kills it.
-	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
+	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host, appCfg.ServiceName)
 
 	gotFirstResponse := false
 	for {
@@ -1734,19 +1734,26 @@ func shellCommand() (string, []string) {
 }
 
 // expandHookEnv resolves Wendy's documented placeholders in s. Both Unix-style
-// (${VAR}, $VAR) and Windows-style (%WENDY_*%) forms are accepted for the two
+// (${VAR}, $VAR) and Windows-style (%WENDY_*%) forms are accepted for the
 // Wendy-provided placeholders, so the same hook string parses identically in
 // sh and cmd.exe. Other ${VAR} forms fall through to os.Getenv; raw %VAR%
 // forms for non-Wendy variables are left for cmd.exe to expand natively.
-func expandHookEnv(s, hostname, appID string) string {
+//
+// serviceName is "" for single-container apps (and the app-level fallback
+// hook), which expands WENDY_SERVICE_NAME to the empty string rather than
+// leaving it verbatim — the placeholder simply isn't meaningful there.
+func expandHookEnv(s, hostname, appID, serviceName string) string {
 	s = strings.ReplaceAll(s, "%WENDY_HOSTNAME%", hostname)
 	s = strings.ReplaceAll(s, "%WENDY_APP_ID%", appID)
+	s = strings.ReplaceAll(s, "%WENDY_SERVICE_NAME%", serviceName)
 	return os.Expand(s, func(key string) string {
 		switch key {
 		case "WENDY_HOSTNAME":
 			return hostname
 		case "WENDY_APP_ID":
 			return appID
+		case "WENDY_SERVICE_NAME":
+			return serviceName
 		default:
 			return os.Getenv(key)
 		}
@@ -1778,14 +1785,18 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 	if err != nil {
 		return
 	}
-	url := reachableAppURL(hookURL, appCfg.AppID, bestReachableIP(resp.GetNetworkInterfaces()), appCfg.Readiness)
+	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, bestReachableIP(resp.GetNetworkInterfaces()), appCfg.Readiness)
 	if url == "" {
 		return
 	}
 	cliLogln("App reachable at %s", tui.Value(url))
 }
 
-// startPostStartHook fires the postStart hook actions for appCfg.
+// startPostStartHook fires the postStart hook actions for appCfg. serviceName
+// is threaded through separately from appCfg (rather than read off
+// appCfg.ServiceName internally) so callers building a synthetic/app-level
+// config can control it explicitly; existing single-container callers pass
+// appCfg.ServiceName, which is "" on true single-container paths.
 //
 // If openURL is set, it is expanded and opened in the developer's default
 // browser via the shared browseropen helper — no shell, no quoting. If cli
@@ -1793,14 +1804,14 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 // platform shell; the returned *exec.Cmd is the cli child for the caller to
 // wait on or kill. Returns nil when no cli command is configured (regardless
 // of whether openURL was fired).
-func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostname string) *exec.Cmd {
+func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostname, serviceName string) *exec.Cmd {
 	if appCfg.Hooks == nil || appCfg.Hooks.PostStart == nil {
 		return nil
 	}
 	hook := appCfg.Hooks.PostStart
 
 	if hook.OpenURL != "" {
-		url := expandHookEnv(hook.OpenURL, hostname, appCfg.AppID)
+		url := expandHookEnv(hook.OpenURL, hostname, appCfg.AppID, serviceName)
 		if err := browserOpen(url); err != nil {
 			cliLogln("Warning: postStart openURL failed: %v", err)
 		} else {
@@ -1812,7 +1823,7 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 		return nil
 	}
 
-	expanded := expandHookEnv(hook.CLI, hostname, appCfg.AppID)
+	expanded := expandHookEnv(hook.CLI, hostname, appCfg.AppID, serviceName)
 	shell, flags := shellCommand()
 	cmd := execCommandContext(ctx, shell, append(flags, expanded)...)
 	cmd.Stdout = os.Stdout
@@ -1906,7 +1917,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 					warnReadiness(ctx, conn, appCfg.AppID, err)
 				}
 				announceReachableURL(ctx, conn, appCfg)
-				startPostStartHook(context.Background(), appCfg, conn.Host)
+				startPostStartHook(context.Background(), appCfg, conn.Host, appCfg.ServiceName)
 				return nil
 			}
 			// Attached: mirror startAndStreamContainer's attached branch — wait
@@ -1920,7 +1931,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 					warnReadiness(ctx, conn, appCfg.AppID, err)
 				}
 				announceReachableURL(ctx, conn, appCfg)
-				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host)
+				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host, appCfg.ServiceName)
 			}
 			continue
 		}

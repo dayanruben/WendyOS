@@ -359,7 +359,7 @@ func runPostStartHostHook(ctx context.Context, conn *grpcclient.AgentConnection,
 	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 		warnReadiness(ctx, conn, appCfg.AppID, err)
 	}
-	startPostStartHook(context.Background(), appCfg, conn.Host)
+	startPostStartHook(context.Background(), appCfg, conn.Host, appCfg.ServiceName)
 }
 
 // containerExitDetail returns a short human summary of why appID's container
