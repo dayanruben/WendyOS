@@ -3,10 +3,14 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // lifecycleFakeAgentClient is a minimal WendyAgentServiceClient for driving
@@ -385,4 +390,385 @@ func TestAppLevelLifecycleConfig(t *testing.T) {
 			t.Error("appLevelLifecycleConfig() = nil, want populated config when only Hooks is set")
 		}
 	})
+}
+
+// --- startAndStreamServices lifecycle-hook fakes (WDY-1271) ---
+
+// hookSvcStartStream is a scripted StartContainer stream: it emits one Started
+// response (as the agent does before it streams logs), then keeps the stream
+// open — the attached path's per-service goroutine loops on Recv — until
+// shouldEOF reports true (or the deadline passes). Gating EOF on an observable
+// signal (e.g. a hook's sentinel file, or "browser opened") lets a test hold
+// the log-multiplex loop open until a hook has demonstrably fired before the
+// run tears down and runCancel suppresses it.
+type hookSvcStartStream struct {
+	grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse] // embedded nil
+
+	startedSent bool
+	shouldEOF   func() bool
+	deadline    time.Time
+}
+
+func (s *hookSvcStartStream) Recv() (*agentpb.RunContainerLayersResponse, error) {
+	if !s.startedSent {
+		s.startedSent = true
+		return &agentpb.RunContainerLayersResponse{
+			ResponseType: &agentpb.RunContainerLayersResponse_Started_{Started: &agentpb.RunContainerLayersResponse_Started{}},
+		}, nil
+	}
+	for {
+		if s.shouldEOF == nil || s.shouldEOF() || time.Now().After(s.deadline) {
+			return nil, io.EOF
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// hookSvcContainerClient is a WendyContainerServiceClient for driving
+// startAndStreamServices: StartContainer records the context it was invoked
+// with (keyed by request AppName) so a test can assert per-service agent-hook
+// metadata scoping, and ListContainers backs warnReadiness's exit-detail lookup.
+type hookSvcContainerClient struct {
+	agentpb.WendyContainerServiceClient // embedded nil — satisfies interface
+
+	mu         sync.Mutex
+	startCtxes map[string]context.Context
+	startOrder []string
+
+	container *agentpb.AppContainer // nil → empty ListContainers response
+	shouldEOF func() bool
+	deadline  time.Time
+	onStart   func(calls int) // invoked after each StartContainer is recorded (no lock held)
+}
+
+func (f *hookSvcContainerClient) StartContainer(ctx context.Context, in *agentpb.StartContainerRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], error) {
+	f.mu.Lock()
+	if f.startCtxes == nil {
+		f.startCtxes = map[string]context.Context{}
+	}
+	f.startCtxes[in.GetAppName()] = ctx
+	f.startOrder = append(f.startOrder, in.GetAppName())
+	calls := len(f.startOrder)
+	onStart := f.onStart
+	f.mu.Unlock()
+	if onStart != nil {
+		onStart(calls)
+	}
+	return &hookSvcStartStream{shouldEOF: f.shouldEOF, deadline: f.deadline}, nil
+}
+
+func (f *hookSvcContainerClient) ListContainers(context.Context, *agentpb.ListContainersRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.ListContainersResponse], error) {
+	return &fakeListContainersStream{resp: &agentpb.ListContainersResponse{Container: f.container}}, nil
+}
+
+func (f *hookSvcContainerClient) startCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.startOrder)
+}
+
+func (f *hookSvcContainerClient) startContext(appName string) (context.Context, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.startCtxes[appName]
+	return c, ok
+}
+
+// hasAgentHookMetadata reports whether ctx carries the outgoing agent-side
+// postStart hook metadata (i.e. contextWithPostStartAgentHook attached it).
+func hasAgentHookMetadata(t *testing.T, ctx context.Context) bool {
+	t.Helper()
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok {
+		return false
+	}
+	return len(md.Get(appconfig.PostStartAgentHookMetadataKey)) > 0
+}
+
+// TestStartAndStreamServices_FourServices_OnlyFrontendDeclares is the WDY-1271
+// acceptance test: of four services (db, cache, api, frontend), only frontend
+// declares readiness + postStart hooks. It proves (1) the agent-side hook
+// metadata is attached ONLY to frontend's StartContainer context, (2) frontend's
+// cli hook actually fires, (3) no openURL means browserOpen is never called, and
+// (attached) (4) hook firing never gates the start loop: frontend's readiness
+// port stays closed until all four StartContainer calls are issued.
+func TestStartAndStreamServices_FourServices_OnlyFrontendDeclares(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host-side postStart cli hook uses `touch`, unavailable on Windows")
+	}
+	t.Run("detached", func(t *testing.T) { runFourServicesOnlyFrontend(t, true) })
+	t.Run("attached", func(t *testing.T) { runFourServicesOnlyFrontend(t, false) })
+}
+
+func runFourServicesOnlyFrontend(t *testing.T, detach bool) {
+	// Pre-reserve a port for frontend's readiness probe, then close it so nothing
+	// is listening yet. The fake re-opens it only once every StartContainer has
+	// been recorded, so a start loop that (wrongly) gated on frontend's readiness
+	// before issuing every start could never make progress.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve readiness port: %v", err)
+	}
+	port := testPort(t, ln)
+	ln.Close()
+
+	sentinel := filepath.Join(t.TempDir(), "frontend-cli-ran")
+	browserCalls := swapBrowserOpen(t)
+
+	svcCfgs := map[string]*appconfig.AppConfig{
+		"db":    {AppID: "app", ServiceName: "db"},
+		"cache": {AppID: "app", ServiceName: "cache"},
+		"api":   {AppID: "app", ServiceName: "api"},
+		"frontend": {
+			AppID:       "app",
+			ServiceName: "frontend",
+			Readiness: &appconfig.ReadinessConfig{
+				TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
+				TimeoutSeconds: 30,
+			},
+			Hooks: &appconfig.HooksConfig{
+				PostStart: &appconfig.HookCommand{
+					CLI:   fmt.Sprintf("touch %q", sentinel),
+					Agent: "echo hi",
+				},
+			},
+		},
+	}
+	ordered := []string{"db", "cache", "api", "frontend"}
+
+	var lnMu sync.Mutex
+	var reopened net.Listener
+	t.Cleanup(func() {
+		lnMu.Lock()
+		if reopened != nil {
+			reopened.Close()
+		}
+		lnMu.Unlock()
+	})
+
+	fake := &hookSvcContainerClient{
+		shouldEOF: func() bool { _, statErr := os.Stat(sentinel); return statErr == nil },
+		deadline:  time.Now().Add(20 * time.Second),
+		onStart: func(calls int) {
+			if calls != len(ordered) {
+				return
+			}
+			l, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+			if lerr != nil {
+				return
+			}
+			lnMu.Lock()
+			reopened = l
+			lnMu.Unlock()
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host:             "127.0.0.1",
+		AgentService:     &lifecycleFakeAgentClient{},
+		ContainerService: fake,
+	}
+
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+		func(string) error { return nil }, svcCfgs, nil)
+	if err != nil {
+		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
+	}
+
+	if got := fake.startCalls(); got != len(ordered) {
+		t.Fatalf("StartContainer calls = %d, want %d", got, len(ordered))
+	}
+
+	// (1) Agent-hook metadata present ONLY on frontend.
+	frontendCtx, ok := fake.startContext("app_frontend")
+	if !ok {
+		t.Fatal("no StartContainer recorded for app_frontend")
+	}
+	if !hasAgentHookMetadata(t, frontendCtx) {
+		t.Error("app_frontend StartContainer context is missing the agent-hook metadata")
+	}
+	for _, name := range []string{"db", "cache", "api"} {
+		ctxN, ok := fake.startContext("app_" + name)
+		if !ok {
+			t.Fatalf("no StartContainer recorded for app_%s", name)
+		}
+		if hasAgentHookMetadata(t, ctxN) {
+			t.Errorf("app_%s StartContainer context unexpectedly carries agent-hook metadata (only frontend declares one)", name)
+		}
+	}
+
+	// (2) frontend's cli hook fired.
+	waitForFile(t, sentinel, 5*time.Second)
+
+	// (3) No openURL declared → browserOpen must never fire.
+	if len(*browserCalls) != 0 {
+		t.Errorf("browserOpen called %v, want no calls (no service declares openURL)", *browserCalls)
+	}
+}
+
+// TestStartAndStreamServices_AppLevelFallback verifies that when no service
+// declares lifecycle config but the group does (appLevelCfg), the fallback fires
+// exactly once, only after every service has started, with ${WENDY_HOSTNAME}
+// expanded to the connection host — and that the app-level agent hook is never
+// attached to any StartContainer context.
+func TestStartAndStreamServices_AppLevelFallback(t *testing.T) {
+	t.Run("detached", func(t *testing.T) { runAppLevelFallback(t, true) })
+	t.Run("attached", func(t *testing.T) { runAppLevelFallback(t, false) })
+}
+
+func runAppLevelFallback(t *testing.T, detach bool) {
+	// A live listener so the app-level readiness probe passes immediately.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	svcCfgs := map[string]*appconfig.AppConfig{
+		"db":    {AppID: "app", ServiceName: "db"},
+		"cache": {AppID: "app", ServiceName: "cache"},
+		"api":   {AppID: "app", ServiceName: "api"},
+		"web":   {AppID: "app", ServiceName: "web"},
+	}
+	ordered := []string{"db", "cache", "api", "web"}
+	appLevelCfg := &appconfig.AppConfig{
+		AppID:     "app",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)},
+		},
+	}
+
+	fake := &hookSvcContainerClient{}
+
+	var (
+		bMu           sync.Mutex
+		openedURLs    []string
+		openedAtCalls []int
+	)
+	browserFired := make(chan struct{})
+	original := browserOpen
+	browserOpen = func(url string) error {
+		bMu.Lock()
+		openedURLs = append(openedURLs, url)
+		openedAtCalls = append(openedAtCalls, fake.startCalls())
+		first := len(openedURLs) == 1
+		bMu.Unlock()
+		if first {
+			close(browserFired)
+		}
+		return nil
+	}
+	t.Cleanup(func() { browserOpen = original })
+
+	// Attached: hold the log-multiplex loop open until the app-level hook has
+	// opened the browser, so runCancel/reap can't suppress it first. (Detached
+	// runs the hook synchronously, so this predicate is never consulted there.)
+	fake.shouldEOF = func() bool {
+		select {
+		case <-browserFired:
+			return true
+		default:
+			return false
+		}
+	}
+	fake.deadline = time.Now().Add(20 * time.Second)
+
+	conn := &grpcclient.AgentConnection{
+		Host:             "127.0.0.1",
+		AgentService:     &lifecycleFakeAgentClient{},
+		ContainerService: fake,
+	}
+
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+		func(string) error { return nil }, svcCfgs, appLevelCfg)
+	if err != nil {
+		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
+	}
+
+	bMu.Lock()
+	defer bMu.Unlock()
+	if len(openedURLs) != 1 {
+		t.Fatalf("browserOpen fired %d times (%v), want exactly 1", len(openedURLs), openedURLs)
+	}
+	wantURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if openedURLs[0] != wantURL {
+		t.Errorf("openURL = %q, want %q (WENDY_HOSTNAME expanded to the conn host)", openedURLs[0], wantURL)
+	}
+	if openedAtCalls[0] != len(ordered) {
+		t.Errorf("app-level hook fired after %d StartContainer calls, want %d (only after every service started)", openedAtCalls[0], len(ordered))
+	}
+
+	// The app-level agent hook is never sent to the agent (no app-level container).
+	for _, name := range ordered {
+		ctxN, ok := fake.startContext("app_" + name)
+		if !ok {
+			t.Fatalf("no StartContainer recorded for app_%s", name)
+		}
+		if hasAgentHookMetadata(t, ctxN) {
+			t.Errorf("app_%s StartContainer context carries agent-hook metadata; app-level agent hooks must never be sent", name)
+		}
+	}
+}
+
+// TestStartAndStreamServices_Detached_ReadinessTimeoutNonFatal verifies that a
+// declaring service whose readiness probe times out (closed port) does not fail
+// the run — the function returns nil and the postStart hook still fires.
+func TestStartAndStreamServices_Detached_ReadinessTimeoutNonFatal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host-side postStart cli hook uses `touch`, unavailable on Windows")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	port := testPort(t, ln)
+	ln.Close() // nothing listens → readiness times out
+
+	sentinel := filepath.Join(t.TempDir(), "solo-cli-ran")
+	swapBrowserOpen(t)
+
+	svcCfgs := map[string]*appconfig.AppConfig{
+		"solo": {
+			AppID:       "app",
+			ServiceName: "solo",
+			Readiness:   &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 1},
+			Hooks:       &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{CLI: fmt.Sprintf("touch %q", sentinel)}},
+		},
+	}
+	fake := &hookSvcContainerClient{}
+	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
+
+	err = startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, runOptions{detach: true},
+		func(string) error { return nil }, svcCfgs, nil)
+	if err != nil {
+		t.Fatalf("startAndStreamServices returned %v, want nil (readiness timeout must be non-fatal)", err)
+	}
+	waitForFile(t, sentinel, 5*time.Second)
+}
+
+// TestStartAndStreamServices_NilAppLevelCfg verifies the subset-run case (nil
+// appLevelCfg, no service declaring anything): no fallback activity, no panic,
+// in both detached and attached modes.
+func TestStartAndStreamServices_NilAppLevelCfg(t *testing.T) {
+	browserCalls := swapBrowserOpen(t)
+	svcCfgs := map[string]*appconfig.AppConfig{
+		"db":  {AppID: "app", ServiceName: "db"},
+		"api": {AppID: "app", ServiceName: "api"},
+	}
+	ordered := []string{"db", "api"}
+
+	for _, detach := range []bool{true, false} {
+		fake := &hookSvcContainerClient{}
+		conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
+		err := startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
+			func(string) error { return nil }, svcCfgs, nil)
+		if err != nil {
+			t.Fatalf("startAndStreamServices(detach=%v) = %v, want nil", detach, err)
+		}
+	}
+	if len(*browserCalls) != 0 {
+		t.Errorf("browserOpen called %v with a nil app-level config and no declaring services", *browserCalls)
+	}
 }
