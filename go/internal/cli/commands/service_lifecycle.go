@@ -48,12 +48,12 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 			// the hook entirely; this is not a readiness failure to report.
 			return
 		}
-		// containerExitDetail (invoked by warnReadiness) matches containers by
-		// their registered AppName, which for a per-service AppConfig is
-		// "{AppID}_{ServiceName}" (see AppConfig.ContainerName), not the bare
-		// group AppID — use cfg.ContainerName() so the lookup finds the
-		// container that actually failed.
-		warnReadiness(ctx, r.conn, cfg.ContainerName(), err)
+		// containerExitDetail (invoked by warnReadiness) matches on the GROUP
+		// appID: the agent's ListContainers groups per-service containers under
+		// the group app-ID label, reports AppContainer.AppName as the bare
+		// group appID, and aggregates exit code/reason onto that group entry —
+		// so pass cfg.AppID, never cfg.ContainerName().
+		warnReadiness(ctx, r.conn, cfg.AppID, err)
 	}
 	if ctx.Err() != nil {
 		return

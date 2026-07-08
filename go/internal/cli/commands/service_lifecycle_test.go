@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,19 +29,21 @@ func (f *lifecycleFakeAgentClient) GetAgentVersion(context.Context, *agentpb.Get
 }
 
 // lifecycleFakeContainerClient is a minimal WendyContainerServiceClient:
-// ListContainers always reports no containers (so warnReadiness's
-// containerExitDetail lookup returns "" without needing a real agent), and
-// listContainersCalls lets tests assert whether the warning path's exit-detail
-// lookup ran at all — a proxy for "was warnReadiness invoked".
+// ListContainers reports the configured container (or none, in which case
+// warnReadiness's containerExitDetail lookup returns "" without needing a
+// real agent), and listContainersCalls lets tests assert whether the warning
+// path's exit-detail lookup ran at all — a proxy for "was warnReadiness
+// invoked".
 type lifecycleFakeContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil — satisfies the interface
 
 	listContainersCalls int
+	container           *agentpb.AppContainer // nil → empty ListContainers response
 }
 
 func (f *lifecycleFakeContainerClient) ListContainers(context.Context, *agentpb.ListContainersRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.ListContainersResponse], error) {
 	f.listContainersCalls++
-	return &fakeListContainersStream{resp: &agentpb.ListContainersResponse{}}, nil
+	return &fakeListContainersStream{resp: &agentpb.ListContainersResponse{Container: f.container}}, nil
 }
 
 // newLifecycleTestConn builds an AgentConnection backed by the fakes above, so
@@ -186,6 +189,53 @@ func TestServiceHookRunner_ReadinessTimeoutStillFiresHook(t *testing.T) {
 	}
 	if containerFake.listContainersCalls == 0 {
 		t.Errorf("ListContainers never called; expected warnReadiness's exit-detail lookup to run")
+	}
+}
+
+// TestServiceHookRunner_ReadinessWarningIncludesGroupExitDetail locks in that
+// the readiness-failure warning's container-exit-detail lookup matches on the
+// GROUP appID: the agent's ListContainers groups per-service containers under
+// the group app-ID label and reports AppContainer.AppName as the bare group
+// appID (exit code/reason aggregate onto that group entry; per-service detail
+// lives in a separate Services list). Passing "{AppID}_{ServiceName}" would
+// never match, silently dropping the enrichment for every multi-service app.
+func TestServiceHookRunner_ReadinessWarningIncludesGroupExitDetail(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	port := testPort(t, ln)
+	ln.Close() // nothing listens; readiness will time out
+
+	containerFake := &lifecycleFakeContainerClient{
+		container: &agentpb.AppContainer{
+			AppName:           "app", // GROUP appID, not "app_worker"
+			RunningState:      agentpb.AppRunningState_STOPPED,
+			TerminationReason: "crashed",
+			ExitCode:          1,
+		},
+	}
+	conn := newLifecycleTestConn("127.0.0.1", containerFake)
+	r := &serviceHookRunner{conn: conn}
+
+	cfg := &appconfig.AppConfig{
+		AppID:       "app",
+		ServiceName: "worker",
+		Readiness: &appconfig.ReadinessConfig{
+			TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
+			TimeoutSeconds: 1,
+		},
+	}
+
+	out := captureStdout(t, func() {
+		r.runOne(context.Background(), context.Background(), cfg)
+	})
+
+	if !strings.Contains(out, "Warning:") {
+		t.Fatalf("readiness warning never printed; output:\n%s", out)
+	}
+	if !strings.Contains(out, "container crashed (exit 1)") {
+		t.Errorf("readiness warning lacks the container-exit-detail suffix (group-appID lookup failed); output:\n%s", out)
 	}
 }
 
