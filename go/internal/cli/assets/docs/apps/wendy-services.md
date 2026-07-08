@@ -113,9 +113,10 @@ Press **Ctrl-C** to stop all services. The CLI cancels all streams, issues a `St
 
 ### Container naming
 
-Each service container ID follows the `{appId}/{serviceName}` convention. For
+Each service container ID follows the `{appId}_{serviceName}` convention (`_`
+is the separator because `/` is not permitted in containerd container IDs). For
 example, with `appId: "com.example.myapp"` and service `"api"`, the containerd
-container ID is `com.example.myapp/api`. The corresponding snapshot key uses
+container ID is `com.example.myapp_api`. The corresponding snapshot key uses
 `@` as the separator (`wendy-com.example.myapp@api`) to remain unambiguous when
 either component contains a hyphen. The cgroup path component uses `@` as the
 separator: `system.slice:edge-agent:com.example.myapp@api` (the systemd service segment

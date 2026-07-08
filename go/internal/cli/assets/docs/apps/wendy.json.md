@@ -115,7 +115,7 @@ Lifecycle commands to run at specific points during the app lifecycle.
 {
   "hooks": {
     "postStart": {
-      "cli": "open http://localhost:8080",
+      "openURL": "http://${WENDY_HOSTNAME}:8080",
       "agent": "/app/post-start.sh"
     }
   }
@@ -124,8 +124,11 @@ Lifecycle commands to run at specific points during the app lifecycle.
 
 | Field | Description |
 |-------|-------------|
-| `hooks.postStart.cli` | Command run on the developer's machine after the app starts |
+| `hooks.postStart.openURL` | URL to open in the developer's default browser after the app starts. Dispatched directly, without a shell, so it works uniformly on macOS, Linux, and Windows |
+| `hooks.postStart.cli` | Command run on the developer's machine (through the platform shell) after the app starts |
 | `hooks.postStart.agent` | Command run on the device after the app starts |
+
+Prefer `openURL` over a `cli` command that shells out to a platform-specific opener (`open`, `xdg-open`, `start`) — those only work on one OS, and the CLI warns about them, suggesting `openURL` instead. When both are set, `openURL` fires first, then `cli` runs.
 
 > **Note:** `hooks.postStart.agent` is executed directly on the device, not through a shell. Shell features such as pipes (`|`), redirects (`>`), command chaining (`;`, `&&`), and command substitution (`$(...)`) are **not** interpreted — they are passed through as literal arguments. If you need them, put the logic in a script file (e.g. `/app/post-start.sh`) and invoke that. `${WENDY_APP_ID}`, `${WENDY_HOSTNAME}`, `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for single-container apps), and environment variables are still expanded.
 
