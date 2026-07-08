@@ -310,7 +310,10 @@ func TestServiceHookRunner_ReapWaitsCliHook(t *testing.T) {
 		AppID:       "app",
 		ServiceName: "worker",
 		Hooks: &appconfig.HooksConfig{
-			PostStart: &appconfig.HookCommand{CLI: fmt.Sprintf("touch %q && sleep 30", sentinel)},
+			// sleep's stdio is redirected so that, if the kill races and orphans
+			// it, it cannot hold the test binary's stdout/stderr pipes open past
+			// exit (go test's WaitDelay would trip).
+			PostStart: &appconfig.HookCommand{CLI: fmt.Sprintf("touch %q && sleep 30 >/dev/null 2>&1", sentinel)},
 		},
 	}
 

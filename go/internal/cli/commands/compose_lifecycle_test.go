@@ -241,7 +241,11 @@ func TestComposeStartAndStream_MetadataOnDeclaringServiceOnly(t *testing.T) {
 			},
 			Hooks: &appconfig.HooksConfig{
 				PostStart: &appconfig.HookCommand{
-					CLI:   fmt.Sprintf("touch %q && sleep 30", sentinel),
+					// sleep's stdio is redirected so that, if the kill races
+					// and orphans it, it cannot hold the test binary's
+					// stdout/stderr pipes open past exit (go test's WaitDelay
+					// would trip).
+					CLI:   fmt.Sprintf("touch %q && sleep 30 >/dev/null 2>&1", sentinel),
 					Agent: "echo hi",
 				},
 			},
