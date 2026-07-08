@@ -55,6 +55,9 @@ type composeService struct {
 	Restart     string    `yaml:"restart"`
 	NetworkMode string    `yaml:"network_mode"`
 
+	// XWendy carries Wendy-specific service extensions (readiness, hooks).
+	XWendy yaml.Node `yaml:"x-wendy"`
+
 	// Captured only for warning purposes — not used in deployment.
 	Devices     yaml.Node `yaml:"devices"`
 	Privileged  yaml.Node `yaml:"privileged"`
@@ -396,6 +399,52 @@ func composeAppConfig(projectName, serviceName string, svc composeService, numSe
 	}
 }
 
+// parseXWendy decodes a compose service's x-wendy extension into appconfig
+// types via a YAML→map→JSON roundtrip, so wendy.json's exact camelCase keys
+// (readiness.tcpSocket.port, timeoutSeconds, hooks.postStart.openURL/cli/agent)
+// apply verbatim. yaml.v3 does not read json struct tags, hence the roundtrip.
+func parseXWendy(node yaml.Node, serviceName string) (*appconfig.ReadinessConfig, *appconfig.HooksConfig, []string, error) {
+	if node.IsZero() {
+		return nil, nil, nil, nil
+	}
+
+	var raw map[string]any
+	if err := node.Decode(&raw); err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: x-wendy: %w", serviceName, err)
+	}
+
+	var unknown []string
+	for k := range raw {
+		if k != "readiness" && k != "hooks" {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	var warnings []string
+	for _, k := range unknown {
+		warnings = append(warnings, fmt.Sprintf("service %q: unknown x-wendy key %q (supported: readiness, hooks)", serviceName, k))
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: x-wendy: %w", serviceName, err)
+	}
+	var parsed struct {
+		Readiness *appconfig.ReadinessConfig `json:"readiness"`
+		Hooks     *appconfig.HooksConfig     `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: x-wendy: %w", serviceName, err)
+	}
+
+	if err := appconfig.ValidateReadiness(fmt.Sprintf("services.%s.x-wendy.readiness", serviceName), parsed.Readiness); err != nil {
+		return nil, nil, nil, err
+	}
+	warnings = append(warnings, appconfig.LintHooks(parsed.Hooks, fmt.Sprintf("services.%s.x-wendy.hooks", serviceName))...)
+
+	return parsed.Readiness, parsed.Hooks, warnings, nil
+}
+
 // composeCompanionWarnings returns warnings for service names declared in the
 // companion wendy.json that have no matching service in the compose file.
 // A nil companion produces no warnings.
@@ -428,6 +477,12 @@ func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *compos
 //   - Per-service frameworks override the group-level frameworks for that service.
 //   - Duplicate entitlements (same type+name+mode) are removed; the first
 //     occurrence wins so compose-synthesised entitlements take precedence.
+//   - Per-service readiness/hooks from the companion replace (not merge with)
+//     any x-wendy-derived values for that service, wholesale per field.
+//   - The companion's *top-level* readiness/hooks are deliberately never
+//     copied onto per-service configs: they are an app-level fallback
+//     reserved for a later stage, and copying hooks.postStart.agent
+//     per-service would run it in every container.
 func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.AppConfig, serviceName string) {
 	if companion == nil {
 		return
@@ -442,8 +497,44 @@ func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.App
 		if svc.Frameworks != nil {
 			appCfg.Frameworks = svc.Frameworks
 		}
+		if svc.Readiness != nil {
+			appCfg.Readiness = svc.Readiness
+		}
+		if svc.Hooks != nil {
+			appCfg.Hooks = svc.Hooks
+		}
 	}
 	appCfg.Entitlements = deduplicateEntitlements(appCfg.Entitlements)
+}
+
+// buildComposeServiceConfigs synthesizes the per-service AppConfig for every
+// compose service once: compose-derived fields, then x-wendy lifecycle config,
+// then companion overrides. Returned warnings are printed once by the caller.
+func buildComposeServiceConfigs(projectName string, cfg *composeConfig, companion *appconfig.AppConfig) (map[string]*appconfig.AppConfig, []string, error) {
+	names := make([]string, 0, len(cfg.Services))
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(cfg.Services))
+	var warnings []string
+	for _, name := range names {
+		svc := cfg.Services[name]
+		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
+
+		readiness, hooks, xWendyWarnings, err := parseXWendy(svc.XWendy, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		appCfg.Readiness, appCfg.Hooks = readiness, hooks
+		warnings = append(warnings, xWendyWarnings...)
+
+		applyComposeCompanion(appCfg, companion, name)
+
+		svcCfgs[name] = appCfg
+	}
+	return svcCfgs, warnings, nil
 }
 
 // deduplicateEntitlements returns a copy of ents with duplicates removed.
@@ -670,10 +761,21 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if err != nil {
 		return err
 	}
+
+	// Synthesize every service's AppConfig once (compose fields + x-wendy
+	// lifecycle config + companion overrides) so the create/stop/detach/attach
+	// steps below all see the same config instead of recomputing it.
+	svcCfgs, xWendyWarnings, err := buildComposeServiceConfigs(projectName, cfg, companion)
+	if err != nil {
+		return err
+	}
+	for _, w := range xWendyWarnings {
+		cliLogln("warning: %s", w)
+	}
+
 	for _, name := range ordered {
 		svc := cfg.Services[name]
-		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-		applyComposeCompanion(appCfg, companion, name)
+		appCfg := svcCfgs[name]
 
 		// Determine image: built image or declared image. Public image refs
 		// like "python:3.11-slim" must be canonicalised to "docker.io/library/…"
@@ -753,9 +855,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		fmt.Println()
 		for i := len(ordered) - 1; i >= 0; i-- {
 			name := ordered[i]
-			svc := cfg.Services[name]
-			appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-			applyComposeCompanion(appCfg, companion, name)
+			appCfg := svcCfgs[name]
 			cliLogln("Stopping %s...", name)
 			// Use AppID (not ContainerName) so StopContainer's label-based lookup
 			// finds the container regardless of whether a companion sets ServiceName.
@@ -770,9 +870,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	if opts.detach {
 		for _, name := range ordered {
-			svc := cfg.Services[name]
-			appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-			applyComposeCompanion(appCfg, companion, name)
+			appCfg := svcCfgs[name]
 			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
 				AppName: appCfg.ContainerName(),
 			})
@@ -799,9 +897,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	errCh := make(chan error, len(ordered))
 
 	for _, name := range ordered {
-		svc := cfg.Services[name]
-		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-		applyComposeCompanion(appCfg, companion, name)
+		appCfg := svcCfgs[name]
 
 		wg.Add(1)
 		go func(serviceName, containerID string) {
