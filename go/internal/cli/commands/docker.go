@@ -25,6 +25,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
@@ -246,11 +247,12 @@ func detectProjectType(dir string) (string, error) {
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
 var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Build-arg values are passed to exec.Command as a single KEY=VALUE argument,
-// but keep a narrow allowlist so shell-like metacharacters, whitespace,
-// digests, embedded key separators, and flag-looking values cannot cross into
-// builder CLIs.
-var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*$`)
+// Device-reported build-arg hints (see applyDeviceBuildArgHints) are meant to be
+// clean identifier/version tokens, never free text, so they keep a narrow
+// allowlist. It lets an unmappable agent fallback like "L4T 38.2.0" (note the
+// space) be dropped with a warning instead of injected as a bogus version.
+// User-authored build args are NOT held to this — see validateBuildArgPair.
+var validBuildArgHintValueRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
@@ -284,6 +286,19 @@ func validateDockerfileName(name string) error {
 	return nil
 }
 
+// validateBuildArgPair gates a KEY=VALUE build arg headed for a builder CLI.
+// Values are user-authored (docker-compose args, wendy.json) and legitimately
+// hold spaces, slashes, and other punctuation — a Minecraft MOTD or a log path,
+// say. Their content is not dangerous: each pair is handed to exec.Command as a
+// single "KEY=VALUE" argv element (no shell is involved), and because KEY is
+// validated to [A-Za-z_][A-Za-z0-9_]* the token always starts with a letter, so
+// a builder CLI can never mistake the value for a flag. So the rejections are
+// only:
+//   - a leading '-', kept as defense-in-depth so a value can never look like a
+//     flag even if a future call site passed it as a standalone argv token; and
+//   - control characters, which are genuinely unsafe regardless: NUL truncates
+//     C strings (Go's exec rejects it outright) and CR/LF/escape sequences can
+//     inject lines or terminal escapes into the streamed build log.
 func validateBuildArgPair(key, value string) error {
 	if !validBuildArgNameRe.MatchString(key) {
 		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
@@ -291,8 +306,8 @@ func validateBuildArgPair(key, value string) error {
 	if strings.HasPrefix(value, "-") {
 		return fmt.Errorf("invalid build arg %q: value must not start with '-'", key)
 	}
-	if !validBuildArgValueRe.MatchString(value) {
-		return fmt.Errorf("invalid build arg %q: value must contain only safe ASCII characters", key)
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("invalid build arg %q: value must not contain control characters", key)
 	}
 	return nil
 }
@@ -301,15 +316,23 @@ func validateBuildArgPair(key, value string) error {
 // agent reports (WENDY_DEVICE_TYPE, WENDY_HAS_GPU, WENDY_GPU_VENDOR,
 // WENDY_JETPACK_VERSION, WENDY_JETPACK_MAJOR, WENDY_CUDA_VERSION) into
 // buildArgs. Each hint is only set when the agent reports it, so Dockerfiles
-// keep their own ARG defaults on older agents. These values are device-reported
-// and feed straight into a builder CLI, so any hint that fails build-arg
-// validation is skipped with a warning rather than failing the whole deploy —
-// e.g. a Jetson running an L4T release the agent's JetPack table doesn't map
-// reports a fallback like "L4T 38.2.0", whose space is rejected by
-// validBuildArgValueRe.
+// keep their own ARG defaults on older agents. These are meant to be clean
+// identifier/version tokens, so a hint that isn't one (validBuildArgHintValueRe)
+// is skipped with a warning rather than injected — e.g. a Jetson running an L4T
+// release the agent's JetPack table doesn't map reports a fallback like
+// "L4T 38.2.0", whose space fails the token check, so it is dropped and the
+// Dockerfile keeps its ARG default instead of receiving a bogus version.
 func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.GetAgentVersionResponse) {
 	setHint := func(key, value string) {
 		if value == "" {
+			return
+		}
+		// A hint must be a clean identifier/version token AND clear the build-arg
+		// safety gate. Anything else — an unmappable "L4T 38.2.0" fallback, say —
+		// is skipped with a warning rather than injected as a bogus hint or left to
+		// abort the deploy at the final build-arg check.
+		if !validBuildArgHintValueRe.MatchString(value) {
+			cliLogln("Warning: ignoring device-reported build arg %s=%q: not a clean identifier/version token", key, value)
 			return
 		}
 		if err := validateBuildArgPair(key, value); err != nil {

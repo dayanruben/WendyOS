@@ -2146,10 +2146,29 @@ func TestValidateDockerfileName(t *testing.T) {
 }
 
 func TestValidateBuildArgPair(t *testing.T) {
+	// User-authored build args (docker-compose args, wendy.json) can hold any
+	// printable text. They are safe: each pair is one "KEY=VALUE" argv element
+	// passed to exec.Command (no shell), and the validated KEY prefix means the
+	// value can never be read as a flag. So the only rule is "no control chars".
 	valid := map[string]string{
 		"WENDY_PLATFORM":    "nvidia-jetson",
 		"_PRIVATE_ARG":      "value-without-equals",
 		"WENDY_DEVICE_TYPE": "jetson-agx-orin",
+		// Real WendyMC example values the old allowlist wrongly rejected.
+		"MOTD":     "WendyMC - hosted by Wendy", // spaces
+		"MOTD_UNI": "WendyMC — hosted by Wendy", // non-ASCII em-dash
+		"LOG_PATH": "/mc-data/logs/latest.log",  // slashes
+		// Harmless as a single KEY=VALUE token — there is no shell to interpret
+		// them and the KEY= prefix keeps a builder CLI from seeing a flag.
+		"SHELL":     "$(echo bad)",
+		"DIGEST":    "image@sha256:abc",
+		"PLUS":      "v1+metadata",
+		"EQUALS":    "value=with=equals",
+		"SLASH":     "linux/arm64",
+		"COLON":     "8080:80",
+		"COMMA":     "left,right",
+		"COMMAFLAG": ",--cache", // '-' is mid-token, not a leading flag
+		"EMPTY":     "",
 	}
 	for k, v := range valid {
 		if err := validateBuildArgPair(k, v); err != nil {
@@ -2158,22 +2177,17 @@ func TestValidateBuildArgPair(t *testing.T) {
 	}
 
 	invalid := map[string]string{
-		"":          "value",
-		"BAD-NAME":  "value",
-		"1BAD":      "value",
-		"BAD=NAME":  "value",
-		"BAD\nKEY":  "value",
-		"GOOD":      "bad\nvalue",
-		"ALSO_GOOD": "bad\x00value",
-		"LEADING":   "--flag-like",
-		"SHELL":     "$(echo bad)",
-		"DIGEST":    "image@sha256:abc",
-		"PLUS":      "v1+metadata",
-		"EQUALS":    "value=with=equals",
-		"SLASH":     "linux/arm64",
-		"COLON":     "8080:80",
-		"COMMA":     "left,right",
-		"COMMAFLAG": ",--cache",
+		"":         "value",            // empty key
+		"BAD-NAME": "value",            // hyphen in key
+		"1BAD":     "value",            // leading digit in key
+		"BAD=NAME": "value",            // equals in key
+		"BAD\nKEY": "value",            // newline in key
+		"LEADING":  "--flag-like",      // value looks like a flag
+		"NEWLINE":  "bad\nvalue",       // newline in value
+		"CR":       "bad\rvalue",       // carriage return in value
+		"NUL":      "bad\x00value",     // NUL in value
+		"ESC":      "bad\x1b[31mvalue", // ANSI escape in value
+		"TAB":      "bad\tvalue",       // tab is a control char
 	}
 	for k, v := range invalid {
 		if err := validateBuildArgPair(k, v); err == nil {
