@@ -137,7 +137,7 @@ In attached mode, each service's readiness→postStart sequence runs asynchronou
 
 Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for the app-level fallback). Windows-style `%VAR%` forms are accepted too.
 
-A note on naming for single-service projects: a compose file with more than one service groups its containers under the project name (`WENDY_APP_ID` = the project directory name, `WENDY_SERVICE_NAME` = the service name). A **single-service** compose project instead keeps the legacy `<project>-<service>` app ID for backward compatibility, so `WENDY_SERVICE_NAME` expands to the empty string and `WENDY_APP_ID` is e.g. `myproj-web` (not `myproj`). Write hook commands accordingly if your project has only one service.
+A note on naming for single-service projects: a compose file with more than one service groups its containers under the project name (`WENDY_APP_ID` = the project directory name, `WENDY_SERVICE_NAME` = the service name). A **single-service** compose project *without a companion `wendy.json`* instead keeps the legacy `<project>-<service>` app ID for backward compatibility, so `WENDY_SERVICE_NAME` expands to the empty string and `WENDY_APP_ID` is e.g. `myproj-web` (not `myproj`). A companion's `appId` and grouped naming always take over, even for a single service. Write hook commands accordingly if your project has only one service and no companion.
 
 > Readiness probes dial the device host, not the container directly, so a service's probed port must be published (`ports:`) or the service must use `network_mode: host` for the probe to succeed.
 
