@@ -23,15 +23,19 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	diskfs "github.com/diskfs/go-diskfs"
+	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashengine"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // Step IDs for the flashing progress list.
 const (
 	stepDownload = iota
+	stepProvision
 	stepStage1
 	stepStage2
 )
@@ -55,7 +59,7 @@ type thorDevice struct {
 // the device, then run download → stage-1 RCM boot → stage-2 partition flash as a
 // BuildKit-style step list. Stage-2 is the shared Go engine (flashengine) on all
 // platforms.
-func installThor(ctx context.Context, version string, nightly, force bool) error {
+func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Thor's USB recovery access is an in-process libusb handle, so the whole
 	// process must be root on macOS/Linux — caching the sudo timestamp is not
 	// enough. Elevate up front, before the briefing, so a missing-permission
@@ -78,6 +82,23 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 
 	// Fail fast on a full disk, before the user starts cabling the Thor.
 	if err := checkThorDiskSpace(cacheDir, plan); err != nil {
+		return err
+	}
+
+	// Resolve provisioning up front: interactive prompts and pre-enrollment run
+	// before the flash UI takes over the terminal, and a bad flag or failed
+	// enrollment aborts before we touch USB. Written to the config image in
+	// stepProvision, then flashed like a disk install's config partition.
+	creds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+	name, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+	provJSON, err := resolveProvisioningJSON(ctx, preOpts, name)
+	if err != nil {
 		return err
 	}
 
@@ -140,6 +161,9 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 			fp = resolved
 			return cached, err
 		}},
+		{id: stepProvision, label: "Write config partition", run: func(out io.Writer, detail func(string)) (bool, error) {
+			return false, injectConfigPartition(fp, creds, name, provJSON, out, detail)
+		}},
 		{id: stepStage1, label: "Stage 1  RCM boot", run: func(out io.Writer, _ func(string)) (bool, error) {
 			return false, thorStageOne(fp, dev, out)
 		}},
@@ -198,6 +222,50 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it. (press the right button once)", plan.version)))
 	return nil
+}
+
+// fatWriter writes config-partition files into a mounted FAT32 filesystem image
+// (Thor's config-partition.fat32.img) — the analog of dirTarget for a drive.
+type fatWriter struct{ fs filesystem.FileSystem }
+
+func (w fatWriter) WriteFile(name string, data []byte, _ os.FileMode) error {
+	f, err := w.fs.OpenFile("/"+name, os.O_CREATE|os.O_RDWR|os.O_TRUNC) // FAT has no perms; O_TRUNC keeps re-runs clean
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(data)
+	return err
+}
+
+// injectConfigPartition populates the flashpack's FAT32 config image with the
+// same files a disk install writes to a drive's config partition — agent binary,
+// wendy.conf, provisioning.json, clock_floor — so first boot applies them via the
+// identical on-device path. Runs before stage-2, so a failure aborts with nothing
+// written to the Thor.
+func injectConfigPartition(fp *flashpack.Flashpack, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
+	// Freshen the agent like a disk install, but best-effort: resolveAgentBinary is
+	// the only network step here, so an offline re-flash of a cached flashpack still
+	// provisions wifi/enrollment, falling back to the agent baked into the image.
+	detail("downloading agent")
+	agentBinary, agentVer, _, err := resolveAgentBinary("arm64", false)
+	if err != nil {
+		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
+	} else {
+		detail("agent " + agentVer)
+	}
+
+	img := filepath.Join(fp.FlashWorkspaceDir(), "flash-images", "config-partition.fat32.img")
+	d, err := diskfs.Open(img)
+	if err != nil {
+		return fmt.Errorf("opening config image: %w", err)
+	}
+	defer d.Close()
+	fs, err := d.GetFilesystem(0) // bare FAT32, no partition table
+	if err != nil {
+		return fmt.Errorf("reading config filesystem: %w", err)
+	}
+	return writeConfigFilesTo(fatWriter{fs}, agentBinary, creds, deviceName, provJSON)
 }
 
 // ---- flashpack plan / download (cross-platform) ----
