@@ -63,7 +63,14 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
-	event := eventNameFor(path, env.IsHomebrewInstall())
+	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
+	// every interactive shell once `eval "$(brew shellenv)"` is set up (the
+	// standard ~/.zprofile line), so env presence alone cannot distinguish the
+	// post-install hook from a user manually running `wendy completion
+	// install` in a normal Homebrew terminal. The post-install hook runs with
+	// a non-interactive stdin (no TTY), so require both.
+	homebrewPostInstall := env.IsHomebrewInstall() && !stdinIsInteractive()
+	event := eventNameFor(path, homebrewPostInstall)
 	props := map[string]string{
 		"command_name": path,
 		"command_root": commandRoot(executed),
@@ -103,14 +110,27 @@ func commandRoot(c *cobra.Command) string {
 	return c.Name()
 }
 
-// eventNameFor returns the analytics event name for a command invocation. A
-// Homebrew post-install `wendy completion install` is reported as
-// install_completed so it is not counted as deliberate CLI usage.
-func eventNameFor(commandPath string, homebrew bool) string {
-	if homebrew && commandPath == "wendy completion install" {
+// eventNameFor returns the analytics event name for a command invocation.
+// homebrewPostInstall must mean the Homebrew post-install context
+// specifically (Homebrew env present AND stdin non-interactive), not merely
+// that Homebrew env vars are set — see trackCommand. A Homebrew post-install
+// `wendy completion install` is reported as install_completed so it is not
+// counted as deliberate CLI usage.
+func eventNameFor(commandPath string, homebrewPostInstall bool) string {
+	if homebrewPostInstall && commandPath == "wendy completion install" {
 		return "install_completed"
 	}
 	return "command_executed"
+}
+
+// stdinIsInteractive reports whether stdin is attached to a terminal. The
+// Homebrew post-install hook runs wendy with a non-interactive stdin.
+func stdinIsInteractive() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // isSetupCommand reports whether a command path is a meta/setup command that
