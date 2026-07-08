@@ -773,6 +773,17 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("warning: %s", w)
 	}
 
+	// App-level lifecycle fallback: only a companion wendy.json can declare
+	// TOP-LEVEL readiness/hooks for a compose project (x-wendy is per-service
+	// by construction), and buildComposeServiceConfigs deliberately leaves them
+	// off the per-service configs. It fires once after ALL services have
+	// started; the compose path has no service-subset flag (unlike --service on
+	// the multi-service path), so that guarantee always holds here.
+	var appLevelCfg *appconfig.AppConfig
+	if companion != nil {
+		appLevelCfg = appLevelLifecycleConfig(companion.AppID, companion)
+	}
+
 	for _, name := range ordered {
 		svc := cfg.Services[name]
 		appCfg := svcCfgs[name]
@@ -869,48 +880,90 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}()
 
 	if opts.detach {
-		for _, name := range ordered {
-			appCfg := svcCfgs[name]
-			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
-				AppName: appCfg.ContainerName(),
-			})
-			if err != nil {
-				return fmt.Errorf("starting service %s: %w", name, err)
-			}
-			if _, err := stream.Recv(); err != nil && err != io.EOF {
-				return fmt.Errorf("waiting for service %s start: %w", name, err)
-			}
-			cliLogln("Service %s started.", name)
-		}
-		cliLogln("All services running in detached mode.")
-		cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
-		return nil
+		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, appLevelCfg, projectName)
 	}
 
 	// Attached mode: stream output from all containers concurrently with
 	// color-coded, column-aligned service name prefixes.
-	serviceNames := make([]string, len(ordered))
-	copy(serviceNames, ordered)
-	stdoutWriters, stderrWriters := newServiceLogWriters(serviceNames)
+	stdoutWriters, stderrWriters := newServiceLogWriters(ordered)
+	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, appLevelCfg, stdoutWriters, stderrWriters)
+}
+
+// composeStartDetached starts every compose service in dependency order,
+// waiting for each Started ack, and returns with the containers left running.
+// ctx gates the StartContainer RPCs (the command's outer context); runCtx
+// gates the lifecycle readiness waits. Each start carries the service's
+// agent-side postStart hook as gRPC metadata, and once every container is up
+// the per-service readiness→announce→postStart sequences run sequentially in
+// dependency order, then the app-level fallback (WDY-1271).
+func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
+	for _, name := range ordered {
+		appCfg := svcCfgs[name]
+		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
+			AppName: appCfg.ContainerName(),
+		})
+		if err != nil {
+			return fmt.Errorf("starting service %s: %w", name, err)
+		}
+		if _, err := stream.Recv(); err != nil && err != io.EOF {
+			return fmt.Errorf("waiting for service %s start: %w", name, err)
+		}
+		cliLogln("Service %s started.", name)
+	}
+	cliLogln("All services running in detached mode.")
+	cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
+
+	// Every container is up: fire each declaring service's readiness→announce→
+	// postStart sequence, then the app-level fallback. hookCtx is
+	// context.Background() so cli hooks outlive the detaching CLI; readiness
+	// failures only warn (non-fatal), so we still return nil. No reap: there is
+	// nothing left to wait on once we detach.
+	runner := &serviceHookRunner{conn: conn}
+	for _, name := range ordered {
+		runner.runOne(runCtx, context.Background(), svcCfgs[name])
+	}
+	runner.runOne(runCtx, context.Background(), appLevelCfg)
+	return nil
+}
+
+// composeStartAndStream is the attached-mode tail of a compose run: it starts
+// all services concurrently (bidi AttachContainer preferred, StartContainer
+// fallback for agents that return Unimplemented) and multiplexes their output
+// until every stream ends. Extracted from runComposeWithAgent so tests can
+// drive it with fake clients; the Ctrl+C handler (stop in reverse order, then
+// runCancel) stays with the caller and its ordering is unchanged.
+func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
+	runner := &serviceHookRunner{conn: conn}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(ordered))
+
+	// startedWg gates the app-level fallback on every service having reported
+	// Started. Each service goroutine releases it exactly once — on its first
+	// Started message, or via the deferred markStarted if its stream dies
+	// first — so the fallback goroutine below can never leak.
+	var startedWg sync.WaitGroup
+	startedWg.Add(len(ordered))
 
 	for _, name := range ordered {
 		appCfg := svcCfgs[name]
 
 		wg.Add(1)
-		go func(serviceName, containerID string) {
+		go func(serviceName, containerID string, svcCfg *appconfig.AppConfig) {
 			defer wg.Done()
+			markStarted := sync.OnceFunc(startedWg.Done)
+			defer markStarted()
 			outW := stdoutWriters[serviceName]
 			errW := stderrWriters[serviceName]
 			defer outW.Flush()
 			defer errW.Flush()
 
 			// openStart falls back to the server-streaming StartContainer RPC,
-			// used when the agent is too old to support AttachContainer.
+			// used when the agent is too old to support AttachContainer. The
+			// agent reads the postStart-hook metadata on both RPCs, so the
+			// fallback must carry it too.
 			openStart := func() (containerOutputStream, error) {
-				startStream, startErr := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+				startStream, startErr := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, svcCfg), &agentpb.StartContainerRequest{
 					AppName: containerID,
 				})
 				if startErr != nil {
@@ -921,7 +974,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 			var outStream containerOutputStream
 			attached := false
-			attachStream, streamErr := conn.ContainerService.AttachContainer(runCtx)
+			attachStream, streamErr := conn.ContainerService.AttachContainer(contextWithPostStartAgentHook(runCtx, svcCfg))
 			if streamErr == nil {
 				streamErr = attachStream.Send(&agentpb.AttachContainerRequest{
 					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: containerID},
@@ -942,6 +995,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 				attached = true
 			}
 
+			// hookFired guards against a double fire: the Unimplemented→
+			// StartContainer fallback below REPLAYS the Started message, so a
+			// stream swap must not re-run this service's lifecycle sequence.
+			hookFired := false
 			gotFirstResponse := false
 			for {
 				resp, recvErr := outStream.Recv()
@@ -969,6 +1026,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					return
 				}
 				gotFirstResponse = true
+				if resp.GetStarted() != nil && !hookFired {
+					// This service's task is running: fire its readiness→
+					// announce→postStart sequence on a runner goroutine so a
+					// slow or failing probe never stalls this log loop.
+					hookFired = true
+					markStarted()
+					runner.startAsync(runCtx, svcCfg)
+				}
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
 				}
@@ -976,22 +1041,45 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					errW.Write(out.GetData())
 				}
 			}
-		}(name, appCfg.ContainerName())
+		}(name, appCfg.ContainerName(), appCfg)
 	}
+
+	// App-level fallback: fires once after every service has reported Started
+	// (or its stream has died). Registered on wg — not fire-and-forget — so
+	// the function cannot return while it runs. No deadlock: wg.Wait() waits
+	// on the service goroutines plus this one; this one waits on startedWg,
+	// which every service goroutine releases via its deferred markStarted.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startedWg.Wait()
+		if runCtx.Err() == nil {
+			runner.runOne(runCtx, runCtx, appLevelCfg)
+		}
+	}()
 
 	cliLogln("All services started.")
 
 	wg.Wait()
 
+	// The run has ended (streams closed, or Ctrl+C already canceled runCtx).
+	// Capture the interrupt state first, then cancel to abort in-flight
+	// readiness waits and kill tracked cli-hook children, and reap so no hook
+	// goroutine or child outlives this call — mirroring run.go's
+	// `runCancel(); postStartCmd.Wait()`.
+	interrupted := runCtx.Err() != nil
+	runCancel()
+	runner.reap()
+
 	select {
 	case err := <-errCh:
-		if runCtx.Err() == nil {
+		if !interrupted {
 			return err
 		}
 	default:
 	}
 
-	if runCtx.Err() == nil {
+	if !interrupted {
 		cliLogln("\nAll services stopped.")
 	}
 	return nil
