@@ -421,12 +421,26 @@ func TestComposeStartAndStream_AppLevelFiresOnceAfterAllStarted(t *testing.T) {
 	}
 }
 
-// TestComposeStartAndStream_StreamDeathBeforeStartedReleasesFallback: one
-// service's stream errors before ever delivering Started. Its goroutine must
-// still release the app-level fallback's WaitGroup (via the deferred
-// markStarted), so the function returns — the no-deadlock property — and the
-// app-level hook still runs since the run context was never canceled.
-func TestComposeStartAndStream_StreamDeathBeforeStartedReleasesFallback(t *testing.T) {
+// TestComposeStartAndStream_NaturalEndSuppressesInFlightFallback: when every
+// service stream ends naturally (no Ctrl+C) while the app-level fallback is
+// still waiting on readiness, the post-stream teardown (runCancel → reap) must
+// cancel that in-flight wait and SUPPRESS the hook — matching multibuild's
+// semantics, so we never open a browser onto a stack that has already exited.
+// The function must also return PROMPTLY (well under the fallback's readiness
+// timeout) and never deadlock: one service's stream dies before ever
+// delivering Started, and its deferred markStarted must still release the
+// fallback's start gate so the fallback can reach — and then be canceled at —
+// its readiness wait.
+func TestComposeStartAndStream_NaturalEndSuppressesInFlightFallback(t *testing.T) {
+	// A port nothing listens on, so the app-level readiness probe blocks until
+	// teardown cancels it — never long enough here to reach its timeout.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	deadPort := testPort(t, ln)
+	ln.Close() // stop listening; the probe now hangs until the run cancels it.
+
 	svcCfgs := map[string]*appconfig.AppConfig{
 		"dead":  {AppID: "app", ServiceName: "dead"},
 		"alive": {AppID: "app", ServiceName: "alive"},
@@ -434,6 +448,10 @@ func TestComposeStartAndStream_StreamDeathBeforeStartedReleasesFallback(t *testi
 	ordered := []string{"dead", "alive"}
 	appLevelCfg := &appconfig.AppConfig{
 		AppID: "app",
+		Readiness: &appconfig.ReadinessConfig{
+			TCPSocket:      &appconfig.TCPSocketProbe{Port: deadPort},
+			TimeoutSeconds: 30, // long enough that only cancellation ends the wait
+		},
 		Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:8080"}},
 	}
 	browserCalls := swapBrowserOpen(t)
@@ -441,7 +459,8 @@ func TestComposeStartAndStream_StreamDeathBeforeStartedReleasesFallback(t *testi
 	fake := &composeHookContainerClient{
 		// dead's stream dies before Started with a non-Unimplemented code (so
 		// no fallback); alive delivers Started then EOFs immediately
-		// (shouldEOF nil).
+		// (shouldEOF nil). Both release the fallback's start gate, so it
+		// proceeds into the readiness wait that teardown then cancels.
 		attachRecvErrs: map[string]error{
 			"app_dead": status.Error(codes.Internal, "stream torn down before Started"),
 		},
@@ -458,15 +477,16 @@ func TestComposeStartAndStream_StreamDeathBeforeStartedReleasesFallback(t *testi
 
 	select {
 	case err := <-done:
+		// Natural end (no interrupt) still surfaces the dead service's error.
 		if err == nil || !strings.Contains(err.Error(), "dead") {
 			t.Errorf("composeStartAndStream = %v, want the dead service's stream error", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("composeStartAndStream deadlocked: a stream death before Started must still release the app-level fallback")
+	case <-time.After(10 * time.Second):
+		t.Fatal("composeStartAndStream did not return promptly: an in-flight app-level readiness wait must be canceled at natural stream end, not awaited to its timeout")
 	}
 
-	if len(*browserCalls) != 1 {
-		t.Errorf("app-level hook fired %d times (%v), want exactly 1 (runCtx was never canceled)", len(*browserCalls), *browserCalls)
+	if len(*browserCalls) != 0 {
+		t.Errorf("app-level hook fired %d time(s) (%v), want 0 — a fallback still waiting on readiness at natural stream end must be suppressed, not fired onto a dead stack", len(*browserCalls), *browserCalls)
 	}
 }
 

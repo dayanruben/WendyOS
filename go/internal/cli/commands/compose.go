@@ -468,7 +468,7 @@ func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *compos
 //
 // Merge rules:
 //   - AppID and ServiceName are set from the companion so the agent creates the
-//     container as "{appId}/{serviceName}" (WDY-878) and injects WENDY_APP_ID /
+//     container as "{appId}_{serviceName}" (WDY-878) and injects WENDY_APP_ID /
 //     WENDY_HOSTNAME correctly.
 //   - Top-level isolation and frameworks from the companion are applied to every service.
 //   - Top-level entitlements from the companion are appended to every service's
@@ -505,6 +505,19 @@ func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.App
 		}
 	}
 	appCfg.Entitlements = deduplicateEntitlements(appCfg.Entitlements)
+}
+
+// composeAppLevelAgentHookDropped reports whether the app-level fallback config
+// carries a top-level hooks.postStart.agent that a compose run will silently
+// drop: compose apps have no app-level container, so appLevelLifecycleConfig's
+// agent command is never sent to the agent. Callers warn on it so the drop is
+// visible (Stage-A ValidateJSON only warns when a services map is present, and
+// a compose companion has none). nil-safe at every level.
+func composeAppLevelAgentHookDropped(appLevelCfg *appconfig.AppConfig) bool {
+	return appLevelCfg != nil &&
+		appLevelCfg.Hooks != nil &&
+		appLevelCfg.Hooks.PostStart != nil &&
+		appLevelCfg.Hooks.PostStart.Agent != ""
 }
 
 // buildComposeServiceConfigs synthesizes the per-service AppConfig for every
@@ -722,6 +735,38 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
 
+	// Synthesize every service's AppConfig once (compose fields + x-wendy
+	// lifecycle config + companion overrides) so the create/stop/detach/attach
+	// steps below all see the same config instead of recomputing it. Done
+	// BEFORE the image builds so an invalid x-wendy config (a hard error here)
+	// fails fast instead of costing a full multi-minute build; nothing in it
+	// depends on build outputs (projectName is the only input).
+	svcCfgs, xWendyWarnings, err := buildComposeServiceConfigs(projectName, cfg, companion)
+	if err != nil {
+		return err
+	}
+	for _, w := range xWendyWarnings {
+		cliLogln("warning: %s", w)
+	}
+
+	// App-level lifecycle fallback: only a companion wendy.json can declare
+	// TOP-LEVEL readiness/hooks for a compose project (x-wendy is per-service
+	// by construction), and buildComposeServiceConfigs deliberately leaves them
+	// off the per-service configs. It fires once after ALL services have
+	// started; the compose path has no service-subset flag (unlike --service on
+	// the multi-service path), so that guarantee always holds here.
+	var appLevelCfg *appconfig.AppConfig
+	if companion != nil {
+		appLevelCfg = appLevelLifecycleConfig(companion.AppID, companion)
+	}
+	// A compose app has no app-level container, so a companion's top-level
+	// hooks.postStart.agent can never run — warn rather than drop it silently.
+	// Stage-A ValidateJSON only warns about this when a services map is present,
+	// which a compose companion (e.g. Examples/WendyMC/wendy.json) has none of.
+	if composeAppLevelAgentHookDropped(appLevelCfg) {
+		cliLogln("warning: top-level hooks.postStart.agent is ignored for compose apps (no app-level container exists); declare it under a service's x-wendy.hooks or the companion's services.<name>.hooks")
+	}
+
 	// Build and push each service that has a build directive.
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, buildArgs, err := composeBuildContext(svc, projectDir)
@@ -760,28 +805,6 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	ordered, err := serviceOrder(cfg)
 	if err != nil {
 		return err
-	}
-
-	// Synthesize every service's AppConfig once (compose fields + x-wendy
-	// lifecycle config + companion overrides) so the create/stop/detach/attach
-	// steps below all see the same config instead of recomputing it.
-	svcCfgs, xWendyWarnings, err := buildComposeServiceConfigs(projectName, cfg, companion)
-	if err != nil {
-		return err
-	}
-	for _, w := range xWendyWarnings {
-		cliLogln("warning: %s", w)
-	}
-
-	// App-level lifecycle fallback: only a companion wendy.json can declare
-	// TOP-LEVEL readiness/hooks for a compose project (x-wendy is per-service
-	// by construction), and buildComposeServiceConfigs deliberately leaves them
-	// off the per-service configs. It fires once after ALL services have
-	// started; the compose path has no service-subset flag (unlike --service on
-	// the multi-service path), so that guarantee always holds here.
-	var appLevelCfg *appconfig.AppConfig
-	if companion != nil {
-		appLevelCfg = appLevelLifecycleConfig(companion.AppID, companion)
 	}
 
 	for _, name := range ordered {
@@ -1045,18 +1068,21 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 	}
 
 	// App-level fallback: fires once after every service has reported Started
-	// (or its stream has died). Registered on wg — not fire-and-forget — so
-	// the function cannot return while it runs. No deadlock: wg.Wait() waits
-	// on the service goroutines plus this one; this one waits on startedWg,
-	// which every service goroutine releases via its deferred markStarted.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	// (or its stream has died). Registered on the runner (reaped after the
+	// stream teardown), NOT on wg — so wg.Wait() below returns as soon as the
+	// streams end, and the teardown's runCancel() then cancels an in-flight
+	// readiness wait so the hook is SUPPRESSED at natural stream end rather
+	// than fired onto a stack that has already exited (mirrors multibuild).
+	// No deadlock: by the time reap() runs, every stream goroutine has exited
+	// and released startedWg via its deferred markStarted, and runCtx is
+	// canceled, so this goroutine's startedWg.Wait() and any readiness wait
+	// both return promptly.
+	runner.spawn(func() {
 		startedWg.Wait()
 		if runCtx.Err() == nil {
 			runner.runOne(runCtx, runCtx, appLevelCfg)
 		}
-	}()
+	})
 
 	cliLogln("All services started.")
 

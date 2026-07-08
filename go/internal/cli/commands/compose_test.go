@@ -735,8 +735,10 @@ services:
 		}
 	})
 
-	t.Run("unknown key warns but config still parses", func(t *testing.T) {
-		svc := parseSvc(t, "services:\n  web:\n    x-wendy:\n      foo: bar\n")
+	t.Run("unknown keys warn in sorted order, config still parses", func(t *testing.T) {
+		// Declared zeta-before-alpha so the assertion proves the warnings are
+		// emitted sorted (parseXWendy sorts unknown keys), not map-iteration order.
+		svc := parseSvc(t, "services:\n  web:\n    x-wendy:\n      zeta: 1\n      alpha: 2\n")
 		r, h, warnings, err := parseXWendy(svc.XWendy, "web")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -744,8 +746,14 @@ services:
 		if r != nil || h != nil {
 			t.Fatalf("expected nil readiness/hooks, got r=%v h=%v", r, h)
 		}
-		if len(warnings) != 1 || !strings.Contains(warnings[0], `unknown x-wendy key "foo"`) {
-			t.Fatalf("expected unknown-key warning, got %v", warnings)
+		if len(warnings) != 2 {
+			t.Fatalf("expected two unknown-key warnings, got %v", warnings)
+		}
+		if !strings.Contains(warnings[0], `unknown x-wendy key "alpha"`) {
+			t.Fatalf("expected first (sorted) warning to name \"alpha\", got %v", warnings)
+		}
+		if !strings.Contains(warnings[1], `unknown x-wendy key "zeta"`) {
+			t.Fatalf("expected second (sorted) warning to name \"zeta\", got %v", warnings)
 		}
 	})
 
@@ -781,6 +789,35 @@ services:
 			t.Fatal("expected error for scalar readiness value")
 		}
 	})
+}
+
+// TestComposeAppLevelAgentHookDropped guards the condition behind the warning
+// runComposeWithAgent prints when a compose companion declares a top-level
+// hooks.postStart.agent: compose apps have no app-level container to run it in,
+// so it is dropped — and Stage-A ValidateJSON stays silent because a compose
+// companion has no services map. Only a non-empty .agent triggers it;
+// openURL/cli-only top-level hooks (which DO run as an app-level fallback) do not.
+func TestComposeAppLevelAgentHookDropped(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *appconfig.AppConfig
+		want bool
+	}{
+		{"nil cfg", nil, false},
+		{"nil hooks", &appconfig.AppConfig{AppID: "app"}, false},
+		{"nil postStart", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{}}, false},
+		{"openURL only", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://x"}}}, false},
+		{"cli only", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{CLI: "touch x"}}}, false},
+		{"agent set", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{Agent: "echo hi"}}}, true},
+		{"agent set alongside openURL", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://x", Agent: "echo hi"}}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composeAppLevelAgentHookDropped(tc.cfg); got != tc.want {
+				t.Errorf("composeAppLevelAgentHookDropped(%+v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestBuildComposeServiceConfigs_XWendy(t *testing.T) {

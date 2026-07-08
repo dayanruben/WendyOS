@@ -84,6 +84,22 @@ func (r *serviceHookRunner) startAsync(runCtx context.Context, cfg *appconfig.Ap
 	}()
 }
 
+// spawn runs fn on a goroutine tracked by r.wg, so a later reap() waits for it
+// and any cli-hook children it registers via runOne. Unlike startAsync (which
+// wraps a single runOne), spawn lets the caller gate runOne behind custom
+// preconditions while keeping it part of the run's teardown — the compose
+// app-level fallback uses it to wait for every service's Started ack, then
+// re-check runCtx, before firing. Because reap() runs only after those Started
+// acks have all been released and runCtx has been canceled, the spawned
+// goroutine can never block reap indefinitely.
+func (r *serviceHookRunner) spawn(fn func()) {
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		fn()
+	}()
+}
+
 // reap waits for every startAsync'd runOne to finish, then waits on each
 // tracked cli-hook child so its exit status is collected and no zombie is
 // left behind. Callers invoke it after canceling runCtx, mirroring run.go's
