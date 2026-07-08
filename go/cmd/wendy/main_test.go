@@ -420,3 +420,21 @@ func TestEnv_IsCITripsKillSwitch(t *testing.T) {
 		t.Error("env.IsCI() should be true when CI=1")
 	}
 }
+
+func TestEventNameFor(t *testing.T) {
+	cases := []struct {
+		path     string
+		homebrew bool
+		want     string
+	}{
+		{"wendy completion install", true, "install_completed"},
+		{"wendy completion install", false, "command_executed"},
+		{"wendy run", true, "command_executed"},
+		{"wendy device info", false, "command_executed"},
+	}
+	for _, c := range cases {
+		if got := eventNameFor(c.path, c.homebrew); got != c.want {
+			t.Errorf("eventNameFor(%q, %v) = %q, want %q", c.path, c.homebrew, got, c.want)
+		}
+	}
+}

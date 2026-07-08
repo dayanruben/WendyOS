@@ -15,6 +15,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/shim"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -44,8 +45,8 @@ func main() {
 	}
 }
 
-// trackCommand emits a single command_executed analytics event describing the
-// invocation. Properties:
+// trackCommand emits a single analytics event describing the invocation.
+// Properties:
 //
 //   - command_name: canonical cobra path (e.g. "wendy device wifi connect"),
 //     never flag values or positional args.
@@ -61,8 +62,10 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	if executed == nil {
 		return
 	}
+	path := executed.CommandPath()
+	event := eventNameFor(path, env.IsHomebrewInstall())
 	props := map[string]string{
-		"command_name": executed.CommandPath(),
+		"command_name": path,
 		"command_root": commandRoot(executed),
 		"duration_ms":  strconv.FormatInt(dur.Milliseconds(), 10),
 		"success":      strconv.FormatBool(err == nil),
@@ -71,7 +74,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	if err != nil {
 		props["error_class"] = errorClass(err)
 	}
-	analytics.Track("command_executed", props)
+	analytics.Track(event, props)
 }
 
 func commandRoot(c *cobra.Command) string {
@@ -85,6 +88,16 @@ func commandRoot(c *cobra.Command) string {
 		c = c.Parent()
 	}
 	return c.Name()
+}
+
+// eventNameFor returns the analytics event name for a command invocation. A
+// Homebrew post-install `wendy completion install` is reported as
+// install_completed so it is not counted as deliberate CLI usage.
+func eventNameFor(commandPath string, homebrew bool) string {
+	if homebrew && commandPath == "wendy completion install" {
+		return "install_completed"
+	}
+	return "command_executed"
 }
 
 // errorClass maps an execution error to a bounded enum suitable for analytics.
