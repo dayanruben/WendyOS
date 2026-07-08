@@ -826,11 +826,16 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	// Create and start sequentially in dependency order; the first Recv
 	// blocks until the agent's Started ack, guaranteeing each service's task
 	// is running before the next service's container is created.
+	// Every early-error return mirrors the happy-path teardown: cancel first
+	// (aborts in-flight hook waits, kills tracked cli-hook children), then wait
+	// out the log goroutines and reap hooks already startAsync'd for earlier
+	// services, so nothing outlives this call.
 	var wg sync.WaitGroup
 	for _, name := range ordered {
 		if err := createService(name); err != nil {
 			runCancel()
 			wg.Wait()
+			runner.reap()
 			return err
 		}
 		containerName := multiServiceContainerName(appID, name)
@@ -840,11 +845,13 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		if err != nil {
 			runCancel()
 			wg.Wait()
+			runner.reap()
 			return fmt.Errorf("starting service %s: %w", name, err)
 		}
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			runCancel()
 			wg.Wait()
+			runner.reap()
 			return fmt.Errorf("waiting for service %s to start: %w", name, err)
 		}
 		// This service's task is running (Started ack received). Fire its

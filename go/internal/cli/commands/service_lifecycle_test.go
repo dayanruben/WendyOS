@@ -431,9 +431,10 @@ func (s *hookSvcStartStream) Recv() (*agentpb.RunContainerLayersResponse, error)
 type hookSvcContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil — satisfies interface
 
-	mu         sync.Mutex
-	startCtxes map[string]context.Context
-	startOrder []string
+	mu             sync.Mutex
+	startCtxes     map[string]context.Context
+	startOrder     []string
+	listContainers int // ListContainers call count — a proxy for "did warnReadiness run"
 
 	container *agentpb.AppContainer // nil → empty ListContainers response
 	shouldEOF func() bool
@@ -458,6 +459,9 @@ func (f *hookSvcContainerClient) StartContainer(ctx context.Context, in *agentpb
 }
 
 func (f *hookSvcContainerClient) ListContainers(context.Context, *agentpb.ListContainersRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[agentpb.ListContainersResponse], error) {
+	f.mu.Lock()
+	f.listContainers++
+	f.mu.Unlock()
 	return &fakeListContainersStream{resp: &agentpb.ListContainersResponse{Container: f.container}}, nil
 }
 
@@ -465,6 +469,12 @@ func (f *hookSvcContainerClient) startCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.startOrder)
+}
+
+func (f *hookSvcContainerClient) listContainersCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listContainers
 }
 
 func (f *hookSvcContainerClient) startContext(appName string) (context.Context, bool) {
@@ -602,6 +612,139 @@ func runFourServicesOnlyFrontend(t *testing.T, detach bool) {
 	// (3) No openURL declared → browserOpen must never fire.
 	if len(*browserCalls) != 0 {
 		t.Errorf("browserOpen called %v, want no calls (no service declares openURL)", *browserCalls)
+	}
+}
+
+// TestStartAndStreamServices_Attached_HookDoesNotBlockStartLoop is the direct
+// guard for the non-blocking invariant: hook firing must never delay a LATER
+// service's start. The declaring service (frontend) is deliberately in the
+// MIDDLE of the topo order, and its readiness port only opens once the LAST
+// service (api) has issued its StartContainer call — so frontend's probe is
+// satisfiable only if the start loop advanced past frontend without waiting on
+// its hook. A regression that runs the hook synchronously in the start loop
+// (runOne instead of startAsync) stalls at frontend until its bounded probe
+// times out, and is caught two ways: the hook fires with only 2 of 3 starts
+// recorded, and the readiness warning path runs (ListContainers lookup) where
+// a passing probe never warns.
+func TestStartAndStreamServices_Attached_HookDoesNotBlockStartLoop(t *testing.T) {
+	// Pre-reserve frontend's readiness port, then close it; the fake re-opens
+	// it only once api's StartContainer call has been recorded.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve readiness port: %v", err)
+	}
+	port := testPort(t, ln)
+	ln.Close()
+
+	svcCfgs := map[string]*appconfig.AppConfig{
+		"db": {AppID: "app", ServiceName: "db"},
+		"frontend": {
+			AppID:       "app",
+			ServiceName: "frontend",
+			// Bounded timeout: generous enough for the loop to reach api and
+			// open the port (it does so within milliseconds against fakes), but
+			// bounded so a blocking-loop regression fails the test instead of
+			// hanging it.
+			Readiness: &appconfig.ReadinessConfig{
+				TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
+				TimeoutSeconds: 3,
+			},
+			Hooks: &appconfig.HooksConfig{
+				PostStart: &appconfig.HookCommand{OpenURL: fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)},
+			},
+		},
+		"api": {AppID: "app", ServiceName: "api"},
+	}
+	ordered := []string{"db", "frontend", "api"}
+
+	var lnMu sync.Mutex
+	var reopened net.Listener
+	t.Cleanup(func() {
+		lnMu.Lock()
+		if reopened != nil {
+			reopened.Close()
+		}
+		lnMu.Unlock()
+	})
+
+	fake := &hookSvcContainerClient{
+		deadline: time.Now().Add(20 * time.Second),
+		onStart: func(calls int) {
+			if calls != len(ordered) { // api is last in topo order
+				return
+			}
+			l, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+			if lerr != nil {
+				return
+			}
+			lnMu.Lock()
+			reopened = l
+			lnMu.Unlock()
+		},
+	}
+
+	// browserOpen recorder: capture how many StartContainer calls had been
+	// recorded at the instant the hook fired, and release the log streams.
+	var (
+		bMu           sync.Mutex
+		openedURLs    []string
+		openedAtCalls []int
+	)
+	browserFired := make(chan struct{})
+	original := browserOpen
+	browserOpen = func(url string) error {
+		bMu.Lock()
+		openedURLs = append(openedURLs, url)
+		openedAtCalls = append(openedAtCalls, fake.startCalls())
+		first := len(openedURLs) == 1
+		bMu.Unlock()
+		if first {
+			close(browserFired)
+		}
+		return nil
+	}
+	t.Cleanup(func() { browserOpen = original })
+
+	// Hold the log-multiplex loop open until the hook has fired, so teardown
+	// (runCancel/reap) can't suppress it.
+	fake.shouldEOF = func() bool {
+		select {
+		case <-browserFired:
+			return true
+		default:
+			return false
+		}
+	}
+
+	conn := &grpcclient.AgentConnection{
+		Host:             "127.0.0.1",
+		AgentService:     &lifecycleFakeAgentClient{},
+		ContainerService: fake,
+	}
+
+	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: false},
+		func(string) error { return nil }, svcCfgs, nil)
+	if err != nil {
+		t.Fatalf("startAndStreamServices: %v", err)
+	}
+
+	if got := fake.startCalls(); got != len(ordered) {
+		t.Fatalf("StartContainer calls = %d, want %d (start loop must not stall on frontend's hook)", got, len(ordered))
+	}
+
+	bMu.Lock()
+	defer bMu.Unlock()
+	if len(openedURLs) != 1 {
+		t.Fatalf("browserOpen fired %d times (%v), want exactly 1", len(openedURLs), openedURLs)
+	}
+	if openedAtCalls[0] != len(ordered) {
+		t.Errorf("frontend's hook fired after %d StartContainer calls, want %d — its readiness can only pass once api (started AFTER frontend) opened the port, so fewer means the start loop blocked on the hook", openedAtCalls[0], len(ordered))
+	}
+	// A passing probe never warns; the warning path's exit-detail lookup calls
+	// ListContainers. Any call here means frontend's readiness timed out —
+	// i.e. the loop waited on the probe instead of advancing to api.
+	if got := fake.listContainersCalls(); got != 0 {
+		t.Errorf("ListContainers called %d times, want 0 (readiness must have passed, not timed out)", got)
 	}
 }
 
