@@ -61,6 +61,9 @@ func NewRootCmd() *cobra.Command {
 				cmd.PrintErrln("Or, set the following environment variable:")
 				cmd.PrintErrln("  WENDY_ANALYTICS=false")
 
+				cmd.PrintErrln("")
+				cmd.PrintErrln("New to Wendy? Run `wendy tour` for a guided setup.")
+
 				cfg.Analytics = &config.AnalyticsConfig{Enabled: true}
 				if err := config.Save(cfg); err != nil {
 					return err
@@ -160,7 +163,7 @@ func NewRootCmd() *cobra.Command {
 	utilsCmd := newUtilsCmd()
 	utilsCmd.Hidden = true
 	tourCmd := newTourCmd()
-	tourCmd.Hidden = true
+	tourCmd.GroupID = "develop"
 	mcpCmd := newMCPCmd()
 	mcpCmd.Hidden = true
 	completionCmd := newCompletionCmd()

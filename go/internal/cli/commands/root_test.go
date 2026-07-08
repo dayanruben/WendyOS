@@ -96,7 +96,7 @@ func TestRootCommand_Help(t *testing.T) {
 
 	// Commands that were demoted to hidden must not appear in top-level help,
 	// even though they remain registered and runnable.
-	for _, hidden := range []string{"build", "watch", "discover", "os", "utils", "info", "mcp", "tour", "auth", "completion"} {
+	for _, hidden := range []string{"build", "watch", "discover", "os", "utils", "info", "mcp", "auth", "completion"} {
 		if strings.Contains(output, "\n  "+hidden+" ") {
 			t.Errorf("help output should not list hidden command %q:\n%s", hidden, output)
 		}
@@ -110,4 +110,17 @@ func TestRootCommand_DeviceFlag(t *testing.T) {
 	if f == nil {
 		t.Fatal("expected --device persistent flag")
 	}
+}
+
+func TestTourCommandIsVisible(t *testing.T) {
+	root := NewRootCmd()
+	for _, c := range root.Commands() {
+		if c.Name() == "tour" {
+			if c.Hidden {
+				t.Fatal("tour command should be visible (not hidden)")
+			}
+			return
+		}
+	}
+	t.Fatal("tour command not registered on root")
 }
