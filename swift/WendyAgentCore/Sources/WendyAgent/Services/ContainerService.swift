@@ -428,17 +428,36 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         ["bundle", "--file", brewfilePath]
     }
 
+    nonisolated static func realUserName() -> String? {
+        guard let passwd = getpwuid(getuid()) else { return nil }
+        return String(cString: passwd.pointee.pw_name)
+    }
+
     nonisolated static func brewBundleEnvironment(
-        source: [String: String] = ProcessInfo.processInfo.environment
+        source: [String: String] = ProcessInfo.processInfo.environment,
+        realUserName: String? = realUserName()
     ) -> [String: String] {
         var environment: [String: String] = [:]
-        for key in ["HOME", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE"] {
+        for key in ["HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
             if let value = source[key], !value.isEmpty {
                 environment[key] = value
             }
         }
         if environment["HOME"] == nil {
             environment["HOME"] = NSHomeDirectory()
+        }
+        // Homebrew's tap-trust resolves the invoking user's home via a passwd lookup
+        // of USER/LOGNAME, so these must name a real account — an env-only identity
+        // (as the E2E harness sets) makes every `brew install` abort.
+        if let realUserName, !realUserName.isEmpty {
+            environment["USER"] = realUserName
+            environment["LOGNAME"] = realUserName
+        } else {
+            for key in ["USER", "LOGNAME"] {
+                if let value = source[key], !value.isEmpty {
+                    environment[key] = value
+                }
+            }
         }
         environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
