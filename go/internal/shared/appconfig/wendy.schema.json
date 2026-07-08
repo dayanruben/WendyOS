@@ -418,7 +418,9 @@
         "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Service names this service starts after." },
         "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
         "frameworks": { "$ref": "#/$defs/frameworks" },
-        "resources": { "$ref": "#/$defs/resourceLimits" }
+        "resources": { "$ref": "#/$defs/resourceLimits" },
+        "readiness": { "$ref": "#/$defs/readiness" },
+        "hooks": { "$ref": "#/$defs/hooks" }
       }
     },
     "resourceLimits": {
