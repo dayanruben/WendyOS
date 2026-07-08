@@ -74,8 +74,9 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 | `ports` | Port mappings (`host:container`). Adds a `network` entitlement when present. |
 | `network_mode: host` | Adds a `host` network entitlement. |
 | `volumes` | Named volumes are created as `persist` entitlements. Host bind mounts (paths starting with `.` or `/`) are silently skipped. |
-| `depends_on` | Dependency order: list or condition-map form. Services are created in dependency order; detached starts follow the same order, but health checks and readiness conditions are not evaluated. |
+| `depends_on` | Dependency order: list or condition-map form. Services are created in dependency order; detached starts follow the same order, but the condition-map's own health-check conditions (e.g. `condition: service_healthy`) are not evaluated — ordering is purely topological. To gate a service's own postStart hook on its readiness instead, see [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks). |
 | `restart` | Restart policy: `no`, `on-failure`, `always`, `unless-stopped`. Overridden by CLI flags if specified. |
+| `x-wendy` | Wendy-specific per-service extensions: `readiness` (a readiness probe) and `hooks` (postStart hooks). Same camelCase schema as `wendy.json`'s top-level `readiness`/`hooks` fields. See [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks) below. |
 
 ## Networking
 
@@ -106,6 +107,38 @@ volumes:
 
 > Host bind mounts (e.g. `./local-path:/container/path`) are not supported on device; they are skipped.
 
+## Readiness probes and postStart hooks
+
+A compose service can declare its own readiness probe and postStart hooks under `x-wendy`, using the same camelCase schema as `wendy.json`'s `readiness`/`hooks` fields:
+
+```yaml
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    x-wendy:
+      readiness:
+        tcpSocket:
+          port: 3000
+        timeoutSeconds: 30
+      hooks:
+        postStart:
+          openURL: "http://${WENDY_HOSTNAME}:3000"
+```
+
+`readiness` here gates only `frontend`'s own `postStart` hook — it never delays any other service's startup (`depends_on` ordering is unaffected). `hooks.postStart.agent` (a command run on the device) is attached only to the declaring service's own container.
+
+A companion `wendy.json` in the same directory can also declare `services.<name>.readiness` / `services.<name>.hooks` for a service. When both are present, the companion wins wholesale per field — its `readiness` and `hooks` each replace the `x-wendy` value entirely rather than merging with it.
+
+A companion `wendy.json`'s *top-level* `readiness`/`hooks` act instead as an app-level fallback: they fire once after every service in the project has started, rather than gating any single service. Both the fallback and a service's own `x-wendy` hooks fire if both are declared. [Examples/WendyMC](../../Examples/WendyMC) is a live example of this: its companion `wendy.json` declares a top-level `readiness.tcpSocket` (port 8080) and `hooks.postStart.openURL`, so `wendy run` waits for the web UI to come up and opens it automatically once both of its services have started.
+
+In attached mode, each service's readiness→postStart sequence runs asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service; Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. In detached mode, readiness is waited sequentially in dependency order after every service has started; hooks outlive the CLI once it exits, and a readiness failure only prints a warning — it never fails the command.
+
+Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` (the declaring service's name; empty for the app-level fallback). Windows-style `%VAR%` forms are accepted too.
+
+> Readiness probes dial the device host, not the container directly, so a service's probed port must be published (`ports:`) or the service must use `network_mode: host` for the probe to succeed.
+
 ## Flags
 
 All `wendy run` flags work with compose projects:
@@ -124,7 +157,6 @@ All `wendy run` flags work with compose projects:
 
 - Headless Mac is not supported. `wendy run` rejects compose projects before any registry or Docker setup when the selected target is Headless Mac. Target a Linux/WendyOS device to use compose.
 - Wendy-specific hardware access entitlements such as `gpu`, `display`, `camera`, `audio`, `bluetooth`, `usb`, `i2c`, `gpio`, `spi`, `input`, and `serial` are not inferred from compose fields.
-- Service-specific lifecycle behavior is not supported yet: Compose services cannot declare Wendy readiness probes or `postStart` hooks, and top-level `wendy.json` hooks do not apply to generated Compose service apps.
 - Host networking does not imply shared IPC or shared `/dev/shm`; ROS 2 shared-memory transport requires an app shape that can explicitly share namespaces.
 - Linux containers on macOS require a target WendyOS device; local Docker Desktop compose is used as a fallback when no device is targeted.
 - Compose `extends`, `profiles`, and `secrets` are not supported.
