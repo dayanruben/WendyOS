@@ -99,7 +99,7 @@ A top-level `readiness`/`hooks` in `wendy.json` acts as an app-level fallback: i
 
 ### Attached vs. detached
 
-In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. In detached mode, readiness is waited sequentially in dependency order after every service has started; hooks outlive the CLI once it exits, and a readiness failure only prints a warning — it never fails the command.
+In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode, readiness is waited sequentially in dependency order after every service has started; hooks outlive the CLI once it exits, and a readiness failure only prints a warning — it never fails the command.
 
 ## How `wendy run` handles multi-service projects
 

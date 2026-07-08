@@ -33,9 +33,10 @@ Connect a Minecraft Java client to `<jetson-ip>:25565`.
 
 ## Why the browser opens
 
-The companion `wendy.json` declares a top-level `readiness` (a TCP probe
-against port 8080, with a 180 s timeout to cover first-boot world
-generation) and `hooks.postStart.openURL` pointing at
+The companion `wendy.json` (which sits right next to `docker-compose.yml` in
+this directory, so `wendy run` picks it up automatically) declares a
+top-level `readiness` (a TCP probe against port 8080, with a 180 s timeout to
+cover first-boot world generation) and `hooks.postStart.openURL` pointing at
 `http://${WENDY_HOSTNAME}:8080`. Since this is a two-service compose
 project, that top-level pair is an app-level fallback: it fires once after
 both `minecraft` and `webui` have started, rather than being tied to either
