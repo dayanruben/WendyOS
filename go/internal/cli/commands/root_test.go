@@ -112,6 +112,22 @@ func TestRootCommand_DeviceFlag(t *testing.T) {
 	}
 }
 
+func TestNextStepHint(t *testing.T) {
+	cases := map[string]string{
+		"wendy discover":         "Next: run `wendy init` to create an app, then `wendy run` to deploy it.",
+		"wendy device info":      "Next: run `wendy run` to build and deploy an app to this device.",
+		"wendy device top":       "Next: run `wendy run` to build and deploy an app to this device.",
+		"wendy device apps list": "Next: run `wendy run` to build and deploy an app to this device.",
+		"wendy run":              "Next: run `wendy device logs` to stream your app's logs.",
+		"wendy analytics status": "",
+	}
+	for path, want := range cases {
+		if got := nextStepHint(path); got != want {
+			t.Errorf("nextStepHint(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestTourCommandIsVisible(t *testing.T) {
 	root := NewRootCmd()
 	for _, c := range root.Commands() {
