@@ -2080,13 +2080,69 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		return addr, false, addrCleanup, addrErr
 	}
 
-	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
+	// Cloud tunnel. On a provisioned device the registry itself speaks TLS,
+	// but registry tooling (containertool, Apple Container) treats a
+	// 127.0.0.1 registry as plain HTTP — and the device's Wendy-CA cert
+	// could never verify for the loopback address anyway. So terminate TLS
+	// in the proxy: upgrade each tunneled connection with the CLI's client
+	// certificate and hand the plugin a plain-HTTP loopback address
+	// (swiftUseMTLS=false), mirroring the provisioned-LAN branch above.
+	// Previously the raw TCP forward returned swiftUseMTLS=true, so the
+	// plugin sent plain HTTP straight into the TLS listener and every
+	// tunnel deploy to an enrolled device hung on GET /v2/ (WDY-1868).
+	dial := func(ctx context.Context) (net.Conn, error) {
 		return conn.RegistryDialer(ctx, port)
-	})
+	}
+	if conn.IsMTLS {
+		certInfo := loadCLICert()
+		if certInfo == nil {
+			return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
+		}
+		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, dial)
+		if tlsErr != nil {
+			return "", false, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
+		}
+		dial = tlsDial
+	}
+
+	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", dial)
 	if proxyErr != nil {
 		return "", false, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), conn.IsMTLS, proxy.Close, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
+}
+
+// tlsClientDialer wraps dial so every connection is upgraded to TLS with the
+// given CLI client certificate before use. Server verification matches
+// startMTLSRegistryProxy: chain validation is skipped because device registry
+// certs are Wendy-CA-signed identity certs that never carry the dialed
+// address as a SAN (pinning is tracked separately).
+func tlsClientDialer(certPEM, keyPEM string, dial func(context.Context) (net.Conn, error)) (func(context.Context) (net.Conn, error), error) {
+	leafPEM, err := certs.LeafCertificatePEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
+	}
+	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("loading client certificate: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		MinVersion:         tls.VersionTLS12,
+		Certificates:       []tls.Certificate{tlsCert},
+	}
+	return func(ctx context.Context) (net.Conn, error) {
+		raw, dialErr := dial(ctx)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		tlsConn := tls.Client(raw, tlsCfg)
+		if hsErr := tlsConn.HandshakeContext(ctx); hsErr != nil {
+			raw.Close()
+			return nil, fmt.Errorf("TLS handshake with device registry: %w", hsErr)
+		}
+		return tlsConn, nil
+	}, nil
 }
 
 func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {

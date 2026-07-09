@@ -2317,3 +2317,48 @@ func TestResolveDockerfile_AutoSelectionRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal("expected error for auto-selected symlink escape, got nil")
 	}
 }
+
+// TestTLSClientDialer_TunneledRegistry reproduces WDY-1868's tunnel-deploy
+// failure: a provisioned device's registry speaks TLS, so a raw TCP forward
+// of the tunnel plus a plain-HTTP push client hangs on GET /v2/. The fix
+// upgrades each tunneled connection to TLS inside the local proxy; this test
+// drives plain HTTP through startRegistryProxyWithDialer + tlsClientDialer
+// against a mutual-TLS registry stand-in and expects 200.
+func TestTLSClientDialer_TunneledRegistry(t *testing.T) {
+	ca := generateTestCA(t)
+	serverLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageServerAuth)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	// clientCA enforces mutual TLS, asserting the dialer presents the CLI cert.
+	addr := startTestTLSServer(t, serverTLSCert, ca)
+
+	// The "tunnel": a plain TCP dial to the TLS registry, as RegistryDialer does.
+	rawDial := func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
+	dial, err := tlsClientDialer(clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), rawDial)
+	if err != nil {
+		t.Fatalf("tlsClientDialer: %v", err)
+	}
+
+	proxy, err := startRegistryProxyWithDialer(context.Background(), "127.0.0.1:0", dial)
+	if err != nil {
+		t.Fatalf("startRegistryProxyWithDialer: %v", err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port())) + "/v2/")
+	if err != nil {
+		t.Fatalf("plain-HTTP request through TLS-wrapping proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
