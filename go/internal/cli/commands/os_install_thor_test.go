@@ -1,5 +1,3 @@
-//go:build darwin || linux
-
 package commands
 
 import (
@@ -207,7 +205,7 @@ func TestRunFlashStepsPlain_Sequencing(t *testing.T) {
 		}},
 	}
 
-	failedID, err := runFlashSteps("Flashing", steps, func() {})
+	failedID, err := runFlashSteps("Flashing", steps, func() {}, io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +233,7 @@ func TestRunFlashStepsPlain_StopsOnFailure(t *testing.T) {
 		}},
 	}
 
-	failedID, err := runFlashSteps("Flashing", steps, func() {})
+	failedID, err := runFlashSteps("Flashing", steps, func() {}, io.Discard)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel", err)
 	}

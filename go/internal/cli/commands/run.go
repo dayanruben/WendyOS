@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -487,6 +488,10 @@ type runOptions struct {
 	keepGoing            bool
 	maxConcurrency       int
 	userArgs             []string
+	// env are extra KEY=VALUE environment variables injected into the container
+	// at create time (CreateContainerRequest.Env). Used by fleet deploys to wire
+	// cross-component discovery (e.g. WENDY_FLEET_PEERS) into a component.
+	env []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
@@ -1025,6 +1030,9 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		RestartPolicy: restartPolicy,
 		Cmd:           cmd,
 		UserArgs:      userArgs,
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1557,9 +1565,70 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
+}
+
+// expandServiceEnv resolves one service's `env` map from wendy.json into the
+// "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may reference
+// host environment variables via ${VAR} (or $VAR); they are expanded here, on
+// the deploy host, since the agent has no access to this shell's environment.
+// An entry whose value expands to empty is dropped so the container falls
+// back to its own built-in default rather than receiving an empty override.
+// Output is sorted for deterministic requests; the agent re-validates every
+// entry (POSIX key, blocked prefixes) before applying it.
+func expandServiceEnv(svc *appconfig.ServiceConfig) []string {
+	if svc == nil || len(svc.Env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(svc.Env))
+	for k, v := range svc.Env {
+		if expanded := os.Expand(v, os.Getenv); expanded != "" {
+			out = append(out, k+"="+expanded)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolveServiceEnv merges expandServiceEnv across every service in appCfg,
+// for single-service deploy paths that build one CreateContainerRequest for
+// the whole app rather than one per service (see multibuild.go for the
+// per-service path, which calls expandServiceEnv directly).
+func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
+	if appCfg == nil {
+		return nil
+	}
+	// Sort service names so cross-service key collisions resolve deterministically.
+	svcNames := make([]string, 0, len(appCfg.Services))
+	for name := range appCfg.Services {
+		svcNames = append(svcNames, name)
+	}
+	sort.Strings(svcNames)
+
+	merged := map[string]string{}
+	for _, name := range svcNames {
+		for _, kv := range expandServiceEnv(appCfg.Services[name]) {
+			k, v, _ := strings.Cut(kv, "=")
+			merged[k] = v
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
