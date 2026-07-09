@@ -597,6 +597,15 @@ func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
 	if err != nil {
 		return // file absent — not an error on images that predate this feature
 	}
+	// The config directory may not exist yet on first boot: provisioning
+	// (which creates it) can run after us or not at all on a fresh image,
+	// and without the floor a no-RTC device boots months in the past.
+	if err := os.MkdirAll(configPath, 0o700); err != nil {
+		if logger != nil {
+			logger.Warn("configpartition: failed to create config dir for clock_floor", zap.Error(err))
+		}
+		return
+	}
 	dst := filepath.Join(configPath, "clock_floor")
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		if logger != nil {

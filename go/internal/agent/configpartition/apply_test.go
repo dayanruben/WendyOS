@@ -558,3 +558,37 @@ func TestUpdateAvahiService_UnprovisioningRemovesAssetID(t *testing.T) {
 		t.Errorf("expected assetid TXT record removed from service file:\n%s", got)
 	}
 }
+
+func TestApplyClockFloor_CreatesConfigDir(t *testing.T) {
+	cfgDir := t.TempDir()
+	// Reproduces WDY-1868: on a fresh (or not-yet-provisioned) image the agent
+	// config dir does not exist, and the floor copy must create it rather than
+	// fail — without the floor a no-RTC device boots with a months-old clock.
+	configPath := filepath.Join(t.TempDir(), "subdir", "wendy-agent")
+
+	payload := []byte{0, 0, 0, 0, 0x68, 0x6e, 0xda, 0x80}
+	if err := os.WriteFile(filepath.Join(cfgDir, "clock_floor"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	applyClockFloor(logger, cfgDir, configPath)
+
+	got, err := os.ReadFile(filepath.Join(configPath, "clock_floor"))
+	if err != nil {
+		t.Fatalf("clock_floor not written to configPath: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("clock_floor content = %v, want %v", got, payload)
+	}
+}
+
+func TestApplyClockFloor_NoFile(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	// Should return without side effects when the partition has no floor file.
+	configPath := filepath.Join(t.TempDir(), "wendy-agent")
+	applyClockFloor(logger, t.TempDir(), configPath)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("configPath should not be created when there is no clock_floor to copy")
+	}
+}
