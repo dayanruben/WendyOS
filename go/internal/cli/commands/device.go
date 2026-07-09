@@ -68,6 +68,7 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("manage",
 		newDeviceInfoCmd(),
 		newDeviceAttachCmd(),
+		newDeviceShellCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
 		newDeviceGetDefaultCmd(),
