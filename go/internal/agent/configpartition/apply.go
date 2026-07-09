@@ -589,18 +589,29 @@ func Apply(logger *zap.Logger, configPath string) {
 	applyClockFloor(logger, configDir, configPath)
 }
 
-// applyClockFloor copies clock_floor from the config partition directory to
-// the agent config path, so the agent can read it as a startup time floor.
+// applyClockFloor copies clock_floor from cfgDir (the FAT32 config partition,
+// written by the CLI at flash time) into configPath (the agent's private config
+// directory, e.g. /etc/wendy-agent), so the agent can read it as a startup time
+// floor.
 func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
 	src := filepath.Join(cfgDir, "clock_floor")
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return // file absent — not an error on images that predate this feature
 	}
-	dst := filepath.Join(configPath, "clock_floor")
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	// The config directory may not exist yet on first boot: provisioning
+	// (which creates it) can run after us or not at all on a fresh image,
+	// and without the floor a no-RTC device boots months in the past.
+	if err := os.MkdirAll(configPath, 0o700); err != nil {
 		if logger != nil {
-			logger.Warn("configpartition: failed to write clock_floor", zap.Error(err))
+			logger.Error("configpartition: failed to create config dir for clock_floor", zap.Error(err))
+		}
+		return
+	}
+	dst := filepath.Join(configPath, "clock_floor")
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		if logger != nil {
+			logger.Error("configpartition: failed to write clock_floor", zap.Error(err))
 		}
 	}
 }
