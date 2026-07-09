@@ -2043,6 +2043,49 @@ func TestStartMTLSRegistryHTTPProxy_UntrustedClientCert(t *testing.T) {
 	}
 }
 
+// Over a cloud tunnel the raw connection to the device registry comes from a
+// broker byte pipe (conn.RegistryDialer), not a direct TCP dial to a host:port.
+// The mTLS-terminating proxy must still layer the CLI client certificate on top
+// of that pre-dialed connection so swift-container-plugin — which speaks only
+// plain HTTP — can push to a provisioned device's RequireAnyClientCert registry.
+// Without a client cert the registry rejects the push (the "fails to upload"
+// symptom); this test proves the dialer variant supplies it.
+func TestStartMTLSRegistryHTTPProxyWithDialer_TunnelDialProvidesClientCert(t *testing.T) {
+	ca := generateTestCA(t)
+	// Wendy device registry certs are mutual-auth identity certs (clientAuth EKU).
+	serverLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	// Registry requires a client cert, mirroring tls.RequireAnyClientCert on device.
+	addr := startTestTLSServer(t, serverTLSCert, ca)
+
+	// The dialer stands in for the cloud tunnel: it hands back a raw (pre-TLS)
+	// connection to the registry, ignoring the nominal target address entirely.
+	dial := func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
+	proxy, err := startMTLSRegistryHTTPProxyWithDialer("wendy-registry:5000", clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr, dial)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxyWithDialer: %v", err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port())))
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (tunnel-dialed mTLS proxy must present the client cert)", resp.StatusCode)
+	}
+}
+
 func TestResolveDockerfile_NoDockerfiles(t *testing.T) {
 	dir := t.TempDir()
 	got, err := resolveDockerfile(dir, "", false)
