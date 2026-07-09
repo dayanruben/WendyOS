@@ -62,6 +62,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
+		newFoxgloveCmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
 	)
