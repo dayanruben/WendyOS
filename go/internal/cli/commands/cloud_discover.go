@@ -43,7 +43,9 @@ func newCloudDiscoverCmd() *cobra.Command {
 			}
 
 			m := newCloudDiscoverModel(ctx, auth, brokerURL, all, false, nil)
-			p := tea.NewProgram(m)
+			// Alt screen restores the user's terminal content on exit. The
+			// picker-mode embedding in `wendy cloud tunnel` stays inline.
+			p := tea.NewProgram(m, tea.WithAltScreen())
 			if _, err := p.Run(); err != nil {
 				return fmt.Errorf("TUI error: %w", err)
 			}
