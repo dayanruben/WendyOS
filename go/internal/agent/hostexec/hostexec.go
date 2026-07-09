@@ -38,7 +38,13 @@ func (Spawner) Run(ctx context.Context, command []string, stdin io.Reader, stdou
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "HOME=/root", "TERM=xterm-256color")
-	cmd.Dir = "/root"
+	// Start in root's home when it exists. On a machine without /root (dev/test
+	// boxes, or a non-root context) fall back to the inherited working directory
+	// so the shell still starts; on the device the agent runs as root and /root
+	// is present, so this is the /root cwd the design calls for.
+	if fi, statErr := os.Stat("/root"); statErr == nil && fi.IsDir() {
+		cmd.Dir = "/root"
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
