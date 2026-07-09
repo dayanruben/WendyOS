@@ -2080,13 +2080,41 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		return addr, false, addrCleanup, addrErr
 	}
 
+	// A provisioned device's registry speaks HTTPS and demands a client cert
+	// (RequireAnyClientCert). swift-container-plugin cannot perform mTLS, so —
+	// exactly as the LAN mTLS branch above does — terminate plain HTTP locally
+	// and re-originate the request over mTLS with the CLI cert. Here the registry
+	// is reached through the cloud tunnel byte pipe rather than a direct dial. The
+	// plugin then pushes via plain HTTP, so swiftUseMTLS is false. Without this the
+	// plugin attempts HTTPS with no client cert and the registry rejects the push
+	// ("fails to upload").
+	if conn.IsMTLS {
+		certInfo := loadCLICert()
+		if certInfo == nil {
+			return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
+		}
+		proxy, proxyErr := startMTLSRegistryHTTPProxyWithDialer(
+			net.JoinHostPort("localhost", strconv.Itoa(port)),
+			certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain,
+			func(ctx context.Context) (net.Conn, error) {
+				return conn.RegistryDialer(ctx, port)
+			},
+		)
+		if proxyErr != nil {
+			return "", false, nil, fmt.Errorf("starting mTLS registry proxy for Swift over cloud tunnel: %w", proxyErr)
+		}
+		return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
+	}
+
+	// Unprovisioned cloud device: the registry is plain HTTP, so a raw TCP
+	// passthrough over the tunnel is sufficient.
 	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
 		return conn.RegistryDialer(ctx, port)
 	})
 	if proxyErr != nil {
 		return "", false, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), conn.IsMTLS, proxy.Close, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
 }
 
 func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
@@ -2136,6 +2164,22 @@ func (p *mtlsRegistryHTTPProxy) Close() {
 }
 
 func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsRegistryHTTPProxy, error) {
+	return startMTLSRegistryHTTPProxyWithDialer(target, certPEM, keyPEM, caPEM, nil)
+}
+
+// startMTLSRegistryHTTPProxyWithDialer behaves like startMTLSRegistryHTTPProxy
+// but, when dial is non-nil, obtains the raw (pre-TLS) connection to the device
+// registry from dial instead of opening a direct TCP connection to target. This
+// is what lets the proxy reach a registry that is only reachable through a cloud
+// tunnel byte pipe (conn.RegistryDialer): the tunnel yields a plain net.Conn and
+// this proxy layers TLS + the CLI client certificate on top of it, so
+// swift-container-plugin — which speaks only plain HTTP — can push to a
+// provisioned device whose registry demands a client cert (RequireAnyClientCert).
+//
+// target is used only for the forwarded request's scheme/Host; server identity
+// is validated against caPEM via VerifyConnection (hostname checks are skipped,
+// so a synthetic target such as "wendy-registry:5000" is fine over a tunnel).
+func startMTLSRegistryHTTPProxyWithDialer(target, certPEM, keyPEM, caPEM string, dial func(context.Context) (net.Conn, error)) (*mtlsRegistryHTTPProxy, error) {
 	leafPEM, err := certs.LeafCertificatePEM(certPEM)
 	if err != nil {
 		return nil, fmt.Errorf("extracting leaf cert: %w", err)
@@ -2149,56 +2193,66 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
 
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			// Skip hostname verification: device registry certs are signed by
+			// the Wendy CA but may not include the mDNS hostname as a SAN.
+			// VerifyConnection performs full chain validation against the Wendy
+			// CA instead.
+			InsecureSkipVerify: true, //nolint:gosec
+			MinVersion:         tls.VersionTLS12,
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return fmt.Errorf("server presented no certificates")
+				}
+				intermediates := x509.NewCertPool()
+				for _, c := range cs.PeerCertificates[1:] {
+					intermediates.AddCert(c)
+				}
+				// Wendy issues a single mutual-auth identity cert per principal,
+				// used for mTLS in both directions; when a device serves its
+				// registry it presents that identity cert, which carries
+				// clientAuth (mirrored by the agent-side verifier in
+				// agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
+				// rejects a legitimately trusted device cert, so we accept either
+				// authentication EKU — but still require an authentication cert
+				// (rejecting e.g. codeSigning/emailProtection leaves) and full
+				// chain validation against the Wendy CA. The residual exposure
+				// (a clientAuth identity-cert holder impersonating the registry)
+				// requires MITM of the loopback-only proxy's connection to the
+				// device and is identical to the gRPC channel's trust model; the
+				// long-term fix is issuing device registry certs with a
+				// serverAuth EKU at the PKI layer.
+				opts := x509.VerifyOptions{
+					Roots:         caPool,
+					Intermediates: intermediates,
+					KeyUsages: []x509.ExtKeyUsage{
+						x509.ExtKeyUsageServerAuth,
+						x509.ExtKeyUsageClientAuth,
+					},
+				}
+				_, err := cs.PeerCertificates[0].Verify(opts)
+				return err
+			},
+		},
+	}
+	if dial != nil {
+		// Ignore the address the transport would dial (derived from target) and
+		// hand back the tunnel connection; TLS is still applied by the transport
+		// because the forwarded request uses the https scheme.
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dial(ctx)
+		}
+	}
+
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "https"
 			req.URL.Host = target
 			req.Host = target
 		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{cert},
-				// Skip hostname verification: device registry certs are signed by
-				// the Wendy CA but may not include the mDNS hostname as a SAN.
-				// VerifyConnection performs full chain validation against the Wendy
-				// CA instead.
-				InsecureSkipVerify: true, //nolint:gosec
-				MinVersion:         tls.VersionTLS12,
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("server presented no certificates")
-					}
-					intermediates := x509.NewCertPool()
-					for _, c := range cs.PeerCertificates[1:] {
-						intermediates.AddCert(c)
-					}
-					// Wendy issues a single mutual-auth identity cert per principal,
-					// used for mTLS in both directions; when a device serves its
-					// registry it presents that identity cert, which carries
-					// clientAuth (mirrored by the agent-side verifier in
-					// agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
-					// rejects a legitimately trusted device cert, so we accept either
-					// authentication EKU — but still require an authentication cert
-					// (rejecting e.g. codeSigning/emailProtection leaves) and full
-					// chain validation against the Wendy CA. The residual exposure
-					// (a clientAuth identity-cert holder impersonating the registry)
-					// requires MITM of the loopback-only proxy's connection to the
-					// device and is identical to the gRPC channel's trust model; the
-					// long-term fix is issuing device registry certs with a
-					// serverAuth EKU at the PKI layer.
-					opts := x509.VerifyOptions{
-						Roots:         caPool,
-						Intermediates: intermediates,
-						KeyUsages: []x509.ExtKeyUsage{
-							x509.ExtKeyUsageServerAuth,
-							x509.ExtKeyUsageClientAuth,
-						},
-					}
-					_, err := cs.PeerCertificates[0].Verify(opts)
-					return err
-				},
-			},
-		},
+		Transport: transport,
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
