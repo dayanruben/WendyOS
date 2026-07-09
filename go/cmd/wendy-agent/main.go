@@ -461,7 +461,6 @@ func main() {
 
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
-		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
 		agentpb.RegisterWendyAudioServiceServer(srv, audioSvc)
 		agentpb.RegisterWendyVideoServiceServer(srv, videoSvc)
 		agentpb.RegisterWendyProvisioningServiceServer(srv, provisioningSvc)
@@ -538,6 +537,15 @@ func main() {
 
 		// Register all services on the mTLS server.
 		registerAllServices(srv)
+
+		// WendyShellService opens an interactive *host* root shell. It is
+		// deliberately registered ONLY here, on the mTLS server, so it is
+		// reachable only on a provisioned device over an authenticated,
+		// org-checked connection. It is intentionally NOT part of
+		// registerAllServices: that would also expose it on the unauthenticated
+		// plaintext pre-provisioning server (handing anyone on the LAN a host
+		// root shell) and on the local admin socket.
+		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)
