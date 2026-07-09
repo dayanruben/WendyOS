@@ -217,8 +217,8 @@ func cloudFleetTargets(ctx context.Context, group, cloudGRPC, brokerURL string) 
 	for _, asset := range assets {
 		asset := asset
 		targets = append(targets, fleetTarget{
-			Name:    asset.GetName(),
-			ID:      fmt.Sprintf("%d", asset.GetId()),
+			Name: asset.GetName(),
+			ID:   fmt.Sprintf("%d", asset.GetId()),
 			connect: func(ctx context.Context) (*grpcclient.AgentConnection, error) {
 				return connectCloudAsset(ctx, auth, asset, brokerURL)
 			},

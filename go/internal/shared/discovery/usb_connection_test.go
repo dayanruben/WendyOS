@@ -11,16 +11,16 @@ func TestIsRoutableLANAddress(t *testing.T) {
 		addr string
 		want bool
 	}{
-		{"192.168.1.10", true},                        // IPv4 private
-		{"10.0.0.5", true},                            // IPv4 private
-		{"169.254.1.1", true},                         // IPv4 link-local (APIPA) is still routable per "IPv4 (any)"
-		{"2001:db8::1", true},                         // global IPv6
-		{"fd00::1", true},                             // ULA IPv6 (not link-local)
-		{"::1", true},                                 // IPv6 loopback is not link-local-unicast
-		{"fe80::1", false},                            // IPv6 link-local
-		{"fe80::1dc5:4d23:df52:fc45%wlan0", false},    // zoned IPv6 link-local
-		{"", false},                                   // empty
-		{"not-an-ip", false},                          // garbage
+		{"192.168.1.10", true},                     // IPv4 private
+		{"10.0.0.5", true},                         // IPv4 private
+		{"169.254.1.1", true},                      // IPv4 link-local (APIPA) is still routable per "IPv4 (any)"
+		{"2001:db8::1", true},                      // global IPv6
+		{"fd00::1", true},                          // ULA IPv6 (not link-local)
+		{"::1", true},                              // IPv6 loopback is not link-local-unicast
+		{"fe80::1", false},                         // IPv6 link-local
+		{"fe80::1dc5:4d23:df52:fc45%wlan0", false}, // zoned IPv6 link-local
+		{"", false},                                // empty
+		{"not-an-ip", false},                       // garbage
 	}
 	for _, tc := range cases {
 		if got := isRoutableLANAddress(tc.addr); got != tc.want {

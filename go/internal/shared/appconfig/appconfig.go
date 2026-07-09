@@ -593,10 +593,8 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
-
 	return nil
 }
-
 
 // FleetManifestFileName is the conventional filename for a fleet manifest — a
 // placement/topology file kept separate from a project's single-app wendy.json.

@@ -1032,7 +1032,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:      userArgs,
 		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
 		// env (discovery peers). Fleet env is appended last so it wins on key clash.
-		Env:           append(resolveServiceEnv(appCfg), opts.env...),
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1567,7 +1567,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		UserArgs:      opts.userArgs,
 		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
 		// env (discovery peers). Fleet env is appended last so it wins on key clash.
-		Env:           append(resolveServiceEnv(appCfg), opts.env...),
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)

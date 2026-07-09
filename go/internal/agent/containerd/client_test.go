@@ -1235,14 +1235,14 @@ func TestIsPubliclyBoundAddress(t *testing.T) {
 		addr string
 		want bool
 	}{
-		{"0.0.0.0", true},          // IPv4 wildcard = all interfaces
-		{"::", true},               // IPv6 wildcard
-		{"192.168.1.10", true},     // specific non-loopback
-		{"127.0.0.1", false},       // IPv4 loopback
-		{"127.0.0.53", false},      // loopback range
-		{"::1", false},             // IPv6 loopback
-		{"", false},                // empty
-		{"garbage", false},         // unparseable
+		{"0.0.0.0", true},      // IPv4 wildcard = all interfaces
+		{"::", true},           // IPv6 wildcard
+		{"192.168.1.10", true}, // specific non-loopback
+		{"127.0.0.1", false},   // IPv4 loopback
+		{"127.0.0.53", false},  // loopback range
+		{"::1", false},         // IPv6 loopback
+		{"", false},            // empty
+		{"garbage", false},     // unparseable
 	} {
 		if got := isPubliclyBoundAddress(tc.addr); got != tc.want {
 			t.Errorf("isPubliclyBoundAddress(%q) = %v, want %v", tc.addr, got, tc.want)

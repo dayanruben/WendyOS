@@ -96,7 +96,6 @@ const labelKeyIsolation = "sh.wendy/isolation"
 // group restart. Absent means no declared dependencies.
 const labelKeyDependsOn = "sh.wendy/depends-on"
 
-
 // labelKeyStoppedByUser records that an app was explicitly stopped by the user
 // (wendy device apps stop). Set to "true" on stop, removed on start. The boot
 // reconcile skips containers carrying it, so a deliberate stop survives a
