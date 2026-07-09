@@ -32,6 +32,7 @@ import (
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostexec"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
@@ -231,6 +232,7 @@ func main() {
 	containerSvc := services.NewContainerService(logger, containerdClient,
 		containerSvcOpts...,
 	)
+	shellSvc := services.NewShellService(logger, hostexec.New())
 	audioSvc := services.NewAudioService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
@@ -459,6 +461,7 @@ func main() {
 
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
+		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
 		agentpb.RegisterWendyAudioServiceServer(srv, audioSvc)
 		agentpb.RegisterWendyVideoServiceServer(srv, videoSvc)
 		agentpb.RegisterWendyProvisioningServiceServer(srv, provisioningSvc)
