@@ -2340,7 +2340,7 @@ func TestTLSClientDialer_TunneledRegistry(t *testing.T) {
 	rawDial := func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}
-	dial, err := tlsClientDialer(clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), rawDial)
+	dial, err := tlsClientDialer(clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr, rawDial)
 	if err != nil {
 		t.Fatalf("tlsClientDialer: %v", err)
 	}
@@ -2360,5 +2360,33 @@ func TestTLSClientDialer_TunneledRegistry(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestTLSClientDialer_RejectsWrongCA asserts the dialer's chain validation:
+// a registry presenting a cert from an unrelated CA must fail the handshake
+// rather than receive the CLI's client credential silently.
+func TestTLSClientDialer_RejectsWrongCA(t *testing.T) {
+	serverCA := generateTestCA(t)
+	trustedCA := generateTestCA(t)
+	serverLeaf := generateTestLeaf(t, serverCA, x509.ExtKeyUsageServerAuth)
+	clientLeaf := generateTestLeaf(t, trustedCA, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	addr := startTestTLSServer(t, serverTLSCert, nil)
+
+	rawDial := func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
+	dial, err := tlsClientDialer(clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), trustedCA.pemStr, rawDial)
+	if err != nil {
+		t.Fatalf("tlsClientDialer: %v", err)
+	}
+
+	if _, err := dial(context.Background()); err == nil {
+		t.Fatal("expected handshake failure against a server signed by an untrusted CA")
 	}
 }

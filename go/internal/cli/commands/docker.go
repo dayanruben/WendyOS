@@ -2098,7 +2098,7 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		if certInfo == nil {
 			return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 		}
-		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, dial)
+		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain, dial)
 		if tlsErr != nil {
 			return "", false, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
 		}
@@ -2112,12 +2112,49 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
 }
 
+// wendyRegistryServerVerifier returns a VerifyConnection callback that
+// chain-validates the registry server's certificate against the Wendy CA.
+//
+// Wendy issues a single mutual-auth identity cert per principal, used for
+// mTLS in both directions; when a device serves its registry it presents
+// that identity cert, which carries clientAuth (mirrored by the agent-side
+// verifier in agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
+// rejects a legitimately trusted device cert, so we accept either
+// authentication EKU — but still require an authentication cert (rejecting
+// e.g. codeSigning/emailProtection leaves) and full chain validation against
+// the Wendy CA. The residual exposure (a clientAuth identity-cert holder
+// impersonating the registry) requires MITM of the loopback-only proxy's
+// connection to the device and is identical to the gRPC channel's trust
+// model; the long-term fix is issuing device registry certs with a
+// serverAuth EKU at the PKI layer.
+func wendyRegistryServerVerifier(caPool *x509.CertPool) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("server presented no certificates")
+		}
+		intermediates := x509.NewCertPool()
+		for _, c := range cs.PeerCertificates[1:] {
+			intermediates.AddCert(c)
+		}
+		opts := x509.VerifyOptions{
+			Roots:         caPool,
+			Intermediates: intermediates,
+			KeyUsages: []x509.ExtKeyUsage{
+				x509.ExtKeyUsageServerAuth,
+				x509.ExtKeyUsageClientAuth,
+			},
+		}
+		_, err := cs.PeerCertificates[0].Verify(opts)
+		return err
+	}
+}
+
 // tlsClientDialer wraps dial so every connection is upgraded to TLS with the
-// given CLI client certificate before use. Server verification matches
-// startMTLSRegistryProxy: chain validation is skipped because device registry
-// certs are Wendy-CA-signed identity certs that never carry the dialed
-// address as a SAN (pinning is tracked separately).
-func tlsClientDialer(certPEM, keyPEM string, dial func(context.Context) (net.Conn, error)) (func(context.Context) (net.Conn, error), error) {
+// given CLI client certificate before use. Hostname verification is skipped —
+// device registry certs never carry the dialed (loopback/tunnel) address as a
+// SAN — but the server chain is fully validated against the Wendy CA via
+// wendyRegistryServerVerifier, matching startMTLSRegistryHTTPProxy.
+func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (net.Conn, error)) (func(context.Context) (net.Conn, error), error) {
 	leafPEM, err := certs.LeafCertificatePEM(certPEM)
 	if err != nil {
 		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
@@ -2126,10 +2163,16 @@ func tlsClientDialer(certPEM, keyPEM string, dial func(context.Context) (net.Con
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
+	}
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		// Hostname check only; full chain validation happens in VerifyConnection.
+		InsecureSkipVerify: true, //nolint:gosec
 		MinVersion:         tls.VersionTLS12,
 		Certificates:       []tls.Certificate{tlsCert},
+		VerifyConnection:   wendyRegistryServerVerifier(caPool),
 	}
 	return func(ctx context.Context) (net.Conn, error) {
 		raw, dialErr := dial(ctx)
@@ -2220,39 +2263,7 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 				// CA instead.
 				InsecureSkipVerify: true, //nolint:gosec
 				MinVersion:         tls.VersionTLS12,
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("server presented no certificates")
-					}
-					intermediates := x509.NewCertPool()
-					for _, c := range cs.PeerCertificates[1:] {
-						intermediates.AddCert(c)
-					}
-					// Wendy issues a single mutual-auth identity cert per principal,
-					// used for mTLS in both directions; when a device serves its
-					// registry it presents that identity cert, which carries
-					// clientAuth (mirrored by the agent-side verifier in
-					// agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
-					// rejects a legitimately trusted device cert, so we accept either
-					// authentication EKU — but still require an authentication cert
-					// (rejecting e.g. codeSigning/emailProtection leaves) and full
-					// chain validation against the Wendy CA. The residual exposure
-					// (a clientAuth identity-cert holder impersonating the registry)
-					// requires MITM of the loopback-only proxy's connection to the
-					// device and is identical to the gRPC channel's trust model; the
-					// long-term fix is issuing device registry certs with a
-					// serverAuth EKU at the PKI layer.
-					opts := x509.VerifyOptions{
-						Roots:         caPool,
-						Intermediates: intermediates,
-						KeyUsages: []x509.ExtKeyUsage{
-							x509.ExtKeyUsageServerAuth,
-							x509.ExtKeyUsageClientAuth,
-						},
-					}
-					_, err := cs.PeerCertificates[0].Verify(opts)
-					return err
-				},
+				VerifyConnection:   wendyRegistryServerVerifier(caPool),
 			},
 		},
 	}
