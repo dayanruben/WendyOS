@@ -30,6 +30,11 @@ func New() *Spawner { return &Spawner{} }
 // applies window resizes ([rows, cols]) until the resize channel closes, and
 // returns the child's exit code. stderr is merged into the PTY master, so all
 // output arrives via stdout.
+//
+// The caller owns stdin and resize: Run's internal goroutines that read stdin
+// and drain resize unwind only when the caller closes the stdin reader and the
+// resize channel. Callers must close both on every path that ends a session
+// (including error and cancellation) or each session leaks two goroutines.
 func (Spawner) Run(ctx context.Context, command []string, stdin io.Reader, stdout io.Writer, resize <-chan [2]uint32) (int, error) {
 	argv := command
 	if len(argv) == 0 {
@@ -38,12 +43,16 @@ func (Spawner) Run(ctx context.Context, command []string, stdin io.Reader, stdou
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "HOME=/root", "TERM=xterm-256color")
-	// Start in root's home when it exists. On a machine without /root (dev/test
-	// boxes, or a non-root context) fall back to the inherited working directory
-	// so the shell still starts; on the device the agent runs as root and /root
-	// is present, so this is the /root cwd the design calls for.
-	if fi, statErr := os.Stat("/root"); statErr == nil && fi.IsDir() {
-		cmd.Dir = "/root"
+	// Start in root's home only when running as root with /root present — that is
+	// the on-device case (the agent runs as root and /root exists). Bare existence
+	// is not enough: on a non-root box /root can exist as 0700 root:root, and
+	// chdir(2) into it during pty.Start would fail with EACCES. Off the device
+	// (dev/test/non-root CI) leave cmd.Dir unset so the child inherits the working
+	// directory and the shell still starts.
+	if os.Geteuid() == 0 {
+		if fi, statErr := os.Stat("/root"); statErr == nil && fi.IsDir() {
+			cmd.Dir = "/root"
+		}
 	}
 
 	ptmx, err := pty.Start(cmd)
