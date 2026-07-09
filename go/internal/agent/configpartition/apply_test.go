@@ -566,6 +566,8 @@ func TestApplyClockFloor_CreatesConfigDir(t *testing.T) {
 	// fail — without the floor a no-RTC device boots with a months-old clock.
 	configPath := filepath.Join(t.TempDir(), "subdir", "wendy-agent")
 
+	// 8-byte big-endian Unix-seconds payload (FloorBytes format); the value is
+	// arbitrary — the test only asserts a byte-for-byte copy.
 	payload := []byte{0, 0, 0, 0, 0x68, 0x6e, 0xda, 0x80}
 	if err := os.WriteFile(filepath.Join(cfgDir, "clock_floor"), payload, 0o644); err != nil {
 		t.Fatal(err)
@@ -580,6 +582,17 @@ func TestApplyClockFloor_CreatesConfigDir(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Errorf("clock_floor content = %v, want %v", got, payload)
+	}
+
+	if info, err := os.Stat(filepath.Join(configPath, "clock_floor")); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("clock_floor mode = %o, want 0600", perm)
+	}
+	if info, err := os.Stat(configPath); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("config dir mode = %o, want 0700", perm)
 	}
 }
 
