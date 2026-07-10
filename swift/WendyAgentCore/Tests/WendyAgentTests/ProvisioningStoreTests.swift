@@ -90,21 +90,43 @@ struct ProvisioningStoreTests {
     @Test("save leaves the device unprovisioned if writing the key/cert files fails")
     func saveFailureDoesNotMarkEnrolled() throws {
         let dir = tempDir()
+        let keyPath = dir.appendingPathComponent("device-key.pem")
         defer {
-            // Restore write permission so cleanup can actually remove the dir.
+            // Restore write permissions so cleanup can actually remove everything.
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: keyPath.path
+            )
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o700],
                 ofItemAtPath: dir.path
             )
             try? FileManager.default.removeItem(at: dir)
         }
+        // The config directory itself stays writable: a provisioning.json
+        // write would succeed here if `save` attempted it.
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // Make the config directory read-only so writing device-key.pem (the
-        // first thing `save` writes) fails before provisioning.json is ever
-        // touched.
+
+        // Pre-create `device-key.pem` as a NON-EMPTY DIRECTORY and make *it*
+        // (not the config dir) read-only. `writePEMFiles` writes the key
+        // first via the `writeFile` helper, which does
+        // `removeItem(at: device-key.pem)` before moving the new content
+        // into place. Removing a directory's contents requires write
+        // permission on that directory, not on the config dir containing it,
+        // so this makes only the key write fail while leaving json writes
+        // fully able to succeed -- the property that actually discriminates
+        // PEM-first (correct) from json-first (buggy) save ordering. Making
+        // the whole config dir read-only instead (the old approach) fails
+        // *every* write unconditionally and does not discriminate.
+        try FileManager.default.createDirectory(at: keyPath, withIntermediateDirectories: true)
+        try "blocker".write(
+            to: keyPath.appendingPathComponent("blocker"),
+            atomically: true,
+            encoding: .utf8
+        )
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o500],
-            ofItemAtPath: dir.path
+            ofItemAtPath: keyPath.path
         )
 
         let store = ProvisioningStore(configPath: dir)
