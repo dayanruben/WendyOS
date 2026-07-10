@@ -211,7 +211,7 @@ public final class WendyAgent {
             AgentService(),
             containerService,
             AudioService(),
-            ProvisioningService(),
+            ProvisioningService(configPath: stateDirectory),
             TelemetryService(broadcaster: broadcaster),
             FileSyncService(appsBase: appsBase),
         ]
