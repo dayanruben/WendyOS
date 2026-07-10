@@ -11,7 +11,7 @@ struct AudioService: Wendy_Agent_Services_V1_WendyAudioService.ServiceProtocol {
         let filter = Self.modelKind(request.message.typeFilter)
         let devices: [AudioDeviceInfo]
         do {
-            devices = try audio.listDevices(typeFilter: filter)
+            devices = try await audio.listDevices(typeFilter: filter)
         } catch {
             throw RPCError(code: .internalError, message: "\(error)")
         }
@@ -33,7 +33,7 @@ struct AudioService: Wendy_Agent_Services_V1_WendyAudioService.ServiceProtocol {
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse> {
         do {
-            try audio.setDefault(deviceID: request.message.deviceID)
+            try await audio.setDefault(deviceID: request.message.deviceID)
         } catch {
             throw RPCError(code: .internalError, message: "\(error)")
         }

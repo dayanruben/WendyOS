@@ -56,13 +56,18 @@ struct BluetoothScanner: BluetoothManaging {
         guard let uuid = UUID(uuidString: address) else {
             return .failed("Invalid peripheral identifier \"\(address)\" (expected a UUID).")
         }
-        return await withCheckedContinuation { continuation in
-            let session = BluetoothSession(
-                mode: connect ? .connect(uuid) : .disconnect(uuid)
-            ) { result in
-                continuation.resume(returning: result)
+        let session = BluetoothSession(mode: connect ? .connect(uuid) : .disconnect(uuid))
+        // CoreBluetooth's connect has no timeout of its own, so a peripheral that
+        // never answers would hang the RPC forever. Bound it, and tear the
+        // session down if the caller's task is cancelled.
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                session.begin(timeout: .seconds(30)) { result in
+                    continuation.resume(returning: result)
+                }
             }
-            session.start()
+        } onCancel: {
+            session.cancel()
         }
     }
 }
@@ -70,6 +75,13 @@ struct BluetoothScanner: BluetoothManaging {
 /// Bridges `CBCentralManager` delegate callbacks into async consumers. Retains
 /// itself for the lifetime of a connect/disconnect action; for scans it is held
 /// by the stream's `onTermination` handler.
+///
+/// `@unchecked Sendable` safety invariant: all mutable state (`manager`,
+/// `pendingPeripheral`, `selfRetain`, `hasFinished`, `finishedResult`,
+/// `completion`) is read and written **only** on `queue`. The delegate callbacks
+/// are delivered on `queue` (it is the `CBCentralManager` dispatch queue), and
+/// `start`/`stop`/`begin`/`cancel` all hop onto `queue` before touching state,
+/// so there is no cross-thread access to synchronize.
 private final class BluetoothSession: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
     enum Mode {
         case scan(AsyncStream<DiscoveredPeripheral>.Continuation)
@@ -78,35 +90,87 @@ private final class BluetoothSession: NSObject, CBCentralManagerDelegate, @unche
     }
 
     private let mode: Mode
-    private let completion: (@Sendable (BluetoothActionResult) -> Void)?
     private let queue = DispatchQueue(label: "sh.wendy.agent.bluetooth")
     private var manager: CBCentralManager?
     private var pendingPeripheral: CBPeripheral?
     private var selfRetain: BluetoothSession?
 
-    init(mode: Mode, completion: (@Sendable (BluetoothActionResult) -> Void)? = nil) {
+    // Connect/disconnect completion state — all touched only on `queue`.
+    private var completion: (@Sendable (BluetoothActionResult) -> Void)?
+    private var hasFinished = false
+    private var finishedResult: BluetoothActionResult?
+
+    init(mode: Mode) {
         self.mode = mode
-        self.completion = completion
         super.init()
     }
 
+    /// Starts a scan session. Held alive by the stream's `onTermination`.
     func start() {
-        selfRetain = self
-        manager = CBCentralManager(delegate: self, queue: queue)
-    }
-
-    func stop() {
-        queue.async { [weak self] in
-            self?.manager?.stopScan()
-            self?.manager = nil
-            self?.selfRetain = nil
+        queue.async { [self] in
+            selfRetain = self
+            manager = CBCentralManager(delegate: self, queue: queue)
         }
     }
 
+    func stop() {
+        queue.async { [self] in
+            manager?.stopScan()
+            manager = nil
+            selfRetain = nil
+        }
+    }
+
+    /// Starts a connect/disconnect action, delivering exactly one result to
+    /// `completion` (on success, failure, timeout, or cancellation).
+    func begin(
+        timeout: Duration,
+        completion: @escaping @Sendable (BluetoothActionResult) -> Void
+    ) {
+        queue.async { [self] in
+            // A cancel may already have raced ahead of us.
+            if hasFinished {
+                completion(finishedResult ?? .failed("Bluetooth operation cancelled."))
+                return
+            }
+            self.completion = completion
+            selfRetain = self
+            manager = CBCentralManager(delegate: self, queue: queue)
+
+            let seconds =
+                Double(timeout.components.seconds)
+                + Double(timeout.components.attoseconds) / 1e18
+            queue.asyncAfter(deadline: .now() + seconds) { [self] in
+                finish(.failed("Bluetooth operation timed out."))
+            }
+        }
+    }
+
+    /// Cancels an in-flight connect/disconnect action.
+    func cancel() {
+        queue.async { [self] in
+            finish(.failed("Bluetooth operation cancelled."))
+        }
+    }
+
+    /// Delivers the result exactly once and releases the session. Must run on
+    /// `queue`.
     private func finish(_ result: BluetoothActionResult) {
-        completion?(result)
+        guard !hasFinished else { return }
+        hasFinished = true
+        finishedResult = result
+
+        if let pendingPeripheral, case .connect = mode {
+            // Stop an outstanding connection attempt we're abandoning.
+            manager?.cancelPeripheralConnection(pendingPeripheral)
+        }
         manager = nil
+        pendingPeripheral = nil
         selfRetain = nil
+
+        let completion = self.completion
+        self.completion = nil
+        completion?(result)
     }
 
     // MARK: - CBCentralManagerDelegate
@@ -179,7 +243,12 @@ private final class BluetoothSession: NSObject, CBCentralManagerDelegate, @unche
         _ central: CBCentralManager,
         didConnect peripheral: CBPeripheral
     ) {
-        if case .connect = mode { finish(.ok) }
+        if case .connect = mode {
+            // Clear the pending peripheral so `finish` keeps the connection we
+            // just established rather than cancelling it.
+            pendingPeripheral = nil
+            finish(.ok)
+        }
     }
 
     func centralManager(

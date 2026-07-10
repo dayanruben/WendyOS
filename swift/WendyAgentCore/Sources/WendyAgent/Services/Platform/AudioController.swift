@@ -30,8 +30,8 @@ enum AudioError: Error, CustomStringConvertible {
 
 /// Manages the host's audio devices and input streaming.
 protocol AudioManaging: Sendable {
-    func listDevices(typeFilter: AudioKind?) throws -> [AudioDeviceInfo]
-    func setDefault(deviceID: UInt32) throws
+    func listDevices(typeFilter: AudioKind?) async throws -> [AudioDeviceInfo]
+    func setDefault(deviceID: UInt32) async throws
     func levels(
         deviceID: UInt32,
         rateHz: UInt32
@@ -51,42 +51,68 @@ protocol AudioManaging: Sendable {
 struct AudioController: AudioManaging {
     // MARK: - Device enumeration
 
-    func listDevices(typeFilter: AudioKind?) throws -> [AudioDeviceInfo] {
-        let ids = try deviceIDs()
-        let defaultInput = try? defaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice)
-        let defaultOutput = try? defaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice)
+    // The CoreAudio HAL calls below are synchronous and can stall (e.g. while
+    // devices are being added or removed), so they run off the cooperative pool.
 
-        var devices: [AudioDeviceInfo] = []
-        for id in ids {
-            let name = deviceName(id)
-            if typeFilter != .output, channelCount(id, scope: kAudioObjectPropertyScopeInput) > 0 {
-                devices.append(
-                    AudioDeviceInfo(id: id, name: name, kind: .input, isDefault: id == defaultInput)
-                )
-            }
-            if typeFilter != .input, channelCount(id, scope: kAudioObjectPropertyScopeOutput) > 0 {
-                devices.append(
-                    AudioDeviceInfo(
-                        id: id,
-                        name: name,
-                        kind: .output,
-                        isDefault: id == defaultOutput
+    func listDevices(typeFilter: AudioKind?) async throws -> [AudioDeviceInfo] {
+        try await BlockingExecutor.run {
+            let ids = try Self.deviceIDs()
+            let defaultInput = try? Self.defaultDevice(
+                selector: kAudioHardwarePropertyDefaultInputDevice
+            )
+            let defaultOutput = try? Self.defaultDevice(
+                selector: kAudioHardwarePropertyDefaultOutputDevice
+            )
+
+            var devices: [AudioDeviceInfo] = []
+            for id in ids {
+                let name = Self.deviceName(id)
+                if typeFilter != .output,
+                    Self.channelCount(id, scope: kAudioObjectPropertyScopeInput) > 0
+                {
+                    devices.append(
+                        AudioDeviceInfo(
+                            id: id,
+                            name: name,
+                            kind: .input,
+                            isDefault: id == defaultInput
+                        )
                     )
-                )
+                }
+                if typeFilter != .input,
+                    Self.channelCount(id, scope: kAudioObjectPropertyScopeOutput) > 0
+                {
+                    devices.append(
+                        AudioDeviceInfo(
+                            id: id,
+                            name: name,
+                            kind: .output,
+                            isDefault: id == defaultOutput
+                        )
+                    )
+                }
             }
+            return devices
         }
-        return devices
     }
 
-    func setDefault(deviceID: UInt32) throws {
-        let ids = try deviceIDs()
-        guard ids.contains(deviceID) else { throw AudioError.deviceNotFound(deviceID) }
+    func setDefault(deviceID: UInt32) async throws {
+        try await BlockingExecutor.run {
+            let ids = try Self.deviceIDs()
+            guard ids.contains(deviceID) else { throw AudioError.deviceNotFound(deviceID) }
 
-        if channelCount(deviceID, scope: kAudioObjectPropertyScopeOutput) > 0 {
-            try setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: deviceID)
-        }
-        if channelCount(deviceID, scope: kAudioObjectPropertyScopeInput) > 0 {
-            try setDefaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice, id: deviceID)
+            if Self.channelCount(deviceID, scope: kAudioObjectPropertyScopeOutput) > 0 {
+                try Self.setDefaultDevice(
+                    selector: kAudioHardwarePropertyDefaultOutputDevice,
+                    id: deviceID
+                )
+            }
+            if Self.channelCount(deviceID, scope: kAudioObjectPropertyScopeInput) > 0 {
+                try Self.setDefaultDevice(
+                    selector: kAudioHardwarePropertyDefaultInputDevice,
+                    id: deviceID
+                )
+            }
         }
     }
 
@@ -98,7 +124,10 @@ struct AudioController: AudioManaging {
     ) -> AsyncThrowingStream<
         (peakDb: Float, rmsDb: Float), any Error
     > {
-        AsyncThrowingStream { continuation in
+        // Bound the buffer: the CoreAudio render thread produces faster than a
+        // slow gRPC consumer drains. Keeping only the newest samples caps memory
+        // and keeps levels current rather than replaying a stale backlog.
+        AsyncThrowingStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
             let session = AudioTapSession()
             let interval = rateHz == 0 ? 0.1 : 1.0 / Double(rateHz)
             do {
@@ -121,7 +150,10 @@ struct AudioController: AudioManaging {
     ) -> AsyncThrowingStream<
         (pcm: Data, sampleRate: UInt32, channels: UInt32), any Error
     > {
-        AsyncThrowingStream { continuation in
+        // Bound the buffer so a stalled network consumer drops old audio chunks
+        // instead of accumulating an unbounded backlog. 32 buffers of ~4096
+        // frames is a fraction of a second of slack before dropping.
+        AsyncThrowingStream(bufferingPolicy: .bufferingNewest(32)) { continuation in
             let session = AudioTapSession()
             do {
                 try session.start(deviceID: deviceID, minInterval: 0) { buffer in
@@ -145,7 +177,7 @@ struct AudioController: AudioManaging {
 
     // MARK: - CoreAudio helpers
 
-    private func deviceIDs() throws -> [AudioDeviceID] {
+    private static func deviceIDs() throws -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -175,7 +207,7 @@ struct AudioController: AudioManaging {
         return ids
     }
 
-    private func deviceName(_ id: AudioDeviceID) -> String {
+    private static func deviceName(_ id: AudioDeviceID) -> String {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioObjectPropertyName,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -190,7 +222,7 @@ struct AudioController: AudioManaging {
         return name as String
     }
 
-    private func channelCount(_ id: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
+    private static func channelCount(_ id: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: scope,
@@ -215,7 +247,8 @@ struct AudioController: AudioManaging {
         return listPointer.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
-    private func defaultDevice(selector: AudioObjectPropertySelector) throws -> AudioDeviceID {
+    private static func defaultDevice(selector: AudioObjectPropertySelector) throws -> AudioDeviceID
+    {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -235,7 +268,12 @@ struct AudioController: AudioManaging {
         return deviceID
     }
 
-    private func setDefaultDevice(selector: AudioObjectPropertySelector, id: AudioDeviceID) throws {
+    private static func setDefaultDevice(
+        selector: AudioObjectPropertySelector,
+        id: AudioDeviceID
+    )
+        throws
+    {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -255,6 +293,12 @@ struct AudioController: AudioManaging {
 }
 
 /// Holds a live `AVAudioEngine` input tap for the duration of a stream.
+///
+/// `@unchecked Sendable` safety invariant: after `start(...)` installs the tap,
+/// `lastEmit` is read and written only from the single serialized audio render
+/// thread that drives the tap callback, so those mutations never race. `start`
+/// and `stop` are each called once from the owning `AsyncThrowingStream` build /
+/// termination closures and do not touch `lastEmit`.
 final class AudioTapSession: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var lastEmit = Date.distantPast
@@ -267,11 +311,10 @@ final class AudioTapSession: @unchecked Sendable {
     ) throws {
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [self] buffer, _ in
             let now = Date()
-            if minInterval > 0, now.timeIntervalSince(self.lastEmit) < minInterval { return }
-            self.lastEmit = now
+            if minInterval > 0, now.timeIntervalSince(lastEmit) < minInterval { return }
+            lastEmit = now
             onBuffer(buffer)
         }
         engine.prepare()

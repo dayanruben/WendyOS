@@ -87,63 +87,77 @@ struct WiFiController: WiFiManaging {
         CWWiFiClient.shared().interface()
     }
 
+    // Every CoreWLAN call below is synchronous and blocking — `scanForNetworks`
+    // in particular blocks for seconds. They run on `BlockingExecutor` so they
+    // never occupy a gRPC handler's cooperative thread. `self` is trivially
+    // Sendable (no stored state) and only `Sendable` value types cross back out.
+
     func status() async -> WiFiStatus {
-        guard let interface else {
-            return WiFiStatus(
-                connected: false,
-                ssid: nil,
-                errorMessage: "No Wi-Fi interface found."
-            )
+        await BlockingExecutor.run {
+            guard let interface = self.interface else {
+                return WiFiStatus(
+                    connected: false,
+                    ssid: nil,
+                    errorMessage: "No Wi-Fi interface found."
+                )
+            }
+            let ssid = interface.ssid()
+            return WiFiStatus(connected: ssid != nil, ssid: ssid, errorMessage: nil)
         }
-        let ssid = interface.ssid()
-        return WiFiStatus(connected: ssid != nil, ssid: ssid, errorMessage: nil)
     }
 
     func scan() async throws -> [WiFiScanResult] {
-        guard let interface else {
-            throw WiFiError.noInterface
-        }
-        let currentSSID = interface.ssid()
-        let known = Set(knownProfiles(interface).compactMap { $0.ssid })
+        try await BlockingExecutor.run {
+            guard let interface = self.interface else {
+                throw WiFiError.noInterface
+            }
+            let currentSSID = interface.ssid()
+            let known = Set(self.knownProfiles(interface).compactMap { $0.ssid })
 
-        let networks: Set<CWNetwork>
-        do {
-            networks = try interface.scanForNetworks(withSSID: nil)
-        } catch {
-            throw WiFiError.scanFailed(error.localizedDescription)
-        }
+            let networks: Set<CWNetwork>
+            do {
+                networks = try interface.scanForNetworks(withSSID: nil)
+            } catch {
+                throw WiFiError.scanFailed(error.localizedDescription)
+            }
 
-        // Deduplicate by SSID, keeping the strongest signal.
-        var strongest: [String: CWNetwork] = [:]
-        for network in networks {
-            guard let ssid = network.ssid, !ssid.isEmpty else { continue }
-            if let existing = strongest[ssid], existing.rssiValue >= network.rssiValue { continue }
-            strongest[ssid] = network
-        }
+            // Deduplicate by SSID, keeping the strongest signal.
+            var strongest: [String: CWNetwork] = [:]
+            for network in networks {
+                guard let ssid = network.ssid, !ssid.isEmpty else { continue }
+                if let existing = strongest[ssid], existing.rssiValue >= network.rssiValue {
+                    continue
+                }
+                strongest[ssid] = network
+            }
 
-        let results = strongest.values.map { network -> WiFiScanResult in
-            let ssid = network.ssid ?? ""
-            return WiFiScanResult(
-                ssid: ssid,
-                rssiDbm: network.rssiValue,
-                signalStrength: Self.rssiToSignalStrength(network.rssiValue),
-                security: Self.security(of: network),
-                isKnown: known.contains(ssid),
-                isConnected: ssid == currentSSID
-            )
+            let results = strongest.values.map { network -> WiFiScanResult in
+                let ssid = network.ssid ?? ""
+                return WiFiScanResult(
+                    ssid: ssid,
+                    rssiDbm: network.rssiValue,
+                    signalStrength: Self.rssiToSignalStrength(network.rssiValue),
+                    security: Self.security(of: network),
+                    isKnown: known.contains(ssid),
+                    isConnected: ssid == currentSSID
+                )
+            }
+            return results.sorted { $0.rssiDbm > $1.rssiDbm }
         }
-        return results.sorted { $0.rssiDbm > $1.rssiDbm }
     }
 
     func knownNetworks() async -> [KnownWiFi] {
-        guard let interface else { return [] }
-        return knownProfiles(interface).enumerated().compactMap { index, profile in
-            guard let ssid = profile.ssid else { return nil }
-            return KnownWiFi(
-                ssid: ssid,
-                priority: Int32(clamping: knownProfiles(interface).count - index),
-                security: Self.security(of: profile.security)
-            )
+        await BlockingExecutor.run {
+            guard let interface = self.interface else { return [] }
+            let profiles = self.knownProfiles(interface)
+            return profiles.enumerated().compactMap { index, profile in
+                guard let ssid = profile.ssid else { return nil }
+                return KnownWiFi(
+                    ssid: ssid,
+                    priority: Int32(clamping: profiles.count - index),
+                    security: Self.security(of: profile.security)
+                )
+            }
         }
     }
 
@@ -155,28 +169,38 @@ struct WiFiController: WiFiManaging {
     ) async
         -> WiFiActionResult
     {
-        guard let interface else { return .failed("No Wi-Fi interface found.") }
-        do {
-            let networks = try interface.scanForNetworks(withSSID: nil)
-            guard let target = networks.first(where: { $0.ssid == ssid }) else {
-                return .failed("Network \"\(ssid)\" not found in scan results.")
+        await BlockingExecutor.run {
+            guard let interface = self.interface else {
+                return .failed("No Wi-Fi interface found.")
             }
-            try interface.associate(to: target, password: password.isEmpty ? nil : password)
-            return .ok
-        } catch {
-            return .failed("Failed to connect to \"\(ssid)\": \(error.localizedDescription)")
+            do {
+                let networks = try interface.scanForNetworks(withSSID: nil)
+                guard let target = networks.first(where: { $0.ssid == ssid }) else {
+                    return .failed("Network \"\(ssid)\" not found in scan results.")
+                }
+                try interface.associate(to: target, password: password.isEmpty ? nil : password)
+                return .ok
+            } catch {
+                return .failed("Failed to connect to \"\(ssid)\": \(error.localizedDescription)")
+            }
         }
     }
 
     func disconnect() async -> WiFiActionResult {
-        guard let interface else { return .failed("No Wi-Fi interface found.") }
-        interface.disassociate()
-        return .ok
+        await BlockingExecutor.run {
+            guard let interface = self.interface else {
+                return .failed("No Wi-Fi interface found.")
+            }
+            interface.disassociate()
+            return .ok
+        }
     }
 
     func forget(ssid: String) async -> WiFiActionResult {
-        mutateConfiguration { profiles in
-            profiles.filter { $0.ssid != ssid }
+        await BlockingExecutor.run {
+            self.mutateConfiguration { profiles in
+                profiles.filter { $0.ssid != ssid }
+            }
         }
     }
 
@@ -184,25 +208,31 @@ struct WiFiController: WiFiManaging {
         // macOS represents Wi-Fi priority by preferred-network order (index 0 =
         // highest). We move the target network to the front for any positive
         // priority; exact integer priorities are not representable on macOS.
-        mutateConfiguration { profiles in
-            guard let target = profiles.first(where: { $0.ssid == ssid }) else { return profiles }
-            return [target] + profiles.filter { $0.ssid != ssid }
+        await BlockingExecutor.run {
+            self.mutateConfiguration { profiles in
+                guard let target = profiles.first(where: { $0.ssid == ssid }) else {
+                    return profiles
+                }
+                return [target] + profiles.filter { $0.ssid != ssid }
+            }
         }
     }
 
     func reorder(ssids: [String]) async -> WiFiActionResult {
-        mutateConfiguration { profiles in
-            var ordered: [CWNetworkProfile] = []
-            for ssid in ssids {
-                if let match = profiles.first(where: { $0.ssid == ssid }) {
-                    ordered.append(match)
+        await BlockingExecutor.run {
+            self.mutateConfiguration { profiles in
+                var ordered: [CWNetworkProfile] = []
+                for ssid in ssids {
+                    if let match = profiles.first(where: { $0.ssid == ssid }) {
+                        ordered.append(match)
+                    }
                 }
+                // Append the untouched remainder in original order.
+                for profile in profiles where !ssids.contains(profile.ssid ?? "") {
+                    ordered.append(profile)
+                }
+                return ordered
             }
-            // Append the untouched remainder in original order.
-            for profile in profiles where !ssids.contains(profile.ssid ?? "") {
-                ordered.append(profile)
-            }
-            return ordered
         }
     }
 

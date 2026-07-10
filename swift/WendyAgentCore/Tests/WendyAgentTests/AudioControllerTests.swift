@@ -10,11 +10,11 @@ private struct FakeAudio: AudioManaging {
     var levelSamples: [(peakDb: Float, rmsDb: Float)] = []
     let recordedFilter: FilterBox = .init()
 
-    func listDevices(typeFilter: AudioKind?) throws -> [AudioDeviceInfo] {
+    func listDevices(typeFilter: AudioKind?) async throws -> [AudioDeviceInfo] {
         recordedFilter.value = typeFilter
         return devices
     }
-    func setDefault(deviceID: UInt32) throws {}
+    func setDefault(deviceID: UInt32) async throws {}
     func levels(
         deviceID: UInt32,
         rateHz: UInt32
