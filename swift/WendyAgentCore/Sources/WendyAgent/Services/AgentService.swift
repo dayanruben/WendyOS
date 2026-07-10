@@ -4,6 +4,7 @@ import WendyAgentGRPC
 
 struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     var hardware: any HardwareDiscovering = HardwareInventory()
+    var hostname: any HostnameSetting = ScutilHostname()
 
     func runContainer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_RunContainerRequest>,
@@ -235,9 +236,20 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: ServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Setting the hostname is currently not supported by Wendy Agent for Mac."
-        )
+        let requested = request.message.hostname
+        do {
+            try await hostname.setHostname(requested)
+        } catch let error as HostnameError {
+            throw RPCError(code: .permissionDenied, message: "\(error)")
+        } catch {
+            throw RPCError(
+                code: .permissionDenied,
+                message: "Failed to set hostname: \(error)"
+            )
+        }
+
+        var response = Wendy_Agent_Services_V1_SetHostnameResponse()
+        response.hostname = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ServerResponse(message: response)
     }
 }
