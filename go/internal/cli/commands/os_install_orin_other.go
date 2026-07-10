@@ -8,6 +8,6 @@ import (
 )
 
 // installOrin is macOS/Linux-only (USB recovery flashing uses gousb/libusb).
-func installOrin(_ context.Context, _ string, _ bool, _ bool) error {
-	return fmt.Errorf("flashing a Jetson AGX Orin over USB recovery is supported on macOS and Linux only")
+func installOrin(_ context.Context, opts t234InstallOptions) error {
+	return fmt.Errorf("full USB recovery for %s is supported on macOS and Linux only; use --rootfs-only on Windows to write an explicit SD/NVMe image", opts.DeviceType)
 }

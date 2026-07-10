@@ -8,7 +8,7 @@ description: Install WendyOS on your NVIDIA Jetson device
   <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', margin: 0, lineHeight: '1' }}>NVIDIA Jetson Installation</h1>
 </div>
 
-For Jetson Orin Nano and Jetson AGX Orin, you'll need an NVMe SSD to USB-C adapter to flash WendyOS onto your NVMe SSD. Jetson AGX Thor uses a separate USB recovery flash path and does not use an external drive.
+Jetson Orin Nano, Jetson AGX Orin, and Jetson AGX Thor install through USB recovery. Orin recovery updates QSPI and the selected NVMe/eMMC together; an NVMe-to-USB adapter is needed only for explicit `--rootfs-only` imaging.
 
 ## Installing WendyOS on NVIDIA Jetson
 
@@ -30,14 +30,14 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
 
     <Tabs items={['Orin Nano / AGX Orin', 'AGX Thor']} groupId="jetson-model" persist>
       <Tab value="Orin Nano / AGX Orin">
-        Using an NVMe SSD to USB-C adapter, connect your NVMe SSD into the adapter and then the USB-C end to your computer.
+        Start with the devkit powered off. Connect the host to its recovery/device-mode USB-C port, enter Force Recovery mode, and leave the target NVMe installed. AGX Orin can instead select onboard eMMC.
 
         <video width="100%" autoPlay loop muted playsInline>
           <source src="/videos/installation/jetson-nvme-mac-adapter.mp4" type="video/mp4" />
           Your browser does not support the video tag.
         </video>
 
-        On macOS you'll be presented with a permission dialog to use the adapter. Press **Allow**.
+        Full Orin recovery is supported on macOS and Linux. It erases QSPI and all data on the selected NVMe/eMMC, including `/data`.
       </Tab>
       <Tab value="AGX Thor">
         Start with the Thor powered off. Connect your computer to the USB-C port next to the HDMI port, then enter recovery mode: plug in power, hold **Force Recovery**, briefly tap **Reset**, then release **Force Recovery**. The other USB-C port is power-only.
@@ -58,7 +58,8 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
 
     Select the Jetson model you are installing:
 
-    - **Jetson Orin Nano** or **Jetson AGX Orin**: select your target drive. WendyOS downloads to the drive, and you'll enter your administrator password to write the image.
+    - **Jetson Orin Nano**: the CLI verifies the exact devkit identity, then recovers QSPI plus the installed NVMe.
+    - **Jetson AGX Orin**: choose NVMe or eMMC; noninteractive use requires `--storage nvme` or `--storage emmc`.
     - **Jetson AGX Thor**: the CLI downloads a Thor flashpack, scans for the board in USB recovery mode, and flashes QSPI plus the internal NVMe. No external drive is selected.
 
     The CLI also offers optional first-boot provisioning — joining WiFi, applying critical updates, and pre-enrolling the device to Wendy Cloud. Each can also be set up after the device boots. See [`wendy install`](/docs/advanced/clients/wendy-cli/commands/os/install) for more.
@@ -69,12 +70,9 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
 
     <Tabs items={['Orin Nano / AGX Orin', 'AGX Thor']} groupId="jetson-model" persist>
       <Tab value="Orin Nano / AGX Orin">
-        Remove the NVMe SSD from your computer and insert it into your Jetson's M.2 slot.
+        After the CLI has collected the final `SUCCESS` status, let the Jetson reboot. Do not disconnect it while the CLI is waiting for final device status.
 
-        <video width="100%" autoPlay loop muted playsInline>
-          <source src="/videos/installation/jetson-nvme-bottom-insertion.mp4" type="video/mp4" />
-          Your browser does not support the video tag.
-        </video>
+        To preserve the old raw-media workflow instead, pass `--rootfs-only`. This does not update QSPI and is not available for eMMC.
       </Tab>
       <Tab value="AGX Thor">
         After the CLI reports a successful flash, power-cycle the Thor out of recovery mode so it boots WendyOS from its internal storage.

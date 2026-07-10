@@ -20,7 +20,7 @@ var usbDevRe = regexp.MustCompile(`^\d+-\d+(\.\d+)*$`)
 // driver and rebinds it a second later — the same fallback the bundle's own
 // initrd-flash script uses when udisks is unavailable. Requires root.
 // serial, when set, must match the gadget's USB serial number.
-func ReleaseUSB(serial string) error {
+func ReleaseUSB(serial, port string) error {
 	devices, err := filepath.Glob("/sys/bus/usb/devices/*")
 	if err != nil {
 		return err
@@ -37,6 +37,9 @@ func ReleaseUSB(serial string) error {
 			continue
 		}
 		name := filepath.Base(dev)
+		if port != "" && name != port {
+			continue
+		}
 		if err := os.WriteFile("/sys/bus/usb/drivers/usb/unbind", []byte(name), 0o200); err != nil {
 			return fmt.Errorf("unbinding %s: %w", name, err)
 		}

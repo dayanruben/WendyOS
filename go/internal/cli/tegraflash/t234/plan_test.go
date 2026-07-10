@@ -1,11 +1,6 @@
 package t234
 
-import (
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // agxOrinEMMCPlan is the real jetson-agx-orin-devkit-emmc layout (17
 // partitions, from nvflashxmlparse -t rootfs of the 0.16.1 bundle), in flash
@@ -41,7 +36,7 @@ var sgdiskStarts = map[int]int64{
 func testPlan() *Plan {
 	parts := make([]Partition, len(agxOrinEMMCPlan))
 	copy(parts, agxOrinEMMCPlan)
-	return &Plan{Schema: planSchema, Machine: "jetson-agx-orin-devkit-emmc-wendyos", RootfsDevice: "mmcblk0", Partitions: parts}
+	return &Plan{RootfsDevice: "mmcblk0", Partitions: parts}
 }
 
 func TestPlacementMatchesSgdisk(t *testing.T) {
@@ -57,49 +52,5 @@ func TestPlacementMatchesSgdisk(t *testing.T) {
 		if part.StartSector != want {
 			t.Errorf("partition %d (%s): start %d, sgdisk placed it at %d", part.Number, part.Name, part.StartSector, want)
 		}
-	}
-}
-
-func TestLoadPlan(t *testing.T) {
-	dir := t.TempDir()
-	prep := filepath.Join(dir, PrepDirName)
-	if err := os.MkdirAll(prep, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(testPlan())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(prep, "plan.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	p, err := LoadPlan(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(p.Partitions) != 17 {
-		t.Fatalf("got %d partitions", len(p.Partitions))
-	}
-	if p.Partitions[0].StartSector != 2048 {
-		t.Errorf("first partition not placed at 2048: %d", p.Partitions[0].StartSector)
-	}
-	// The 64 GB eMMC (124321792 sectors) must fit the layout.
-	if min := p.MinDeviceSectors(); min > 124321792 {
-		t.Errorf("plan needs %d sectors, more than the 64 GB eMMC", min)
-	}
-}
-
-func TestLoadPlanRejectsWrongSchema(t *testing.T) {
-	dir := t.TempDir()
-	prep := filepath.Join(dir, PrepDirName)
-	if err := os.MkdirAll(prep, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(prep, "plan.json"), []byte(`{"schema":99,"partitions":[{"number":1,"name":"x","sizeSectors":8}]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadPlan(dir); err == nil {
-		t.Fatal("expected schema error")
 	}
 }

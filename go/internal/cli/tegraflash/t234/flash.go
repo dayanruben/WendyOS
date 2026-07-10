@@ -5,6 +5,7 @@ package t234
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,9 @@ import (
 // which can take many minutes on the device before it exports mmcblk0; the
 // final status LUN only after all programming completes.
 const (
+	// flashpkgSize is the exact size exported by tegra-flash-init and of the
+	// builder-created schema-v2 flashpkg.ext4 image.
+	flashpkgSize    = 128 << 20
 	flashpkgWait    = 5 * time.Minute
 	rootfsWait      = 15 * time.Minute
 	finalStatusWait = 15 * time.Minute
@@ -32,14 +36,37 @@ var ErrDeviceSideFailed = errors.New("device-side flash failed early")
 // Stage2 drives the mass-storage half of the flash (everything after the RCM
 // boot). Callbacks keep the privileged pieces and the UI in the caller.
 type Stage2 struct {
-	BundleDir string
-	Plan      *Plan
-	Out       io.Writer    // verbose log
-	Detail    func(string) // live one-line progress; may be nil
+	FlashPackagePath string
+	LayoutPath       string
+	ImagesDir        string
+	Plan             *Plan
+	PortPath         string
+	Session          string
+	StatusPath       string
+	LogsPath         string
+	ExpectedIdentity IdentityExpectation
+	HandoffStarted   bool
+	Out              io.Writer    // verbose log
+	Detail           func(string) // live one-line progress; may be nil
 
 	// RunHelper runs the hidden root helper `wendy __t234-write` with args,
 	// reporting any "PROGRESS <done> <total>" lines it prints.
-	RunHelper func(args []string, onProgress func(done, total int64)) error
+	RunHelper func(context.Context, []string, func(done, total int64)) error
+}
+
+const DeviceIdentityProtocol = "wendy-t234-recovery-v2"
+
+type DeviceIdentity struct {
+	Protocol   string `json:"protocol"`
+	SessionID  string `json:"session_id"`
+	ModuleID   string `json:"module_id"`
+	ModuleSKU  string `json:"module_sku"`
+	CarrierID  string `json:"carrier_id"`
+	CarrierSKU string `json:"carrier_sku"`
+}
+
+type IdentityExpectation struct {
+	ModuleID, ModuleSKU, CarrierID, CarrierSKU string
 }
 
 func (s *Stage2) detail(format string, args ...any) {
@@ -54,7 +81,7 @@ func (s *Stage2) detail(format string, args ...any) {
 func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 	s.detail("waiting for the flash-package disk")
 	fmt.Fprintln(s.Out, "Waiting for the device's flashpkg USB disk...")
-	disk, err := WaitForUMSDisk(ctx, FlashpkgVendor, flashpkgWait)
+	disk, err := WaitForUMSDiskAt(ctx, LUNSelector{Vendor: FlashpkgVendor, PortPath: s.PortPath}, flashpkgWait)
 	if err != nil {
 		return err
 	}
@@ -64,14 +91,68 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 	}
 
 	unmountUMSDisk(disk)
+	if err := s.verifyDeviceIdentity(ctx, disk); err != nil {
+		return err
+	}
+	s.Session = disk.Serial
 	s.detail("sending flash commands + bootloader")
-	if err := s.RunHelper([]string{"--device", disk.RawPath, "--blob", FlashpkgPath(s.BundleDir)}, nil); err != nil {
+	s.HandoffStarted = true
+	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--blob", s.FlashPackagePath}, nil); err != nil {
 		return fmt.Errorf("writing flash package: %w", err)
 	}
-	if err := s.verifyFlashPackage(disk); err != nil {
+	if err := s.verifyFlashPackage(ctx, disk); err != nil {
 		return err
 	}
 	return s.release(ctx, disk)
+}
+
+// verifyDeviceIdentity reads the initrd-created device.json before replacing
+// the first flashpkg LUN. RCM boot is non-persistent; this is the last check
+// before the flash-package handoff starts QSPI/rootfs destruction.
+func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) error {
+	tmp, err := os.CreateTemp("", "t234-identity-*.ext4")
+	if err != nil {
+		return err
+	}
+	path := tmp.Name()
+	tmp.Close()
+	defer os.Remove(path)
+	s.detail("verifying module and carrier identity")
+	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--dump", path, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+		return fmt.Errorf("reading device identity: %w", err)
+	}
+	img, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer img.Close()
+	data, err := Ext4ReadFile(img, "flashpkg/device.json")
+	if err != nil {
+		return fmt.Errorf("recovery initrd did not provide device.json; refusing to flash without hardware identity: %w", err)
+	}
+	var got DeviceIdentity
+	if err := json.Unmarshal(data, &got); err != nil {
+		return fmt.Errorf("parsing recovery device.json: %w", err)
+	}
+	if err := validateDeviceIdentity(got, disk.Serial, s.ExpectedIdentity); err != nil {
+		return err
+	}
+	fmt.Fprintf(s.Out, "  identity verified: module P%s-%s, carrier P%s-%s, session %s\n", got.ModuleID, got.ModuleSKU, got.CarrierID, got.CarrierSKU, got.SessionID)
+	return nil
+}
+
+func validateDeviceIdentity(got DeviceIdentity, session string, want IdentityExpectation) error {
+	if got.Protocol != DeviceIdentityProtocol {
+		return fmt.Errorf("recovery device protocol %q is unsupported", got.Protocol)
+	}
+	if got.SessionID == "" || !strings.EqualFold(got.SessionID, session) {
+		return fmt.Errorf("recovery device session %q does not match USB LUN session %q", got.SessionID, session)
+	}
+	if got.ModuleID != want.ModuleID || got.ModuleSKU != want.ModuleSKU || got.CarrierID != want.CarrierID || got.CarrierSKU != want.CarrierSKU {
+		return fmt.Errorf("wrong Jetson hardware: detected module P%s-%s on carrier P%s-%s; flashpack requires module P%s-%s on carrier P%s-%s",
+			got.ModuleID, got.ModuleSKU, got.CarrierID, got.CarrierSKU, want.ModuleID, want.ModuleSKU, want.CarrierID, want.CarrierSKU)
+	}
+	return nil
 }
 
 // verifyFlashPackage reads the flash package back from the device right after
@@ -82,8 +163,8 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 // reads a broken command mailbox and stalls without exporting anything, which
 // is indistinguishable from a device-side hang until we check. Reading it back
 // turns that ambiguity into a clear host-side verdict.
-func (s *Stage2) verifyFlashPackage(disk UMSDisk) error {
-	local, err := os.Open(FlashpkgPath(s.BundleDir))
+func (s *Stage2) verifyFlashPackage(ctx context.Context, disk UMSDisk) error {
+	local, err := os.Open(s.FlashPackagePath)
 	if err != nil {
 		return err
 	}
@@ -102,7 +183,7 @@ func (s *Stage2) verifyFlashPackage(disk UMSDisk) error {
 	defer os.Remove(tmpPath)
 
 	s.detail("verifying flash package on device")
-	if err := s.RunHelper([]string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
 		return fmt.Errorf("reading back flash package: %w", err)
 	}
 	img, err := os.Open(tmpPath)
@@ -130,7 +211,7 @@ func (s *Stage2) verifyFlashPackage(disk UMSDisk) error {
 func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 	s.detail("waiting for the %s disk", s.Plan.RootfsDevice)
 	fmt.Fprintf(s.Out, "Waiting for the device to export %s over USB...\n", s.Plan.RootfsDevice)
-	disk, err := waitForUMSDiskConfirmed(ctx, s.Plan.RootfsDevice, rootfsWait)
+	disk, err := waitForUMSDiskConfirmed(ctx, LUNSelector{Vendor: s.Plan.RootfsDevice, PortPath: s.PortPath, Session: s.Session}, rootfsWait)
 	if err != nil {
 		if errors.Is(err, errGotFlashpkg) {
 			return ErrDeviceSideFailed
@@ -145,7 +226,7 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 	unmountUMSDisk(disk)
 	fmt.Fprintf(s.Out, "Writing GPT + %d partitions...\n", len(s.Plan.Partitions))
 	start := time.Now()
-	err = s.RunHelper([]string{"--device", disk.RawPath, "--write-plan", "--bundle", s.BundleDir},
+	err = s.RunHelper(ctx, []string{"--device", disk.RawPath, "--write-plan", "--layout", s.LayoutPath, "--images", s.ImagesDir, "--rootfs-device", s.Plan.RootfsDevice},
 		func(done, total int64) {
 			if total > 0 {
 				s.detail("%.1f/%.1f GiB", float64(done)/(1<<30), float64(total)/(1<<30))
@@ -174,7 +255,7 @@ type FinalStatus struct {
 func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	s.detail("waiting for the device's final status")
 	fmt.Fprintln(s.Out, "Waiting for the device to report its final status (QSPI programming can take several minutes)...")
-	disk, err := WaitForUMSDisk(ctx, FlashpkgVendor, finalStatusWait)
+	disk, err := WaitForUMSDiskAt(ctx, LUNSelector{Vendor: FlashpkgVendor, PortPath: s.PortPath, Session: s.Session}, finalStatusWait)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +270,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	defer os.Remove(tmpPath)
 
 	s.detail("reading device status + logs")
-	if err := s.RunHelper([]string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
 		return nil, fmt.Errorf("reading back flash package: %w", err)
 	}
 	if err := s.release(ctx, disk); err != nil {
@@ -205,15 +286,23 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	defer img.Close()
 
 	res := &FinalStatus{Logs: map[string][]byte{}}
-	statusBytes, err := Ext4ReadFile(img, "flashpkg/status")
+	statusPath := strings.TrimPrefix(s.StatusPath, "/")
+	if statusPath == "" {
+		statusPath = "flashpkg/status"
+	}
+	statusBytes, err := Ext4ReadFile(img, statusPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading device status from flash package: %w", err)
 	}
 	res.Status = strings.TrimSpace(string(statusBytes))
 	res.Success = res.Status == "SUCCESS"
-	if names, err := Ext4ListDir(img, "flashpkg/logs"); err == nil {
+	logsPath := strings.TrimPrefix(s.LogsPath, "/")
+	if logsPath == "" {
+		logsPath = "flashpkg/logs"
+	}
+	if names, err := Ext4ListDir(img, logsPath); err == nil {
 		for _, name := range names {
-			if data, err := Ext4ReadFile(img, "flashpkg/logs/"+name); err == nil {
+			if data, err := Ext4ReadFile(img, logsPath+"/"+name); err == nil {
 				res.Logs[name] = data
 			}
 		}
@@ -245,7 +334,7 @@ func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 	// UDC leaves "configured"). Needed when the eject didn't take — e.g. no
 	// udisks/diskutil or a driver holding the node.
 	fmt.Fprintf(s.Out, "  eject didn't release %s; forcing a USB disconnect\n", disk.DevPath)
-	if err := s.RunHelper([]string{"--release", "--serial", disk.Serial}, nil); err != nil {
+	if err := s.RunHelper(ctx, []string{"--release", "--serial", disk.Serial, "--port", disk.PortPath}, nil); err != nil {
 		return fmt.Errorf("releasing %s: %w", disk.DevPath, err)
 	}
 	gone, err = s.waitForDiskGone(ctx, disk)
@@ -264,10 +353,10 @@ func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 func (s *Stage2) waitForDiskGone(ctx context.Context, disk UMSDisk) (bool, error) {
 	deadline := time.Now().Add(disappearWait)
 	for time.Now().Before(deadline) {
-		disks, err := listUMSDisks()
+		disks, err := scanUMSDisks()
 		gone := err == nil
 		for _, d := range disks {
-			if d.DevPath == disk.DevPath && d.Vendor == disk.Vendor {
+			if d.DevPath == disk.DevPath && d.Vendor == disk.Vendor && d.PortPath == disk.PortPath && strings.EqualFold(d.Serial, disk.Serial) {
 				gone = false
 			}
 		}
@@ -277,7 +366,7 @@ func (s *Stage2) waitForDiskGone(ctx context.Context, disk UMSDisk) (bool, error
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(umsPollInterval):
 		}
 	}
 	return false, nil
@@ -290,24 +379,29 @@ var errGotFlashpkg = errors.New("got flashpkg instead of the requested LUN")
 // waitForUMSDiskConfirmed is WaitForUMSDisk, except a flashpkg sighting is
 // only treated as a device-side failure when it persists across scans (a
 // just-released flashpkg node can linger for a moment on the host).
-func waitForUMSDiskConfirmed(ctx context.Context, vendor string, timeout time.Duration) (UMSDisk, error) {
+func waitForUMSDiskConfirmed(ctx context.Context, selector LUNSelector, timeout time.Duration) (UMSDisk, error) {
 	deadline := time.Now().Add(timeout)
 	flashpkgStreak := 0
 	for {
-		disks, err := listUMSDisks()
+		disks, err := scanUMSDisks()
 		if err == nil {
-			var match *UMSDisk
+			var matches []UMSDisk
 			sawFlashpkg := false
 			for i, d := range disks {
-				if d.Vendor == vendor {
-					match = &disks[i]
+				if d.Vendor == selector.Vendor && d.PortPath == selector.PortPath && strings.EqualFold(d.Serial, selector.Session) {
+					matches = append(matches, disks[i])
+				} else if d.Vendor == selector.Vendor && d.PortPath == "" {
+					return UMSDisk{}, fmt.Errorf("USB storage %q appeared as %s without physical-port correlation", selector.Vendor, d.DevPath)
 				}
-				if d.Vendor == FlashpkgVendor {
+				if d.Vendor == FlashpkgVendor && d.PortPath == selector.PortPath && strings.EqualFold(d.Serial, selector.Session) {
 					sawFlashpkg = true
 				}
 			}
-			if match != nil {
-				return *match, nil
+			if len(matches) > 1 {
+				return UMSDisk{}, fmt.Errorf("multiple USB storage LUNs match %q at port %q/session %q", selector.Vendor, selector.PortPath, selector.Session)
+			}
+			if len(matches) == 1 {
+				return matches[0], nil
 			}
 			if sawFlashpkg {
 				flashpkgStreak++
@@ -319,12 +413,12 @@ func waitForUMSDiskConfirmed(ctx context.Context, vendor string, timeout time.Du
 			}
 		}
 		if time.Now().After(deadline) {
-			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the device\n%s", vendor, observedUMSHint())
+			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the selected device\n%s", selector.Vendor, observedUMSHint())
 		}
 		select {
 		case <-ctx.Done():
 			return UMSDisk{}, ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(umsPollInterval):
 		}
 	}
 }

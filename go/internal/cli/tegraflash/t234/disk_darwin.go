@@ -44,12 +44,17 @@ func tegraUSBHint() string {
 // e.g. at IOSCSIPeripheralDeviceType00, loses them; verified on the real
 // flashing gadget.)
 func listUMSDisks() ([]UMSDisk, error) {
-	out, err := exec.Command("ioreg", "-rc", "IOSCSILogicalUnitNub", "-l", "-w0").Output()
+	// Root at each USB device so the chunk contains both the gadget's physical
+	// locationID and its descendant SCSI inquiry/IOMedia properties.
+	out, err := exec.Command("ioreg", "-p", "IOUSB", "-rc", "IOUSBHostDevice", "-l", "-w0").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ioreg: %w", err)
 	}
 	var disks []UMSDisk
 	for _, chunk := range splitIoregSubtrees(string(out)) {
+		if ioregInt(chunk, "idVendor") != GadgetVendorID || ioregInt(chunk, "idProduct") != GadgetProductID {
+			continue
+		}
 		vendor := ioregString(chunk, "Vendor Identification")
 		if vendor == "" {
 			continue
@@ -58,11 +63,13 @@ func listUMSDisks() ([]UMSDisk, error) {
 		if !wholeDiskRe.MatchString(bsd) {
 			continue // no media yet, or a partition slice matched first
 		}
+		name, serial := splitInquiry(vendor, ioregString(chunk, "Product Identification"))
 		d := UMSDisk{
-			DevPath: "/dev/" + bsd,
-			RawPath: "/dev/r" + bsd,
-			Vendor:  strings.TrimSpace(vendor),
-			Serial:  strings.TrimSpace(ioregString(chunk, "Product Identification")),
+			DevPath:  "/dev/" + bsd,
+			RawPath:  "/dev/r" + bsd,
+			Vendor:   name,
+			Serial:   serial,
+			PortPath: macUSBPortPath(ioregInt(chunk, "locationID")),
 		}
 		if size := ioregInt(chunk, "Size"); size > 0 {
 			d.SizeBytes = size
@@ -70,6 +77,25 @@ func listUMSDisks() ([]UMSDisk, error) {
 		disks = append(disks, d)
 	}
 	return disks, nil
+}
+
+func macUSBPortPath(location int64) string {
+	if location <= 0 {
+		return ""
+	}
+	bus := (location >> 24) & 0xff
+	var ports []string
+	for shift := 20; shift >= 0; shift -= 4 {
+		port := (location >> shift) & 0xf
+		if port == 0 {
+			break
+		}
+		ports = append(ports, strconv.FormatInt(port, 10))
+	}
+	if bus == 0 || len(ports) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d-%s", bus, strings.Join(ports, "."))
 }
 
 // rawUMSInquiry lists every IOSCSILogicalUnitNub's raw INQUIRY vendor/product
@@ -143,11 +169,11 @@ func ioregString(chunk, key string) string {
 func ioregInt(chunk, key string) int64 {
 	re, ok := ioregIntRe[key]
 	if !ok {
-		re = regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" = (\d+)`)
+		re = regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" = (0x[0-9a-fA-F]+|\d+)`)
 		ioregIntRe[key] = re
 	}
 	if m := re.FindStringSubmatch(chunk); m != nil {
-		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+		if n, err := strconv.ParseInt(m[1], 0, 64); err == nil {
 			return n
 		}
 	}

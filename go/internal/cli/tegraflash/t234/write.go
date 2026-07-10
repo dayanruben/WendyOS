@@ -9,6 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	backendfile "github.com/diskfs/go-diskfs/backend/file"
+	"github.com/diskfs/go-diskfs/filesystem/ext4"
+	"github.com/diskfs/go-diskfs/filesystem/fat32"
 )
 
 // This file is the body of the hidden `wendy __t234-write` helper: it runs as
@@ -21,13 +25,15 @@ import (
 // WriterOptions selects what the helper does. Exactly one of Blob,
 // WritePlan, or DumpTo is set.
 type WriterOptions struct {
-	Device    string // raw block device, e.g. /dev/rdisk4
-	Blob      string // write this file at offset 0
-	WritePlan bool   // write the bundle's GPT + partition images
-	BundleDir string // bundle root (holds wendy-prep/plan.json + images)
-	DumpTo    string // read DumpBytes from the device into this file
-	DumpBytes int64
-	Progress  io.Writer // "PROGRESS <bytes> <total>" lines; may be nil
+	Device       string // raw block device, e.g. /dev/rdisk4
+	Blob         string // write this file at offset 0
+	WritePlan    bool   // write the schema-v2 GPT + partition images
+	LayoutPath   string // schema-v2 initrd-flash.xml
+	ImagesDir    string // directory containing layout-referenced partition images
+	RootfsDevice string
+	DumpTo       string // read DumpBytes from the device into this file
+	DumpBytes    int64
+	Progress     io.Writer // "PROGRESS <bytes> <total>" lines; may be nil
 }
 
 const writeChunk = 4 << 20 // 4 MiB write buffer (padded to full sectors)
@@ -47,6 +53,19 @@ func rawSyncError(devPath string, err error) error {
 // RunWriter executes the selected operation. It requires root for raw block
 // device access on both macOS and Linux.
 func RunWriter(opts WriterOptions) error {
+	operations := 0
+	if opts.Blob != "" {
+		operations++
+	}
+	if opts.WritePlan {
+		operations++
+	}
+	if opts.DumpTo != "" {
+		operations++
+	}
+	if operations != 1 {
+		return fmt.Errorf("exactly one of --blob, --write-plan, or --dump is required")
+	}
 	switch {
 	case opts.Blob != "":
 		return writeBlob(opts)
@@ -54,9 +73,8 @@ func RunWriter(opts WriterOptions) error {
 		return writePlan(opts)
 	case opts.DumpTo != "":
 		return dumpDevice(opts)
-	default:
-		return fmt.Errorf("nothing to do: need --blob, --write-plan, or --dump")
 	}
+	return nil
 }
 
 // writeBlob writes a single file verbatim at offset 0 (the flashpkg LUN).
@@ -88,11 +106,14 @@ func writeBlob(opts WriterOptions) error {
 // writePlan writes the GPT (primary + backup) and every partition image at
 // its placed offset.
 func writePlan(opts WriterOptions) error {
-	plan, err := LoadPlan(opts.BundleDir)
+	if opts.LayoutPath == "" || opts.ImagesDir == "" || opts.RootfsDevice == "" {
+		return fmt.Errorf("--layout, --images, and --rootfs-device are required with --write-plan")
+	}
+	plan, err := LoadXMLPlan(opts.LayoutPath, opts.ImagesDir, opts.RootfsDevice)
 	if err != nil {
 		return err
 	}
-	dev, err := os.OpenFile(opts.Device, os.O_WRONLY, 0)
+	dev, err := os.OpenFile(opts.Device, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("opening %s (requires root): %w", opts.Device, err)
 	}
@@ -102,18 +123,22 @@ func writePlan(opts WriterOptions) error {
 	if err != nil {
 		return fmt.Errorf("sizing %s: %w", opts.Device, err)
 	}
-	gpt, err := BuildGPT(plan, size)
+	resolved, err := plan.ResolveForDevice(size / sectorSize)
+	if err != nil {
+		return err
+	}
+	gpt, err := BuildGPT(resolved, size)
 	if err != nil {
 		return err
 	}
 
 	// Total for progress: partition file bytes (the GPT is noise).
 	var total, done int64
-	for _, p := range plan.Partitions {
+	for _, p := range resolved.Partitions {
 		if p.File == "" {
 			continue
 		}
-		st, err := os.Stat(filepath.Join(opts.BundleDir, p.File))
+		st, err := os.Stat(filepath.Join(opts.ImagesDir, p.File))
 		if err != nil {
 			return fmt.Errorf("partition %s: %w", p.Name, err)
 		}
@@ -127,17 +152,44 @@ func writePlan(opts WriterOptions) error {
 	// Partition images first, GPT last: the disk only presents a valid
 	// partition table once all content is in place, so an interrupted write
 	// leaves an obviously-blank disk instead of a plausible-but-torn one.
-	for _, p := range plan.Partitions {
+	for _, p := range resolved.Partitions {
 		if p.File == "" {
 			continue
 		}
-		err := copyFileAt(dev, filepath.Join(opts.BundleDir, p.File), p.StartSector*sectorSize,
+		err := copyFileAt(dev, filepath.Join(opts.ImagesDir, p.File), p.StartSector*sectorSize,
 			func(n int64) { progress(opts.Progress, done+n, total) })
 		if err != nil {
 			return fmt.Errorf("writing partition %s: %w", p.Name, err)
 		}
-		st, _ := os.Stat(filepath.Join(opts.BundleDir, p.File))
+		st, _ := os.Stat(filepath.Join(opts.ImagesDir, p.File))
 		done += st.Size()
+	}
+	// Create explicitly-requested blank filesystems directly at their partition
+	// offsets. This uses pure Go filesystem writers and never shells out to mkfs.
+	// It happens before the GPT is committed, so an interruption cannot leave a
+	// plausible partition table pointing at a half-created filesystem.
+	backend := backendfile.New(dev, false)
+	for _, p := range resolved.Partitions {
+		if p.File != "" || p.FsType == "" || p.FsType == "basic" {
+			continue
+		}
+		partSize := p.SizeSectors * sectorSize
+		partOffset := p.StartSector * sectorSize
+		var closeFS interface{ Close() error }
+		switch p.FsType {
+		case "ext4":
+			closeFS, err = ext4.Create(backend, partSize, partOffset, sectorSize, &ext4.Params{VolumeName: p.Name})
+		case "fat32", "vfat":
+			closeFS, err = fat32.Create(backend, partSize, partOffset, sectorSize, p.Name, false)
+		}
+		if err != nil {
+			return fmt.Errorf("creating %s filesystem on partition %s: %w", p.FsType, p.Name, err)
+		}
+		if closeFS != nil {
+			if err := closeFS.Close(); err != nil {
+				return fmt.Errorf("closing filesystem on partition %s: %w", p.Name, err)
+			}
+		}
 	}
 	if _, err := dev.WriteAt(gpt.Primary, 0); err != nil {
 		return fmt.Errorf("writing primary GPT: %w", err)
@@ -145,13 +197,22 @@ func writePlan(opts WriterOptions) error {
 	if _, err := dev.WriteAt(gpt.Backup, gpt.BackupOffset); err != nil {
 		return fmt.Errorf("writing backup GPT: %w", err)
 	}
-	return rawSyncError(opts.Device, dev.Sync())
+	if err := rawSyncError(opts.Device, dev.Sync()); err != nil {
+		return err
+	}
+	if err := VerifyGPT(dev, resolved, size); err != nil {
+		return fmt.Errorf("verifying written GPT: %w", err)
+	}
+	return nil
 }
 
 // dumpDevice copies the first DumpBytes of the device into DumpTo (used to
 // read the flashpkg filesystem back for the status report). The output file
 // is made world-readable so the unprivileged parent can parse it.
 func dumpDevice(opts WriterOptions) error {
+	if opts.DumpBytes <= 0 {
+		return fmt.Errorf("--bytes must be positive with --dump")
+	}
 	dev, err := os.Open(opts.Device)
 	if err != nil {
 		return fmt.Errorf("opening %s (requires root): %w", opts.Device, err)

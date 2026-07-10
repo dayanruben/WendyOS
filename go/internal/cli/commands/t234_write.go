@@ -12,7 +12,7 @@ import (
 // `sudo wendy __t234-write …` for each raw block operation on the disks the
 // flashing initrd exports (same pattern as `__bmap-write`).
 func newT234WriteCmd() *cobra.Command {
-	var device, blob, bundleDir, dumpTo, releaseSerial string
+	var device, blob, layoutPath, imagesDir, rootfsDevice, dumpTo, releaseSerial, releasePort string
 	var writePlan, release bool
 	var dumpBytes int64
 	cmd := &cobra.Command{
@@ -20,26 +20,31 @@ func newT234WriteCmd() *cobra.Command {
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if release {
-				return t234.ReleaseUSB(releaseSerial)
+				return t234.ReleaseUSB(releaseSerial, releasePort)
 			}
 			return t234.RunWriter(t234.WriterOptions{
-				Device:    device,
-				Blob:      blob,
-				WritePlan: writePlan,
-				BundleDir: bundleDir,
-				DumpTo:    dumpTo,
-				DumpBytes: dumpBytes,
-				Progress:  cmd.OutOrStdout(),
+				Device:       device,
+				Blob:         blob,
+				WritePlan:    writePlan,
+				LayoutPath:   layoutPath,
+				ImagesDir:    imagesDir,
+				RootfsDevice: rootfsDevice,
+				DumpTo:       dumpTo,
+				DumpBytes:    dumpBytes,
+				Progress:     cmd.OutOrStdout(),
 			})
 		},
 	}
 	cmd.Flags().StringVar(&device, "device", "", "Raw block device to operate on")
 	cmd.Flags().StringVar(&blob, "blob", "", "Write this file at offset 0")
 	cmd.Flags().BoolVar(&writePlan, "write-plan", false, "Write the bundle's GPT + partition images")
-	cmd.Flags().StringVar(&bundleDir, "bundle", "", "Extracted bundle root (with wendy-prep/plan.json)")
+	cmd.Flags().StringVar(&layoutPath, "layout", "", "Schema-v2 initrd-flash.xml")
+	cmd.Flags().StringVar(&imagesDir, "images", "", "Directory containing partition images")
+	cmd.Flags().StringVar(&rootfsDevice, "rootfs-device", "", "Expected exported rootfs device")
 	cmd.Flags().StringVar(&dumpTo, "dump", "", "Read the device into this file")
 	cmd.Flags().Int64Var(&dumpBytes, "bytes", 0, "Bytes to read with --dump")
 	cmd.Flags().BoolVar(&release, "release", false, "Force-disconnect the flashing gadget")
 	cmd.Flags().StringVar(&releaseSerial, "serial", "", "USB serial to match with --release")
+	cmd.Flags().StringVar(&releasePort, "port", "", "Physical USB port to match with --release")
 	return cmd
 }

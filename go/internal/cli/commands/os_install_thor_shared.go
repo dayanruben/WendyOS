@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -104,7 +105,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 
 	// Brief the user (Windows briefing includes the one-time WinUSB driver note),
 	// then confirm before touching USB.
-	if err := confirmThorReady(plan.version); err != nil {
+	if err := confirmThorReady(plan.version, force); err != nil {
 		return err
 	}
 
@@ -154,7 +155,16 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		}
 	}
 
-	var fp *flashpack.Flashpack
+	var (
+		fp             *flashpack.Flashpack
+		runWorkspace   string
+		runConfigImage string
+	)
+	defer func() {
+		if runWorkspace != "" {
+			_ = os.RemoveAll(runWorkspace)
+		}
+	}()
 	steps := []flashStep{
 		{id: stepDownload, label: "Download flashpack", run: func(out io.Writer, detail func(string)) (bool, error) {
 			resolved, cached, err := downloadAndExtractFlashpack(cacheDir, plan, detail)
@@ -162,7 +172,13 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 			return cached, err
 		}},
 		{id: stepProvision, label: "Write config partition", run: func(out io.Writer, detail func(string)) (bool, error) {
-			return false, injectConfigPartition(fp, creds, name, provJSON, out, detail)
+			sourceImages := filepath.Join(fp.FlashWorkspaceDir(), "flash-images")
+			var err error
+			runWorkspace, runConfigImage, err = prepareMutableWorkspace(sourceImages, filepath.Join(sourceImages, "config-partition.fat32.img"))
+			if err != nil {
+				return false, err
+			}
+			return false, injectConfigPartition(runConfigImage, creds, name, provJSON, out, detail)
 		}},
 		{id: stepStage1, label: "Stage 1  RCM boot", run: func(out io.Writer, _ func(string)) (bool, error) {
 			return false, thorStageOne(fp, dev, out)
@@ -181,7 +197,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 				// under) an in-flight USB transfer.
 				defer closer()
 				return false, flashengine.Run(flashCtx, transport, flashengine.Options{
-					FlashImagesDir: filepath.Join(fp.FlashWorkspaceDir(), "flash-images"),
+					FlashImagesDir: runWorkspace,
 					NvddLocalPath:  filepath.Join(fp.BundleDir(), "unified_flash", "tools", "flashtools", "flash", "nvdd"),
 					Out:            out,
 					// USB-push progress, e.g. "38% · 6.9/18.1 GiB". Tracks
@@ -243,7 +259,7 @@ func (w fatWriter) WriteFile(name string, data []byte, _ os.FileMode) error {
 // wendy.conf, provisioning.json, clock_floor — so first boot applies them via the
 // identical on-device path. Runs before stage-2, so a failure aborts with nothing
 // written to the Thor.
-func injectConfigPartition(fp *flashpack.Flashpack, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
+func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
 	// Freshen the agent like a disk install, but best-effort: resolveAgentBinary is
 	// the only network step here, so an offline re-flash of a cached flashpack still
 	// provisions wifi/enrollment, falling back to the agent baked into the image.
@@ -255,7 +271,6 @@ func injectConfigPartition(fp *flashpack.Flashpack, creds []wendyconf.WifiCreden
 		detail("agent " + agentVer)
 	}
 
-	img := filepath.Join(fp.FlashWorkspaceDir(), "flash-images", "config-partition.fat32.img")
 	d, err := diskfs.Open(img)
 	if err != nil {
 		return fmt.Errorf("opening config image: %w", err)
@@ -400,7 +415,7 @@ type flashStep struct {
 
 func runFlashSteps(title string, steps []flashStep, cancelWork func(), logW io.Writer) (int, error) {
 	if !isInteractiveTerminal() {
-		return runFlashStepsPlain(title, steps, logW)
+		return runFlashStepsPlain(title, steps, cancelWork, logW)
 	}
 	m := tui.NewStepsModel(title)
 	prog := tui.NewProgressProgram(m)
@@ -459,7 +474,7 @@ func runFlashSteps(title string, steps []flashStep, cancelWork func(), logW io.W
 	return res.failedID, res.err
 }
 
-func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, error) {
+func runFlashStepsPlain(title string, steps []flashStep, cancelWork func(), logW io.Writer) (int, error) {
 	fmt.Println(title)
 	for _, s := range steps {
 		fmt.Printf("==> %s\n", s.label)
@@ -469,7 +484,7 @@ func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, e
 		// idle-output timeouts from killing the process mid-write.
 		done := make(chan struct{})
 		go stepHeartbeat(out, s.label, done)
-		cached, err := s.run(out, func(string) {})
+		cached, err := runFlashStepPlain(s, out, cancelWork)
 		close(done)
 		if err != nil {
 			return s.id, err
@@ -479,6 +494,46 @@ func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, e
 		}
 	}
 	return -1, nil
+}
+
+func runFlashStepPlain(step flashStep, out io.Writer, cancelWork func()) (bool, error) {
+	if step.abortWarning == "" {
+		return step.run(out, func(string) {})
+	}
+	type result struct {
+		cached bool
+		err    error
+	}
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+	resultC := make(chan result, 1)
+	go func() {
+		cached, err := step.run(out, func(string) {})
+		resultC <- result{cached: cached, err: err}
+	}()
+
+	var armedAt time.Time
+	const abortWindow = 3 * time.Second
+	for {
+		select {
+		case res := <-resultC:
+			return res.cached, res.err
+		case <-signals:
+			if armedAt.IsZero() || time.Since(armedAt) > abortWindow {
+				armedAt = time.Now()
+				fmt.Fprintln(os.Stderr, "\n"+step.abortWarning)
+				continue
+			}
+			cancelWork()
+			select {
+			case <-resultC:
+			case <-time.After(10 * time.Second):
+				fmt.Fprintln(os.Stderr, "warning: the flash worker didn't stop within 10s; temp files may be left behind")
+			}
+			return false, tui.ErrCancelled
+		}
+	}
 }
 
 // stepHeartbeat prints a periodic "still in progress" line until done is closed.

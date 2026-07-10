@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"unicode/utf16"
 )
 
@@ -32,16 +33,108 @@ type GPT struct {
 	DeviceSectors int64
 }
 
+// VerifyGPT reads both GPT copies back and validates their headers, entry CRC,
+// geometry, and every planned partition. It is intentionally independent of
+// the bytes returned by BuildGPT so a short/misdirected raw write cannot pass.
+func VerifyGPT(r io.ReaderAt, p *Plan, deviceSize int64) error {
+	if deviceSize%sectorSize != 0 {
+		return fmt.Errorf("device size is not sector aligned")
+	}
+	sectors := deviceSize / sectorSize
+	primary := make([]byte, gptPrimarySize)
+	if _, err := r.ReadAt(primary, 0); err != nil {
+		return err
+	}
+	backup := make([]byte, gptBackupSectors*sectorSize)
+	if _, err := r.ReadAt(backup, (sectors-gptBackupSectors)*sectorSize); err != nil {
+		return err
+	}
+	if primary[510] != 0x55 || primary[511] != 0xaa || primary[446+4] != 0xee {
+		return fmt.Errorf("protective MBR is invalid")
+	}
+	checkHeader := func(h []byte, current, alternate, entriesLBA int64) error {
+		if string(h[:8]) != "EFI PART" || binary.LittleEndian.Uint32(h[12:16]) != 92 {
+			return fmt.Errorf("GPT header signature/size is invalid")
+		}
+		stored := binary.LittleEndian.Uint32(h[16:20])
+		copyHeader := append([]byte(nil), h[:92]...)
+		binary.LittleEndian.PutUint32(copyHeader[16:20], 0)
+		if stored != crc32.ChecksumIEEE(copyHeader) {
+			return fmt.Errorf("GPT header CRC mismatch")
+		}
+		if int64(binary.LittleEndian.Uint64(h[24:32])) != current || int64(binary.LittleEndian.Uint64(h[32:40])) != alternate ||
+			int64(binary.LittleEndian.Uint64(h[40:48])) != 2+gptEntrySectors ||
+			int64(binary.LittleEndian.Uint64(h[48:56])) != sectors-1-gptBackupSectors ||
+			int64(binary.LittleEndian.Uint64(h[72:80])) != entriesLBA ||
+			binary.LittleEndian.Uint32(h[80:84]) != gptNumEntries || binary.LittleEndian.Uint32(h[84:88]) != gptEntrySize {
+			return fmt.Errorf("GPT header geometry mismatch")
+		}
+		return nil
+	}
+	ph := primary[sectorSize : 2*sectorSize]
+	bh := backup[gptEntrySectors*sectorSize:]
+	if err := checkHeader(ph, 1, sectors-1, 2); err != nil {
+		return fmt.Errorf("primary: %w", err)
+	}
+	if err := checkHeader(bh, sectors-1, 1, sectors-1-gptEntrySectors); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	entries := primary[2*sectorSize:]
+	backupEntries := backup[:gptEntrySectors*sectorSize]
+	if !bytes.Equal(entries, backupEntries) {
+		return fmt.Errorf("primary and backup partition entries differ")
+	}
+	if crc32.ChecksumIEEE(entries) != binary.LittleEndian.Uint32(ph[88:92]) || crc32.ChecksumIEEE(entries) != binary.LittleEndian.Uint32(bh[88:92]) {
+		return fmt.Errorf("partition-entry CRC mismatch")
+	}
+	for _, part := range p.Partitions {
+		if part.Number < 1 || part.Number > gptNumEntries {
+			return fmt.Errorf("partition %s number out of range", part.Name)
+		}
+		e := entries[(part.Number-1)*gptEntrySize : part.Number*gptEntrySize]
+		if int64(binary.LittleEndian.Uint64(e[32:40])) != part.StartSector || int64(binary.LittleEndian.Uint64(e[40:48])) != part.StartSector+part.SizeSectors-1 {
+			return fmt.Errorf("partition %s bounds mismatch", part.Name)
+		}
+		typeGUID := part.TypeGuid
+		if typeGUID == "" {
+			typeGUID = defaultTypeGUID
+		}
+		wantType := make([]byte, 16)
+		if err := putGUID(wantType, typeGUID); err != nil || !bytes.Equal(wantType, e[:16]) {
+			return fmt.Errorf("partition %s type GUID mismatch", part.Name)
+		}
+		if part.UniqueGuid != "" {
+			wantUnique := make([]byte, 16)
+			if err := putGUID(wantUnique, part.UniqueGuid); err != nil || !bytes.Equal(wantUnique, e[16:32]) {
+				return fmt.Errorf("partition %s unique GUID mismatch", part.Name)
+			}
+		}
+		var units []uint16
+		for off := 56; off < 128; off += 2 {
+			u := binary.LittleEndian.Uint16(e[off : off+2])
+			if u == 0 {
+				break
+			}
+			units = append(units, u)
+		}
+		if string(utf16.Decode(units)) != part.Name {
+			return fmt.Errorf("partition %s name mismatch", part.Name)
+		}
+	}
+	return nil
+}
+
 // BuildGPT lays out the plan's partitions on a device of deviceSize bytes and
 // returns the primary and backup GPT structures. The partition placement must
-// already be computed (LoadPlan does this).
+// already be computed by LoadXMLPlan.
 func BuildGPT(p *Plan, deviceSize int64) (*GPT, error) {
 	if deviceSize%sectorSize != 0 {
 		return nil, fmt.Errorf("device size %d is not a multiple of %d", deviceSize, sectorSize)
 	}
 	sectors := deviceSize / sectorSize
-	if min := p.MinDeviceSectors(); sectors < min {
-		return nil, fmt.Errorf("device too small: %d sectors, plan needs at least %d", sectors, min)
+	resolved, err := p.ResolveForDevice(sectors)
+	if err != nil {
+		return nil, err
 	}
 
 	diskGUID, err := randomGUID()
@@ -51,7 +144,7 @@ func BuildGPT(p *Plan, deviceSize int64) (*GPT, error) {
 
 	// Partition entry array (shared verbatim by primary and backup).
 	entries := make([]byte, gptEntrySize*gptNumEntries)
-	for _, part := range p.Partitions {
+	for _, part := range resolved.Partitions {
 		if part.Number < 1 || part.Number > gptNumEntries {
 			return nil, fmt.Errorf("partition number %d out of range", part.Number)
 		}
@@ -63,11 +156,17 @@ func BuildGPT(p *Plan, deviceSize int64) (*GPT, error) {
 		if err := putGUID(e[0:16], typeGUID); err != nil {
 			return nil, fmt.Errorf("partition %s: %w", part.Name, err)
 		}
-		unique, err := randomGUID()
-		if err != nil {
-			return nil, err
+		if part.UniqueGuid != "" {
+			if err := putGUID(e[16:32], part.UniqueGuid); err != nil {
+				return nil, fmt.Errorf("partition %s unique GUID: %w", part.Name, err)
+			}
+		} else {
+			unique, err := randomGUID()
+			if err != nil {
+				return nil, err
+			}
+			copy(e[16:32], unique)
 		}
-		copy(e[16:32], unique)
 		binary.LittleEndian.PutUint64(e[32:40], uint64(part.StartSector))
 		binary.LittleEndian.PutUint64(e[40:48], uint64(part.StartSector+part.SizeSectors-1))
 		// attributes (48:56) zero
@@ -136,6 +235,17 @@ func protectiveMBR(sectors int64) []byte {
 
 // putGUID writes a textual GUID in GPT on-disk (mixed-endian) form.
 func putGUID(dst []byte, guid string) error {
+	if len(guid) != 36 || guid[8] != '-' || guid[13] != '-' || guid[18] != '-' || guid[23] != '-' {
+		return fmt.Errorf("invalid GUID %q", guid)
+	}
+	for i, c := range guid {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return fmt.Errorf("invalid GUID %q", guid)
+		}
+	}
 	var b [16]byte
 	n, err := fmt.Sscanf(guid,
 		"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",

@@ -25,11 +25,13 @@ func listUMSDisks() ([]UMSDisk, error) {
 		if vendor == "" {
 			continue
 		}
+		exportName, serial := splitInquiry(vendor, sysfsString(filepath.Join(e, "device", "model")))
 		d := UMSDisk{
-			DevPath: "/dev/" + name,
-			RawPath: "/dev/" + name,
-			Vendor:  vendor,
-			Serial:  sysfsString(filepath.Join(e, "device", "model")),
+			DevPath:  "/dev/" + name,
+			RawPath:  "/dev/" + name,
+			Vendor:   exportName,
+			Serial:   serial,
+			PortPath: linuxUSBPortPath(e),
 		}
 		if sectors := sysfsString(filepath.Join(e, "size")); sectors != "" {
 			if n, err := strconv.ParseInt(sectors, 10, 64); err == nil {
@@ -39,6 +41,19 @@ func listUMSDisks() ([]UMSDisk, error) {
 		disks = append(disks, d)
 	}
 	return disks, nil
+}
+
+func linuxUSBPortPath(blockPath string) string {
+	p, err := filepath.EvalSymlinks(filepath.Join(blockPath, "device"))
+	if err != nil {
+		return ""
+	}
+	for dir := p; dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if sysfsString(filepath.Join(dir, "idVendor")) == "1d6b" && sysfsString(filepath.Join(dir, "idProduct")) == "0104" {
+			return filepath.Base(dir)
+		}
+	}
+	return ""
 }
 
 // rawUMSInquiry lists every /sys/block/sd* device's raw SCSI vendor/model — a

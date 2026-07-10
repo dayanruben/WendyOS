@@ -5,6 +5,7 @@ package t234
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,10 +16,22 @@ const (
 	GadgetProductID = 0x0104
 )
 
-// SCSI inquiry vendor strings of the exported LUNs (init-flash.sh writes
-// "<export_name><serial>" into the gadget's inquiry_string; the vendor field
-// is the first 8 characters, i.e. the export name).
+// FlashpkgVendor is the export name of the command-package LUN. init-flash.sh
+// writes "<export_name><serial>" into the gadget's inquiry_string; listUMSDisks
+// splits it back into the export name and session serial via splitInquiry.
 const FlashpkgVendor = "flashpkg"
+
+const sessionSerialLen = 8
+
+// splitInquiry recovers the export name and session id after SCSI splits the
+// gadget inquiry string across its fixed-width vendor and product fields.
+func splitInquiry(vendor, product string) (name, serial string) {
+	combined := strings.TrimSpace(vendor) + strings.TrimSpace(product)
+	if len(combined) <= sessionSerialLen {
+		return combined, ""
+	}
+	return combined[:len(combined)-sessionSerialLen], combined[len(combined)-sessionSerialLen:]
+}
 
 // UMSDisk is one USB mass-storage LUN the flashing initrd exposed.
 type UMSDisk struct {
@@ -27,7 +40,17 @@ type UMSDisk struct {
 	SizeBytes int64
 	Vendor    string // SCSI inquiry vendor, e.g. "flashpkg" or "mmcblk0"
 	Serial    string // SCSI inquiry product: the device's 8-hex session id
+	PortPath  string // physical USB topology key, same form as rcm.RecoveryDevice.PathKey
 }
+
+type LUNSelector struct {
+	Vendor   string
+	PortPath string
+	Session  string
+}
+
+var scanUMSDisks = listUMSDisks
+var umsPollInterval = time.Second
 
 // observedUMSHint formats the raw SCSI INQUIRY strings of every USB
 // mass-storage LUN currently visible, for diagnosing a wait that timed out. It
@@ -66,13 +89,26 @@ func tegraUSBLabel(vendor, product uint16) string {
 // rootfs device). It returns an error when several match — wendy flashes one
 // Orin at a time and must not write into the wrong board.
 func WaitForUMSDisk(ctx context.Context, vendor string, timeout time.Duration) (UMSDisk, error) {
+	return WaitForUMSDiskAt(ctx, LUNSelector{Vendor: vendor}, timeout)
+}
+
+// WaitForUMSDiskAt correlates a LUN by export name, selected physical USB port,
+// and (after the first LUN) the device's session identifier. Any missing or
+// ambiguous topology correlation fails closed before a raw disk write.
+func WaitForUMSDiskAt(ctx context.Context, selector LUNSelector, timeout time.Duration) (UMSDisk, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		disks, err := listUMSDisks()
+		disks, err := scanUMSDisks()
 		if err == nil {
 			var matches []UMSDisk
 			for _, d := range disks {
-				if d.Vendor == vendor {
+				if d.Vendor != selector.Vendor {
+					continue
+				}
+				if selector.PortPath != "" && d.PortPath == "" {
+					return UMSDisk{}, fmt.Errorf("USB storage %q appeared as %s but its physical USB port could not be determined; refusing an uncorrelated raw write", selector.Vendor, d.DevPath)
+				}
+				if (selector.PortPath == "" || d.PortPath == selector.PortPath) && (selector.Session == "" || strings.EqualFold(d.Serial, selector.Session)) {
 					matches = append(matches, d)
 				}
 			}
@@ -80,29 +116,29 @@ func WaitForUMSDisk(ctx context.Context, vendor string, timeout time.Duration) (
 			case len(matches) == 1:
 				return matches[0], nil
 			case len(matches) > 1:
-				return UMSDisk{}, fmt.Errorf("found %d USB storage devices named %q — connect only one Jetson while flashing", len(matches), vendor)
+				return UMSDisk{}, fmt.Errorf("found %d USB storage devices matching %q at port %q/session %q — correlation is ambiguous", len(matches), selector.Vendor, selector.PortPath, selector.Session)
 			}
 			// The device exports "flashpkg" instead of the requested LUN when
 			// its side of the flash failed early — surface that instead of
 			// timing out (mirrors the bundle's initrd-flash host script).
-			if vendor != FlashpkgVendor {
+			if selector.Vendor != FlashpkgVendor {
 				for _, d := range disks {
-					if d.Vendor == FlashpkgVendor {
-						return UMSDisk{}, fmt.Errorf("device exported %q instead of %q — the device-side flash failed early; its logs are in the flash package", FlashpkgVendor, vendor)
+					if d.Vendor == FlashpkgVendor && (selector.PortPath == "" || d.PortPath == selector.PortPath) && (selector.Session == "" || strings.EqualFold(d.Serial, selector.Session)) {
+						return UMSDisk{}, fmt.Errorf("device exported %q instead of %q — the device-side flash failed early; its logs are in the flash package", FlashpkgVendor, selector.Vendor)
 					}
 				}
 			}
 		}
 		if time.Now().After(deadline) {
 			if err != nil {
-				return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q (last scan error: %v)\n%s", vendor, err, observedUMSHint())
+				return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q at port %q/session %q (last scan error: %v)\n%s", selector.Vendor, selector.PortPath, selector.Session, err, observedUMSHint())
 			}
-			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the device\n%s", vendor, observedUMSHint())
+			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q at port %q/session %q\n%s", selector.Vendor, selector.PortPath, selector.Session, observedUMSHint())
 		}
 		select {
 		case <-ctx.Done():
 			return UMSDisk{}, ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(umsPollInterval):
 		}
 	}
 }

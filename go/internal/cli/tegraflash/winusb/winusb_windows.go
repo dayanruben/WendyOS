@@ -143,6 +143,12 @@ func interfaceDetailPath(set uintptr, ifd *spDeviceInterfaceData) (string, error
 // re-enumerates and shares no substring with a location path). Empty opens the
 // first device found.
 func Open(locationPath string) (*USBDevice, error) {
+	return OpenExpected(locationPath, 0)
+}
+
+// OpenExpected pins both physical location and USB product. Recovery callers
+// use this to ensure an Orin at the same host cannot satisfy a Thor re-open.
+func OpenExpected(locationPath string, expectedProduct uint16) (*USBDevice, error) {
 	paths, err := openDevicePaths()
 	if err != nil {
 		return nil, err
@@ -162,7 +168,7 @@ func Open(locationPath string) (*USBDevice, error) {
 		return nil, err
 	}
 	for _, d := range devs {
-		if d.LocationPath != locationPath {
+		if d.LocationPath != locationPath || (expectedProduct != 0 && d.PID != expectedProduct) {
 			continue
 		}
 		key := strings.ToLower(strings.ReplaceAll(d.InstanceID, `\`, "#"))
@@ -172,7 +178,7 @@ func Open(locationPath string) (*USBDevice, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("no Jetson WinUSB device at location %q among %d present (is our driver bound to it?)", locationPath, len(paths))
+	return nil, fmt.Errorf("no Jetson WinUSB product 0x%04x at location %q among %d present (is our driver bound to it?)", expectedProduct, locationPath, len(paths))
 }
 
 // InterfacePresent reports whether any present device currently exposes wendy's

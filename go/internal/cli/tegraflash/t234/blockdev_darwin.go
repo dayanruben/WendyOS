@@ -19,6 +19,9 @@ const (
 
 // blockDeviceSize returns the device's capacity in bytes.
 func blockDeviceSize(dev *os.File) (int64, error) {
+	if info, err := dev.Stat(); err == nil && info.Mode().IsRegular() {
+		return info.Size(), nil
+	}
 	var blockSize uint32
 	var blockCount uint64
 	if err := ioctlPtr(dev, dkiocGetBlockSize, unsafe.Pointer(&blockSize)); err != nil {

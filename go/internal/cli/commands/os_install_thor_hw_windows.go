@@ -59,7 +59,7 @@ func pickThorRecoveryDevice() (thorDevice, error) {
 		}
 		var recovery []winusb.Device
 		for _, d := range devs {
-			if d.IsRecovery() {
+			if d.IsThor() {
 				recovery = append(recovery, d)
 			}
 		}
@@ -131,11 +131,12 @@ func diskAvailBytes(path string) (int64, bool) {
 // thorStageOne performs the stage-1 RCM boot over WinUSB.
 func thorStageOne(fp *flashpack.Flashpack, dev thorDevice, out io.Writer) error {
 	return winusb.StageOneBoot(winusb.StageOneOptions{
-		Stage1Dir: fp.Stage1Dir(),
-		MemBCT:    fp.MemBCT(),
-		SendOrder: fp.Manifest.Stage1SendOrder,
-		Location:  dev.PathKey,
-		Out:       out,
+		Stage1Dir:       fp.Stage1Dir(),
+		MemBCT:          fp.MemBCT(),
+		SendOrder:       fp.Manifest.Stage1SendOrder,
+		Location:        dev.PathKey,
+		ExpectedProduct: winusb.ProductThor,
+		Out:             out,
 	})
 }
 

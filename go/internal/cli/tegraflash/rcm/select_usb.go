@@ -66,8 +66,10 @@ func ListRecoveryDevices() ([]RecoveryDevice, error) {
 }
 
 // WaitForDeviceAt blocks until the Jetson at pathKey (from ListRecoveryDevices)
-// appears in recovery mode, then claims it. An empty pathKey matches any device.
-func WaitForDeviceAt(pathKey string) (*Device, error) {
+// appears with expectedProduct, then claims it. An empty pathKey matches any
+// physical port; an expectedProduct of zero retains the legacy any-Jetson
+// behavior. Recovery installers must always pass the product they selected.
+func WaitForDeviceAt(pathKey string, expectedProduct uint16) (*Device, error) {
 	ctx := gousb.NewContext()
 	ctx.Debug(0)
 
@@ -75,6 +77,7 @@ func WaitForDeviceAt(pathKey string) (*Device, error) {
 	for time.Now().Before(deadline) {
 		devs, err := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
 			return d.Vendor == gousb.ID(VendorNVIDIA) && isRecoveryPID(d.Product) &&
+				(expectedProduct == 0 || uint16(d.Product) == expectedProduct) &&
 				(pathKey == "" || portKey(d) == pathKey)
 		})
 		// Access denied won't heal within the wait window; fail now with the
@@ -103,5 +106,5 @@ func WaitForDeviceAt(pathKey string) (*Device, error) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	ctx.Close()
-	return nil, fmt.Errorf("timed out waiting for Jetson at usb %s in recovery mode", pathKey)
+	return nil, fmt.Errorf("timed out waiting for Jetson product 0x%04x at usb %s in recovery mode", expectedProduct, pathKey)
 }

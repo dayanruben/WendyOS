@@ -4,6 +4,8 @@ package t234
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/gousb"
@@ -16,7 +18,7 @@ import (
 // (libusb implements detach on macOS as a driver-suppressing re-enumeration;
 // this is why the caller runs it as root) and holds it long enough for the
 // device's 1 Hz poll to observe the unconfigured state, then lets go.
-func ReleaseUSB(serial string) error {
+func ReleaseUSB(serial, port string) error {
 	ctx := gousb.NewContext()
 	ctx.Debug(0)
 	defer ctx.Close()
@@ -32,6 +34,9 @@ func ReleaseUSB(serial string) error {
 	}
 	var chosen *gousb.Device
 	for _, d := range devs {
+		if port != "" && darwinUSBPortKey(d.Desc) != port {
+			continue
+		}
 		if serial != "" {
 			if s, err := d.SerialNumber(); err == nil && s != serial {
 				continue
@@ -61,4 +66,12 @@ func ReleaseUSB(serial string) error {
 	time.Sleep(3 * time.Second)
 	cfg.Close()
 	return nil
+}
+
+func darwinUSBPortKey(desc *gousb.DeviceDesc) string {
+	parts := make([]string, len(desc.Path))
+	for i, p := range desc.Path {
+		parts[i] = strconv.Itoa(p)
+	}
+	return fmt.Sprintf("%d-%s", desc.Bus, strings.Join(parts, "."))
 }

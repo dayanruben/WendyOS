@@ -17,11 +17,12 @@ import (
 
 // StageOneOptions controls a Windows stage-1 RCM boot.
 type StageOneOptions struct {
-	Stage1Dir string   // dir holding the RCM-boot artifacts
-	MemBCT    string   // membct filename (RAMCODE/2)
-	SendOrder []string // bootROM image filenames in send order
-	Location  string   // optional location substring to pin the device
-	Out       io.Writer
+	Stage1Dir       string   // dir holding the RCM-boot artifacts
+	MemBCT          string   // membct filename (RAMCODE/2)
+	SendOrder       []string // bootROM image filenames in send order
+	Location        string   // optional location substring to pin the device
+	ExpectedProduct uint16
+	Out             io.Writer
 }
 
 // bootROM image filenames (mirror of package bringup).
@@ -66,7 +67,7 @@ func StageOneBoot(opts StageOneOptions) error {
 	}
 
 	fmt.Fprintln(out, "Opening Jetson in recovery mode over WinUSB…")
-	dev, err := Open(opts.Location)
+	dev, err := OpenExpected(opts.Location, opts.ExpectedProduct)
 	if err != nil {
 		return err
 	}

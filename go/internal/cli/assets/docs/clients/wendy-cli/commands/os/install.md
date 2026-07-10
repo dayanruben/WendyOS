@@ -1,12 +1,13 @@
 # `wendy install`
 
-Installs WendyOS onto an NVMe or SD card, flashes Jetson AGX Thor over USB recovery, or flashes Wendy Lite firmware onto an ESP32 over USB.
+Installs WendyOS onto an NVMe or SD card, fully recovers supported Jetsons over USB, or flashes Wendy Lite firmware onto an ESP32.
 
 > **Tip:** [`wendy install`](../install.md) is the recommended, surfaced entry point for this command. `wendy os install` remains available and behaves identically — it is kept for backward compatibility and for discoverability under the `wendy os` group.
 
 The command presents a unified device picker that lists Linux targets (Raspberry Pi, Jetson, ...) and ESP32 targets (C6, C5). Select the device type to take the appropriate path:
 
-- **Raspberry Pi and Orin Jetson targets** -> download OS image -> write to SD/NVMe -> write config partition
+- **Jetson Orin Nano / AGX Orin** -> download a recovery flashpack -> verify the module/carrier -> update QSPI and NVMe/eMMC together
+- **Raspberry Pi targets** -> download OS image -> write to SD/NVMe -> write config partition
 - **Jetson AGX Thor** -> download flashpack -> boot over USB recovery -> flash QSPI and internal NVMe
 - **ESP32 targets** → detect USB serial port → download firmware `.bin` → flash over serial
 
@@ -22,6 +23,16 @@ wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 -
 
 # Jetson AGX Thor: flash over USB recovery (macOS, Linux, and Windows)
 wendy install --device-type jetson-agx-thor
+
+# Orin Nano: full QSPI + NVMe recovery (macOS or Linux)
+wendy install --device-type jetson-orin-nano
+
+# AGX Orin: storage is mandatory non-interactively
+wendy install --device-type jetson-agx-orin --storage nvme
+wendy install --device-type jetson-agx-orin --storage emmc
+
+# Explicit legacy raw-media write; QSPI is not updated
+wendy install --device-type jetson-orin-nano --rootfs-only --drive /dev/disk4
 
 # Direct install from a local image (Linux only)
 wendy install path/to/image.img /dev/disk4 --force
@@ -43,8 +54,9 @@ and the serial console is active. They are for testing the PR on hardware —
 **never flash a PR image to a production device.** Artifacts are deleted when
 the PR is closed.
 
-`--pr` is supported for Linux disk-image devices (Raspberry Pi, Jetson Orin
-Nano, Jetson AGX Orin). It is not supported for Jetson AGX Thor or ESP32 targets.
+`--pr` is supported for Linux disk-image devices. Orin PR artifacts require
+explicit `--rootfs-only`; PR workflows do not build recovery flashpacks. It is
+not supported for Jetson AGX Thor or ESP32 targets.
 `--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
 image path.
 
@@ -127,7 +139,7 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 
 ## Linux (WendyOS) path
 
-For Raspberry Pi and Orin-class Jetson devices, the install path writes a disk image to a selected SD card, NVMe drive, or USB-attached enclosure:
+For Raspberry Pi devices—and Orin only with explicit `--rootfs-only`—the install path writes a disk image to a selected SD card, NVMe drive, or USB-attached enclosure:
 
 1. **Resolve version** — `--version` if provided, otherwise latest (or nightly with `--nightly`).
 2. **Resolve drive** — `--drive` if provided, otherwise an interactive picker of external drives. Internal drives require `--yes-overwrite-internal` in non-interactive mode; in interactive mode the user must type the device path to confirm.
@@ -139,6 +151,19 @@ For Raspberry Pi and Orin-class Jetson devices, the install path writes a disk i
 > **Exit code:** `wendy install` exits `0` as long as the OS image was written to the drive, regardless of whether the config-partition provisioning step succeeded. A non-zero exit indicates only that the image itself could not be written. When `--wifi`, `--device-name`, or `--pre-enroll` were requested but couldn't be applied, the warning calls this out explicitly so the values can be re-applied with another `wendy install`, or configured after the device boots.
 
 > **Provisioning retry:** When the config-partition write fails on an interactive terminal, the CLI asks `Retry writing provisioning data to the config partition?`. Answering yes re-attempts the write (download + config-partition write); answering no, or running non-interactively, prints guidance and exits successfully — the OS image is already on the drive.
+
+## Jetson Orin full recovery path
+
+New Orin releases default to full USB recovery on macOS and Linux. Supported hardware is intentionally exact:
+
+- Orin Nano P3767-0005 on P3768-0000, NVMe.
+- AGX Orin P3701-0005 on P3737-0000, NVMe or eMMC.
+
+The CLI RCM-boots a signed recovery initrd, correlates its mass-storage LUNs to the selected physical USB port and session, and reads `device.json` before any persistent write. A module/carrier mismatch aborts before the flash-package handoff. It then writes/ejects the flash package, writes the exported `nvme0n1` or `mmcblk0` according to the signed partition layout, collects device logs, and reports success only when the final status is `SUCCESS`.
+
+Full recovery erases QSPI and every partition on the chosen storage, including `/data`. After the handoff, the first Ctrl+C warns that the device may be partially written; a second Ctrl+C confirms the abort. Windows returns an unsupported-platform error for full Orin recovery; `--rootfs-only` remains available there.
+
+`--drive`, `--no-bmap`, and `--yes-overwrite-internal` apply only with `--rootfs-only`. eMMC has no rootfs-only mode. Rootfs-only emits a warning because it does not update QSPI; there is no automatic fallback from recovery to raw imaging.
 
 ## Jetson AGX Thor recovery flash path
 
@@ -212,6 +237,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`) |
 | `--version` | latest | WendyOS version to install (Linux only) |
 | `--drive` | interactive | Target drive path (e.g. `/dev/disk4`) |
+| `--rootfs-only` | false | Explicitly write only an Orin SD/NVMe image; QSPI is not updated |
 | `--force` | false | Skip confirmation prompts |
 | `--yes-overwrite-internal` | false | Required to wipe a non-removable drive non-interactively |
 | `--wifi-ssid` | — | Pre-configure a single WiFi network |
@@ -220,7 +246,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--no-wifi` | false | Skip WiFi setup entirely |
 | `--device-name` | interactive | Set device name on first boot (lowercase letters, digits, hyphens; must start with a letter, 3–55 chars) |
 | `--pre-enroll` | auto | Pre-enroll with Wendy Cloud during imaging |
-| `--storage` | auto | Force image storage variant: `nvme` or `sd` (default: auto-detect — real NVMe drives use `nvme`; a USB-attached drive uses the device's published image, `sd` for Raspberry Pi / `nvme` for Jetson SSD enclosures) |
+| `--storage` | auto | Storage variant: `nvme`/`sd` for raw imaging; AGX Orin recovery requires `nvme` or `emmc` non-interactively |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 
 > **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](../../../../cloud/).
