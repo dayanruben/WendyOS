@@ -2139,7 +2139,11 @@ func (x *ConnectBluetoothPeripheralRequest) GetTrust() bool {
 }
 
 type ConnectBluetoothPeripheralResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether the device is paired after the connect completed. Optional so
+	// clients can tell an agent that reports pairing state apart from an
+	// older agent that does not (absent = unknown).
+	Paired        *bool `protobuf:"varint,1,opt,name=paired,proto3,oneof" json:"paired,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2172,6 +2176,13 @@ func (x *ConnectBluetoothPeripheralResponse) ProtoReflect() protoreflect.Message
 // Deprecated: Use ConnectBluetoothPeripheralResponse.ProtoReflect.Descriptor instead.
 func (*ConnectBluetoothPeripheralResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ConnectBluetoothPeripheralResponse) GetPaired() bool {
+	if x != nil && x.Paired != nil {
+		return *x.Paired
+	}
+	return false
 }
 
 type DisconnectBluetoothPeripheralRequest struct {
@@ -4426,8 +4437,10 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"!ConnectBluetoothPeripheralRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04pair\x18\x02 \x01(\bR\x04pair\x12\x14\n" +
-	"\x05trust\x18\x03 \x01(\bR\x05trust\"$\n" +
-	"\"ConnectBluetoothPeripheralResponse\"@\n" +
+	"\x05trust\x18\x03 \x01(\bR\x05trust\"L\n" +
+	"\"ConnectBluetoothPeripheralResponse\x12\x1b\n" +
+	"\x06paired\x18\x01 \x01(\bH\x00R\x06paired\x88\x01\x01B\t\n" +
+	"\a_paired\"@\n" +
 	"$DisconnectBluetoothPeripheralRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\"'\n" +
 	"%DisconnectBluetoothPeripheralResponse\"<\n" +
@@ -4760,6 +4773,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_service_proto_init() {
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[22].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[24].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[25].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[31].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[37].OneofWrappers = []any{
 		(*UpdateOSResponse_Progress_)(nil),
 		(*UpdateOSResponse_Completed_)(nil),

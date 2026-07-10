@@ -454,7 +454,12 @@ message ConnectBluetoothPeripheralRequest {
     bool pair = 2;
     bool trust = 3;
 }
-message ConnectBluetoothPeripheralResponse {}
+message ConnectBluetoothPeripheralResponse {
+    // Whether the device is paired after the connect completed. Optional so
+    // clients can tell an agent that reports pairing state apart from an
+    // older agent that does not (absent = unknown).
+    optional bool paired = 1;
+}
 
 message DisconnectBluetoothPeripheralRequest {
     string address = 1;
