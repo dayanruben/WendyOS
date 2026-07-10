@@ -170,22 +170,6 @@ struct UnsupportedRPCTests {
                 }
             ),
             (
-                "ListHardwareCapabilities",
-                "Hardware capability discovery is currently not supported by Wendy Agent for Mac.",
-                {
-                    _ = try await service.listHardwareCapabilities(
-                        request: ServerRequest(
-                            metadata: [:],
-                            message: Wendy_Agent_Services_V1_ListHardwareCapabilitiesRequest()
-                        ),
-                        context: makeServerContext(
-                            service: "wendy.agent.services.v1.WendyAgentService",
-                            method: "ListHardwareCapabilities"
-                        )
-                    )
-                }
-            ),
-            (
                 "ScanBluetoothPeripherals",
                 "Bluetooth scanning is currently not supported by Wendy Agent for Mac.",
                 {

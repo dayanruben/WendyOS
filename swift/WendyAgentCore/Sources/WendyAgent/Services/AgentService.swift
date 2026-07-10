@@ -3,6 +3,8 @@ import GRPCCore
 import WendyAgentGRPC
 
 struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
+    var hardware: any HardwareDiscovering = HardwareInventory()
+
     func runContainer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_RunContainerRequest>,
         context: ServerContext
@@ -134,11 +136,20 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: ServerRequest<Wendy_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Hardware capability discovery is currently not supported by Wendy Agent for Mac."
-        )
+        let filter = request.message.hasCategoryFilter ? request.message.categoryFilter : nil
+        let capabilities = try await hardware.discover(categoryFilter: filter)
+
+        var response = Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse()
+        response.capabilities = capabilities.map { capability in
+            var proto =
+                Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability()
+            proto.category = capability.category
+            proto.devicePath = capability.devicePath
+            proto.description_p = capability.description
+            proto.properties = capability.properties
+            return proto
+        }
+        return ServerResponse(message: response)
     }
 
     func scanBluetoothPeripherals(
