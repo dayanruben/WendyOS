@@ -39,7 +39,7 @@ the v2 provisioning service, and the `configpartition` Avahi-file rewriting
 
 | Aspect | Go | Swift (this design) |
 | --- | --- | --- |
-| Key | P-256 EC, PEM `EC PRIVATE KEY` (SEC1) | Same |
+| Key | P-256 EC, PEM `EC PRIVATE KEY` (SEC1) | P-256 EC, PEM `PRIVATE KEY` (PKCS#8) — see note |
 | CSR CN | `sh/wendy/<org>/<asset>` | Same |
 | CSR keyUsage | digitalSignature, **critical** | Same |
 | CSR EKU | clientAuth + serverAuth | Same |
@@ -67,9 +67,14 @@ New file `Sources/WendyAgent/Provisioning/DeviceIdentity.swift`, using
 graph; will be added as explicit package dependencies of `WendyAgentCore`).
 
 - `static func generatePrivateKeyPEM() -> String` — a new
-  `P256.Signing.PrivateKey`, serialized as SEC1 DER wrapped in a
-  `EC PRIVATE KEY` PEM block. This matches Go's `x509.MarshalECPrivateKey`
-  output (SEC1), so the same file is interchangeable.
+  `P256.Signing.PrivateKey`, serialized via
+  `Certificate.PrivateKey(P256key).serializeAsPEM().pemString`, which emits a
+  PKCS#8 `PRIVATE KEY` PEM block. Go emits SEC1 (`EC PRIVATE KEY`) via
+  `x509.MarshalECPrivateKey`, but swift-crypto's `pemRepresentation` is PKCS#8.
+  This is **functionally equivalent** for our purposes: only the macOS Swift
+  agent ever reads this file (the Go agent runs on Linux devices, never macOS),
+  and both NIOSSL and swift-certificates parse PKCS#8 and SEC1. The key loader
+  therefore accepts either discriminator so a legacy SEC1 file would still load.
 - `static func generateCSRPEM(privateKeyPEM:commonName:) throws -> String` —
   parse the key, build an `X509.CertificateSigningRequest` with:
   - Subject `CN=<commonName>`.
@@ -132,10 +137,12 @@ persisted state on init.
   drop key, reset state → fire `onUnprovisioned`.
 - Accessors `provisioningCerts()` and `provisioningInfo()` for the agent wiring.
 
-Because `SimpleServiceProtocol` conformance is on a `struct` today, the actor
-is wrapped by a small `Sendable` adapter that conforms to the generated service
-protocol and forwards to the actor (same thin-adapter pattern used elsewhere in
-this PR).
+`ProvisioningService` conforms to `SimpleServiceProtocol` **directly as an
+actor** — `ContainerService` already does exactly this (`actor
+ContainerService: ...ServiceProtocol`), so no wrapper/adapter is needed; the
+generated `registerMethods`/request-wrapping default implementations are
+`nonisolated` protocol-extension methods that call the async handlers, which hop
+to the actor.
 
 ### 5. `WendyAgent` lifecycle wiring
 
