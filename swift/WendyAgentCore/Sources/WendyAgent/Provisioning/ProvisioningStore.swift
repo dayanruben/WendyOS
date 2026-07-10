@@ -93,6 +93,13 @@ struct ProvisioningStore {
             attributes: [.posixPermissions: 0o700]
         )
 
+        // Write the key/cert/ca PEM files FIRST. provisioning.json (with
+        // enrolled: true) is the commit marker `load()` treats as the source
+        // of truth, so it must be written LAST: if anything above fails, the
+        // device is left honestly unprovisioned (no json => load() -> nil)
+        // rather than "enrolled" on disk with no private key.
+        try self.writePEMFiles(keyPEM: keyPEM, certPEM: certPEM, chainPEM: chainPEM)
+
         // provisioning.json WITHOUT the key, mode 0600.
         let state = PersistedState(
             enrolled: true,
@@ -106,8 +113,6 @@ struct ProvisioningStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try self.writeFile(self.statePath, data: encoder.encode(state), permissions: 0o600)
-
-        try self.writePEMFiles(keyPEM: keyPEM, certPEM: certPEM, chainPEM: chainPEM)
     }
 
     func clear() throws {

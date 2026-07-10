@@ -94,19 +94,14 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             ]
         )
 
-        // Reuse the device key if present, otherwise generate one.
         let keyPEM: String
-        if let existing = self.store.load()?.keyPEM, !existing.isEmpty {
-            keyPEM = existing
-        } else {
-            do {
-                keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
-            } catch {
-                throw RPCError(
-                    code: .internalError,
-                    message: "failed to generate key pair: \(error)"
-                )
-            }
+        do {
+            keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
+        } catch {
+            throw RPCError(
+                code: .internalError,
+                message: "failed to generate key pair: \(error)"
+            )
         }
 
         let commonName = DeviceIdentity.commonName(
