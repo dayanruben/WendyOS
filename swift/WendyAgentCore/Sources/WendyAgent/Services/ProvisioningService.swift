@@ -22,9 +22,10 @@ struct ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Sim
         request: Wendy_Agent_Services_V1_UnprovisionRequest,
         context: ServerContext
     ) async throws -> Wendy_Agent_Services_V1_UnprovisionResponse {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Unprovisioning is currently not supported by Wendy Agent for Mac."
-        )
+        // The macOS agent does not perform PKI/cloud enrollment, so it always
+        // reports as not provisioned (see `isProvisioned`). Unprovisioning is
+        // therefore an idempotent success: there is no enrollment state to
+        // clear, and the device remains unprovisioned afterwards.
+        Wendy_Agent_Services_V1_UnprovisionResponse()
     }
 }
