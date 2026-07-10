@@ -1079,6 +1079,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         response.stats = appNames.map { appName in
             var stats = Wendy_Agent_Services_V1_ContainerStats()
             stats.appName = appName
+            if let pid = appsByID[appName]?.info.pid,
+                let sample = SystemStats.processStats(pid: pid)
+            {
+                stats.memoryBytes = sample.memoryBytes
+            }
             return stats
         }
         return ServerResponse(message: response)
@@ -1121,10 +1126,28 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: ServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Resource stats are currently not supported by Wendy Agent for Mac."
-        )
+        let host = SystemStats.hostStats()
+        var response = Wendy_Agent_Services_V1_GetResourceStatsResponse()
+
+        var hostStats = Wendy_Agent_Services_V1_HostStats()
+        hostStats.cpuTotalJiffies = host.cpuTotalTicks
+        hostStats.cpuIdleJiffies = host.cpuIdleTicks
+        hostStats.cpuCount = host.cpuCount
+        hostStats.memTotalBytes = host.memTotalBytes
+        hostStats.memAvailableBytes = host.memAvailableBytes
+        response.host = hostStats
+
+        response.containers = appsByID.keys.sorted().compactMap { appName in
+            guard let pid = appsByID[appName]?.info.pid,
+                let sample = SystemStats.processStats(pid: pid)
+            else { return nil }
+            var container = Wendy_Agent_Services_V1_ResourceContainerStats()
+            container.appName = appName
+            container.cpuUsageNanos = sample.cpuUsageNanos
+            container.memoryBytes = sample.memoryBytes
+            return container
+        }
+        return ServerResponse(message: response)
     }
 
     func streamMCP(
@@ -1141,10 +1164,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: ServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Container port lookup is currently not supported by Wendy Agent for Mac."
-        )
+        var response = Wendy_Agent_Services_V1_GetContainerPortsResponse()
+        if let pid = appsByID[request.message.appName]?.info.pid {
+            let ports = await SystemStats.listeningPorts(pid: pid)
+            response.ports = ports.map { sample in
+                var entry = Wendy_Agent_Services_V1_PortEntry()
+                entry.protocol = sample.proto
+                entry.port = sample.port
+                entry.address = sample.address
+                return entry
+            }
+        }
+        return ServerResponse(message: response)
     }
 
     func queryChunks(
