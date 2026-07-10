@@ -268,6 +268,14 @@ func (m Model) updateBrowsing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
+		if m.scanning && m.handler != nil {
+			// Connecting while discovery is running can fail at the HCI level
+			// (paging during an active inquiry), so hold connects until the
+			// ~8s scan window closes. Handler-less picker mode is exempt: it
+			// never receives a ScanDoneMsg, and its connect happens after the
+			// TUI exits anyway.
+			return m, m.setFlash("Scan in progress — wait for it to finish, then connect.", true)
+		}
 		p, ok := m.selected()
 		if !ok {
 			return m, nil
