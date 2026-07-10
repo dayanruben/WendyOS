@@ -307,7 +307,7 @@ public final class WendyAgent {
         let security: HTTP2ServerTransport.Posix.TransportSecurity
         let port: Int
         if let certs {
-            security = Self.mTLSSecurity(certs: certs)
+            security = self.mTLSSecurity(certs: certs)
             port = self.configuration.port + 1
         } else {
             security = .plaintext
@@ -349,7 +349,7 @@ public final class WendyAgent {
     /// org-equality. It fails closed. The device's org is derived once, here,
     /// from the device's own leaf certificate — never by calling back into the
     /// provisioning actor from the event loop.
-    private static func mTLSSecurity(
+    private func mTLSSecurity(
         certs: ProvisioningService.ProvisioningCerts
     ) -> HTTP2ServerTransport.Posix.TransportSecurity {
         let leaf = TLSConfig.CertificateSource.bytes(Array(certs.certPEM.utf8), format: .pem)
@@ -358,6 +358,11 @@ public final class WendyAgent {
 
         let trustRootsPEM = certs.chainPEM
         let deviceOrg = ClientCertAuthorizer.organizationID(fromLeafPEM: certs.certPEM)
+        if deviceOrg == nil {
+            self.logger.warning(
+                "mTLS org enforcement disabled: could not determine device organization from its own certificate"
+            )
+        }
 
         var tls = HTTP2ServerTransport.Posix.TransportSecurity.TLS(
             certificateChain: [leaf, chain],

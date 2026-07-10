@@ -110,6 +110,24 @@ struct ClientCertAuthorizerTests {
         #expect(!authorized)
     }
 
+    @Test("rejects a client presenting a rogue CA as its own intermediate")
+    func rejectsRogueIntermediateAsTrustAnchor() async throws {
+        let deviceCA = try Self.makeCA(commonName: "Wendy Device CA")
+        let rogueCA = try Self.makeCA(commonName: "Rogue CA")
+        // Same org number as the device would expect, but the chain is rooted at
+        // a CA the device does not trust — presented as a peer intermediate
+        // rather than only a leaf, to prove the rogue CA can't smuggle itself in
+        // as a terminal trust anchor.
+        let client = try Self.makeLeaf(org: 7, asset: 42, ca: rogueCA)
+
+        let authorized = await ClientCertAuthorizer.isAuthorized(
+            peerCertificatesDER: [try Self.der(client), try Self.der(rogueCA.certificate)],
+            trustRootsPEM: deviceCA.pem,
+            deviceOrg: 7
+        )
+        #expect(!authorized)
+    }
+
     @Test("with device org unknown, still requires a verified chain")
     func orgEnforcementDisabledStillVerifiesChain() async throws {
         let ca = try Self.makeCA()
