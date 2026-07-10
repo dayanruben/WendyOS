@@ -58,12 +58,21 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     }
 
     func provisioningInfo() -> ProvisioningInfo {
-        ProvisioningInfo(cloudHost: self.cloudHost, orgID: self.orgID, assetID: self.assetID, enrolled: self.enrolled)
+        ProvisioningInfo(
+            cloudHost: self.cloudHost,
+            orgID: self.orgID,
+            assetID: self.assetID,
+            enrolled: self.enrolled
+        )
     }
 
     func provisioningCerts() -> ProvisioningCerts? {
         guard self.enrolled else { return nil }
-        return ProvisioningCerts(certPEM: self.certPEM, chainPEM: self.chainPEM, keyPEM: self.keyPEM)
+        return ProvisioningCerts(
+            certPEM: self.certPEM,
+            chainPEM: self.chainPEM,
+            keyPEM: self.keyPEM
+        )
     }
 
     // MARK: - RPCs
@@ -93,7 +102,10 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             do {
                 keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
             } catch {
-                throw RPCError(code: .internalError, message: "failed to generate key pair: \(error)")
+                throw RPCError(
+                    code: .internalError,
+                    message: "failed to generate key pair: \(error)"
+                )
             }
         }
 
@@ -103,13 +115,18 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         )
         let csrPEM: String
         do {
-            csrPEM = try DeviceIdentity.generateCSRPEM(privateKeyPEM: keyPEM, commonName: commonName)
+            csrPEM = try DeviceIdentity.generateCSRPEM(
+                privateKeyPEM: keyPEM,
+                commonName: commonName
+            )
         } catch {
             throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
         }
 
         let issued = try await self.cloudClient.issue(
-            request.cloudHost, csrPEM, request.enrollmentToken
+            request.cloudHost,
+            csrPEM,
+            request.enrollmentToken
         )
         guard !issued.certPEM.isEmpty else {
             throw RPCError(code: .internalError, message: "cloud returned empty certificate")
@@ -127,8 +144,14 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
                 chainPEM: issued.chainPEM
             )
         } catch {
-            self.logger.error("Failed to persist provisioning state", metadata: ["error": "\(error)"])
-            throw RPCError(code: .internalError, message: "failed to save provisioning state: \(error)")
+            self.logger.error(
+                "Failed to persist provisioning state",
+                metadata: ["error": "\(error)"]
+            )
+            throw RPCError(
+                code: .internalError,
+                message: "failed to save provisioning state: \(error)"
+            )
         }
 
         self.enrolled = true
@@ -145,7 +168,11 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         )
 
         if let cb = self.onProvisioned {
-            let certs = ProvisioningCerts(certPEM: self.certPEM, chainPEM: self.chainPEM, keyPEM: self.keyPEM)
+            let certs = ProvisioningCerts(
+                certPEM: self.certPEM,
+                chainPEM: self.chainPEM,
+                keyPEM: self.keyPEM
+            )
             await cb(certs)
         }
 
@@ -185,8 +212,14 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         do {
             try self.store.clear()
         } catch {
-            self.logger.error("Failed to delete provisioning state", metadata: ["error": "\(error)"])
-            throw RPCError(code: .internalError, message: "failed to delete provisioning state: \(error)")
+            self.logger.error(
+                "Failed to delete provisioning state",
+                metadata: ["error": "\(error)"]
+            )
+            throw RPCError(
+                code: .internalError,
+                message: "failed to delete provisioning state: \(error)"
+            )
         }
 
         self.enrolled = false

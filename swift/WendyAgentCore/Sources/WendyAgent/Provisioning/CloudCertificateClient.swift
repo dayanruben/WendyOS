@@ -14,9 +14,15 @@ struct IssuedCertificate: Sendable {
 /// certificate. The work is behind a closure so tests can stub it without a
 /// network; `.live` performs the real dial.
 struct CloudCertificateClient: Sendable {
-    var issue: @Sendable (_ cloudHost: String, _ csrPEM: String, _ enrollmentToken: String) async throws -> IssuedCertificate
+    var issue:
+        @Sendable (_ cloudHost: String, _ csrPEM: String, _ enrollmentToken: String) async throws ->
+            IssuedCertificate
 
-    init(issue: @escaping @Sendable (_ cloudHost: String, _ csrPEM: String, _ enrollmentToken: String) async throws -> IssuedCertificate) {
+    init(
+        issue:
+            @escaping @Sendable (_ cloudHost: String, _ csrPEM: String, _ enrollmentToken: String)
+            async throws -> IssuedCertificate
+    ) {
         self.issue = issue
     }
 

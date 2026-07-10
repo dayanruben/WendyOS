@@ -41,7 +41,8 @@ struct ProvisioningStore {
 
     func load() -> LoadedState? {
         guard let data = try? Data(contentsOf: self.statePath) else { return nil }
-        guard let state = try? JSONDecoder().decode(PersistedState.self, from: data), state.enrolled else {
+        guard let state = try? JSONDecoder().decode(PersistedState.self, from: data), state.enrolled
+        else {
             return nil
         }
 
@@ -115,7 +116,9 @@ struct ProvisioningStore {
                 try FileManager.default.removeItem(at: url)
             } catch let error as CocoaError where error.code == .fileNoSuchFile {
                 continue
-            } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
+            } catch let error as NSError
+                where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError
+            {
                 continue
             }
         }
@@ -134,16 +137,20 @@ struct ProvisioningStore {
 
     private func writeFile(_ url: URL, data: Data, permissions: Int) throws {
         let directory = url.deletingLastPathComponent()
-        let tmpURL = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        let tmpURL = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).tmp"
+        )
 
         // Create the temp file with the target permissions applied up front so
         // it never appears on disk at a broader-than-target mode. `createFile`
         // is subject to umask, so we re-assert the mode below as well.
-        guard FileManager.default.createFile(
-            atPath: tmpURL.path,
-            contents: nil,
-            attributes: [.posixPermissions: permissions]
-        ) else {
+        guard
+            FileManager.default.createFile(
+                atPath: tmpURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: permissions]
+            )
+        else {
             throw CocoaError(.fileWriteUnknown)
         }
 
@@ -158,7 +165,10 @@ struct ProvisioningStore {
             }
 
             // umask may have masked bits from createFile's attributes; re-assert.
-            try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: tmpURL.path)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: permissions],
+                ofItemAtPath: tmpURL.path
+            )
 
             // Remove any existing destination first, then rename atomically
             // within the directory so the final path never observes the old

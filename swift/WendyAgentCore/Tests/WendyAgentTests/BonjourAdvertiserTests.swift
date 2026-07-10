@@ -20,7 +20,12 @@ struct BonjourAdvertiserTests {
 
     @Test("unprovisioned TXT carries tls=false and no assetid")
     func unprovisioned() {
-        let data = BonjourAdvertiser.encodeTXT(displayName: "mac", deviceID: "mac", tls: false, assetID: nil)
+        let data = BonjourAdvertiser.encodeTXT(
+            displayName: "mac",
+            deviceID: "mac",
+            tls: false,
+            assetID: nil
+        )
         let f = fields(data)
         #expect(f.contains("displayname=mac"))
         #expect(f.contains("id=mac"))
@@ -30,7 +35,12 @@ struct BonjourAdvertiserTests {
 
     @Test("provisioned TXT carries tls=true and assetid")
     func provisioned() {
-        let data = BonjourAdvertiser.encodeTXT(displayName: "mac", deviceID: "mac", tls: true, assetID: 42)
+        let data = BonjourAdvertiser.encodeTXT(
+            displayName: "mac",
+            deviceID: "mac",
+            tls: true,
+            assetID: 42
+        )
         let f = fields(data)
         #expect(f.contains("tls=true"))
         #expect(f.contains("assetid=42"))

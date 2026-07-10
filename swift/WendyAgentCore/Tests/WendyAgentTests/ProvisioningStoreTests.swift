@@ -19,8 +19,11 @@ struct ProvisioningStoreTests {
 
         try store.save(
             cloudHost: "cloud.example:50051",
-            orgID: 7, assetID: 42,
-            keyPEM: "KEYPEM", certPEM: "CERTPEM", chainPEM: "CHAINPEM"
+            orgID: 7,
+            assetID: 42,
+            keyPEM: "KEYPEM",
+            certPEM: "CERTPEM",
+            chainPEM: "CHAINPEM"
         )
 
         let loaded = try #require(store.load())
@@ -33,13 +36,24 @@ struct ProvisioningStoreTests {
         #expect(loaded.chainPEM == "CHAINPEM")
 
         // Key must NOT be in provisioning.json.
-        let json = try String(contentsOf: dir.appendingPathComponent("provisioning.json"), encoding: .utf8)
+        let json = try String(
+            contentsOf: dir.appendingPathComponent("provisioning.json"),
+            encoding: .utf8
+        )
         #expect(!json.contains("KEYPEM"))
         // Individual PEM files exist.
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("device-key.pem").path))
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("device.pem").path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("device-key.pem").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent("device.pem").path)
+        )
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("ca.pem").path))
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".provisioned").path))
+        #expect(
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent(".provisioned").path)
+        )
     }
 
     @Test("legacy keyPem in provisioning.json migrates into device-key.pem")
@@ -48,18 +62,28 @@ struct ProvisioningStoreTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let legacy = """
-        {"enrolled":true,"cloudHost":"c:50051","orgId":1,"assetId":2,\
-        "keyPem":"LEGACYKEY","certPem":"C","chainPem":"CH"}
-        """
-        try legacy.write(to: dir.appendingPathComponent("provisioning.json"), atomically: true, encoding: .utf8)
+            {"enrolled":true,"cloudHost":"c:50051","orgId":1,"assetId":2,\
+            "keyPem":"LEGACYKEY","certPem":"C","chainPem":"CH"}
+            """
+        try legacy.write(
+            to: dir.appendingPathComponent("provisioning.json"),
+            atomically: true,
+            encoding: .utf8
+        )
 
         let store = ProvisioningStore(configPath: dir)
         let loaded = try #require(store.load())
         #expect(loaded.keyPEM == "LEGACYKEY")
         // Migrated to device-key.pem and stripped from json.
-        let migratedKey = try String(contentsOf: dir.appendingPathComponent("device-key.pem"), encoding: .utf8)
+        let migratedKey = try String(
+            contentsOf: dir.appendingPathComponent("device-key.pem"),
+            encoding: .utf8
+        )
         #expect(migratedKey == "LEGACYKEY")
-        let json = try String(contentsOf: dir.appendingPathComponent("provisioning.json"), encoding: .utf8)
+        let json = try String(
+            contentsOf: dir.appendingPathComponent("provisioning.json"),
+            encoding: .utf8
+        )
         #expect(!json.contains("LEGACYKEY"))
     }
 
@@ -68,12 +92,20 @@ struct ProvisioningStoreTests {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = ProvisioningStore(configPath: dir)
-        try store.save(cloudHost: "c:50051", orgID: 1, assetID: 2, keyPEM: "K", certPEM: "C", chainPEM: "CH")
+        try store.save(
+            cloudHost: "c:50051",
+            orgID: 1,
+            assetID: 2,
+            keyPEM: "K",
+            certPEM: "C",
+            chainPEM: "CH"
+        )
 
         try store.clear()
 
         #expect(store.load() == nil)
-        for name in ["provisioning.json", "device-key.pem", "device.pem", "ca.pem", ".provisioned"] {
+        for name in ["provisioning.json", "device-key.pem", "device.pem", "ca.pem", ".provisioned"]
+        {
             #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path))
         }
         // Second clear on an empty dir does not throw.

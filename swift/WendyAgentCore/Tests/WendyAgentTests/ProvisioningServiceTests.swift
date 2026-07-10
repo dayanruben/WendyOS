@@ -59,7 +59,10 @@ struct ProvisioningServiceTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let service = ProvisioningService(configPath: dir, cloudClient: stubClient())
         var req = Wendy_Agent_Services_V1_StartProvisioningRequest()
-        req.organizationID = 7; req.assetID = 42; req.cloudHost = "c:50051"; req.enrollmentToken = "t"
+        req.organizationID = 7
+        req.assetID = 42
+        req.cloudHost = "c:50051"
+        req.enrollmentToken = "t"
         _ = try await service.startProvisioning(request: req, context: ctx("StartProvisioning"))
 
         await #expect(throws: RPCError.self) {
@@ -76,7 +79,10 @@ struct ProvisioningServiceTests {
         }
         let service = ProvisioningService(configPath: dir, cloudClient: failing)
         var req = Wendy_Agent_Services_V1_StartProvisioningRequest()
-        req.organizationID = 7; req.assetID = 42; req.cloudHost = "c:50051"; req.enrollmentToken = "t"
+        req.organizationID = 7
+        req.assetID = 42
+        req.cloudHost = "c:50051"
+        req.enrollmentToken = "t"
 
         await #expect(throws: RPCError.self) {
             _ = try await service.startProvisioning(request: req, context: ctx("StartProvisioning"))
@@ -97,10 +103,16 @@ struct ProvisioningServiceTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let service = ProvisioningService(configPath: dir, cloudClient: stubClient())
         let unprovisioned = ManagedAtomicFlag()
-        await service.setCallbacks(onProvisioned: nil, onUnprovisioned: { await unprovisioned.set() })
+        await service.setCallbacks(
+            onProvisioned: nil,
+            onUnprovisioned: { await unprovisioned.set() }
+        )
 
         var req = Wendy_Agent_Services_V1_StartProvisioningRequest()
-        req.organizationID = 7; req.assetID = 42; req.cloudHost = "c:50051"; req.enrollmentToken = "t"
+        req.organizationID = 7
+        req.assetID = 42
+        req.cloudHost = "c:50051"
+        req.enrollmentToken = "t"
         _ = try await service.startProvisioning(request: req, context: ctx("StartProvisioning"))
 
         _ = try await service.unprovision(
