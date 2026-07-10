@@ -92,9 +92,6 @@ struct ProvisioningStore {
             attributes: [.posixPermissions: 0o700]
         )
 
-        // Key first, on its own file, mode 0600.
-        try self.writeFile(self.keyPath, contents: keyPEM, permissions: 0o600)
-
         // provisioning.json WITHOUT the key, mode 0600.
         let state = PersistedState(
             enrolled: true,
@@ -136,7 +133,43 @@ struct ProvisioningStore {
     }
 
     private func writeFile(_ url: URL, data: Data, permissions: Int) throws {
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+        let directory = url.deletingLastPathComponent()
+        let tmpURL = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+
+        // Create the temp file with the target permissions applied up front so
+        // it never appears on disk at a broader-than-target mode. `createFile`
+        // is subject to umask, so we re-assert the mode below as well.
+        guard FileManager.default.createFile(
+            atPath: tmpURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: permissions]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        do {
+            let handle = try FileHandle(forWritingTo: tmpURL)
+            do {
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } catch {
+                try? handle.close()
+                throw error
+            }
+
+            // umask may have masked bits from createFile's attributes; re-assert.
+            try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: tmpURL.path)
+
+            // Remove any existing destination first, then rename atomically
+            // within the directory so the final path never observes the old
+            // (or a partially-written) content.
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            try FileManager.default.moveItem(at: tmpURL, to: url)
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw error
+        }
     }
 }
