@@ -6,6 +6,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     var hardware: any HardwareDiscovering = HardwareInventory()
     var hostname: any HostnameSetting = ScutilHostname()
     var wifi: any WiFiManaging = WiFiController()
+    var bluetooth: any BluetoothManaging = BluetoothScanner()
 
     func runContainer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_RunContainerRequest>,
@@ -191,21 +192,38 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> StreamingServerResponse<
         Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse
     > {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Bluetooth scanning is currently not supported by Wendy Agent for Mac."
-        )
+        let stream = bluetooth.scan()
+        return StreamingServerResponse { writer in
+            for await peripheral in stream {
+                var discovered = Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral()
+                discovered.name = peripheral.name
+                discovered.address = peripheral.address
+                discovered.rssi = peripheral.rssi
+                discovered.deviceType = peripheral.deviceType
+                discovered.paired = peripheral.paired
+                discovered.connected = peripheral.connected
+                discovered.trusted = peripheral.trusted
+
+                var response = Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse()
+                response.discoveredDevices = [discovered]
+                try await writer.write(response)
+            }
+            return Metadata()
+        }
     }
 
     func connectBluetoothPeripheral(
         request: ServerRequest<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Connecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
-        )
+        let result = await bluetooth.connect(address: request.message.address)
+        guard result.success else {
+            throw RPCError(
+                code: .internalError,
+                message: result.errorMessage ?? "Failed to connect Bluetooth peripheral."
+            )
+        }
+        return ServerResponse(message: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse())
     }
 
     func disconnectBluetoothPeripheral(
@@ -213,10 +231,15 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse>
     {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Disconnecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
+        let result = await bluetooth.disconnect(address: request.message.address)
+        guard result.success else {
+            throw RPCError(
+                code: .internalError,
+                message: result.errorMessage ?? "Failed to disconnect Bluetooth peripheral."
+            )
+        }
+        return ServerResponse(
+            message: Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse()
         )
     }
 
@@ -227,7 +250,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         throw RPCError(
             code: .unimplemented,
             message:
-                "Forgetting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
+                "Forgetting Bluetooth peripherals is not supported on macOS: CoreBluetooth is BLE-only and does not expose classic pairing state to remove."
         )
     }
 
