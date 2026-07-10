@@ -2,8 +2,11 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import NIOCore
+import NIOSSL
 import OpenTelemetryGRPC
 import WendyAgentGRPC
+import X509
 
 @MainActor
 public final class WendyAgent {
@@ -49,6 +52,7 @@ public final class WendyAgent {
         )
 
         let broadcaster = TelemetryBroadcaster()
+        self.telemetryBroadcaster = broadcaster
 
         do {
             let dockerAvailability = await self.prepareDockerIfNeeded()
@@ -150,6 +154,20 @@ public final class WendyAgent {
     private var mainServerTask: Task<Void, any Error>?
     private var containerService: ContainerService?
 
+    /// The provisioning service registered on the currently-running main server.
+    /// Rebuilt (with callbacks re-wired) every time the main server starts so the
+    /// next provision/unprovision transition still fires.
+    private var provisioningService: ProvisioningService?
+    /// Whether the main server is currently running in mTLS mode (provisioned) as
+    /// opposed to plaintext (unprovisioned).
+    private var mainServerIsMTLS = false
+    /// Guards against overlapping plaintext<->mTLS transitions.
+    private var switchingMainServer = false
+    /// The telemetry broadcaster shared by the main server's `TelemetryService`
+    /// and the OTel receivers; retained so a mid-flight main-server switch reuses
+    /// it and telemetry continuity is preserved.
+    private var telemetryBroadcaster: TelemetryBroadcaster?
+
     private var otelServer: PosixGRPCServer?
     private var otelServerTask: Task<Void, any Error>?
 
@@ -207,36 +225,41 @@ public final class WendyAgent {
         self.containerService = containerService
         await containerService.publishCurrentApps()
 
+        // Build the provisioning service, hold it, and wire the transition
+        // callbacks. The callbacks are invoked from inside the provisioning RPC
+        // handler *before* it returns; they MUST NOT await the server switch or
+        // graceful shutdown would deadlock on the in-flight RPC. Each callback
+        // therefore kicks off the switch in a detached task and returns at once.
+        let provisioningService = ProvisioningService(configPath: stateDirectory)
+        self.provisioningService = provisioningService
+        await provisioningService.setCallbacks(
+            onProvisioned: { [weak self] _ in
+                Task { @MainActor in
+                    await self?.handleProvisioned()
+                }
+            },
+            onUnprovisioned: { [weak self] in
+                Task { @MainActor in
+                    await self?.handleUnprovisioned()
+                }
+            }
+        )
+        let info = await provisioningService.provisioningInfo()
+
         let services: [any RegistrableRPCService] = [
             AgentService(),
             containerService,
             AudioService(),
-            ProvisioningService(configPath: stateDirectory),
+            provisioningService,
             TelemetryService(broadcaster: broadcaster),
             FileSyncService(appsBase: appsBase),
         ]
 
-        let server = PosixGRPCServer(
-            transport: HTTP2ServerTransport.Posix(
-                address: {
-                    switch self.configuration.host {
-                    case "::", "::1":
-                        .ipv6(host: self.configuration.host, port: self.configuration.port)
-                    case "localhost":
-                        .ipv4(host: "127.0.0.1", port: self.configuration.port)
-                    default:
-                        .ipv4(host: self.configuration.host, port: self.configuration.port)
-                    }
-                }(),
-                transportSecurity: .plaintext,
-                config: .defaults {
-                    $0.http2.maxFrameSize = 256 * 1024
-                    $0.http2.targetWindowSize = 8 * 1024 * 1024
-                    $0.rpc.maxRequestPayloadSize = 16 * 1024 * 1024
-                }
-            ),
-            services: services
-        )
+        // When enrolled, run mTLS on `port + 1`; otherwise plaintext on `port`.
+        let certs = info.enrolled ? await provisioningService.provisioningCerts() : nil
+        let (server, isMTLS) = self.makeMainServer(services: services, certs: certs)
+        self.mainServerIsMTLS = isMTLS
+        let boundPort = isMTLS ? self.configuration.port + 1 : self.configuration.port
 
         let task = Self.makeServeTask(server: server)
 
@@ -244,10 +267,13 @@ public final class WendyAgent {
             if let address = try await server.listeningAddress {
                 self.logger.info(
                     "Main Wendy Agent gRPC server listening",
-                    metadata: ["grpc_address": "\(address)"]
+                    metadata: ["grpc_address": "\(address)", "mtls": "\(isMTLS)"]
                 )
             } else {
-                self.logger.info("Main Wendy Agent gRPC server listening")
+                self.logger.info(
+                    "Main Wendy Agent gRPC server listening",
+                    metadata: ["mtls": "\(isMTLS)"]
+                )
             }
 
             self.mainServer = server
@@ -256,7 +282,7 @@ public final class WendyAgent {
             server.beginGracefulShutdown()
             throw await Self.startupError(
                 serviceName: "Wendy Agent gRPC",
-                port: self.configuration.port,
+                port: boundPort,
                 listeningAddressError: error,
                 serveTask: task
             )
@@ -268,6 +294,90 @@ public final class WendyAgent {
         _ = try? await self.mainServerTask?.value
         self.mainServer = nil
         self.mainServerTask = nil
+    }
+
+    /// Builds the main gRPC server. When `certs` is non-nil the server runs mTLS
+    /// on `port + 1`, requiring and verifying client certificates against the
+    /// device CA chain and enforcing org-equality; otherwise it runs plaintext on
+    /// `port`. Returns the server and whether it is mTLS.
+    private func makeMainServer(
+        services: [any RegistrableRPCService],
+        certs: ProvisioningService.ProvisioningCerts?
+    ) -> (PosixGRPCServer, Bool) {
+        let security: HTTP2ServerTransport.Posix.TransportSecurity
+        let port: Int
+        if let certs {
+            security = Self.mTLSSecurity(certs: certs)
+            port = self.configuration.port + 1
+        } else {
+            security = .plaintext
+            port = self.configuration.port
+        }
+
+        let server = PosixGRPCServer(
+            transport: HTTP2ServerTransport.Posix(
+                address: {
+                    switch self.configuration.host {
+                    case "::", "::1":
+                        .ipv6(host: self.configuration.host, port: port)
+                    case "localhost":
+                        .ipv4(host: "127.0.0.1", port: port)
+                    default:
+                        .ipv4(host: self.configuration.host, port: port)
+                    }
+                }(),
+                transportSecurity: security,
+                config: .defaults {
+                    $0.http2.maxFrameSize = 256 * 1024
+                    $0.http2.targetWindowSize = 8 * 1024 * 1024
+                    $0.rpc.maxRequestPayloadSize = 16 * 1024 * 1024
+                }
+            ),
+            services: services
+        )
+        return (server, certs != nil)
+    }
+
+    /// Constructs the mTLS transport security for the main server.
+    ///
+    /// `clientCertificateVerification` is `.noHostnameVerification` (rather than
+    /// `.noVerification`) for two reasons: a client certificate is required, and
+    /// NIOSSL only invokes `customVerificationCallback` when verification is not
+    /// disabled. The custom callback fully REPLACES BoringSSL's chain validation,
+    /// so `ClientCertAuthorizer` performs the complete verification itself: it
+    /// builds a verified path to the device's own CA trust roots AND enforces
+    /// org-equality. It fails closed. The device's org is derived once, here,
+    /// from the device's own leaf certificate — never by calling back into the
+    /// provisioning actor from the event loop.
+    private static func mTLSSecurity(
+        certs: ProvisioningService.ProvisioningCerts
+    ) -> HTTP2ServerTransport.Posix.TransportSecurity {
+        let leaf = TLSConfig.CertificateSource.bytes(Array(certs.certPEM.utf8), format: .pem)
+        let chain = TLSConfig.CertificateSource.bytes(Array(certs.chainPEM.utf8), format: .pem)
+        let key = TLSConfig.PrivateKeySource.bytes(Array(certs.keyPEM.utf8), format: .pem)
+
+        let trustRootsPEM = certs.chainPEM
+        let deviceOrg = ClientCertAuthorizer.organizationID(fromLeafPEM: certs.certPEM)
+
+        var tls = HTTP2ServerTransport.Posix.TransportSecurity.TLS(
+            certificateChain: [leaf, chain],
+            privateKey: key,
+            clientCertificateVerification: .noHostnameVerification,
+            trustRoots: .certificates([chain]),
+            requireALPN: false
+        )
+        tls.customVerificationCallback = { peerCertificates, promise in
+            let ders = peerCertificates.compactMap { try? $0.toDERBytes() }
+            Task {
+                let authorized = await ClientCertAuthorizer.isAuthorized(
+                    peerCertificatesDER: ders,
+                    trustRootsPEM: trustRootsPEM,
+                    deviceOrg: deviceOrg
+                )
+                promise.succeed(authorized ? .certificateVerified(.init(nil)) : .failed)
+            }
+        }
+        return .tls(tls)
     }
 
     private func startOTelServer(
@@ -320,14 +430,21 @@ public final class WendyAgent {
     }
 
     private func startBonjour() async throws {
+        let info = await self.provisioningService?.provisioningInfo()
+        let enrolled = info?.enrolled ?? false
         let advertiser = BonjourAdvertiser(
-            port: self.configuration.port,
+            port: enrolled ? self.configuration.port + 1 : self.configuration.port,
             displayName: ProcessInfo.processInfo.hostName,
-            deviceID: ProcessInfo.processInfo.hostName
+            deviceID: ProcessInfo.processInfo.hostName,
+            tls: enrolled,
+            assetID: enrolled ? info?.assetID : nil
         )
 
         let runtime = try await advertiser.start()
-        self.logger.info("Bonjour advertisement registered")
+        self.logger.info(
+            "Bonjour advertisement registered",
+            metadata: ["tls": "\(enrolled)"]
+        )
 
         self.bonjourRegistration = runtime.registration
         self.bonjourTask = runtime.task
@@ -338,6 +455,74 @@ public final class WendyAgent {
         _ = try? await self.bonjourTask?.value
         self.bonjourRegistration = nil
         self.bonjourTask = nil
+    }
+
+    /// Called (via a detached task) after the device is provisioned. Switches the
+    /// main server from plaintext to mTLS and re-advertises Bonjour.
+    private func handleProvisioned() async {
+        guard case .running = self.status, !self.mainServerIsMTLS else { return }
+        self.logger.info("Device provisioned — switching main server to mTLS")
+        await self.switchMainServer()
+    }
+
+    /// Called (via a detached task) after the device is unprovisioned. Switches
+    /// the main server from mTLS back to plaintext and re-advertises Bonjour.
+    private func handleUnprovisioned() async {
+        guard case .running = self.status, self.mainServerIsMTLS else { return }
+        self.logger.info("Device unprovisioned — switching main server to plaintext")
+        await self.switchMainServer()
+    }
+
+    /// Rebuilds and restarts the main gRPC server (and Bonjour) in whatever mode
+    /// the now-updated provisioning state dictates.
+    ///
+    /// Concurrency: this only ever runs from a detached task spawned by the
+    /// provisioning callbacks, never synchronously from the provisioning RPC, so
+    /// the graceful shutdown of the old server here cannot deadlock on the RPC
+    /// that triggered it. A short delay first lets that RPC's response flush
+    /// (mirroring the Go agent's delayed restart). The runtime monitor is stopped
+    /// before teardown so the intentional stop isn't misread as a crash, then
+    /// resumed with the fresh task handles.
+    private func switchMainServer() async {
+        guard case .running = self.status, !self.switchingMainServer else { return }
+        self.switchingMainServer = true
+        defer { self.switchingMainServer = false }
+
+        try? await Task.sleep(for: .milliseconds(500))
+        guard case .running = self.status else { return }
+
+        self.stopMonitorTask()
+        await self.stopBonjour()
+        await self.stopMainServer()
+
+        let dockerAvailability = await self.prepareDockerIfNeeded()
+        let broadcaster = self.telemetryBroadcaster ?? TelemetryBroadcaster()
+
+        do {
+            try await self.startMainServer(
+                dockerAvailability: dockerAvailability,
+                broadcaster: broadcaster
+            )
+            try await self.startBonjour()
+        } catch {
+            self.logger.error(
+                "Failed to switch main server after provisioning change",
+                metadata: ["error": "\(Self.errorMessage(for: error))"]
+            )
+            await self.rollbackStartup()
+            self.clearRuntimeState()
+            self.updateStatus(.failed(Self.errorMessage(for: error)))
+            return
+        }
+
+        self.runIdentifier &+= 1
+        self.handlingUnexpectedRuntimeExit = false
+        self.startMonitorTask(runIdentifier: self.runIdentifier)
+
+        self.logger.info(
+            "Main server switched",
+            metadata: ["mtls": "\(self.mainServerIsMTLS)"]
+        )
     }
 
     private func startMonitorTask(runIdentifier: UInt64) {
@@ -373,6 +558,9 @@ public final class WendyAgent {
         self.mainServer = nil
         self.mainServerTask = nil
         self.containerService = nil
+        self.provisioningService = nil
+        self.mainServerIsMTLS = false
+        self.telemetryBroadcaster = nil
         self.otelServer = nil
         self.otelServerTask = nil
         self.bonjourRegistration = nil
