@@ -6,8 +6,8 @@ import OSLog
 import Observation
 import ServiceManagement
 
-@MainActor
 @Observable
+@MainActor
 final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocationManagerDelegate {
     enum Permission: CaseIterable, Hashable {
         case bluetooth
@@ -182,6 +182,9 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        // Read the Sendable status here, in the nonisolated context: the
+        // non-Sendable `manager` must not be captured into the MainActor hop.
+        let authorizationStatus = manager.authorizationStatus
         MainActor.assumeIsolated {
             guard let locationContinuation = self.locationContinuation else {
                 self.refreshPermissionStatuses()
@@ -189,7 +192,7 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocatio
             }
             // The first callback fires immediately on delegate assignment with
             // .notDetermined; wait for the user's actual decision.
-            guard manager.authorizationStatus != .notDetermined else { return }
+            guard authorizationStatus != .notDetermined else { return }
 
             self.locationContinuation = nil
             self.locationManager = nil
