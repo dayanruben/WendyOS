@@ -217,6 +217,11 @@ func resolveT234Flashpack(cacheDir string, ref flashpack.RecoveryRef, info *reco
 	tarball := flashpack.RecoveryTarballCachePath(cacheDir, ref)
 	if _, err := os.Stat(filepath.Join(extracted, "manifest.json")); err == nil {
 		fp, err := flashpack.ResolveRecovery(cacheDir, ref)
+		if err == nil {
+			// Reclaim a tarball an earlier interrupted run left behind: the
+			// extracted tree is the cache from here on.
+			_ = os.Remove(tarball)
+		}
 		return fp, true, err
 	}
 	cached := true
@@ -250,7 +255,13 @@ func resolveT234Flashpack(cacheDir string, ref flashpack.RecoveryRef, info *reco
 	}
 	detail("extracting and verifying every consumed file")
 	fp, err := flashpack.ResolveRecovery(cacheDir, ref)
-	return fp, cached, err
+	if err != nil {
+		return nil, cached, err
+	}
+	// The extracted tree is the cache; drop the large .tar.zst so a version's
+	// on-disk footprint isn't doubled (mirrors the pre-schema-v2 bundle flow).
+	_ = os.Remove(tarball)
+	return fp, cached, nil
 }
 
 // prepareT234Workspace hard-links immutable partition images into a per-run

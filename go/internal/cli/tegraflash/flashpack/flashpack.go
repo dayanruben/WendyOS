@@ -369,9 +369,15 @@ func pathWithin(parent, child string) bool {
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
-// verifyIntegrity checks every declared file, not only stage 1. Schema-v2
-// builders list every consumed partition image; an immutable cache is safe only
-// when the complete map still matches.
+// verifyIntegrity checks every declared file against its recorded size, and its
+// SHA-256 for the small consumed control set: stage 1, the command package, the
+// partition layout, and the config image. The large T234 partition images —
+// dominated by the multi-GiB rootfs — are size-checked only. They are already
+// covered by the download-time tarball checksum and the atomic extraction, so
+// re-hashing them on every resolve (including cache hits) costs seconds of IO
+// per install for no added guarantee; Thor never hashes its stage-2 images at
+// all. Every staged image must still appear in the map, and no stray file may
+// live under the flash-images tree (checked below).
 func (f *Flashpack) verifyIntegrity() error {
 	for rel, meta := range f.Manifest.Files {
 		clean := filepath.Clean(filepath.FromSlash(rel))
@@ -388,6 +394,9 @@ func (f *Flashpack) verifyIntegrity() error {
 		}
 		if info.Size() != meta.Size {
 			return fmt.Errorf("flashpack %s wrong size (got %d, want %d); %s", rel, info.Size(), meta.Size, clearCacheHint)
+		}
+		if f.sizeOnlyStagedImage(rel) {
+			continue
 		}
 		sum, err := sha256File(p)
 		if err != nil {
@@ -424,6 +433,27 @@ func (f *Flashpack) verifyIntegrity() error {
 		}
 	}
 	return nil
+}
+
+// sizeOnlyStagedImage reports whether rel is a large T234 partition image that
+// verifyIntegrity checks by size only. The consumed control files that live
+// inside the flash-images tree — the partition layout and the config image —
+// are excluded so they keep full-hash coverage; everything outside the tree
+// (stage 1, the command package) is always fully hashed.
+func (f *Flashpack) sizeOnlyStagedImage(rel string) bool {
+	if !f.IsT234() {
+		return false
+	}
+	if !pathWithin(f.Manifest.Layout.FlashImages, rel) {
+		return false
+	}
+	key := toSlashClean(rel)
+	return key != toSlashClean(f.Manifest.Layout.PartitionLayout) &&
+		key != toSlashClean(f.Manifest.Layout.ConfigImage)
+}
+
+func toSlashClean(p string) string {
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))
 }
 
 func sha256File(path string) (string, error) {

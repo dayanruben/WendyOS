@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestRawSyncError guards the macOS raw-device flush behavior: fsync on a raw
@@ -29,6 +30,31 @@ func TestRawSyncError(t *testing.T) {
 		t.Fatal("a real sync error (EIO) must not be swallowed")
 	} else if !errors.Is(err, syscall.EIO) {
 		t.Fatalf("returned error should wrap EIO, got %v", err)
+	}
+}
+
+func TestClampLabel(t *testing.T) {
+	cases := []struct {
+		name, in string
+		max      int
+		want     string
+	}{
+		{"short-ext4", "UDA", ext4LabelMax, "UDA"},
+		{"exact-ext4", "0123456789abcdef", ext4LabelMax, "0123456789abcdef"},
+		{"long-ext4", "this-label-is-way-too-long", ext4LabelMax, "this-label-is-wa"},
+		{"short-fat32", "ESP", fat32LabelMax, "ESP"},
+		{"long-fat32", "config-partition", fat32LabelMax, "config-part"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampLabel(tc.in, tc.max); got != tc.want {
+				t.Fatalf("clampLabel(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+			}
+		})
+	}
+	// A multi-byte rune straddling the limit is dropped whole, not split.
+	if got := clampLabel("ααααααααα", ext4LabelMax); len(got) > ext4LabelMax || !utf8.ValidString(got) {
+		t.Fatalf("clampLabel truncated a rune: %q (len %d)", got, len(got))
 	}
 }
 

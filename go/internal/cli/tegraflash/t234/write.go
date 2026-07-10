@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"unicode/utf8"
 
 	backendfile "github.com/diskfs/go-diskfs/backend/file"
 	"github.com/diskfs/go-diskfs/filesystem/ext4"
@@ -37,6 +38,29 @@ type WriterOptions struct {
 }
 
 const writeChunk = 4 << 20 // 4 MiB write buffer (padded to full sectors)
+
+// Volume-label byte limits for the pure-Go blank-filesystem writers. LoadXMLPlan
+// permits GPT partition names up to 36 UTF-16 units, but ext4 stores a 16-byte
+// label and FAT32 an 11-byte one; a longer name would fail Create and abort the
+// flash. The label is cosmetic — the GPT partition name carries the identity —
+// so clamping it is safe.
+const (
+	ext4LabelMax  = 16
+	fat32LabelMax = 11
+)
+
+// clampLabel truncates name to at most max bytes, dropping a trailing partial
+// UTF-8 sequence so the label stays valid.
+func clampLabel(name string, max int) string {
+	if len(name) <= max {
+		return name
+	}
+	b := name[:max]
+	for len(b) > 0 && !utf8.ValidString(b) {
+		b = b[:len(b)-1]
+	}
+	return b
+}
 
 // rawSyncError classifies the error from flushing a raw block device. fsync
 // succeeds on Linux block devices, but macOS raw character devices
@@ -178,9 +202,9 @@ func writePlan(opts WriterOptions) error {
 		var closeFS interface{ Close() error }
 		switch p.FsType {
 		case "ext4":
-			closeFS, err = ext4.Create(backend, partSize, partOffset, sectorSize, &ext4.Params{VolumeName: p.Name})
+			closeFS, err = ext4.Create(backend, partSize, partOffset, sectorSize, &ext4.Params{VolumeName: clampLabel(p.Name, ext4LabelMax)})
 		case "fat32", "vfat":
-			closeFS, err = fat32.Create(backend, partSize, partOffset, sectorSize, p.Name, false)
+			closeFS, err = fat32.Create(backend, partSize, partOffset, sectorSize, clampLabel(p.Name, fat32LabelMax), false)
 		}
 		if err != nil {
 			return fmt.Errorf("creating %s filesystem on partition %s: %w", p.FsType, p.Name, err)

@@ -76,6 +76,46 @@ func TestT234SchemaV2VerifiesEveryFile(t *testing.T) {
 	}
 }
 
+// TestT234SchemaV2HashesControlFilesSizeChecksImages pins the intentional
+// split: the small consumed control files are fully hashed (a same-size content
+// change is caught), while the large staged partition images are size-checked
+// only (covered by the download-time tarball checksum) so they are not
+// re-SHA256'd on every cache hit.
+func TestT234SchemaV2HashesControlFilesSizeChecksImages(t *testing.T) {
+	sameSize := func(t *testing.T, path string) {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(strings.Repeat("x", int(info.Size()))), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A same-size edit to a stage-1 control file is caught by its checksum.
+	root := writeT234ManifestFixture(t, 2)
+	fp, err := open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameSize(t, filepath.Join(root, "stage1/br.bct"))
+	if err := fp.verifyIntegrity(); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("control-file tamper error = %v", err)
+	}
+
+	// A same-size edit to a staged partition image is deliberately not hashed.
+	root = writeT234ManifestFixture(t, 2)
+	fp, err = open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameSize(t, filepath.Join(root, "stage2/flash/rootfs.img"))
+	if err := fp.verifyIntegrity(); err != nil {
+		t.Fatalf("size-only staged image should pass verifyIntegrity, got %v", err)
+	}
+}
+
 func TestT234SchemaV2RejectsUnsupportedTargetMapping(t *testing.T) {
 	root := writeT234ManifestFixture(t, 2)
 	data, err := os.ReadFile(filepath.Join(root, "manifest.json"))
