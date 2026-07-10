@@ -67,6 +67,11 @@ type OpResultMsg struct {
 	Name    string
 	Address string
 	Err     error
+	// PairedKnown reports whether Paired carries the agent's actual
+	// post-connect pairing state. Older agents do not report it, in which
+	// case the model falls back to assuming the requested pairing succeeded.
+	PairedKnown bool
+	Paired      bool
 }
 
 // flashClearMsg clears the current flash message after a delay. The token
@@ -378,8 +383,13 @@ func (m *Model) applyOptimisticUpdate(msg OpResultMsg) {
 		switch msg.Action {
 		case ActionConnect:
 			m.peripherals[i].Connected = true
-			m.peripherals[i].Paired = true
-			m.peripherals[i].Trusted = true
+			// A successful connect no longer implies pairing (the agent falls
+			// back to a direct connect when pairing fails), so apply the
+			// reported state when the agent provides it.
+			if !msg.PairedKnown || msg.Paired {
+				m.peripherals[i].Paired = true
+				m.peripherals[i].Trusted = true
+			}
 		case ActionDisconnect:
 			m.peripherals[i].Connected = false
 		case ActionForget:
@@ -411,6 +421,9 @@ func flashFor(msg OpResultMsg) (string, bool) {
 	}
 	switch msg.Action {
 	case ActionConnect:
+		if msg.PairedKnown && !msg.Paired {
+			return fmt.Sprintf("Connected to %s (not paired — the device accepted the connection without pairing).", label), false
+		}
 		return fmt.Sprintf("Connected to %s.", label), false
 	case ActionDisconnect:
 		return fmt.Sprintf("Disconnected %s.", label), false

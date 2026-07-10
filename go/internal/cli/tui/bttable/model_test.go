@@ -22,6 +22,10 @@ type fakeHandler struct {
 	connectResult    error
 	disconnectResult error
 	forgetResult     error
+	// connectPaired/connectPairedKnown mirror the agent's reported post-connect
+	// pairing state (PairedKnown=false simulates an older agent).
+	connectPaired      bool
+	connectPairedKnown bool
 }
 
 func (h *fakeHandler) StartScan() tea.Cmd {
@@ -38,7 +42,10 @@ func (h *fakeHandler) Connect(address string) tea.Cmd {
 	h.connectCalls++
 	h.lastAddress = address
 	err := h.connectResult
-	return func() tea.Msg { return OpResultMsg{Action: ActionConnect, Address: address, Err: err} }
+	paired, pairedKnown := h.connectPaired, h.connectPairedKnown
+	return func() tea.Msg {
+		return OpResultMsg{Action: ActionConnect, Address: address, Err: err, Paired: paired, PairedKnown: pairedKnown}
+	}
 }
 
 func (h *fakeHandler) Disconnect(address string) tea.Cmd {
@@ -299,6 +306,49 @@ func TestConnectOptimisticUpdateAndNoAutoRescan(t *testing.T) {
 	// Divergence from wifi: no auto-rescan after a successful op.
 	if h.startScanCalls != 0 {
 		t.Errorf("expected NO auto-rescan after op, got %d StartScan calls", h.startScanCalls)
+	}
+}
+
+func TestConnectFallbackUnpairedIsNotShownAsPaired(t *testing.T) {
+	// The agent's pair-failure fallback can connect without pairing; the row
+	// must reflect the reported state instead of assuming Paired.
+	h := &fakeHandler{connectPairedKnown: true, connectPaired: false}
+	m := NewModel([]Peripheral{{Name: "Buds", Address: "BB"}}).WithHandler(h)
+	m = finishScan(m)
+	m.table.SetCursor(0)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = runCmd(next.(Model), cmd)
+
+	buds := find(m, "BB")
+	if buds == nil || !buds.Connected {
+		t.Fatalf("row should be connected: %+v", buds)
+	}
+	if buds.Paired || buds.Trusted {
+		t.Errorf("unpaired fallback connect must not mark paired/trusted: %+v", buds)
+	}
+	if !strings.Contains(m.flashMessage, "not paired") {
+		t.Errorf("flash should mention the unpaired outcome, got %q", m.flashMessage)
+	}
+
+	// Forget stays guarded because the row is (correctly) not paired.
+	m.table.SetCursor(0)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	m = next.(Model)
+	if h.forgetCalls != 0 {
+		t.Errorf("forget should stay guarded for the unpaired row")
+	}
+}
+
+func TestConnectReportedPairedMarksPaired(t *testing.T) {
+	h := &fakeHandler{connectPairedKnown: true, connectPaired: true}
+	m := NewModel([]Peripheral{{Name: "Buds", Address: "BB"}}).WithHandler(h)
+	m = finishScan(m)
+	m.table.SetCursor(0)
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = runCmd(next.(Model), cmd)
+	if buds := find(m, "BB"); buds == nil || !buds.Paired || !buds.Trusted || !buds.Connected {
+		t.Errorf("reported-paired connect should mark connected/paired/trusted: %+v", buds)
 	}
 }
 

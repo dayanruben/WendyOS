@@ -76,11 +76,27 @@ func resolveAdapterPath(managed managedObjects) (string, error) {
 // powerOnAdapter powers the adapter on. The call is a no-op if it is already
 // on, but it also clears Command Disallowed state left over from a previous
 // BLE connection that wasn't fully torn down at the HCI level.
-func powerOnAdapter(conn *dbus.Conn, adapterPath string) error {
+func powerOnAdapter(ctx context.Context, conn *dbus.Conn, adapterPath string) error {
 	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
-	call := adapter.Call("org.freedesktop.DBus.Properties.Set", 0,
+	call := adapter.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
 		adapterIface, "Powered", dbus.MakeVariant(true))
 	return call.Err
+}
+
+// stopDiscoveryTimeout bounds the best-effort StopDiscovery cleanup. It uses
+// its own deadline because cleanup often runs after the request context has
+// already been canceled, and godbus's plain Call would otherwise block
+// indefinitely on an unresponsive bluetoothd.
+const stopDiscoveryTimeout = 3 * time.Second
+
+// stopDiscovery stops a discovery session this connection started (best-effort).
+func (m *BlueZManager) stopDiscovery(conn *dbus.Conn, adapterPath string) {
+	ctx, cancel := context.WithTimeout(context.Background(), stopDiscoveryTimeout)
+	defer cancel()
+	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
+	if call := adapter.CallWithContext(ctx, adapterIface+".StopDiscovery", 0); call.Err != nil {
+		m.logger.Debug("Failed to stop Bluetooth discovery", zap.Error(call.Err))
+	}
 }
 
 // findDeviceByAddress locates the org.bluez.Device1 object whose Address
@@ -154,6 +170,29 @@ func includePeripheral(props map[string]dbus.Variant) bool {
 	}
 	_, hasRSSI := props["RSSI"]
 	return hasRSSI
+}
+
+// shouldListPeripheral decides whether a device belongs in scan results. A
+// device object that appeared during this discovery is always listed — BlueZ
+// documents RSSI as optional, so its absence must not hide a fresh device.
+// Objects that predate the scan are cache entries and need a presence marker
+// (paired/connected/trusted, or re-seen with RSSI) to be worth showing.
+func shouldListPeripheral(props map[string]dbus.Variant, preexisting bool) bool {
+	return !preexisting || includePeripheral(props)
+}
+
+// devicePathsUnder returns the set of org.bluez.Device1 object paths nested
+// under the adapter, used to snapshot which devices were already cached
+// before a discovery starts.
+func devicePathsUnder(managed managedObjects, adapterPath string) map[dbus.ObjectPath]bool {
+	prefix := adapterPath + "/"
+	paths := map[dbus.ObjectPath]bool{}
+	for path, ifaces := range managed {
+		if _, ok := ifaces[deviceIface]; ok && strings.HasPrefix(string(path), prefix) {
+			paths[path] = true
+		}
+	}
+	return paths
 }
 
 // dbusErrorInfo unwraps err to a BlueZ/D-Bus error and returns its D-Bus error
@@ -247,13 +286,17 @@ func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBl
 		}
 		adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
 
-		if err := powerOnAdapter(conn, adapterPath); err != nil {
+		// Snapshot the devices BlueZ already had cached, so results can tell a
+		// freshly discovered device apart from a stale cache entry.
+		preexisting := devicePathsUnder(managed, adapterPath)
+
+		if err := powerOnAdapter(ctx, conn, adapterPath); err != nil {
 			m.logger.Warn("Failed to power on Bluetooth adapter", zap.Error(err))
 			return
 		}
 
 		// Start discovery.
-		if call := adapter.Call(adapterIface+".StartDiscovery", 0); call.Err != nil {
+		if call := adapter.CallWithContext(ctx, adapterIface+".StartDiscovery", 0); call.Err != nil {
 			m.logger.Warn("Failed to start Bluetooth discovery", zap.Error(call.Err))
 			return
 		}
@@ -265,12 +308,9 @@ func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBl
 		case <-time.After(scanDuration):
 		case <-ctx.Done():
 		}
-		peripherals := m.collectPeripherals(ctx, conn, adapterPath)
+		peripherals := m.collectPeripherals(ctx, conn, adapterPath, preexisting)
 
-		// Stop discovery (best-effort).
-		if call := adapter.Call(adapterIface+".StopDiscovery", 0); call.Err != nil {
-			m.logger.Debug("Failed to stop Bluetooth discovery", zap.Error(call.Err))
-		}
+		m.stopDiscovery(conn, adapterPath)
 
 		if len(peripherals) > 0 {
 			select {
@@ -284,9 +324,10 @@ func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBl
 }
 
 // collectPeripherals enumerates devices known to BlueZ via the ObjectManager
-// and returns those belonging to the given adapter that are present (paired,
-// connected, trusted, or seen during this discovery).
-func (m *BlueZManager) collectPeripherals(ctx context.Context, conn *dbus.Conn, adapterPath string) []*agentpb.DiscoveredBluetoothPeripheral {
+// and returns those belonging to the given adapter that either appeared
+// during this discovery or carry a presence marker (paired, connected,
+// trusted, or re-seen with RSSI).
+func (m *BlueZManager) collectPeripherals(ctx context.Context, conn *dbus.Conn, adapterPath string, preexisting map[dbus.ObjectPath]bool) []*agentpb.DiscoveredBluetoothPeripheral {
 	managed, err := getManagedObjects(ctx, conn)
 	if err != nil {
 		m.logger.Warn("Failed to enumerate Bluetooth devices", zap.Error(err))
@@ -302,7 +343,7 @@ func (m *BlueZManager) collectPeripherals(ctx context.Context, conn *dbus.Conn, 
 		if !ok || !strings.HasPrefix(string(path), prefix) {
 			continue
 		}
-		if !includePeripheral(props) {
+		if !shouldListPeripheral(props, preexisting[path]) {
 			continue
 		}
 		peripherals = append(peripherals, deviceFromProps(props))
@@ -399,7 +440,7 @@ func (m *BlueZManager) resolveDevice(ctx context.Context, conn *dbus.Conn, addre
 	if err != nil {
 		return "", nil, err
 	}
-	if err := powerOnAdapter(conn, adapterPath); err != nil {
+	if err := powerOnAdapter(ctx, conn, adapterPath); err != nil {
 		m.logger.Warn("Failed to power on Bluetooth adapter before discovery", zap.Error(err))
 	}
 
@@ -412,11 +453,7 @@ func (m *BlueZManager) resolveDevice(ctx context.Context, conn *dbus.Conn, addre
 			return "", nil, m.wrapBluetoothError("discovering", address, call.Err)
 		}
 	}
-	defer func() {
-		if call := adapter.Call(adapterIface+".StopDiscovery", 0); call.Err != nil {
-			m.logger.Debug("Failed to stop on-demand discovery", zap.Error(call.Err))
-		}
-	}()
+	defer m.stopDiscovery(conn, adapterPath)
 
 	deadline := time.NewTimer(resolveDiscoveryTimeout)
 	defer deadline.Stop()
@@ -445,17 +482,19 @@ func (m *BlueZManager) resolveDevice(ctx context.Context, conn *dbus.Conn, addre
 // discovering the device first if BlueZ no longer has it cached. When pair is
 // set it registers a headless pairing agent and pairs first (skipped if the
 // device is already paired); when trust is set it marks the device trusted so
-// BlueZ reconnects it automatically.
-func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust bool) error {
+// BlueZ reconnects it automatically. The returned bool reports whether the
+// device is paired after the connect — success does not imply pairing because
+// pairing failures fall back to a direct connect.
+func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust bool) (bool, error) {
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
-		return fmt.Errorf("connecting to system bus: %w", err)
+		return false, fmt.Errorf("connecting to system bus: %w", err)
 	}
 	defer conn.Close()
 
 	devicePath, props, err := m.resolveDevice(ctx, conn, address)
 	if err != nil {
-		return err
+		return false, err
 	}
 	device := conn.Object(bluezService, devicePath)
 
@@ -489,14 +528,27 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 	}
 
 	if call := device.CallWithContext(ctx, deviceIface+".Connect", 0); call.Err != nil {
-		return m.connectFailureError(address, pairErr, call.Err)
+		return false, m.connectFailureError(address, pairErr, call.Err)
+	}
+
+	// The device's live Paired property is the source of truth: pairing may
+	// have completed implicitly during the connect, or been skipped by the
+	// fallback above. Fall back to the computed state if the read fails.
+	paired := boolProp(props, "Paired") || (pair && pairErr == nil)
+	if call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, deviceIface, "Paired"); call.Err == nil {
+		var v dbus.Variant
+		if call.Store(&v) == nil {
+			if b, ok := v.Value().(bool); ok {
+				paired = b
+			}
+		}
 	}
 
 	if pairErr != nil {
 		m.logger.Info("Connected without pairing", zap.String("address", address), zap.Error(pairErr))
 	}
-	m.logger.Info("Connected to Bluetooth device", zap.String("address", address))
-	return nil
+	m.logger.Info("Connected to Bluetooth device", zap.String("address", address), zap.Bool("paired", paired))
+	return paired, nil
 }
 
 // Disconnect disconnects from a Bluetooth peripheral via BlueZ over D-Bus.

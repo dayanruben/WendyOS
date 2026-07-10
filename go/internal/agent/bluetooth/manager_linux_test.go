@@ -235,6 +235,52 @@ func TestIncludePeripheral(t *testing.T) {
 	}
 }
 
+func TestShouldListPeripheral(t *testing.T) {
+	bare := map[string]dbus.Variant{"Name": dbus.MakeVariant("Mystery")}
+	withRSSI := map[string]dbus.Variant{"RSSI": dbus.MakeVariant(int16(-50))}
+	paired := map[string]dbus.Variant{"Paired": dbus.MakeVariant(true)}
+
+	tests := []struct {
+		name        string
+		props       map[string]dbus.Variant
+		preexisting bool
+		want        bool
+	}{
+		// A device object that appeared during this discovery is always listed —
+		// RSSI is an optional BlueZ property and must not gate fresh devices.
+		{"new device without RSSI", bare, false, true},
+		{"new device with RSSI", withRSSI, false, true},
+		// Pre-existing cache entries need a presence marker.
+		{"stale cache entry", bare, true, false},
+		{"cached but re-seen (RSSI)", withRSSI, true, true},
+		{"cached and paired", paired, true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldListPeripheral(tt.props, tt.preexisting); got != tt.want {
+				t.Errorf("shouldListPeripheral(preexisting=%v) = %v, want %v", tt.preexisting, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDevicePathsUnder(t *testing.T) {
+	managed := managedObjects{
+		"/org/bluez/hci0": {adapterIface: {}},
+		"/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF": {
+			deviceIface: deviceProps("AA:BB:CC:DD:EE:FF", nil),
+		},
+		"/org/bluez/hci1/dev_11_22_33_44_55_66": {
+			deviceIface: deviceProps("11:22:33:44:55:66", nil),
+		},
+	}
+	got := devicePathsUnder(managed, "/org/bluez/hci0")
+	if len(got) != 1 || !got["/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"] {
+		t.Errorf("devicePathsUnder = %v, want only the hci0 device", got)
+	}
+}
+
 func TestResolveAdapterPath(t *testing.T) {
 	adapterEntry := map[string]map[string]dbus.Variant{adapterIface: {}}
 

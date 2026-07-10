@@ -68,11 +68,49 @@ type failingBluetoothManager struct {
 	err error
 }
 
-func (m *failingBluetoothManager) Connect(_ context.Context, _ string, _, _ bool) error {
-	return m.err
+func (m *failingBluetoothManager) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return false, m.err
 }
 func (m *failingBluetoothManager) Disconnect(_ context.Context, _ string) error { return m.err }
 func (m *failingBluetoothManager) Forget(_ context.Context, _ string) error     { return m.err }
+
+// pairedReportingManager reports a fixed post-connect pairing state.
+type pairedReportingManager struct {
+	mockBluetoothManager
+	paired bool
+}
+
+func (m *pairedReportingManager) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return m.paired, nil
+}
+
+func TestBluetoothService_ConnectReportsPairedState(t *testing.T) {
+	for _, paired := range []bool{true, false} {
+		client, cleanup := startBluetoothServer(t, &pairedReportingManager{paired: paired})
+		resp, err := client.ConnectBluetoothPeripheral(context.Background(), &agentpbv2.ConnectBluetoothPeripheralRequest{Address: "AA:BB:CC:DD:EE:FF"})
+		cleanup()
+		if err != nil {
+			t.Fatalf("ConnectBluetoothPeripheral: %v", err)
+		}
+		if resp.Paired == nil {
+			t.Fatalf("paired=%v: response must carry the pairing state", paired)
+		}
+		if resp.GetPaired() != paired {
+			t.Errorf("resp.Paired = %v, want %v", resp.GetPaired(), paired)
+		}
+	}
+}
+
+func TestAgentService_ConnectReportsPairedState(t *testing.T) {
+	svc := NewAgentService(zap.NewNop(), &mockNetworkManager{}, &mockHardwareDiscoverer{}, &pairedReportingManager{paired: false}, &AgentInstaller{})
+	resp, err := svc.ConnectBluetoothPeripheral(context.Background(), &agentpb.ConnectBluetoothPeripheralRequest{Address: "AA:BB:CC:DD:EE:FF"})
+	if err != nil {
+		t.Fatalf("ConnectBluetoothPeripheral: %v", err)
+	}
+	if resp.Paired == nil || resp.GetPaired() {
+		t.Errorf("v1 response should report paired=false, got %v", resp.Paired)
+	}
+}
 
 func TestBluetoothService_DeviceNotFoundMapsToNotFound(t *testing.T) {
 	notFound := fmt.Errorf("%w: device AA:BB:CC:DD:EE:FF was not seen within 12s of discovery — rescan", bluetooth.ErrDeviceNotFound)

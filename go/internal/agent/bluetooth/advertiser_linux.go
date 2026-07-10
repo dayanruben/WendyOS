@@ -119,7 +119,7 @@ func startAdvertising(ctx context.Context, logger *zap.Logger) error {
 	hci := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
 
 	// Ensure the adapter is powered on before advertising.
-	if err := powerOnAdapter(conn, adapterPath); err != nil {
+	if err := powerOnAdapter(ctx, conn, adapterPath); err != nil {
 		logger.Warn("BLE adapter power-on failed", zap.Error(err))
 	}
 

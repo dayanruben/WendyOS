@@ -649,10 +649,11 @@ func (s *AgentService) ScanBluetoothPeripherals(stream grpc.BidiStreamingServer[
 }
 
 func (s *AgentService) ConnectBluetoothPeripheral(ctx context.Context, req *agentpb.ConnectBluetoothPeripheralRequest) (*agentpb.ConnectBluetoothPeripheralResponse, error) {
-	if err := s.bluetoothManager.Connect(ctx, req.GetAddress(), req.GetPair(), req.GetTrust()); err != nil {
+	paired, err := s.bluetoothManager.Connect(ctx, req.GetAddress(), req.GetPair(), req.GetTrust())
+	if err != nil {
 		return nil, btStatusError("connect bluetooth peripheral", err)
 	}
-	return &agentpb.ConnectBluetoothPeripheralResponse{}, nil
+	return &agentpb.ConnectBluetoothPeripheralResponse{Paired: &paired}, nil
 }
 
 func (s *AgentService) DisconnectBluetoothPeripheral(ctx context.Context, req *agentpb.DisconnectBluetoothPeripheralRequest) (*agentpb.DisconnectBluetoothPeripheralResponse, error) {
