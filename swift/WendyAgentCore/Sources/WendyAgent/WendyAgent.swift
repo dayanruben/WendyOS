@@ -418,14 +418,13 @@ public actor WendyAgent {
         // Org-enforcement mode (WENDY_MTLS_ORG_ENFORCEMENT: off|grace|strict).
         // Defaults to grace so today's CLI user certs — which carry no org claim
         // — can connect while cert rotation to org-bearing URNs completes.
-        let (orgMode, recognized) = ClientCertAuthorizer.OrgEnforcementMode.parse(
-            ProcessInfo.processInfo.environment["WENDY_MTLS_ORG_ENFORCEMENT"]
-        )
+        let rawOrgEnforcement = ProcessInfo.processInfo.environment["WENDY_MTLS_ORG_ENFORCEMENT"]
+        let (orgMode, recognized) = ClientCertAuthorizer.OrgEnforcementMode.parse(rawOrgEnforcement)
         if !recognized {
             self.logger.warning(
                 "Unrecognized WENDY_MTLS_ORG_ENFORCEMENT value; defaulting to grace",
                 metadata: [
-                    "value": "\(ProcessInfo.processInfo.environment["WENDY_MTLS_ORG_ENFORCEMENT"] ?? "")"
+                    "value": "\(rawOrgEnforcement ?? "")"
                 ]
             )
         }
