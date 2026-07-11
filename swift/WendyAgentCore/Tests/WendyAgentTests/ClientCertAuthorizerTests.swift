@@ -63,10 +63,155 @@ struct ClientCertAuthorizerTests {
         )
     }
 
+    /// A leaf with the `wendy` CLI's user-cert shape: CommonName
+    /// `wendy/user/<uid>` and, optionally, an authoritative
+    /// `urn:wendy:org:<org>:user:<uid>` SAN URI. When `org` is nil the cert
+    /// carries no org identity at all (today's shipping CLI cert).
+    private static func makeUserLeaf(
+        uid: String,
+        org: Int32?,
+        ca: TestCA
+    ) throws -> Certificate {
+        let key = P256.Signing.PrivateKey()
+        let subject = try DistinguishedName {
+            CommonName("wendy/user/\(uid)")
+        }
+        return try Certificate(
+            version: .v3,
+            serialNumber: Certificate.SerialNumber(),
+            publicKey: Certificate.PublicKey(key.publicKey),
+            notValidBefore: Date().addingTimeInterval(-3600),
+            notValidAfter: Date().addingTimeInterval(3600),
+            issuer: ca.certificate.subject,
+            subject: subject,
+            signatureAlgorithm: .ecdsaWithSHA256,
+            extensions: try Certificate.Extensions {
+                Critical(BasicConstraints.notCertificateAuthority)
+                Critical(KeyUsage(digitalSignature: true))
+                try ExtendedKeyUsage([.clientAuth, .serverAuth])
+                if let org {
+                    SubjectAlternativeNames([
+                        .uniformResourceIdentifier("urn:wendy:org:\(org):user:\(uid)")
+                    ])
+                }
+            },
+            issuerPrivateKey: ca.privateKey
+        )
+    }
+
     private static func der(_ certificate: Certificate) throws -> [UInt8] {
         var serializer = DER.Serializer()
         try serializer.serialize(certificate)
         return serializer.serializedBytes
+    }
+
+    // MARK: - Client (user) certificates
+
+    @Test("grace (default) accepts a CA-signed user cert that carries no org claim")
+    func graceAcceptsNoOrgUserCert() async throws {
+        // Reproduces the field bug: the shipping `wendy` CLI cert has CN
+        // `wendy/user/<uid>` and no org identity, yet must connect to a
+        // provisioned device.
+        let ca = try Self.makeCA()
+        let client = try Self.makeUserLeaf(uid: "abc", org: nil, ca: ca)
+
+        let authorized = await ClientCertAuthorizer.isAuthorized(
+            peerCertificatesDER: [try Self.der(client)],
+            trustRootsPEM: ca.pem,
+            deviceOrg: 7
+        )
+        #expect(authorized)
+    }
+
+    @Test("strict rejects a CA-signed user cert that carries no org claim")
+    func strictRejectsNoOrgUserCert() async throws {
+        let ca = try Self.makeCA()
+        let client = try Self.makeUserLeaf(uid: "abc", org: nil, ca: ca)
+
+        let authorized = await ClientCertAuthorizer.isAuthorized(
+            peerCertificatesDER: [try Self.der(client)],
+            trustRootsPEM: ca.pem,
+            deviceOrg: 7,
+            mode: .strict
+        )
+        #expect(!authorized)
+    }
+
+    @Test("accepts a user cert whose org URN matches the device org")
+    func acceptsMatchingOrgURN() async throws {
+        let ca = try Self.makeCA()
+        let client = try Self.makeUserLeaf(uid: "abc", org: 7, ca: ca)
+
+        for mode in [ClientCertAuthorizer.OrgEnforcementMode.grace, .strict] {
+            let authorized = await ClientCertAuthorizer.isAuthorized(
+                peerCertificatesDER: [try Self.der(client)],
+                trustRootsPEM: ca.pem,
+                deviceOrg: 7,
+                mode: mode
+            )
+            #expect(authorized, "mode \(mode.name) should accept a matching org URN")
+        }
+    }
+
+    @Test("rejects a user cert whose org URN differs from the device org")
+    func rejectsMismatchedOrgURN() async throws {
+        let ca = try Self.makeCA()
+        let client = try Self.makeUserLeaf(uid: "abc", org: 9, ca: ca)
+
+        for mode in [ClientCertAuthorizer.OrgEnforcementMode.grace, .strict] {
+            let authorized = await ClientCertAuthorizer.isAuthorized(
+                peerCertificatesDER: [try Self.der(client)],
+                trustRootsPEM: ca.pem,
+                deviceOrg: 7,
+                mode: mode
+            )
+            #expect(!authorized, "mode \(mode.name) must reject a mismatched org URN")
+        }
+    }
+
+    @Test("off mode accepts any CA-signed client regardless of org")
+    func offModeSkipsOrgCheck() async throws {
+        let ca = try Self.makeCA()
+        let noOrg = try Self.makeUserLeaf(uid: "abc", org: nil, ca: ca)
+        let mismatched = try Self.makeUserLeaf(uid: "abc", org: 9, ca: ca)
+
+        for client in [noOrg, mismatched] {
+            let authorized = await ClientCertAuthorizer.isAuthorized(
+                peerCertificatesDER: [try Self.der(client)],
+                trustRootsPEM: ca.pem,
+                deviceOrg: 7,
+                mode: .off
+            )
+            #expect(authorized)
+        }
+    }
+
+    @Test("off mode still rejects a client not signed by the device CA")
+    func offModeStillRequiresValidChain() async throws {
+        let deviceCA = try Self.makeCA(commonName: "Wendy Device CA")
+        let rogueCA = try Self.makeCA(commonName: "Rogue CA")
+        let client = try Self.makeUserLeaf(uid: "abc", org: nil, ca: rogueCA)
+
+        let authorized = await ClientCertAuthorizer.isAuthorized(
+            peerCertificatesDER: [try Self.der(client)],
+            trustRootsPEM: deviceCA.pem,
+            deviceOrg: 7,
+            mode: .off
+        )
+        #expect(!authorized)
+    }
+
+    @Test("device org unknown rejects even a no-org user cert under grace")
+    func graceStillFailsClosedWhenDeviceOrgUnknown() async throws {
+        let ca = try Self.makeCA()
+        let client = try Self.makeUserLeaf(uid: "abc", org: nil, ca: ca)
+
+        let authorized = await ClientCertAuthorizer.isAuthorized(
+            peerCertificatesDER: [try Self.der(client)],
+            trustRootsPEM: ca.pem,
+            deviceOrg: nil
+        )
+        #expect(!authorized)
     }
 
     @Test("accepts a CA-signed client whose org matches the device org")

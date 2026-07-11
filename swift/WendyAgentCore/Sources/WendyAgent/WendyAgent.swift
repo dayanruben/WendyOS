@@ -395,10 +395,11 @@ public actor WendyAgent {
     /// NIOSSL only invokes `customVerificationCallback` when verification is not
     /// disabled. The custom callback fully REPLACES BoringSSL's chain validation,
     /// so `ClientCertAuthorizer` performs the complete verification itself: it
-    /// builds a verified path to the device's own CA trust roots AND enforces
-    /// org-equality. It fails closed. The device's org is derived once, here,
-    /// from the device's own leaf certificate — never by calling back into the
-    /// provisioning actor from the event loop.
+    /// builds a verified path to the device's own CA trust roots AND applies the
+    /// org-enforcement policy (`WENDY_MTLS_ORG_ENFORCEMENT`, default grace). It
+    /// fails closed. The device's org is derived once, here, from the device's
+    /// own leaf certificate — never by calling back into the provisioning actor
+    /// from the event loop.
     private func mTLSSecurity(
         certs: ProvisioningService.ProvisioningCerts
     ) -> HTTP2ServerTransport.Posix.TransportSecurity {
@@ -414,6 +415,25 @@ public actor WendyAgent {
             )
         }
 
+        // Org-enforcement mode (WENDY_MTLS_ORG_ENFORCEMENT: off|grace|strict).
+        // Defaults to grace so today's CLI user certs — which carry no org claim
+        // — can connect while cert rotation to org-bearing URNs completes.
+        let (orgMode, recognized) = ClientCertAuthorizer.OrgEnforcementMode.parse(
+            ProcessInfo.processInfo.environment["WENDY_MTLS_ORG_ENFORCEMENT"]
+        )
+        if !recognized {
+            self.logger.warning(
+                "Unrecognized WENDY_MTLS_ORG_ENFORCEMENT value; defaulting to grace",
+                metadata: [
+                    "value": "\(ProcessInfo.processInfo.environment["WENDY_MTLS_ORG_ENFORCEMENT"] ?? "")"
+                ]
+            )
+        }
+        self.logger.info(
+            "mTLS client org enforcement",
+            metadata: ["mode": "\(orgMode.name)"]
+        )
+
         var tls = HTTP2ServerTransport.Posix.TransportSecurity.TLS(
             certificateChain: [leaf, chain],
             privateKey: key,
@@ -427,7 +447,8 @@ public actor WendyAgent {
                 let authorized = await ClientCertAuthorizer.isAuthorized(
                     peerCertificatesDER: ders,
                     trustRootsPEM: trustRootsPEM,
-                    deviceOrg: deviceOrg
+                    deviceOrg: deviceOrg,
+                    mode: orgMode
                 )
                 promise.succeed(authorized ? .certificateVerified(.init(nil)) : .failed)
             }
