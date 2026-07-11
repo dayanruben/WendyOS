@@ -22,11 +22,11 @@ enum ClientCertAuthorizer {
     ///     leaf first (the order NIOSSL delivers them in).
     ///   - trustRootsPEM: The device's CA chain (PEM), used as the trust anchors.
     ///   - deviceOrg: This device's organization id, or `nil` if it could not be
-    ///     determined from the device's own certificate. When `nil`, org-equality
-    ///     enforcement is disabled (fail-safe allow) but chain verification is
-    ///     still required.
-    /// - Returns: `true` iff the chain verifies to a trusted root AND (org
-    ///   enforcement disabled OR the client's org equals the device's org).
+    ///     determined from the device's own certificate. When `nil`, every client
+    ///     is rejected (fail closed): org-equality is the sole cross-org barrier
+    ///     and is never silently dropped.
+    /// - Returns: `true` iff the chain verifies to a trusted root AND the device
+    ///   org is known AND the client's org equals the device's org.
     static func isAuthorized(
         peerCertificatesDER: [[UInt8]],
         trustRootsPEM: String,
@@ -52,9 +52,14 @@ enum ClientCertAuthorizer {
         )
         guard case .validCertificate = result else { return false }
 
-        // Additional layer: org-equality. Disabled (allow) only when the
-        // device's own org is unknown; otherwise the client's org must match.
-        guard let deviceOrg else { return true }
+        // Additional layer: org-equality. Because the PKI shares CA roots
+        // across organizations, chain verification alone would let a validly
+        // provisioned device from another org connect — org-equality is the
+        // sole cross-org barrier, so it fails closed. If the device's own org
+        // is unknown we reject every client rather than silently dropping that
+        // barrier (a device with an unparseable cert becomes unreachable over
+        // mTLS, which is the safe failure mode).
+        guard let deviceOrg else { return false }
         guard let clientOrg = OrgIdentity.organizationID(fromLeaf: leaf) else {
             return false
         }

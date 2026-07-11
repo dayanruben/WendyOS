@@ -406,8 +406,8 @@ public final class WendyAgent {
         let trustRootsPEM = certs.chainPEM
         let deviceOrg = ClientCertAuthorizer.organizationID(fromLeafPEM: certs.certPEM)
         if deviceOrg == nil {
-            self.logger.warning(
-                "mTLS org enforcement disabled: could not determine device organization from its own certificate"
+            self.logger.error(
+                "Could not determine device organization from its own certificate; mTLS will reject all clients (fail closed). Re-provision the device to recover."
             )
         }
 

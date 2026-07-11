@@ -128,19 +128,22 @@ struct ClientCertAuthorizerTests {
         #expect(!authorized)
     }
 
-    @Test("with device org unknown, still requires a verified chain")
-    func orgEnforcementDisabledStillVerifiesChain() async throws {
+    @Test("with device org unknown, rejects every client (fail closed)")
+    func orgUnknownFailsClosed() async throws {
         let ca = try Self.makeCA()
         let rogueCA = try Self.makeCA(commonName: "Rogue CA")
         let trusted = try Self.makeLeaf(org: 3, asset: 9, ca: ca)
         let untrusted = try Self.makeLeaf(org: 3, asset: 9, ca: rogueCA)
 
-        let allowsTrusted = await ClientCertAuthorizer.isAuthorized(
+        // Even a client with a chain that verifies to a trusted root is
+        // rejected when the device cannot determine its own org: org-equality
+        // is the sole cross-org barrier and is never silently dropped.
+        let rejectsTrusted = await ClientCertAuthorizer.isAuthorized(
             peerCertificatesDER: [try Self.der(trusted)],
             trustRootsPEM: ca.pem,
             deviceOrg: nil
         )
-        #expect(allowsTrusted)
+        #expect(!rejectsTrusted)
 
         let rejectsUntrusted = await ClientCertAuthorizer.isAuthorized(
             peerCertificatesDER: [try Self.der(untrusted)],
