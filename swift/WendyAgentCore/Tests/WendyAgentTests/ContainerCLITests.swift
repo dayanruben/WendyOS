@@ -43,6 +43,53 @@ import Testing
             ]
         )
     }
+
+    @Test func parseListIncludesManagedContainer() {
+        let json = """
+            [
+                {
+                    "configuration": {
+                        "id": "abc123",
+                        "labels": {
+                            "wendy.managed": "true"
+                        }
+                    },
+                    "status": "running"
+                }
+            ]
+            """
+        let result = ContainerCLI.parseList(json)
+        #expect(result.count == 1)
+        #expect(result[0].id == "abc123")
+        #expect(result[0].state == "running")
+    }
+
+    @Test func parseListFiltersUnmanagedContainer() {
+        let json = """
+            [
+                {
+                    "configuration": {
+                        "id": "abc123",
+                        "labels": {}
+                    },
+                    "status": "running"
+                }
+            ]
+            """
+        let result = ContainerCLI.parseList(json)
+        #expect(result.isEmpty)
+    }
+
+    @Test func parseListReturnsEmptyForMalformed() {
+        let result1 = ContainerCLI.parseList("")
+        #expect(result1.isEmpty)
+
+        let result2 = ContainerCLI.parseList("{}")
+        #expect(result2.isEmpty)
+
+        let result3 = ContainerCLI.parseList("invalid json")
+        #expect(result3.isEmpty)
+    }
 }
 
 private func argFollowing(_ flag: String, in args: [String]) -> String? {

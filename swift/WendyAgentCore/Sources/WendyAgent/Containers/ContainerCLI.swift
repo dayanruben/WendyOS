@@ -62,7 +62,7 @@ struct ContainerCLI: Sendable {
     // MARK: - Image + lifecycle
 
     func pull(image: String) async throws {
-        _ = try await run(["pull", "--scheme", "http", image])
+        _ = try await run(["pull", "--scheme", "http", image], timeout: .seconds(600))
     }
 
     func runAttached(
@@ -139,11 +139,21 @@ struct ContainerCLI: Sendable {
 
     /// Run a short `container` command via the shared `Subprocess` helper;
     /// throw on nonzero exit. Long-running attached runs use `runAttached`.
+    /// Note: the struct's stored `environment` is used only for PATH resolution,
+    /// not passed to the subprocess (unlike `runAttached`).
     @discardableResult
-    private func run(_ arguments: [String]) async throws -> String {
+    private func run(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> String
+    {
         let resolved = try resolvedExecutablePath()
-        let result = try await Subprocess.run(resolved, arguments)
+        let result = try await Subprocess.run(resolved, arguments, timeout: timeout)
         guard result.status == 0 else {
+            logger.warning(
+                "container command failed",
+                metadata: [
+                    "args": .array(arguments.map { .stringConvertible($0) }),
+                    "status": .stringConvertible(result.status),
+                ]
+            )
             throw ContainerCLIError.commandFailed(
                 executable: resolved,
                 args: arguments,
