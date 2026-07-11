@@ -57,6 +57,19 @@ public final class WendyAgent {
         do {
             let backend = await self.makeLinuxBackend()
 
+            if backend != nil, self.registryTask == nil {
+                let registry = AgentImageRegistry(
+                    store: BlobStore(root: WendyAgentPaths.stateDirectory)
+                )
+                self.registryTask = Task { @MainActor in
+                    do {
+                        try await registry.run()
+                    } catch {
+                        self.logger.error("Registry stopped", metadata: ["error": "\(error)"])
+                    }
+                }
+            }
+
             try await self.startMainServer(
                 linuxBackend: backend,
                 broadcaster: broadcaster
@@ -99,6 +112,10 @@ public final class WendyAgent {
         await self.stopBonjour()
         await self.stopOTelServer()
         await self.stopMainServer()
+
+        self.registryTask?.cancel()
+        await self.registryTask?.value
+        self.registryTask = nil
 
         self.clearRuntimeState()
         self.updateStatus(.stopped)
@@ -154,8 +171,12 @@ public final class WendyAgent {
     private var mainServerTask: Task<Void, any Error>?
     private var containerService: ContainerService?
     /// The embedded OCI registry serving `localhost:5555` for Linux container
-    /// image pushes/pulls. Started once, the first time a Linux runtime backend
-    /// is available; cancelled when the main server stops.
+    /// image pushes/pulls. Started once, in `start()`, for the lifetime of the
+    /// process — it does not depend on the main gRPC server's plaintext/mTLS
+    /// mode, so it is deliberately NOT torn down/rebuilt by `switchMainServer()`
+    /// (which only stops/starts the main server). It is only cancelled (and
+    /// awaited, so the port is released) on a full agent stop or a failed
+    /// startup, via `rollbackStartup()`/`stop()`.
     private var registryTask: Task<Void, Never>?
 
     /// The provisioning service registered on the currently-running main server.
@@ -236,17 +257,6 @@ public final class WendyAgent {
         self.containerService = containerService
         await containerService.publishCurrentApps()
 
-        if linuxBackend != nil, self.registryTask == nil {
-            let registry = AgentImageRegistry(store: BlobStore(root: stateDirectory))
-            self.registryTask = Task { @MainActor in
-                do {
-                    try await registry.run()
-                } catch {
-                    self.logger.error("Registry stopped", metadata: ["error": "\(error)"])
-                }
-            }
-        }
-
         // Build the provisioning service, hold it, and wire the transition
         // callbacks. The callbacks are invoked from inside the provisioning RPC
         // handler *before* it returns; they MUST NOT await the server switch or
@@ -316,9 +326,6 @@ public final class WendyAgent {
         _ = try? await self.mainServerTask?.value
         self.mainServer = nil
         self.mainServerTask = nil
-
-        self.registryTask?.cancel()
-        self.registryTask = nil
     }
 
     /// Builds the main gRPC server. When `certs` is non-nil the server runs mTLS
@@ -582,6 +589,10 @@ public final class WendyAgent {
         await self.stopBonjour()
         await self.stopOTelServer()
         await self.stopMainServer()
+
+        self.registryTask?.cancel()
+        await self.registryTask?.value
+        self.registryTask = nil
     }
 
     private func clearRuntimeState() {
