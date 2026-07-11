@@ -216,8 +216,10 @@ public final class WendyAgent {
                 : self.configuration.sandboxProfile,
             stateDirectory: stateDirectory,
             appsBase: appsBase,
-            dockerAvailable: dockerAvailability.isAvailable,
-            dockerUnavailableMessage: dockerAvailability.failureMessage,
+            // Real Linux runtime probing/selection lands in a follow-up task;
+            // `linuxBackend: nil` keeps createContainer/startContainer failing
+            // precondition with `linuxUnavailableMessage` until then.
+            linuxBackend: nil,
             onAppsChanged: { [weak self] apps in
                 await self?.updateApps(apps)
             }

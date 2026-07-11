@@ -27,11 +27,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private var isStopping = false
     private let sandboxProfilePath: String?
 
-    /// Docker backend for Linux containers. Nil while Linux containers remain unsupported.
-    private let dockerBackend: DockerContainerBackend?
-    private let dockerUnavailableMessage: String?
-    private let linuxContainersUnsupportedMessage =
-        "Linux containers aren't supported on Macs yet. Support is planned for a future release."
+    /// Linux container runtime (Apple `container` or Docker). Nil when neither is present.
+    private let linuxBackend: (any LinuxContainerBackend)?
+    private let linuxUnavailableMessage: String
 
     init(
         broadcaster: TelemetryBroadcaster,
@@ -39,16 +37,17 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         sandboxProfilePath: String? = nil,
         stateDirectory: URL? = nil,
         appsBase: URL? = nil,
-        dockerAvailable: Bool = false,
-        dockerUnavailableMessage: String? = nil,
+        linuxBackend: (any LinuxContainerBackend)? = nil,
+        linuxUnavailableMessage: String =
+            "No Linux container runtime found. Install Apple's `container` (recommended) or Docker on the Mac agent.",
         onAppsChanged: @escaping @Sendable ([WendyAppInfo]) async -> Void = { _ in }
     ) {
         self.broadcaster = broadcaster
         self.onAppsChanged = onAppsChanged
         self.executablePath = executablePath
         self.sandboxProfilePath = sandboxProfilePath
-        self.dockerBackend = dockerAvailable ? DockerContainerBackend() : nil
-        self.dockerUnavailableMessage = dockerUnavailableMessage
+        self.linuxBackend = linuxBackend
+        self.linuxUnavailableMessage = linuxUnavailableMessage
 
         let defaultStateDirectory = WendyAgentPaths.stateDirectory
         let resolvedStateDirectory = stateDirectory ?? appsBase ?? defaultStateDirectory
@@ -311,8 +310,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         let exitTask = Self.makeProcessExitTask(process)
 
-        if app.info.kind == .container, app.container != nil, let dockerBackend {
-            try await dockerBackend.stop(appName: id)
+        if app.info.kind == .container, app.container != nil, let linuxBackend {
+            try await linuxBackend.stop(appName: id)
             let didExit = await Self.waitForProcessExit(exitTask, timeout: self.nativeStopTimeout)
             if !didExit {
                 self.logger.warning(
@@ -734,10 +733,19 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         if isLinux {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+            guard linuxBackend != nil else {
+                throw RPCError(code: .failedPrecondition, message: self.linuxUnavailableMessage)
+            }
+            try await self.registerApp(
+                id: appName,
+                kind: .container,
+                container: WendyApp.ContainerMetadata(imageName: imageName, appConfig: appConfig)
             )
+            logger.info(
+                "Registered Linux container app",
+                metadata: ["app_name": "\(appName)", "image": "\(imageName)"]
+            )
+            return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
         }
 
         // Native darwin path (existing behavior).
@@ -865,10 +873,32 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        if app.container != nil {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+        if let container = app.container {
+            guard let linuxBackend else {
+                throw RPCError(code: .failedPrecondition, message: self.linuxUnavailableMessage)
+            }
+            try await linuxBackend.pull(image: container.imageName)
+            let launchToken = UUID()
+            self.prepareAppForLaunch(id: appName, launchToken: launchToken)
+            let (process, stdoutPipe, stderrPipe) = try await linuxBackend.createAndStart(
+                appName: appName,
+                imageName: container.imageName,
+                appConfig: container.appConfig,
+                terminationHandler: self.makeTerminationHandler(
+                    forAppID: appName,
+                    launchToken: launchToken
+                )
+            )
+            try await self.markAppRunning(id: appName, process: process, launchToken: launchToken)
+            logger.info(
+                "Container started",
+                metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
+            )
+            return self.makeStreamingResponse(
+                appName: appName,
+                process: process,
+                stdoutPipe: stdoutPipe,
+                stderrPipe: stderrPipe
             )
         }
 
@@ -941,6 +971,24 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
         )
 
+        return self.makeStreamingResponse(
+            appName: appName,
+            process: process,
+            stdoutPipe: stdoutPipe,
+            stderrPipe: stderrPipe
+        )
+    }
+
+    /// Builds the streaming RPC response shared by both the native-process and
+    /// Linux-container launch paths: sends a `.started` message, then streams
+    /// stdout/stderr as they're produced (also broadcasting them as telemetry
+    /// logs) until the process exits.
+    private func makeStreamingResponse(
+        appName: String,
+        process: Foundation.Process,
+        stdoutPipe: Pipe,
+        stderrPipe: Pipe
+    ) -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
         // Capture values for the sendable closure.
         let broadcaster = self.broadcaster
 
@@ -1016,7 +1064,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let didStop = try await self.stopTrackedAppIfRunning(id: appName)
         if didStop {
             if self.appsByID[appName]?.info.kind == .container {
-                logger.info("Docker container stopped", metadata: ["app_name": "\(appName)"])
+                logger.info("Linux container stopped", metadata: ["app_name": "\(appName)"])
             } else {
                 logger.info("Process stopped", metadata: ["app_name": "\(appName)"])
             }
@@ -1036,10 +1084,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         try await self.stopTrackedAppIfRunning(id: appName)
 
-        if self.appsByID[appName]?.container != nil, let dockerBackend {
-            try await dockerBackend.remove(appName: appName)
+        if self.appsByID[appName]?.container != nil, let linuxBackend {
+            try await linuxBackend.remove(appName: appName)
             await self.removeApp(id: appName)
-            logger.info("Docker container removed", metadata: ["app_name": "\(appName)"])
+            logger.info("Linux container removed", metadata: ["app_name": "\(appName)"])
         } else {
             try self.removeNativeAppDirectory(appName: appName)
             await self.removeApp(id: appName)
