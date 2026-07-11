@@ -41,7 +41,8 @@ type fakeMacContainerServer struct {
 
 // fakeMacProvisioningServer reports "not provisioned" so requireRegistryAuth
 // (used on the docker/compose/python push path) doesn't require CLI mTLS
-// certs in tests.
+// certs in tests. The gate's provisioned branch — the actual security control —
+// is exercised separately in TestRequireRegistryAuth_* below.
 type fakeMacProvisioningServer struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
 }
@@ -551,6 +552,91 @@ func TestRunMacOSNativeContainer_OverwritesPrepopulatedAppConfig(t *testing.T) {
 	}
 	if sentConfig.Brewfile != "Brewfile.wendy" {
 		t.Fatalf("AppConfig Brewfile = %q, want Brewfile.wendy", sentConfig.Brewfile)
+	}
+}
+
+// fakeProvisionedServer reports the device as provisioned so that
+// requireRegistryAuth must enforce the CLI-cert (mTLS) requirement.
+type fakeProvisionedServer struct {
+	agentpb.UnimplementedWendyProvisioningServiceServer
+}
+
+func (s *fakeProvisionedServer) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest) (*agentpb.IsProvisionedResponse, error) {
+	return &agentpb.IsProvisionedResponse{
+		Response: &agentpb.IsProvisionedResponse_Provisioned{Provisioned: &agentpb.ProvisionedResponse{}},
+	}, nil
+}
+
+// startFakeProvisioningServer stands up a gRPC server exposing only the
+// provisioning service backed by prov, returning a connection to it.
+func startFakeProvisioningServer(t *testing.T, prov agentpb.WendyProvisioningServiceServer) (*grpcclient.AgentConnection, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+
+	s := grpc.NewServer()
+	agentpb.RegisterWendyProvisioningServiceServer(s, prov)
+	go func() { _ = s.Serve(ln) }()
+
+	conn, err := grpc.NewClient(ln.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		s.Stop()
+		_ = ln.Close()
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+
+	ac := &grpcclient.AgentConnection{
+		Conn:                conn,
+		ProvisioningService: agentpb.NewWendyProvisioningServiceClient(conn),
+	}
+	cleanup := func() {
+		_ = conn.Close()
+		s.Stop()
+		_ = ln.Close()
+	}
+	return ac, cleanup
+}
+
+// A provisioned device's registry requires mTLS. When the CLI has no client
+// certificate loaded, requireRegistryAuth must fail with actionable guidance
+// rather than letting the push proceed unauthenticated. This is the security
+// gate that the fakeMacProvisioningServer ("not provisioned") deliberately
+// bypasses in the other Mac run tests.
+func TestRequireRegistryAuth_EnforcesMTLSWhenProvisionedWithoutCert(t *testing.T) {
+	// Point config resolution (loadCLICert -> config.Load -> os.UserHomeDir) at
+	// an empty home so no CLI certificate is present regardless of the machine.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	conn, cleanup := startFakeProvisioningServer(t, &fakeProvisionedServer{})
+	defer cleanup()
+
+	err := requireRegistryAuth(context.Background(), conn)
+	if err == nil {
+		t.Fatal("requireRegistryAuth = nil; want mTLS-required error for a provisioned device with no CLI cert")
+	}
+	if !strings.Contains(err.Error(), "mTLS authentication") {
+		t.Fatalf("error = %q, want mTLS authentication guidance", err.Error())
+	}
+}
+
+// A device that reports "not provisioned" has an unauthenticated registry, so
+// requireRegistryAuth passes through even with no CLI cert. This documents the
+// intended bypass that fakeMacProvisioningServer relies on.
+func TestRequireRegistryAuth_AllowsWhenNotProvisioned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	conn, cleanup := startFakeProvisioningServer(t, &fakeMacProvisioningServer{})
+	defer cleanup()
+
+	if err := requireRegistryAuth(context.Background(), conn); err != nil {
+		t.Fatalf("requireRegistryAuth = %v; want nil for an unprovisioned device", err)
 	}
 }
 

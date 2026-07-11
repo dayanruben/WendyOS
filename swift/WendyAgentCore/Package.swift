@@ -13,6 +13,11 @@ let swiftSettings: [SwiftSetting] = [
 
     .enableUpcomingFeature("InferIsolatedConformances"),
     .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+
+    // https://github.com/swiftlang/swift-evolution/blob/main/proposals/0458-strict-memory-safety.md
+    // Opt into strict memory safety: uses of memory-unsafe APIs must be spelled
+    // `unsafe`, so any new unchecked pointer/buffer usage is surfaced at review.
+    .strictMemorySafety(),
 ]
 
 let package = Package(

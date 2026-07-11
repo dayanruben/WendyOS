@@ -85,6 +85,9 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             throw RPCError(code: .failedPrecondition, message: "agent is already provisioned")
         }
 
+        // NEVER add `request.enrollmentToken` (or any other credential) to this
+        // metadata — it is a bearer secret that would then land in log
+        // aggregation/SIEM. Only non-secret operational identifiers belong here.
         self.logger.info(
             "Starting provisioning",
             metadata: [

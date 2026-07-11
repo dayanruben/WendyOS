@@ -25,7 +25,8 @@ final class StatusMenuController: NSObject {
         self.menu = NSMenu()
         super.init()
 
-        self.statusObservation = await self.wendyAgent.observeStatus { @MainActor [weak self] status in
+        self.statusObservation = await self.wendyAgent.observeStatus {
+            @MainActor [weak self] status in
             self?.update(status: status)
         }
         self.appsObservation = await self.wendyAgent.observeApps { @MainActor [weak self] apps in

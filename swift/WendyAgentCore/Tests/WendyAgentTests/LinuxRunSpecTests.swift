@@ -4,7 +4,9 @@ import Testing
 
 @Suite struct LinuxRunSpecTests {
     @Test func mapsNetworkNone() {
-        let ents = [WendyEntitlement(type: "network", mode: "none", name: nil, path: nil, ports: nil)]
+        let ents = [
+            WendyEntitlement(type: "network", mode: "none", name: nil, path: nil, ports: nil)
+        ]
         let specs = LinuxRunSpecBuilder.specs(from: ents, appName: "app", warn: { _ in })
         #expect(specs == [.networkNone])
     }
@@ -12,7 +14,10 @@ import Testing
     @Test func mapsPublishedPorts() {
         let ents = [
             WendyEntitlement(
-                type: "network", mode: nil, name: nil, path: nil,
+                type: "network",
+                mode: nil,
+                name: nil,
+                path: nil,
                 ports: [WendyPortMapping(host: 8080, container: 80)]
             )
         ]
@@ -21,7 +26,15 @@ import Testing
     }
 
     @Test func mapsPersistVolumeWithNamespacedName() {
-        let ents = [WendyEntitlement(type: "persist", mode: nil, name: "data", path: "/var/data", ports: nil)]
+        let ents = [
+            WendyEntitlement(
+                type: "persist",
+                mode: nil,
+                name: "data",
+                path: "/var/data",
+                ports: nil
+            )
+        ]
         let specs = LinuxRunSpecBuilder.specs(from: ents, appName: "app", warn: { _ in })
         #expect(specs == [.volume(name: "wendy-app-data", path: "/var/data")])
     }
@@ -29,7 +42,11 @@ import Testing
     @Test func warnsOnHardwareEntitlementAndEmitsNoSpec() {
         var warnings: [String] = []
         let ents = [WendyEntitlement(type: "gpu", mode: nil, name: nil, path: nil, ports: nil)]
-        let specs = LinuxRunSpecBuilder.specs(from: ents, appName: "app", warn: { warnings.append($0) })
+        let specs = LinuxRunSpecBuilder.specs(
+            from: ents,
+            appName: "app",
+            warn: { warnings.append($0) }
+        )
         #expect(specs.isEmpty)
         #expect(warnings.count == 1)
         #expect(warnings[0].contains("gpu"))

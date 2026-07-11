@@ -187,6 +187,10 @@ public actor WendyAgent {
     private var mainServerIsMTLS = false
     /// Guards against overlapping plaintext<->mTLS transitions.
     private var switchingMainServer = false
+    /// How long `switchMainServer` waits before tearing the old server down, to
+    /// let the provisioning RPC that triggered the switch flush its response to
+    /// the client first (mirrors the Go agent's delayed restart).
+    private static let serverSwitchFlushDelay: Duration = .milliseconds(500)
     /// The telemetry broadcaster shared by the main server's `TelemetryService`
     /// and the OTel receivers; retained so a mid-flight main-server switch reuses
     /// it and telemetry continuity is preserved.
@@ -539,7 +543,9 @@ public actor WendyAgent {
         self.switchingMainServer = true
         defer { self.switchingMainServer = false }
 
-        try? await Task.sleep(for: .milliseconds(500))
+        // A cancelled sleep just proceeds to the status re-check below, which is
+        // the intended behavior during shutdown.
+        try? await Task.sleep(for: Self.serverSwitchFlushDelay)
         guard case .running = self.status else { return }
 
         self.stopMonitorTask()

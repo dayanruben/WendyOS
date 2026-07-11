@@ -1714,6 +1714,11 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
 
 	gotFirstResponse := false
+	// Set when the stream ends on a genuine failure (as opposed to a clean
+	// container exit, which arrives as io.EOF, or a user Ctrl+C, which cancels
+	// runCtx). Held so the normal stop/cleanup below still runs before we
+	// surface the failure and exit non-zero.
+	var runErr error
 	for {
 		resp, recvErr := outStream.Recv()
 		if recvErr == io.EOF {
@@ -1737,13 +1742,15 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 				stdinAttempted = false
 				continue
 			}
-			// Any other stream error here means the agent stopped streaming
-			// container output — most often the container failed to start or
-			// exited abnormally (the agent wraps the real cause in the status
-			// message). Surface it as a notice rather than a fatal CLI error and
-			// fall through to the normal stop/cleanup path, so `wendy run` ends
-			// cleanly instead of looking like the CLI itself crashed.
-			cliNotice("Notice: container output stream ended: %v", recvErr)
+			// Any other stream error is a real failure: the container failed to
+			// start or exited abnormally (the agent wraps the real cause in the
+			// status message), or the stream itself broke (agent crash, network
+			// drop, auth). A clean container exit arrives as io.EOF above, so
+			// reaching here always means the run did not succeed. Record it, run
+			// the normal cleanup, then return it so `wendy run` exits non-zero
+			// instead of reporting a false success. Use the status message so the
+			// output reads as a container failure, not a CLI crash.
+			runErr = fmt.Errorf("container run failed: %s", status.Convert(recvErr).Message())
 			break
 		}
 		gotFirstResponse = true
@@ -1760,6 +1767,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	runCancel()
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
+	}
+	if runErr != nil {
+		return runErr
 	}
 	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
