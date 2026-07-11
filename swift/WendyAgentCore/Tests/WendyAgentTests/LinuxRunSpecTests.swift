@@ -1,6 +1,6 @@
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct LinuxRunSpecTests {
     @Test func mapsNetworkNone() {

@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Swift package requires Swift 6 language mode; all new types must satisfy strict-concurrency (`Sendable` where crossing isolation). Copy the pattern from `DockerCLI` (a `Sendable` struct) and actor backends.
-- New Swift sources live under `swift/WendyAgentCore/Sources/WendyAgent/`; tests under `swift/WendyAgentCore/Tests/WendyAgentTests/`.
+- New Swift sources live under `swift/WendyAgentCore/Sources/WendyAgent/`; tests under `swift/WendyAgentCore/Tests/WendyAgentTests/`. **The module name is `WendyAgentCore`** (the SwiftPM target name), even though sources sit in `Sources/WendyAgent` — tests must use `@testable import WendyAgentCore`.
 - Config types are fixed: `WendyAppConfig { platform: String?, entitlements: [WendyEntitlement]?, brewfile: String? }`, `WendyEntitlement { type: String, mode: String?, name: String?, path: String?, ports: [WendyPortMapping]? }`, `WendyPortMapping { host: UInt16, container: UInt16 }` (in `Services/OCITypes.swift`). Do not modify them.
 - Registry port is `5555` (matches Go `registryPort("darwin")` in `helpers.go:2513` and `DockerCLI.registryPort`). Bind to `127.0.0.1` only.
 - Container naming: managed containers are named `wendy-<appName>` and carry label `wendy.managed=true` (matches the existing Docker backend and Go provider).
@@ -45,7 +45,7 @@ Introduces the backend abstraction and the single source of truth for turning en
 // swift/WendyAgentCore/Tests/WendyAgentTests/LinuxRunSpecTests.swift
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct LinuxRunSpecTests {
     @Test func mapsNetworkNone() {
@@ -212,7 +212,7 @@ A `Sendable` `ContainerCLI` struct: pure argument builders, an availability prob
 // swift/WendyAgentCore/Tests/WendyAgentTests/ExecutableResolverTests.swift
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct ExecutableResolverTests {
     @Test func resolvesFromPathFirst() {
@@ -257,7 +257,7 @@ import Testing
 // swift/WendyAgentCore/Tests/WendyAgentTests/ContainerCLITests.swift
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct ContainerCLITests {
     @Test func runArgumentsIncludeSchemeNameLabelAndImageLast() {
@@ -568,7 +568,7 @@ Wraps `ContainerCLI` behind the protocol: interpret entitlements → specs, remo
 // swift/WendyAgentCore/Tests/WendyAgentTests/ContainerCLIBackendTests.swift
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct ContainerCLIBackendTests {
     @Test func specsForConfigMapNetworkAndPersist() {
@@ -699,7 +699,7 @@ Wire the currently-dead `createAndStart`/`pullImage`, reuse the shared `LinuxRun
 // swift/WendyAgentCore/Tests/WendyAgentTests/DockerContainerBackendTests.swift
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct DockerContainerBackendTests {
     @Test func runOptionsRenderPortsVolumesAndManagedLabels() {
@@ -849,7 +849,7 @@ import Crypto
 import Foundation
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct BlobStoreTests {
     private func tempRoot() -> URL {
@@ -1152,7 +1152,7 @@ Replace the `dockerBackend`/`throw` gate with a real `linuxBackend` path: regist
 import Foundation
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 /// A fake backend that records calls and hands back a short-lived process.
 actor FakeLinuxBackend: LinuxContainerBackend {
@@ -1321,7 +1321,7 @@ Replace the hardcoded-disabled `prepareDockerIfNeeded` with real runtime probing
 // swift/WendyAgentCore/Tests/WendyAgentTests/BackendSelectionTests.swift
 import Testing
 
-@testable import WendyAgent
+@testable import WendyAgentCore
 
 @Suite struct BackendSelectionTests {
     @Test func prefersAppleContainerWhenBothAvailable() {
