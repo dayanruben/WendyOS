@@ -174,3 +174,34 @@ for genuinely unsupported targets (e.g. a non-darwin/non-linux platform).
 - Compose / multi-service apps on the Mac agent.
 - `container images load` archive delivery (the alternative delivery mechanism
   not chosen).
+
+## 9. Manual E2E (hardware-gated)
+
+The Swift package cannot be fully built or `swift test`-run on the current dev
+box: the macOS 27 SDK added a `Foundation.ContiguousBytes.withBytes` requirement
+that swift-crypto 4.5.0 (the latest release) does not yet satisfy, so
+`CryptoExtras` — pulled in transitively via swift-certificates — fails to
+compile. This is pre-existing and unrelated to this feature. During
+implementation each task's Swift logic was therefore verified in isolation
+(standalone scripts, `swiftc -parse`, `swift-format lint --strict`); the Go CLI
+task (§5) was verified for real (`go build ./...` + `go test ./...` green). Full
+`swift test` and the live run are **CI-deferred**, consistent with prior
+Mac-agent PRs.
+
+Run this once on a box with a working build (compatible SDK/toolchain) and
+Apple's `container` installed:
+
+1. Build & launch WendyAgentMac. Confirm the logs
+   `Linux container runtime: Apple container` and
+   `Agent image registry listening port=5555`.
+2. In a Linux/arm64 project with a Dockerfile, run `wendy run` against the Mac
+   agent. Confirm: the CLI builds + pushes to `localhost:5555`; the agent pulls;
+   the container starts; stdout/stderr stream back in the CLI.
+3. `container list --all` shows `wendy-<app>` with label `wendy.managed=true`.
+4. Stop via `wendy device apps stop <app>` (or Ctrl-C); confirm the container
+   stops and is removed.
+5. Provision the agent (plaintext → mTLS switch), then repeat step 2. Confirm the
+   registry on 5555 stays up across the switch (regression guard for the rebind
+   race fixed in the runtime-selection task).
+6. Repeat step 2 with Docker installed and `container` absent to exercise the
+   Docker fallback backend.
