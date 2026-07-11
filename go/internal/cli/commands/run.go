@@ -1467,6 +1467,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// values that fail build-arg validation are skipped rather than fatal.
 	applyDeviceBuildArgHints(buildArgs, versionResp)
 
+	// The Mac agent runs Linux containers via a CLI runtime with no chunk-diff
+	// (CDC) support, so every fast-deploy attempt just probes, fails, and falls
+	// back to a registry push — wasted round trips. Skip both fast-deploy paths
+	// entirely for darwin agents and go straight to the registry push below.
+	isDarwinAgent := strings.EqualFold(agentOS, appconfig.PlatformDarwin)
+
 	// Detached fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
 	// just ensure the existing container is running. Best-effort — a missing or
@@ -1474,7 +1480,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
-	if opts.detach && !opts.deploy && hashErr == nil {
+	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
@@ -1495,7 +1501,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
-	if !opts.deploy && opts.chunking != chunkingOff {
+	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
 		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
