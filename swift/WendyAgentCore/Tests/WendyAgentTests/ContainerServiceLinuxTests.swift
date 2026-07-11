@@ -90,8 +90,10 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         let infos = await service.currentAppInfosForTesting()
         #expect(infos.contains { $0.id == "svc" && $0.kind == .container })
 
-        // startContainer pulls the image, then creates+starts via the backend,
-        // and streams a `.started` message through the shared streaming helper.
+        // startContainer pulls the image, then creates+starts via the backend.
+        // The streaming producer blocks until the container's process exits, so
+        // drive it on a background task: it emits `.started` while the app runs
+        // and returns once stopContainer ends the process.
         var startReq = Wendy_Agent_Services_V1_StartContainerRequest()
         startReq.appName = "svc"
         let response = try await service.startContainer(
@@ -101,23 +103,21 @@ actor FakeLinuxBackend: LinuxContainerBackend {
 
         let contents = try response.accepted.get()
         let writer = CollectingWriter<Wendy_Agent_Services_V1_RunContainerLayersResponse>()
-        _ = try await contents.producer(RPCWriter(wrapping: writer))
-        let messages = writer.snapshot()
+        let produce = contents.producer
+        let producer = Task {
+            try await produce(RPCWriter(wrapping: writer))
+        }
 
-        #expect(
-            messages.contains { message in
-                if case .started = message.responseType { return true }
-                return false
-            }
-        )
+        // markAppRunning completes inside startContainer, so the app is running
+        // by the time the call returns and stays so until it is stopped.
+        let runningInfo = try #require(await service.appInfo(forAppID: "svc"))
+        #expect(runningInfo.status == .running)
 
         #expect(await backend.pulledImages() == ["localhost:5555/svc:latest"])
         #expect(await backend.startedApps() == ["svc"])
 
-        let runningInfo = try #require(await service.appInfo(forAppID: "svc"))
-        #expect(runningInfo.status == .running)
-
-        // stopContainer routes to the backend's stop(appName:).
+        // stopContainer routes to the backend's stop(appName:), which ends the
+        // container's process and lets the streaming producer return.
         var stopReq = Wendy_Agent_Services_V1_StopContainerRequest()
         stopReq.appName = "svc"
         _ = try await service.stopContainer(
@@ -125,6 +125,16 @@ actor FakeLinuxBackend: LinuxContainerBackend {
             context: makeServerContext(method: "StopContainer")
         )
         #expect(await backend.stoppedApps() == ["svc"])
+
+        // The producer has now returned; it streamed a `.started` message.
+        _ = try await producer.value
+        let messages = writer.snapshot()
+        #expect(
+            messages.contains { message in
+                if case .started = message.responseType { return true }
+                return false
+            }
+        )
 
         // deleteContainer routes to the backend's remove(appName:).
         var deleteReq = Wendy_Agent_Services_V1_DeleteContainerRequest()
