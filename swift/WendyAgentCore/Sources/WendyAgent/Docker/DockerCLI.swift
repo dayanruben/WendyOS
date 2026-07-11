@@ -201,16 +201,8 @@ struct DockerCLI: Sendable {
 
     // MARK: - Listing
 
-    /// Parsed container info from `docker ps`.
-    struct ContainerInfo: Sendable {
-        let id: String
-        let names: String
-        let state: String
-        let status: String
-    }
-
     /// List containers matching a label filter.
-    func ps(label: String) async throws -> [ContainerInfo] {
+    func ps(label: String) async throws -> [LinuxContainerInfo] {
         let output = try await run(arguments: [
             "ps", "-a",
             "--filter", "label=\(label)",
@@ -219,10 +211,10 @@ struct DockerCLI: Sendable {
         return
             output
             .split(separator: "\n")
-            .compactMap { line -> ContainerInfo? in
+            .compactMap { line -> LinuxContainerInfo? in
                 let cols = line.split(separator: "\t", maxSplits: 3).map(String.init)
                 guard cols.count == 4 else { return nil }
-                return ContainerInfo(id: cols[0], names: cols[1], state: cols[2], status: cols[3])
+                return LinuxContainerInfo(id: cols[0], name: cols[1], state: cols[2])
             }
     }
 
