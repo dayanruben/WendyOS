@@ -55,7 +55,6 @@ struct AgentImageRegistry: Sendable {
         let maxBlobSize = Self.maxBlobSize
         let maxManifestSize = Self.maxManifestSize
 
-        router.get("/v2/") { _, _ in Response(status: .ok) }
         router.get("/v2") { _, _ in Response(status: .ok) }
 
         // Begin an upload session, or perform a monolithic push when `digest`
