@@ -11,6 +11,10 @@ actor FakeLinuxBackend: LinuxContainerBackend {
     private(set) var started: [String] = []
     private(set) var stopped: [String] = []
     private(set) var removed: [String] = []
+    /// Retains the process handed to `ContainerService` so `stop`/`remove` can
+    /// end it, mirroring a real backend where the attached process lives until
+    /// the container is stopped.
+    private var processes: [String: Foundation.Process] = [:]
 
     func pull(image: String) async throws { pulled.append(image) }
 
@@ -22,19 +26,32 @@ actor FakeLinuxBackend: LinuxContainerBackend {
     ) async throws -> (process: Foundation.Process, stdout: Pipe, stderr: Pipe) {
         started.append(appName)
         let p = Foundation.Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/echo")
-        p.arguments = ["hi"]
+        // Long-lived: the app must be observably `.running` until the test stops
+        // it. A short-lived process (e.g. `/bin/echo`) would exit immediately and
+        // fire the termination handler, flipping the app back to `.stopped` before
+        // the test could observe it running.
+        p.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        p.arguments = ["30"]
         let out = Pipe()
         let err = Pipe()
         p.standardOutput = out
         p.standardError = err
         p.terminationHandler = terminationHandler
         try p.run()
+        processes[appName] = p
         return (p, out, err)
     }
 
-    func stop(appName: String) async throws { stopped.append(appName) }
-    func remove(appName: String) async throws { removed.append(appName) }
+    func stop(appName: String) async throws {
+        stopped.append(appName)
+        // A real backend stops the container, which ends its attached process.
+        processes[appName]?.terminate()
+    }
+    func remove(appName: String) async throws {
+        removed.append(appName)
+        processes[appName]?.terminate()
+        processes[appName] = nil
+    }
     func listContainers() async throws -> [LinuxContainerInfo] { [] }
 
     func pulledImages() -> [String] { pulled }
