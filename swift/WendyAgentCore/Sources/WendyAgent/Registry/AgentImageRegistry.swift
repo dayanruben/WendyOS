@@ -64,7 +64,11 @@ struct AgentImageRegistry: Sendable {
             let repo = context.parameters.get("repo") ?? ""
             if let digest = request.uri.queryParameters["digest"].map(String.init) {
                 let buffer = try await request.body.collect(upTo: maxBlobSize)
-                try store.writeBlob(Data(buffer.readableBytesView), expectedDigest: digest)
+                do {
+                    try store.writeBlob(Data(buffer.readableBytesView), expectedDigest: digest)
+                } catch is BlobStore.BlobError {
+                    return Response(status: .badRequest)
+                }
                 return Response(
                     status: .created,
                     headers: [.location: "/v2/\(repo)/blobs/\(digest)"]
@@ -100,7 +104,11 @@ struct AgentImageRegistry: Sendable {
             var data = await uploads.take(id) ?? Data()
             let buffer = try await request.body.collect(upTo: maxBlobSize)
             data.append(Data(buffer.readableBytesView))
-            try store.writeBlob(data, expectedDigest: digest)
+            do {
+                try store.writeBlob(data, expectedDigest: digest)
+            } catch is BlobStore.BlobError {
+                return Response(status: .badRequest)
+            }
             return Response(
                 status: .created,
                 headers: [.location: "/v2/\(repo)/blobs/\(digest)"]
@@ -109,15 +117,17 @@ struct AgentImageRegistry: Sendable {
 
         router.head("/v2/{repo}/blobs/{digest}") { _, context -> Response in
             let digest = context.parameters.get("digest") ?? ""
+            guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
             guard store.hasBlob(digest: digest) else { return Response(status: .notFound) }
             return Response(status: .ok)
         }
 
         router.get("/v2/{repo}/blobs/{digest}") { _, context -> Response in
             let digest = context.parameters.get("digest") ?? ""
-            guard store.hasBlob(digest: digest),
-                let data = try? Data(contentsOf: store.blobURL(digest: digest))
-            else { return Response(status: .notFound) }
+            guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
+            guard let data = store.readBlob(digest: digest) else {
+                return Response(status: .notFound)
+            }
             return Response(
                 status: .ok,
                 headers: [.contentType: "application/octet-stream"],
@@ -128,6 +138,9 @@ struct AgentImageRegistry: Sendable {
         router.put("/v2/{repo}/manifests/{reference}") { request, context -> Response in
             let repo = context.parameters.get("repo") ?? ""
             let reference = context.parameters.get("reference") ?? ""
+            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
+                return Response(status: .badRequest)
+            }
             let buffer = try await request.body.collect(upTo: maxManifestSize)
             try store.writeManifest(
                 Data(buffer.readableBytesView),
@@ -140,6 +153,9 @@ struct AgentImageRegistry: Sendable {
         router.head("/v2/{repo}/manifests/{reference}") { _, context -> Response in
             let repo = context.parameters.get("repo") ?? ""
             let reference = context.parameters.get("reference") ?? ""
+            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
+                return Response(status: .notFound)
+            }
             return store.manifestURL(repository: repo, reference: reference) != nil
                 ? Response(status: .ok) : Response(status: .notFound)
         }
@@ -147,6 +163,9 @@ struct AgentImageRegistry: Sendable {
         router.get("/v2/{repo}/manifests/{reference}") { _, context -> Response in
             let repo = context.parameters.get("repo") ?? ""
             let reference = context.parameters.get("reference") ?? ""
+            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
+                return Response(status: .notFound)
+            }
             guard let url = store.manifestURL(repository: repo, reference: reference),
                 let data = try? Data(contentsOf: url)
             else { return Response(status: .notFound) }

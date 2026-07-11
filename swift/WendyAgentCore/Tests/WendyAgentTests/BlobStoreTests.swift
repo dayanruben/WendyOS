@@ -45,4 +45,109 @@ import Testing
         let url = try #require(store.manifestURL(repository: "app", reference: "sha256:\(hex)"))
         #expect(try Data(contentsOf: url) == manifest)
     }
+
+    // MARK: - Digest validation (path traversal fix)
+
+    @Test func isValidSHA256DigestAcceptsRealDigest() {
+        let payload = Data("hello".utf8)
+        let hex = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        #expect(BlobStore.isValidSHA256Digest("sha256:\(hex)"))
+    }
+
+    @Test func isValidSHA256DigestRejectsColonStyleTraversal() {
+        // The confirmed exploit shape: a Hummingbird path segment like
+        // `x:..:..:..:..:..:..:..:etc:passwd` that `blobURL` would otherwise
+        // turn into `blobs/x/../../../../../../../etc/passwd`.
+        #expect(!BlobStore.isValidSHA256Digest("x:..:..:..:etc:passwd"))
+    }
+
+    @Test func isValidSHA256DigestRejectsSlashStyleTraversal() {
+        #expect(!BlobStore.isValidSHA256Digest("sha256:../../../../etc/passwd"))
+    }
+
+    @Test func isValidSHA256DigestRejectsUppercaseHex() {
+        let hex = String(repeating: "A", count: 64)
+        #expect(!BlobStore.isValidSHA256Digest("sha256:\(hex)"))
+    }
+
+    @Test func isValidSHA256DigestRejectsShortHex() {
+        let hex = String(repeating: "a", count: 63)
+        #expect(!BlobStore.isValidSHA256Digest("sha256:\(hex)"))
+    }
+
+    @Test func isValidSHA256DigestRejectsLongHex() {
+        let hex = String(repeating: "a", count: 65)
+        #expect(!BlobStore.isValidSHA256Digest("sha256:\(hex)"))
+    }
+
+    @Test func isValidSHA256DigestRejectsMissingPrefix() {
+        let hex = String(repeating: "a", count: 64)
+        #expect(!BlobStore.isValidSHA256Digest(hex))
+    }
+
+    @Test func hasBlobFalseForNeverWrittenValidDigest() {
+        let store = BlobStore(root: tempRoot())
+        let hex = String(repeating: "a", count: 64)
+        #expect(!store.hasBlob(digest: "sha256:\(hex)"))
+    }
+
+    @Test func hasBlobFalseForTraversalDigest() {
+        let store = BlobStore(root: tempRoot())
+        #expect(!store.hasBlob(digest: "x:..:..:..:..:..:..:..:etc:passwd"))
+    }
+
+    @Test func readBlobNilForTraversalDigest() {
+        let store = BlobStore(root: tempRoot())
+        #expect(store.readBlob(digest: "x:..:..:..:..:..:..:..:etc:passwd") == nil)
+    }
+
+    @Test func writeBlobRejectsTraversalExpectedDigest() {
+        let store = BlobStore(root: tempRoot())
+        #expect(throws: BlobStore.BlobError.self) {
+            try store.writeBlob(Data("hello".utf8), expectedDigest: "x:..:..:..:etc:passwd")
+        }
+    }
+
+    // MARK: - Repository/reference validation (manifest traversal fix)
+
+    @Test func isValidRepositoryAcceptsNormalName() {
+        #expect(BlobStore.isValidRepository("my-app_2.0"))
+    }
+
+    @Test func isValidRepositoryRejectsParentTraversal() {
+        #expect(!BlobStore.isValidRepository(".."))
+    }
+
+    @Test func isValidRepositoryRejectsEmbeddedTraversal() {
+        #expect(!BlobStore.isValidRepository("a/../../etc"))
+    }
+
+    @Test func isValidRepositoryRejectsSlash() {
+        #expect(!BlobStore.isValidRepository("a/b"))
+    }
+
+    @Test func isValidRepositoryRejectsEmpty() {
+        #expect(!BlobStore.isValidRepository(""))
+    }
+
+    @Test func isValidReferenceAcceptsTag() {
+        #expect(BlobStore.isValidReference("latest"))
+    }
+
+    @Test func isValidReferenceAcceptsDigest() {
+        let hex = String(repeating: "a", count: 64)
+        #expect(BlobStore.isValidReference("sha256:\(hex)"))
+    }
+
+    @Test func isValidReferenceRejectsParentTraversal() {
+        #expect(!BlobStore.isValidReference(".."))
+    }
+
+    @Test func isValidReferenceRejectsSlash() {
+        #expect(!BlobStore.isValidReference("a/b"))
+    }
+
+    @Test func isValidReferenceRejectsEmpty() {
+        #expect(!BlobStore.isValidReference(""))
+    }
 }
