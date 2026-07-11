@@ -70,7 +70,7 @@ function ThemedImage({
         alt={alt}
         width={WIDTH}
         height={HEIGHT}
-        loading="lazy"
+        loading="eager"
         decoding="async"
         className="block h-auto w-full dark:hidden"
       />

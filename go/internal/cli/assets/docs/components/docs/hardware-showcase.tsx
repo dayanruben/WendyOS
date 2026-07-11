@@ -12,15 +12,15 @@ type Board = {
 const boards: Board[] = [
   {
     name: 'NVIDIA Jetson',
-    tagline: 'Orin Nano, AGX Orin',
+    tagline: 'Orin Nano, AGX Orin, AGX Thor',
     logo: '/icons/icons8-nvidia.svg',
     animation: '/images/boards/jetson-orin.webp',
-    href: '/installation/wendyos-nvidia-jetson/',
+    href: '/installation/wendyos-nvidia-jetson-orin-nano/',
     features: [
       'Up to 2000 TOPS AI performance',
       'CUDA, PyTorch & MLX support',
+      'AGX Thor USB recovery flashing',
       'Hardware video encode & decode',
-      'Unified memory architecture',
     ],
   },
   {
