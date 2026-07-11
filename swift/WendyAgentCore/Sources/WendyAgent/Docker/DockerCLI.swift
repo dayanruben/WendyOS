@@ -345,52 +345,19 @@ struct DockerCLI: Sendable {
     }
 
     private func resolveExecutable() -> ExecutableResolution {
-        if self.executable.contains("/") {
-            let resolvedPath =
-                FileManager.default.isExecutableFile(atPath: self.executable)
-                ? self.executable : nil
-            return ExecutableResolution(
-                requested: self.executable,
-                resolvedPath: resolvedPath,
-                searchedPaths: [self.executable]
-            )
-        }
-
-        let searchPaths = self.buildSearchPaths()
-        let resolvedPath = searchPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
+        let resolution = ExecutableResolver.resolve(
+            self.executable,
+            environment: self.environment,
+            extraFallbackDirectories: [
+                "/usr/local/bin", "/opt/homebrew/bin",
+                "/Applications/Docker.app/Contents/Resources/bin",
+            ]
+        )
         return ExecutableResolution(
             requested: self.executable,
-            resolvedPath: resolvedPath,
-            searchedPaths: searchPaths
+            resolvedPath: resolution.resolvedPath,
+            searchedPaths: resolution.searchedPaths
         )
-    }
-
-    private func buildSearchPaths() -> [String] {
-        let pathEntries = (self.environment["PATH"] ?? "")
-            .split(separator: ":")
-            .map(String.init)
-            .filter { !$0.isEmpty }
-
-        let candidates =
-            pathEntries.map {
-                URL(fileURLWithPath: $0).appendingPathComponent(self.executable).path
-            }
-            + Self.fallbackExecutablePaths(for: self.executable)
-
-        var seen = Set<String>()
-        var uniqueCandidates: [String] = []
-        for candidate in candidates where seen.insert(candidate).inserted {
-            uniqueCandidates.append(candidate)
-        }
-        return uniqueCandidates
-    }
-
-    private static func fallbackExecutablePaths(for executable: String) -> [String] {
-        [
-            "/usr/local/bin/\(executable)",
-            "/opt/homebrew/bin/\(executable)",
-            "/Applications/Docker.app/Contents/Resources/bin/\(executable)",
-        ]
     }
 }
 
