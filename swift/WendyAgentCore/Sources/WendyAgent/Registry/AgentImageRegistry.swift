@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import HTTPTypes
 import Hummingbird
@@ -23,6 +24,25 @@ struct AgentImageRegistry: Sendable {
     private let port: Int
     private let logger = Logger(label: "sh.wendy.agent.registry")
     private let uploads = UploadBuffers()
+
+    /// `Docker-Content-Digest` — clients (notably Apple `container`) require this
+    /// header on blob and manifest GET/HEAD responses to resolve a tag/reference
+    /// to its content digest. The literal is a valid HTTP field token.
+    private static let dockerContentDigest = HTTPField.Name("Docker-Content-Digest")!
+
+    /// The canonical `sha256:<hex>` content digest of `data`.
+    private static func contentDigest(of data: Data) -> String {
+        let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return "sha256:\(hex)"
+    }
+
+    /// The manifest's own `mediaType`, defaulting to the OCI image manifest type.
+    /// Clients (Apple `container`) require `Content-Type` on both GET *and* HEAD
+    /// manifest responses.
+    private static func manifestMediaType(_ data: Data) -> String {
+        (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["mediaType"]
+            as? String ?? "application/vnd.oci.image.manifest.v1+json"
+    }
 
     init(store: BlobStore, port: Int = 5555) {
         self.store = store
@@ -50,12 +70,17 @@ struct AgentImageRegistry: Sendable {
 
     func run() async throws {
         let router = Router()
+        router.addMiddleware {
+            LogRequestsMiddleware(.info)
+        }
         let store = self.store
         let uploads = self.uploads
         let maxBlobSize = Self.maxBlobSize
         let maxManifestSize = Self.maxManifestSize
 
-        router.get("/v2") { _, _ in Response(status: .ok) }
+        router.get("/v2") { _, _ in
+            Response(status: .ok)
+        }
 
         // Begin an upload session, or perform a monolithic push when `digest`
         // is supplied on the initial POST (the whole blob is the body).
@@ -118,7 +143,7 @@ struct AgentImageRegistry: Sendable {
             let digest = context.parameters.get("digest") ?? ""
             guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
             guard store.hasBlob(digest: digest) else { return Response(status: .notFound) }
-            return Response(status: .ok)
+            return Response(status: .ok, headers: [Self.dockerContentDigest: digest])
         }
 
         router.get("/v2/{repo}/blobs/{digest}") { _, context -> Response in
@@ -129,7 +154,10 @@ struct AgentImageRegistry: Sendable {
             }
             return Response(
                 status: .ok,
-                headers: [.contentType: "application/octet-stream"],
+                headers: [
+                    .contentType: "application/octet-stream",
+                    Self.dockerContentDigest: digest,
+                ],
                 body: .init(byteBuffer: ByteBuffer(bytes: data))
             )
         }
@@ -155,8 +183,13 @@ struct AgentImageRegistry: Sendable {
             guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
                 return Response(status: .notFound)
             }
-            return store.manifestURL(repository: repo, reference: reference) != nil
-                ? Response(status: .ok) : Response(status: .notFound)
+            guard let url = store.manifestURL(repository: repo, reference: reference),
+                let data = try? Data(contentsOf: url)
+            else { return Response(status: .notFound) }
+            return Response(
+                status: .ok,
+                headers: [Self.dockerContentDigest: Self.contentDigest(of: data)]
+            )
         }
 
         router.get("/v2/{repo}/manifests/{reference}") { _, context -> Response in
@@ -174,7 +207,10 @@ struct AgentImageRegistry: Sendable {
                 as? String ?? "application/vnd.oci.image.manifest.v1+json"
             return Response(
                 status: .ok,
-                headers: [.contentType: mediaType],
+                headers: [
+                    .contentType: mediaType,
+                    Self.dockerContentDigest: Self.contentDigest(of: data),
+                ],
                 body: .init(byteBuffer: ByteBuffer(bytes: data))
             )
         }
