@@ -8,8 +8,7 @@ import OpenTelemetryGRPC
 import WendyAgentGRPC
 import X509
 
-@MainActor
-public final class WendyAgent {
+public actor WendyAgent {
     private typealias PosixGRPCServer = GRPCServer<HTTP2ServerTransport.Posix>
 
     /// The Wendy Agent version from the main bundle Info.plist.
@@ -61,7 +60,7 @@ public final class WendyAgent {
                 let registry = AgentImageRegistry(
                     store: BlobStore(root: WendyAgentPaths.stateDirectory)
                 )
-                self.registryTask = Task { @MainActor in
+                self.registryTask = Task {
                     do {
                         try await registry.run()
                     } catch {
@@ -281,14 +280,14 @@ public final class WendyAgent {
         self.provisioningService = provisioningService
         await provisioningService.setCallbacks(
             onProvisioned: { [weak self] _ in
-                Task { @MainActor in
-                    await self?.handleProvisioned()
-                }
+                // Fire-and-forget: the switch (and its graceful shutdown of the
+                // current server) MUST NOT be awaited here — this callback runs
+                // inside the in-flight provisioning RPC, which that shutdown
+                // drains, so awaiting it would deadlock. Detach and return.
+                Task { await self?.handleProvisioned() }
             },
             onUnprovisioned: { [weak self] in
-                Task { @MainActor in
-                    await self?.handleUnprovisioned()
-                }
+                Task { await self?.handleUnprovisioned() }
             }
         )
         let info = await provisioningService.provisioningInfo()
@@ -750,7 +749,7 @@ public final class WendyAgent {
     ) {
         guard self.statusObservationTasks[observationID] == nil else { return }
 
-        let task = Task { @MainActor in
+        let task = Task {
             await self.runStatusObservation(for: observationID)
         }
         self.statusObservationTasks[observationID] = task
@@ -785,7 +784,7 @@ public final class WendyAgent {
     ) {
         guard self.appsObservationTasks[observationID] == nil else { return }
 
-        let task = Task { @MainActor in
+        let task = Task {
             await self.runAppsObservation(for: observationID)
         }
         self.appsObservationTasks[observationID] = task
