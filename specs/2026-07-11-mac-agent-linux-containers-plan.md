@@ -185,24 +185,73 @@ git commit -m "feat(mac): LinuxContainerBackend protocol + entitlement run-spec 
 
 ---
 
-### Task 2: `ContainerCLI` — thin wrapper over Apple's `container`
+### Task 2: Shared `ExecutableResolver` + `ContainerCLI` over Apple's `container`
 
-A `Sendable` struct mirroring `DockerCLI`: executable resolution, an availability probe, and `pull`/`runAttached`/`stop`/`delete`/`list`. Argument construction is unit-tested without a live runtime by exposing pure arg-builder functions.
+A `Sendable` `ContainerCLI` struct: pure argument builders, an availability probe, and `pull`/`runAttached`/`stop`/`delete`/`list`. To avoid duplicating process plumbing, extract a shared `ExecutableResolver` (PATH + homebrew lookup) used by both `DockerCLI` and `ContainerCLI`, and route `ContainerCLI`'s short commands through the existing `Subprocess.run`. Only the small attached-run plumbing stays per-CLI. Argument construction is unit-tested without a live runtime via pure arg-builder functions.
 
 **Files:**
+- Create: `swift/WendyAgentCore/Sources/WendyAgent/Containers/ExecutableResolver.swift`
 - Create: `swift/WendyAgentCore/Sources/WendyAgent/Containers/ContainerCLI.swift`
+- Modify: `swift/WendyAgentCore/Sources/WendyAgent/Docker/DockerCLI.swift:331-394` (replace its private `resolveExecutablePath`/`resolveExecutable`/`buildSearchPaths`/`fallbackExecutablePaths` with calls to the shared `ExecutableResolver`; keep `resolveExecutableForTesting`)
+- Test: `swift/WendyAgentCore/Tests/WendyAgentTests/ExecutableResolverTests.swift`
 - Test: `swift/WendyAgentCore/Tests/WendyAgentTests/ContainerCLITests.swift`
 
 **Interfaces:**
-- Consumes: `LinuxRunSpec` (Task 1), `LinuxContainerInfo` (Task 1).
+- Consumes: `LinuxRunSpec` (Task 1), `LinuxContainerInfo` (Task 1), existing `Subprocess.run(_:_:timeout:) -> Subprocess.Result` (`Services/Platform/Subprocess.swift`).
 - Produces:
+  - `enum ExecutableResolver { struct Resolution: Sendable { let resolvedPath: String?; let searchedPaths: [String] }; static func resolve(_ executable: String, environment: [String: String], extraFallbackDirectories: [String] = ["/usr/local/bin", "/opt/homebrew/bin"], fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) -> Resolution }`. An `executable` containing `/` is treated as an explicit path (resolved iff executable).
   - `struct ContainerCLI: Sendable` with `init(executable: String = "container", environment: [String: String] = ProcessInfo.processInfo.environment)`.
   - `func checkAvailable() async -> Bool` (runs `container --version`).
   - `static func runArguments(containerName: String, imageName: String, specs: [LinuxRunSpec], env: [String: String]) -> [String]` — pure, returns the full `container run …` arg list including `--scheme http`.
   - `static func deleteArguments(containerName: String) -> [String]` → `["delete", "--force", <name>]`.
   - `func pull(image: String) async throws`, `func runAttached(containerName:imageName:specs:env:terminationHandler:) throws -> (Process, Pipe, Pipe)`, `func stop(containerName:) async throws`, `func delete(containerName:) async throws`, `func list() async throws -> [LinuxContainerInfo]` (parses `container list --all --format json`, filters `wendy.managed=true`).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
+
+```swift
+// swift/WendyAgentCore/Tests/WendyAgentTests/ExecutableResolverTests.swift
+import Testing
+
+@testable import WendyAgent
+
+@Suite struct ExecutableResolverTests {
+    @Test func resolvesFromPathFirst() {
+        let r = ExecutableResolver.resolve(
+            "container",
+            environment: ["PATH": "/custom/bin:/usr/bin"],
+            extraFallbackDirectories: ["/opt/homebrew/bin"],
+            fileExists: { $0 == "/custom/bin/container" }
+        )
+        #expect(r.resolvedPath == "/custom/bin/container")
+    }
+
+    @Test func fallsBackToExtraDirectoriesWhenNotOnPath() {
+        let r = ExecutableResolver.resolve(
+            "container",
+            environment: ["PATH": "/usr/bin"],
+            extraFallbackDirectories: ["/opt/homebrew/bin"],
+            fileExists: { $0 == "/opt/homebrew/bin/container" }
+        )
+        #expect(r.resolvedPath == "/opt/homebrew/bin/container")
+    }
+
+    @Test func nilWhenNowhereExecutable() {
+        let r = ExecutableResolver.resolve(
+            "container", environment: ["PATH": "/usr/bin"],
+            extraFallbackDirectories: ["/opt/homebrew/bin"], fileExists: { _ in false }
+        )
+        #expect(r.resolvedPath == nil)
+        #expect(!r.searchedPaths.isEmpty)
+    }
+
+    @Test func explicitPathHonored() {
+        let r = ExecutableResolver.resolve(
+            "/abs/container", environment: [:], fileExists: { $0 == "/abs/container" }
+        )
+        #expect(r.resolvedPath == "/abs/container")
+    }
+}
+```
 
 ```swift
 // swift/WendyAgentCore/Tests/WendyAgentTests/ContainerCLITests.swift
@@ -258,14 +307,60 @@ private func pairPresent(_ flag: String, _ value: String, in args: [String]) -> 
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd swift/WendyAgentCore && swift test --filter ContainerCLITests`
-Expected: FAIL — `ContainerCLI` not defined.
+Run: `cd swift/WendyAgentCore && swift test --filter ExecutableResolverTests --filter ContainerCLITests`
+Expected: FAIL — `ExecutableResolver` / `ContainerCLI` not defined.
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3a: Implement `ExecutableResolver`**
 
-Model the process plumbing on `DockerCLI` (executable resolution across `PATH` + `/opt/homebrew/bin`, async `run(arguments:)` returning trimmed stdout, `runAttached` returning process + pipes). Only the pure arg builders are shown in full; the process helpers are a direct copy of `DockerCLI`'s private `run`/`resolveExecutable`/`buildSearchPaths` with `executable` defaulting to `"container"` and the Docker-app fallback path removed.
+```swift
+// swift/WendyAgentCore/Sources/WendyAgent/Containers/ExecutableResolver.swift
+import Foundation
+
+/// Resolves a CLI tool's absolute path: entries on `PATH` first, then a set of
+/// fallback directories (homebrew/usr-local). Shared by `DockerCLI` and
+/// `ContainerCLI` so the lookup logic exists once.
+enum ExecutableResolver {
+    struct Resolution: Sendable {
+        let resolvedPath: String?
+        let searchedPaths: [String]
+    }
+
+    static func resolve(
+        _ executable: String,
+        environment: [String: String],
+        extraFallbackDirectories: [String] = ["/usr/local/bin", "/opt/homebrew/bin"],
+        fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> Resolution {
+        // An explicit path is used as-is.
+        if executable.contains("/") {
+            return Resolution(
+                resolvedPath: fileExists(executable) ? executable : nil,
+                searchedPaths: [executable]
+            )
+        }
+        let pathDirs = (environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init).filter { !$0.isEmpty }
+        var candidates: [String] = []
+        var seen = Set<String>()
+        for dir in pathDirs + extraFallbackDirectories {
+            let candidate = URL(fileURLWithPath: dir).appendingPathComponent(executable).path
+            if seen.insert(candidate).inserted { candidates.append(candidate) }
+        }
+        return Resolution(
+            resolvedPath: candidates.first(where: fileExists),
+            searchedPaths: candidates
+        )
+    }
+}
+```
+
+Then refactor `DockerCLI` to use it. In `DockerCLI.swift`, replace the bodies of the private `resolveExecutable()`/`buildSearchPaths()`/`fallbackExecutablePaths()` (lines ~347-394) with a single call site: keep `resolveExecutablePath()` and `resolveExecutableForTesting()`, but implement them via `ExecutableResolver.resolve(self.executable, environment: self.environment, extraFallbackDirectories: ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"])`. Map a nil resolution to `DockerError.executableNotFound`. Delete the now-dead private helpers. The existing `DockerCLI` tests (`resolveExecutableForTesting`) must still pass unchanged.
+
+- [ ] **Step 3b: Implement `ContainerCLI`**
+
+Short commands go through the existing `Subprocess.run` (resolve the path with `ExecutableResolver`, throw on nonzero exit). Only `runAttached` keeps its own small process setup (it must return the live process + pipes for streaming, which `Subprocess.run` — which reads to EOF — cannot do).
 
 ```swift
 // swift/WendyAgentCore/Sources/WendyAgent/Containers/ContainerCLI.swift
@@ -327,13 +422,13 @@ struct ContainerCLI: Sendable {
     // MARK: - Availability
 
     func checkAvailable() async -> Bool {
-        (try? await run(arguments: ["--version"])) != nil
+        (try? await run(["--version"])) != nil
     }
 
     // MARK: - Image + lifecycle
 
     func pull(image: String) async throws {
-        _ = try await run(arguments: ["pull", "--scheme", "http", image])
+        _ = try await run(["pull", "--scheme", "http", image])
     }
 
     func runAttached(
@@ -346,7 +441,7 @@ struct ContainerCLI: Sendable {
         let args = Self.runArguments(
             containerName: containerName, imageName: imageName, specs: specs, env: env
         )
-        let resolved = try resolveExecutablePath()
+        let resolved = try resolvedExecutablePath()
         let process = Foundation.Process()
         process.executableURL = URL(fileURLWithPath: resolved)
         process.arguments = args
@@ -361,15 +456,15 @@ struct ContainerCLI: Sendable {
     }
 
     func stop(containerName: String) async throws {
-        _ = try await run(arguments: ["stop", containerName])
+        _ = try await run(["stop", containerName])
     }
 
     func delete(containerName: String) async throws {
-        _ = try await run(arguments: Self.deleteArguments(containerName: containerName))
+        _ = try await run(Self.deleteArguments(containerName: containerName))
     }
 
     func list() async throws -> [LinuxContainerInfo] {
-        let output = try await run(arguments: ["list", "--all", "--format", "json"])
+        let output = try await run(["list", "--all", "--format", "json"])
         return Self.parseList(output)
     }
 
@@ -391,12 +486,32 @@ struct ContainerCLI: Sendable {
         }
     }
 
-    // MARK: - Private process helpers (copied from DockerCLI, `container` executable)
-    // run(arguments:) -> String, resolveExecutablePath(), resolveExecutable(),
-    // buildSearchPaths(), fallbackExecutablePaths() — identical to DockerCLI's
-    // private helpers except `fallbackExecutablePaths` returns only
-    // ["/usr/local/bin/\(executable)", "/opt/homebrew/bin/\(executable)"].
-    // Reuse ContainerCLIError mirroring DockerError.
+    // MARK: - Private
+
+    private func resolvedExecutablePath() throws -> String {
+        let resolution = ExecutableResolver.resolve(executable, environment: environment)
+        guard let path = resolution.resolvedPath else {
+            throw ContainerCLIError.executableNotFound(
+                executable: executable, searchedPaths: resolution.searchedPaths
+            )
+        }
+        return path
+    }
+
+    /// Run a short `container` command via the shared `Subprocess` helper;
+    /// throw on nonzero exit. Long-running attached runs use `runAttached`.
+    @discardableResult
+    private func run(_ arguments: [String]) async throws -> String {
+        let resolved = try resolvedExecutablePath()
+        let result = try await Subprocess.run(resolved, arguments)
+        guard result.status == 0 else {
+            throw ContainerCLIError.commandFailed(
+                executable: resolved, args: arguments, status: result.status,
+                stderr: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 enum ContainerCLIError: Error, CustomStringConvertible {
@@ -417,19 +532,20 @@ enum ContainerCLIError: Error, CustomStringConvertible {
 }
 ```
 
-For the copied `run`/resolution helpers, open `swift/WendyAgentCore/Sources/WendyAgent/Docker/DockerCLI.swift:233-394` and paste the bodies of `run(arguments:timeout:)` (you may drop the `timeout` parameter and its task-group branch — availability calls here are short), `resolveExecutablePath`, `resolveExecutable`, and `buildSearchPaths`, substituting `ContainerCLIError` for `DockerError`.
+- [ ] **Step 4: Run tests to verify they pass**
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd swift/WendyAgentCore && swift test --filter ContainerCLITests`
-Expected: PASS (3 tests).
+Run: `cd swift/WendyAgentCore && swift test --filter ExecutableResolverTests --filter ContainerCLITests && swift test --filter DockerCLI && swift build`
+Expected: resolver tests PASS (4), ContainerCLI tests PASS (3), existing DockerCLI tests still PASS, build clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swift/WendyAgentCore/Sources/WendyAgent/Containers/ContainerCLI.swift \
+git add swift/WendyAgentCore/Sources/WendyAgent/Containers/ExecutableResolver.swift \
+        swift/WendyAgentCore/Sources/WendyAgent/Containers/ContainerCLI.swift \
+        swift/WendyAgentCore/Sources/WendyAgent/Docker/DockerCLI.swift \
+        swift/WendyAgentCore/Tests/WendyAgentTests/ExecutableResolverTests.swift \
         swift/WendyAgentCore/Tests/WendyAgentTests/ContainerCLITests.swift
-git commit -m "feat(mac): ContainerCLI wrapper for Apple container runtime"
+git commit -m "feat(mac): shared ExecutableResolver + ContainerCLI over Apple container"
 ```
 
 ---
