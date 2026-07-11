@@ -40,24 +40,24 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const macContainersUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
-
 func macPlatformMismatchMessage(platform string) string {
 	return fmt.Sprintf("Project/target mismatch: selected target is Wendy Agent for Mac, but wendy.json resolves to platform %q. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device.", platform)
 }
 
 func rejectUnsupportedMacRunProject(projectType, platform string) error {
-	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
+	osName := platformOS(platform)
+	// Native darwin apps and Linux/WendyOS containers (via the Mac agent's
+	// container runtime) are both supported. Anything else is a real mismatch.
+	if !strings.EqualFold(osName, appconfig.PlatformDarwin) &&
+		!strings.EqualFold(osName, "linux") &&
+		!strings.EqualFold(osName, "wendyos") {
 		return errors.New(macPlatformMismatchMessage(platform))
 	}
-
 	switch projectType {
-	case "swift", "xcode":
+	case "swift", "xcode", "docker", "python", "compose", "multi-service":
 		return nil
-	case "docker", "python", "compose", "multi-service":
-		return errors.New(macContainersUnsupportedMessage)
 	default:
-		return nil
+		return fmt.Errorf("unable to detect project type for a Mac target: %q", projectType)
 	}
 }
 

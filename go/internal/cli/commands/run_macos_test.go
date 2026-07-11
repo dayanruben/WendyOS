@@ -39,6 +39,19 @@ type fakeMacContainerServer struct {
 	state *fakeMacRunState
 }
 
+// fakeMacProvisioningServer reports "not provisioned" so requireRegistryAuth
+// (used on the docker/compose/python push path) doesn't require CLI mTLS
+// certs in tests.
+type fakeMacProvisioningServer struct {
+	agentpb.UnimplementedWendyProvisioningServiceServer
+}
+
+func (s *fakeMacProvisioningServer) IsProvisioned(context.Context, *agentpb.IsProvisionedRequest) (*agentpb.IsProvisionedResponse, error) {
+	return &agentpb.IsProvisionedResponse{
+		Response: &agentpb.IsProvisionedResponse_NotProvisioned{NotProvisioned: &agentpb.NotProvisionedResponse{}},
+	}, nil
+}
+
 func (s *fakeMacContainerServer) CreateContainer(_ context.Context, req *agentpb.CreateContainerRequest) (*agentpb.CreateContainerResponse, error) {
 	s.state.createReqs = append(s.state.createReqs, proto.Clone(req).(*agentpb.CreateContainerRequest))
 	return &agentpb.CreateContainerResponse{}, nil
@@ -61,6 +74,7 @@ func startFakeMacRunServer(t *testing.T, state *fakeMacRunState) (*grpcclient.Ag
 	agentpb.RegisterWendyAgentServiceServer(s, &fakeMacAgentServer{})
 	agentpb.RegisterWendyContainerServiceServer(s, &fakeMacContainerServer{state: state})
 	agentpb.RegisterWendyFileSyncServiceServer(s, &state.fakeSyncServer)
+	agentpb.RegisterWendyProvisioningServiceServer(s, &fakeMacProvisioningServer{})
 	go func() { _ = s.Serve(ln) }()
 
 	conn, err := grpc.NewClient(ln.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -71,10 +85,11 @@ func startFakeMacRunServer(t *testing.T, state *fakeMacRunState) (*grpcclient.Ag
 	}
 
 	ac := &grpcclient.AgentConnection{
-		Conn:             conn,
-		AgentService:     agentpb.NewWendyAgentServiceClient(conn),
-		ContainerService: agentpb.NewWendyContainerServiceClient(conn),
-		FileSyncService:  agentpb.NewWendyFileSyncServiceClient(conn),
+		Conn:                conn,
+		AgentService:        agentpb.NewWendyAgentServiceClient(conn),
+		ContainerService:    agentpb.NewWendyContainerServiceClient(conn),
+		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
+		ProvisioningService: agentpb.NewWendyProvisioningServiceClient(conn),
 	}
 
 	cleanup := func() {
@@ -402,131 +417,53 @@ func TestAssembleSwiftPMSyncEntries_IncludesSiblingResourceDirectories(t *testin
 	}
 }
 
-func TestPreflightMissingAppConfigForMacTarget_RejectsContainerProjectBeforeConfigPrompt(t *testing.T) {
-	state := &fakeMacRunState{}
-	conn, cleanup := startFakeMacRunServer(t, state)
-	defer cleanup()
-
-	target := &SelectedDevice{Agent: conn}
-	err := preflightMissingAppConfigForMacTarget(context.Background(), target, "docker")
-	if err == nil {
-		t.Fatal("preflightMissingAppConfigForMacTarget error = nil, want unsupported Mac project error")
-	}
-	if got := err.Error(); !strings.Contains(got, "Project/target mismatch") || !strings.Contains(got, "platform: \"darwin\"") {
-		t.Fatalf("preflightMissingAppConfigForMacTarget error = %q, want Mac project guidance", got)
-	}
-}
-
-func TestPreflightMissingAppConfigForMacTarget_RejectsNativeSwiftProjectWithoutDarwinPlatform(t *testing.T) {
-	state := &fakeMacRunState{}
-	conn, cleanup := startFakeMacRunServer(t, state)
-	defer cleanup()
-
-	target := &SelectedDevice{Agent: conn}
-	err := preflightMissingAppConfigForMacTarget(context.Background(), target, "swift")
-	if err == nil {
-		t.Fatal("preflightMissingAppConfigForMacTarget swift error = nil, want unsupported Mac project error")
-	}
-	if got := err.Error(); !strings.Contains(got, "Project/target mismatch") || !strings.Contains(got, "platform: \"darwin\"") {
-		t.Fatalf("preflightMissingAppConfigForMacTarget swift error = %q, want Mac project guidance", got)
-	}
-}
-
-func TestRunWithAgent_RejectsUnsupportedMacProjectShapes(t *testing.T) {
-	tests := []struct {
-		name   string
-		setup  func(t *testing.T, dir string)
-		appCfg *appconfig.AppConfig
-	}{
-		{
-			name: "dockerfile with explicit linux platform",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
-					t.Fatalf("WriteFile Dockerfile: %v", err)
-				}
-			},
-			appCfg: &appconfig.AppConfig{AppID: "sh.wendy.MacLinuxContainer", Platform: "linux/arm64"},
-		},
-		{
-			name: "dockerfile with implicit target platform",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
-					t.Fatalf("WriteFile Dockerfile: %v", err)
-				}
-			},
-			appCfg: &appconfig.AppConfig{AppID: "sh.wendy.MacDockerContainer"},
-		},
-		{
-			name: "python project with darwin platform",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("flask\n"), 0o644); err != nil {
-					t.Fatalf("WriteFile requirements.txt: %v", err)
-				}
-			},
-			appCfg: &appconfig.AppConfig{AppID: "sh.wendy.MacPythonContainer", Platform: appconfig.PlatformDarwin},
-		},
-		{
-			name: "wendyos platform template",
-			setup: func(t *testing.T, dir string) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("flask\n"), 0o644); err != nil {
-					t.Fatalf("WriteFile requirements.txt: %v", err)
-				}
-			},
-			appCfg: &appconfig.AppConfig{AppID: "sh.wendy.WendyOSTemplate", Platform: appconfig.PlatformWendyOS},
-		},
-		{
-			name:  "multi-service config",
-			setup: func(t *testing.T, dir string) { t.Helper() },
-			appCfg: &appconfig.AppConfig{
-				AppID:    "sh.wendy.MultiService",
-				Platform: appconfig.PlatformDarwin,
-				Services: map[string]*appconfig.ServiceConfig{
-					"api": {Context: "api"},
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			tt.setup(t, dir)
-
+// preflightMissingAppConfigForMacTarget runs before a wendy.json exists, so it
+// always resolves the effective platform as "linux/<arch>" (the same default
+// resolveAgentPlatform uses for an empty cfgPlatform). Now that Linux/WendyOS
+// containers are supported on the Mac agent, that default is no longer a
+// mismatch for any of these project types, so this early gate should let them
+// through and defer to the normal ensureAppConfig/runWithAgent path.
+func TestPreflightMissingAppConfigForMacTarget_AllowsContainerAndSwiftProjectsBeforeConfigPrompt(t *testing.T) {
+	for _, pt := range []string{"docker", "python", "compose", "multi-service", "swift", "xcode"} {
+		t.Run(pt, func(t *testing.T) {
 			state := &fakeMacRunState{}
 			conn, cleanup := startFakeMacRunServer(t, state)
 			defer cleanup()
 
-			err := runWithAgent(context.Background(), conn, dir, tt.appCfg, runOptions{})
-			if err == nil {
-				t.Fatal("runWithAgent error = nil, want unsupported platform error")
-			}
-			got := err.Error()
-			if !strings.Contains(got, "Wendy Agent for Mac currently runs native macOS apps only") || !strings.Contains(got, "target a Linux/WendyOS device") {
-				t.Fatalf("runWithAgent error = %q, want unsupported Macs guidance", got)
-			}
-			if strings.Contains(got, "agent version") || strings.Contains(got, "updating") {
-				t.Fatalf("runWithAgent error = %q, should not suggest updating the agent", got)
-			}
-			if len(state.createReqs) != 0 {
-				t.Fatalf("CreateContainer calls = %d, want 0", len(state.createReqs))
-			}
-			if len(state.startReqs) != 0 {
-				t.Fatalf("StartContainer calls = %d, want 0", len(state.startReqs))
+			target := &SelectedDevice{Agent: conn}
+			if err := preflightMissingAppConfigForMacTarget(context.Background(), target, pt); err != nil {
+				t.Fatalf("preflightMissingAppConfigForMacTarget(%q) = %v, want nil", pt, err)
 			}
 		})
 	}
 }
 
-func TestRunComposeWithAgent_RejectsMacAgentBeforeRegistrySetup(t *testing.T) {
-	dir := t.TempDir()
-	compose := []byte("services:\n  web:\n    build: .\n")
-	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), compose, 0o644); err != nil {
-		t.Fatalf("WriteFile compose.yaml: %v", err)
+func TestRejectUnsupportedMacRunProject_AllowsLinuxContainers(t *testing.T) {
+	// Linux container projects are now supported on the Mac agent.
+	for _, pt := range []string{"docker", "python", "compose", "multi-service"} {
+		if err := rejectUnsupportedMacRunProject(pt, "linux/arm64"); err != nil {
+			t.Fatalf("projectType %q on linux/arm64 should be allowed, got: %v", pt, err)
+		}
 	}
+	// Native darwin still fine.
+	if err := rejectUnsupportedMacRunProject("swift", "darwin"); err != nil {
+		t.Fatalf("swift/darwin should be allowed, got: %v", err)
+	}
+	// A genuinely unsupported platform still rejected.
+	if err := rejectUnsupportedMacRunProject("docker", "windows/amd64"); err == nil {
+		t.Fatalf("windows target should still be rejected")
+	}
+}
+
+// Linux/WendyOS-platform docker, python, compose (via companion wendy.json),
+// and multi-service projects are now allowed to target a Mac agent (they run
+// as Linux containers via the Mac agent's container runtime). Only a
+// genuinely foreign platform (e.g. windows) is still a real project/target
+// mismatch. This is exercised at the runWithAgent level (not just the
+// isolated rejectUnsupportedMacRunProject gate) so the platform check
+// continues to fire before any build/push is attempted.
+func TestRunWithAgent_RejectsGenuinelyUnsupportedPlatform(t *testing.T) {
+	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile Dockerfile: %v", err)
 	}
@@ -535,15 +472,53 @@ func TestRunComposeWithAgent_RejectsMacAgentBeforeRegistrySetup(t *testing.T) {
 	conn, cleanup := startFakeMacRunServer(t, state)
 	defer cleanup()
 
-	err := runComposeWithAgent(context.Background(), conn, dir, runOptions{})
+	appCfg := &appconfig.AppConfig{AppID: "sh.wendy.MacWindowsContainer", Platform: "windows/amd64"}
+	err := runWithAgent(context.Background(), conn, dir, appCfg, runOptions{})
 	if err == nil {
-		t.Fatal("runComposeWithAgent error = nil, want unsupported Mac project error")
+		t.Fatal("runWithAgent error = nil, want unsupported platform error")
 	}
-	if got := err.Error(); !strings.Contains(got, "Wendy Agent for Mac currently runs native macOS apps only") {
-		t.Fatalf("runComposeWithAgent error = %q, want Mac beta native-only guidance", got)
+	got := err.Error()
+	if !strings.Contains(got, "Project/target mismatch") || !strings.Contains(got, "platform: \"darwin\"") {
+		t.Fatalf("runWithAgent error = %q, want Mac project guidance", got)
+	}
+	if strings.Contains(got, "agent version") || strings.Contains(got, "updating") {
+		t.Fatalf("runWithAgent error = %q, should not suggest updating the agent", got)
 	}
 	if len(state.createReqs) != 0 {
 		t.Fatalf("CreateContainer calls = %d, want 0", len(state.createReqs))
+	}
+	if len(state.startReqs) != 0 {
+		t.Fatalf("StartContainer calls = %d, want 0", len(state.startReqs))
+	}
+}
+
+// runComposeWithAgent always resolves the effective platform via
+// resolveAgentPlatform("", agentOS, architecture) (compose has no per-run
+// wendy.json platform override), which defaults to "linux/<arch>" regardless
+// of the agent's actual OS. That means a compose run against a Mac agent is
+// now unconditionally allowed by rejectUnsupportedMacRunProject (linux is a
+// supported platform), so the old "reject before registry setup" behavior no
+// longer exists to test at this call site: the gate simply passes through.
+// Confirm end-to-end (using a pre-built image so no real docker build runs)
+// that the old native-only rejection message is gone and the container is
+// created.
+func TestRunComposeWithAgent_AllowsMacAgentWithPrebuiltImage(t *testing.T) {
+	dir := t.TempDir()
+	compose := []byte("services:\n  web:\n    image: docker.io/library/nginx:latest\n")
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), compose, 0o644); err != nil {
+		t.Fatalf("WriteFile compose.yaml: %v", err)
+	}
+
+	state := &fakeMacRunState{}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+
+	err := runComposeWithAgent(context.Background(), conn, dir, runOptions{deploy: true})
+	if err != nil {
+		t.Fatalf("runComposeWithAgent: %v", err)
+	}
+	if len(state.createReqs) != 1 {
+		t.Fatalf("CreateContainer calls = %d, want 1", len(state.createReqs))
 	}
 }
 
