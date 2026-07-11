@@ -143,7 +143,13 @@ struct AgentImageRegistry: Sendable {
             let digest = context.parameters.get("digest") ?? ""
             guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
             guard store.hasBlob(digest: digest) else { return Response(status: .notFound) }
-            return Response(status: .ok, headers: [Self.dockerContentDigest: digest])
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: "application/octet-stream",
+                    Self.dockerContentDigest: digest,
+                ]
+            )
         }
 
         router.get("/v2/{repo}/blobs/{digest}") { _, context -> Response in
@@ -188,7 +194,10 @@ struct AgentImageRegistry: Sendable {
             else { return Response(status: .notFound) }
             return Response(
                 status: .ok,
-                headers: [Self.dockerContentDigest: Self.contentDigest(of: data)]
+                headers: [
+                    .contentType: Self.manifestMediaType(data),
+                    Self.dockerContentDigest: Self.contentDigest(of: data),
+                ]
             )
         }
 
@@ -202,13 +211,10 @@ struct AgentImageRegistry: Sendable {
                 let data = try? Data(contentsOf: url)
             else { return Response(status: .notFound) }
             // Content-Type must echo the stored manifest's mediaType; default to OCI.
-            let mediaType =
-                (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["mediaType"]
-                as? String ?? "application/vnd.oci.image.manifest.v1+json"
             return Response(
                 status: .ok,
                 headers: [
-                    .contentType: mediaType,
+                    .contentType: Self.manifestMediaType(data),
                     Self.dockerContentDigest: Self.contentDigest(of: data),
                 ],
                 body: .init(byteBuffer: ByteBuffer(bytes: data))

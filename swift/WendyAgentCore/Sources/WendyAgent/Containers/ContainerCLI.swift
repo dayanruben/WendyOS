@@ -71,7 +71,8 @@ struct ContainerCLI: Sendable {
     // MARK: - Image + lifecycle
 
     func pull(image: String) async throws {
-        _ = try await run(["pull", "--scheme", "http", image], timeout: .seconds(600))
+        // `container` has no top-level `pull`; the subcommand is `image pull`.
+        _ = try await run(["image", "pull", "--scheme", "http", image], timeout: .seconds(600))
     }
 
     func runAttached(
