@@ -31,10 +31,10 @@ func New() *Spawner { return &Spawner{} }
 // returns the child's exit code. stderr is merged into the PTY master, so all
 // output arrives via stdout.
 //
-// The caller owns stdin and resize: Run's internal goroutines that read stdin
-// and drain resize unwind only when the caller closes the stdin reader and the
-// resize channel. Callers must close both on every path that ends a session
-// (including error and cancellation) or each session leaks two goroutines.
+// The resize goroutine unwinds on its own once the child exits, so it never
+// leaks. The stdin goroutine (io.Copy from stdin into the PTY) blocks on the
+// stdin read, so the caller must close the stdin reader on every path that ends
+// a session (including error and cancellation) or each session leaks it.
 func (Spawner) Run(ctx context.Context, command []string, stdin io.Reader, stdout io.Writer, resize <-chan [2]uint32) (int, error) {
 	argv := command
 	if len(argv) == 0 {
@@ -59,12 +59,28 @@ func (Spawner) Run(ctx context.Context, command []string, stdin io.Reader, stdou
 	if err != nil {
 		return 0, fmt.Errorf("starting host pty for %q: %w", argv[0], err)
 	}
-	defer func() { _ = ptmx.Close() }()
 
-	// Apply resizes until the channel closes.
+	// Apply resizes until the channel closes or the session ends. sessionDone
+	// stops the goroutine as soon as the child exits — we cannot wait for the
+	// caller to close resize, because the caller closes it only after receiving
+	// the exit code that Run returns here (that would deadlock). resizeStopped
+	// closes once the goroutine has fully unwound and is guaranteed to touch
+	// ptmx no more, so ptmx.Close below never races pty.Setsize on the pty fd
+	// (pty.Setsize reads ptmx.Fd() without the poll.FD refcount that Close takes).
+	sessionDone := make(chan struct{})
+	resizeStopped := make(chan struct{})
 	go func() {
-		for sz := range resize {
-			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(sz[0]), Cols: uint16(sz[1])})
+		defer close(resizeStopped)
+		for {
+			select {
+			case sz, ok := <-resize:
+				if !ok {
+					return
+				}
+				_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(sz[0]), Cols: uint16(sz[1])})
+			case <-sessionDone:
+				return
+			}
 		}
 	}()
 
@@ -74,7 +90,12 @@ func (Spawner) Run(ctx context.Context, command []string, stdin io.Reader, stdou
 	// PTY master -> stdout. Returns when the child exits and the master EOFs.
 	_, _ = io.Copy(stdout, ptmx)
 
-	return exitCode(cmd.Wait()), nil
+	waitErr := cmd.Wait()
+	close(sessionDone)
+	<-resizeStopped
+	_ = ptmx.Close()
+
+	return exitCode(waitErr), nil
 }
 
 func exitCode(err error) int {
