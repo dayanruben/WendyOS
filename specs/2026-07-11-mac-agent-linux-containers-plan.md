@@ -12,7 +12,7 @@
 
 - Swift package requires Swift 6 language mode; all new types must satisfy strict-concurrency (`Sendable` where crossing isolation). Copy the pattern from `DockerCLI` (a `Sendable` struct) and actor backends.
 - New Swift sources live under `swift/WendyAgentCore/Sources/WendyAgent/`; tests under `swift/WendyAgentCore/Tests/WendyAgentTests/`. **The module name is `WendyAgentCore`** (the SwiftPM target name), even though sources sit in `Sources/WendyAgent` — tests must use `@testable import WendyAgentCore`.
-- Config types are fixed: `WendyAppConfig { platform: String?, entitlements: [WendyEntitlement]?, brewfile: String? }`, `WendyEntitlement { type: String, mode: String?, name: String?, path: String?, ports: [WendyPortMapping]? }`, `WendyPortMapping { host: UInt16, container: UInt16 }` (in `Services/OCITypes.swift`). Do not modify them.
+- Config types are fixed (in `Services/OCITypes.swift`; do not modify them). Exact initializers: `WendyAppConfig(appId: String, platform: String?, entitlements: [WendyEntitlement]?, brewfile: String? = nil)` — **`appId` is required and first**; `WendyEntitlement(type: String, mode: String?, name: String?, path: String?, ports: [WendyPortMapping]?)`; `WendyPortMapping(host: UInt16, container: UInt16)`. Every `WendyAppConfig(...)` in a test must pass `appId:`.
 - Registry port is `5555` (matches Go `registryPort("darwin")` in `helpers.go:2513` and `DockerCLI.registryPort`). Bind to `127.0.0.1` only.
 - Container naming: managed containers are named `wendy-<appName>` and carry label `wendy.managed=true` (matches the existing Docker backend and Go provider).
 - Runtime selection order: prefer `container`, else `docker`, else neither (Linux apps unsupported with an actionable message).
@@ -573,6 +573,7 @@ import Testing
 @Suite struct ContainerCLIBackendTests {
     @Test func specsForConfigMapNetworkAndPersist() {
         let config = WendyAppConfig(
+            appId: "app",
             platform: "linux/arm64",
             entitlements: [
                 WendyEntitlement(
@@ -704,6 +705,7 @@ import Testing
 @Suite struct DockerContainerBackendTests {
     @Test func runOptionsRenderPortsVolumesAndManagedLabels() {
         let config = WendyAppConfig(
+            appId: "app",
             platform: "linux/arm64",
             entitlements: [
                 WendyEntitlement(
@@ -1195,7 +1197,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
                 .appendingPathComponent("cs-\(UUID().uuidString)"),
             linuxBackend: backend
         )
-        let config = WendyAppConfig(platform: "linux/arm64", entitlements: nil, brewfile: nil)
+        let config = WendyAppConfig(appId: "svc", platform: "linux/arm64", entitlements: nil, brewfile: nil)
         let configData = try JSONEncoder().encode(config)
 
         // createContainer registers a .container app (no throw).

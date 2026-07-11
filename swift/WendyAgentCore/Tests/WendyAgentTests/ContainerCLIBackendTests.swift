@@ -5,6 +5,7 @@ import Testing
 @Suite struct ContainerCLIBackendTests {
     @Test func specsForConfigMapNetworkAndPersist() {
         let config = WendyAppConfig(
+            appId: "svc",
             platform: "linux/arm64",
             entitlements: [
                 WendyEntitlement(
