@@ -70,7 +70,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
             request: ServerRequest(metadata: [:], message: createReq),
             context: makeServerContext(method: "CreateContainer")
         )
-        let infos = service.currentAppInfosForTesting()
+        let infos = await service.currentAppInfosForTesting()
         #expect(infos.contains { $0.id == "svc" && $0.kind == .container })
 
         // startContainer pulls the image, then creates+starts via the backend,
@@ -97,7 +97,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         #expect(await backend.pulledImages() == ["localhost:5555/svc:latest"])
         #expect(await backend.startedApps() == ["svc"])
 
-        let runningInfo = try #require(service.appInfo(forAppID: "svc"))
+        let runningInfo = try #require(await service.appInfo(forAppID: "svc"))
         #expect(runningInfo.status == .running)
 
         // stopContainer routes to the backend's stop(appName:).
@@ -117,7 +117,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
             context: makeServerContext(method: "DeleteContainer")
         )
         #expect(await backend.removedApps() == ["svc"])
-        #expect(service.appInfo(forAppID: "svc") == nil)
+        #expect(await service.appInfo(forAppID: "svc") == nil)
     }
 
     @Test func createContainerFailsPreconditionWithoutABackend() async throws {
