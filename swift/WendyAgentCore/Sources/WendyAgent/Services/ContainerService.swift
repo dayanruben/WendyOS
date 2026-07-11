@@ -877,18 +877,37 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             guard let linuxBackend else {
                 throw RPCError(code: .failedPrecondition, message: self.linuxUnavailableMessage)
             }
-            try await linuxBackend.pull(image: container.imageName)
             let launchToken = UUID()
-            self.prepareAppForLaunch(id: appName, launchToken: launchToken)
-            let (process, stdoutPipe, stderrPipe) = try await linuxBackend.createAndStart(
-                appName: appName,
-                imageName: container.imageName,
-                appConfig: container.appConfig,
-                terminationHandler: self.makeTerminationHandler(
-                    forAppID: appName,
-                    launchToken: launchToken
+            let process: Foundation.Process
+            let stdoutPipe: Pipe
+            let stderrPipe: Pipe
+            do {
+                // Pull first, then create+start. Both shell out to the Linux
+                // runtime CLI, which throws a plain `Error` (e.g. a nonzero exit
+                // with stderr) on failure. Wrap those in `RPCError` so the client
+                // sees the actionable message — an un-wrapped error surfaces as
+                // gRPC's opaque "Service method threw an unknown error." instead.
+                try await linuxBackend.pull(image: container.imageName)
+                self.prepareAppForLaunch(id: appName, launchToken: launchToken)
+                (process, stdoutPipe, stderrPipe) = try await linuxBackend.createAndStart(
+                    appName: appName,
+                    imageName: container.imageName,
+                    appConfig: container.appConfig,
+                    terminationHandler: self.makeTerminationHandler(
+                        forAppID: appName,
+                        launchToken: launchToken
+                    )
                 )
-            )
+            } catch let error as RPCError {
+                self.cancelAppLaunch(id: appName, launchToken: launchToken)
+                throw error
+            } catch {
+                self.cancelAppLaunch(id: appName, launchToken: launchToken)
+                throw RPCError(
+                    code: .internalError,
+                    message: "Failed to start Linux container \(appName): \(error)"
+                )
+            }
             try await self.markAppRunning(id: appName, process: process, launchToken: launchToken)
             logger.info(
                 "Container started",

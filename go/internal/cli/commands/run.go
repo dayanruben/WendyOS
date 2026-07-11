@@ -1731,7 +1731,14 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 				stdinAttempted = false
 				continue
 			}
-			return fmt.Errorf("receiving container output: %w", recvErr)
+			// Any other stream error here means the agent stopped streaming
+			// container output — most often the container failed to start or
+			// exited abnormally (the agent wraps the real cause in the status
+			// message). Surface it as a notice rather than a fatal CLI error and
+			// fall through to the normal stop/cleanup path, so `wendy run` ends
+			// cleanly instead of looking like the CLI itself crashed.
+			cliNotice("Notice: container output stream ended: %v", recvErr)
+			break
 		}
 		gotFirstResponse = true
 		if out := resp.GetStdoutOutput(); out != nil {

@@ -59,6 +59,15 @@ struct ContainerCLI: Sendable {
         (try? await run(["--version"])) != nil
     }
 
+    /// Start Apple's container system services (`container system start`). The
+    /// runtime needs these running before any pull/run; `container --version`
+    /// (used by `checkAvailable`) succeeds even when they are stopped, so this
+    /// must be invoked explicitly. Idempotent: a no-op when already running.
+    /// Booting the backing services/VM can take a while, hence the long timeout.
+    func systemStart() async throws {
+        _ = try await run(["system", "start"], timeout: .seconds(120))
+    }
+
     // MARK: - Image + lifecycle
 
     func pull(image: String) async throws {

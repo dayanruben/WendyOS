@@ -21,6 +21,20 @@ actor ContainerCLIBackend: LinuxContainerBackend {
     }
 
     func pull(image: String) async throws {
+        // The container system services must be running before a pull/run, and
+        // `container --version` (our availability probe) succeeds even when they
+        // are stopped. Start them here — idempotent and best-effort: if the
+        // start itself fails, let the pull run and surface the real error rather
+        // than masking it. This self-heals a Mac where the services were never
+        // started ("Plugins are unavailable. … container system start").
+        do {
+            try await cli.systemStart()
+        } catch {
+            logger.warning(
+                "container system start failed; attempting pull anyway",
+                metadata: ["error": "\(error)"]
+            )
+        }
         logger.info("Pulling image", metadata: ["image": "\(image)"])
         try await cli.pull(image: image)
     }

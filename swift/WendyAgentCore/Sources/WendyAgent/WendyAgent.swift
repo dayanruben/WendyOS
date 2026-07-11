@@ -224,6 +224,21 @@ public final class WendyAgent {
         ) {
         case .appleContainer:
             self.logger.info("Linux container runtime: Apple container")
+            // Warm up the container system services in the background so the
+            // first deploy doesn't pay the boot latency. Detached and
+            // best-effort — never block agent startup on it, and the backend
+            // also starts them before each pull, so a failure here is harmless.
+            let warmupLogger = self.logger
+            Task.detached {
+                do {
+                    try await ContainerCLI().systemStart()
+                } catch {
+                    warmupLogger.warning(
+                        "container system start failed at startup; will retry on first pull",
+                        metadata: ["error": "\(error)"]
+                    )
+                }
+            }
             return ContainerCLIBackend()
         case .docker:
             self.logger.info("Linux container runtime: Docker")
