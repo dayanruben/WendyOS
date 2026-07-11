@@ -55,10 +55,10 @@ public final class WendyAgent {
         self.telemetryBroadcaster = broadcaster
 
         do {
-            let dockerAvailability = await self.prepareDockerIfNeeded()
+            let backend = await self.makeLinuxBackend()
 
             try await self.startMainServer(
-                dockerAvailability: dockerAvailability,
+                linuxBackend: backend,
                 broadcaster: broadcaster
             )
             try await self.startOTelServer(broadcaster: broadcaster)
@@ -153,6 +153,10 @@ public final class WendyAgent {
     private var mainServer: PosixGRPCServer?
     private var mainServerTask: Task<Void, any Error>?
     private var containerService: ContainerService?
+    /// The embedded OCI registry serving `localhost:5555` for Linux container
+    /// image pushes/pulls. Started once, the first time a Linux runtime backend
+    /// is available; cancelled when the main server stops.
+    private var registryTask: Task<Void, Never>?
 
     /// The provisioning service registered on the currently-running main server.
     /// Rebuilt (with callbacks re-wired) every time the main server starts so the
@@ -187,22 +191,30 @@ public final class WendyAgent {
     )
     private var appsObservationTasks:
         [WendyObservationRegistry<[WendyAppInfo]>.ObservationID: Task<Void, Never>] = [:]
-    private static let linuxContainersUnsupportedMessage =
-        "Linux containers aren't supported on Macs yet. Support is planned for a future release."
-
-    private func prepareDockerIfNeeded() async -> DockerCLI.AvailabilityCheckResult {
-        self.logger.info(
-            "Linux container support disabled on macOS",
-            metadata: ["reason": "\(Self.linuxContainersUnsupportedMessage)"]
-        )
-        return DockerCLI.AvailabilityCheckResult(
-            isAvailable: false,
-            failureMessage: Self.linuxContainersUnsupportedMessage
-        )
+    /// Probes for an available Linux container runtime, preferring Apple's
+    /// `container` over Docker, and returns the concrete backend to use (or
+    /// `nil` if neither is installed/running).
+    private func makeLinuxBackend() async -> (any LinuxContainerBackend)? {
+        let containerAvailable = await ContainerCLI().checkAvailable()
+        let dockerAvailable = await DockerCLI().checkAvailable()
+        switch LinuxRuntimeSelector.choose(
+            containerAvailable: containerAvailable,
+            dockerAvailable: dockerAvailable
+        ) {
+        case .appleContainer:
+            self.logger.info("Linux container runtime: Apple container")
+            return ContainerCLIBackend()
+        case .docker:
+            self.logger.info("Linux container runtime: Docker")
+            return DockerContainerBackend()
+        case nil:
+            self.logger.info("No Linux container runtime available; native macOS apps only")
+            return nil
+        }
     }
 
     private func startMainServer(
-        dockerAvailability: DockerCLI.AvailabilityCheckResult,
+        linuxBackend: (any LinuxContainerBackend)?,
         broadcaster: TelemetryBroadcaster
     ) async throws {
         let stateDirectory = WendyAgentPaths.stateDirectory
@@ -216,16 +228,24 @@ public final class WendyAgent {
                 : self.configuration.sandboxProfile,
             stateDirectory: stateDirectory,
             appsBase: appsBase,
-            // Real Linux runtime probing/selection lands in a follow-up task;
-            // `linuxBackend: nil` keeps createContainer/startContainer failing
-            // precondition with `linuxUnavailableMessage` until then.
-            linuxBackend: nil,
+            linuxBackend: linuxBackend,
             onAppsChanged: { [weak self] apps in
                 await self?.updateApps(apps)
             }
         )
         self.containerService = containerService
         await containerService.publishCurrentApps()
+
+        if linuxBackend != nil, self.registryTask == nil {
+            let registry = AgentImageRegistry(store: BlobStore(root: stateDirectory))
+            self.registryTask = Task { @MainActor in
+                do {
+                    try await registry.run()
+                } catch {
+                    self.logger.error("Registry stopped", metadata: ["error": "\(error)"])
+                }
+            }
+        }
 
         // Build the provisioning service, hold it, and wire the transition
         // callbacks. The callbacks are invoked from inside the provisioning RPC
@@ -296,6 +316,9 @@ public final class WendyAgent {
         _ = try? await self.mainServerTask?.value
         self.mainServer = nil
         self.mainServerTask = nil
+
+        self.registryTask?.cancel()
+        self.registryTask = nil
     }
 
     /// Builds the main gRPC server. When `certs` is non-nil the server runs mTLS
@@ -502,12 +525,12 @@ public final class WendyAgent {
         await self.stopBonjour()
         await self.stopMainServer()
 
-        let dockerAvailability = await self.prepareDockerIfNeeded()
+        let backend = await self.makeLinuxBackend()
         let broadcaster = self.telemetryBroadcaster ?? TelemetryBroadcaster()
 
         do {
             try await self.startMainServer(
-                dockerAvailability: dockerAvailability,
+                linuxBackend: backend,
                 broadcaster: broadcaster
             )
             try await self.startBonjour()
