@@ -95,10 +95,12 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
+		server.WithPromptCapabilities(false),
 	)
 	s.registerStatusTools(srv)
 	s.registerGuideResource(srv)
 	s.registerDiagnosticsResource(srv)
+	s.registerPrompts(srv)
 	s.registerDeviceTools(srv)
 	s.registerContainerTools(srv)
 	s.registerTelemetryTools(srv)
