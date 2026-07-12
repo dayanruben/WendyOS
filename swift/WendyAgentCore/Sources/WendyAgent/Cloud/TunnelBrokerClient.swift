@@ -218,18 +218,26 @@ struct TunnelBrokerClient: Sendable {
         }
 
         // Server-auth-only TLS: no client certificate (the broker rejects the
-        // ML-DSA client certs pki-core issues), validate the broker's chain
-        // against the device CA, and skip hostname verification (the broker cert
-        // CN does not match the cloud host). Mirrors the Go agent's dial options.
-        let chainSource = TLSConfig.CertificateSource.bytes(
-            Array(config.chainPEM.utf8),
-            format: .pem
-        )
+        // ML-DSA client certs pki-core issues), and skip hostname verification (a
+        // self-hosted broker cert's CN is `localhost`, not the cloud host).
+        // Mirrors the Go agent, which trusts the system roots AND the device CA.
+        //
+        // `TrustRootsSource` is either system OR custom (it cannot combine them),
+        // so pick by port: the cloud broker on `:443` is Google Cloud Run, which
+        // terminates TLS with a public WebPKI cert (validated by the system
+        // roots); a self-hosted/LAN broker presents a device-CA-signed cert
+        // (validated by the device chain).
+        let trustRoots: TLSConfig.TrustRootsSource =
+            port == 443
+            ? .systemDefault
+            : .certificates([
+                TLSConfig.CertificateSource.bytes(Array(config.chainPEM.utf8), format: .pem)
+            ])
         let tls = HTTP2ClientTransport.Posix.TransportSecurity.TLS(
             certificateChain: [],
             privateKey: nil,
             serverCertificateVerification: .noHostnameVerification,
-            trustRoots: .certificates([chainSource])
+            trustRoots: trustRoots
         )
         let transport = try HTTP2ClientTransport.Posix(
             target: .dns(host: host, port: port),
@@ -259,7 +267,7 @@ struct TunnelBrokerClient: Sendable {
                 metadata: ["broker": "\(host):\(port)", "asset_id": "\(config.assetID)"]
             )
 
-            try await client.registerPresence(request: presence) { response in
+            try await client.registerPresence(request: presence) { [metadata] response in
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     for try await dial in response.messages {
                         group.addTask {
