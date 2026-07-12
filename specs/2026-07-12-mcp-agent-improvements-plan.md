@@ -98,20 +98,32 @@ Formal per-tool `WithOutputSchema[T]()` is **deferred** (needs concrete Go resul
 
 ### Annotation matrix (`annotations.go`)
 
-Helpers return option slices spread into `NewTool`:
+**CRITICAL:** `mcp-go`'s `NewTool` applies pessimistic MCP defaults to every tool —
+`ReadOnlyHint=false`, `DestructiveHint=true`, `IdempotentHint=false`, `OpenWorldHint=true`.
+"Absence" therefore advertises a tool as destructive + open-world. Helpers must set
+each axis **explicitly**. Every tool applies exactly one behavior helper
+(`readOnly`/`mutating`/`destructive`) and exactly one world helper
+(`localOnly`/`openWorld`); `idempotent()` is an optional modifier for mutating tools
+(`readOnly` already implies idempotent — do not stack them).
 
 ```go
-func readOnly() []mcpgo.ToolOption {
-	return []mcpgo.ToolOption{mcpgo.WithReadOnlyHintAnnotation(true)}
+func readOnly() []mcpgo.ToolOption { // reads only: not destructive, idempotent
+	return []mcpgo.ToolOption{mcpgo.WithReadOnlyHintAnnotation(true), mcpgo.WithDestructiveHintAnnotation(false), mcpgo.WithIdempotentHintAnnotation(true)}
 }
-func destructive() []mcpgo.ToolOption {
-	return []mcpgo.ToolOption{mcpgo.WithDestructiveHintAnnotation(true), mcpgo.WithReadOnlyHintAnnotation(false)}
+func mutating() []mcpgo.ToolOption { // changes state, not destructively
+	return []mcpgo.ToolOption{mcpgo.WithReadOnlyHintAnnotation(false), mcpgo.WithDestructiveHintAnnotation(false)}
+}
+func destructive() []mcpgo.ToolOption { // irreversible/disruptive updates
+	return []mcpgo.ToolOption{mcpgo.WithReadOnlyHintAnnotation(false), mcpgo.WithDestructiveHintAnnotation(true)}
 }
 func idempotent() []mcpgo.ToolOption {
 	return []mcpgo.ToolOption{mcpgo.WithIdempotentHintAnnotation(true)}
 }
-func openWorld() []mcpgo.ToolOption {
+func openWorld() []mcpgo.ToolOption { // external network/radios/cloud broker
 	return []mcpgo.ToolOption{mcpgo.WithOpenWorldHintAnnotation(true)}
+}
+func localOnly() []mcpgo.ToolOption { // closed world: connected device/local host
+	return []mcpgo.ToolOption{mcpgo.WithOpenWorldHintAnnotation(false)}
 }
 ```
 
@@ -124,44 +136,42 @@ opts = append(opts, openWorld()...)
 srv.AddTool(mcpgo.NewTool("device_list", opts...), s.handleDeviceList)
 ```
 
-Per-tool classification (readOnly / destructive / idempotent / openWorld):
+Per-tool classification — apply the named behavior helper + world helper (+ `idempotent()` where shown). `readOnly` already implies idempotent, so those rows show "—":
 
-| Tool | readOnly | destructive | idempotent | openWorld |
-|------|:--:|:--:|:--:|:--:|
-| wendy_status | ✓ | | | |
-| device_list | ✓ | | | ✓ |
-| device_connect | | | ✓ | ✓ |
-| device_disconnect | | | ✓ | |
-| device_info | ✓ | | | |
-| device_set_default | | | ✓ | |
-| container_list | ✓ | | | |
-| container_start | | | | |
-| container_stop | | ✓ | ✓ | |
-| container_delete | | ✓ | ✓ | |
-| container_stats | ✓ | | | |
-| container_attach | ✓ | | | |
-| telemetry_logs / _metrics / _traces | ✓ | | | |
-| wifi_list | ✓ | | | ✓ |
-| wifi_connect | | | ✓ | ✓ |
-| wifi_status | ✓ | | | |
-| wifi_disconnect | | ✓ | ✓ | ✓ |
-| wifi_known_networks | ✓ | | | |
-| bluetooth_scan | ✓ | | | ✓ |
-| bluetooth_connect | | | ✓ | ✓ |
-| bluetooth_disconnect | | ✓ | ✓ | ✓ |
-| hardware_capabilities | ✓ | | | |
-| filesync_sync | | | ✓ | |
-| provisioning_status | ✓ | | | |
-| provisioning_start | | | ✓ | ✓ |
-| os_update | | ✓ | | ✓ |
-| os_update_status | ✓ | | | |
-| cloud_discover | ✓ | | | ✓ |
-| cloud_connect / cloud_device_connect | | | ✓ | ✓ |
-| cloud_enroll_device | | | ✓ | ✓ |
-| cloud_tunnel | | | ✓ | ✓ |
-| run / cloud_run | | | | ✓ |
-
-(`readOnly=false` is the mcp-go default, so a blank cell = leave unset, except `destructive()` explicitly sets `ReadOnlyHint=false` for clarity.)
+| Tool | behavior | world | +idempotent() |
+|------|----------|-------|:--:|
+| wendy_status | readOnly | localOnly | — |
+| device_list | readOnly | openWorld | — |
+| device_connect | mutating | openWorld | ✓ |
+| device_disconnect | mutating | localOnly | ✓ |
+| device_info | readOnly | localOnly | — |
+| device_set_default | mutating | localOnly | ✓ |
+| container_list | readOnly | localOnly | — |
+| container_start | mutating | localOnly | |
+| container_stop | destructive | localOnly | ✓ |
+| container_delete | destructive | localOnly | ✓ |
+| container_stats | readOnly | localOnly | — |
+| container_attach | readOnly | localOnly | — |
+| telemetry_logs / _metrics / _traces | readOnly | localOnly | — |
+| wifi_list | readOnly | openWorld | — |
+| wifi_connect | mutating | openWorld | ✓ |
+| wifi_status | readOnly | localOnly | — |
+| wifi_disconnect | destructive | openWorld | ✓ |
+| wifi_known_networks | readOnly | localOnly | — |
+| bluetooth_scan | readOnly | openWorld | — |
+| bluetooth_connect | mutating | openWorld | ✓ |
+| bluetooth_disconnect | destructive | openWorld | ✓ |
+| hardware_capabilities | readOnly | localOnly | — |
+| filesync_sync | mutating | localOnly | ✓ |
+| provisioning_status | readOnly | localOnly | — |
+| provisioning_start | mutating | openWorld | ✓ |
+| os_update | destructive | openWorld | |
+| os_update_status | readOnly | localOnly | — |
+| cloud_discover | readOnly | openWorld | — |
+| cloud_connect / cloud_device_connect | mutating | openWorld | ✓ |
+| cloud_enroll_device | mutating | openWorld | ✓ |
+| cloud_tunnel | mutating | openWorld | ✓ |
+| run / cloud_run | mutating | openWorld | |
 
 ---
 
