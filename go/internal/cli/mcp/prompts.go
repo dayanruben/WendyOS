@@ -16,7 +16,7 @@ func (s *mcpServer) registerPrompts(srv *server.MCPServer) {
 		mcpgo.NewPrompt("deploy_app",
 			mcpgo.WithPromptDescription("Walks through connecting to a device and deploying a project with the run tool."),
 			mcpgo.WithArgument("project_path", mcpgo.ArgumentDescription("Path to the project to deploy (defaults to the current directory).")),
-			mcpgo.WithArgument("device", mcpgo.ArgumentDescription("Device name or address to deploy to (defaults to the currently connected/default device).")),
+			mcpgo.WithArgument("device_name", mcpgo.ArgumentDescription("Cloud device name to target the run at (defaults to the currently connected/default device).")),
 		),
 		s.handleDeployAppPrompt,
 	)
@@ -52,7 +52,7 @@ func promptArg(req mcpgo.GetPromptRequest, name, defaultVal string) string {
 
 func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
 	projectPath := promptArg(req, "project_path", ".")
-	device := promptArg(req, "device", "")
+	device := promptArg(req, "device_name", "")
 
 	deviceClause := "the currently connected device"
 	if device != "" {
@@ -74,13 +74,14 @@ func (s *mcpServer) handleDeployAppPrompt(_ context.Context, req mcpgo.GetPrompt
 	), nil
 }
 
-// deviceArg renders the optional device argument suffix for the run tool call
-// shown in the deploy_app prompt text.
+// deviceArg renders the optional device_name argument suffix for the run tool
+// call shown in the deploy_app prompt text. The run tool's device selector is
+// device_name (not device), so the rendered example must match that param.
 func deviceArg(device string) string {
 	if device == "" {
 		return ""
 	}
-	return fmt.Sprintf(", device=%q", device)
+	return fmt.Sprintf(", device_name=%q", device)
 }
 
 func (s *mcpServer) handleDiagnoseContainerPrompt(_ context.Context, req mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
