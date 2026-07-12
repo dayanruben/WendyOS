@@ -410,25 +410,14 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	return okText(text), nil
 }
 
-// cloudMultipleSessionsErr, cloudAssetNotFoundErr, cloudAssetAmbiguousErr, and
-// cloudAssetCapExceededErr tag specific actionable failure modes so
-// cloudErrResult can map them to a precise error_code without disturbing
-// their human-readable message text.
-type cloudMultipleSessionsErr struct{ msg string }
+// cloudResolveErr is returned by the cloud auth/asset-resolution helpers
+// carrying the precise error_code the MCP layer should surface.
+type cloudResolveErr struct {
+	code errorCode
+	msg  string
+}
 
-func (e *cloudMultipleSessionsErr) Error() string { return e.msg }
-
-type cloudAssetNotFoundErr struct{ msg string }
-
-func (e *cloudAssetNotFoundErr) Error() string { return e.msg }
-
-type cloudAssetAmbiguousErr struct{ msg string }
-
-func (e *cloudAssetAmbiguousErr) Error() string { return e.msg }
-
-type cloudAssetCapExceededErr struct{ msg string }
-
-func (e *cloudAssetCapExceededErr) Error() string { return e.msg }
+func (e *cloudResolveErr) Error() string { return e.msg }
 
 // cloudErrResult maps an error from the cloud auth/asset-resolution helpers
 // (cloudAuthEntry, pickCloudAsset, connectToCloudAgent, mcpListCloudAssets) to
@@ -436,21 +425,9 @@ func (e *cloudAssetCapExceededErr) Error() string { return e.msg }
 // specific code; anything else (including real gRPC errors, which may be
 // wrapped with fmt.Errorf %w) falls back to codeFromGRPC.
 func cloudErrResult(err error) *mcpgo.CallToolResult {
-	var multi *cloudMultipleSessionsErr
-	if errors.As(err, &multi) {
-		return errResult(errCodeMultipleSessions, multi.msg)
-	}
-	var notFound *cloudAssetNotFoundErr
-	if errors.As(err, &notFound) {
-		return errResult(errCodeNotFound, notFound.msg)
-	}
-	var ambiguous *cloudAssetAmbiguousErr
-	if errors.As(err, &ambiguous) {
-		return errResult(errCodeInvalidArgument, ambiguous.msg)
-	}
-	var capExceeded *cloudAssetCapExceededErr
-	if errors.As(err, &capExceeded) {
-		return errResult(errCodeInvalidArgument, capExceeded.msg)
+	var re *cloudResolveErr
+	if errors.As(err, &re) {
+		return errResult(re.code, re.msg)
 	}
 	return errResult(codeFromGRPC(err), grpcErrString(err))
 }
@@ -460,7 +437,7 @@ func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error)
 	// persisted default (or errors when several sessions remain ambiguous).
 	auth, err := config.ResolveAuth(s.cfg, cloudGRPC, nil)
 	if errors.Is(err, config.ErrMultipleSessions) {
-		return nil, &cloudMultipleSessionsErr{msg: "multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'"}
+		return nil, &cloudResolveErr{code: errCodeMultipleSessions, msg: "multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'"}
 	}
 	return auth, err
 }
@@ -537,26 +514,26 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		return nil, err
 	}
 	if len(assets) == 0 {
-		return nil, &cloudAssetNotFoundErr{msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
+		return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
 	}
 	if deviceName == "" {
 		if len(assets) == 1 {
 			return assets[0], nil
 		}
-		return nil, &cloudAssetAmbiguousErr{msg: "multiple cloud devices found; pass device_name"}
+		return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: "multiple cloud devices found; pass device_name"}
 	}
 	lower := strings.ToLower(deviceName)
 	var matched *cloudpb.Asset
 	for _, a := range assets {
 		if strings.ToLower(a.GetName()) == lower {
 			if matched != nil {
-				return nil, &cloudAssetAmbiguousErr{msg: fmt.Sprintf("multiple devices match %q; use a more specific name", deviceName)}
+				return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: fmt.Sprintf("multiple devices match %q; use a more specific name", deviceName)}
 			}
 			matched = a
 		}
 	}
 	if matched == nil {
-		return nil, &cloudAssetNotFoundErr{msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
+		return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
 	}
 	return matched, nil
 }
@@ -610,7 +587,7 @@ func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter str
 			return nil, fmt.Errorf("listing devices: %w", err)
 		}
 		if len(assets) >= maxAssets {
-			return nil, &cloudAssetCapExceededErr{msg: fmt.Sprintf("cloud returned more than %d devices", maxAssets)}
+			return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: fmt.Sprintf("cloud returned more than %d devices", maxAssets)}
 		}
 		assets = append(assets, resp.GetAsset())
 	}
