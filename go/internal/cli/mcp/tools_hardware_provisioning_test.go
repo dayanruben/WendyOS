@@ -321,35 +321,6 @@ func TestProvisioningStart_MissingRequired(t *testing.T) {
 	}
 }
 
-// --- FileSync tests ---
-
-func TestFileSyncSync_AlwaysReturnsError(t *testing.T) {
-	srv := New(&config.Config{}, nil)
-	result, err := srv.callTool(context.Background(), "filesync_sync", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected IsError=true — filesync is unavailable via MCP")
-	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if !strings.Contains(text, "wendy CLI") {
-		t.Errorf("expected CLI redirect hint in error, got %q", text)
-	}
-}
-
-func TestFileSyncSync_UnsupportedCode(t *testing.T) {
-	srv := New(&config.Config{}, nil)
-	r, _ := srv.callTool(context.Background(), "filesync_sync", nil)
-	if !r.IsError {
-		t.Fatal("filesync_sync should error")
-	}
-	sc, _ := r.StructuredContent.(map[string]any)
-	if sc == nil || sc["error_code"] != "UNSUPPORTED" {
-		t.Errorf("want UNSUPPORTED, got %v", sc)
-	}
-}
-
 // --- OS Update tests ---
 
 func TestOSUpdate_NotConnected(t *testing.T) {

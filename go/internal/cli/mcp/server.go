@@ -107,7 +107,6 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerWiFiTools(srv)
 	s.registerBluetoothTools(srv)
 	s.registerHardwareTools(srv)
-	s.registerFileSyncTools(srv)
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)

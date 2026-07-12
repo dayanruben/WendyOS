@@ -40,8 +40,10 @@ Cloud-enrolled devices:
 - telemetry_logs / telemetry_metrics / telemetry_traces
 - hardware_capabilities
 - os_update
-- filesync_sync
 - provisioning_start / provisioning_status
+
+Host↔device file sync happens automatically as part of ` + "`wendy run`" + `'s
+fast redeploy path — there is no standalone file-sync CLI command or MCP tool.
 
 ## Deploying a workload
 
