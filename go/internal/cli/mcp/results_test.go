@@ -21,3 +21,29 @@ func TestOkResult_HasStructuredAndJSONText(t *testing.T) {
 		t.Errorf("version = %v", m["version"])
 	}
 }
+
+func TestOkResultBounded_TruncatesOversize(t *testing.T) {
+	big := make([]string, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		big = append(big, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	}
+	r := okResultBounded(big, 200)
+	if r.IsError {
+		t.Fatal("truncation is not an error result")
+	}
+	sc, ok := r.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected truncation envelope map, got %T", r.StructuredContent)
+	}
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
+	}
+}
+
+func TestOkResultBounded_PassesSmall(t *testing.T) {
+	r := okResultBounded(map[string]any{"k": "v"}, 100000)
+	sc, _ := r.StructuredContent.(map[string]any)
+	if sc["truncated"] == true {
+		t.Error("small payload should not be truncated")
+	}
+}

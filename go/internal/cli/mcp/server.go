@@ -137,6 +137,14 @@ func intParam(req mcpgo.CallToolRequest, name string, defaultVal int) int {
 	return req.GetInt(name, defaultVal)
 }
 
+// intParamAlias reads primary, falling back to alias, then defaultVal.
+func intParamAlias(req mcpgo.CallToolRequest, primary, alias string, defaultVal int) int {
+	if v := req.GetInt(primary, -1<<62); v != -1<<62 {
+		return v
+	}
+	return req.GetInt(alias, defaultVal)
+}
+
 // registerContainerMCPTools scans running containers for mcp_port > 0 and
 // registers each container's tools on srv, prefixed with the app name.
 // Errors per-container are warnings; they do not prevent the session from starting.

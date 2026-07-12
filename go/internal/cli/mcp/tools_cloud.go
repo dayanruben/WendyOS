@@ -184,6 +184,9 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
 		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
 	}
 	runOpts = append(runOpts, mutating()...)
 	runOpts = append(runOpts, openWorld()...)
@@ -221,6 +224,9 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		),
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
 		),
 	}
 	cloudRunOpts = append(cloudRunOpts, mutating()...)
@@ -409,6 +415,10 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	}
 	if text == "" {
 		text = "cloud run completed"
+	}
+	maxBytes := intParam(req, "max_bytes", 100000)
+	if maxBytes > 0 && len(text) > maxBytes {
+		text = text[:maxBytes] + fmt.Sprintf("\n[truncated: output exceeded max_bytes=%d; narrow the query (e.g. reduce timeout_seconds, redirect the app's own output, or raise max_bytes)]", maxBytes)
 	}
 	return okText(text), nil
 }

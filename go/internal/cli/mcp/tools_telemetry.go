@@ -34,6 +34,9 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("max_batches",
 			mcpgo.Description("Maximum OTLP batches to collect (default 10)"),
 		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
 	}
 	logsOpts = append(logsOpts, readOnly()...)
 	logsOpts = append(logsOpts, localOnly()...)
@@ -53,6 +56,9 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("max_batches",
 			mcpgo.Description("Maximum OTLP batches to collect (default 10)"),
 		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
 	}
 	metricsOpts = append(metricsOpts, readOnly()...)
 	metricsOpts = append(metricsOpts, localOnly()...)
@@ -71,6 +77,9 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 		),
 		mcpgo.WithNumber("max_batches",
 			mcpgo.Description("Maximum OTLP batches to collect (default 10)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
 		),
 	}
 	tracesOpts = append(tracesOpts, readOnly()...)
@@ -140,7 +149,7 @@ func (s *mcpServer) handleTelemetryLogs(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return okResult(result), nil
+	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleTelemetryMetrics(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -174,7 +183,7 @@ func (s *mcpServer) handleTelemetryMetrics(ctx context.Context, req mcpgo.CallTo
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return okResult(result), nil
+	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleTelemetryTraces(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -208,5 +217,5 @@ func (s *mcpServer) handleTelemetryTraces(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return okResult(result), nil
+	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
 }
