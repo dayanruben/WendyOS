@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -43,5 +44,8 @@ func TestGuideResource_ReturnsText(t *testing.T) {
 	}
 	if len(tc.Text) < 100 {
 		t.Errorf("expected guide text to be at least 100 chars, got %d", len(tc.Text))
+	}
+	if !strings.Contains(tc.Text, "error_code") {
+		t.Errorf("expected guide text to mention error_code, got %q", tc.Text)
 	}
 }
