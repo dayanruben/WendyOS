@@ -121,6 +121,28 @@ func TestHardwareCapabilities_ReturnsList(t *testing.T) {
 	}
 }
 
+func TestHardwareCapabilities_HasStructuredContent(t *testing.T) {
+	fake := &fakeHWProvisioningOSServer{
+		capabilities: []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+			{Category: "gpu", DevicePath: "/dev/gpu0", Description: "NVIDIA GPU"},
+		},
+	}
+	conn := startFakeHWProvisioningServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "hardware_capabilities", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("hardware_capabilities should return structuredContent")
+	}
+}
+
 func TestHardwareCapabilities_EmptyList(t *testing.T) {
 	fake := &fakeHWProvisioningOSServer{}
 	conn := startFakeHWProvisioningServer(t, fake)
