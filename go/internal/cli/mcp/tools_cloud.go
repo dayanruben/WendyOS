@@ -396,7 +396,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		if text == "" {
 			text = runCtx.Err().Error()
 		}
-		return errResultf(errCodeInternal, "%s", text), nil
+		return errResultf(errCodeTimeout, "%s", text), nil
 	}
 	if err != nil {
 		if text == "" {

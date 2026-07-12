@@ -119,10 +119,10 @@ func (s *mcpServer) handleDeviceConnect(ctx context.Context, req mcpgo.CallToolR
 func (s *mcpServer) handleDeviceDisconnect(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn := s.GetConn()
 	if conn == nil {
-		return mcpgo.NewToolResultText("not connected"), nil
+		return okText("not connected"), nil
 	}
 	s.SetConn(nil)
-	return mcpgo.NewToolResultText("disconnected"), nil
+	return okText("disconnected"), nil
 }
 
 func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
