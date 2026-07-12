@@ -9,9 +9,11 @@ import (
 )
 
 func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
-	statusOpts := append([]mcpgo.ToolOption{
+	statusOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Return current MCP session connection state and a plain-English suggested next step. Call this first to orient yourself."),
-	}, readOnly()...)
+	}
+	statusOpts = append(statusOpts, readOnly()...)
+	statusOpts = append(statusOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("wendy_status", statusOpts...), s.handleWendyStatus)
 }
 

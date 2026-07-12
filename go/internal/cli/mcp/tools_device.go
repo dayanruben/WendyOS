@@ -24,21 +24,29 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Connect to a wendy device by address (host:port)"),
 		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address, e.g. mydevice.local:50051 or 192.168.1.10:50051")),
 	}
+	connectOpts = append(connectOpts, mutating()...)
 	connectOpts = append(connectOpts, idempotent()...)
 	connectOpts = append(connectOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("device_connect", connectOpts...), s.handleDeviceConnect)
 
-	disconnectOpts := append([]mcpgo.ToolOption{mcpgo.WithDescription("Disconnect from the currently connected device")}, idempotent()...)
+	disconnectOpts := []mcpgo.ToolOption{mcpgo.WithDescription("Disconnect from the currently connected device")}
+	disconnectOpts = append(disconnectOpts, mutating()...)
+	disconnectOpts = append(disconnectOpts, idempotent()...)
+	disconnectOpts = append(disconnectOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("device_disconnect", disconnectOpts...), s.handleDeviceDisconnect)
 
-	infoOpts := append([]mcpgo.ToolOption{mcpgo.WithDescription("Get agent version, OS, CPU architecture, GPU info, and feature set of connected device")}, readOnly()...)
+	infoOpts := []mcpgo.ToolOption{mcpgo.WithDescription("Get agent version, OS, CPU architecture, GPU info, and feature set of connected device")}
+	infoOpts = append(infoOpts, readOnly()...)
+	infoOpts = append(infoOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("device_info", infoOpts...), s.handleDeviceInfo)
 
 	setDefaultOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Save an address as the default device in ~/.wendy/config.json"),
 		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address to save as default")),
 	}
+	setDefaultOpts = append(setDefaultOpts, mutating()...)
 	setDefaultOpts = append(setDefaultOpts, idempotent()...)
+	setDefaultOpts = append(setDefaultOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("device_set_default", setDefaultOpts...), s.handleDeviceSetDefault)
 }
 

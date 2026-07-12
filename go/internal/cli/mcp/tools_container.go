@@ -17,15 +17,19 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("List all containers on the connected device"),
 	}
 	listOpts = append(listOpts, readOnly()...)
+	listOpts = append(listOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("container_list", listOpts...), s.handleContainerList)
 
-	srv.AddTool(mcpgo.NewTool("container_start",
+	startOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Start a container and stream its output (bounded snapshot)"),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to start"),
 		),
-	), s.handleContainerStart)
+	}
+	startOpts = append(startOpts, mutating()...)
+	startOpts = append(startOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_start", startOpts...), s.handleContainerStart)
 
 	stopOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Stop a running container"),
@@ -36,6 +40,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	}
 	stopOpts = append(stopOpts, destructive()...)
 	stopOpts = append(stopOpts, idempotent()...)
+	stopOpts = append(stopOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("container_stop", stopOpts...), s.handleContainerStop)
 
 	deleteOpts := []mcpgo.ToolOption{
@@ -53,12 +58,14 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	}
 	deleteOpts = append(deleteOpts, destructive()...)
 	deleteOpts = append(deleteOpts, idempotent()...)
+	deleteOpts = append(deleteOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("container_delete", deleteOpts...), s.handleContainerDelete)
 
 	statsOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Get memory and storage stats for all containers"),
 	}
 	statsOpts = append(statsOpts, readOnly()...)
+	statsOpts = append(statsOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("container_stats", statsOpts...), s.handleContainerStats)
 
 	attachOpts := []mcpgo.ToolOption{
@@ -72,6 +79,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		),
 	}
 	attachOpts = append(attachOpts, readOnly()...)
+	attachOpts = append(attachOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("container_attach", attachOpts...), s.handleContainerAttach)
 }
 
