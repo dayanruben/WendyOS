@@ -416,11 +416,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	if text == "" {
 		text = "cloud run completed"
 	}
-	maxBytes := intParam(req, "max_bytes", 100000)
-	if maxBytes > 0 && len(text) > maxBytes {
-		text = text[:maxBytes] + fmt.Sprintf("\n[truncated: output exceeded max_bytes=%d; narrow the query (e.g. reduce timeout_seconds, redirect the app's own output, or raise max_bytes)]", maxBytes)
-	}
-	return okText(text), nil
+	return okTextBounded(text, "reduce timeout_seconds, redirect the app's own output, or raise max_bytes", intParam(req, "max_bytes", 100000)), nil
 }
 
 // cloudResolveErr is returned by the cloud auth/asset-resolution helpers

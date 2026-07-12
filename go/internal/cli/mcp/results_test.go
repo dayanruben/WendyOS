@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestOkResult_HasStructuredAndJSONText(t *testing.T) {
@@ -45,5 +47,26 @@ func TestOkResultBounded_PassesSmall(t *testing.T) {
 	sc, _ := r.StructuredContent.(map[string]any)
 	if sc["truncated"] == true {
 		t.Error("small payload should not be truncated")
+	}
+}
+
+func TestOkTextBounded_TruncatesOnRuneBoundary(t *testing.T) {
+	// A string of 3-byte runes (each "世" is 3 bytes). Cutting at a byte cap
+	// that lands mid-rune must back off so the result stays valid UTF-8.
+	s := strings.Repeat("世", 20)  // 60 bytes
+	r := okTextBounded(s, "", 10) // 10 is not a multiple of 3 → mid-rune cut
+	text := toolResultText(t, r)
+	if !utf8.ValidString(text) {
+		t.Fatalf("truncated output is not valid UTF-8: %q", text)
+	}
+	if !strings.Contains(text, "truncated") {
+		t.Error("expected a truncation note in the output")
+	}
+}
+
+func TestOkTextBounded_PassesSmall(t *testing.T) {
+	r := okTextBounded("hello", "", 100000)
+	if toolResultText(t, r) != "hello" {
+		t.Error("under-cap text should be returned verbatim")
 	}
 }

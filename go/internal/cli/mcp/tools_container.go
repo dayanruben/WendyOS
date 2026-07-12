@@ -181,7 +181,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	if out == "" {
 		out = fmt.Sprintf("container %s started", appName)
 	}
-	return okTextBounded(out, intParam(req, "max_bytes", 100000)), nil
+	return okTextBounded(out, "", intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -290,5 +290,5 @@ func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToo
 			collected++
 		}
 	}
-	return okTextBounded(sb.String(), intParam(req, "max_bytes", 100000)), nil
+	return okTextBounded(sb.String(), "", intParam(req, "max_bytes", 100000)), nil
 }

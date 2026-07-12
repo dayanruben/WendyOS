@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
@@ -45,14 +46,24 @@ func okResultBounded(v any, maxBytes int) *mcpgo.CallToolResult {
 }
 
 // okTextBounded returns a plain-text success result like okText, but clamps s
-// to maxBytes bytes and appends a truncation note when it exceeds the cap.
-// Kept separate from okResultBounded because JSON-marshaling a plain string
-// (as okResultBounded would) quotes and escapes it, changing the text output
-// format for tools whose callers rely on the raw, unquoted text. maxBytes <=
-// 0 disables the cap (behaves as okText).
-func okTextBounded(s string, maxBytes int) *mcpgo.CallToolResult {
+// to maxBytes bytes and appends a truncation note when it exceeds the cap. The
+// cut is backed off to the nearest UTF-8 rune boundary so the result is never
+// invalid UTF-8 (which some hosts reject when serializing TextContent). hint is
+// a tool-specific suggestion for narrowing output; a generic one is used when
+// empty. Kept separate from okResultBounded because JSON-marshaling a plain
+// string (as okResultBounded would) quotes and escapes it, changing the text
+// output format for tools whose callers rely on the raw, unquoted text.
+// maxBytes <= 0 disables the cap (behaves as okText).
+func okTextBounded(s, hint string, maxBytes int) *mcpgo.CallToolResult {
 	if maxBytes > 0 && len(s) > maxBytes {
-		s = s[:maxBytes] + fmt.Sprintf("\n[truncated: output exceeded max_bytes=%d; narrow the query (reduce max_chunks, add filters, or raise max_bytes)]", maxBytes)
+		cut := maxBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		if hint == "" {
+			hint = "narrow the query (reduce max_chunks, add filters, or raise max_bytes)"
+		}
+		s = s[:cut] + fmt.Sprintf("\n[truncated: output exceeded max_bytes=%d; %s]", maxBytes, hint)
 	}
 	return okText(s)
 }
