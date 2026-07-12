@@ -8,14 +8,15 @@ import (
 )
 
 func (s *mcpServer) registerFileSyncTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("filesync_sync",
+	syncOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Sync files to a container app on the connected device (requires binary file data; not available via MCP)"),
-	), s.handleFileSyncSync)
+	}
+	syncOpts = append(syncOpts, mutating()...)
+	syncOpts = append(syncOpts, localOnly()...)
+	syncOpts = append(syncOpts, idempotent()...)
+	srv.AddTool(mcpgo.NewTool("filesync_sync", syncOpts...), s.handleFileSyncSync)
 }
 
 func (s *mcpServer) handleFileSyncSync(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	return mcpgo.NewToolResultError(
-		"filesync_sync requires binary file transfer and is not available via the MCP interface. " +
-			"Use the wendy CLI directly: wendy run <path>",
-	), nil
+	return errResult(errCodeUnsupported, "filesync over MCP is not supported; run the equivalent from the wendy CLI"), nil
 }
