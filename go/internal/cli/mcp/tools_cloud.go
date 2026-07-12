@@ -389,8 +389,11 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		args = append(args, "--detach")
 	}
 
+	tok := progressToken(req)
 	cmd := exec.CommandContext(runCtx, bin, args...)
+	reportProgress(ctx, tok, 0, 0, "running wendy…")
 	out, err := cmd.CombinedOutput()
+	reportProgress(ctx, tok, 1, 1, "done")
 	text := strings.TrimSpace(string(out))
 	if runCtx.Err() != nil {
 		if text == "" {

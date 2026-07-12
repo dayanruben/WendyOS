@@ -86,6 +86,7 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 	if orgID == 0 {
 		return errResult(errCodeInvalidArgument, "organization_id is required"), nil
 	}
+	tok := progressToken(req)
 	_, err := conn.ProvisioningService.StartProvisioning(ctx, &agentpb.StartProvisioningRequest{
 		EnrollmentToken: token,
 		CloudHost:       cloudHost,
@@ -106,6 +107,7 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 		case <-pollCtx.Done():
 			return errResult(errCodeTimeout, "provisioning timed out — check status with provisioning_status"), nil
 		case <-ticker.C:
+			reportProgress(ctx, tok, 0, 0, "waiting for device to finish provisioning…")
 			statusResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
 			if err != nil {
 				return errResult(codeFromGRPC(err), grpcErrString(err)), nil
