@@ -7,12 +7,27 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func TestContainerDelete_AnnotatedDestructive(t *testing.T) {
+	srv := server.NewMCPServer("t", "0")
+	s := New(&config.Config{}, nil)
+	s.registerContainerTools(srv)
+	tools := srv.ListTools() // returns map[string]*server.ServerTool
+	tool, ok := tools["container_delete"]
+	if !ok {
+		t.Fatal("container_delete not registered")
+	}
+	if tool.Tool.Annotations.DestructiveHint == nil || !*tool.Tool.Annotations.DestructiveHint {
+		t.Error("container_delete should be annotated destructive")
+	}
+}
 
 // fakeContainerServer implements WendyContainerServiceServer for container tests.
 type fakeContainerServer struct {
