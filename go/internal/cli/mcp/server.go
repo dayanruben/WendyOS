@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -141,7 +142,10 @@ func intParam(req mcpgo.CallToolRequest, name string, defaultVal int) int {
 
 // intParamAlias reads primary, falling back to alias, then defaultVal.
 func intParamAlias(req mcpgo.CallToolRequest, primary, alias string, defaultVal int) int {
-	if v := req.GetInt(primary, -1<<62); v != -1<<62 {
+	// math.MinInt is a sentinel no realistic caller supplies; using it (rather
+	// than an int-overflowing constant like -1<<62) keeps this portable across
+	// 32- and 64-bit build targets.
+	if v := req.GetInt(primary, math.MinInt); v != math.MinInt {
 		return v
 	}
 	return req.GetInt(alias, defaultVal)

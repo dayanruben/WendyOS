@@ -102,12 +102,16 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 	defer cancel()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	var tick float64
 	for {
 		select {
 		case <-pollCtx.Done():
 			return errResult(errCodeTimeout, "provisioning timed out — check status with provisioning_status"), nil
 		case <-ticker.C:
-			reportProgress(ctx, tok, 0, 0, "waiting for device to finish provisioning…")
+			// Indeterminate progress: total unknown, but the value must advance
+			// monotonically per the MCP spec, so emit the tick count.
+			tick++
+			reportProgress(ctx, tok, tick, 0, "waiting for device to finish provisioning…")
 			statusResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
 			if err != nil {
 				return errResult(codeFromGRPC(err), grpcErrString(err)), nil
