@@ -429,12 +429,16 @@ func main() {
 			if brokerURL == "" {
 				brokerURL = brokerURLForCloudHost(cloudHost)
 			}
-			_, chainPEM, _ := provisioningSvc.ProvisioningCerts()
+			certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
+			keyPEM := string(keyData)
+			for i := range keyData {
+				keyData[i] = 0
+			}
 			if chainPEM == "" {
 				logger.Warn("CA chain PEM unavailable; cannot start tunnel broker (re-provision if this persists)")
 				return
 			}
-			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, chainPEM, mtlsPortNum)
+			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, mtlsPortNum)
 			client.Run(ctx)
 		}()
 	}
