@@ -52,6 +52,15 @@ Use the run tool to build and deploy a local project to a cloud-enrolled device:
 
 device_disconnect — closes the active connection and frees resources.
 
+## Entitlements
+
+Apps declare the device capabilities they need (gpu, network, persistence,
+camera, bluetooth, etc.) in their project's wendy.json. The device only
+grants what's declared there — if a container needs a capability that isn't
+entitled, the operation fails (or the container exits) with error_code
+ENTITLEMENT_DENIED, and container_list surfaces it in termination_reason for
+stopped containers.
+
 ## Result shape & error codes
 
 Tools that return data include a machine-readable structuredContent object

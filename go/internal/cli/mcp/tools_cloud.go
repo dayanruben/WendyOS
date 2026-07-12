@@ -65,7 +65,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	discoverOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List enrolled cloud devices for the selected Wendy Cloud auth session"),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithBoolean("online_only",
 			mcpgo.Description("Only list devices with active tunnel broker presence (default true)"),
@@ -84,7 +84,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -101,7 +101,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -119,7 +119,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Name to assign to the device in Wendy Cloud"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 	}
 	enrollOpts = append(enrollOpts, mutating()...)
@@ -131,16 +131,16 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Forward a local TCP port to a port on a cloud-enrolled device"),
 		mcpgo.WithNumber("local_port",
 			mcpgo.Required(),
-			mcpgo.Description("Local TCP port to listen on"),
+			mcpgo.Description("Local TCP port to listen on (1-65535)"),
 		),
 		mcpgo.WithNumber("remote_port",
-			mcpgo.Description("Remote device port; defaults to local_port"),
+			mcpgo.Description("Remote device port (1-65535); defaults to local_port"),
 		),
 		mcpgo.WithString("device_name",
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -152,7 +152,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_tunnel", tunnelOpts...), s.handleCloudTunnel)
 
 	runOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials."),
+		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials. The project's wendy.json entitlements (e.g. gpu, network, persistence) apply on the device; if a required entitlement is denied, the run fails with error_code ENTITLEMENT_DENIED."),
 		mcpgo.WithString("project_path",
 			mcpgo.Required(),
 			mcpgo.Description("Project directory containing wendy.json"),
@@ -161,7 +161,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Cloud device name"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port; omit to use the default derived from cloud_grpc (port 443 when cloud_grpc ends in :443, otherwise port 50052)"),
@@ -193,7 +193,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
 
 	cloudRunOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Deprecated: use run instead. Run 'wendy cloud run' for a local project and return bounded command output"),
+		mcpgo.WithDescription("Deprecated: use run instead. Run 'wendy cloud run' for a local project and return bounded command output. The project's wendy.json entitlements apply on the device; a denied entitlement returns error_code ENTITLEMENT_DENIED."),
 		mcpgo.WithString("project_path",
 			mcpgo.Required(),
 			mcpgo.Description("Project directory containing wendy.json"),
@@ -202,7 +202,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Cloud device name"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.sh:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),

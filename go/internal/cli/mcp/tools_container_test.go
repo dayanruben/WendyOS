@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -14,6 +15,19 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func TestContainerStart_DescriptionMentionsEntitlements(t *testing.T) {
+	srv := server.NewMCPServer("t", "0")
+	s := New(&config.Config{}, nil)
+	s.registerContainerTools(srv)
+	tool, ok := srv.ListTools()["container_start"]
+	if !ok {
+		t.Fatal("container_start not registered")
+	}
+	if !strings.Contains(strings.ToLower(tool.Tool.Description), "entitlement") {
+		t.Errorf("container_start description should mention entitlements; got: %s", tool.Tool.Description)
+	}
+}
 
 func TestContainerAnnotations_ReadOnlyNotDestructive(t *testing.T) {
 	srv := server.NewMCPServer("t", "0")
