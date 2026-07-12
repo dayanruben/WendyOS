@@ -25,6 +25,7 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		out := map[string]any{
 			"connected":           false,
 			"suggested_next_step": "not connected — call device_list to see available devices then device_connect, or cloud_discover + cloud_connect for cloud-enrolled devices",
+			"proxy_diagnostics":   s.proxyDiagnostics(),
 		}
 		return okResult(out), nil
 	}
@@ -38,6 +39,7 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		"device":              host,
 		"connection_type":     connType,
 		"suggested_next_step": fmt.Sprintf("connected to %s via %s — ready to use container, wifi, hardware, telemetry, and os tools", host, connType),
+		"proxy_diagnostics":   s.proxyDiagnostics(),
 	}
 	return okResult(out), nil
 }

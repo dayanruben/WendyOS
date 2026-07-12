@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path"
@@ -80,6 +81,28 @@ func (s *mcpServer) registerGuideResource(srv *server.MCPServer) {
 func (s *mcpServer) handleGuideResource(_ context.Context, _ mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
 	return []mcpgo.ResourceContents{
 		mcpgo.TextResourceContents{URI: "wendy://guide", MIMEType: "text/plain", Text: guideText},
+	}, nil
+}
+
+// registerDiagnosticsResource registers wendy://diagnostics, which reports
+// container-MCP proxy failures that would otherwise only appear on stderr.
+func (s *mcpServer) registerDiagnosticsResource(srv *server.MCPServer) {
+	srv.AddResource(
+		mcpgo.NewResource("wendy://diagnostics", "Wendy MCP Diagnostics",
+			mcpgo.WithResourceDescription("Container-MCP proxy failures recorded during this session (app name, stage, error, time), as JSON."),
+			mcpgo.WithMIMEType("application/json"),
+		),
+		s.handleDiagnosticsResource,
+	)
+}
+
+func (s *mcpServer) handleDiagnosticsResource(_ context.Context, _ mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+	data, err := json.Marshal(s.proxyDiagnostics())
+	if err != nil {
+		return nil, err
+	}
+	return []mcpgo.ResourceContents{
+		mcpgo.TextResourceContents{URI: "wendy://diagnostics", MIMEType: "application/json", Text: string(data)},
 	}, nil
 }
 
