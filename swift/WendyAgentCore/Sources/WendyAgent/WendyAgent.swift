@@ -178,6 +178,13 @@ public actor WendyAgent {
     /// startup, via `rollbackStartup()`/`stop()`.
     private var registryTask: Task<Void, Never>?
 
+    /// The cloud tunnel-broker presence/relay loop, tied to the mTLS main
+    /// server's lifetime: started in `startMainServer` when the server comes up
+    /// in mTLS mode (provisioned), cancelled in `stopMainServer`. This makes the
+    /// device reachable through the cloud relay while provisioned; a plaintext
+    /// (unprovisioned) server never starts it.
+    private var tunnelBrokerTask: Task<Void, Never>?
+
     /// The provisioning service registered on the currently-running main server.
     /// Rebuilt (with callbacks re-wired) every time the main server starts so the
     /// next provision/unprovision transition still fires.
@@ -328,6 +335,12 @@ public actor WendyAgent {
 
             self.mainServer = server
             self.mainServerTask = task
+
+            // Once the mTLS server is listening, dial out to the cloud tunnel
+            // broker so the device shows online and is remotely reachable.
+            if isMTLS, let certs {
+                self.startTunnelBroker(info: info, certs: certs)
+            }
         } catch {
             server.beginGracefulShutdown()
             throw await Self.startupError(
@@ -339,7 +352,45 @@ public actor WendyAgent {
         }
     }
 
+    /// Starts the tunnel-broker loop for a provisioned (mTLS) main server. The
+    /// broker URL comes from the provisioning `cloudHost` (with a
+    /// `WENDY_BROKER_URL` override); org/asset from the provisioning info; the
+    /// trust anchor from the device CA chain; the relay target is the local mTLS
+    /// port. A missing chain skips the broker rather than dialing without a trust
+    /// anchor (mirrors the Go agent).
+    private func startTunnelBroker(
+        info: ProvisioningService.ProvisioningInfo,
+        certs: ProvisioningService.ProvisioningCerts
+    ) {
+        guard !certs.chainPEM.isEmpty else {
+            self.logger.warning(
+                "CA chain unavailable; not starting tunnel broker (re-provision if this persists)"
+            )
+            return
+        }
+        let config = TunnelBrokerClient.Config(
+            brokerURL: TunnelBrokerClient.brokerURL(
+                cloudHost: info.cloudHost,
+                override: ProcessInfo.processInfo.environment["WENDY_BROKER_URL"]
+            ),
+            orgID: info.orgID,
+            assetID: info.assetID,
+            chainPEM: certs.chainPEM,
+            mtlsPort: self.configuration.port + 1
+        )
+        let client = TunnelBrokerClient.live
+        let logger = self.logger
+        self.tunnelBrokerTask = Task {
+            await client.runForever(config: config, logger: logger)
+        }
+    }
+
     private func stopMainServer() async {
+        // Stop dialing the broker before tearing the server down.
+        self.tunnelBrokerTask?.cancel()
+        await self.tunnelBrokerTask?.value
+        self.tunnelBrokerTask = nil
+
         self.mainServer?.beginGracefulShutdown()
         _ = try? await self.mainServerTask?.value
         self.mainServer = nil
@@ -638,6 +689,7 @@ public actor WendyAgent {
     private func clearRuntimeState() {
         self.mainServer = nil
         self.mainServerTask = nil
+        self.tunnelBrokerTask = nil
         self.containerService = nil
         self.provisioningService = nil
         self.mainServerIsMTLS = false
