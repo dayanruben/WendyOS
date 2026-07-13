@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,24 +40,24 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const macContainersUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
-
 func macPlatformMismatchMessage(platform string) string {
 	return fmt.Sprintf("Project/target mismatch: selected target is Wendy Agent for Mac, but wendy.json resolves to platform %q. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device.", platform)
 }
 
 func rejectUnsupportedMacRunProject(projectType, platform string) error {
-	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
+	osName := platformOS(platform)
+	// Native darwin apps and Linux/WendyOS containers (via the Mac agent's
+	// container runtime) are both supported. Anything else is a real mismatch.
+	if !strings.EqualFold(osName, appconfig.PlatformDarwin) &&
+		!strings.EqualFold(osName, "linux") &&
+		!strings.EqualFold(osName, "wendyos") {
 		return errors.New(macPlatformMismatchMessage(platform))
 	}
-
 	switch projectType {
-	case "swift", "xcode":
+	case "swift", "xcode", "docker", "python", "compose", "multi-service":
 		return nil
-	case "docker", "python", "compose", "multi-service":
-		return errors.New(macContainersUnsupportedMessage)
 	default:
-		return nil
+		return fmt.Errorf("unable to detect project type for a Mac target: %q", projectType)
 	}
 }
 
@@ -487,6 +488,10 @@ type runOptions struct {
 	keepGoing            bool
 	maxConcurrency       int
 	userArgs             []string
+	// env are extra KEY=VALUE environment variables injected into the container
+	// at create time (CreateContainerRequest.Env). Used by fleet deploys to wire
+	// cross-component discovery (e.g. WENDY_FLEET_PEERS) into a component.
+	env []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
@@ -1025,6 +1030,9 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		RestartPolicy: restartPolicy,
 		Cmd:           cmd,
 		UserArgs:      userArgs,
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1459,6 +1467,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// values that fail build-arg validation are skipped rather than fatal.
 	applyDeviceBuildArgHints(buildArgs, versionResp)
 
+	// The Mac agent runs Linux containers via a CLI runtime with no chunk-diff
+	// (CDC) support, so every fast-deploy attempt just probes, fails, and falls
+	// back to a registry push — wasted round trips. Skip both fast-deploy paths
+	// entirely for darwin agents and go straight to the registry push below.
+	isDarwinAgent := strings.EqualFold(agentOS, appconfig.PlatformDarwin)
+
 	// Detached fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
 	// just ensure the existing container is running. Best-effort — a missing or
@@ -1466,7 +1480,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
-	if opts.detach && !opts.deploy && hashErr == nil {
+	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
@@ -1487,7 +1501,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
-	if !opts.deploy && opts.chunking != chunkingOff {
+	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
 		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
@@ -1557,9 +1571,70 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
+}
+
+// expandServiceEnv resolves one service's `env` map from wendy.json into the
+// "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may reference
+// host environment variables via ${VAR} (or $VAR); they are expanded here, on
+// the deploy host, since the agent has no access to this shell's environment.
+// An entry whose value expands to empty is dropped so the container falls
+// back to its own built-in default rather than receiving an empty override.
+// Output is sorted for deterministic requests; the agent re-validates every
+// entry (POSIX key, blocked prefixes) before applying it.
+func expandServiceEnv(svc *appconfig.ServiceConfig) []string {
+	if svc == nil || len(svc.Env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(svc.Env))
+	for k, v := range svc.Env {
+		if expanded := os.Expand(v, os.Getenv); expanded != "" {
+			out = append(out, k+"="+expanded)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolveServiceEnv merges expandServiceEnv across every service in appCfg,
+// for single-service deploy paths that build one CreateContainerRequest for
+// the whole app rather than one per service (see multibuild.go for the
+// per-service path, which calls expandServiceEnv directly).
+func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
+	if appCfg == nil {
+		return nil
+	}
+	// Sort service names so cross-service key collisions resolve deterministically.
+	svcNames := make([]string, 0, len(appCfg.Services))
+	for name := range appCfg.Services {
+		svcNames = append(svcNames, name)
+	}
+	sort.Strings(svcNames)
+
+	merged := map[string]string{}
+	for _, name := range svcNames {
+		for _, kv := range expandServiceEnv(appCfg.Services[name]) {
+			k, v, _ := strings.Cut(kv, "=")
+			merged[k] = v
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
@@ -1639,6 +1714,11 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host, appCfg.ServiceName)
 
 	gotFirstResponse := false
+	// Set when the stream ends on a genuine failure (as opposed to a clean
+	// container exit, which arrives as io.EOF, or a user Ctrl+C, which cancels
+	// runCtx). Held so the normal stop/cleanup below still runs before we
+	// surface the failure and exit non-zero.
+	var runErr error
 	for {
 		resp, recvErr := outStream.Recv()
 		if recvErr == io.EOF {
@@ -1662,7 +1742,16 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 				stdinAttempted = false
 				continue
 			}
-			return fmt.Errorf("receiving container output: %w", recvErr)
+			// Any other stream error is a real failure: the container failed to
+			// start or exited abnormally (the agent wraps the real cause in the
+			// status message), or the stream itself broke (agent crash, network
+			// drop, auth). A clean container exit arrives as io.EOF above, so
+			// reaching here always means the run did not succeed. Record it, run
+			// the normal cleanup, then return it so `wendy run` exits non-zero
+			// instead of reporting a false success. Use the status message so the
+			// output reads as a container failure, not a CLI crash.
+			runErr = fmt.Errorf("container run failed: %s", status.Convert(recvErr).Message())
+			break
 		}
 		gotFirstResponse = true
 		if out := resp.GetStdoutOutput(); out != nil {
@@ -1678,6 +1767,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	runCancel()
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
+	}
+	if runErr != nil {
+		return runErr
 	}
 	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil

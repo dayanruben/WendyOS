@@ -265,7 +265,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
 	// artifact and device selection — a separate path from the disk-image flow below.
 	if flagDeviceType == thorDeviceType {
-		return installThor(ctx, flagVersion, nightly, force)
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts)
 	}
 
 	fmt.Println("Fetching available devices...")
@@ -389,7 +389,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// installThor here as well — otherwise it falls through to the disk-image
 	// flow and dd's the wrong artifact onto an external drive.
 	if selected == thorDeviceType {
-		return installThor(ctx, flagVersion, nightly, force)
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts)
 	}
 
 	if selected == linuxDesktopValue {
@@ -484,27 +484,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return err
 	}
 
-	// Resolve pre-enrollment — must happen before provisionConfigPartition because
-	// the config partition is mounted and unmounted inside that call.
-	var provisioningJSON []byte
-	if preOpts.mode != preEnrollSkip {
-		cfg, cfgErr := config.Load()
-		if cfgErr != nil {
-			if preOpts.mode == preEnrollForced {
-				return fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
-			}
-			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
-		}
-		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
-		if resolveErr != nil {
-			return resolveErr
-		}
-		if provisioning != nil {
-			provisioningJSON, err = json.Marshal(provisioning)
-			if err != nil {
-				return fmt.Errorf("marshaling provisioning state: %w", err)
-			}
-		}
+	// Resolve pre-enrollment before provisioning — the config partition is mounted
+	// and unmounted inside provisionConfigWithRetry below.
+	provisioningJSON, err := resolveProvisioningJSON(ctx, preOpts, provDeviceName)
+	if err != nil {
+		return err
 	}
 
 	// Step 5: Resolve image metadata for the target storage. A USB-attached
@@ -1997,6 +1981,26 @@ func resolveDeviceName(flagName string) (string, error) {
 		return "", fmt.Errorf("device-name prompt: %w", err)
 	}
 	return strings.TrimSpace(name), nil
+}
+
+// resolveProvisioningJSON runs pre-enrollment per preOpts and returns the
+// marshaled provisioning.json, or nil when enrollment is skipped or not available.
+func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, deviceName string) ([]byte, error) {
+	if preOpts.mode == preEnrollSkip {
+		return nil, nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		if preOpts.mode == preEnrollForced {
+			return nil, fmt.Errorf("--pre-enroll: loading config: %w", err)
+		}
+		cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
+	}
+	prov, err := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), deviceName)
+	if err != nil || prov == nil {
+		return nil, err
+	}
+	return json.Marshal(prov)
 }
 
 // confirmOverwriteInternalDrive guards against accidentally wiping internal

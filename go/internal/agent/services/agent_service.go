@@ -649,22 +649,23 @@ func (s *AgentService) ScanBluetoothPeripherals(stream grpc.BidiStreamingServer[
 }
 
 func (s *AgentService) ConnectBluetoothPeripheral(ctx context.Context, req *agentpb.ConnectBluetoothPeripheralRequest) (*agentpb.ConnectBluetoothPeripheralResponse, error) {
-	if err := s.bluetoothManager.Connect(ctx, req.GetAddress(), req.GetPair(), req.GetTrust()); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to connect bluetooth peripheral: %v", err)
+	paired, err := s.bluetoothManager.Connect(ctx, req.GetAddress(), req.GetPair(), req.GetTrust())
+	if err != nil {
+		return nil, btStatusError("connect bluetooth peripheral", err)
 	}
-	return &agentpb.ConnectBluetoothPeripheralResponse{}, nil
+	return &agentpb.ConnectBluetoothPeripheralResponse{Paired: &paired}, nil
 }
 
 func (s *AgentService) DisconnectBluetoothPeripheral(ctx context.Context, req *agentpb.DisconnectBluetoothPeripheralRequest) (*agentpb.DisconnectBluetoothPeripheralResponse, error) {
 	if err := s.bluetoothManager.Disconnect(ctx, req.GetAddress()); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to disconnect bluetooth peripheral: %v", err)
+		return nil, btStatusError("disconnect bluetooth peripheral", err)
 	}
 	return &agentpb.DisconnectBluetoothPeripheralResponse{}, nil
 }
 
 func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agentpb.ForgetBluetoothPeripheralRequest) (*agentpb.ForgetBluetoothPeripheralResponse, error) {
 	if err := s.bluetoothManager.Forget(ctx, req.GetAddress()); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to forget bluetooth peripheral: %v", err)
+		return nil, btStatusError("forget bluetooth peripheral", err)
 	}
 	return &agentpb.ForgetBluetoothPeripheralResponse{}, nil
 }

@@ -445,7 +445,7 @@ struct ContainerServiceTests {
         }
     }
 
-    @Test("Linux container create requests return a planned future message")
+    @Test("Linux container create requests fail precondition without a configured runtime")
     func createContainerRejectsLinuxContainers() async throws {
         let appsBase = try makeTempDir()
         defer { cleanup(appsBase) }
@@ -472,7 +472,7 @@ struct ContainerServiceTests {
             Issue.record("Expected createContainer to reject Linux containers on Macs")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -505,7 +505,7 @@ struct ContainerServiceTests {
             )
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -536,7 +536,7 @@ struct ContainerServiceTests {
             Issue.record("Expected createContainer to reject wendyos apps as Linux containers")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -576,7 +576,7 @@ struct ContainerServiceTests {
             Issue.record("Expected startContainer to reject persisted Linux containers on Macs")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -692,7 +692,8 @@ struct ContainerServiceTests {
                 "AWS_SECRET_ACCESS_KEY": "secret",
                 "GITHUB_TOKEN": "token",
                 "DATABASE_PASSWORD": "secret",
-            ]
+            ],
+            realUserName: "wendy"
         )
 
         #expect(environment["HOME"] == "/Users/wendy")
@@ -706,6 +707,43 @@ struct ContainerServiceTests {
         #expect(environment["AWS_SECRET_ACCESS_KEY"] == nil)
         #expect(environment["GITHUB_TOKEN"] == nil)
         #expect(environment["DATABASE_PASSWORD"] == nil)
+    }
+
+    @Test("Brewfile command environment replaces synthetic USER/LOGNAME with the real user")
+    func brewfileCommandEnvironmentReplacesSyntheticUserWithRealUser() {
+        let environment = ContainerService.brewBundleEnvironment(
+            source: [
+                "HOME": "/tmp/wendy-e2e/home",
+                "USER": "wendy-e2e-agent",
+                "LOGNAME": "wendy-e2e-agent",
+            ],
+            realUserName: "runner"
+        )
+
+        #expect(environment["USER"] == "runner")
+        #expect(environment["LOGNAME"] == "runner")
+        #expect(environment["HOME"] == "/tmp/wendy-e2e/home")
+    }
+
+    @Test("Brewfile command environment falls back to source USER when real user is unknown")
+    func brewfileCommandEnvironmentFallsBackToSourceUserWhenRealUserIsUnknown() {
+        let environment = ContainerService.brewBundleEnvironment(
+            source: [
+                "HOME": "/Users/wendy",
+                "USER": "wendy",
+                "LOGNAME": "wendy",
+            ],
+            realUserName: nil
+        )
+
+        #expect(environment["USER"] == "wendy")
+        #expect(environment["LOGNAME"] == "wendy")
+    }
+
+    @Test("Real user name resolves to an existing account")
+    func realUserNameResolvesToAnExistingAccount() {
+        let name = ContainerService.realUserName()
+        #expect(name?.isEmpty == false)
     }
 
     @Test("Brewfile symlink escapes are rejected before launching Homebrew")

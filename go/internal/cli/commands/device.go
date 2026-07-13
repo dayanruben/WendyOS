@@ -62,12 +62,14 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
+		newFoxgloveCmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
 	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
 		newDeviceAttachCmd(),
+		newDeviceShellCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
 		newDeviceGetDefaultCmd(),
@@ -566,7 +568,7 @@ func newDeviceSetupCmd() *cobra.Command {
 					if deviceName == "" {
 						return fmt.Errorf("device name is required")
 					}
-					if enrollErr := runEnrollDevice(ctx, conn, auth, deviceName); enrollErr != nil {
+					if enrollErr := runEnrollDevice(ctx, conn, auth, deviceName, 0); enrollErr != nil {
 						fmt.Printf("Enrollment failed: %v\n", enrollErr)
 					}
 				}
@@ -626,6 +628,7 @@ func newDeviceSetupCmd() *cobra.Command {
 func newDeviceEnrollCmd() *cobra.Command {
 	var name string
 	var cloudGRPC string
+	var orgID int32
 
 	cmd := &cobra.Command{
 		Use:    "enroll",
@@ -648,11 +651,12 @@ func newDeviceEnrollCmd() *cobra.Command {
 				return err
 			}
 
-			return runEnrollDevice(ctx, conn, auth, name)
+			return runEnrollDevice(ctx, conn, auth, name, orgID)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
+	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID to enroll into; skips the interactive org picker (required in non-interactive/--json runs when you belong to multiple orgs)")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
 	return cmd
 }
@@ -718,7 +722,7 @@ func defaultEnrollmentName(host string) string {
 	return strings.TrimSuffix(h, ".local")
 }
 
-func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
+func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string, orgOverride int32) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
 	}
@@ -777,9 +781,17 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	tokenCtx := cloudContext(ctx, auth)
 
-	org, orgErr := resolveOrg(ctx, auth, false)
-	if orgErr != nil {
-		return fmt.Errorf("resolving organization: %w", orgErr)
+	var org OrgResolution
+	if orgOverride != 0 {
+		// Explicit --org: use it directly (the cloud rejects it if the caller
+		// isn't a member), skipping org listing and the interactive picker.
+		org = OrgResolution{ID: orgOverride, Name: fmt.Sprintf("org %d", orgOverride)}
+	} else {
+		var orgErr error
+		org, orgErr = resolveOrg(ctx, auth, false)
+		if orgErr != nil {
+			return fmt.Errorf("resolving organization: %w", orgErr)
+		}
 	}
 
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)

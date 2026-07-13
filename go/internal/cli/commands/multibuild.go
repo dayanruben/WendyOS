@@ -272,7 +272,9 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
 	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
-		return rejectUnsupportedMacRunProject("multi-service", platform)
+		if err := rejectUnsupportedMacRunProject("multi-service", platform); err != nil {
+			return err
+		}
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {
@@ -379,6 +381,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	createService := func(name string) error {
+		svc := services[name]
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
 			strings.ToLower(appCfg.AppID), strings.ToLower(name))
 
@@ -394,6 +397,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
+			Env:           expandServiceEnv(svc),
 		}
 
 		cliLogln("Creating container for service %s...", name)

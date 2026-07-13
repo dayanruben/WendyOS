@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
-	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/shim"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -22,14 +20,6 @@ import (
 )
 
 func main() {
-	// When invoked as adb/lsusb/timeout (via the symlinks wendy plants on PATH for
-	// NVIDIA's bootburn during a Thor flash), act as that tool and exit. macOS and
-	// Linux only; IsShimName is always false elsewhere.
-	if shim.IsShimName(filepath.Base(os.Args[0])) {
-		shim.Dispatch()
-		return
-	}
-
 	start := time.Now()
 	cmd := commands.NewRootCmd()
 	executed, err := cmd.ExecuteC()
@@ -231,14 +221,34 @@ func formatError(err error) error {
 		strings.Contains(prefix, "creating enrollment token") ||
 		strings.Contains(prefix, "connecting to cloud")
 
-	isTLSError := strings.Contains(msg, "tls:") ||
+	// A genuine mTLS rejection carries a TLS-alert / cert-verification marker: the
+	// device rejected our client cert ("remote error: tls: bad certificate"),
+	// required one ("certificate required"), or our client rejected the device's
+	// server cert ("tls: failed to verify certificate: x509: ..."). Only these
+	// indicate a real cert/clock-skew problem worth an ssh timedatectl check.
+	isCertRejection := strings.Contains(msg, "tls:") ||
 		strings.Contains(msg, "bad certificate") ||
-		strings.Contains(msg, "authentication handshake failed") ||
 		strings.Contains(msg, "certificate required")
 
+	// A bare "authentication handshake failed" with a transport-death cause (EOF,
+	// a closed pipe, a reset) is NOT a cert rejection — the far side vanished
+	// mid-handshake before any TLS alert. This is the signature of an unreachable
+	// device or, over a cloud tunnel, an offline broker / a device not connected
+	// to it: the tunnel byte pipe is dead, so the first RPC's handshake reads a
+	// closed pipe. Blaming the device clock here sends the user to ssh a box they
+	// can't reach.
+	isTransportHandshakeDrop := !isCertRejection &&
+		strings.Contains(msg, "authentication handshake failed") &&
+		(strings.Contains(msg, "EOF") ||
+			strings.Contains(msg, "read/write on closed pipe") ||
+			strings.Contains(msg, "connection reset") ||
+			strings.Contains(msg, "broken pipe"))
+
 	switch {
-	case strings.Contains(msg, "code = Unavailable") && isTLSError && !isPKICoreCall && !isCloudCall:
+	case strings.Contains(msg, "code = Unavailable") && isCertRejection && !isPKICoreCall && !isCloudCall:
 		return fmt.Errorf("%sTLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1", prefix)
+	case strings.Contains(msg, "code = Unavailable") && isTransportHandshakeDrop && !isPKICoreCall && !isCloudCall:
+		return fmt.Errorf("%sSecure connection dropped during the TLS handshake.\n  The device may be offline or unreachable. If you are connecting through Wendy Cloud, the tunnel broker or the device's link to it may be down.\n  For full TLS details rerun with WENDY_TLS_DEBUG=1", prefix)
 	case strings.Contains(msg, "code = Unavailable") && strings.Contains(msg, "connection refused"):
 		if isPKICoreCall {
 			return fmt.Errorf("%sCould not connect to local pki-core. Check that the gRPC endpoint is reachable from this machine.", prefix)

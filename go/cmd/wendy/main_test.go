@@ -406,6 +406,70 @@ func TestFormatError_UnimplementedKeepsUpdateHintForGeneratedStub(t *testing.T) 
 	}
 }
 
+// A genuine mTLS rejection by the device (clock skew, stale/mismatched cert)
+// surfaces as a server-sent TLS alert ("remote error: tls: bad certificate").
+// That case must keep the clock-skew / timedatectl remedy — it is accurate.
+func TestFormatError_GenuineCertRejectionKeepsClockSkewAdvice(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
+
+	got := formatError(err).Error()
+	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "timedatectl") {
+		t.Fatalf("genuine cert rejection should keep clock-skew advice, got %q", got)
+	}
+}
+
+// A client-side verification failure caused by clock skew (the device's server
+// cert reads as expired/not-yet-valid) is wrapped as "authentication handshake
+// failed: tls: failed to verify certificate: x509: ...". It carries a tls:/x509
+// marker, so it is still a genuine cert/clock problem and keeps the advice.
+func TestFormatError_X509VerifyFailureKeepsClockSkewAdvice(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate has expired or is not yet valid"`))
+
+	got := formatError(err).Error()
+	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "timedatectl") {
+		t.Fatalf("x509 verify failure should keep clock-skew advice, got %q", got)
+	}
+}
+
+// When a cloud-tunnel byte pipe is dead (broker offline, or the device is not
+// connected to the broker), the first RPC fails the TLS handshake against a
+// closed pipe: "authentication handshake failed: io: read/write on closed pipe".
+// There is no TLS alert — the device never rejected anything — so this must NOT
+// tell the user to check the device clock over ssh (the device is unreachable).
+func TestFormatError_DeadCloudTunnelIsNotDeviceClockSkew(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: io: read/write on closed pipe"`))
+
+	got := formatError(err).Error()
+	if strings.Contains(got, "clock skew") || strings.Contains(got, "timedatectl") {
+		t.Fatalf("dead tunnel must not blame the device clock, got %q", got)
+	}
+	if strings.Contains(got, "rpc error") {
+		t.Fatalf("should not leak raw gRPC transport text, got %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "connection") {
+		t.Fatalf("should describe a dropped connection, got %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "tunnel") {
+		t.Fatalf("should point at the cloud tunnel as a likely cause, got %q", got)
+	}
+}
+
+// The same transport death also appears as a bare EOF during the handshake when
+// the far end closes cleanly (e.g. a LAN device drops mid-handshake). It is a
+// connectivity failure, not a cert rejection.
+func TestFormatError_HandshakeEOFIsNotDeviceClockSkew(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: EOF"`))
+
+	got := formatError(err).Error()
+	if strings.Contains(got, "clock skew") || strings.Contains(got, "timedatectl") {
+		t.Fatalf("handshake EOF must not blame the device clock, got %q", got)
+	}
+}
+
 func TestEnv_IsCITripsKillSwitch(t *testing.T) {
 	// Sanity check that env.IsCI() recognizes the CI variable. The deeper
 	// contract — that analytics.Init refuses to enable in CI — is covered
