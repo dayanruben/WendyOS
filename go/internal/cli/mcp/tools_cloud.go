@@ -184,6 +184,9 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
 		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
 	}
 	runOpts = append(runOpts, mutating()...)
 	runOpts = append(runOpts, openWorld()...)
@@ -221,6 +224,9 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		),
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
 		),
 	}
 	cloudRunOpts = append(cloudRunOpts, mutating()...)
@@ -389,8 +395,11 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		args = append(args, "--detach")
 	}
 
+	tok := progressToken(req)
 	cmd := exec.CommandContext(runCtx, bin, args...)
+	reportProgress(ctx, tok, 0, 0, "running wendy…")
 	out, err := cmd.CombinedOutput()
+	reportProgress(ctx, tok, 1, 1, "done")
 	text := strings.TrimSpace(string(out))
 	if runCtx.Err() != nil {
 		if text == "" {
@@ -407,7 +416,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	if text == "" {
 		text = "cloud run completed"
 	}
-	return okText(text), nil
+	return okTextBounded(text, "reduce timeout_seconds, redirect the app's own output, or raise max_bytes", intParam(req, "max_bytes", 100000)), nil
 }
 
 // cloudResolveErr is returned by the cloud auth/asset-resolution helpers

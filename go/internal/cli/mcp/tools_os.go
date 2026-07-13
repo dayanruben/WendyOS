@@ -88,6 +88,7 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 
+	tok := progressToken(req)
 	var sb strings.Builder
 	for {
 		resp, err := stream.Recv()
@@ -101,6 +102,7 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 		case *agentpb.UpdateOSResponse_Progress_:
 			p := resp.GetProgress()
 			sb.WriteString(fmt.Sprintf("[%s] %d%%\n", p.GetPhase(), p.GetPercent()))
+			reportProgress(ctx, tok, float64(p.GetPercent()), 100, fmt.Sprintf("[%s] %d%%", p.GetPhase(), p.GetPercent()))
 		case *agentpb.UpdateOSResponse_Completed_:
 			c := resp.GetCompleted()
 			if c.GetRebootRequired() {

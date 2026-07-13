@@ -26,6 +26,12 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to start"),
 		),
+		mcpgo.WithNumber("max_chunks",
+			mcpgo.Description("Maximum output chunks to collect (default 200)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
 	}
 	startOpts = append(startOpts, mutating()...)
 	startOpts = append(startOpts, localOnly()...)
@@ -74,8 +80,14 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to attach to"),
 		),
-		mcpgo.WithNumber("max_lines",
+		mcpgo.WithNumber("max_chunks",
 			mcpgo.Description("Maximum output chunks to collect (default 100)"),
+		),
+		mcpgo.WithNumber("max_lines",
+			mcpgo.Description("Deprecated alias for max_chunks (maximum output chunks to collect, default 100)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
 		),
 	}
 	attachOpts = append(attachOpts, readOnly()...)
@@ -142,9 +154,10 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
+	maxChunks := intParam(req, "max_chunks", 200)
 	var sb strings.Builder
 	chunks := 0
-	for chunks < 200 {
+	for chunks < maxChunks {
 		resp, err := stream.Recv()
 		if err == io.EOF {
 			break
@@ -168,7 +181,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	if out == "" {
 		out = fmt.Sprintf("container %s started", appName)
 	}
-	return okText(out), nil
+	return okTextBounded(out, "", intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -239,7 +252,7 @@ func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToo
 	if appName == "" {
 		return errResult(errCodeInvalidArgument, "app_name is required"), nil
 	}
-	maxChunks := intParam(req, "max_lines", 100)
+	maxChunks := intParamAlias(req, "max_chunks", "max_lines", 100)
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -277,5 +290,5 @@ func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToo
 			collected++
 		}
 	}
-	return okText(sb.String()), nil
+	return okTextBounded(sb.String(), "", intParam(req, "max_bytes", 100000)), nil
 }
