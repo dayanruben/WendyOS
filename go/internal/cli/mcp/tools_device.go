@@ -42,7 +42,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 
 	setDefaultOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Save an address as the default device in ~/.wendy/config.json"),
-		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address to save as default")),
+		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address to save as default, e.g. mydevice.local:50051")),
 	}
 	setDefaultOpts = append(setDefaultOpts, mutating()...)
 	setDefaultOpts = append(setDefaultOpts, idempotent()...)

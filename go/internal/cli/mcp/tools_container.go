@@ -21,7 +21,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("container_list", listOpts...), s.handleContainerList)
 
 	startOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Start a container and stream its output (bounded snapshot)"),
+		mcpgo.WithDescription("Start a container and stream its output (bounded snapshot). The app runs with the entitlements declared in its wendy.json (e.g. gpu, network, persistence); if the device denies a required entitlement, the start fails (or the container exits) with error_code ENTITLEMENT_DENIED, also visible later as termination_reason in container_list."),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to start"),

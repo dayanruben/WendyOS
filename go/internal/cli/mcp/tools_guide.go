@@ -40,8 +40,10 @@ Cloud-enrolled devices:
 - telemetry_logs / telemetry_metrics / telemetry_traces
 - hardware_capabilities
 - os_update
-- filesync_sync
 - provisioning_start / provisioning_status
+
+Host↔device file sync happens automatically as part of ` + "`wendy run`" + `'s
+fast redeploy path — there is no standalone file-sync CLI command or MCP tool.
 
 ## Deploying a workload
 
@@ -51,6 +53,15 @@ Use the run tool to build and deploy a local project to a cloud-enrolled device:
 ## Disconnecting
 
 device_disconnect — closes the active connection and frees resources.
+
+## Entitlements
+
+Apps declare the device capabilities they need (gpu, network, persistence,
+camera, bluetooth, etc.) in their project's wendy.json. The device only
+grants what's declared there — if a container needs a capability that isn't
+entitled, the operation fails (or the container exits) with error_code
+ENTITLEMENT_DENIED, and container_list surfaces it in termination_reason for
+stopped containers.
 
 ## Result shape & error codes
 

@@ -26,7 +26,7 @@ func (s *mcpServer) registerBluetoothTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Connect to a Bluetooth peripheral by address"),
 		mcpgo.WithString("address",
 			mcpgo.Required(),
-			mcpgo.Description("Bluetooth peripheral address"),
+			mcpgo.Description("Bluetooth peripheral address, e.g. AA:BB:CC:DD:EE:FF"),
 		),
 		mcpgo.WithBoolean("pair",
 			mcpgo.Description("Pair the peripheral during connection"),
@@ -44,7 +44,7 @@ func (s *mcpServer) registerBluetoothTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Disconnect from a Bluetooth peripheral by address"),
 		mcpgo.WithString("address",
 			mcpgo.Required(),
-			mcpgo.Description("Bluetooth peripheral address"),
+			mcpgo.Description("Bluetooth peripheral address, e.g. AA:BB:CC:DD:EE:FF"),
 		),
 	}
 	disconnectOpts = append(disconnectOpts, destructive()...)
