@@ -51,6 +51,15 @@ Use the run tool to build and deploy a local project to a cloud-enrolled device:
 
 device_disconnect — closes the active connection and frees resources.
 
+## Result shape & error codes
+
+Tools that return data include a machine-readable structuredContent object
+alongside human-readable text. Errors include an error_code you can branch
+on — e.g. NOT_CONNECTED, DEVICE_UNREACHABLE, ENTITLEMENT_DENIED,
+INVALID_ARGUMENT, NOT_FOUND, MULTIPLE_SESSIONS, UNSUPPORTED, TIMEOUT,
+INTERNAL. Tool annotations mark read-only vs destructive vs mutating
+operations and whether a tool reaches beyond the connected device (open-world).
+
 ## Documentation
 
 Detailed documentation is available as MCP resources under wendy://docs/.

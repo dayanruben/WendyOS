@@ -116,7 +116,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 }
 
 func errNotConnected() *mcpgo.CallToolResult {
-	return mcpgo.NewToolResultError("no device connected — use device_connect first")
+	return errResult(errCodeNotConnected, "no device connected — use device_connect first")
 }
 
 // grpcErrString unwraps a gRPC status error into a human-readable string.

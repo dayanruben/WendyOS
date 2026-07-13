@@ -7,12 +7,37 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func TestContainerAnnotations_ReadOnlyNotDestructive(t *testing.T) {
+	srv := server.NewMCPServer("t", "0")
+	s := New(&config.Config{}, nil)
+	s.registerContainerTools(srv)
+	tools := srv.ListTools()
+	list, ok := tools["container_list"]
+	if !ok {
+		t.Fatal("container_list not registered")
+	}
+	if list.Tool.Annotations.DestructiveHint == nil || *list.Tool.Annotations.DestructiveHint {
+		t.Error("container_list (readOnly) must have DestructiveHint=false")
+	}
+	if list.Tool.Annotations.OpenWorldHint == nil || *list.Tool.Annotations.OpenWorldHint {
+		t.Error("container_list must have OpenWorldHint=false (localOnly)")
+	}
+	del, ok := tools["container_delete"]
+	if !ok {
+		t.Fatal("container_delete not registered")
+	}
+	if del.Tool.Annotations.DestructiveHint == nil || !*del.Tool.Annotations.DestructiveHint {
+		t.Error("container_delete must have DestructiveHint=true")
+	}
+}
 
 // fakeContainerServer implements WendyContainerServiceServer for container tests.
 type fakeContainerServer struct {
