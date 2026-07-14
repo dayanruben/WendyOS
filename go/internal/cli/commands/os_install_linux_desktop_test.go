@@ -27,10 +27,10 @@ func TestRenderLinuxDesktopInstructions_Plain(t *testing.T) {
 
 func TestRenderLinuxDesktopInstructions_Enrolled(t *testing.T) {
 	exp := time.Date(2026, 7, 7, 15, 4, 5, 0, time.UTC)
-	out := renderLinuxDesktopInstructions("tok-abc", "cloud.wendy.sh:443", "Acme", exp)
+	out := renderLinuxDesktopInstructions("tok-abc", "cloud.wendy.dev:443", "Acme", exp)
 	for _, want := range []string{
 		"WENDY_ENROLLMENT_TOKEN=tok-abc",
-		"WENDY_CLOUD_HOST=cloud.wendy.sh:443",
+		"WENDY_CLOUD_HOST=cloud.wendy.dev:443",
 		"install.wendy.dev/agent.sh",
 		"Acme",
 	} {
@@ -70,7 +70,7 @@ func stubLinuxDesktopSingleSessionConfig(t *testing.T) {
 		return &config.Config{
 			Auth: []config.AuthConfig{
 				{
-					CloudGRPC: "cloud.wendy.sh:443",
+					CloudGRPC: "cloud.wendy.dev:443",
 					Certificates: []config.CertificateInfo{
 						{OrganizationID: 7},
 					},
@@ -114,7 +114,7 @@ func TestInstallLinuxDesktop_EnrolledPrintsToken(t *testing.T) {
 	}
 	for _, want := range []string{
 		"WENDY_ENROLLMENT_TOKEN=tok-xyz",
-		"WENDY_CLOUD_HOST=cloud.wendy.sh:443",
+		"WENDY_CLOUD_HOST=cloud.wendy.dev:443",
 		"Acme",
 	} {
 		if !strings.Contains(out, want) {
@@ -158,8 +158,8 @@ func TestLinuxDesktopCommand(t *testing.T) {
 	if got := linuxDesktopCommand("", ""); got != "curl -fsSL https://install.wendy.dev/agent.sh | bash" {
 		t.Fatalf("plain command = %q", got)
 	}
-	got := linuxDesktopCommand("tok-abc", "cloud.wendy.sh:443")
-	want := "curl -fsSL https://install.wendy.dev/agent.sh | WENDY_ENROLLMENT_TOKEN=tok-abc WENDY_CLOUD_HOST=cloud.wendy.sh:443 bash"
+	got := linuxDesktopCommand("tok-abc", "cloud.wendy.dev:443")
+	want := "curl -fsSL https://install.wendy.dev/agent.sh | WENDY_ENROLLMENT_TOKEN=tok-abc WENDY_CLOUD_HOST=cloud.wendy.dev:443 bash"
 	if got != want {
 		t.Fatalf("enrolled command\n got: %q\nwant: %q", got, want)
 	}
@@ -176,11 +176,11 @@ func TestCopyLinuxDesktopCommand_Interactive(t *testing.T) {
 	t.Cleanup(func() { clipboardWriter = orig })
 
 	out := captureStdout(t, func() {
-		if !copyLinuxDesktopCommand("tok-xyz", "cloud.wendy.sh:443", true) {
+		if !copyLinuxDesktopCommand("tok-xyz", "cloud.wendy.dev:443", true) {
 			t.Fatal("expected copyLinuxDesktopCommand to report success")
 		}
 	})
-	if copied != linuxDesktopCommand("tok-xyz", "cloud.wendy.sh:443") {
+	if copied != linuxDesktopCommand("tok-xyz", "cloud.wendy.dev:443") {
 		t.Fatalf("clipboard got %q", copied)
 	}
 	if !strings.Contains(out, "clipboard") {
