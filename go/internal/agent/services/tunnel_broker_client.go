@@ -153,30 +153,25 @@ func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, metadata.MD, er
 }
 
 // brokerDialOpts returns gRPC dial options and identity metadata for any
-// agent-originated connection to the tunnel broker. Shared by the presence
-// client (serving side) and the mesh dialer (dialing side).
-func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, chainPEM string) ([]grpc.DialOption, metadata.MD, error) {
-	// Identity is asserted two ways during the mTLS rollout:
-	//
-	//   1. The device's client certificate (mTLS). We present the ECDSA leaf +
-	//      key below so the broker can authenticate us cryptographically once it
-	//      starts requesting client certs (rollout phase 2). Only the leaf is
-	//      presented, never the ML-DSA CA chain — Go's TLS stack rejects ML-DSA
-	//      certs at parse time, but the leaf itself is ECDSA and parses fine.
-	//   2. The XFCC header (below). Today the broker still runs NoClientCert and
-	//      authenticates on the header, so presenting the cert is a no-op on the
-	//      wire (the server never sends a CertificateRequest). Presenting it now
-	//      makes the deployed fleet ready for the broker to require client certs
-	//      without a flag-day cutover.
-	//
-	// Broker cert CN is localhost and won't match the cloud host — skip hostname
-	// verification but still validate the chain against the Wendy CA.
+// brokerTLSConfig builds the TLS config for a broker connection: it validates
+// the broker's chain against the Wendy CA (hostname verification is skipped —
+// the broker cert CN is localhost, not the cloud host) and presents the
+// device's ECDSA leaf for mTLS.
+//
+// Loading the client cert is non-fatal: today's broker runs NoClientCert and
+// authenticates on the XFCC header, so a failed load still yields a working
+// certless connection. The failure is logged with a stable, greppable
+// event key and an explicit client_cert_presented=false field so the rollout
+// to a cert-requiring broker (phase 2) — where a load failure WILL break
+// authentication — can be alerted on from logs. Extracted from brokerDialOpts
+// so the cert-load / fallback behavior is unit-testable without a live dial.
+func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls.Config, error) {
 	caPool, err := x509.SystemCertPool()
 	if err != nil {
 		caPool = x509.NewCertPool()
 	}
 	if chainPEM != "" && !caPool.AppendCertsFromPEM([]byte(chainPEM)) {
-		return nil, metadata.MD{}, fmt.Errorf("no valid CA certificates in chainPEM")
+		return nil, fmt.Errorf("no valid CA certificates in chainPEM")
 	}
 	tlsCfg := &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec
@@ -206,16 +201,41 @@ func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, c
 	// Present the device's ECDSA leaf certificate so the broker can authenticate
 	// this connection via mTLS once it starts requesting client certs. Loading
 	// only the leaf (not the ML-DSA CA chain) keeps Go's TLS stack from tripping
-	// over ML-DSA parse failures. A load failure is non-fatal: today's broker
-	// runs NoClientCert and authenticates on the XFCC header, so the connection
-	// still succeeds certless.
+	// over ML-DSA parse failures.
 	if certPEM != "" && keyPEM != "" {
 		if clientCert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err != nil {
 			logger.Warn("failed to load device client certificate for broker mTLS; presenting none (XFCC header identity still applies)",
+				zap.String("event", "broker_mtls_client_cert_load_failed"),
+				zap.Bool("client_cert_presented", false),
 				zap.Error(err))
 		} else {
 			tlsCfg.Certificates = []tls.Certificate{clientCert}
 		}
+	}
+	return tlsCfg, nil
+}
+
+// agent-originated connection to the tunnel broker. Shared by the presence
+// client (serving side) and the mesh dialer (dialing side).
+func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, chainPEM string) ([]grpc.DialOption, metadata.MD, error) {
+	// Identity is asserted two ways during the mTLS rollout:
+	//
+	//   1. The device's client certificate (mTLS). We present the ECDSA leaf +
+	//      key below so the broker can authenticate us cryptographically once it
+	//      starts requesting client certs (rollout phase 2). Only the leaf is
+	//      presented, never the ML-DSA CA chain — Go's TLS stack rejects ML-DSA
+	//      certs at parse time, but the leaf itself is ECDSA and parses fine.
+	//   2. The XFCC header (below). Today the broker still runs NoClientCert and
+	//      authenticates on the header, so presenting the cert is a no-op on the
+	//      wire (the server never sends a CertificateRequest). Presenting it now
+	//      makes the deployed fleet ready for the broker to require client certs
+	//      without a flag-day cutover.
+	//
+	// Broker cert CN is localhost and won't match the cloud host — skip hostname
+	// verification but still validate the chain against the Wendy CA.
+	tlsCfg, err := brokerTLSConfig(logger, certPEM, keyPEM, chainPEM)
+	if err != nil {
+		return nil, metadata.MD{}, err
 	}
 
 	certHeader := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
