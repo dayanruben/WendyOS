@@ -60,7 +60,7 @@ type thorDevice struct {
 // the device, then run download → stage-1 RCM boot → stage-2 partition flash as a
 // BuildKit-style step list. Stage-2 is the shared Go engine (flashengine) on all
 // platforms.
-func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
 	// Thor's USB recovery access is an in-process libusb handle, so the whole
 	// process must be root on macOS/Linux — caching the sudo timestamp is not
 	// enough. Elevate up front, before the briefing, so a missing-permission
@@ -76,7 +76,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		return fmt.Errorf("resolving cache dir: %w", err)
 	}
 
-	plan, err := planThorFlashpack(cacheDir, version, nightly)
+	plan, err := planThorFlashpack(cacheDir, version, nightly, prNumber)
 	if err != nil {
 		return err
 	}
@@ -292,11 +292,11 @@ type thorFlashPlan struct {
 	info    *thorFlashpackInfo
 }
 
-func planThorFlashpack(cacheDir, version string, nightly bool) (thorFlashPlan, error) {
+func planThorFlashpack(cacheDir, version string, nightly bool, pr int) (thorFlashPlan, error) {
 	if version != "" && flashpackCached(cacheDir, version) {
 		return thorFlashPlan{version: version, cached: true}, nil
 	}
-	info, err := getThorFlashpackInfo(version, nightly)
+	info, err := getThorFlashpackInfo(version, nightly, pr)
 	if err != nil {
 		if version != "" {
 			return thorFlashPlan{}, fmt.Errorf("flashpack %s not in cache and manifest lookup failed: %w", version, err)

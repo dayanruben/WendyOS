@@ -54,11 +54,12 @@ and the serial console is active. They are for testing the PR on hardware —
 **never flash a PR image to a production device.** Artifacts are deleted when
 the PR is closed.
 
-`--pr` is supported for Linux disk-image devices and for Jetson Orin recovery
-(Nano/AGX). PR builds publish recovery flashpacks into the `pr/<N>/` sandbox, so
-`--pr` can drive a full QSPI+storage recovery install as well as
-`--pr --rootfs-only` raw imaging. It is not supported for Jetson AGX Thor or
-ESP32 targets.
+`--pr` is supported for Linux disk-image devices and for Jetson recovery — Orin
+(Nano/AGX) and AGX Thor. PR builds publish recovery flashpacks into the
+`pr/<N>/` sandbox, so `--pr` can drive a full recovery install (QSPI+storage for
+Orin, QSPI+NVMe for Thor) as well as `--pr --rootfs-only` raw imaging on Orin. It
+is not supported for ESP32 targets (Wendy Lite firmware is not built by the
+per-PR pipeline).
 `--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
 image path.
 

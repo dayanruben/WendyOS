@@ -111,9 +111,6 @@ Flags can be provided progressively — omitted values trigger interactive picke
 				if nightly || versionFlag != "" || len(args) > 0 {
 					return fmt.Errorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
 				}
-				if deviceType == thorDeviceType {
-					return fmt.Errorf("--pr does not support jetson-agx-thor yet")
-				}
 				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
@@ -303,7 +300,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if storageOverride != "" {
 			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
 		}
-		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts)
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
 	}
 	fmt.Println("Fetching available devices...")
 
@@ -435,7 +432,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if storageOverride != "" {
 			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
 		}
-		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts)
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
 	}
 
 	if selected == linuxDesktopValue {

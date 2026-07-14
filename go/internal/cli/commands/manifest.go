@@ -505,14 +505,26 @@ type thorFlashpackInfo struct {
 }
 
 // getThorFlashpackInfo fetches the jetson-agx-thor manifest and returns the flashpack
-// artifact for version (or the latest stable / nightly when version is "").
-func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, error) {
-	main, err := fetchMainManifest()
+// artifact for version (or the latest stable / nightly when version is ""). When
+// pr > 0 it resolves against the per-PR manifest (pr/<N>/) written by the
+// wendyos-builder publish-pr job instead of the released master manifest; the
+// flashpack path there is already pr-prefixed, so the download URL is correct.
+func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackInfo, error) {
+	var main *mainManifest
+	var err error
+	if pr > 0 {
+		main, err = fetchPRMainManifest(pr)
+	} else {
+		main, err = fetchMainManifest()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching manifest: %w", err)
 	}
 	dev, ok := main.Devices[thorDeviceType]
 	if !ok || dev.ManifestPath == "" {
+		if pr > 0 {
+			return nil, fmt.Errorf("%s not built by PR %d", thorDeviceType, pr)
+		}
 		return nil, fmt.Errorf("%s not found in manifest", thorDeviceType)
 	}
 	dm, err := fetchDeviceManifest(dev.ManifestPath)
@@ -520,9 +532,13 @@ func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, err
 		return nil, fmt.Errorf("fetching device manifest: %w", err)
 	}
 	if version == "" {
-		version = dev.Latest
-		if nightly && dev.LatestNightly != "" {
-			version = dev.LatestNightly
+		if pr > 0 {
+			version = prDeviceVersion(dev)
+		} else {
+			version = dev.Latest
+			if nightly && dev.LatestNightly != "" {
+				version = dev.LatestNightly
+			}
 		}
 	}
 	if version == "" {
