@@ -14,21 +14,20 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
-	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// fakeUpdateAgentStream satisfies
-// agentpbv2.WendyAgentUpdateService_UpdateAgentClient (a
-// grpc.BidiStreamingClient[UpdateAgentRequest, UpdateAgentResponse]) via the
-// embedded-nil trick used elsewhere in this package (see fakeWriteChunksStream
-// in chunkpush_test.go). It only records the requests sent so a test can
-// inspect the final control command.
+// fakeUpdateAgentStream satisfies agentpb.WendyAgentService_UpdateAgentClient
+// (a grpc.BidiStreamingClient[UpdateAgentRequest, UpdateAgentResponse]) via
+// the embedded-nil trick used elsewhere in this package (see
+// fakeWriteChunksStream in chunkpush_test.go). It only records the requests
+// sent so a test can inspect the final control command.
 type fakeUpdateAgentStream struct {
-	grpc.BidiStreamingClient[agentpbv2.UpdateAgentRequest, agentpbv2.UpdateAgentResponse]
-	sent []*agentpbv2.UpdateAgentRequest
+	grpc.BidiStreamingClient[agentpb.UpdateAgentRequest, agentpb.UpdateAgentResponse]
+	sent []*agentpb.UpdateAgentRequest
 }
 
-func (s *fakeUpdateAgentStream) Send(req *agentpbv2.UpdateAgentRequest) error {
+func (s *fakeUpdateAgentStream) Send(req *agentpb.UpdateAgentRequest) error {
 	s.sent = append(s.sent, req)
 	return nil
 }
@@ -40,7 +39,7 @@ func (s *fakeUpdateAgentStream) CloseSend() error {
 // sendAgentUpdate streams the binary in chunks and then a final control
 // command carrying the sha256 and (optionally) a detached signature. This
 // pins the seam a signer will populate: whatever bytes the caller passes as
-// signature must land verbatim on the v2 proto's Update.Signature field,
+// signature must land verbatim on the v1 proto's Update.Signature field,
 // which is what the agent's (currently-disabled) verifier reads.
 func TestSendAgentUpdateSignatureReachesProtoField(t *testing.T) {
 	stream := &fakeUpdateAgentStream{}

@@ -813,7 +813,7 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 		h := sha256.Sum256(binaryData)
 		sha256Hash := hex.EncodeToString(h[:])
 
-		if err := deviceUpdateUpload(ctx, conn.AgentUpdateService, binaryData, sha256Hash); err != nil {
+		if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
 			conn.Close()
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("uploading: %w", err)}
 		}

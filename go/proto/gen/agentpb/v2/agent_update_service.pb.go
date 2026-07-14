@@ -282,7 +282,7 @@ func (*UpdateAgentRequest_ControlCommand_Update_) isUpdateAgentRequest_ControlCo
 type UpdateAgentRequest_ControlCommand_Update struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Sha256        string                 `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"` // Detached ML-DSA65 signature over the streamed binary bytes; empty until a signer is deployed.
+	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"` // Detached ML-DSA65 signature over the SHA256 digest of the agent binary; empty until a signer is deployed.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

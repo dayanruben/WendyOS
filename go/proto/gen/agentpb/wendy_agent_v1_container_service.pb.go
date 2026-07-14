@@ -729,7 +729,7 @@ type RunContainerLayersRequest struct {
 	// path so the assembled image preserves the original runtime config; when
 	// empty the agent synthesises a minimal config (legacy behaviour).
 	ImageConfig    []byte `protobuf:"bytes,9,opt,name=image_config,json=imageConfig,proto3" json:"image_config,omitempty"`
-	ImageSignature []byte `protobuf:"bytes,10,opt,name=image_signature,json=imageSignature,proto3" json:"image_signature,omitempty"` // Detached ML-DSA65 signature over the assembled image manifest digest; empty until a signer is deployed.
+	ImageSignature []byte `protobuf:"bytes,10,opt,name=image_signature,json=imageSignature,proto3" json:"image_signature,omitempty"` // Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }

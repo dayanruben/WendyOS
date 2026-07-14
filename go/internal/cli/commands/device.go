@@ -26,7 +26,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	"golang.org/x/term"
@@ -142,7 +141,7 @@ func newDevicePushAgentCmd() *cobra.Command {
 
 			h := sha256.Sum256(binaryData)
 			fmt.Fprintf(os.Stderr, "Uploading %d bytes to %s...\n", len(binaryData), conn.Host)
-			if err := deviceUpdateUpload(ctx, conn.AgentUpdateService, binaryData, hex.EncodeToString(h[:])); err != nil {
+			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, hex.EncodeToString(h[:])); err != nil {
 				return fmt.Errorf("uploading agent: %w", err)
 			}
 			conn.Close()
@@ -2223,7 +2222,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 			// moment the binary lands, which can drop the stream before its
 			// ack arrives. Reconnect below and verify what the device runs.
 			unconfirmed := false
-			if err := uploadAgentBinary(ctx, conn.AgentUpdateService, binaryData, sha256Hash, jsonOutput); err != nil {
+			if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
 				if !errors.Is(err, errAgentUpdateUnconfirmed) {
 					return err
 				}
@@ -2383,7 +2382,7 @@ const (
 // interactive and a plain status line otherwise (nothing extra in JSON mode).
 // It is the shared upload used by both `device update`'s initial agent update
 // and the post-OS-update --binary re-apply, so the two stay in lockstep.
-func uploadAgentBinary(ctx context.Context, agentService agentpbv2.WendyAgentUpdateServiceClient, binaryData []byte, sha256Hash string, jsonOutput bool) error {
+func uploadAgentBinary(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string, jsonOutput bool) error {
 	if isInteractiveTerminal() && !jsonOutput {
 		s := tui.NewSpinner("Uploading agent binary...")
 		p := tui.NewProgressProgram(s)
@@ -2440,7 +2439,7 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 
 	// An unconfirmed upload is expected here too — the agent restarts as the
 	// binary lands — and the wait below already verifies the agent returns.
-	if err := uploadAgentBinary(ctx, conn.AgentUpdateService, binaryData, sha256Hash, jsonOutput); err != nil && !errors.Is(err, errAgentUpdateUnconfirmed) {
+	if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil && !errors.Is(err, errAgentUpdateUnconfirmed) {
 		_ = conn.Close()
 		return err
 	}
@@ -2474,7 +2473,7 @@ var errAgentUpdateUnconfirmed = errors.New("the connection was lost before the a
 // alongside the binary, instead of requiring the caller to set it by hand.
 const agentSignaturePathEnv = "WENDY_AGENT_SIGNATURE_PATH"
 
-func deviceUpdateUpload(ctx context.Context, agentService agentpbv2.WendyAgentUpdateServiceClient, binaryData []byte, sha256Hash string) error {
+func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
 	signature, err := readOptionalSignature(os.Getenv(agentSignaturePathEnv))
 	if err != nil {
 		return fmt.Errorf("reading agent signature from %s: %w", agentSignaturePathEnv, err)
@@ -2508,7 +2507,7 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpbv2.WendyAgentUp
 // Recv terminal status is what callers act on). signature is the (currently
 // almost-always-nil) detached signature over binaryData; see
 // agentSignaturePathEnv and readOptionalSignature.
-func sendAgentUpdate(stream agentpbv2.WendyAgentUpdateService_UpdateAgentClient, binaryData []byte, sha256Hash string, signature []byte) error {
+func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string, signature []byte) error {
 	const chunkSize = 64 * 1024
 	for offset := 0; offset < len(binaryData); offset += chunkSize {
 		end := offset + chunkSize
@@ -2516,9 +2515,9 @@ func sendAgentUpdate(stream agentpbv2.WendyAgentUpdateService_UpdateAgentClient,
 			end = len(binaryData)
 		}
 
-		if err := stream.Send(&agentpbv2.UpdateAgentRequest{
-			RequestType: &agentpbv2.UpdateAgentRequest_Chunk_{
-				Chunk: &agentpbv2.UpdateAgentRequest_Chunk{
+		if err := stream.Send(&agentpb.UpdateAgentRequest{
+			RequestType: &agentpb.UpdateAgentRequest_Chunk_{
+				Chunk: &agentpb.UpdateAgentRequest_Chunk{
 					Data: binaryData[offset:end],
 				},
 			},
@@ -2527,11 +2526,11 @@ func sendAgentUpdate(stream agentpbv2.WendyAgentUpdateService_UpdateAgentClient,
 		}
 	}
 
-	if err := stream.Send(&agentpbv2.UpdateAgentRequest{
-		RequestType: &agentpbv2.UpdateAgentRequest_Control{
-			Control: &agentpbv2.UpdateAgentRequest_ControlCommand{
-				Command: &agentpbv2.UpdateAgentRequest_ControlCommand_Update_{
-					Update: &agentpbv2.UpdateAgentRequest_ControlCommand_Update{
+	if err := stream.Send(&agentpb.UpdateAgentRequest{
+		RequestType: &agentpb.UpdateAgentRequest_Control{
+			Control: &agentpb.UpdateAgentRequest_ControlCommand{
+				Command: &agentpb.UpdateAgentRequest_ControlCommand_Update_{
+					Update: &agentpb.UpdateAgentRequest_ControlCommand_Update{
 						Sha256:    sha256Hash,
 						Signature: signature,
 					},

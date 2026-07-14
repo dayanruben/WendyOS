@@ -67,11 +67,6 @@ type AgentConnection struct {
 	TelemetryService    agentpb.WendyTelemetryServiceClient
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
-	// AgentUpdateService is the v2 UpdateAgent RPC used by `wendy device
-	// update` and friends. It replaces AgentService's own (v1) UpdateAgent,
-	// which lacks the detached-signature field the agent's (currently
-	// disabled) update verifier reads.
-	AgentUpdateService agentpbv2.WendyAgentUpdateServiceClient
 	// observedServerOrg holds the org ID read from the device's server
 	// certificate during the TLS handshake (set by the OnServerIdentity sink
 	// wired in ConnectWithTLSAndPins). Written on the handshake goroutine, read
@@ -281,7 +276,6 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		TelemetryService:    agentpb.NewWendyTelemetryServiceClient(conn),
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
-		AgentUpdateService:  agentpbv2.NewWendyAgentUpdateServiceClient(conn),
 	}
 }
 
