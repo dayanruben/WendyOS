@@ -1324,8 +1324,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 )
             }
 
-            let blobPath = "\(blobsDirectory)/sha256/\(expectedHash)"
-            try accumulated.write(to: URL(fileURLWithPath: blobPath))
+            let blobURL = try validateContainedPath(
+                base: URL(fileURLWithPath: blobsDirectory),
+                relative: "sha256/\(expectedHash)"
+            )
+            try accumulated.write(to: blobURL)
 
             logger.info(
                 "WriteLayer completed (OCI blob)",
@@ -1410,7 +1413,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     private func readBlob(digest: String) throws -> Data {
         // digest is "sha256:<hex>" — map to blobsDirectory/sha256/<hex>.
-        let blobPath = "\(blobsDirectory)/\(digest.replacingOccurrences(of: ":", with: "/"))"
+        let blobPath = try validateContainedPath(
+            base: URL(fileURLWithPath: blobsDirectory),
+            relative: digest.replacingOccurrences(of: ":", with: "/")
+        ).path
         guard let data = FileManager.default.contents(atPath: blobPath) else {
             throw RPCError(code: .notFound, message: "Blob not found at \(blobPath)")
         }
@@ -1418,7 +1424,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     private func extractTarGz(blobDigest: String, to destinationDirectory: String) async throws {
-        let blobPath = "\(blobsDirectory)/\(blobDigest.replacingOccurrences(of: ":", with: "/"))"
+        let blobPath = try validateContainedPath(
+            base: URL(fileURLWithPath: blobsDirectory),
+            relative: blobDigest.replacingOccurrences(of: ":", with: "/")
+        ).path
         let tarProcess = Foundation.Process()
         tarProcess.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tarProcess.arguments = ["-xzf", blobPath, "-C", destinationDirectory]
