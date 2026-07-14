@@ -753,7 +753,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let nativeLaunchInfo: NativeLaunchInfo
         if imageName.hasPrefix("sha256:") {
             // OCI image: parse manifest → config → extract layer.
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             try FileManager.default.createDirectory(
                 atPath: appDirectory,
                 withIntermediateDirectories: true
@@ -801,7 +801,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         } else if !imageName.isEmpty {
             // Legacy: imageName is the binary name directly.
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             let binaryPath = "\(appDirectory)/\(imageName)"
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath)")
@@ -823,7 +823,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 // Nothing to register — container will fall back to --appPath.
                 return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
             }
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             let binaryPath = "\(appDirectory)/\(cmd)"
 
             guard FileManager.default.fileExists(atPath: binaryPath) else {
@@ -1324,8 +1324,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 )
             }
 
-            let blobPath = "\(blobsDirectory)/sha256/\(expectedHash)"
-            try accumulated.write(to: URL(fileURLWithPath: blobPath))
+            let blobURL = try validateContainedPath(
+                base: URL(fileURLWithPath: blobsDirectory),
+                relative: "sha256/\(expectedHash)"
+            )
+            try accumulated.write(to: blobURL)
 
             logger.info(
                 "WriteLayer completed (OCI blob)",
@@ -1350,18 +1353,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 )
             }
 
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectoryURL = try validateContainedPath(base: appsBase, relative: appName)
             try FileManager.default.createDirectory(
-                atPath: appDirectory,
+                at: appDirectoryURL,
                 withIntermediateDirectories: true
             )
-            let filePath = "\(appDirectory)/\(filename)"
-            try accumulated.write(to: URL(fileURLWithPath: filePath))
+            let fileURL = try validateContainedPath(base: appDirectoryURL, relative: filename)
+            try accumulated.write(to: fileURL)
 
             if filename != "sandbox.sb" {
                 try FileManager.default.setAttributes(
                     [.posixPermissions: 0o755],
-                    ofItemAtPath: filePath
+                    ofItemAtPath: fileURL.path
                 )
             }
 
@@ -1410,7 +1413,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     private func readBlob(digest: String) throws -> Data {
         // digest is "sha256:<hex>" — map to blobsDirectory/sha256/<hex>.
-        let blobPath = "\(blobsDirectory)/\(digest.replacingOccurrences(of: ":", with: "/"))"
+        let blobPath = try validateContainedPath(
+            base: URL(fileURLWithPath: blobsDirectory),
+            relative: digest.replacingOccurrences(of: ":", with: "/")
+        ).path
         guard let data = FileManager.default.contents(atPath: blobPath) else {
             throw RPCError(code: .notFound, message: "Blob not found at \(blobPath)")
         }
@@ -1418,7 +1424,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     private func extractTarGz(blobDigest: String, to destinationDirectory: String) async throws {
-        let blobPath = "\(blobsDirectory)/\(blobDigest.replacingOccurrences(of: ":", with: "/"))"
+        let blobPath = try validateContainedPath(
+            base: URL(fileURLWithPath: blobsDirectory),
+            relative: blobDigest.replacingOccurrences(of: ":", with: "/")
+        ).path
         let tarProcess = Foundation.Process()
         tarProcess.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tarProcess.arguments = ["-xzf", blobPath, "-C", destinationDirectory]
