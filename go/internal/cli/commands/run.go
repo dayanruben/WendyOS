@@ -2055,8 +2055,8 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 	}
 }
 
-// imageSignaturePathEnv optionally points at a detached signature file for the
-// assembled image manifest digest (e.g. an ML-DSA65 signature). No signer
+// imageSignaturePathEnv optionally points at a detached signature file over the
+// SHA256 digest of the OCI image config (e.g. an ML-DSA65 signature). No signer
 // exists yet, so this is unset in normal operation and RunContainerLayersRequest
 // carries an empty ImageSignature — the agent's verifier tolerates that until a
 // pinned key is embedded (see internal/shared/sigverify).

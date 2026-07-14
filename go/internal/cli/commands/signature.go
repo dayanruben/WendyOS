@@ -6,7 +6,7 @@ import (
 )
 
 // readOptionalSignature reads a detached artifact signature (e.g. an ML-DSA65
-// signature over an agent binary's bytes, or an image manifest digest) from an
+// signature over the SHA256 digest of an agent binary, or of an OCI image config) from an
 // optional sidecar file. No signer exists yet, so this is forward-compatible
 // plumbing: callers pass an empty path today and get (nil, nil), which lands
 // as an empty proto bytes field. The agent-side verifier already tolerates an

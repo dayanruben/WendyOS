@@ -2464,7 +2464,8 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 var errAgentUpdateUnconfirmed = errors.New("the connection was lost before the agent confirmed the update")
 
 // agentSignaturePathEnv optionally points at a detached signature file for the
-// agent binary being uploaded (e.g. an ML-DSA65 signature over its bytes). No
+// agent binary being uploaded (e.g. an ML-DSA65 signature over the SHA256 digest
+// of the agent binary). No
 // signer exists yet, so this is unset in normal operation and the update
 // carries an empty signature — the agent's verifier (internal/shared/sigverify)
 // tolerates that until a pinned key is embedded.
@@ -2505,7 +2506,7 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 // sendAgentUpdate streams the binary chunks and the final update command,
 // returning the first send error (used only to stop sending — the stream's
 // Recv terminal status is what callers act on). signature is the (currently
-// almost-always-nil) detached signature over binaryData; see
+// almost-always-nil) detached signature over the SHA256 digest of binaryData; see
 // agentSignaturePathEnv and readOptionalSignature.
 func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string, signature []byte) error {
 	const chunkSize = 64 * 1024

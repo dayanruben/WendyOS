@@ -228,7 +228,7 @@ func TestRunContainer_DisabledVerifierProceeds(t *testing.T) {
 	close(outputCh)
 	mock := &mockContainerdClient{startOutputCh: outputCh}
 
-	// nil verifier override -> NewContainerService's default (sigverify.DefaultVerifier, disabled).
+	// nil verifier override -> NewContainerService's default image verifier (sigverify.Disabled()).
 	client, cleanup := startContainerServerWithVerifier(t, mock, nil)
 	defer cleanup()
 
