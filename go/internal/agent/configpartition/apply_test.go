@@ -322,7 +322,7 @@ func TestApplyPreProvisioning_Success(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := t.TempDir()
 
-	state := `{"enrolled":true,"cloudHost":"cloud.wendy.sh","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
+	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestApplyPreProvisioning_IncompleteState(t *testing.T) {
 	configPath := t.TempDir()
 	srcPath := filepath.Join(cfgDir, "provisioning.json")
 	// Missing keyPem — should be rejected.
-	if err := os.WriteFile(srcPath, []byte(`{"enrolled":true,"cloudHost":"cloud.wendy.sh","certPem":"cert"}`), 0o600); err != nil {
+	if err := os.WriteFile(srcPath, []byte(`{"enrolled":true,"cloudHost":"cloud.wendy.dev","certPem":"cert"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logger, _ := zap.NewDevelopment()
@@ -423,7 +423,7 @@ func TestApplyPreProvisioning_CreatesConfigDir(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "subdir", "wendy-agent")
 
-	state := `{"enrolled":true,"cloudHost":"cloud.wendy.sh","orgId":1,"assetId":42,"keyPem":"k","certPem":"c","chainPem":"ch"}`
+	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"k","certPem":"c","chainPem":"ch"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}

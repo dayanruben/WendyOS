@@ -1216,7 +1216,7 @@ func (m tourWizardModel) viewAptInstall(w int) string {
 	sb.WriteString(wizBodyStyle.Width(w).Render(
 		"Or using APT:\n") + "\n")
 	sb.WriteString("  " + wizCodeStyle.Render("curl -fsSL https://install.wendy.dev/apt-key.gpg | sudo apt-key add -") + "\n")
-	sb.WriteString("  " + wizCodeStyle.Render(`echo "deb https://apt.wendy.sh stable main" | sudo tee /etc/apt/sources.list.d/wendy.list`) + "\n")
+	sb.WriteString("  " + wizCodeStyle.Render(`echo "deb https://apt.wendy.dev stable main" | sudo tee /etc/apt/sources.list.d/wendy.list`) + "\n")
 	sb.WriteString("  " + wizCodeStyle.Render("sudo apt update && sudo apt install -y wendy-agent") + "\n\n")
 	sb.WriteString(wizBodyStyle.Width(w).Render("Once the agent is installed and the service is running, press Enter.") + "\n\n")
 	sb.WriteString(wizHintStyle.Render("Enter to continue"))
@@ -1633,7 +1633,7 @@ func (m tourWizardModel) viewCloud(w int) string {
 			"  • Remote access to all your devices\n"+
 			"  • Certificate-based mTLS authentication\n"+
 			"  • App deployment pipelines\n\n"+
-			"Docs: https://wendy.sh/docs") + "\n\n")
+			"Docs: https://docs.wendy.dev/latest") + "\n\n")
 	sb.WriteString(wizHintStyle.Render("Press any key to exit"))
 	return sb.String()
 }

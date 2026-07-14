@@ -10,14 +10,17 @@ set -euo pipefail
 REPO="wendylabsinc/wendy-agent"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="wendy-agent"
+HOMEBREW_TAP="wendylabsinc/tap"
+HOMEBREW_CASK="wendy-agent"
+HOMEBREW_CASK_QUALIFIED="wendylabsinc/tap/wendy-agent"
 YES=false
 
 usage() {
   cat <<EOF
 Install the Wendy Agent.
 
-The agent runs on Linux devices and provides remote debugging and deployment
-capabilities.
+The agent runs on Linux devices and Apple Silicon Macs, and provides remote
+debugging and deployment capabilities.
 
 Usage: install-agent.sh [OPTIONS]
 
@@ -46,12 +49,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- Require Linux ---
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "Error: The Wendy Agent only runs on Linux."
-  echo "  Detected OS: $(uname -s)"
-  exit 1
-fi
+# --- Detect OS (the darwin/linux dispatch happens after helpers are defined) ---
+case "$(uname -s)" in
+  Linux*)  OS="linux" ;;
+  Darwin*) OS="darwin" ;;
+  *)       OS="unsupported" ;;
+esac
 
 # --- Determine sudo prefix ---
 SUDO=""
@@ -95,6 +98,47 @@ download() {
   elif command -v wget &>/dev/null; then
     wget -qO "$dest" "$url"
   fi
+}
+
+# --- Homebrew helpers (macOS) ---
+homebrew_supports_trust() {
+  brew help trust >/dev/null 2>&1
+}
+
+trust_homebrew_tap() {
+  local tap="$1"
+
+  if ! homebrew_supports_trust; then
+    return 0
+  fi
+
+  echo "Trusting Homebrew tap: ${tap}"
+  if brew trust "$tap"; then
+    return 0
+  fi
+
+  echo "Error: Homebrew could not trust ${tap}." >&2
+  echo "Run this command, then re-run the installer:" >&2
+  echo "  brew trust ${tap}" >&2
+  exit 1
+}
+
+trust_homebrew_cask() {
+  local cask="$1"
+
+  if ! homebrew_supports_trust; then
+    return 0
+  fi
+
+  echo "Trusting Homebrew cask: ${cask}"
+  if brew trust --cask "$cask"; then
+    return 0
+  fi
+
+  echo "Error: Homebrew could not trust ${cask}." >&2
+  echo "Run this command, then re-run the installer:" >&2
+  echo "  brew trust --cask ${cask}" >&2
+  exit 1
 }
 
 apt_install_or_upgrade() {
@@ -173,6 +217,81 @@ ARCH=$(detect_arch)
 
 if [[ "$ARCH" == "unsupported" ]]; then
   echo "Error: Unsupported architecture: $(uname -m)"
+  exit 1
+fi
+
+# ===== macOS: install the Wendy Agent app (Homebrew cask, or the signed zip) =====
+if [[ "$OS" == "darwin" ]]; then
+  if [[ "$ARCH" != "arm64" ]]; then
+    # On Apple Silicon running under Rosetta, uname -m reports x86_64; still install arm64.
+    if [[ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then
+      ARCH="arm64"
+    else
+      echo "Error: the Wendy Agent for macOS requires Apple Silicon (arm64)." >&2
+      echo "Intel (x86_64) Macs are not supported." >&2
+      exit 1
+    fi
+  fi
+
+  if command -v brew &>/dev/null; then
+    if homebrew_supports_trust; then
+      echo "Homebrew detected. Will trust and install via:"
+      echo "  brew tap ${HOMEBREW_TAP}"
+      echo "  brew trust ${HOMEBREW_TAP}"
+      echo "  brew trust --cask ${HOMEBREW_CASK_QUALIFIED}"
+      echo "  brew install --cask ${HOMEBREW_CASK}"
+    else
+      echo "Homebrew detected. Will install via:"
+      echo "  brew tap ${HOMEBREW_TAP}"
+      echo "  brew install --cask ${HOMEBREW_CASK}"
+    fi
+    confirm "Proceed?"
+    brew tap "$HOMEBREW_TAP" >/dev/null 2>&1 || true
+    trust_homebrew_tap "$HOMEBREW_TAP"
+    trust_homebrew_cask "$HOMEBREW_CASK_QUALIFIED"
+    brew install --cask "$HOMEBREW_CASK"
+  else
+    # No Homebrew — download the signed, notarized app bundle from GitHub and
+    # install it to /Applications.
+    TAG=$(resolve_version)
+    if [[ -z "$TAG" ]]; then
+      echo "Error: Could not determine latest version."
+      exit 1
+    fi
+    VERSION="${TAG#v}"
+    ARTIFACT="wendy-agent-macos-${ARCH}-${VERSION}.zip"
+    URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
+    echo "Homebrew not found. Will download ${ARTIFACT}"
+    echo "  and install WendyAgentMac.app to /Applications."
+    confirm "Proceed?"
+
+    TMPDIR_DL=$(mktemp -d)
+    trap 'rm -rf "$TMPDIR_DL"' EXIT
+
+    echo "Downloading ${URL}..."
+    download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
+    unzip -oq "${TMPDIR_DL}/${ARTIFACT}" -d "$TMPDIR_DL"
+    APP_SRC=$(/usr/bin/find "$TMPDIR_DL" -maxdepth 2 -name 'WendyAgentMac.app' -type d | head -1)
+    if [[ -z "$APP_SRC" ]]; then
+      echo "Error: WendyAgentMac.app not found in ${ARTIFACT}." >&2
+      exit 1
+    fi
+    rm -rf "/Applications/WendyAgentMac.app" 2>/dev/null \
+      || $SUDO rm -rf "/Applications/WendyAgentMac.app"
+    cp -R "$APP_SRC" /Applications/ 2>/dev/null \
+      || $SUDO cp -R "$APP_SRC" /Applications/
+    echo "Installed /Applications/WendyAgentMac.app"
+    open /Applications/WendyAgentMac.app || true
+  fi
+
+  echo ""
+  echo "Wendy Agent for macOS installed. Look for it in the menu bar."
+  echo "See https://docs.wendy.dev/latest/installation/wendy-agent-macos for setup."
+  exit 0
+
+elif [[ "$OS" != "linux" ]]; then
+  echo "Error: The Wendy Agent runs on Linux and Apple Silicon macOS."
+  echo "  Detected OS: $(uname -s)"
   exit 1
 fi
 

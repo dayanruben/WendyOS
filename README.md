@@ -2,7 +2,7 @@
   <img src="docs/media/demo.gif" alt="Wendy on NVIDIA Jetson" width="360">
 </p>
 
-Visit our developer docs at https://wendy.sh/docs
+Visit our developer docs at https://docs.wendy.dev/latest
 
 # Install
 
