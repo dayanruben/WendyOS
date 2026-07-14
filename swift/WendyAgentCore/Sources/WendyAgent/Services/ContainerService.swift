@@ -753,7 +753,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let nativeLaunchInfo: NativeLaunchInfo
         if imageName.hasPrefix("sha256:") {
             // OCI image: parse manifest → config → extract layer.
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             try FileManager.default.createDirectory(
                 atPath: appDirectory,
                 withIntermediateDirectories: true
@@ -801,7 +801,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         } else if !imageName.isEmpty {
             // Legacy: imageName is the binary name directly.
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             let binaryPath = "\(appDirectory)/\(imageName)"
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath)")
@@ -823,7 +823,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 // Nothing to register — container will fall back to --appPath.
                 return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
             }
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             let binaryPath = "\(appDirectory)/\(cmd)"
 
             guard FileManager.default.fileExists(atPath: binaryPath) else {
@@ -1350,18 +1350,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 )
             }
 
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectoryURL = try validateContainedPath(base: appsBase, relative: appName)
             try FileManager.default.createDirectory(
-                atPath: appDirectory,
+                at: appDirectoryURL,
                 withIntermediateDirectories: true
             )
-            let filePath = "\(appDirectory)/\(filename)"
-            try accumulated.write(to: URL(fileURLWithPath: filePath))
+            let fileURL = try validateContainedPath(base: appDirectoryURL, relative: filename)
+            try accumulated.write(to: fileURL)
 
             if filename != "sandbox.sb" {
                 try FileManager.default.setAttributes(
                     [.posixPermissions: 0o755],
-                    ofItemAtPath: filePath
+                    ofItemAtPath: fileURL.path
                 )
             }
 

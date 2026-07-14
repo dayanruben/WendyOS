@@ -1,3 +1,4 @@
+import Crypto
 import Darwin
 import Foundation
 import GRPCCore
@@ -840,6 +841,41 @@ struct ContainerServiceTests {
             #expect("\(error)".contains("brewfile path must be relative"))
         }
     }
+
+    @Test("WriteLayer legacy rejects app name path traversal")
+    func writeLayerRejectsAppNameTraversal() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        // A sibling directory of appsBase, inside the writable temp root, so a
+        // permission error (rather than the path-validation guard) can't mask
+        // whether the traversal actually escaped appsBase.
+        let escapeTarget = URL(fileURLWithPath: appsBase)
+            .deletingLastPathComponent()
+            .appendingPathComponent("wendy-evil-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: escapeTarget) }
+
+        let payload = Data("x".utf8)
+        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        // Legacy digest: "<appName>:<filename>:sha256:<hash>". appName escapes appsBase.
+        let digest = "../\(escapeTarget.lastPathComponent):pwned.sh:sha256:\(hash)"
+
+        await #expect(throws: (any Error).self) {
+            try await driveWriteLayer(service: service, digest: digest, chunks: [payload])
+        }
+        // Nothing was written outside appsBase.
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: escapeTarget.appendingPathComponent("pwned.sh").path
+            )
+        )
+    }
 }
 
 // MARK: - Helpers
@@ -1024,6 +1060,35 @@ private func makeServerContext(method: String) -> ServerContext {
         remotePeer: "in-process:test",
         localPeer: "in-process:test",
         cancellation: .init()
+    )
+}
+
+private func driveWriteLayer(
+    service: ContainerService,
+    digest: String,
+    chunks: [Data]
+) async throws {
+    let stream = AsyncThrowingStream<Wendy_Agent_Services_V1_WriteLayerRequest, any Error> {
+        continuation in
+        var first = true
+        for chunk in chunks {
+            var message = Wendy_Agent_Services_V1_WriteLayerRequest()
+            if first {
+                message.digest = digest
+                first = false
+            }
+            message.data = chunk
+            continuation.yield(message)
+        }
+        continuation.finish()
+    }
+    let request = StreamingServerRequest<Wendy_Agent_Services_V1_WriteLayerRequest>(
+        metadata: [:],
+        messages: RPCAsyncSequence(wrapping: stream)
+    )
+    _ = try await service.writeLayer(
+        request: request,
+        context: makeServerContext(method: "WriteLayer")
     )
 }
 
