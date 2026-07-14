@@ -19,3 +19,12 @@ var DefaultVerifier = func() *Verifier {
 	}
 	return v
 }()
+
+// Disabled returns a fresh, always-disabled Verifier (Enabled() == false, so
+// Verify is a fail-safe skip). Use this for trust seams that must NOT
+// inherit the build-embedded Wendy key (DefaultVerifier) — e.g. per-org
+// artifact verification — until their own key is wired in.
+func Disabled() *Verifier {
+	v, _ := NewVerifier(nil)
+	return v
+}

@@ -35,12 +35,19 @@ type ContainerService struct {
 	logManager *ContainerLogManager
 	monitor    ContainerMonitorRegistrar
 
-	// verifier checks the container image signature (see RunContainer) before
-	// the image is assembled or the container created. Defaults to
-	// sigverify.DefaultVerifier (disabled until a real pinned key is
-	// embedded); settable within-package so tests can inject an enabled
-	// verifier without changing the exported constructor signature.
-	verifier *sigverify.Verifier
+	// imageVerifier checks the container image signature (see RunContainer)
+	// before the image is assembled or the container created. This verifies
+	// against the per-org PUBLISHER key sourced from provisioning/PKI (the
+	// cosign / per-org-registry trust model) — container images are per-org
+	// artifacts, not first-party Wendy artifacts. It MUST NOT default to (or
+	// otherwise use) sigverify.DefaultVerifier, which is the Wendy
+	// build-embedded key reserved for first-party agent-binary / OS
+	// artifact verification (see agent_service.go / agent_update_service.go).
+	// Until the org publisher key is wired in from provisioning, this stays
+	// a disabled placeholder (sigverify.Disabled()); settable within-package
+	// so tests can inject an enabled verifier without changing the exported
+	// constructor signature.
+	imageVerifier *sigverify.Verifier
 
 	// appMu serialises create/stop/delete operations per appID so that
 	// ContainerIDsForApp and the subsequent monitor marks + containerd call are
@@ -67,9 +74,9 @@ func (a *appMutex) lockApp(appName string) func() {
 
 func NewContainerService(logger *zap.Logger, client ContainerdClient, opts ...ContainerServiceOption) *ContainerService {
 	s := &ContainerService{
-		logger:     logger,
-		containerd: client,
-		verifier:   sigverify.DefaultVerifier,
+		logger:        logger,
+		containerd:    client,
+		imageVerifier: sigverify.Disabled(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -308,7 +315,7 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	// pinned key embedded yet), Verify is a fail-safe no-op and RunContainer
 	// proceeds exactly as before this check existed.
 	imageDigest := sha256.Sum256(req.GetImageConfig())
-	if err := s.verifier.Verify(imageDigest[:], req.GetImageSignature()); err != nil {
+	if err := s.imageVerifier.Verify(imageDigest[:], req.GetImageSignature()); err != nil {
 		switch {
 		case errors.Is(err, sigverify.ErrUnsigned):
 			return status.Error(codes.FailedPrecondition, "container image is unsigned; refusing to run")

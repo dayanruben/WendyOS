@@ -59,8 +59,9 @@ func containerImageMldsaKeypairForTest(t *testing.T) (verifier *sigverify.Verifi
 }
 
 // startContainerServerWithVerifier starts a ContainerService over bufconn
-// with the given ContainerdClient, overriding the verifier field directly
-// (same within-package injection seam as AgentUpdateService's verifier).
+// with the given ContainerdClient, overriding the imageVerifier field
+// directly (same within-package injection seam as AgentUpdateService's
+// verifier).
 func startContainerServerWithVerifier(t *testing.T, client ContainerdClient, verifier *sigverify.Verifier) (agentpb.WendyContainerServiceClient, func()) {
 	t.Helper()
 	lis := bufconn.Listen(bufSize)
@@ -68,7 +69,7 @@ func startContainerServerWithVerifier(t *testing.T, client ContainerdClient, ver
 	logger := zap.NewNop()
 	svc := NewContainerService(logger, client)
 	if verifier != nil {
-		svc.verifier = verifier
+		svc.imageVerifier = verifier
 	}
 	agentpb.RegisterWendyContainerServiceServer(srv, svc)
 
@@ -105,6 +106,24 @@ func drainRunContainerStream(stream grpc.ServerStreamingClient[agentpb.RunContai
 		if err != nil {
 			return err
 		}
+	}
+}
+
+// TestNewContainerService_ImageVerifierIsSeparateFromAgentBinaryKey covers H2
+// Task 9: container image verification must sit on its own key seam
+// (imageVerifier), distinct from sigverify.DefaultVerifier (the Wendy
+// build-embedded key used for the agent binary / OS artifacts). Images are
+// per-org publisher artifacts and must eventually verify against a per-org
+// key sourced from provisioning/PKI, never the global Wendy build key. The
+// default must therefore be a disabled placeholder, not DefaultVerifier.
+func TestNewContainerService_ImageVerifierIsSeparateFromAgentBinaryKey(t *testing.T) {
+	svc := NewContainerService(zap.NewNop(), &mockContainerdClient{})
+
+	if svc.imageVerifier == sigverify.DefaultVerifier {
+		t.Fatal("imageVerifier must not be the same instance as sigverify.DefaultVerifier (the agent-binary/OS key); container images need a separate per-org publisher key seam")
+	}
+	if svc.imageVerifier.Enabled() {
+		t.Fatal("imageVerifier must default to disabled until the per-org publisher key is wired from provisioning")
 	}
 }
 
