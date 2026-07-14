@@ -1,4 +1,5 @@
 import Foundation
+import GRPCCore
 import Testing
 
 @testable import WendyAgentCore
@@ -45,5 +46,12 @@ struct PathValidationTests {
         #expect(throws: PathValidationError.self) {
             _ = try validateContainedPath(base: base, relative: "a/../../b")
         }
+    }
+
+    @Test("PathValidationError maps to invalidArgument RPC status")
+    func mapsToInvalidArgument() {
+        let rpcError = RPCError(PathValidationError.unsafePath("../x"))
+        #expect(rpcError.code == .invalidArgument)
+        #expect(rpcError.message == "unsafe path rejected: ../x")
     }
 }
