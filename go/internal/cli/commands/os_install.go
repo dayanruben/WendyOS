@@ -289,9 +289,6 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
 			return err
 		}
-		if prNumber > 0 {
-			return fmt.Errorf("--pr recovery installation is unsupported; use --pr --rootfs-only")
-		}
 	}
 
 	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
@@ -477,9 +474,6 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
 			return err
-		}
-		if prNumber > 0 {
-			return fmt.Errorf("--pr recovery installation is unsupported; use --pr --rootfs-only")
 		}
 		storage, err := chooseT234RecoveryStorage(selected, storageOverride)
 		if err != nil {
