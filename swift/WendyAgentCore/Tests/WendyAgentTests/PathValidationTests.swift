@@ -48,6 +48,16 @@ struct PathValidationTests {
         }
     }
 
+    // Regression lock for the load-bearing trailing "/" in the containment check:
+    // a sibling directory that shares `base` as a string prefix (…/apps vs …/apps-evil)
+    // must be rejected. Without the "+ \"/\"" a bare hasPrefix would wrongly accept it.
+    @Test("rejects a prefix-sibling escape (…/apps vs …/apps-evil)")
+    func rejectsPrefixSiblingEscape() {
+        #expect(throws: PathValidationError.self) {
+            _ = try validateContainedPath(base: base, relative: "../apps-evil/secret")
+        }
+    }
+
     @Test("PathValidationError maps to invalidArgument RPC status")
     func mapsToInvalidArgument() {
         let rpcError = RPCError(PathValidationError.unsafePath("../x"))

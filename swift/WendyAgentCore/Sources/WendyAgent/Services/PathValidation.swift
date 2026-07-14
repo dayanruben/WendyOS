@@ -12,6 +12,13 @@ public enum PathValidationError: Error, Equatable {
 ///
 /// Mirrors the existing `ContainerService.removeNativeAppDirectory` containment
 /// check (standardized-path prefix), generalized for reuse.
+///
+/// Containment is LEXICAL: `standardizedFileURL` collapses `.`/`..` syntactically
+/// but does not resolve symlinks. That is sufficient for the current call sites
+/// (app/blob directories are agent-created, and FileSyncService validates each
+/// per-file destination with symlink resolution downstream). A new call site that
+/// writes through a path an attacker could pre-seed with a symlink must resolve
+/// symlinks itself (or add resolution here) to also defeat symlink-based TOCTOU.
 public func validateContainedPath(base: URL, relative: String) throws -> URL {
     guard !relative.isEmpty, !relative.hasPrefix("/") else {
         throw PathValidationError.unsafePath(relative)
