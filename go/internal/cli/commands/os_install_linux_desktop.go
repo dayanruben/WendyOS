@@ -96,14 +96,14 @@ var linuxDesktopTokenFn = createLinuxDesktopToken
 // without reading ~/.wendy/config.json from disk.
 var linuxDesktopConfigLoad = config.Load
 
-// installLinuxDesktop prints agent.sh install instructions for turning an
+// installDesktop prints agent.sh install instructions for turning an
 // existing Linux machine or Mac into a managed Wendy device. machineLabel
 // names the target in the printed prose ("Linux machine" or "Mac"); the
 // agent.sh command is identical for both because the script auto-detects the
 // platform. When the user is logged in and does not decline, it mints a
 // short-lived enrollment token and prints the pre-enrollment one-liner. It
 // never writes a drive or downloads an image.
-func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, machineLabel string) error {
+func installDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, machineLabel string) error {
 	interactive := isInteractiveTerminal()
 
 	cfg, err := linuxDesktopConfigLoad()

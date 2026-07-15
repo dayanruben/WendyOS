@@ -401,11 +401,11 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	}
 
 	if selected == linuxDesktopValue {
-		return installLinuxDesktop(ctx, preOpts, deviceName, linuxDesktopMachineLabel)
+		return installDesktop(ctx, preOpts, deviceName, linuxDesktopMachineLabel)
 	}
 
 	if selected == headlessMacValue {
-		return installLinuxDesktop(ctx, preOpts, deviceName, headlessMacMachineLabel)
+		return installDesktop(ctx, preOpts, deviceName, headlessMacMachineLabel)
 	}
 
 	device := deviceMap[selected]

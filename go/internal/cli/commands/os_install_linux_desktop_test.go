@@ -70,8 +70,8 @@ func TestInstallLinuxDesktop_SkipMode_PrintsPlain(t *testing.T) {
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
 	out := captureStdout(t, func() {
-		if err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollSkip}, "", linuxDesktopMachineLabel); err != nil {
-			t.Fatalf("installLinuxDesktop: %v", err)
+		if err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollSkip}, "", linuxDesktopMachineLabel); err != nil {
+			t.Fatalf("installDesktop: %v", err)
 		}
 	})
 	if called {
@@ -120,8 +120,8 @@ func TestInstallLinuxDesktop_EnrolledPrintsToken(t *testing.T) {
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
 	out := captureStdout(t, func() {
-		if err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box", linuxDesktopMachineLabel); err != nil {
-			t.Fatalf("installLinuxDesktop: %v", err)
+		if err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box", linuxDesktopMachineLabel); err != nil {
+			t.Fatalf("installDesktop: %v", err)
 		}
 	})
 
@@ -161,7 +161,7 @@ func TestInstallLinuxDesktop_EnrolledValidatesDeviceName(t *testing.T) {
 	}
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
-	err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "BadName", linuxDesktopMachineLabel)
+	err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "BadName", linuxDesktopMachineLabel)
 	if err == nil {
 		t.Fatal("expected an error for an invalid --device-name, got nil")
 	}
@@ -245,7 +245,7 @@ func TestInstallLinuxDesktop_ForcedNonInteractive_TokenError(t *testing.T) {
 	}
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
-	err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box", linuxDesktopMachineLabel)
+	err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box", linuxDesktopMachineLabel)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
