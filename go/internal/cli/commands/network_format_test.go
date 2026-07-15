@@ -159,12 +159,12 @@ func TestURLSafeHost(t *testing.T) {
 		host string
 		want string
 	}{
-		{"device.local", "device.local"},             // hostname untouched
-		{"192.168.0.159", "192.168.0.159"},           // IPv4 untouched
-		{"2001:db8::1", "[2001:db8::1]"},             // IPv6 bracketed
-		{"fe80::1%en0", "[fe80::1%25en0]"},           // zone percent-escaped (RFC 6874)
-		{"::ffff:192.168.0.1", "192.168.0.1"},        // IPv4-mapped unmapped to plain IPv4
-		{"[2001:db8::1]", "[2001:db8::1]"},           // already bracketed passes through
+		{"device.local", "device.local"},      // hostname untouched
+		{"192.168.0.159", "192.168.0.159"},    // IPv4 untouched
+		{"2001:db8::1", "[2001:db8::1]"},      // IPv6 bracketed
+		{"fe80::1%en0", "[fe80::1%25en0]"},    // zone percent-escaped (RFC 6874)
+		{"::ffff:192.168.0.1", "192.168.0.1"}, // IPv4-mapped unmapped to plain IPv4
+		{"[2001:db8::1]", "[2001:db8::1]"},    // already bracketed passes through
 		{"", ""},
 	}
 	for _, tc := range cases {
