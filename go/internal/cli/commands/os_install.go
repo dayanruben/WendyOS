@@ -349,6 +349,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			SortKey:     "2_linux_desktop",
 			Value:       linuxDesktopValue,
 		})
+
+		items = append(items, tui.PickerItem{
+			Name:        "Headless Mac",
+			Description: "Install wendy-agent on an existing Mac (Apple Silicon)",
+			Section:     "Headless Mac",
+			SortKey:     "3_headless_mac",
+			Value:       headlessMacValue,
+		})
 	}
 
 	// Resolve device — use flag or interactive picker.
@@ -393,7 +401,11 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	}
 
 	if selected == linuxDesktopValue {
-		return installLinuxDesktop(ctx, preOpts, deviceName)
+		return installDesktop(ctx, preOpts, deviceName, linuxDesktopMachineLabel)
+	}
+
+	if selected == headlessMacValue {
+		return installDesktop(ctx, preOpts, deviceName, headlessMacMachineLabel)
 	}
 
 	device := deviceMap[selected]

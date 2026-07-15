@@ -1667,13 +1667,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-		// Wait for readiness before firing hook.
-		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-			warnReadiness(ctx, conn, appCfg.AppID, err)
-		}
-		announceReachableURL(ctx, conn, appCfg)
-		// Fire-and-forget: post-start hook outlives the CLI process.
-		startPostStartHook(context.Background(), appCfg, conn.Host, appCfg.ServiceName)
+		// Announce + fire-and-forget post-start hook (outlives the CLI process),
+		// but only if the app passes readiness.
+		runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 		return nil
 	}
 
@@ -1700,18 +1696,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		runCancel()
 	}()
 
-	// Wait for readiness before firing hook.
-	if err := waitForReadiness(runCtx, appCfg.Readiness, conn.Host); err != nil {
-		if runCtx.Err() == nil {
-			warnReadiness(runCtx, conn, appCfg.AppID, err)
-		}
-	}
-	if runCtx.Err() == nil {
-		announceReachableURL(runCtx, conn, appCfg)
-	}
-
-	// Post-start hook tied to runCtx so Ctrl+C kills it.
-	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host, appCfg.ServiceName)
+	// Announce + post-start hook, gated on readiness; the hook is tied to
+	// runCtx so Ctrl+C kills it.
+	postStartCmd := runPostStartIfReady(runCtx, runCtx, conn, appCfg)
 
 	gotFirstResponse := false
 	// Set when the stream ends on a genuine failure (as opposed to a clean
@@ -1863,25 +1850,62 @@ var browserOpen = browseropen.Open
 // from one of them. It is best-effort: it only queries the device when there is
 // something to show (a postStart openURL or a readiness TCP port) and stays
 // silent on any error or when no reachable address can be determined.
-func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
+// Returns the device IP the printed URL uses, or "" when nothing was announced.
+func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) string {
 	var hookURL string
 	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
 		hookURL = appCfg.Hooks.PostStart.OpenURL
 	}
 	hasPort := appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil && appCfg.Readiness.TCPSocket.Port != 0
 	if hookURL == "" && !hasPort {
-		return
+		return ""
 	}
 
 	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
-		return
+		return ""
 	}
-	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, bestReachableIP(resp.GetNetworkInterfaces()), appCfg.Readiness)
+	ip := bestReachableIP(resp.GetNetworkInterfaces())
+	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, appCfg.Readiness)
 	if url == "" {
-		return
+		return ""
 	}
 	cliLogln("App reachable at %s", tui.Value(url))
+	return ip
+}
+
+// runPostStartIfReady gates `wendy run`'s post-start side effects on the
+// readiness probe: the reachable-URL announcement and the host-side postStart
+// hook fire only when the app actually came up. Firing them after a failed
+// probe reported a success that never happened — "App reachable at ..." and a
+// browser tab pointed at a container that had already exited.
+//
+// hookCtx bounds the hook's CLI child process; detached callers pass
+// context.Background() so the hook outlives the CLI. Returns the hook's cmd
+// for the caller to reap, nil when no CLI hook ran.
+func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
+	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+		if ctx.Err() == nil {
+			warnReadiness(ctx, conn, appCfg.AppID, err)
+			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
+				(appCfg.Hooks.PostStart.OpenURL != "" || appCfg.Hooks.PostStart.CLI != "") {
+				cliLogln("Skipping postStart hook: %s is not ready.", containerDisplayName(appCfg))
+			}
+		}
+		return nil
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	hookHost := conn.Host
+	if ip := announceReachableURL(ctx, conn, appCfg); ip != "" && isIPv6Literal(conn.Host) {
+		// The CLI dialed the device at a bare IPv6 literal — often an RFC 4941
+		// temporary (privacy) address picked up from mDNS that rotates away.
+		// Point the hook at the device's best self-reported IP (IPv4-preferred)
+		// so the URL it opens matches the "App reachable at" line.
+		hookHost = ip
+	}
+	return startPostStartHook(hookCtx, appCfg, hookHost, appCfg.ServiceName)
 }
 
 // startPostStartHook fires the postStart hook actions for appCfg. serviceName
@@ -1903,7 +1927,9 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 	hook := appCfg.Hooks.PostStart
 
 	if hook.OpenURL != "" {
-		url := expandHookEnv(hook.OpenURL, hostname, appCfg.AppID, serviceName)
+		// openURL is a URL by definition, so an IPv6 hostname must be
+		// bracketed; the CLI hook below stays raw for shell contexts.
+		url := expandHookEnv(hook.OpenURL, urlSafeHost(hostname), appCfg.AppID, serviceName)
 		if err := browserOpen(url); err != nil {
 			cliLogln("Warning: postStart openURL failed: %v", err)
 		} else {
@@ -2005,11 +2031,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				// then return without tailing logs. The container keeps running
 				// independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-					warnReadiness(ctx, conn, appCfg.AppID, err)
-				}
-				announceReachableURL(ctx, conn, appCfg)
-				startPostStartHook(context.Background(), appCfg, conn.Host, appCfg.ServiceName)
+				runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 				return nil
 			}
 			// Attached: mirror startAndStreamContainer's attached branch — wait
@@ -2019,11 +2041,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			// hookFired guards against a malformed stream sending Started twice.
 			if !hookFired {
 				hookFired = true
-				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-					warnReadiness(ctx, conn, appCfg.AppID, err)
-				}
-				announceReachableURL(ctx, conn, appCfg)
-				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host, appCfg.ServiceName)
+				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, appCfg)
 			}
 			continue
 		}

@@ -391,12 +391,12 @@ func main() {
 	}
 
 	// mTLS organization-equality enforcement mode. Read once here so the
-	// startMTLSServer closure can capture it. The default (empty value) is grace,
-	// which enforces org-equality for certs that carry an org identity but allows
-	// legacy certs without one — easing migration before cert rotation completes.
+	// startMTLSServer closure can capture it. The default (empty value) is strict,
+	// which rejects client certs that carry no org identity. Set to grace for
+	// migration mode, which allows legacy certs without org identity.
 	orgMode, ok := interceptor.ParseOrgMode(os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT"))
 	if !ok {
-		logger.Warn("WENDY_MTLS_ORG_ENFORCEMENT has unrecognised value; defaulting to grace",
+		logger.Warn("WENDY_MTLS_ORG_ENFORCEMENT has unrecognised value; defaulting to strict",
 			zap.String("value", os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT")))
 	}
 	logger.Info("mTLS org enforcement mode", zap.String("mode", orgMode.String()))
@@ -429,12 +429,16 @@ func main() {
 			if brokerURL == "" {
 				brokerURL = brokerURLForCloudHost(cloudHost)
 			}
-			_, chainPEM, _ := provisioningSvc.ProvisioningCerts()
+			certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
+			keyPEM := string(keyData)
+			for i := range keyData {
+				keyData[i] = 0
+			}
 			if chainPEM == "" {
 				logger.Warn("CA chain PEM unavailable; cannot start tunnel broker (re-provision if this persists)")
 				return
 			}
-			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, chainPEM, mtlsPortNum)
+			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, mtlsPortNum)
 			client.Run(ctx)
 		}()
 	}

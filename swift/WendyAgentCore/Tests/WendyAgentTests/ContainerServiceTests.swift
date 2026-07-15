@@ -1,3 +1,4 @@
+import Crypto
 import Darwin
 import Foundation
 import GRPCCore
@@ -840,6 +841,150 @@ struct ContainerServiceTests {
             #expect("\(error)".contains("brewfile path must be relative"))
         }
     }
+
+    @Test("WriteLayer legacy rejects app name path traversal")
+    func writeLayerRejectsAppNameTraversal() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        // A sibling directory of appsBase, inside the writable temp root, so a
+        // permission error (rather than the path-validation guard) can't mask
+        // whether the traversal actually escaped appsBase.
+        let escapeTarget = URL(fileURLWithPath: appsBase)
+            .deletingLastPathComponent()
+            .appendingPathComponent("wendy-evil-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: escapeTarget) }
+
+        let payload = Data("x".utf8)
+        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        // Legacy digest: "<appName>:<filename>:sha256:<hash>". appName escapes appsBase.
+        let digest = "../\(escapeTarget.lastPathComponent):pwned.sh:sha256:\(hash)"
+
+        await #expect(throws: (any Error).self) {
+            try await driveWriteLayer(service: service, digest: digest, chunks: [payload])
+        }
+        // Nothing was written outside appsBase.
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: escapeTarget.appendingPathComponent("pwned.sh").path
+            )
+        )
+    }
+
+    @Test("createContainer rejects OCI manifest digest path traversal (readBlob)")
+    func createContainerRejectsManifestDigestTraversal() async throws {
+        let stateDir = try makeTempDir()
+        defer { cleanup(stateDir) }
+        let stateURL = URL(fileURLWithPath: stateDir)
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            stateDirectory: stateURL
+        )
+
+        // Plant a file outside blobsDirectory (a sibling of stateDir/blobs, inside
+        // the writable temp state dir) that the traversal digest would resolve to
+        // if the path derivation were unguarded.
+        let escapeTarget = stateURL.appendingPathComponent("evil-manifest")
+        try "not-a-manifest".write(to: escapeTarget, atomically: true, encoding: .utf8)
+
+        let appID = "sh.wendy.tests.ManifestTraversal"
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.imageName = "sha256:../../evil-manifest"
+
+        await #expect(throws: PathValidationError.self) {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+        }
+    }
+
+    @Test("createContainer rejects OCI layer digest path traversal (extractTarGz)")
+    func createContainerRejectsLayerDigestTraversal() async throws {
+        let stateDir = try makeTempDir()
+        defer { cleanup(stateDir) }
+        let stateURL = URL(fileURLWithPath: stateDir)
+        let blobsShaDir = stateURL.appendingPathComponent("blobs").appendingPathComponent("sha256")
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            stateDirectory: stateURL
+        )
+
+        // Legitimate config blob, stored inside blobsDirectory (no traversal).
+        let config = OCIImageConfig(
+            architecture: "arm64",
+            os: "darwin",
+            config: OCIContainerConfig(
+                Entrypoint: ["./marker.sh"],
+                Cmd: nil,
+                WorkingDir: nil,
+                Env: nil,
+                ExposedPorts: nil
+            ),
+            rootfs: nil
+        )
+        let configData = try JSONEncoder().encode(config)
+        let configHash = SHA256.hash(data: configData).map { String(format: "%02x", $0) }.joined()
+        try configData.write(to: blobsShaDir.appendingPathComponent(configHash))
+
+        // Malicious tar.gz planted OUTSIDE blobsDirectory (a sibling of it, inside
+        // the writable temp state dir), containing the marker binary.
+        let evilLayerURL = stateURL.appendingPathComponent("evil-layer")
+        try makeTarGz(containing: [("marker.sh", "#!/bin/sh\necho pwned\n")], at: evilLayerURL)
+
+        // Legitimate manifest, stored inside blobsDirectory, referencing the config
+        // normally but pointing its layer digest OUTSIDE blobsDirectory via traversal.
+        let manifest = OCIManifest(
+            schemaVersion: 2,
+            config: OCIDescriptor(
+                mediaType: "application/vnd.oci.image.config.v1+json",
+                digest: "sha256:\(configHash)",
+                size: Int64(configData.count)
+            ),
+            layers: [
+                OCIDescriptor(
+                    mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+                    digest: "sha256:../../evil-layer",
+                    size: 1
+                )
+            ]
+        )
+        let manifestData = try JSONEncoder().encode(manifest)
+        let manifestHash = SHA256.hash(data: manifestData).map { String(format: "%02x", $0) }
+            .joined()
+        try manifestData.write(to: blobsShaDir.appendingPathComponent(manifestHash))
+
+        let appID = "sh.wendy.tests.LayerTraversal"
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.imageName = "sha256:\(manifestHash)"
+
+        await #expect(throws: PathValidationError.self) {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+        }
+
+        // The malicious layer must never be extracted into the app directory.
+        let appDirectory = stateURL.appendingPathComponent("apps").appendingPathComponent(appID)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: appDirectory.appendingPathComponent("marker.sh").path
+            )
+        )
+    }
 }
 
 // MARK: - Helpers
@@ -1027,6 +1172,35 @@ private func makeServerContext(method: String) -> ServerContext {
     )
 }
 
+private func driveWriteLayer(
+    service: ContainerService,
+    digest: String,
+    chunks: [Data]
+) async throws {
+    let stream = AsyncThrowingStream<Wendy_Agent_Services_V1_WriteLayerRequest, any Error> {
+        continuation in
+        var first = true
+        for chunk in chunks {
+            var message = Wendy_Agent_Services_V1_WriteLayerRequest()
+            if first {
+                message.digest = digest
+                first = false
+            }
+            message.data = chunk
+            continuation.yield(message)
+        }
+        continuation.finish()
+    }
+    let request = StreamingServerRequest<Wendy_Agent_Services_V1_WriteLayerRequest>(
+        metadata: [:],
+        messages: RPCAsyncSequence(wrapping: stream)
+    )
+    _ = try await service.writeLayer(
+        request: request,
+        context: makeServerContext(method: "WriteLayer")
+    )
+}
+
 private func writePrintPWDScript(to url: URL) throws {
     try "#!/bin/sh\n/bin/pwd\n".write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
@@ -1056,6 +1230,37 @@ private func makeTempDir() throws -> String {
         .appendingPathComponent("wendy-test-\(UUID().uuidString)").path
     try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
     return path
+}
+
+/// Builds a real gzipped tarball at `destination` containing the given files,
+/// mirroring the `/usr/bin/tar -xzf` extraction ContainerService performs.
+private func makeTarGz(
+    containing files: [(name: String, content: String)],
+    at destination: URL
+)
+    throws
+{
+    let stagingDir = destination.deletingLastPathComponent()
+        .appendingPathComponent("tar-staging-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: stagingDir) }
+
+    for file in files {
+        try file.content.write(
+            to: stagingDir.appendingPathComponent(file.name),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    let process = Foundation.Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+    process.arguments = ["-czf", destination.path, "-C", stagingDir.path] + files.map(\.name)
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw TestError(description: "Failed to build test tar.gz at \(destination.path)")
+    }
 }
 
 private func canonicalPath(_ path: String) throws -> String {
