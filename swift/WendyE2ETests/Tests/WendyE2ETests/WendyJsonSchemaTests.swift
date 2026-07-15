@@ -20,7 +20,7 @@ struct `'wendy json schema'` {
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
-                #expect(stdout.contains("Print the JSON Schema for wendy.json"))
+                #expect(stdout.contains("Prints the JSON Schema to stdout"))
                 #expect(stdout.contains("Usage:"))
                 #expect(stdout.contains("wendy json schema [flags]"))
                 #expect(stdout.contains("--help"))

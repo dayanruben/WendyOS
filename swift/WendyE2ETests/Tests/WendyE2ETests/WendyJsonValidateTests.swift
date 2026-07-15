@@ -20,7 +20,7 @@ struct `'wendy json validate'` {
                 let stdout = result.stdout
 
                 #expect(result.status.isSuccess)
-                #expect(stdout.contains("Validate a wendy.json file"))
+                #expect(stdout.contains("Validates a wendy.json for required fields"))
                 #expect(stdout.contains("Usage:"))
                 #expect(stdout.contains("wendy json validate [path] [flags]"))
                 #expect(stdout.contains("--help"))
