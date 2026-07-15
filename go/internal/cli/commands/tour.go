@@ -226,6 +226,10 @@ type tourWizardModel struct {
 	// project
 	projectPath string
 	projectID   string
+	// projectBaseDir is the parent directory sample projects are scaffolded
+	// into. Empty means the default (~/Documents, via resolveProjectBaseDir);
+	// tests set it to a temp dir so the tour never writes to the real home.
+	projectBaseDir string
 
 	// template picker
 	repoMeta         *repoMeta
@@ -1810,12 +1814,25 @@ func (m tourWizardModel) downloadTourTemplateCmd() tea.Cmd {
 
 // ─── project creation ─────────────────────────────────────────────────────────
 
-func (m *tourWizardModel) createPythonProject() error {
-	docs, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
+// resolveProjectBaseDir returns the parent directory that sample projects are
+// scaffolded into. When projectBaseDir is set (tests inject a temp dir) it is
+// used as-is; otherwise it defaults to the user's ~/Documents.
+func (m *tourWizardModel) resolveProjectBaseDir() (string, error) {
+	if m.projectBaseDir != "" {
+		return m.projectBaseDir, nil
 	}
-	docs = filepath.Join(docs, "Documents")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	return filepath.Join(home, "Documents"), nil
+}
+
+func (m *tourWizardModel) createPythonProject() error {
+	docs, err := m.resolveProjectBaseDir()
+	if err != nil {
+		return err
+	}
 
 	appID := "sh.wendy.hello"
 	if m.deviceName != "" {
@@ -1854,11 +1871,10 @@ func (m *tourWizardModel) createPythonProject() error {
 }
 
 func (m *tourWizardModel) createProjectFromTemplate() error {
-	docs, err := os.UserHomeDir()
+	docs, err := m.resolveProjectBaseDir()
 	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
+		return err
 	}
-	docs = filepath.Join(docs, "Documents")
 
 	appID := "sh.wendy.hello"
 	if m.deviceName != "" {
