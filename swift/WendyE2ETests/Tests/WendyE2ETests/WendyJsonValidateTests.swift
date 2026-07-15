@@ -174,8 +174,8 @@ struct `'wendy json validate'` {
      file path, warnings, and errors. JSON mode emits no human summary on
      stdout.
      */
-    @Test(.disabled("TODO: CLI currently prints human validation output only"))
+    @Test(.disabled("WDY-1910: CLI currently prints human validation output only"))
     func `prints JSON validation results for automation`() async throws {
-        // TODO: implement once the CLI exposes machine-readable validation results.
+        // TODO(WDY-1910): enable once the CLI exposes machine-readable validation results.
     }
 }
