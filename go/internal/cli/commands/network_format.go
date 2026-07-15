@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -54,6 +55,24 @@ func bestReachableIP(ifaces []*agentpb.NetworkInterface) string {
 	return firstAny
 }
 
+// isIPv6Literal reports whether host parses as a bare (unbracketed) IPv6
+// literal, zone ID included; hostnames, IPv4, and IPv4-mapped forms are false.
+func isIPv6Literal(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Is6() && !addr.Is4In6()
+}
+
+// urlSafeHost returns host formatted for the authority part of a URL: IPv6
+// literals are bracketed, with any zone ID percent-escaped per RFC 6874. An
+// unbracketed IPv6 literal in "http://host:port" is unparseable — the port
+// digits read as one more hextet. Hostnames and IPv4 pass through unchanged.
+func urlSafeHost(host string) string {
+	if !isIPv6Literal(host) {
+		return host
+	}
+	return "[" + strings.ReplaceAll(host, "%", "%25") + "]"
+}
+
 // reachableAppURL builds a browser-openable URL for a freshly started app,
 // using a routable device IP instead of the (often unresolvable) .local
 // hostname that `wendy run` otherwise reports.
@@ -68,7 +87,7 @@ func reachableAppURL(hookURL, appID, deviceIP string, readiness *appconfig.Readi
 		return ""
 	}
 	if hookURL != "" && strings.Contains(hookURL, "WENDY_HOSTNAME") {
-		return expandHookEnv(hookURL, deviceIP, appID)
+		return expandHookEnv(hookURL, urlSafeHost(deviceIP), appID)
 	}
 	if readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0 {
 		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(readiness.TCPSocket.Port))
