@@ -7,7 +7,7 @@
 
 Konstantin requested that AI Security Review match the AI Docs/E2E review comment style: one glanceable line per issue, per-finding details disclosures, stateful re-review statuses, `// SECURITY: <reason>` silencing, and a gate that counts only open unsilenced HIGH/CRITICAL findings.
 
-Keep PR #1436 draft until it is ready, and keep its title exactly `Make AI security review stateful, silenceable, and glanceable`.
+Keep PR #1436 draft until it is ready, and keep its title exactly `Make AI security review stateful, silenceable, and glanceable`. Konstantin chose Sonnet 4.8 for this workflow.
 
 ## Committed work
 
