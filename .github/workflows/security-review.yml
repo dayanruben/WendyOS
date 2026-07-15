@@ -9,6 +9,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CLAUDE_MODEL: claude-sonnet-4-6
+
 jobs:
   security-review:
     name: Claude Security Review
@@ -50,15 +53,74 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Fetch previous security review state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 << 'PYEOF'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          repo = os.environ['REPO']
+          pr_number_text = os.environ['PR_NUMBER']
+          marker = '<!-- ai-security-review:v1 -->'
+
+          if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+              raise RuntimeError(f'Invalid REPO value: {repo}')
+          try:
+              pr_number = int(pr_number_text)
+          except ValueError as e:
+              raise RuntimeError(f'Invalid PR_NUMBER value: {pr_number_text}') from e
+          if pr_number <= 0:
+              raise RuntimeError(f'Invalid PR_NUMBER value: {pr_number_text}')
+
+          def _gh_json(path):
+              try:
+                  raw = subprocess.check_output(['gh', 'api', path], text=True)
+                  return json.loads(raw)
+              except Exception as e:
+                  print(f'WARNING: failed to fetch {path}: {e}')
+                  return None
+
+          comments = []
+          for page in range(1, 11):
+              page_comments = _gh_json(f'repos/{repo}/issues/{pr_number}/comments?per_page=100&page={page}')
+              if not page_comments:
+                  break
+              comments.extend(page_comments)
+              if len(page_comments) < 100:
+                  break
+          else:
+              print('WARNING: stopped scanning comments after 1000 entries')
+
+          previous_review = ''
+          for comment in reversed(comments):
+              user = comment.get('user') or {}
+              body = comment.get('body') or ''
+              if user.get('login') == 'github-actions[bot]' and (
+                  marker in body
+                  or body.startswith('# AI Security Review')
+                  or body.startswith('## AI Security Review')
+              ):
+                  previous_review = body[:30000]
+                  break
+
+          pathlib.Path('previous_security_review.md').write_text(previous_review, encoding='utf-8')
+          print('Previous security review state found' if previous_review else 'No previous security review state found')
+          PYEOF
+
       - name: Install Anthropic SDK
         run: pip install --quiet anthropic==0.97.0
 
       - name: Run security review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CLAUDE_MODEL: ${{ env.CLAUDE_MODEL }}
           REVIEW_FILE: ${{ runner.temp }}/review.md
         run: |
           python3 << 'PYEOF'
@@ -68,7 +130,6 @@ jobs:
           import os
           import pathlib
           import re
-          import subprocess
 
           client = anthropic.Anthropic()
 
@@ -81,45 +142,15 @@ jobs:
               raise SystemExit(0)
 
           meta = json.load(open('pr_meta.json'))
-          pr_number = meta['number']
+          try:
+              pr_number = int(meta['number'])
+          except (TypeError, ValueError) as e:
+              raise RuntimeError(f'Invalid PR number in pr_meta.json: {meta.get("number")!r}') from e
+          if pr_number <= 0:
+              raise RuntimeError(f'Invalid PR number in pr_meta.json: {pr_number}')
           pr_title = meta['title']
           pr_body = meta['body'] or ''
-          repo = os.environ['REPO']
-          marker = '<!-- ai-security-review:v1 -->'
-
-          def _gh_json(path):
-              try:
-                  raw = subprocess.check_output(['gh', 'api', path], text=True)
-                  return json.loads(raw)
-              except Exception as e:
-                  print(f'WARNING: failed to fetch {path}: {e}')
-                  return None
-
-          def _list_issue_comments():
-              comments = []
-              for page in range(1, 11):
-                  page_comments = _gh_json(f'repos/{repo}/issues/{pr_number}/comments?per_page=100&page={page}')
-                  if not page_comments:
-                      break
-                  comments.extend(page_comments)
-                  if len(page_comments) < 100:
-                      break
-              else:
-                  print('WARNING: stopped scanning comments after 1000 entries')
-              return comments
-
-          comments = _list_issue_comments()
-          previous_review = ''
-          for comment in reversed(comments):
-              user = comment.get('user') or {}
-              body = comment.get('body') or ''
-              if user.get('login') == 'github-actions[bot]' and (
-                  marker in body
-                  or body.startswith('# AI Security Review')
-                  or body.startswith('## AI Security Review')
-              ):
-                  previous_review = body[:30000]
-                  break
+          previous_review = pathlib.Path('previous_security_review.md').read_text(encoding='utf-8') if pathlib.Path('previous_security_review.md').exists() else ''
 
           TRUST_BOUNDARY_TAGS = (
               '<untrusted_pr_content>',
@@ -149,7 +180,7 @@ jobs:
 
           try:
               message = client.messages.create(
-                  model='claude-sonnet-4-6',
+                  model=os.environ['CLAUDE_MODEL'],
                   max_tokens=16000,
                   system=[
                       {
@@ -267,7 +298,7 @@ jobs:
           except ValueError as first_error:
               print(f'WARNING: Claude returned invalid security-review JSON; asking for a strict JSON repair: {first_error}')
               repair_message = client.messages.create(
-                  model='claude-sonnet-4-6',
+                  model=os.environ['CLAUDE_MODEL'],
                   max_tokens=16000,
                   system=[{
                       'type': 'text',
