@@ -33,7 +33,7 @@ Environment:
   WENDY_VERSION   Install a specific version (e.g. v0.2.0) instead of latest
   WENDY_ENROLLMENT_TOKEN
                   Pre-enroll this device into a Wendy Cloud org on first start.
-                  Obtain it from 'wendy install' → "Linux Desktop".
+                  Obtain it from 'wendy install' → "Linux Desktop" or "Headless Mac".
   WENDY_CLOUD_HOST
                   Wendy Cloud gRPC host (required when WENDY_ENROLLMENT_TOKEN is set).
 EOF
