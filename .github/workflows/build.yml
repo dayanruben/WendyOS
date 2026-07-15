@@ -264,6 +264,12 @@ jobs:
     name: ${{ matrix.artifact-name }}
     runs-on: macos-15
     needs: [determine-version]
+    # Attest SLSA build provenance in the job that produces the archive, so the
+    # provenance reflects the actual build environment (not a downstream job).
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
