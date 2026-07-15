@@ -390,6 +390,13 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 			}
 			// Keep in sync with containerd.ContainerName.
 			running[c.GetAppName()+"_"+s.GetName()] = true
+			// Single-service apps deploy as a bare-named container (see
+			// AppConfig.ContainerName: ServiceName == "" → bare appID) while
+			// still reporting a services list here, so their monitor state is
+			// registered under the bare appID. Without the bare-key mark the
+			// monitor believes the app is down and force-restarts a healthy
+			// container every tick — the same failure mode as WDY-1552.
+			running[c.GetAppName()] = true
 		}
 	}
 
