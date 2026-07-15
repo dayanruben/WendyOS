@@ -447,7 +447,8 @@ jobs:
           - { artifact-name: wendy-cli-linux-arm64,   binary: wendy,       ext: tar.gz }
           - { artifact-name: wendy-cli-windows-amd64, binary: wendy.exe,   ext: zip }
           - { artifact-name: wendy-cli-windows-arm64, binary: wendy.exe,   ext: zip }
-          - { artifact-name: wendy-cli-darwin-amd64,  binary: wendy,       ext: tar.gz }
+          # Intel (amd64) macOS CLI is not built (see build-go-macos), so there
+          # is no wendy-cli-darwin-amd64 archive to attest.
           - { artifact-name: wendy-cli-darwin-arm64,  binary: wendy,       ext: tar.gz }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
