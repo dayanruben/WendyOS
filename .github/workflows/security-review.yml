@@ -154,6 +154,48 @@ jobs:
           pr_body = meta['body'] or ''
           previous_review = pathlib.Path('previous_security_review.md').read_text(encoding='utf-8') if pathlib.Path('previous_security_review.md').exists() else ''
 
+          def _collect_security_comments(diff_text):
+              comments = []
+              path = ''
+              new_line = None
+              for line in diff_text.splitlines():
+                  if line.startswith('+++ b/'):
+                      path = line.removeprefix('+++ b/')
+                      continue
+                  if line.startswith('@@'):
+                      match = re.search(r'\+(\d+)', line)
+                      new_line = int(match.group(1)) if match else None
+                      continue
+                  if new_line is None:
+                      continue
+                  if line.startswith('+') and not line.startswith('+++'):
+                      text = line[1:]
+                      match = re.search(r'\bSECURITY:\s*(.+)', text)
+                      if path and match:
+                          comments.append({'path': path, 'line': new_line, 'reason': match.group(1).strip()})
+                      new_line += 1
+                  elif line.startswith(' '):
+                      text = line[1:]
+                      match = re.search(r'\bSECURITY:\s*(.+)', text)
+                      if path and match:
+                          comments.append({'path': path, 'line': new_line, 'reason': match.group(1).strip()})
+                      new_line += 1
+                  elif not line.startswith('-'):
+                      new_line += 1
+              return comments
+
+          security_comments = _collect_security_comments(diff)
+
+          def _matching_security_comment(path, lines_value):
+              normalized_path = str(path or '').replace('\\', '/').strip()
+              line_numbers = [int(value) for value in re.findall(r'\d+', str(lines_value or ''))]
+              for comment in security_comments:
+                  if comment['path'] != normalized_path:
+                      continue
+                  if not line_numbers or any(abs(comment['line'] - line_number) <= 8 for line_number in line_numbers):
+                      return comment
+              return None
+
           TRUST_BOUNDARY_TAGS = (
               '<untrusted_pr_content>',
               '</untrusted_pr_content>',
@@ -426,12 +468,21 @@ jobs:
               if status not in status_rank:
                   status = 'open'
 
+              raw_path = _one_line(raw_finding.get('path')).replace('\\', '/')
+              raw_lines = _one_line(raw_finding.get('lines'))
+              silence_comment = _matching_security_comment(raw_path, raw_lines)
+              if status == 'open' and silence_comment:
+                  status = 'silenced'
+
               title = _safe_inline(raw_finding.get('title'), limit=180) or 'Security finding'
-              path = _safe_inline(raw_finding.get('path'), limit=240)
-              lines_value = _safe_inline(raw_finding.get('lines'), limit=80)
+              path = _safe_inline(raw_path, limit=240)
+              lines_value = _safe_inline(raw_lines, limit=80)
               standards = _safe_inline(raw_finding.get('standards'), limit=300)
               overview = _safe_inline(raw_finding.get('overview'), limit=600)
               raw_details = _strip_detail_metadata(raw_finding.get('details'))
+              if silence_comment:
+                  reason = silence_comment['reason'] or 'accepted by nearby SECURITY comment'
+                  raw_details = (raw_details + '\n\n' if raw_details else '') + f'Silenced by nearby `SECURITY:` comment: {reason}'
               if not overview and not raw_details:
                   continue
               if not overview:
