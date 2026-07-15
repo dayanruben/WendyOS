@@ -146,7 +146,7 @@ func TestReachableAppURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reachableAppURL(tc.hookURL, tc.appID, tc.deviceIP, tc.readiness)
+			got := reachableAppURL(tc.hookURL, tc.appID, "", tc.deviceIP, tc.readiness)
 			if got != tc.want {
 				t.Errorf("reachableAppURL() = %q, want %q", got, tc.want)
 			}

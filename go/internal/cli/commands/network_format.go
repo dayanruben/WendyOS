@@ -89,12 +89,12 @@ func urlSafeHost(host string) string {
 // IP swapped in, so the printed URL matches what the browser hook opens.
 // Otherwise, if readiness defines a TCP port, an http URL on that port is
 // assumed. Returns "" when no reachable URL can be derived.
-func reachableAppURL(hookURL, appID, deviceIP string, readiness *appconfig.ReadinessConfig) string {
+func reachableAppURL(hookURL, appID, serviceName, deviceIP string, readiness *appconfig.ReadinessConfig) string {
 	if deviceIP == "" {
 		return ""
 	}
 	if hookURL != "" && strings.Contains(hookURL, "WENDY_HOSTNAME") {
-		return expandHookEnv(hookURL, urlSafeHost(deviceIP), appID)
+		return expandHookEnv(hookURL, urlSafeHost(deviceIP), appID, serviceName)
 	}
 	if readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0 {
 		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(readiness.TCPSocket.Port))
