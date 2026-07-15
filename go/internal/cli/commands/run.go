@@ -2084,6 +2084,16 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 	}
 }
 
+// imageSignaturePathEnv optionally points at a detached signature file over the
+// SHA256 digest of the OCI image config (e.g. an ML-DSA65 signature). No signer
+// exists yet, so this is unset in normal operation and RunContainerLayersRequest
+// carries an empty ImageSignature — the agent's verifier tolerates that until a
+// pinned key is embedded (see internal/shared/sigverify).
+// TODO(H2): once a signed-release pipeline ships, replace this env var with a
+// real sidecar/manifest convention resolved automatically alongside the build,
+// instead of requiring the caller to set it by hand.
+const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
+
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
 // calls RunContainer with the resulting layer headers. On success it returns the
@@ -2135,18 +2145,23 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return nil, err
 	}
+	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
+	if err != nil {
+		return nil, fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
+	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
 	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
 	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
-		ImageName:     imageName,
-		AppName:       appCfg.AppID,
-		Layers:        headers,
-		AppConfig:     appConfigData,
-		ImageConfig:   imageConfig,
-		RestartPolicy: resolveRestartPolicy(opts),
-		UserArgs:      opts.userArgs,
+		ImageName:      imageName,
+		AppName:        appCfg.AppID,
+		Layers:         headers,
+		AppConfig:      appConfigData,
+		ImageConfig:    imageConfig,
+		RestartPolicy:  resolveRestartPolicy(opts),
+		UserArgs:       opts.userArgs,
+		ImageSignature: imageSignature,
 	})
 	if err != nil {
 		return nil, err

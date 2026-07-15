@@ -2463,7 +2463,23 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 // should reconnect and verify what the device now runs instead of aborting.
 var errAgentUpdateUnconfirmed = errors.New("the connection was lost before the agent confirmed the update")
 
+// agentSignaturePathEnv optionally points at a detached signature file for the
+// agent binary being uploaded (e.g. an ML-DSA65 signature over the SHA256 digest
+// of the agent binary). No
+// signer exists yet, so this is unset in normal operation and the update
+// carries an empty signature — the agent's verifier (internal/shared/sigverify)
+// tolerates that until a pinned key is embedded.
+// TODO(H2): once a signed-release pipeline ships, replace this env var with a
+// real sidecar convention (or a signed-manifest lookup) resolved automatically
+// alongside the binary, instead of requiring the caller to set it by hand.
+const agentSignaturePathEnv = "WENDY_AGENT_SIGNATURE_PATH"
+
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
+	signature, err := readOptionalSignature(os.Getenv(agentSignaturePathEnv))
+	if err != nil {
+		return fmt.Errorf("reading agent signature from %s: %w", agentSignaturePathEnv, err)
+	}
+
 	stream, err := agentService.UpdateAgent(ctx)
 	if err != nil {
 		return fmt.Errorf("starting agent update: %w", err)
@@ -2474,7 +2490,7 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 	// may still have received everything (it commits and restarts, dropping
 	// the transport under us). The stream's terminal status from Recv is the
 	// authoritative outcome, so always drain it.
-	_ = sendAgentUpdate(stream, binaryData, sha256Hash)
+	_ = sendAgentUpdate(stream, binaryData, sha256Hash, signature)
 
 	for {
 		resp, recvErr := stream.Recv()
@@ -2489,8 +2505,10 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 
 // sendAgentUpdate streams the binary chunks and the final update command,
 // returning the first send error (used only to stop sending — the stream's
-// Recv terminal status is what callers act on).
-func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string) error {
+// Recv terminal status is what callers act on). signature is the (currently
+// almost-always-nil) detached signature over the SHA256 digest of binaryData; see
+// agentSignaturePathEnv and readOptionalSignature.
+func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string, signature []byte) error {
 	const chunkSize = 64 * 1024
 	for offset := 0; offset < len(binaryData); offset += chunkSize {
 		end := offset + chunkSize
@@ -2514,7 +2532,8 @@ func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryD
 			Control: &agentpb.UpdateAgentRequest_ControlCommand{
 				Command: &agentpb.UpdateAgentRequest_ControlCommand_Update_{
 					Update: &agentpb.UpdateAgentRequest_ControlCommand_Update{
-						Sha256: sha256Hash,
+						Sha256:    sha256Hash,
+						Signature: signature,
 					},
 				},
 			},

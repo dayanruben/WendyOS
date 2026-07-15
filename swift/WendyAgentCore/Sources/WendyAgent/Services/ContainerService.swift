@@ -1168,6 +1168,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         )
     }
 
+    func execContainer(
+        request: StreamingServerRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+        context: ServerContext
+    ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_ExecContainerResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Interactive container exec is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
     func listVolumes(
         request: ServerRequest<Wendy_Agent_Services_V1_ListVolumesRequest>,
         context: ServerContext
