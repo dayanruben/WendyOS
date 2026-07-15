@@ -480,7 +480,7 @@ jobs:
               standards = _safe_inline(raw_finding.get('standards'), limit=300)
               overview = _safe_inline(raw_finding.get('overview'), limit=600)
               raw_details = _strip_detail_metadata(raw_finding.get('details'))
-              if silence_comment:
+              if silence_comment and 'Silenced by nearby `SECURITY:` comment:' not in raw_details:
                   reason = silence_comment['reason'] or 'accepted by nearby SECURITY comment'
                   raw_details = (raw_details + '\n\n' if raw_details else '') + f'Silenced by nearby `SECURITY:` comment: {reason}'
               if not overview and not raw_details:
