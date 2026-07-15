@@ -56,18 +56,25 @@ func bestReachableIP(ifaces []*agentpb.NetworkInterface) string {
 }
 
 // isIPv6Literal reports whether host parses as a bare (unbracketed) IPv6
-// literal, zone ID included; hostnames, IPv4, and IPv4-mapped forms are false.
+// literal, zone ID included. Hostnames and IPv4 are false.
 func isIPv6Literal(host string) bool {
 	addr, err := netip.ParseAddr(host)
-	return err == nil && addr.Is6() && !addr.Is4In6()
+	return err == nil && addr.Is6()
 }
 
 // urlSafeHost returns host formatted for the authority part of a URL: IPv6
-// literals are bracketed, with any zone ID percent-escaped per RFC 6874. An
-// unbracketed IPv6 literal in "http://host:port" is unparseable — the port
-// digits read as one more hextet. Hostnames and IPv4 pass through unchanged.
+// literals are bracketed, with any zone ID percent-escaped per RFC 6874. IPv4
+// and hostnames pass through unchanged. IPv4-mapped IPv6 literals are unmapped
+// to plain IPv4 so the result remains URL-safe.
 func urlSafeHost(host string) string {
-	if !isIPv6Literal(host) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	if addr.Is4In6() {
+		return addr.Unmap().String()
+	}
+	if !addr.Is6() {
 		return host
 	}
 	return "[" + strings.ReplaceAll(host, "%", "%25") + "]"
