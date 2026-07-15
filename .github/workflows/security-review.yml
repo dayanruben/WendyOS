@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CLAUDE_MODEL: claude-sonnet-4-8
+  CLAUDE_MODEL: claude-opus-4-8
 
 jobs:
   security-review:

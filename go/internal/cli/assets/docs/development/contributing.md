@@ -58,7 +58,7 @@ Concurrent runs for the same PR are cancelled automatically (`cancel-in-progress
 
 1. **Fetches the PR diff** using the GitHub CLI (`gh pr diff`).
 2. **Fetches prior review state** from the existing security-review comment identified by the `<!-- ai-security-review:v1 -->` marker.
-3. **Invokes Claude** (`CLAUDE_MODEL`, currently `claude-sonnet-4-8`, `max_tokens=16000`) with a detailed system prompt covering security, compliance, prior review state, and explicit `SECURITY:` silencing comments.
+3. **Invokes Claude** (`CLAUDE_MODEL`, currently `claude-opus-4-8`, `max_tokens=16000`) with a detailed system prompt covering security, compliance, prior review state, and explicit `SECURITY:` silencing comments.
 4. **Renders a structured Markdown comment** from Claude's JSON response: one glanceable line per finding, with full details behind per-finding `<details>` disclosures.
 5. **Posts or updates a PR comment** headed `# AI Security Review`. Existing comments are edited in place via the stable marker; duplicate security-review comments are deleted.
 6. **Blocks merging only on open high-severity findings** — a final step exits non-zero only when an unsilenced `open` finding is `HIGH` or `CRITICAL`.
