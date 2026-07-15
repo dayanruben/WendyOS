@@ -55,6 +55,7 @@ jobs:
 
       - name: Fetch previous security review state
         env:
+          # SECURITY: This isolated step needs GH_TOKEN only to fetch the prior bot comment for stateful review; fork PRs are rejected before token use.
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -98,6 +99,7 @@ jobs:
           else:
               print('WARNING: stopped scanning comments after 1000 entries')
 
+          # SECURITY: Prior comments are untrusted state hints only; the review prompt sanitizes them and requires current-diff evidence before changing finding state.
           previous_review = ''
           for comment in reversed(comments):
               user = comment.get('user') or {}
@@ -358,11 +360,11 @@ jobs:
 
           def _safe_inline(value, limit=500):
               text = _UNSAFE_URI_RE.sub(_neutralize_uri_scheme, _limit_text(value, limit))
-              return _one_line(text).replace('<', '‹').replace('>', '›')
+              return html.escape(_one_line(text), quote=False)
 
           def _fenced_details(value, limit=8000):
               text = _UNSAFE_URI_RE.sub(_neutralize_uri_scheme, _limit_text(value, limit))
-              text = text.replace('<', '‹').replace('>', '›')
+              text = html.escape(text, quote=False)
               text = text.replace('\r\n', '\n').replace('\r', '\n')
               longest_ticks = max((len(match.group(0)) for match in re.finditer(r'`+', text)), default=0)
               fence = '`' * max(3, longest_ticks + 1)
@@ -370,6 +372,14 @@ jobs:
 
           def _has_instruction_artifact(value):
               return bool(_RESPONSE_ROLE_RE.search(_text(value)))
+
+          _DETAIL_METADATA_RE = re.compile(r'^\*\*(?:Status|Severity|Standards|Location):\*\*', re.IGNORECASE)
+
+          def _strip_detail_metadata(value):
+              lines = _text(value).splitlines()
+              while lines and (not lines[0].strip() or _DETAIL_METADATA_RE.match(lines[0].strip())):
+                  lines.pop(0)
+              return '\n'.join(lines).strip()
 
           severity_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3, 'informational': 4}
           status_rank = {'open': 0, 'silenced': 1, 'addressed': 2, 'cancelled': 3}
@@ -421,7 +431,7 @@ jobs:
               lines_value = _safe_inline(raw_finding.get('lines'), limit=80)
               standards = _safe_inline(raw_finding.get('standards'), limit=300)
               overview = _safe_inline(raw_finding.get('overview'), limit=600)
-              raw_details = _text(raw_finding.get('details'))
+              raw_details = _strip_detail_metadata(raw_finding.get('details'))
               if not overview and not raw_details:
                   continue
               if not overview:
@@ -545,13 +555,21 @@ jobs:
           if not body:
               raise SystemExit(0)
 
-          max_comment_chars = 65000
+          max_comment_bytes = 65000
           marker_suffix = f'\n\n{marker}'
           truncation_notice = '\n\n*(truncated)*'
+
+          def _truncate_utf8(value, byte_limit):
+              encoded = value.encode('utf-8')
+              if len(encoded) <= byte_limit:
+                  return value
+              return encoded[:byte_limit].decode('utf-8', errors='ignore')
+
           body = body.replace(marker, '&lt;!-- ai-security-review:v1 --&gt;')
-          body_limit = max_comment_chars - len(marker_suffix)
-          if len(body) > body_limit:
-              body = body[:body_limit - len(truncation_notice)].rstrip() + truncation_notice
+          body_limit = max_comment_bytes - len(marker_suffix.encode('utf-8'))
+          if len(body.encode('utf-8')) > body_limit:
+              truncated_limit = body_limit - len(truncation_notice.encode('utf-8'))
+              body = _truncate_utf8(body, truncated_limit).rstrip() + truncation_notice
           body = body.rstrip() + marker_suffix
 
           comment_path.write_text(body + '\n', encoding='utf-8')
@@ -561,6 +579,7 @@ jobs:
       - name: Post security review comment
         env:
           COMMENT_FILE: ${{ runner.temp }}/comment.md
+          # SECURITY: GH_TOKEN is required here only to update the single bot-owned review comment after repo and PR inputs are validated.
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
