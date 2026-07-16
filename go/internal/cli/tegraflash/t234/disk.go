@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 )
 
 // The USB gadget the flashing initrd exposes (Linux Foundation composite
@@ -74,9 +76,10 @@ func observedUMSHint() string {
 // tegraUSBLabel names a Tegra-relevant USB device, or "" for anything else.
 func tegraUSBLabel(vendor, product uint16) string {
 	switch {
-	case vendor == 0x0955 && product == 0x7023:
-		return "0955:7023 (AGX Orin APX recovery)"
 	case vendor == 0x0955:
+		if name, ok := rcm.T234ModuleName(product); ok {
+			return fmt.Sprintf("0955:%04x (%s APX recovery)", product, name)
+		}
 		return fmt.Sprintf("0955:%04x (NVIDIA recovery)", product)
 	case vendor == GadgetVendorID && product == GadgetProductID:
 		return "1d6b:0104 (flashing gadget)"

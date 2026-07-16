@@ -172,3 +172,42 @@ func TestUntaggedThorSchemaV1StillAccepted(t *testing.T) {
 		t.Fatalf("legacy Thor rejected: %v", err)
 	}
 }
+
+// A flashpack's usb_product_id must accept the whole T234 family — every Orin
+// module SKU enumerates its own recovery PID (an Orin Nano pack is 0x7523, not
+// AGX's 0x7023) — while junk and non-T234 PIDs stay rejected.
+func TestT234ManifestUSBProductIDAcceptsFamily(t *testing.T) {
+	root := writeT234ManifestFixture(t, 2)
+	manifestPath := filepath.Join(root, "manifest.json")
+	setPID := func(pid string) {
+		t.Helper()
+		data, err := os.ReadFile(manifestPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatal(err)
+		}
+		m["usb_product_id"] = pid
+		data, err = json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, pid := range []string{"0x7023", "0x7223", "0x7523", "0x7623"} {
+		setPID(pid)
+		if _, err := open(root); err != nil {
+			t.Errorf("T234 PID %s rejected: %v", pid, err)
+		}
+	}
+	for _, pid := range []string{"", "0x7026", "0x1234", "junk"} {
+		setPID(pid)
+		if _, err := open(root); err == nil || !strings.Contains(err.Error(), "USB product") {
+			t.Errorf("PID %q not rejected (err = %v)", pid, err)
+		}
+	}
+}

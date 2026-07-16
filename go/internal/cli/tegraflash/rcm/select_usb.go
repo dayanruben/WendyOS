@@ -19,7 +19,7 @@ import (
 var ErrUSBAccess = errors.New("USB device access denied")
 
 func isRecoveryPID(p gousb.ID) bool {
-	return p == gousb.ID(ProductOrin) || p == gousb.ID(ProductThor)
+	return IsT234RecoveryPID(uint16(p)) || p == gousb.ID(ProductThor)
 }
 
 // portKey is the stable physical-location key (bus + parent-port chain).

@@ -27,7 +27,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 )
 
 // SupportedSchema is the newest tagged flashpack schema this wendy understands.
@@ -272,6 +275,15 @@ func open(root string) (*Flashpack, error) {
 	return &Flashpack{Root: root, Manifest: m}, nil
 }
 
+// isT234RecoveryPIDString reports whether s (e.g. "0x7523") names a T234-family
+// recovery PID. Every Orin module SKU enumerates its own PID, so an Orin Nano
+// flashpack legitimately differs from an AGX one; a non-T234 PID still means a
+// mismatched or corrupted artifact.
+func isT234RecoveryPIDString(s string) bool {
+	pid, err := strconv.ParseUint(s, 0, 16)
+	return err == nil && rcm.IsT234RecoveryPID(uint16(pid))
+}
+
 func validateManifest(m *Manifest) error {
 	if m.Family == FamilyT234 {
 		if m.Schema != T234Schema {
@@ -280,7 +292,7 @@ func validateManifest(m *Manifest) error {
 		if m.Protocol != T234ProtocolMassStorage {
 			return fmt.Errorf("T234 flashpack protocol %q is unsupported", m.Protocol)
 		}
-		if m.USBProductID != "0x7023" {
+		if !isT234RecoveryPIDString(m.USBProductID) {
 			return fmt.Errorf("T234 flashpack has unexpected USB product %q", m.USBProductID)
 		}
 		if err := validateT234Target(m); err != nil {

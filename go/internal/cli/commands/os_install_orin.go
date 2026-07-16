@@ -74,7 +74,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err := confirmOrinReady(opts); err != nil {
 		return err
 	}
-	dev, err := pickUnixRecoveryDevice(orinRecoveryHints(opts), func(d rcm.RecoveryDevice) bool { return d.IsOrin() })
+	dev, err := pickUnixRecoveryDevice(orinRecoveryHints(opts), orinRecoveryMatch(opts.DeviceType))
 	if err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 				return false, err
 			}
 			return false, bringup.Run(bringup.Options{Dir: fp.Root, MemBCT: memBCT, Blob: blob, DevicePath: dev.PathKey,
-				ExpectedProduct: uint16(rcm.ProductOrin), SendOrder: order, Out: out})
+				ExpectedProduct: dev.Product, SendOrder: order, Out: out})
 		}},
 		{id: orinStepCommands, label: "Stage 2  verify target + hand off recovery", abortWarning: boundaryWarning, run: func(out io.Writer, detail func(string)) (bool, error) {
 			massStorage.Out, massStorage.Detail = out, detail
@@ -424,37 +424,67 @@ func confirmOrinReady(opts t234InstallOptions) error {
 	return err
 }
 
-// orinRecoveryHints is the USB-recovery wait-UI text for a T234 Orin target,
-// mirroring the cabling/button guidance in orinRecoveryBriefingBox so the
-// shared wait UI never shows Thor's port/buttons for an Orin.
-func orinRecoveryHints(opts t234InstallOptions) recoveryWaitHints {
-	port := "the USB-C recovery/device-mode port"
-	if opts.DeviceType == orinDeviceType {
-		port = "the USB-C port next to the 40-pin header"
+// orinRecoveryMatch selects only recovery devices whose module family matches
+// the install's device type: T234 modules share a chip but each SKU has its own
+// recovery PID, and a jetson-orin-nano install must never pick up an AGX Orin
+// sitting in recovery on the same host (or vice versa).
+func orinRecoveryMatch(deviceType string) func(rcm.RecoveryDevice) bool {
+	if deviceType == orinNanoDeviceType {
+		return func(d rcm.RecoveryDevice) bool { return d.IsOrinNano() }
 	}
-	return recoveryWaitHints{
+	return func(d rcm.RecoveryDevice) bool { return d.IsOrinAGX() }
+}
+
+// orinRecoveryPort names the USB-C port carrying recovery/device mode for the
+// given T234 device type. The Orin Nano devkit has a single USB-C port; the AGX
+// Orin devkit's recovery port is the USB-C next to the 40-pin header.
+func orinRecoveryPort(deviceType string) string {
+	if deviceType == orinNanoDeviceType {
+		return "the devkit's USB-C port"
+	}
+	return "the USB-C port next to the 40-pin header"
+}
+
+// orinRecoveryHints is the USB-recovery wait-UI text for a T234 Orin target,
+// mirroring the cabling and recovery-entry guidance in orinRecoveryBriefingBox
+// so the shared wait UI never shows the wrong board's port or buttons. The Orin
+// Nano devkit has no buttons at all — recovery mode is entered by jumpering
+// FC REC to GND — so it must never get AGX's button sequence.
+func orinRecoveryHints(opts t234InstallOptions) recoveryWaitHints {
+	hints := recoveryWaitHints{
 		label:       opts.DeviceName,
-		cablingLine: "the USB-C cable is in " + briefPort.Render(port),
+		cablingLine: "the USB-C cable is in " + briefPort.Render(orinRecoveryPort(opts.DeviceType)),
 		buttonLine:  "the recovery sequence: power off, hold " + briefKey.Render("Force Recovery") + ", tap " + briefKey.Render("Reset/Power") + ", release Force Recovery",
 	}
+	if opts.DeviceType == orinNanoDeviceType {
+		hints.buttonLine = "the recovery jumper: " + briefKey.Render("FC REC") + " bridged to " + briefKey.Render("GND") + " (pins 9–10 on the button header under the module) when power is connected"
+	}
+	return hints
 }
 
 func orinRecoveryBriefingBox(opts t234InstallOptions) string {
-	port := "the USB-C recovery/device-mode port"
-	if opts.DeviceType == orinDeviceType {
-		port = "the USB-C port next to the 40-pin header"
-	}
 	lines := []string{
 		briefMarker.Render("●") + " " + briefTitle.Render("Destructive full recovery"),
 		"  QSPI and " + briefKey.Render(strings.ToUpper(opts.Storage)) + " are updated together; all partitions, including /data, are erased.",
 		"",
 		briefMarker.Render("●") + " " + briefTitle.Render("USB-C cabling"),
-		"  Connect this computer to " + briefPort.Render(port) + ".",
+		"  Connect this computer to " + briefPort.Render(orinRecoveryPort(opts.DeviceType)) + ".",
 		"",
 		briefMarker.Render("●") + " " + briefTitle.Render("Entering recovery mode"),
-		"    " + briefNum.Render("1.") + " Power off the devkit and connect power.",
-		"    " + briefNum.Render("2.") + " Hold " + briefKey.Render("Force Recovery") + ", tap " + briefKey.Render("Reset/Power") + ", then release Force Recovery.",
-		"    " + briefNum.Render("3.") + " Keep the recovery USB-C cable attached until final SUCCESS.",
+	}
+	if opts.DeviceType == orinNanoDeviceType {
+		lines = append(lines,
+			"    "+briefNum.Render("1.")+" Disconnect power from the devkit (it has no buttons).",
+			"    "+briefNum.Render("2.")+" Bridge "+briefKey.Render("FC REC")+" to "+briefKey.Render("GND")+" — pins 9–10 on the button header under the module — with a jumper.",
+			"    "+briefNum.Render("3.")+" Connect power; the devkit boots straight into recovery mode. The jumper can then be removed.",
+			"    "+briefNum.Render("4.")+" Keep the recovery USB-C cable attached until final SUCCESS.",
+		)
+	} else {
+		lines = append(lines,
+			"    "+briefNum.Render("1.")+" Power off the devkit and connect power.",
+			"    "+briefNum.Render("2.")+" Hold "+briefKey.Render("Force Recovery")+", tap "+briefKey.Render("Reset/Power")+", then release Force Recovery.",
+			"    "+briefNum.Render("3.")+" Keep the recovery USB-C cable attached until final SUCCESS.",
+		)
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }

@@ -93,14 +93,24 @@ func TestRecoveryManifestRoutesFlashpackByStorage(t *testing.T) {
 }
 
 func TestRecoverySelectorFiltersJetsonFamily(t *testing.T) {
-	devs := []rcm.RecoveryDevice{{Product: rcm.ProductOrin}, {Product: rcm.ProductThor}}
+	devs := []rcm.RecoveryDevice{
+		{Product: rcm.ProductOrinAGX32},
+		{Product: rcm.ProductOrinNano8},
+		{Product: rcm.ProductThor},
+	}
 	thor := filterRecoveryDevices(devs, func(d rcm.RecoveryDevice) bool { return d.IsThor() })
 	if len(thor) != 1 || !thor[0].IsThor() {
 		t.Fatalf("Thor filter = %+v", thor)
 	}
-	orin := filterRecoveryDevices(devs, func(d rcm.RecoveryDevice) bool { return d.IsOrin() })
-	if len(orin) != 1 || !orin[0].IsOrin() {
-		t.Fatalf("Orin filter = %+v", orin)
+	// A jetson-orin-nano install must select only Nano modules, and a
+	// jetson-agx-orin install only AGX modules — never each other's boards.
+	nano := filterRecoveryDevices(devs, orinRecoveryMatch(orinNanoDeviceType))
+	if len(nano) != 1 || !nano[0].IsOrinNano() {
+		t.Fatalf("Nano filter = %+v", nano)
+	}
+	agx := filterRecoveryDevices(devs, orinRecoveryMatch(orinDeviceType))
+	if len(agx) != 1 || !agx[0].IsOrinAGX() {
+		t.Fatalf("AGX filter = %+v", agx)
 	}
 }
 
@@ -135,5 +145,30 @@ func TestPrepareT234WorkspaceLeavesCacheImmutable(t *testing.T) {
 	data, _ := os.ReadFile(config)
 	if string(data) != "original" {
 		t.Fatalf("cached config was mutated: %q", data)
+	}
+}
+
+// The Orin Nano devkit has no buttons — recovery mode is entered by jumpering
+// FC REC to GND — so its guidance must never show AGX's button sequence (the
+// text a Nano user actually saw in WDY-1888).
+func TestOrinRecoveryGuidanceIsDeviceSpecific(t *testing.T) {
+	nano := t234InstallOptions{DeviceType: orinNanoDeviceType, DeviceName: "Jetson Orin Nano", Storage: "nvme"}
+	for name, text := range map[string]string{
+		"wait hint": orinRecoveryHints(nano).buttonLine,
+		"briefing":  orinRecoveryBriefingBox(nano),
+	} {
+		if strings.Contains(text, "Force Recovery") || strings.Contains(text, "Reset") {
+			t.Errorf("Nano %s mentions buttons the devkit does not have: %q", name, text)
+		}
+		if !strings.Contains(text, "FC REC") || !strings.Contains(text, "GND") {
+			t.Errorf("Nano %s omits the FC REC/GND jumper: %q", name, text)
+		}
+	}
+	agx := t234InstallOptions{DeviceType: orinDeviceType, DeviceName: "Jetson AGX Orin", Storage: "nvme"}
+	if bl := orinRecoveryHints(agx).buttonLine; !strings.Contains(bl, "Force Recovery") {
+		t.Errorf("AGX wait hint lost its button sequence: %q", bl)
+	}
+	if b := orinRecoveryBriefingBox(agx); !strings.Contains(b, "Force Recovery") || strings.Contains(b, "FC REC") {
+		t.Errorf("AGX briefing shows the wrong recovery entry: %q", b)
 	}
 }
