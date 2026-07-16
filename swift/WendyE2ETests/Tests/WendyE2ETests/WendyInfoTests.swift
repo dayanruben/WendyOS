@@ -128,6 +128,15 @@ struct `'wendy info'` {
                 #expect(stderr.contains("unknown command"))
                 #expect(stderr.contains("extra"))
             }
+
+            try await cli.sh("wendy info --bogus") { result in
+                let stderr = result.stderr
+
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(stderr.contains("unknown flag"))
+                #expect(stderr.contains("--bogus"))
+            }
         }
     }
 }
