@@ -49,6 +49,13 @@ type Stage2 struct {
 	Out              io.Writer    // verbose log
 	Detail           func(string) // live one-line progress; may be nil
 
+	// TempDir holds the identity/verify/status handoff files exchanged with the
+	// root __t234-write helper. It must be a private (non-world-writable) dir:
+	// Linux fs.protected_regular blocks root from O_CREAT-opening a file this
+	// unprivileged process owns in a sticky, world-writable dir like /tmp. Empty
+	// falls back to os.TempDir().
+	TempDir string
+
 	// RunHelper runs the hidden root helper `wendy __t234-write` with args,
 	// reporting any "PROGRESS <done> <total>" lines it prints.
 	RunHelper func(context.Context, []string, func(done, total int64)) error
@@ -110,7 +117,7 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 // the first flashpkg LUN. RCM boot is non-persistent; this is the last check
 // before the flash-package handoff starts QSPI/rootfs destruction.
 func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) error {
-	tmp, err := os.CreateTemp("", "t234-identity-*.ext4")
+	tmp, err := os.CreateTemp(s.TempDir, "t234-identity-*.ext4")
 	if err != nil {
 		return err
 	}
@@ -174,7 +181,7 @@ func (s *Stage2) verifyFlashPackage(ctx context.Context, disk UMSDisk) error {
 		return fmt.Errorf("reading local command_sequence: %w", err)
 	}
 
-	tmp, err := os.CreateTemp("", "t234-verify-*.ext4")
+	tmp, err := os.CreateTemp(s.TempDir, "t234-verify-*.ext4")
 	if err != nil {
 		return err
 	}
@@ -261,7 +268,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	}
 	unmountUMSDisk(disk)
 
-	tmp, err := os.CreateTemp("", "t234-flashpkg-*.ext4")
+	tmp, err := os.CreateTemp(s.TempDir, "t234-flashpkg-*.ext4")
 	if err != nil {
 		return nil, err
 	}

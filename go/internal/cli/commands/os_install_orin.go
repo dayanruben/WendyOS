@@ -48,6 +48,16 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	}
 	ref := flashpack.RecoveryRef{Device: opts.DeviceType, Storage: opts.Storage, Version: opts.Version}
 
+	// Identity/verify/status files pass between this process and the root
+	// __t234-write helper. Keep them in a private 0700 dir, not shared /tmp:
+	// Linux fs.protected_regular denies root an O_CREAT open of a file this
+	// unprivileged process owns in a sticky, world-writable dir.
+	handoffDir, err := os.MkdirTemp("", "t234-flash-")
+	if err != nil {
+		return fmt.Errorf("creating flash temp dir: %w", err)
+	}
+	defer os.RemoveAll(handoffDir)
+
 	creds, err := resolveWiFiCredentialsList(opts.WiFi)
 	if err != nil {
 		return err
@@ -148,7 +158,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 				Plan: flashPlan, PortPath: dev.PathKey,
 				StatusPath: fp.Manifest.Layout.FlashPackageStatus, LogsPath: fp.Manifest.Layout.FlashPackageLogs,
 				ExpectedIdentity: t234.IdentityExpectation{ModuleID: target.ModuleID, ModuleSKU: target.ModuleSKU, CarrierID: target.CarrierID, CarrierSKU: target.CarrierSKU},
-				Out:              out, Detail: detail, RunHelper: runT234Helper,
+				Out:              out, Detail: detail, RunHelper: runT234Helper, TempDir: handoffDir,
 			}
 			return false, nil
 		}},
