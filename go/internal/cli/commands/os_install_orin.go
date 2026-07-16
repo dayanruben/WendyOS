@@ -388,7 +388,7 @@ func saveOrinDeviceLogs(out io.Writer, logPath string, st *t234.FinalStatus) {
 		if dir, err = os.MkdirTemp("", "orin-device-logs-"); err != nil {
 			return
 		}
-	} else if err := os.MkdirAll(dir, 0o755); err != nil {
+	} else if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 	names := make([]string, 0, len(st.Logs))
@@ -397,7 +397,7 @@ func saveOrinDeviceLogs(out io.Writer, logPath string, st *t234.FinalStatus) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		_ = os.WriteFile(filepath.Join(dir, filepath.Base(name)), st.Logs[name], 0o644)
+		_ = os.WriteFile(filepath.Join(dir, filepath.Base(name)), st.Logs[name], 0o600)
 	}
 	fmt.Fprintf(out, "Device-side logs (%s): %s\n", strings.Join(names, ", "), dir)
 }

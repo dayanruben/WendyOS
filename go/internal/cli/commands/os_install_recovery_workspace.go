@@ -32,7 +32,7 @@ func prepareMutableWorkspace(sourceDir, mutableSource string) (workspace, mutabl
 		}
 		dst := filepath.Join(workspace, rel)
 		if entry.IsDir() {
-			return os.MkdirAll(dst, 0o755)
+			return os.MkdirAll(dst, 0o700)
 		}
 		info, err := entry.Info()
 		if err != nil || !info.Mode().IsRegular() {

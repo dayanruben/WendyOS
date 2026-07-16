@@ -151,17 +151,36 @@ func splitIoregSubtrees(out string) []string {
 // wholeDiskRe matches a whole-disk BSD name (diskN, not a diskNsM slice).
 var wholeDiskRe = regexp.MustCompile(`^disk\d+$`)
 
+// ioregStrRe/ioregIntRe hold extractors for the fixed set of ioreg keys this
+// package reads. Populated once at init and read-only thereafter, so concurrent
+// callers are safe; an unlisted key falls back to a one-off compile.
 var (
 	ioregStrRe = map[string]*regexp.Regexp{}
 	ioregIntRe = map[string]*regexp.Regexp{}
 )
 
+func init() {
+	for _, key := range []string{"Vendor Identification", "Product Identification", "BSD Name"} {
+		ioregStrRe[key] = compileIoregStrRe(key)
+	}
+	for _, key := range []string{"idVendor", "idProduct", "locationID", "Size"} {
+		ioregIntRe[key] = compileIoregIntRe(key)
+	}
+}
+
+func compileIoregStrRe(key string) *regexp.Regexp {
+	return regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" = "([^"]*)"`)
+}
+
+func compileIoregIntRe(key string) *regexp.Regexp {
+	return regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" = (0x[0-9a-fA-F]+|\d+)`)
+}
+
 // ioregString extracts the first `"key" = "value"` in an ioreg chunk.
 func ioregString(chunk, key string) string {
 	re, ok := ioregStrRe[key]
 	if !ok {
-		re = regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" = "([^"]*)"`)
-		ioregStrRe[key] = re
+		re = compileIoregStrRe(key)
 	}
 	if m := re.FindStringSubmatch(chunk); m != nil {
 		return m[1]
@@ -173,8 +192,7 @@ func ioregString(chunk, key string) string {
 func ioregInt(chunk, key string) int64 {
 	re, ok := ioregIntRe[key]
 	if !ok {
-		re = regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" = (0x[0-9a-fA-F]+|\d+)`)
-		ioregIntRe[key] = re
+		re = compileIoregIntRe(key)
 	}
 	if m := re.FindStringSubmatch(chunk); m != nil {
 		if n, err := strconv.ParseInt(m[1], 0, 64); err == nil {
