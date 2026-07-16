@@ -88,7 +88,11 @@ func (s *Stage2) detail(format string, args ...any) {
 func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 	s.detail("waiting for the flash-package disk")
 	fmt.Fprintln(s.Out, "Waiting for the device's flashpkg USB disk...")
-	disk, err := WaitForUMSDiskAt(ctx, LUNSelector{Vendor: FlashpkgVendor, PortPath: s.PortPath}, flashpkgWait)
+	// PortHint, not exact match: the gadget can train at a different USB speed
+	// than the bootROM's recovery device, which moves it to the connector's
+	// other root-hub port (e.g. recovery high-speed at usb 1-1, SuperSpeed
+	// gadget at usb 1-2 — seen live on an Orin Nano on macOS).
+	disk, err := WaitForUMSDiskAt(ctx, LUNSelector{Vendor: FlashpkgVendor, PortPath: s.PortPath, PortHint: true}, flashpkgWait)
 	if err != nil {
 		return err
 	}
@@ -101,7 +105,7 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 	if err := s.verifyDeviceIdentity(ctx, disk); err != nil {
 		return err
 	}
-	s.Session = disk.Serial
+	s.adoptGadget(disk)
 	s.detail("sending flash commands + bootloader")
 	s.HandoffStarted = true
 	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--blob", s.FlashPackagePath}, nil); err != nil {
@@ -111,6 +115,17 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return err
 	}
 	return s.release(ctx, disk)
+}
+
+// adoptGadget re-pins stage-2 correlation to the identity-verified gadget LUN:
+// every later LUN (rootfs export, final status) appears on the gadget's own
+// port with its session id, not on the port the bootROM enumerated at.
+func (s *Stage2) adoptGadget(disk UMSDisk) {
+	if disk.PortPath != "" && disk.PortPath != s.PortPath {
+		fmt.Fprintf(s.Out, "  gadget re-enumerated at usb %s (recovery was at usb %s)\n", disk.PortPath, s.PortPath)
+		s.PortPath = disk.PortPath
+	}
+	s.Session = disk.Serial
 }
 
 // verifyDeviceIdentity reads the initrd-created device.json before replacing

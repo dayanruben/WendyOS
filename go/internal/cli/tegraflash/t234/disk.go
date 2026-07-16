@@ -49,6 +49,13 @@ type LUNSelector struct {
 	Vendor   string
 	PortPath string
 	Session  string
+	// PortHint marks PortPath as preferred rather than required. The first LUN
+	// after RCM boot can train at a different USB speed than the bootROM's
+	// recovery device, and the USB2/USB3 phys of one physical connector are
+	// distinct root-hub ports — so the gadget legitimately appears off the
+	// recovery port. With PortHint set, an exact port match still wins, but a
+	// single off-port candidate is accepted; several candidates fail closed.
+	PortHint bool
 }
 
 var scanUMSDisks = listUMSDisks
@@ -120,6 +127,20 @@ func WaitForUMSDiskAt(ctx context.Context, selector LUNSelector, timeout time.Du
 				return matches[0], nil
 			case len(matches) > 1:
 				return UMSDisk{}, fmt.Errorf("found %d USB storage devices matching %q at port %q/session %q — correlation is ambiguous", len(matches), selector.Vendor, selector.PortPath, selector.Session)
+			}
+			if selector.PortHint && selector.PortPath != "" {
+				var offPort []UMSDisk
+				for _, d := range disks {
+					if d.Vendor == selector.Vendor && d.PortPath != "" && (selector.Session == "" || strings.EqualFold(d.Serial, selector.Session)) {
+						offPort = append(offPort, d)
+					}
+				}
+				switch {
+				case len(offPort) == 1:
+					return offPort[0], nil
+				case len(offPort) > 1:
+					return UMSDisk{}, fmt.Errorf("found %d USB storage devices matching %q while none is at the recovery port %q — cannot tell which board re-enumerated; flash one Jetson at a time", len(offPort), selector.Vendor, selector.PortPath)
+				}
 			}
 			// The device exports "flashpkg" instead of the requested LUN when
 			// its side of the flash failed early — surface that instead of

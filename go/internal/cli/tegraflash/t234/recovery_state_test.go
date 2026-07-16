@@ -174,3 +174,66 @@ func TestAwaitFinalStatusCollectsLogsAndRequiresSuccess(t *testing.T) {
 		t.Fatalf("final status = %+v", status)
 	}
 }
+
+// After RCM boot the gadget can train at a different USB speed than the
+// bootROM's recovery device, and USB2/USB3 phys of one physical connector are
+// distinct root-hub ports (seen live on macOS: recovery at usb 1-1, SuperSpeed
+// gadget at usb 1-2). The first-LUN wait must treat the recovery port as a
+// hint: exact match preferred, a unique off-port candidate accepted, several
+// candidates fail closed.
+func TestFirstLUNWaitAcceptsUniqueOffPortGadget(t *testing.T) {
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return []UMSDisk{{DevPath: "/dev/disk6", Vendor: FlashpkgVendor, PortPath: "1-2", Serial: "f3885343"}}, nil
+	})
+	disk, err := WaitForUMSDiskAt(context.Background(), LUNSelector{Vendor: FlashpkgVendor, PortPath: "1-1", PortHint: true}, time.Second)
+	if err != nil || disk.DevPath != "/dev/disk6" {
+		t.Fatalf("off-port gadget = %+v, err=%v", disk, err)
+	}
+}
+
+func TestFirstLUNWaitPrefersExactPortMatch(t *testing.T) {
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return []UMSDisk{
+			{DevPath: "/dev/other", Vendor: FlashpkgVendor, PortPath: "3-2", Serial: "aaaaaaaa"},
+			{DevPath: "/dev/mine", Vendor: FlashpkgVendor, PortPath: "1-1", Serial: "bbbbbbbb"},
+		}, nil
+	})
+	disk, err := WaitForUMSDiskAt(context.Background(), LUNSelector{Vendor: FlashpkgVendor, PortPath: "1-1", PortHint: true}, time.Second)
+	if err != nil || disk.DevPath != "/dev/mine" {
+		t.Fatalf("exact-port disk = %+v, err=%v", disk, err)
+	}
+}
+
+func TestFirstLUNWaitRejectsMultipleOffPortCandidates(t *testing.T) {
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return []UMSDisk{
+			{DevPath: "/dev/a", Vendor: FlashpkgVendor, PortPath: "1-2", Serial: "aaaaaaaa"},
+			{DevPath: "/dev/b", Vendor: FlashpkgVendor, PortPath: "3-2", Serial: "bbbbbbbb"},
+		}, nil
+	})
+	_, err := WaitForUMSDiskAt(context.Background(), LUNSelector{Vendor: FlashpkgVendor, PortPath: "1-1", PortHint: true}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "none is at the recovery port") {
+		t.Fatalf("multi-candidate error = %v", err)
+	}
+}
+
+// Waits after the first LUN pin the gadget's own port + session; an off-port
+// LUN must never satisfy them, hint or not.
+func TestSubsequentLUNWaitRequiresExactPort(t *testing.T) {
+	withFastUMSPoll(t)
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return []UMSDisk{{DevPath: "/dev/other", Vendor: "nvme0n1", PortPath: "1-2", Serial: "f3885343"}}, nil
+	})
+	_, err := WaitForUMSDiskAt(context.Background(), LUNSelector{Vendor: "nvme0n1", PortPath: "1-1", Session: "f3885343"}, 3*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("off-port subsequent wait error = %v", err)
+	}
+}
+
+func TestAdoptGadgetRepinsPortAndSession(t *testing.T) {
+	s := &Stage2{PortPath: "1-1", Out: io.Discard}
+	s.adoptGadget(UMSDisk{DevPath: "/dev/disk6", Vendor: FlashpkgVendor, PortPath: "1-2", Serial: "f3885343"})
+	if s.PortPath != "1-2" || s.Session != "f3885343" {
+		t.Fatalf("adopted state: port=%q session=%q", s.PortPath, s.Session)
+	}
+}
