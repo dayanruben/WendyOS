@@ -170,6 +170,14 @@ func validateDeviceIdentity(got DeviceIdentity, session string, want IdentityExp
 	if got.SessionID == "" || !strings.EqualFold(got.SessionID, session) {
 		return fmt.Errorf("recovery device session %q does not match USB LUN session %q", got.SessionID, session)
 	}
+	// The initrd reports UNKNOWN when it could not parse its own device tree
+	// (initrds built before the WendyOS device-identity parsing fix choke on
+	// DTB compatibles with a variant suffix, e.g. the Orin Nano Super devkit's
+	// "nvidia,p3768-0000+p3767-0005-super"). That is a broken flashpack, not
+	// wrong hardware — say so, and still refuse the flash.
+	if got.ModuleID == "UNKNOWN" || got.CarrierID == "UNKNOWN" {
+		return fmt.Errorf("the recovery initrd could not identify the board's module/carrier — this flashpack's initrd cannot parse this device's identity; retry with a newer WendyOS recovery flashpack that includes the device-identity fix")
+	}
 	if got.ModuleID != want.ModuleID || got.ModuleSKU != want.ModuleSKU || got.CarrierID != want.CarrierID || got.CarrierSKU != want.CarrierSKU {
 		return fmt.Errorf("wrong Jetson hardware: detected module P%s-%s on carrier P%s-%s; flashpack requires module P%s-%s on carrier P%s-%s",
 			got.ModuleID, got.ModuleSKU, got.CarrierID, got.CarrierSKU, want.ModuleID, want.ModuleSKU, want.CarrierID, want.CarrierSKU)

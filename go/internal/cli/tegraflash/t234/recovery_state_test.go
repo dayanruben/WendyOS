@@ -81,6 +81,16 @@ func TestValidateDeviceIdentity(t *testing.T) {
 	if err := validateDeviceIdentity(got, "abcdef12", want); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("wrong-protocol error = %v", err)
 	}
+	// An initrd that failed to parse its device tree reports UNKNOWN (seen live
+	// on an Orin Nano whose DTB compatible carries a "-super" suffix). That is
+	// "identity unreadable", not "wrong hardware" — the error must say the
+	// flashpack's initrd is at fault, and still refuse the flash.
+	got.Protocol = DeviceIdentityProtocol
+	got.ModuleID, got.ModuleSKU, got.CarrierID, got.CarrierSKU = "UNKNOWN", "", "UNKNOWN", ""
+	err := validateDeviceIdentity(got, "abcdef12", want)
+	if err == nil || !strings.Contains(err.Error(), "could not identify") || strings.Contains(err.Error(), "wrong Jetson hardware") {
+		t.Fatalf("unknown-identity error = %v", err)
+	}
 }
 
 func TestRootfsWaitToleratesStaleFlashpkgTransition(t *testing.T) {

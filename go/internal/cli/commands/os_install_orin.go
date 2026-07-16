@@ -486,6 +486,15 @@ func orinRecoveryBriefingBox(opts t234InstallOptions) string {
 			"    "+briefNum.Render("3.")+" Keep the recovery USB-C cable attached until final SUCCESS.",
 		)
 	}
+	if runtime.GOOS == "darwin" {
+		lines = append(lines,
+			"",
+			briefMarker.Render("●")+" "+briefTitle.Render("macOS disk warnings"),
+			"  While flashing, macOS may complain \"The disk you attached was not readable\" —",
+			"  the Jetson's raw flashing disks are expected to look that way. Choose "+briefKey.Render("Ignore")+";",
+			"  "+briefKey.Render("Initialize…")+" or "+briefKey.Render("Eject")+" can corrupt or interrupt the flash.",
+		)
+	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }
 
