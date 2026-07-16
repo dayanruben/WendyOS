@@ -44,9 +44,11 @@ func tegraUSBHint() string {
 // e.g. at IOSCSIPeripheralDeviceType00, loses them; verified on the real
 // flashing gadget.)
 func listUMSDisks() ([]UMSDisk, error) {
-	// Root at each USB device so the chunk contains both the gadget's physical
-	// locationID and its descendant SCSI inquiry/IOMedia properties.
-	out, err := exec.Command("ioreg", "-p", "IOUSB", "-rc", "IOUSBHostDevice", "-l", "-w0").Output()
+	// Root at each USB device in the default IOService plane so the chunk
+	// contains both the gadget's physical locationID and its descendant SCSI
+	// inquiry/IOMedia properties. The IOUSB plane omits the block-storage
+	// subtree, leaving Vendor Identification / BSD Name empty.
+	out, err := exec.Command("ioreg", "-rc", "IOUSBHostDevice", "-l", "-w0").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ioreg: %w", err)
 	}
@@ -92,7 +94,9 @@ func macUSBPortPath(location int64) string {
 		}
 		ports = append(ports, strconv.FormatInt(port, 10))
 	}
-	if bus == 0 || len(ports) == 0 {
+	// bus 0 is a real controller on Apple Silicon; gousb (portKey) numbers it
+	// the same way, so only an empty port chain (a root hub) is unusable here.
+	if len(ports) == 0 {
 		return ""
 	}
 	return fmt.Sprintf("%d-%s", bus, strings.Join(ports, "."))
