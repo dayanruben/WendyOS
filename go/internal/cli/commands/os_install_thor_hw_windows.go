@@ -74,7 +74,7 @@ func pickThorRecoveryDevice() (thorDevice, error) {
 			// The user already confirmed the Thor is in recovery mode, so an empty
 			// scan usually means cabling or the button sequence needs another try.
 			// Wait passively (spinner) until a device appears or the user quits.
-			if recovery, err = waitForThorRecovery(scanRecovery); err != nil {
+			if recovery, err = waitForRecovery(thorRecoveryHints(), scanRecovery); err != nil {
 				return thorDevice{}, err
 			}
 		}

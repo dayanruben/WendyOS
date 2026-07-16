@@ -579,13 +579,32 @@ func byteProgress(written, total int64) string {
 	return fmt.Sprintf("%d%% · %.1f/%.1f GiB", pct, float64(written)/gib, float64(total)/gib)
 }
 
-// waitForThorRecovery handles an empty recovery scan: the user already confirmed
-// the Thor is in recovery mode, so this usually means cabling or the button
-// sequence needs another try. Explain what to check once, then rescan passively
-// every 1.5s under a spinner until a Jetson appears — no keypress needed — or
-// the user quits with q/ctrl+c. Always returns ≥1 device on success. Generic so
-// both the gousb (rcm.RecoveryDevice) and WinUSB (winusb.Device) scans share it.
-func waitForThorRecovery[T any](scan func() ([]T, error)) ([]T, error) {
+// recoveryWaitHints carries the device-specific text shown while waiting for a
+// Jetson to appear in USB recovery mode, so the shared wait UI names the right
+// board and cabling/buttons instead of hardcoding Thor.
+type recoveryWaitHints struct {
+	label       string // e.g. "Thor" or "Jetson AGX Orin"
+	cablingLine string // body of the "USB-C cable is in ..." bullet
+	buttonLine  string // body of the "recovery button sequence: ..." bullet
+}
+
+// thorRecoveryHints is the wait-UI text for a Jetson AGX Thor.
+func thorRecoveryHints() recoveryWaitHints {
+	return recoveryWaitHints{
+		label:       "Thor",
+		cablingLine: "the USB-C cable is in the " + briefPort.Render("port next to the HDMI port"),
+		buttonLine:  "the recovery button sequence: hold " + briefKey.Render("Force Recovery") + " (middle), tap " + briefKey.Render("Reset") + " (right), release",
+	}
+}
+
+// waitForRecovery handles an empty recovery scan: the user already confirmed the
+// board is in recovery mode, so this usually means cabling or the button
+// sequence needs another try. Explain what to check once (device-specific via
+// hints), then rescan passively every 1.5s under a spinner until a Jetson
+// appears — no keypress needed — or the user quits with q/ctrl+c. Always returns
+// ≥1 device on success. Generic so both the gousb (rcm.RecoveryDevice) and
+// WinUSB (winusb.Device) scans share it.
+func waitForRecovery[T any](hints recoveryWaitHints, scan func() ([]T, error)) ([]T, error) {
 	if !isInteractiveTerminal() {
 		return nil, fmt.Errorf("no Jetson found in USB recovery mode")
 	}
@@ -593,11 +612,11 @@ func waitForThorRecovery[T any](scan func() ([]T, error)) ([]T, error) {
 	fmt.Println()
 	fmt.Println(tui.WarningMessage("No Jetson in USB recovery mode yet — it will be picked up automatically once it appears."))
 	fmt.Println("  While this keeps scanning, double-check:")
-	fmt.Println("   • the USB-C cable is in the " + briefPort.Render("port next to the HDMI port"))
-	fmt.Println("   • the recovery button sequence: hold " + briefKey.Render("Force Recovery") + " (middle), tap " + briefKey.Render("Reset") + " (right), release")
+	fmt.Println("   • " + hints.cablingLine)
+	fmt.Println("   • " + hints.buttonLine)
 	fmt.Println()
 
-	p := tui.NewProgressProgram(tui.NewSpinner("Waiting for the Thor to appear... (press q to quit)"))
+	p := tui.NewProgressProgram(tui.NewSpinner("Waiting for the " + hints.label + " to appear... (press q to quit)"))
 	stop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(1500 * time.Millisecond)

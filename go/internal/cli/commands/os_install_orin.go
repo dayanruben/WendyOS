@@ -64,7 +64,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err := confirmOrinReady(opts); err != nil {
 		return err
 	}
-	dev, err := pickUnixRecoveryDevice(opts.DeviceName, func(d rcm.RecoveryDevice) bool { return d.IsOrin() })
+	dev, err := pickUnixRecoveryDevice(orinRecoveryHints(opts), func(d rcm.RecoveryDevice) bool { return d.IsOrin() })
 	if err != nil {
 		return err
 	}
@@ -408,6 +408,21 @@ func confirmOrinReady(opts t234InstallOptions) error {
 		return ErrUserCancelled
 	}
 	return err
+}
+
+// orinRecoveryHints is the USB-recovery wait-UI text for a T234 Orin target,
+// mirroring the cabling/button guidance in orinRecoveryBriefingBox so the
+// shared wait UI never shows Thor's port/buttons for an Orin.
+func orinRecoveryHints(opts t234InstallOptions) recoveryWaitHints {
+	port := "the USB-C recovery/device-mode port"
+	if opts.DeviceType == orinDeviceType {
+		port = "the USB-C port next to the 40-pin header"
+	}
+	return recoveryWaitHints{
+		label:       opts.DeviceName,
+		cablingLine: "the USB-C cable is in " + briefPort.Render(port),
+		buttonLine:  "the recovery sequence: power off, hold " + briefKey.Render("Force Recovery") + ", tap " + briefKey.Render("Reset/Power") + ", release Force Recovery",
+	}
 }
 
 func orinRecoveryBriefingBox(opts t234InstallOptions) string {

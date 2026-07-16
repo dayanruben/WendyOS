@@ -35,7 +35,7 @@ func thorPrepareHost(out io.Writer) error {
 // pickThorRecoveryDevice lists Jetsons in recovery mode and selects one, with a
 // rescan loop and USB-access guidance.
 func pickThorRecoveryDevice() (thorDevice, error) {
-	dev, err := pickUnixRecoveryDevice("Thor", func(d rcm.RecoveryDevice) bool { return d.IsThor() })
+	dev, err := pickUnixRecoveryDevice(thorRecoveryHints(), func(d rcm.RecoveryDevice) bool { return d.IsThor() })
 	if err != nil {
 		return thorDevice{}, err
 	}
@@ -45,7 +45,7 @@ func pickThorRecoveryDevice() (thorDevice, error) {
 // pickUnixRecoveryDevice selects only devices matching the requested family.
 // Filtering happens before the single-device fast path and on every rescan, so
 // an attached Orin can never be selected by a Thor installation (or vice versa).
-func pickUnixRecoveryDevice(label string, match func(rcm.RecoveryDevice) bool) (rcm.RecoveryDevice, error) {
+func pickUnixRecoveryDevice(hints recoveryWaitHints, match func(rcm.RecoveryDevice) bool) (rcm.RecoveryDevice, error) {
 	scan := func() ([]rcm.RecoveryDevice, error) {
 		devs, err := rcm.ListRecoveryDevices()
 		return filterRecoveryDevices(devs, match), err
@@ -67,10 +67,10 @@ func pickUnixRecoveryDevice(label string, match func(rcm.RecoveryDevice) bool) (
 			return rcm.RecoveryDevice{}, err
 		}
 		if len(devs) == 0 {
-			// The user already confirmed the Thor is in recovery mode, so an empty
+			// The user already confirmed the board is in recovery mode, so an empty
 			// scan usually means cabling or the button sequence needs another try.
 			// Wait passively (spinner) until a device appears or the user quits.
-			if devs, err = waitForThorRecovery(scan); err != nil {
+			if devs, err = waitForRecovery(hints, scan); err != nil {
 				return rcm.RecoveryDevice{}, err
 			}
 		}
@@ -89,7 +89,7 @@ func pickUnixRecoveryDevice(label string, match func(rcm.RecoveryDevice) bool) (
 					Value:   d.PathKey,
 				})
 			}
-			sel, err := pickFromItems("Select the "+label+" to flash", items)
+			sel, err := pickFromItems("Select the "+hints.label+" to flash", items)
 			if err != nil {
 				return rcm.RecoveryDevice{}, err
 			}
