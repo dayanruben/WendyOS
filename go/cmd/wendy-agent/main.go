@@ -32,6 +32,7 @@ import (
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
+	"github.com/wendylabsinc/wendy/go/internal/agent/hostexec"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostnetwork"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
@@ -231,6 +232,7 @@ func main() {
 	containerSvc := services.NewContainerService(logger, containerdClient,
 		containerSvcOpts...,
 	)
+	shellSvc := services.NewShellService(logger, hostexec.New())
 	audioSvc := services.NewAudioService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
@@ -389,12 +391,12 @@ func main() {
 	}
 
 	// mTLS organization-equality enforcement mode. Read once here so the
-	// startMTLSServer closure can capture it. The default (empty value) is grace,
-	// which enforces org-equality for certs that carry an org identity but allows
-	// legacy certs without one — easing migration before cert rotation completes.
+	// startMTLSServer closure can capture it. The default (empty value) is strict,
+	// which rejects client certs that carry no org identity. Set to grace for
+	// migration mode, which allows legacy certs without org identity.
 	orgMode, ok := interceptor.ParseOrgMode(os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT"))
 	if !ok {
-		logger.Warn("WENDY_MTLS_ORG_ENFORCEMENT has unrecognised value; defaulting to grace",
+		logger.Warn("WENDY_MTLS_ORG_ENFORCEMENT has unrecognised value; defaulting to strict",
 			zap.String("value", os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT")))
 	}
 	logger.Info("mTLS org enforcement mode", zap.String("mode", orgMode.String()))
@@ -427,12 +429,16 @@ func main() {
 			if brokerURL == "" {
 				brokerURL = brokerURLForCloudHost(cloudHost)
 			}
-			_, chainPEM, _ := provisioningSvc.ProvisioningCerts()
+			certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
+			keyPEM := string(keyData)
+			for i := range keyData {
+				keyData[i] = 0
+			}
 			if chainPEM == "" {
 				logger.Warn("CA chain PEM unavailable; cannot start tunnel broker (re-provision if this persists)")
 				return
 			}
-			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, chainPEM, mtlsPortNum)
+			client := services.NewTunnelBrokerClient(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, mtlsPortNum)
 			client.Run(ctx)
 		}()
 	}
@@ -535,6 +541,15 @@ func main() {
 
 		// Register all services on the mTLS server.
 		registerAllServices(srv)
+
+		// WendyShellService opens an interactive *host* root shell. It is
+		// deliberately registered ONLY here, on the mTLS server, so it is
+		// reachable only on a provisioned device over an authenticated,
+		// org-checked connection. It is intentionally NOT part of
+		// registerAllServices: that would also expose it on the unauthenticated
+		// plaintext pre-provisioning server (handing anyone on the LAN a host
+		// root shell) and on the local admin socket.
+		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)

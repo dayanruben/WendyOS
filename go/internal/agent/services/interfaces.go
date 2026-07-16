@@ -29,7 +29,9 @@ type HardwareDiscoverer interface {
 // BluetoothManager abstracts Bluetooth peripheral management.
 type BluetoothManager interface {
 	Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBluetoothPeripheral, error)
-	Connect(ctx context.Context, address string, pair, trust bool) error
+	// Connect reports whether the device is paired after the connection is
+	// established (pairing can fail while the connection still succeeds).
+	Connect(ctx context.Context, address string, pair, trust bool) (paired bool, err error)
 	Disconnect(ctx context.Context, address string) error
 	Forget(ctx context.Context, address string) error
 }

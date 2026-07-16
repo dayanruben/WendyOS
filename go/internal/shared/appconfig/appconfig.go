@@ -164,6 +164,10 @@ type ServiceConfig struct {
 	// Resources optionally caps this service's CPU/memory/PID usage, overriding
 	// any app-level resources wholesale.
 	Resources *ResourceLimits `json:"resources,omitempty"`
+	// Readiness gates only this service's postStart hooks — it never delays
+	// other services' startup order (that is dependsOn/WDY-879 territory).
+	Readiness *ReadinessConfig `json:"readiness,omitempty"`
+	Hooks     *HooksConfig     `json:"hooks,omitempty"`
 }
 
 // ComponentConfig references one app of a fleet (WDY-1755/1776). The fleet
@@ -498,6 +502,26 @@ func ValidateServiceName(name string) error {
 	return nil
 }
 
+// ValidateReadiness checks a readiness probe configuration: tcpSocket.port
+// must be 1-65535 and timeoutSeconds must be non-negative. prefix is used in
+// error messages (e.g. "readiness" for top-level, or
+// `services["foo"].readiness` for service-level readiness). A nil r is valid.
+func ValidateReadiness(prefix string, r *ReadinessConfig) error {
+	if r == nil {
+		return nil
+	}
+	if r.TCPSocket != nil {
+		port := r.TCPSocket.Port
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("%s.tcpSocket.port must be between 1 and 65535, got %d", prefix, port)
+		}
+	}
+	if r.TimeoutSeconds < 0 {
+		return fmt.Errorf("%s.timeoutSeconds must not be negative, got %d", prefix, r.TimeoutSeconds)
+	}
+	return nil
+}
+
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
 	if err := ValidateAppID(c.AppID); err != nil {
@@ -540,16 +564,8 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
-	if c.Readiness != nil {
-		if c.Readiness.TCPSocket != nil {
-			port := c.Readiness.TCPSocket.Port
-			if port < 1 || port > 65535 {
-				return fmt.Errorf("readiness.tcpSocket.port must be between 1 and 65535, got %d", port)
-			}
-		}
-		if c.Readiness.TimeoutSeconds < 0 {
-			return fmt.Errorf("readiness.timeoutSeconds must not be negative, got %d", c.Readiness.TimeoutSeconds)
-		}
+	if err := ValidateReadiness("readiness", c.Readiness); err != nil {
+		return err
 	}
 
 	if c.Frameworks != nil {
@@ -581,6 +597,9 @@ func (c *AppConfig) Validate() error {
 			}
 		}
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
+			return err
+		}
+		if err := ValidateReadiness(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
 			return err
 		}
 		if svc.Frameworks != nil {
@@ -774,11 +793,18 @@ func LoadComposeCompanion(dir string) (*AppConfig, []string, error) {
 		return nil, nil, err
 	}
 
+	if err := ValidateReadiness("readiness", cfg.Readiness); err != nil {
+		return nil, nil, err
+	}
+
 	for name, svc := range cfg.Services {
 		if svc == nil {
 			return nil, nil, fmt.Errorf("services[%q]: must not be null", name)
 		}
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
+			return nil, nil, err
+		}
+		if err := ValidateReadiness(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -849,12 +875,13 @@ func ValidateJSON(data []byte) []string {
 
 	var warnings []string
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
-	warnings = append(warnings, validateHooksJSON(raw["hooks"])...)
+	warnings = append(warnings, validateHooksJSON(raw["hooks"], "hooks")...)
 	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
 
-	// Validate service-level entitlements and frameworks when a services map is present.
-	// Unmarshal into map[string]json.RawMessage first so a null/invalid entry
-	// for one service doesn't silently drop warnings for all other services.
+	// Validate service-level entitlements, frameworks, and hooks when a
+	// services map is present. Unmarshal into map[string]json.RawMessage first
+	// so a null/invalid entry for one service doesn't silently drop warnings
+	// for all other services.
 	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
 		var serviceEntries map[string]json.RawMessage
 		if err := json.Unmarshal(servicesRaw, &serviceEntries); err == nil {
@@ -866,6 +893,15 @@ func ValidateJSON(data []byte) []string {
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
+				warnings = append(warnings, validateHooksJSON(svc["hooks"], fmt.Sprintf("services[%q].hooks", name))...)
+			}
+
+			// A top-level hooks.postStart.agent has no app-level container to
+			// run in once the app is split into services — only the
+			// .agent variant is impossible app-level; readiness and the rest
+			// of hooks remain legal as an app-level fallback (later stage).
+			if len(serviceEntries) > 0 && hooksPostStartAgentSet(raw["hooks"]) {
+				warnings = append(warnings, "top-level hooks.postStart.agent is ignored for multi-service apps (there is no app-level container to run it in); declare it under services.<name>.hooks")
 			}
 		}
 	}
@@ -995,33 +1031,52 @@ var nonPortableOpenerCommands = map[string]string{
 	"start":    "Windows",
 }
 
-func validateHooksJSON(hooksRaw json.RawMessage) []string {
-	if len(hooksRaw) == 0 {
+// LintHooks returns portability warnings for h (currently: postStart.cli
+// commands that shell out to platform-specific URL openers). prefix is used
+// in the warning message (e.g. "hooks" for top-level, or
+// `services["foo"].hooks` for service-level hooks). A nil h returns nil.
+func LintHooks(h *HooksConfig, prefix string) []string {
+	if h == nil || h.PostStart == nil || h.PostStart.CLI == "" {
 		return nil
 	}
 
-	var hooks struct {
-		PostStart *struct {
-			CLI string `json:"cli"`
-		} `json:"postStart"`
-	}
-	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
-		return nil
-	}
-	if hooks.PostStart == nil || hooks.PostStart.CLI == "" {
-		return nil
-	}
-
-	cli := strings.TrimLeft(hooks.PostStart.CLI, " \t")
+	cli := strings.TrimLeft(h.PostStart.CLI, " \t")
 	for opener, platform := range nonPortableOpenerCommands {
 		if cli == opener || strings.HasPrefix(cli, opener+" ") || strings.HasPrefix(cli, opener+"\t") {
 			return []string{fmt.Sprintf(
-				"hooks.postStart.cli starts with %q, which only works on %s; use \"openURL\" to open a URL portably across macOS, Linux, and Windows",
-				opener, platform,
+				"%s.postStart.cli starts with %q, which only works on %s; use \"openURL\" to open a URL portably across macOS, Linux, and Windows",
+				prefix, opener, platform,
 			)}
 		}
 	}
 	return nil
+}
+
+// validateHooksJSON decodes raw hooks JSON and lints it via LintHooks. prefix
+// is used in the warning message (see LintHooks).
+func validateHooksJSON(hooksRaw json.RawMessage, prefix string) []string {
+	if len(hooksRaw) == 0 {
+		return nil
+	}
+
+	var hooks HooksConfig
+	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
+		return nil
+	}
+	return LintHooks(&hooks, prefix)
+}
+
+// hooksPostStartAgentSet reports whether hooksRaw decodes to a non-empty
+// hooks.postStart.agent field.
+func hooksPostStartAgentSet(hooksRaw json.RawMessage) bool {
+	if len(hooksRaw) == 0 {
+		return false
+	}
+	var hooks HooksConfig
+	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
+		return false
+	}
+	return hooks.PostStart != nil && hooks.PostStart.Agent != ""
 }
 
 // IsSharedNamespaceIsolation reports whether isolation is a mode that shares

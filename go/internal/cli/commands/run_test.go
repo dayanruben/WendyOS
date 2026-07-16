@@ -78,7 +78,7 @@ func TestExpandHookEnv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := expandHookEnv(tc.input, tc.hostname, tc.appID)
+			got := expandHookEnv(tc.input, tc.hostname, tc.appID, "")
 			if got != tc.want {
 				t.Errorf("expandHookEnv(%q) = %q, want %q", tc.input, got, tc.want)
 			}
@@ -131,12 +131,41 @@ func TestStartPostStartHook_OpenURL(t *testing.T) {
 		},
 	}
 
-	cmd := startPostStartHook(context.Background(), cfg, "device.local")
+	cmd := startPostStartHook(context.Background(), cfg, "device.local", "")
 	if cmd != nil {
 		t.Errorf("startPostStartHook() returned non-nil cmd for openURL-only hook")
 	}
 	if got != "http://device.local:3001/com.example.app" {
 		t.Errorf("openURL = %q, want expanded URL", got)
+	}
+}
+
+// TestStartPostStartHook_OpenURLIPv6HostBracketed locks the fix for the
+// malformed-URL bug: an IPv6 hostname substituted into an openURL template
+// must be bracketed, otherwise "http://2600:...:f7:6001" reads the port as
+// one more hextet and is unparseable.
+func TestStartPostStartHook_OpenURLIPv6HostBracketed(t *testing.T) {
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+
+	var got string
+	browserOpen = func(url string) error {
+		got = url
+		return nil
+	}
+
+	cfg := &appconfig.AppConfig{
+		AppID: "com.example.app",
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{
+				OpenURL: "http://${WENDY_HOSTNAME}:6001",
+			},
+		},
+	}
+
+	startPostStartHook(context.Background(), cfg, "2600:1011:a003:4221:be41:6859:13c0:f7", "")
+	if got != "http://[2600:1011:a003:4221:be41:6859:13c0:f7]:6001" {
+		t.Errorf("openURL = %q, want bracketed IPv6 URL", got)
 	}
 }
 
@@ -159,7 +188,7 @@ func TestStartPostStartHook_OpenURLWindowsStyleVars(t *testing.T) {
 		},
 	}
 
-	startPostStartHook(context.Background(), cfg, "device.local")
+	startPostStartHook(context.Background(), cfg, "device.local", "")
 	if got != "http://device.local:3001" {
 		t.Errorf("openURL = %q, want %q", got, "http://device.local:3001")
 	}
@@ -183,7 +212,7 @@ func TestStartPostStartHook_OpenURLErrorDoesNotPropagate(t *testing.T) {
 	}
 
 	// Should not panic and should not block; CLI hook is not set so returns nil.
-	cmd := startPostStartHook(context.Background(), cfg, "h")
+	cmd := startPostStartHook(context.Background(), cfg, "h", "")
 	if cmd != nil {
 		t.Errorf("startPostStartHook() returned non-nil cmd")
 	}
@@ -208,7 +237,7 @@ func TestStartPostStartHook_OpenURLNotCalledWhenEmpty(t *testing.T) {
 		},
 	}
 
-	startPostStartHook(context.Background(), cfg, "h")
+	startPostStartHook(context.Background(), cfg, "h", "")
 	if called {
 		t.Errorf("browserOpen was called for cli-only hook")
 	}
@@ -216,17 +245,17 @@ func TestStartPostStartHook_OpenURLNotCalledWhenEmpty(t *testing.T) {
 
 func TestStartPostStartHook_NoHookReturnsNil(t *testing.T) {
 	cfg := &appconfig.AppConfig{AppID: "com.example.app"}
-	if cmd := startPostStartHook(context.Background(), cfg, "h"); cmd != nil {
+	if cmd := startPostStartHook(context.Background(), cfg, "h", ""); cmd != nil {
 		t.Errorf("startPostStartHook() = %v, want nil for missing hooks", cmd)
 	}
 
 	cfg.Hooks = &appconfig.HooksConfig{}
-	if cmd := startPostStartHook(context.Background(), cfg, "h"); cmd != nil {
+	if cmd := startPostStartHook(context.Background(), cfg, "h", ""); cmd != nil {
 		t.Errorf("startPostStartHook() = %v, want nil for empty Hooks", cmd)
 	}
 
 	cfg.Hooks.PostStart = &appconfig.HookCommand{}
-	if cmd := startPostStartHook(context.Background(), cfg, "h"); cmd != nil {
+	if cmd := startPostStartHook(context.Background(), cfg, "h", ""); cmd != nil {
 		t.Errorf("startPostStartHook() = %v, want nil for empty PostStart", cmd)
 	}
 }

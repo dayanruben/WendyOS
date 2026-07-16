@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wendy.sh/schemas/wendy.json",
+  "$id": "https://wendy.dev/schemas/wendy.json",
   "title": "Wendy App Configuration",
   "description": "Configuration file for Wendy edge computing applications (wendy.json).",
   "type": "object",
@@ -452,7 +452,9 @@
           "type": "object",
           "description": "Environment variables to inject into the service's container. Values may reference host environment variables with ${VAR} (or $VAR), expanded by `wendy run` at deploy time; an entry whose value expands to empty is dropped so the container falls back to its own default.",
           "additionalProperties": { "type": "string" }
-        }
+        },
+        "readiness": { "$ref": "#/$defs/readiness" },
+        "hooks": { "$ref": "#/$defs/hooks" }
       }
     },
     "resourceLimits": {
