@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -199,6 +200,8 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 				printOrinBadStateHint(os.Stdout, opts)
 			}
 			return ErrUserCancelled
+		case isMacRawDiskPermissionError(err):
+			printOrinFullDiskAccessHint(os.Stdout)
 		case errors.Is(err, rcm.ErrUSBAccess):
 			fmt.Println("\n" + usbAccessHintBox())
 		case failedID >= orinStepCommands && massStorage != nil && massStorage.HandoffStarted:
@@ -393,6 +396,9 @@ func confirmOrinReady(opts t234InstallOptions) error {
 	fmt.Println()
 	fmt.Println(tui.Header("Recovering " + opts.DeviceName + " with WendyOS " + opts.Version))
 	fmt.Println(orinRecoveryBriefingBox(opts))
+	if note := orinMacFullDiskAccessNote(); note != "" {
+		fmt.Println(note)
+	}
 	if opts.Force {
 		return nil
 	}
@@ -422,6 +428,47 @@ func orinRecoveryBriefingBox(opts t234InstallOptions) string {
 		"    " + briefNum.Render("3.") + " Keep the recovery USB-C cable attached until final SUCCESS.",
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
+}
+
+// orinMacFullDiskAccessNote returns a short note (macOS only) warning that a USB
+// recovery flash writes directly to the Jetson's disk, which macOS gates behind
+// Full Disk Access for the terminal. Mirrors the Windows WinUSB-driver note.
+// Empty string on other platforms.
+func orinMacFullDiskAccessNote() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	lines := []string{
+		briefMarker.Render("●") + " " + briefTitle.Render("First-time setup: Full Disk Access"),
+		"  Recovery writes directly to the Jetson's disk over USB, which macOS gates",
+		"  behind " + briefKey.Render("Full Disk Access") + " for your terminal. If macOS asks, choose " + briefKey.Render("Allow") + ".",
+		"  To pre-grant: " + briefPort.Render("System Settings ▸ Privacy & Security ▸ Full Disk Access") + ",",
+		"  enable your terminal (e.g. " + briefKey.Render("Terminal.app") + "), then quit and reopen it.",
+	}
+	return briefBorder.Render(strings.Join(lines, "\n"))
+}
+
+// isMacRawDiskPermissionError reports a macOS raw-disk open denied by TCC: the
+// sudo'd helper is root, but macOS still returns EPERM ("operation not
+// permitted") unless the terminal has Full Disk Access.
+func isMacRawDiskPermissionError(err error) bool {
+	return runtime.GOOS == "darwin" && err != nil && strings.Contains(err.Error(), "operation not permitted")
+}
+
+// printOrinFullDiskAccessHint explains the raw-disk permission failure and how
+// to grant Full Disk Access. macOS-specific; root/sudo does not bypass TCC.
+func printOrinFullDiskAccessHint(w io.Writer) {
+	body := strings.Join([]string{
+		thorHintTitle.Render("⚠  Permission denied opening the recovery disk"),
+		"",
+		"macOS blocked raw disk access — your terminal needs " + thorHintEmph.Render("Full Disk Access") + ".",
+		"Running under sudo isn't enough, and macOS won't pop a prompt for it.",
+		"",
+		"  1. Open " + thorHintCmd.Render("System Settings ▸ Privacy & Security ▸ Full Disk Access") + ".",
+		"  2. Enable your terminal (e.g. " + thorHintEmph.Render("Terminal.app") + "); use " + thorHintEmph.Render("+") + " to add it if it's missing.",
+		"  3. Fully quit and reopen the terminal, then re-run the flash.",
+	}, "\n")
+	fmt.Fprintln(w, "\n"+thorHintBorder.Render(body))
 }
 
 func printOrinBadStateHint(w io.Writer, opts t234InstallOptions) {
