@@ -340,6 +340,10 @@ func runT234Helper(ctx context.Context, args []string, onProgress func(done, tot
 	if err != nil {
 		return fmt.Errorf("locating wendy binary: %w", err)
 	}
+	// SECURITY: the target block device is identified by USB VID:PID before elevation
+	// and no NOPASSWD sudoers rule ships, so this re-exec is not an unprivileged
+	// escalation. A path glob cannot distinguish the gadget from the boot disk;
+	// hardening this means re-resolving the node by port/serial inside the helper.
 	cmd := exec.CommandContext(ctx, "sudo", append([]string{self, "__t234-write"}, args...)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
