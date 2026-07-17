@@ -57,7 +57,6 @@ func TestOSInstallPRMutualExclusion(t *testing.T) {
 		{"pr with nightly", []string{"--pr", "123", "--nightly"}, mutexErr},
 		{"pr with version", []string{"--pr", "123", "--version", "0.10.0"}, mutexErr},
 		{"pr with positional args", []string{"--pr", "123", "image.img", "/dev/disk4"}, mutexErr},
-		{"pr with thor device", []string{"--pr", "123", "--device-type", "jetson-agx-thor"}, "--pr does not support jetson-agx-thor yet"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

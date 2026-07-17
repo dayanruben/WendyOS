@@ -31,10 +31,11 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip heavy init for commands that don't need device/cloud setup.
-			// __usb-setup runs as root under sudo; skipping init avoids doing
-			// config/analytics writes (and an update check) as root.
+			// __usb-setup and __t234-write run as root under sudo; skipping init
+			// avoids config/analytics writes (and an update check) as root, and
+			// keeps the first-run banner out of the helper's captured output.
 			switch cmd.Name() {
-			case "__ble-check", "__usb-setup", "open-browser":
+			case "__ble-check", "__usb-setup", "__t234-write", "open-browser":
 				return nil
 			}
 
@@ -225,6 +226,7 @@ func NewRootCmd() *cobra.Command {
 		// Hidden
 		bleCheckCmd,
 		bmapWriteCmd,
+		newT234WriteCmd(),
 		newUSBSetupHiddenCmd(),
 		watchCmd,
 		buildCmd,
