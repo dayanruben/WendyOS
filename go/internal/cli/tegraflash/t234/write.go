@@ -89,11 +89,19 @@ func RunWriter(opts WriterOptions) error {
 
 // writeBlob writes a single file verbatim at offset 0 (the flashpkg LUN).
 func writeBlob(opts WriterOptions) error {
-	dev, err := os.OpenFile(opts.Device, os.O_WRONLY, 0)
+	// O_RDWR (not O_WRONLY): prepareRawTarget's SET_DISK_ATTRIBUTES IOCTL needs
+	// read+write access on the handle, and copyFileAt only ever writes.
+	dev, err := os.OpenFile(opts.Device, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
 	}
 	defer dev.Close()
+
+	// Same offline guard as writePlan: stop Windows auto-mounting a volume on
+	// the target LUN and denying the raw write. No-op off Windows.
+	if err := prepareRawTarget(dev); err != nil {
+		return err
+	}
 
 	size, err := blockDeviceSize(dev)
 	if err != nil {
@@ -128,6 +136,12 @@ func writePlan(opts WriterOptions) error {
 		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
 	}
 	defer dev.Close()
+
+	// Take the disk offline (Windows) so a volume the host mounts on the target
+	// — e.g. a stale ESP from a prior flash — cannot deny the raw write.
+	if err := prepareRawTarget(dev); err != nil {
+		return err
+	}
 
 	size, err := blockDeviceSize(dev)
 	if err != nil {

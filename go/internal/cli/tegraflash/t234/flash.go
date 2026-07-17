@@ -101,7 +101,7 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return fmt.Errorf("flashpkg disk %s is smaller (%d bytes) than the flash package (%d bytes)", disk.DevPath, disk.SizeBytes, flashpkgSize)
 	}
 
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 	if err := s.verifyDeviceIdentity(ctx, disk); err != nil {
 		return err
 	}
@@ -253,7 +253,7 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 		return fmt.Errorf("exported %s (%d bytes) is smaller than the flash layout (%d bytes)", s.Plan.RootfsDevice, disk.SizeBytes, min)
 	}
 
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 	fmt.Fprintf(s.Out, "Writing GPT + %d partitions...\n", len(s.Plan.Partitions))
 	start := time.Now()
 	err = s.RunHelper(ctx, []string{"--device", disk.RawPath, "--write-plan", "--layout", s.LayoutPath, "--images", s.ImagesDir, "--rootfs-device", s.Plan.RootfsDevice},
@@ -268,7 +268,7 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 	fmt.Fprintf(s.Out, "  partitions written in %v\n", time.Since(start).Round(time.Second))
 	// macOS re-probes the disk when the writer closes it and may auto-mount
 	// the freshly written FAT config partition; unmount before releasing.
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 	return s.release(ctx, disk)
 }
 
@@ -289,7 +289,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 
 	tmp, err := os.CreateTemp(s.TempDir, "t234-flashpkg-*.ext4")
 	if err != nil {
@@ -338,6 +338,15 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 		}
 	}
 	return res, nil
+}
+
+// unmount locks/unmounts the LUN's volumes, reporting (not failing on) a
+// volume that stayed mounted — the raw write that follows produces the real
+// error, and the warning explains it.
+func (s *Stage2) unmount(disk UMSDisk) {
+	if err := unmountUMSDisk(disk); err != nil {
+		fmt.Fprintf(s.Out, "  warning: %v\n", err)
+	}
 }
 
 // release forces the USB-level disconnect the device's initrd waits for,

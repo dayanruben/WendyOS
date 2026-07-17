@@ -125,7 +125,7 @@ func ListDevices() ([]Device, error) {
 		if err != nil {
 			continue
 		}
-		vid, pid, ok := parseVIDPID(instanceID)
+		vid, pid, ok := ParseVIDPID(instanceID)
 		if !ok || vid != VendorNVIDIA {
 			continue
 		}
@@ -134,7 +134,7 @@ func ListDevices() ([]Device, error) {
 			InstanceID: instanceID,
 			VID:        vid,
 			PID:        pid,
-			Serial:     instanceSerial(instanceID),
+			Serial:     InstanceSerial(instanceID),
 			devInst:    info.DevInst,
 		}
 
@@ -149,7 +149,7 @@ func ListDevices() ([]Device, error) {
 		// Best-effort: a missing path just yields an empty PathKey. This is stable
 		// across the RCM→gadget re-enumeration at the same physical port.
 		if v, err := set.DeviceRegistryProperty(info, windows.SPDRP_LOCATION_PATHS); err == nil {
-			d.LocationPath = firstString(v)
+			d.LocationPath = FirstString(v)
 		}
 
 		out = append(out, d)
@@ -157,9 +157,10 @@ func ListDevices() ([]Device, error) {
 	return out, nil
 }
 
-// parseVIDPID extracts VID and PID from a hardware/instance ID containing
-// "VID_XXXX&PID_YYYY" (case-insensitive hex).
-func parseVIDPID(id string) (vid, pid uint16, ok bool) {
+// ParseVIDPID extracts VID and PID from a hardware/instance ID containing
+// "VID_XXXX&PID_YYYY" (case-insensitive hex). Exported for package t234's
+// gadget-disk discovery, so both packages parse PnP IDs identically.
+func ParseVIDPID(id string) (vid, pid uint16, ok bool) {
 	up := strings.ToUpper(id)
 	v, okv := hexField(up, "VID_")
 	p, okp := hexField(up, "PID_")
@@ -182,11 +183,13 @@ func hexField(s, prefix string) (uint16, bool) {
 	return uint16(n), true
 }
 
-// instanceSerial returns the trailing instance element (after the last backslash),
+// InstanceSerial returns the trailing instance element (after the last backslash),
 // which is the device serial for devices that report one. A device with no USB
 // serial gets a Windows-generated id prefixed with "&" — we return it as-is; the
-// caller uses LocationPath for stable identity, not this.
-func instanceSerial(instanceID string) string {
+// caller uses LocationPath for stable identity, not this. Exported for package
+// t234, whose ReleaseUSB must extract the serial exactly the way it was
+// reported here.
+func InstanceSerial(instanceID string) string {
 	i := strings.LastIndex(instanceID, `\`)
 	if i < 0 || i+1 >= len(instanceID) {
 		return ""
@@ -194,9 +197,11 @@ func instanceSerial(instanceID string) string {
 	return instanceID[i+1:]
 }
 
-// firstString normalizes the interface{} returned by DeviceProperty for a
+// FirstString normalizes the interface{} returned by DeviceProperty for a
 // REG_MULTI_SZ (string slice) or REG_SZ (string) property to its first string.
-func firstString(v interface{}) string {
+// Exported for package t234; location paths compared across the two packages
+// must be normalized the same way.
+func FirstString(v interface{}) string {
 	switch t := v.(type) {
 	case []string:
 		if len(t) > 0 {
