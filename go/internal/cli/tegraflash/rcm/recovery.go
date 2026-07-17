@@ -1,6 +1,17 @@
 package rcm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrUSBAccess reports that a Jetson in recovery mode is present but the OS
+// refused to open it (LIBUSB_ERROR_ACCESS). On Linux this means the current
+// user lacks permission on the /dev/bus/usb node — fixed by a udev rule or
+// sudo; the caller turns this into actionable guidance. Declared here (not in
+// the gousb-tagged files) so the shared install flow can classify it on every
+// OS, including Windows.
+var ErrUSBAccess = errors.New("USB device access denied")
 
 // RecoveryDevice identifies a Jetson sitting in USB recovery mode. PathKey is the
 // physical USB location (bus + parent-port chain); it is stable across the

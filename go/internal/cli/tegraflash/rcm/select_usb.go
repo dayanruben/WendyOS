@@ -12,12 +12,6 @@ import (
 	"github.com/google/gousb"
 )
 
-// ErrUSBAccess reports that a Jetson in recovery mode is present but the OS
-// refused to open it (LIBUSB_ERROR_ACCESS). On Linux this means the current user
-// lacks permission on the /dev/bus/usb node — fixed by a udev rule or sudo; the
-// caller turns this into actionable guidance.
-var ErrUSBAccess = errors.New("USB device access denied")
-
 func isRecoveryPID(p gousb.ID) bool {
 	return IsT234RecoveryPID(uint16(p)) || p == gousb.ID(ProductThor)
 }
