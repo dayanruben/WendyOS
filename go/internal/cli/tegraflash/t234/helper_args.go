@@ -1,0 +1,117 @@
+//go:build darwin || linux || windows
+
+package t234
+
+import (
+	"fmt"
+	"io"
+	"strconv"
+)
+
+// HelperRequest is one parsed `__t234-write` invocation: either a USB release
+// or exactly one writer operation. Stage2 builds the argument lists (see
+// flash.go); this parser is shared by the privileged helper subcommand
+// (macOS/Linux, re-exec'd under sudo) and the in-process path (Windows, where
+// the whole process is already elevated), so both sides always agree.
+type HelperRequest struct {
+	Release       bool
+	ReleaseSerial string
+	ReleasePort   string
+	Writer        WriterOptions
+}
+
+// Args serializes the request into the flag list ParseWriterArgs parses back —
+// the argv protocol of the sudo re-exec boundary on macOS/Linux (Windows runs
+// requests in-process and never serializes). TestHelperArgsRoundTrip pins the
+// two directions against each other.
+func (r HelperRequest) Args() []string {
+	if r.Release {
+		args := []string{"--release"}
+		if r.ReleaseSerial != "" {
+			args = append(args, "--serial", r.ReleaseSerial)
+		}
+		if r.ReleasePort != "" {
+			args = append(args, "--port", r.ReleasePort)
+		}
+		return args
+	}
+	w := r.Writer
+	args := []string{"--device", w.Device}
+	switch {
+	case w.Blob != "":
+		args = append(args, "--blob", w.Blob)
+	case w.WritePlan:
+		args = append(args, "--write-plan", "--layout", w.LayoutPath, "--images", w.ImagesDir, "--rootfs-device", w.RootfsDevice)
+	case w.DumpTo != "":
+		args = append(args, "--dump", w.DumpTo, "--bytes", strconv.FormatInt(w.DumpBytes, 10))
+	}
+	return args
+}
+
+// ParseWriterArgs parses the flag-style argument list passed to the
+// `__t234-write` helper.
+func ParseWriterArgs(args []string) (HelperRequest, error) {
+	var req HelperRequest
+	next := func(i int, flag string) (string, error) {
+		if i+1 >= len(args) {
+			return "", fmt.Errorf("%s requires a value", flag)
+		}
+		return args[i+1], nil
+	}
+	for i := 0; i < len(args); i++ {
+		var err error
+		switch flag := args[i]; flag {
+		case "--device":
+			req.Writer.Device, err = next(i, flag)
+			i++
+		case "--blob":
+			req.Writer.Blob, err = next(i, flag)
+			i++
+		case "--write-plan":
+			req.Writer.WritePlan = true
+		case "--layout":
+			req.Writer.LayoutPath, err = next(i, flag)
+			i++
+		case "--images":
+			req.Writer.ImagesDir, err = next(i, flag)
+			i++
+		case "--rootfs-device":
+			req.Writer.RootfsDevice, err = next(i, flag)
+			i++
+		case "--dump":
+			req.Writer.DumpTo, err = next(i, flag)
+			i++
+		case "--bytes":
+			var v string
+			if v, err = next(i, flag); err == nil {
+				req.Writer.DumpBytes, err = strconv.ParseInt(v, 10, 64)
+			}
+			i++
+		case "--release":
+			req.Release = true
+		case "--serial":
+			req.ReleaseSerial, err = next(i, flag)
+			i++
+		case "--port":
+			req.ReleasePort, err = next(i, flag)
+			i++
+		default:
+			return HelperRequest{}, fmt.Errorf("unknown __t234-write flag %q", flag)
+		}
+		if err != nil {
+			return HelperRequest{}, err
+		}
+	}
+	return req, nil
+}
+
+// RunHelperRequest executes a parsed helper request, writing "PROGRESS"
+// lines to progress (may be nil).
+func RunHelperRequest(req HelperRequest, progress io.Writer) error {
+	if req.Release {
+		return ReleaseUSB(req.ReleaseSerial, req.ReleasePort)
+	}
+	opts := req.Writer
+	opts.Progress = progress
+	return RunWriter(opts)
+}
