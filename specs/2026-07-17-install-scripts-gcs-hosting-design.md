@@ -80,6 +80,8 @@ exists twice in this repo:
    `manifest.json` to `gs://wendy-install-public/` on `main` push and on
    release. A backing script under `.github/scripts/` (mirroring
    `publish-agent-gcs.sh`) does the upload + sets content-type/cache-control.
+   Only the two scripts and the manifest are uploaded — release binaries are not
+   mirrored (see §B.4).
 
 3. **Load balancer.** Add `install.wendy.dev` to the **existing docs HTTPS load
    balancer**:
@@ -127,17 +129,20 @@ environment has no credentials for the GCP project or DNS zone.
    manager tarball, and the Windows zip paths). The Homebrew / apt / dnf / yum /
    pacman paths then make **zero** GitHub requests.
 
-4. **Binary-download fallbacks → GCS.**
-   - `agent.sh` linux no-package-manager fallback: download the agent tarball
-     from GCS (`agent/<version>/wendy-agent-linux-<arch>-<version>.tar.gz`,
-     already published), GitHub as fallback.
-   - Also publish to GCS the artifacts the other fallbacks fetch so they are
-     GitHub-free too: **CLI** tarballs/zips (`wendy-cli-{darwin,linux}-<arch>-…tar.gz`,
-     `wendy-cli-windows-<arch>-….zip`) and the **macOS agent** zip
-     (`wendy-agent-macos-<arch>-….zip`). Scripts read GCS-first, GitHub fallback.
-   - Mainstream paths (Homebrew CDN; apt/yum via Google Artifact Registry at
-     `us-central1-{apt,yum}.pkg.dev`) already never touch GitHub and are left as
-     is.
+4. **Binary-download fallbacks stay on GitHub (deferred).** Mirroring release
+   binaries to GCS is **out of scope** for this change. The fallback paths
+   (macOS without Homebrew, Linux without a package manager, Windows) continue to
+   download release assets from `github.com/.../releases/download/...`. This is
+   acceptable because:
+   - Release *asset downloads* are **not** subject to the 60-req/hr
+     `api.github.com` limit that causes the workshop 403; that limit applies to
+     the REST API call in `resolve_version`, which §B.2 moves to GCS.
+   - These are tail paths — the mainstream flows (Homebrew CDN; apt/yum via
+     Google Artifact Registry at `us-central1-{apt,yum}.pkg.dev`) already never
+     touch GitHub at all.
+
+   A follow-up can mirror CLI/Windows/macOS-agent binaries to GCS if the fallback
+   paths later prove to matter at workshop scale.
 
 ## Testing
 
@@ -156,13 +161,15 @@ environment has no credentials for the GCP project or DNS zone.
 
 ## Scope boundaries
 
-- **In scope:** GCS bucket + CI publish of scripts, manifest, and the fallback
-  artifacts; GitHub-free `resolve_version`; `cli.sh` no longer calling GitHub on
-  mainstream paths; removal of `static.yml`; a maintainer runbook for LB/cert/DNS.
+- **In scope:** dedicated `wendy-install-public` bucket + CI publish of the two
+  scripts and the install manifest; GitHub-free `resolve_version`; `cli.sh` no
+  longer calling GitHub on mainstream paths; removal of `static.yml`; a
+  maintainer runbook for LB/cert/DNS.
 - **Out of scope / maintainer-executed:** the actual load-balancer, managed-cert,
-  and DNS changes (repo cannot reach GCP/DNS). No changes to package-manager
-  install logic beyond de-GitHub-ing version resolution. No new hostname —
-  `install.wendy.dev` is preserved.
+  and DNS changes (repo cannot reach GCP/DNS). Mirroring release binaries to GCS
+  (§B.4) — fallback paths keep downloading assets from GitHub. No changes to
+  package-manager install logic beyond de-GitHub-ing version resolution. No new
+  hostname — `install.wendy.dev` is preserved.
 
 ## Risks & mitigations
 
