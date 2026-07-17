@@ -10,6 +10,11 @@ type RecoveryDevice struct {
 	PathKey string // e.g. "20-1.2" (bus 20, hub port 1 → port 2)
 	Product uint16 // USB PID: 0x7<module>23 for T234 modules, 0x7026 Thor
 	ECID    string // chip BR_CID read over EP0 (may be empty if unreadable)
+	// Instance is a platform-specific exact device handle for hosts where
+	// PathKey alone cannot single out the devnode: the Windows PnP instance ID
+	// (redirected/virtualized USB may report no location path at all). Empty on
+	// gousb platforms, where PathKey (bus + port chain) is always present.
+	Instance string
 }
 
 // IsThor reports whether the device is a T264 (AGX Thor).
