@@ -41,6 +41,10 @@ func orinStageOne(fp *flashpack.Flashpack, dev rcm.RecoveryDevice, out io.Writer
 		ExpectedProduct: dev.Product, SendOrder: order, Out: out})
 }
 
+// isWinRawDiskAccessError is Windows-only (errno-matched there); never true
+// on macOS/Linux.
+func isWinRawDiskAccessError(error) bool { return false }
+
 func runT234Helper(ctx context.Context, req t234.HelperRequest, onProgress func(done, total int64)) error {
 	self, err := os.Executable()
 	if err != nil {

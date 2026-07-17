@@ -11,9 +11,12 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
@@ -131,17 +134,34 @@ func orinStageOne(fp *flashpack.Flashpack, dev rcm.RecoveryDevice, out io.Writer
 	})
 }
 
+// isWinRawDiskAccessError reports a Windows raw-disk open/write refusal:
+// ERROR_ACCESS_DENIED usually means a mounted volume still covers the write
+// region (or the process is not actually elevated), ERROR_SHARING_VIOLATION
+// that another process (antivirus, backup, indexing, Explorer) holds the
+// disk. Matched with errors.Is — the write path runs in-process, so the
+// syscall.Errno survives every %w wrap — never against rendered message
+// text, which FormatMessage localizes on non-English systems.
+func isWinRawDiskAccessError(err error) bool {
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, windows.ERROR_SHARING_VIOLATION)
+}
+
 // runT234Helper executes one raw block operation in-process: the process is
-// already elevated (preAuthElevation → UAC), so unlike macOS/Linux there is
-// no privileged re-exec. Cancellation caveat: a raw write cannot be
-// interrupted mid-syscall — on ctx cancel this returns while the operation
-// drains in the background, and the imminent process exit ends it, matching
-// the SIGKILL semantics of the sudo helper (already-written bytes stay
-// either way; the step runner's abort warnings cover this).
+// already elevated (preAuthElevation → UAC), so unlike macOS/Linux there is no
+// privileged re-exec. Cancellation caveat: a raw write cannot be interrupted
+// mid-syscall, so on ctx cancel this returns while the write runs to completion
+// on the background goroutine — the process does not abort it (the sole-console
+// pause can even outlive it). Already-written bytes stay either way; the step
+// runner's abort warnings cover the indeterminate device state. Progress
+// forwarding is gated on ctx so the outliving goroutine stops touching the
+// torn-down UI once cancelled.
 func runT234Helper(ctx context.Context, req t234.HelperRequest, onProgress func(done, total int64)) error {
 	result := make(chan error, 1)
 	go func() {
-		result <- t234.RunHelperRequest(req, &progressWriter{onProgress: onProgress})
+		result <- t234.RunHelperRequest(req, &progressWriter{onProgress: func(done, total int64) {
+			if ctx.Err() == nil && onProgress != nil {
+				onProgress(done, total)
+			}
+		}})
 	}()
 	select {
 	case err := <-result:
