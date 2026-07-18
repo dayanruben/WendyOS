@@ -191,23 +191,25 @@ if [[ "$ARCH" == "unsupported" ]]; then
   exit 1
 fi
 
-TAG=$(resolve_version)
-if [[ -z "$TAG" ]]; then
-  echo "Error: Could not determine latest version."
-  exit 1
-fi
-
-# Strip leading 'v' for the version used in artifact filenames.
-VERSION="${TAG#v}"
-
 # --- Determine sudo prefix for Linux (macOS uses sudo selectively, Windows doesn't need it) ---
 SUDO=""
 if [[ "$OS" == "linux" && "$(id -u)" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
+# resolve_and_set_version populates TAG and VERSION for the binary-download
+# fallback paths only. The Homebrew and apt/dnf/yum/pacman paths install from
+# package sources and never need a version, so they never call this.
+resolve_and_set_version() {
+  TAG=$(resolve_version) || exit 1
+  if [[ -z "$TAG" ]]; then
+    echo "Error: Could not determine latest version."
+    exit 1
+  fi
+  VERSION="${TAG#v}"
+}
+
 echo "Detected: OS=${OS} Arch=${ARCH}"
-echo "Version:  ${TAG}"
 echo ""
 
 # ===== macOS =====
@@ -236,6 +238,7 @@ if [[ "$OS" == "darwin" ]]; then
     trust_homebrew_formula "$HOMEBREW_FORMULA"
     brew install "$HOMEBREW_FORMULA"
   else
+    resolve_and_set_version
     ARTIFACT="wendy-cli-darwin-${ARCH}-${VERSION}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
     echo "Will download ${ARTIFACT}"
@@ -339,6 +342,7 @@ REPO
     TMPDIR_DL=$(mktemp -d)
     trap 'rm -rf "$TMPDIR_DL"' EXIT
 
+    resolve_and_set_version
     ARTIFACT="wendy-cli-linux-${ARCH}-${VERSION}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
     echo "Will download ${ARTIFACT}"
@@ -353,6 +357,7 @@ REPO
 
 # ===== Windows (Git Bash / MSYS2) =====
 elif [[ "$OS" == "windows" ]]; then
+  resolve_and_set_version
   ARTIFACT="wendy-cli-windows-${ARCH}-${VERSION}.zip"
   URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
   INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"

@@ -83,4 +83,30 @@ out="$(run_resolver)"
 check "resolve.fallback" "2026.07.18-120000" "$out"
 contains "resolve.fallback.hit_github" "$(cat "$REQ_LOG")" "api.github.com"
 
+# --- Test E: cli.sh Homebrew path makes zero GitHub/manifest calls (deferral) ---
+D="$(mktemp -d)"; setup_net "$D"           # curl fails on every URL and logs it
+printf '{"latest":"2026.07.19-143000"}\n' > "$D/manifest.json"
+STUB="$(mktemp -d)"
+# uname stub: pretend Apple Silicon macOS so the darwin/brew branch is taken.
+cat > "$STUB/uname" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  -s) echo "Darwin";;
+  -m) echo "arm64";;
+  *) echo "Darwin";;
+esac
+EOF
+# brew stub: present, but "brew help trust" fails so the trust steps are skipped;
+# every other subcommand is a successful no-op.
+cat > "$STUB/brew" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "help" ] && exit 1
+exit 0
+EOF
+chmod +x "$STUB/uname" "$STUB/brew"
+: > "$REQ_LOG"
+PATH="$STUB:$BIN:$PATH" bash "$CLI" -y >/dev/null 2>&1 || true
+absent "defer.no_github"   "$(cat "$REQ_LOG")" "api.github.com"
+absent "defer.no_manifest" "$(cat "$REQ_LOG")" "install.wendy.dev/manifest.json"
+
 exit $fail
