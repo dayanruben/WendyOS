@@ -18,4 +18,10 @@ OUT=$(echo "$PRIOR" | jq -f "$FILTER" --arg version 2026.07.20-2 --argjson is_re
 check "stable.latest"        "2026.07.20-2" "$(echo "$OUT" | jq -r .latest)"
 check "stable.keeps_nightly" "2026.07.19-1" "$(echo "$OUT" | jq -r .latest_nightly)"
 
+# Case 3: nightly publish sets latest_nightly and preserves the prior stable pointer
+PRIOR='{"latest":"2026.01.01-9"}'
+OUT=$(echo "$PRIOR" | jq -f "$FILTER" --arg version 2026.07.21-3 --argjson is_release false)
+check "nightly.latest_nightly" "2026.07.21-3" "$(echo "$OUT" | jq -r .latest_nightly)"
+check "nightly.keeps_latest"   "2026.01.01-9" "$(echo "$OUT" | jq -r .latest)"
+
 exit $fail

@@ -973,11 +973,14 @@ jobs:
         run: ./.github/scripts/publish-install-scripts.sh
 
       - name: Verify scripts are reachable
+        # Verifies the bucket directly, since install.wendy.dev isn't fronted by the
+        # load balancer yet (see the Task 5 runbook for that DNS/LB cutover). Flip this
+        # to https://install.wendy.dev/${name} once that cutover is live.
         run: |
           set -euo pipefail
           for name in agent.sh cli.sh manifest.json; do
-            curl -fsS --max-time 30 "https://install.wendy.dev/${name}" >/dev/null
-            echo "ok: https://install.wendy.dev/${name}"
+            curl -fsS --max-time 30 "https://storage.googleapis.com/wendy-install-public/${name}" >/dev/null
+            echo "ok: https://storage.googleapis.com/wendy-install-public/${name}"
           done
 
   integration-tests:
