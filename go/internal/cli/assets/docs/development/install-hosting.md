@@ -75,6 +75,7 @@ gcloud compute url-maps add-path-matcher <URL_MAP> \
   --path-matcher-name=install \
   --default-backend-bucket=wendy-install-backend \
   --new-hosts=install.wendy.dev \
+  --global \
   --project=<PROJECT>
 
 # 4. Add install.wendy.dev to a Google-managed certificate and attach it.
