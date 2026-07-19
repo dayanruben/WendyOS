@@ -8,6 +8,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/**'
+      - '.github/scripts/**'
 
 concurrency:
   group: go-tests-${{ github.event.pull_request.number }}
