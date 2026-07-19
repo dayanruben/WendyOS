@@ -48,6 +48,11 @@ rule routes `install.wendy.dev` to a backend bucket for `wendy-install-public`.
 
 ### One-time maintainer runbook (LB + cert + DNS)
 
+> **Provision before merge:** the bucket and its IAM bindings (step 1 below)
+> must exist BEFORE this branch merges to `main` — the `publish-install-scripts`
+> job runs on every `main` push and will fail if the bucket or write IAM isn't
+> in place yet.
+
 Run these once, from a shell authenticated to the Wendy GCP project. Replace
 `<PROJECT>` with the project id, `<URL_MAP>` / `<TARGET_PROXY>` / `<CERT>` with
 the existing docs load-balancer resource names (find them with
@@ -60,6 +65,11 @@ gcloud storage buckets create gs://wendy-install-public \
   --project=<PROJECT> --location=us --uniform-bucket-level-access
 gcloud storage buckets add-iam-policy-binding gs://wendy-install-public \
   --member=allUsers --role=roles/storage.objectViewer
+
+# Grant the CI/WIF deploy service account (vars.GCP_SERVICE_ACCOUNT) write access
+# so the publish-install-scripts job can upload objects and update the manifest.
+gcloud storage buckets add-iam-policy-binding gs://wendy-install-public \
+  --member=serviceAccount:<SERVICE_ACCOUNT> --role=roles/storage.objectAdmin
 
 # 2. Seed the bucket so the LB has objects to serve before DNS cutover.
 #    (CI republishes these on every build; this is just for verification.)

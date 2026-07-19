@@ -295,11 +295,7 @@ if [[ "$OS" == "darwin" ]]; then
   else
     # No Homebrew — download the signed, notarized app bundle from GitHub and
     # install it to /Applications.
-    TAG=$(resolve_version)
-    if [[ -z "$TAG" ]]; then
-      echo "Error: Could not determine latest version."
-      exit 1
-    fi
+    TAG=$(resolve_version) || exit 1
     VERSION="${TAG#v}"
     ARTIFACT="wendy-agent-macos-${ARCH}-${VERSION}.zip"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
@@ -453,11 +449,7 @@ elif command -v pacman &>/dev/null; then
 else
   # No package manager — fall back to downloading the tarball from GitHub
   # and manually installing the binary, systemd services, and dev registry.
-  TAG=$(resolve_version)
-  if [[ -z "$TAG" ]]; then
-    echo "Error: Could not determine latest version."
-    exit 1
-  fi
+  TAG=$(resolve_version) || exit 1
   VERSION="${TAG#v}"
 
   ARTIFACT="wendy-agent-linux-${ARCH}-${VERSION}.tar.gz"
