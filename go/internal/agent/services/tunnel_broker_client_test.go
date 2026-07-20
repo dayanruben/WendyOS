@@ -18,10 +18,13 @@ type testAgentTunnelStream struct {
 }
 
 func (s *testAgentTunnelStream) Send(message *cloudpb.TunnelData) error {
-	copy := *message
-	copy.Payload = append([]byte(nil), message.Payload...)
+	messageCopy := &cloudpb.TunnelData{
+		SessionId: message.SessionId,
+		Payload:   append([]byte(nil), message.Payload...),
+		HalfClose: message.HalfClose,
+	}
 	select {
-	case s.sent <- &copy:
+	case s.sent <- messageCopy:
 		return nil
 	case <-s.ctx.Done():
 		return s.ctx.Err()
