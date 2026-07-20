@@ -149,6 +149,26 @@ func requireElevation(purpose string, extraArgs ...string) error {
 	return nil
 }
 
+// elevateForT234Recovery elevates as soon as an interactive `wendy os install`
+// commits to a T234 full recovery — the driver install and raw disk writes
+// both need it eventually. Doing it before the remaining wizard questions
+// matters because the UAC relaunch starts a fresh process in a new console:
+// everything answered before it would have to be answered again there. The
+// device choice is the only answer made so far; it rides along as
+// --device-type so the elevated instance resumes at the next question. No-op
+// when the process is already elevated.
+func elevateForT234Recovery(deviceType string) error {
+	return requireElevation("to flash the Jetson over USB recovery", "--device-type", deviceType)
+}
+
+// processElevated reports whether this process already holds administrator
+// rights (false when the check fails). Used to skip elevation guidance that
+// no longer applies once the UAC handoff has happened.
+func processElevated() bool {
+	elevated, err := isElevated()
+	return err == nil && elevated
+}
+
 // preAuthElevation ensures the current process has Administrator privileges,
 // which raw disk writes require on Windows. When not elevated, it offers a
 // UAC re-launch and, on success, exits this non-elevated process so the user

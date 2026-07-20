@@ -1,6 +1,17 @@
 package rcm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrUSBAccess reports that a Jetson in recovery mode is present but the OS
+// refused to open it (LIBUSB_ERROR_ACCESS). On Linux this means the current
+// user lacks permission on the /dev/bus/usb node — fixed by a udev rule or
+// sudo; the caller turns this into actionable guidance. Declared here (not in
+// the gousb-tagged files) so the shared install flow can classify it on every
+// OS, including Windows.
+var ErrUSBAccess = errors.New("USB device access denied")
 
 // RecoveryDevice identifies a Jetson sitting in USB recovery mode. PathKey is the
 // physical USB location (bus + parent-port chain); it is stable across the
@@ -10,6 +21,11 @@ type RecoveryDevice struct {
 	PathKey string // e.g. "20-1.2" (bus 20, hub port 1 → port 2)
 	Product uint16 // USB PID: 0x7<module>23 for T234 modules, 0x7026 Thor
 	ECID    string // chip BR_CID read over EP0 (may be empty if unreadable)
+	// Instance is a platform-specific exact device handle for hosts where
+	// PathKey alone cannot single out the devnode: the Windows PnP instance ID
+	// (redirected/virtualized USB may report no location path at all). Empty on
+	// gousb platforms, where PathKey (bus + port chain) is always present.
+	Instance string
 }
 
 // IsThor reports whether the device is a T264 (AGX Thor).

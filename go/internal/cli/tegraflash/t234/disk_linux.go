@@ -114,9 +114,13 @@ func sysfsString(path string) string {
 }
 
 // unmountUMSDisk unmounts anything an automounter grabbed from the LUN.
-// Best-effort: the LUNs usually carry no mountable filesystem.
-func unmountUMSDisk(d UMSDisk) {
+// Best-effort: the LUNs usually carry no mountable filesystem, so umount's
+// exit status is the routine "not mounted" and is not surfaced — only the
+// Windows implementation can distinguish that from a lock refusal worth
+// reporting.
+func unmountUMSDisk(d UMSDisk) error {
 	exec.Command("umount", d.DevPath).Run() //nolint:errcheck
+	return nil
 }
 
 // ejectUMSDisk sends a SCSI eject (START STOP UNIT / power-off) to the LUN — the

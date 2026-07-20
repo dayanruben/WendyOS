@@ -19,8 +19,10 @@ import (
 type StageOneOptions struct {
 	Stage1Dir       string   // dir holding the RCM-boot artifacts
 	MemBCT          string   // membct filename (RAMCODE/2)
+	Blob            string   // payload filename; empty means the legacy Thor blob.bin
 	SendOrder       []string // bootROM image filenames in send order
-	Location        string   // optional location substring to pin the device
+	Location        string   // optional location path to pin the device
+	Instance        string   // optional PnP instance ID pinning the exact devnode (wins over Location)
 	ExpectedProduct uint16
 	Out             io.Writer
 }
@@ -61,13 +63,22 @@ func StageOneBoot(opts StageOneOptions) error {
 	if err != nil {
 		return fmt.Errorf("reading membct %s: %w", opts.MemBCT, err)
 	}
-	blob, err := os.ReadFile(filepath.Join(opts.Stage1Dir, fileBlob))
+	blobName := opts.Blob
+	if blobName == "" {
+		blobName = fileBlob
+	}
+	blob, err := os.ReadFile(filepath.Join(opts.Stage1Dir, blobName))
 	if err != nil {
-		return fmt.Errorf("reading blob: %w", err)
+		return fmt.Errorf("reading blob %s: %w", blobName, err)
 	}
 
 	fmt.Fprintln(out, "Opening Jetson in recovery mode over WinUSB…")
-	dev, err := OpenExpected(opts.Location, opts.ExpectedProduct)
+	var dev *USBDevice
+	if opts.Instance != "" {
+		dev, err = OpenInstance(opts.Instance, opts.ExpectedProduct)
+	} else {
+		dev, err = OpenExpected(opts.Location, opts.ExpectedProduct)
+	}
 	if err != nil {
 		return err
 	}

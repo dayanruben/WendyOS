@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -478,10 +477,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return fmt.Errorf("version %s predates full recovery artifacts; there is no automatic raw-image fallback—rerun with --rootfs-only to use its legacy SD/NVMe image", selectedVersion)
 	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode == "recovery" && !rootfsOnly {
-		if runtime.GOOS == "windows" {
-			return fmt.Errorf("full Jetson Orin USB recovery is not supported on Windows; run this command from macOS/Linux, or add --rootfs-only to write an explicit SD/NVMe image without updating QSPI")
-		}
 		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
+			return err
+		}
+		// Windows: elevate now, before the remaining wizard questions. The UAC
+		// relaunch starts a fresh process in a new console, so any answers
+		// already given would have to be re-entered there; at this point the
+		// device choice is the only one, and it carries over as --device-type.
+		if err := elevateForT234Recovery(selected); err != nil {
 			return err
 		}
 		storage, err := chooseT234RecoveryStorage(selected, storageOverride)

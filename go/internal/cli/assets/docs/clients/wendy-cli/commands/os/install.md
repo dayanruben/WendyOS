@@ -157,14 +157,14 @@ For Raspberry Pi devices—and Orin only with explicit `--rootfs-only`—the ins
 
 ## Jetson Orin full recovery path
 
-New Orin releases default to full USB recovery on macOS and Linux. Supported hardware is intentionally exact:
+New Orin releases default to full USB recovery on macOS, Linux, and Windows. Supported hardware is intentionally exact:
 
 - Orin Nano P3767-0005 on P3768-0000, NVMe.
 - AGX Orin P3701-0005 on P3737-0000, NVMe or eMMC.
 
 The CLI RCM-boots a signed recovery initrd, correlates its mass-storage LUNs to the selected physical USB port and session, and reads `device.json` before any persistent write. A module/carrier mismatch aborts before the flash-package handoff. It then writes/ejects the flash package, writes the exported `nvme0n1` or `mmcblk0` according to the signed partition layout, collects device logs, and reports success only when the final status is `SUCCESS`.
 
-Full recovery erases QSPI and every partition on the chosen storage, including `/data`. After the handoff, the first Ctrl+C warns that the device may be partially written; a second Ctrl+C confirms the abort. Windows returns an unsupported-platform error for full Orin recovery; `--rootfs-only` remains available there.
+Full recovery erases QSPI and every partition on the chosen storage, including `/data`. After the handoff, the first Ctrl+C warns that the device may be partially written; a second Ctrl+C confirms the abort. On Windows, the first flash installs a WinUSB driver for the Jetson recovery device and raw disk writes require elevation — expect a single administrator (UAC) prompt as soon as a Jetson Orin target is selected; accepting it continues the command, including the remaining setup questions, in a new elevated console window. If Windows offers to format one of the Jetson's flashing disks mid-flash, always choose Cancel.
 
 `--drive`, `--no-bmap`, and `--yes-overwrite-internal` apply only with `--rootfs-only`. eMMC has no rootfs-only mode. Rootfs-only emits a warning because it does not update QSPI; there is no automatic fallback from recovery to raw imaging.
 

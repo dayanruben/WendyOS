@@ -1,14 +1,12 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package t234
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"unicode/utf8"
 
 	backendfile "github.com/diskfs/go-diskfs/backend/file"
@@ -62,20 +60,8 @@ func clampLabel(name string, max int) string {
 	return b
 }
 
-// rawSyncError classifies the error from flushing a raw block device. fsync
-// succeeds on Linux block devices, but macOS raw character devices
-// (/dev/rdiskN) reject it with ENOTTY — those writes are unbuffered and have
-// already reached the device, so a missing fsync is harmless. ENOTTY (however
-// os.File.Sync wraps it) is treated as success; any other error is real.
-func rawSyncError(devPath string, err error) error {
-	if err == nil || errors.Is(err, syscall.ENOTTY) {
-		return nil
-	}
-	return fmt.Errorf("syncing %s: %w", devPath, err)
-}
-
 // RunWriter executes the selected operation. It requires root for raw block
-// device access on both macOS and Linux.
+// device access on macOS and Linux, and Administrator on Windows.
 func RunWriter(opts WriterOptions) error {
 	operations := 0
 	if opts.Blob != "" {
@@ -103,11 +89,19 @@ func RunWriter(opts WriterOptions) error {
 
 // writeBlob writes a single file verbatim at offset 0 (the flashpkg LUN).
 func writeBlob(opts WriterOptions) error {
-	dev, err := os.OpenFile(opts.Device, os.O_WRONLY, 0)
+	// O_RDWR (not O_WRONLY): prepareRawTarget's SET_DISK_ATTRIBUTES IOCTL needs
+	// read+write access on the handle, and copyFileAt only ever writes.
+	dev, err := os.OpenFile(opts.Device, os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("opening %s (requires root): %w", opts.Device, err)
+		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
 	}
 	defer dev.Close()
+
+	// Same offline guard as writePlan: stop Windows auto-mounting a volume on
+	// the target LUN and denying the raw write. No-op off Windows.
+	if err := prepareRawTarget(dev); err != nil {
+		return err
+	}
 
 	size, err := blockDeviceSize(dev)
 	if err != nil {
@@ -139,9 +133,15 @@ func writePlan(opts WriterOptions) error {
 	}
 	dev, err := os.OpenFile(opts.Device, os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("opening %s (requires root): %w", opts.Device, err)
+		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
 	}
 	defer dev.Close()
+
+	// Take the disk offline (Windows) so a volume the host mounts on the target
+	// — e.g. a stale ESP from a prior flash — cannot deny the raw write.
+	if err := prepareRawTarget(dev); err != nil {
+		return err
+	}
 
 	size, err := blockDeviceSize(dev)
 	if err != nil {
@@ -191,8 +191,11 @@ func writePlan(opts WriterOptions) error {
 	// Create explicitly-requested blank filesystems directly at their partition
 	// offsets. This uses pure Go filesystem writers and never shells out to mkfs.
 	// It happens before the GPT is committed, so an interruption cannot leave a
-	// plausible partition table pointing at a half-created filesystem.
-	backend := backendfile.New(dev, false)
+	// plausible partition table pointing at a half-created filesystem. The
+	// writers make sub-sector accesses (e.g. 256-byte ext4 inode-table writes)
+	// that raw disk handles reject; alignedDevice converts those to
+	// sector-granular read-modify-write.
+	backend := backendfile.New(alignedDevice{dev}, false)
 	for _, p := range resolved.Partitions {
 		if p.File != "" || p.FsType == "" || p.FsType == "basic" {
 			continue
@@ -239,7 +242,7 @@ func dumpDevice(opts WriterOptions) error {
 	}
 	dev, err := os.Open(opts.Device)
 	if err != nil {
-		return fmt.Errorf("opening %s (requires root): %w", opts.Device, err)
+		return fmt.Errorf("opening %s (%s): %w", opts.Device, devOpenPrivilege, err)
 	}
 	defer dev.Close()
 	out, err := os.OpenFile(opts.DumpTo, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
