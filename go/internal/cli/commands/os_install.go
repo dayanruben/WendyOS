@@ -474,7 +474,23 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return fmt.Errorf("version %s does not publish an eMMC recovery flashpack", selectedVersion)
 	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode != "recovery" && !rootfsOnly {
-		return fmt.Errorf("version %s predates full recovery artifacts; there is no automatic raw-image fallback—rerun with --rootfs-only to use its legacy SD/NVMe image", selectedVersion)
+		// The version has no recovery flashpack, so its legacy SD/NVMe image is
+		// the only way to install it. Fall back to rootfs-only imaging instead
+		// of making the user rediscover the flag — unless they explicitly
+		// pinned --rootfs-only=false, which asks for a flash this version
+		// cannot deliver.
+		if rootfsOnlyExplicit {
+			return fmt.Errorf("version %s predates full recovery flashpacks and cannot flash boot firmware; drop --rootfs-only=false or pick a newer version", selectedVersion)
+		}
+		fmt.Fprintln(os.Stderr, tui.WarningMessage(fmt.Sprintf("Version %s predates full recovery flashpacks; falling back to its SD/NVMe OS image. QSPI boot firmware will not be updated.", selectedVersion)))
+		rootfsOnly = true
+		// Windows: the raw disk write needs elevation, and the UAC relaunch
+		// starts a fresh process — pin the device and fallback mode on the
+		// child's command line so the elevated instance resumes at the
+		// storage question. No-op on Unix.
+		if err := elevateForT234Flash(selected, true); err != nil {
+			return err
+		}
 	}
 	// Interactively choose the flash mode for Jetson Orin recovery targets so users
 	// don't have to know the --rootfs-only flag. shouldPromptFlashMode skips it
@@ -525,7 +541,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		})
 	}
 	if isT234RecoveryDevice(selected) && rootfsOnly {
-		fmt.Fprintln(os.Stderr, tui.WarningMessage("Rootfs-only imaging does not update Jetson QSPI boot firmware; use full recovery to guarantee matching boot firmware and rootfs."))
+		// The legacy-version fallback above prints its own QSPI notice, and
+		// recommending full recovery would be wrong there — the version has
+		// no flashpack to recover with.
+		if ver.InstallMode == "recovery" {
+			fmt.Fprintln(os.Stderr, tui.WarningMessage("Rootfs-only imaging does not update Jetson QSPI boot firmware; use full recovery to guarantee matching boot firmware and rootfs."))
+		}
 		storageOverride, err = chooseT234RootfsOnlyStorage(selected, storageOverride)
 		if err != nil {
 			return err
