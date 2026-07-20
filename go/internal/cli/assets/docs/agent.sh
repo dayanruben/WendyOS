@@ -71,23 +71,61 @@ detect_arch() {
   esac
 }
 
-# --- Resolve latest release tag ---
+# >>> wendy-install-shared
+# Shared installer helpers. This block MUST be byte-identical in cli.sh and
+# agent.sh (enforced by .github/scripts/install-scripts_test.sh). It resolves
+# the latest version from the GCS-hosted manifest first, so the mainstream
+# install paths never call the rate-limited GitHub API.
+MANIFEST_URL="https://install.wendy.dev/manifest.json"
+
+# Fetch a raw URL to stdout using curl or wget.
+fetch_stdout() {
+  local url="$1"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$url"
+  elif command -v wget &>/dev/null; then
+    wget -qO- "$url"
+  else
+    return 1
+  fi
+}
+
+# Print the manifest's stable "latest" version, or nothing on any failure.
+# Matches the "latest" key only (not "latest_nightly").
+manifest_latest() {
+  fetch_stdout "$MANIFEST_URL" 2>/dev/null \
+    | grep -oE '"latest"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# Print the newest GitHub release tag, or nothing on failure.
+github_latest() {
+  fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+}
+
+# Resolve the version to install: explicit override, else GCS manifest, else GitHub.
 resolve_version() {
   if [[ -n "${WENDY_VERSION:-}" ]]; then
     echo "$WENDY_VERSION"
     return
   fi
-
-  if command -v curl &>/dev/null; then
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-  elif command -v wget &>/dev/null; then
-    wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-  else
-    echo "Error: curl or wget is required" >&2
-    exit 1
+  # `|| true` keeps a failed fetch (e.g. missing manifest) from tripping the
+  # script's `set -e` inside the command substitution, so we can fall through.
+  local v
+  v="$(manifest_latest || true)"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
   fi
+  v="$(github_latest || true)"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
+  fi
+  echo "Error: could not resolve the latest version from GCS or GitHub." >&2
+  return 1
 }
 
 # --- Download helper ---
@@ -99,6 +137,7 @@ download() {
     wget -qO "$dest" "$url"
   fi
 }
+# <<< wendy-install-shared
 
 # --- Homebrew helpers (macOS) ---
 homebrew_supports_trust() {
@@ -256,11 +295,7 @@ if [[ "$OS" == "darwin" ]]; then
   else
     # No Homebrew — download the signed, notarized app bundle from GitHub and
     # install it to /Applications.
-    TAG=$(resolve_version)
-    if [[ -z "$TAG" ]]; then
-      echo "Error: Could not determine latest version."
-      exit 1
-    fi
+    TAG=$(resolve_version) || exit 1
     VERSION="${TAG#v}"
     ARTIFACT="wendy-agent-macos-${ARCH}-${VERSION}.zip"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
@@ -414,11 +449,7 @@ elif command -v pacman &>/dev/null; then
 else
   # No package manager — fall back to downloading the tarball from GitHub
   # and manually installing the binary, systemd services, and dev registry.
-  TAG=$(resolve_version)
-  if [[ -z "$TAG" ]]; then
-    echo "Error: Could not determine latest version."
-    exit 1
-  fi
+  TAG=$(resolve_version) || exit 1
   VERSION="${TAG#v}"
 
   ARTIFACT="wendy-agent-linux-${ARCH}-${VERSION}.tar.gz"
