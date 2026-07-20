@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -478,14 +477,23 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return fmt.Errorf("version %s predates full recovery artifacts; there is no automatic raw-image fallback—rerun with --rootfs-only to use its legacy SD/NVMe image", selectedVersion)
 	}
 	// Interactively choose the flash mode for Jetson Orin recovery targets so users
-	// don't have to know the --rootfs-only flag. Skipped on Windows, where full USB
-	// recovery is unsupported (see below) and the existing error already points at
-	// --rootfs-only. shouldPromptFlashMode also skips it whenever a flag already
-	// pins the mode or we're non-interactive, keeping today's behavior unchanged.
-	if runtime.GOOS != "windows" && shouldPromptFlashMode(selected, ver.InstallMode, rootfsOnlyExplicit, storageOverride, isInteractiveTerminal()) {
+	// don't have to know the --rootfs-only flag. shouldPromptFlashMode skips it
+	// whenever a flag already pins the mode or we're non-interactive, keeping
+	// today's behavior unchanged.
+	if shouldPromptFlashMode(selected, ver.InstallMode, rootfsOnlyExplicit, storageOverride, isInteractiveTerminal()) {
 		rootfsOnly, err = chooseT234FlashMode()
 		if err != nil {
 			return err // ErrUserCancelled -> clean exit
+		}
+		if rootfsOnly {
+			// Windows: the raw disk write needs elevation, and the UAC relaunch
+			// starts a fresh process — elevate now with the device and mode
+			// pinned on the child's command line so the elevated instance
+			// resumes at the storage question instead of re-asking these. The
+			// full-recovery choice elevates below, after its flag validation.
+			if err := elevateForT234Flash(selected, true); err != nil {
+				return err
+			}
 		}
 	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode == "recovery" && !rootfsOnly {
@@ -494,9 +502,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 		// Windows: elevate now, before the remaining wizard questions. The UAC
 		// relaunch starts a fresh process in a new console, so any answers
-		// already given would have to be re-entered there; at this point the
-		// device choice is the only one, and it carries over as --device-type.
-		if err := elevateForT234Recovery(selected); err != nil {
+		// already given would have to be re-entered there; the device choice
+		// and flash mode carry over as --device-type/--rootfs-only. Pinning
+		// the mode also keeps the elevated child (whose fresh console IS
+		// interactive) from raising the flash-mode prompt a non-interactive
+		// parent never showed.
+		if err := elevateForT234Flash(selected, false); err != nil {
 			return err
 		}
 		storage, err := chooseT234RecoveryStorage(selected, storageOverride)
