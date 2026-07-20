@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package t234
 
@@ -56,9 +56,11 @@ type Stage2 struct {
 	// falls back to os.TempDir().
 	TempDir string
 
-	// RunHelper runs the hidden root helper `wendy __t234-write` with args,
-	// reporting any "PROGRESS <done> <total>" lines it prints.
-	RunHelper func(context.Context, []string, func(done, total int64)) error
+	// RunHelper runs one privileged helper request — re-exec'd as `wendy
+	// __t234-write` under sudo on macOS/Linux (serialized at that boundary via
+	// HelperRequest.Args), executed in-process on Windows — reporting any
+	// "PROGRESS <done> <total>" lines it prints.
+	RunHelper func(context.Context, HelperRequest, func(done, total int64)) error
 }
 
 const DeviceIdentityProtocol = "wendy-t234-recovery-v2"
@@ -101,14 +103,14 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return fmt.Errorf("flashpkg disk %s is smaller (%d bytes) than the flash package (%d bytes)", disk.DevPath, disk.SizeBytes, flashpkgSize)
 	}
 
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 	if err := s.verifyDeviceIdentity(ctx, disk); err != nil {
 		return err
 	}
 	s.adoptGadget(disk)
 	s.detail("sending flash commands + bootloader")
 	s.HandoffStarted = true
-	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--blob", s.FlashPackagePath}, nil); err != nil {
+	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, Blob: s.FlashPackagePath}}, nil); err != nil {
 		return fmt.Errorf("writing flash package: %w", err)
 	}
 	if err := s.verifyFlashPackage(ctx, disk); err != nil {
@@ -140,7 +142,7 @@ func (s *Stage2) verifyDeviceIdentity(ctx context.Context, disk UMSDisk) error {
 	tmp.Close()
 	defer os.Remove(path)
 	s.detail("verifying module and carrier identity")
-	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--dump", path, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, DumpTo: path, DumpBytes: flashpkgSize}}, nil); err != nil {
 		return fmt.Errorf("reading device identity: %w", err)
 	}
 	img, err := os.Open(path)
@@ -213,7 +215,7 @@ func (s *Stage2) verifyFlashPackage(ctx context.Context, disk UMSDisk) error {
 	defer os.Remove(tmpPath)
 
 	s.detail("verifying flash package on device")
-	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, DumpTo: tmpPath, DumpBytes: flashpkgSize}}, nil); err != nil {
 		return fmt.Errorf("reading back flash package: %w", err)
 	}
 	img, err := os.Open(tmpPath)
@@ -253,10 +255,10 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 		return fmt.Errorf("exported %s (%d bytes) is smaller than the flash layout (%d bytes)", s.Plan.RootfsDevice, disk.SizeBytes, min)
 	}
 
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 	fmt.Fprintf(s.Out, "Writing GPT + %d partitions...\n", len(s.Plan.Partitions))
 	start := time.Now()
-	err = s.RunHelper(ctx, []string{"--device", disk.RawPath, "--write-plan", "--layout", s.LayoutPath, "--images", s.ImagesDir, "--rootfs-device", s.Plan.RootfsDevice},
+	err = s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, WritePlan: true, LayoutPath: s.LayoutPath, ImagesDir: s.ImagesDir, RootfsDevice: s.Plan.RootfsDevice}},
 		func(done, total int64) {
 			if total > 0 {
 				s.detail("%.1f/%.1f GiB", float64(done)/(1<<30), float64(total)/(1<<30))
@@ -268,7 +270,7 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 	fmt.Fprintf(s.Out, "  partitions written in %v\n", time.Since(start).Round(time.Second))
 	// macOS re-probes the disk when the writer closes it and may auto-mount
 	// the freshly written FAT config partition; unmount before releasing.
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 	return s.release(ctx, disk)
 }
 
@@ -289,7 +291,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	unmountUMSDisk(disk)
+	s.unmount(disk)
 
 	tmp, err := os.CreateTemp(s.TempDir, "t234-flashpkg-*.ext4")
 	if err != nil {
@@ -300,7 +302,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	defer os.Remove(tmpPath)
 
 	s.detail("reading device status + logs")
-	if err := s.RunHelper(ctx, []string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+	if err := s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, DumpTo: tmpPath, DumpBytes: flashpkgSize}}, nil); err != nil {
 		return nil, fmt.Errorf("reading back flash package: %w", err)
 	}
 	if err := s.release(ctx, disk); err != nil {
@@ -340,6 +342,15 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	return res, nil
 }
 
+// unmount locks/unmounts the LUN's volumes, reporting (not failing on) a
+// volume that stayed mounted — the raw write that follows produces the real
+// error, and the warning explains it.
+func (s *Stage2) unmount(disk UMSDisk) {
+	if err := unmountUMSDisk(disk); err != nil {
+		fmt.Fprintf(s.Out, "  warning: %v\n", err)
+	}
+}
+
 // release forces the USB-level disconnect the device's initrd waits for,
 // then waits for the disk node to actually go away so the next wait can't
 // match a stale LUN.
@@ -364,7 +375,7 @@ func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 	// UDC leaves "configured"). Needed when the eject didn't take — e.g. no
 	// udisks/diskutil or a driver holding the node.
 	fmt.Fprintf(s.Out, "  eject didn't release %s; forcing a USB disconnect\n", disk.DevPath)
-	if err := s.RunHelper(ctx, []string{"--release", "--serial", disk.Serial, "--port", disk.PortPath}, nil); err != nil {
+	if err := s.RunHelper(ctx, HelperRequest{Release: true, ReleaseSerial: disk.Serial, ReleasePort: disk.PortPath}, nil); err != nil {
 		return fmt.Errorf("releasing %s: %w", disk.DevPath, err)
 	}
 	gone, err = s.waitForDiskGone(ctx, disk)

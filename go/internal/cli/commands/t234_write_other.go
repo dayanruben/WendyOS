@@ -14,7 +14,7 @@ func newT234WriteCmd() *cobra.Command {
 		Use:    "__t234-write",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("__t234-write is supported on macOS and Linux only")
+			return fmt.Errorf("__t234-write is only used on macOS and Linux (Windows runs raw writes in-process)")
 		},
 	}
 }

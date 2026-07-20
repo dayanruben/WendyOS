@@ -1,4 +1,4 @@
-//go:build !darwin && !linux
+//go:build !darwin && !linux && !windows
 
 package commands
 
@@ -7,7 +7,8 @@ import (
 	"fmt"
 )
 
-// installOrin is macOS/Linux-only (USB recovery flashing uses gousb/libusb).
+// installOrin needs a USB recovery backend (gousb on macOS/Linux, WinUSB on
+// Windows); other platforms have neither.
 func installOrin(_ context.Context, opts t234InstallOptions) error {
-	return fmt.Errorf("full USB recovery for %s is supported on macOS and Linux only; use --rootfs-only on Windows to write an explicit SD/NVMe image", opts.DeviceType)
+	return fmt.Errorf("full USB recovery for %s is supported on macOS, Linux, and Windows only", opts.DeviceType)
 }

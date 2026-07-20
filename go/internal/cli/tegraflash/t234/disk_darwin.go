@@ -204,9 +204,12 @@ func ioregInt(chunk, key string) int64 {
 
 // unmountUMSDisk unmounts anything macOS auto-mounted from the LUN (e.g. the
 // FAT config partition after the GPT lands). Best-effort: the LUNs usually
-// carry no mountable filesystem.
-func unmountUMSDisk(d UMSDisk) {
+// carry no mountable filesystem, and diskutil's exit status is not surfaced —
+// only the Windows implementation can distinguish "nothing mounted" from a
+// lock refusal worth reporting.
+func unmountUMSDisk(d UMSDisk) error {
 	exec.Command("diskutil", "unmountDisk", "force", d.DevPath).Run() //nolint:errcheck
+	return nil
 }
 
 // ejectUMSDisk sends a SCSI eject (START STOP UNIT / power-off) to the LUN — the

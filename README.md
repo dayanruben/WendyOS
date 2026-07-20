@@ -91,6 +91,10 @@ sudo systemctl enable --now containerd
 
 ## Building from Source
 
+For the full developer workflow — running a dev CLI and agent, tests, protobuf
+regeneration, testing WendyOS builds from a PR (`--pr`), and environment
+variables — see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ### CLI
 
 The CLI is written in Go:

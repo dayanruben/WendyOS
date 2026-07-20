@@ -303,8 +303,14 @@ func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloud
 	c.relay(callCtx, cancel, tcpConn, agentStream)
 }
 
+type agentTunnelStream interface {
+	Send(*cloudpb.TunnelData) error
+	Recv() (*cloudpb.TunnelData, error)
+	CloseSend() error
+}
+
 func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFunc,
-	tcpConn net.Conn, stream cloudpb.TunnelBrokerService_AgentTunnelClient) {
+	tcpConn net.Conn, stream agentTunnelStream) {
 	done := make(chan struct{}, 2)
 
 	// gRPC -> TCP
@@ -354,10 +360,15 @@ func (c *TunnelBrokerClient) relay(ctx context.Context, cancel context.CancelFun
 		_ = stream.CloseSend()
 	}()
 
-	select {
-	case <-done:
-		cancel()
-	case <-ctx.Done():
+	// A clean half-close in either direction must not tear down the other
+	// direction before its final frames have reached the broker or backend.
+	for completed := 0; completed < 2; completed++ {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			cancel()
+			<-done
+			return
+		}
 	}
-	<-done
 }

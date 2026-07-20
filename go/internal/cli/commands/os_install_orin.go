@@ -1,24 +1,21 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package commands
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	diskfs "github.com/diskfs/go-diskfs"
-	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/bringup"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/t234"
@@ -37,7 +34,9 @@ const (
 )
 
 // installOrin performs a complete T234 recovery from a pre-signed schema-v2
-// flashpack. No NVIDIA host binary or container is used on macOS/Linux.
+// flashpack. No NVIDIA host binary or container is used on any platform.
+// Per-OS seams: pickOrinRecoveryDevice, orinStageOne, and runT234Helper
+// (os_install_orin_unix.go / os_install_orin_windows.go).
 func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	cacheDir, err := osCacheDir()
 	if err != nil {
@@ -74,7 +73,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	if err := confirmOrinReady(opts); err != nil {
 		return err
 	}
-	dev, err := pickUnixRecoveryDevice(orinRecoveryHints(opts), orinRecoveryMatch(opts.DeviceType))
+	dev, err := pickOrinRecoveryDevice(opts)
 	if err != nil {
 		return err
 	}
@@ -163,12 +162,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 			return false, nil
 		}},
 		{id: orinStepRCMBoot, label: "Stage 1  RCM boot", run: func(out io.Writer, _ func(string)) (bool, error) {
-			order, memBCT, blob, err := t234RCMFiles(fp)
-			if err != nil {
-				return false, err
-			}
-			return false, bringup.Run(bringup.Options{Dir: fp.Root, MemBCT: memBCT, Blob: blob, DevicePath: dev.PathKey,
-				ExpectedProduct: dev.Product, SendOrder: order, Out: out})
+			return false, orinStageOne(fp, dev, out)
 		}},
 		{id: orinStepCommands, label: "Stage 2  verify target + hand off recovery", abortWarning: boundaryWarning, run: func(out io.Writer, detail func(string)) (bool, error) {
 			massStorage.Out, massStorage.Detail = out, detail
@@ -204,14 +198,26 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 
 	failedID, err := runFlashSteps(fmt.Sprintf("Recovering %s with WendyOS %s", opts.DeviceName, opts.Version), steps, cancelFlash, logW)
 	if err != nil {
+		// The console can vanish with the process (UAC-relaunched window), so
+		// the flash log must record why the flash stopped, not just where.
+		fmt.Fprintf(logW, "\nFAILED (step %d): %v\n", failedID, err)
 		switch {
 		case errors.Is(err, tui.ErrCancelled):
 			if failedID >= orinStepCommands && massStorage != nil && massStorage.HandoffStarted {
 				printOrinBadStateHint(os.Stdout, opts)
 			}
 			return ErrUserCancelled
-		case isMacRawDiskPermissionError(err):
+		case failedID >= orinStepCommands && isMacRawDiskPermissionError(err):
+			// Scoped like the Windows raw-disk case below: only the stage-2
+			// steps touch the Jetson's disk, so a permission error earlier
+			// (host-file I/O during download/provision) must not print
+			// recovery-disk remediation.
 			printOrinFullDiskAccessHint(os.Stdout)
+		case failedID >= orinStepCommands && isWinRawDiskAccessError(err):
+			// Scoped to the stage-2 steps that actually touch the Jetson's
+			// disk: a sharing violation on a host file during download or
+			// provisioning must not print recovery-disk remediation.
+			printOrinWinDiskAccessHint(os.Stdout)
 		case errors.Is(err, rcm.ErrUSBAccess):
 			fmt.Println("\n" + usbAccessHintBox())
 		case failedID >= orinStepCommands && massStorage != nil && massStorage.HandoffStarted:
@@ -223,6 +229,31 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	}
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Recovered %s %s with WendyOS %s; the Jetson will reboot after the final LUN is released.", opts.DeviceName, strings.ToUpper(opts.Storage), opts.Version)))
 	return nil
+}
+
+// progressWriter parses the T234 helper's "PROGRESS <done> <total>" stdout
+// lines and forwards them to onProgress; anything else is ignored. One decoder
+// for both the sudo re-exec (macOS/Linux) and in-process (Windows) helper
+// paths, so the wire format cannot drift per platform.
+type progressWriter struct {
+	onProgress func(done, total int64)
+	buf        []byte
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		line := string(w.buf[:i])
+		w.buf = w.buf[i+1:]
+		var done, total int64
+		if n, _ := fmt.Sscanf(line, "PROGRESS %d %d", &done, &total); n == 2 && w.onProgress != nil {
+			w.onProgress(done, total)
+		}
+	}
 }
 
 func resolveT234Flashpack(cacheDir string, ref flashpack.RecoveryRef, info *recoveryFlashpackInfo, detail func(string)) (*flashpack.Flashpack, bool, error) {
@@ -335,53 +366,6 @@ func t234RCMFiles(fp *flashpack.Flashpack) (order []string, memBCT, blob string,
 	return order, memBCT, blob, nil
 }
 
-func runT234Helper(ctx context.Context, args []string, onProgress func(done, total int64)) error {
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locating wendy binary: %w", err)
-	}
-	// SECURITY: the target block device is identified by USB VID:PID before elevation
-	// and no NOPASSWD sudoers rule ships, so this re-exec is not an unprivileged
-	// escalation. A path glob cannot distinguish the gadget from the boot disk;
-	// hardening this means re-resolving the node by port/serial inside the helper.
-	cmd := exec.CommandContext(ctx, "sudo", append([]string{self, "__t234-write"}, args...)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		} else {
-			return err
-		}
-	}
-	cmd.WaitDelay = 5 * time.Second
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting T234 write helper: %w", err)
-	}
-	sc := bufio.NewScanner(stdout)
-	for sc.Scan() {
-		var done, total int64
-		if n, _ := fmt.Sscanf(sc.Text(), "PROGRESS %d %d", &done, &total); n == 2 && onProgress != nil {
-			onProgress(done, total)
-		}
-	}
-	if err := cmd.Wait(); err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("%s: %w", msg, err)
-		}
-		return err
-	}
-	return nil
-}
-
 func saveOrinDeviceLogs(out io.Writer, logPath string, st *t234.FinalStatus) {
 	if st == nil || len(st.Logs) == 0 {
 		return
@@ -411,6 +395,9 @@ func confirmOrinReady(opts t234InstallOptions) error {
 	fmt.Println(tui.Header("Recovering " + opts.DeviceName + " with WendyOS " + opts.Version))
 	fmt.Println(orinRecoveryBriefingBox(opts))
 	if note := orinMacFullDiskAccessNote(); note != "" {
+		fmt.Println(note)
+	}
+	if note := orinWinSetupNote(); note != "" {
 		fmt.Println(note)
 	}
 	if opts.Force {
@@ -495,6 +482,15 @@ func orinRecoveryBriefingBox(opts t234InstallOptions) string {
 			"  "+briefKey.Render("Initialize…")+" or "+briefKey.Render("Eject")+" can corrupt or interrupt the flash.",
 		)
 	}
+	if runtime.GOOS == "windows" {
+		lines = append(lines,
+			"",
+			briefMarker.Render("●")+" "+briefTitle.Render("Windows disk prompts"),
+			"  While flashing, Windows may ask to format a newly attached disk —",
+			"  the Jetson's raw flashing disks are expected to look unformatted. Choose "+briefKey.Render("Cancel")+";",
+			"  formatting or ejecting them can corrupt or interrupt the flash.",
+		)
+	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }
 
@@ -516,11 +512,52 @@ func orinMacFullDiskAccessNote() string {
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }
 
+// orinWinSetupNote returns a short note (Windows only) covering the two
+// pieces of one-time host setup a recovery flash needs: the Jetson WinUSB
+// driver install and the administrator (UAC) elevation for raw disk writes —
+// a single consent prompt covers both, and accepting it continues the
+// command in a new elevated console window. Mirrors thorWindowsDriverNote.
+// Empty string on other platforms.
+func orinWinSetupNote() string {
+	// After the early UAC handoff (elevateForT234Recovery) this process is
+	// already elevated and the "expect a UAC prompt" guidance would be stale.
+	if runtime.GOOS != "windows" || processElevated() {
+		return ""
+	}
+	lines := []string{
+		briefMarker.Render("●") + " " + briefTitle.Render("First-time setup: driver + administrator approval"),
+		"  To talk to the Jetson over USB, Wendy installs a small " + briefKey.Render("WinUSB driver") + " for it",
+		"  (one-time per computer), and recovery writes to the Jetson's disk require",
+		"  " + briefKey.Render("administrator approval") + ". Expect a single UAC prompt; accepting it continues",
+		"  this command in a new elevated console window.",
+	}
+	return briefBorder.Render(strings.Join(lines, "\n"))
+}
+
 // isMacRawDiskPermissionError reports a macOS raw-disk open denied by TCC: the
 // sudo'd helper is root, but macOS still returns EPERM ("operation not
 // permitted") unless the terminal has Full Disk Access.
 func isMacRawDiskPermissionError(err error) bool {
 	return runtime.GOOS == "darwin" && err != nil && strings.Contains(err.Error(), "operation not permitted")
+}
+
+// printOrinWinDiskAccessHint explains a blocked raw-disk write on Windows and
+// what usually causes it. isWinRawDiskAccessError (per-OS, see
+// os_install_orin_windows.go) decides when it prints.
+func printOrinWinDiskAccessHint(w io.Writer) {
+	body := strings.Join([]string{
+		thorHintTitle.Render("⚠  Windows blocked access to the recovery disk"),
+		"",
+		"Windows refused the raw-disk access. Usual causes:",
+		"",
+		"  1. Another program is holding the disk — antivirus, backup, or disk tools.",
+		"     Close or pause them and retry.",
+		"  2. A Windows prompt to format the Jetson's disk was accepted or is pending.",
+		"     Always choose " + thorHintEmph.Render("Cancel") + " on those prompts.",
+		"",
+		"Re-enter recovery mode on the Jetson and re-run the flash to retry.",
+	}, "\n")
+	fmt.Fprintln(w, "\n"+thorHintBorder.Render(body))
 }
 
 // printOrinFullDiskAccessHint explains the raw-disk permission failure and how

@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build darwin || linux || windows
 
 package t234
 
@@ -167,11 +167,9 @@ func TestAwaitFinalStatusCollectsLogsAndRequiresSuccess(t *testing.T) {
 	}
 	stage := &Stage2{
 		PortPath: "1-3", Session: "12345678", StatusPath: "flashpkg/status", LogsPath: "flashpkg/logs", Out: io.Discard,
-		RunHelper: func(_ context.Context, args []string, _ func(int64, int64)) error {
-			for i, arg := range args {
-				if arg == "--dump" && i+1 < len(args) {
-					return os.WriteFile(args[i+1], fixture, 0o644)
-				}
+		RunHelper: func(_ context.Context, req HelperRequest, _ func(int64, int64)) error {
+			if req.Writer.DumpTo != "" {
+				return os.WriteFile(req.Writer.DumpTo, fixture, 0o644)
 			}
 			return nil
 		},
