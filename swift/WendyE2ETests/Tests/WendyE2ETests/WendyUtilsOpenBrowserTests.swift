@@ -100,7 +100,7 @@ struct `'wendy utils open-browser'` {
      */
     @Test(
         .disabled(
-            "Side effect: a valid URL invokes the real platform opener (open/xdg-open/rundll32) and would launch a browser on the runner. The CLI has no injectable or fake opener to make this deterministic and side-effect free."
+            "WDY-1938: a valid URL invokes the real platform opener (open/xdg-open/rundll32) and would launch a browser on the runner; the CLI has no injectable or fake opener to make this deterministic and side-effect free."
         )
     )
     func `opens a valid URL with the system browser`() async throws {
@@ -113,7 +113,7 @@ struct `'wendy utils open-browser'` {
      */
     @Test(
         .disabled(
-            "Requires a controllable platform opener; the command also exits 0 even when the opener fails (it prints 'Could not open browser' to stderr but returns success), contradicting the non-zero-exit spec."
+            "WDY-1938: requires a controllable platform opener; the command also exits 0 even when the opener fails (it prints 'Could not open browser' to stderr but returns success), contradicting the non-zero-exit spec."
         )
     )
     func `reports platform opener failures clearly`() async throws {
