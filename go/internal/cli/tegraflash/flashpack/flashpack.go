@@ -206,6 +206,53 @@ func RecoveryExtractedCachePath(cacheDir string, ref RecoveryRef) string {
 	return filepath.Join(cacheDir, ref.cacheBase())
 }
 
+// StampPath is the sibling file recording the source .tar.zst checksum a cached
+// flashpack tree was built from. Its presence lets a later resolve detect that an
+// upstream artifact (typically a --pr build, whose version tag is stable across
+// re-pushes) was republished under the same version, and refresh — without
+// re-hashing the multi-GiB tree. extractedDir is the tree's on-disk path, e.g.
+// TarballCachePath's dir sibling; the stamp lives next to it as "<name>.sha256".
+func StampPath(extractedDir string) string {
+	return extractedDir + ".sha256"
+}
+
+// WriteStamp records the tarball checksum next to the extracted tree. Callers
+// treat this as best-effort: a missing stamp is grandfathered as current (see
+// StampStale), so a write failure only forfeits future staleness detection.
+func WriteStamp(extractedDir, checksum string) error {
+	return os.WriteFile(StampPath(extractedDir), []byte(strings.TrimSpace(checksum)+"\n"), 0o644)
+}
+
+// ReadStamp returns the recorded checksum and whether a stamp exists. Any
+// missing/unreadable stamp reports ok=false: a legacy cache predates stamping,
+// so callers trust it as current rather than force a re-download.
+func ReadStamp(extractedDir string) (checksum string, ok bool) {
+	b, err := os.ReadFile(StampPath(extractedDir))
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(b)), true
+}
+
+// StampStale reports whether a cached tree must be purged and re-fetched given the
+// manifest's current checksum. Grandfather rule: no stamp → not stale. A present
+// stamp that differs (case-insensitively, whitespace-tolerant) → stale.
+func StampStale(extractedDir, manifestChecksum string) bool {
+	sum, ok := ReadStamp(extractedDir)
+	if !ok {
+		return false
+	}
+	return !strings.EqualFold(sum, strings.TrimSpace(manifestChecksum))
+}
+
+// Purge removes a cached flashpack's extracted tree, its .tar.zst (if any), and
+// its checksum stamp, so a stale artifact is fully dropped before re-downloading.
+func Purge(extractedDir, tarball string) {
+	_ = os.RemoveAll(extractedDir)
+	_ = os.Remove(tarball)
+	_ = os.Remove(StampPath(extractedDir))
+}
+
 // Resolve returns the flashpack for version, cache-first: an already-extracted tree,
 // else a planted/downloaded .tar.zst extracted on demand (atomically). The stage-1
 // files are integrity-checked against the manifest before the flashpack is returned,
@@ -240,7 +287,13 @@ func ResolveRecovery(cacheDir string, ref RecoveryRef) (*Flashpack, error) {
 func resolvePaths(extracted, tarball, version string) (*Flashpack, error) {
 	var extractedErr error
 	if fp, err := open(extracted); err == nil {
-		return fp, fp.verifyIntegrity()
+		if verr := fp.verifyIntegrity(); verr != nil {
+			return fp, verr
+		}
+		// The verified tree is the cache from here on; reclaim any tarball an
+		// earlier run left behind so a version's footprint isn't doubled.
+		_ = os.Remove(tarball)
+		return fp, nil
 	} else if _, statErr := os.Stat(extracted); statErr == nil {
 		extractedErr = err
 	}
@@ -252,7 +305,12 @@ func resolvePaths(extracted, tarball, version string) (*Flashpack, error) {
 		if err != nil {
 			return nil, err
 		}
-		return fp, fp.verifyIntegrity()
+		if verr := fp.verifyIntegrity(); verr != nil {
+			return fp, verr
+		}
+		// Extraction succeeded and the tree verified; drop the tarball.
+		_ = os.Remove(tarball)
+		return fp, nil
 	}
 	if extractedErr != nil {
 		return nil, fmt.Errorf("opening extracted flashpack: %w", extractedErr)
