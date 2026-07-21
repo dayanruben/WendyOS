@@ -3,10 +3,12 @@
 package t234
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 	"time"
 )
 
@@ -45,6 +47,12 @@ func ReleaseUSB(serial, port string) error {
 		}
 		time.Sleep(time.Second)
 		if err := os.WriteFile("/sys/bus/usb/drivers/usb/bind", []byte(name), 0o200); err != nil {
+			// ENODEV means the gadget already left this port (it re-enumerates the
+			// next LUN elsewhere after the unbind) — the disconnect we wanted has
+			// happened, so the release succeeded.
+			if errors.Is(err, syscall.ENODEV) {
+				return nil
+			}
 			return fmt.Errorf("rebinding %s: %w", name, err)
 		}
 		return nil

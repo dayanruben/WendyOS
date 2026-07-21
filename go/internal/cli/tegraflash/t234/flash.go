@@ -103,7 +103,7 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return fmt.Errorf("flashpkg disk %s is smaller (%d bytes) than the flash package (%d bytes)", disk.DevPath, disk.SizeBytes, flashpkgSize)
 	}
 
-	s.unmount(disk)
+	s.unmount(ctx, disk)
 	if err := s.verifyDeviceIdentity(ctx, disk); err != nil {
 		return err
 	}
@@ -255,7 +255,7 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 		return fmt.Errorf("exported %s (%d bytes) is smaller than the flash layout (%d bytes)", s.Plan.RootfsDevice, disk.SizeBytes, min)
 	}
 
-	s.unmount(disk)
+	s.unmount(ctx, disk)
 	fmt.Fprintf(s.Out, "Writing GPT + %d partitions...\n", len(s.Plan.Partitions))
 	start := time.Now()
 	err = s.RunHelper(ctx, HelperRequest{Writer: WriterOptions{Device: disk.RawPath, WritePlan: true, LayoutPath: s.LayoutPath, ImagesDir: s.ImagesDir, RootfsDevice: s.Plan.RootfsDevice}},
@@ -270,7 +270,7 @@ func (s *Stage2) WriteRootfsDevice(ctx context.Context) error {
 	fmt.Fprintf(s.Out, "  partitions written in %v\n", time.Since(start).Round(time.Second))
 	// macOS re-probes the disk when the writer closes it and may auto-mount
 	// the freshly written FAT config partition; unmount before releasing.
-	s.unmount(disk)
+	s.unmount(ctx, disk)
 	return s.release(ctx, disk)
 }
 
@@ -291,7 +291,7 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.unmount(disk)
+	s.unmount(ctx, disk)
 
 	tmp, err := os.CreateTemp(s.TempDir, "t234-flashpkg-*.ext4")
 	if err != nil {
@@ -344,9 +344,10 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 
 // unmount locks/unmounts the LUN's volumes, reporting (not failing on) a
 // volume that stayed mounted — the raw write that follows produces the real
-// error, and the warning explains it.
-func (s *Stage2) unmount(disk UMSDisk) {
-	if err := unmountUMSDisk(disk); err != nil {
+// error, and the warning explains it. Routed through the root helper: umount
+// (Linux) and diskutil (macOS) need privilege the unprivileged parent lacks.
+func (s *Stage2) unmount(ctx context.Context, disk UMSDisk) {
+	if err := s.RunHelper(ctx, HelperRequest{Unmount: true, Writer: WriterOptions{Device: disk.DevPath}}, nil); err != nil {
 		fmt.Fprintf(s.Out, "  warning: %v\n", err)
 	}
 }
@@ -361,8 +362,13 @@ func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 	// device's initrd waits for before finalizing the LUN and moving to its
 	// next command — e.g. exporting the rootfs device. A USB-level disconnect
 	// alone makes the device leave the flashpkg but can be too blunt for it to
-	// then bring up the next LUN.
-	ejectUMSDisk(disk)
+	// then bring up the next LUN. Routed through the root helper: eject
+	// (Linux/macOS) and udisksctl power-off (denied by polkit for a non-root,
+	// seatless SSH session) need privilege the unprivileged parent lacks —
+	// running it here left the LUN unreleased and forced the unbind fallback.
+	if err := s.RunHelper(ctx, HelperRequest{Eject: true, Writer: WriterOptions{Device: disk.DevPath}}, nil); err != nil {
+		fmt.Fprintf(s.Out, "  warning: eject failed (%v); trying a USB disconnect\n", err)
+	}
 	gone, err := s.waitForDiskGone(ctx, disk)
 	if err != nil {
 		return err

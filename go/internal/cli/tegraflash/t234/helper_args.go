@@ -8,15 +8,20 @@ import (
 	"strconv"
 )
 
-// HelperRequest is one parsed `__t234-write` invocation: either a USB release
-// or exactly one writer operation. Stage2 builds the argument lists (see
-// flash.go); this parser is shared by the privileged helper subcommand
-// (macOS/Linux, re-exec'd under sudo) and the in-process path (Windows, where
-// the whole process is already elevated), so both sides always agree.
+// HelperRequest is one parsed `__t234-write` invocation: a USB release, a LUN
+// unmount or eject, or exactly one writer operation. Stage2 builds the argument
+// lists (see flash.go); this parser is shared by the privileged helper
+// subcommand (macOS/Linux, re-exec'd under sudo) and the in-process path
+// (Windows, where the whole process is already elevated), so both sides always
+// agree. Unmount and Eject are privileged too (umount/diskutil/udisksctl/eject
+// all need root on Linux/macOS), so they route through the same helper rather
+// than running in the unprivileged parent; Writer.Device carries their target.
 type HelperRequest struct {
 	Release       bool
 	ReleaseSerial string
 	ReleasePort   string
+	Unmount       bool
+	Eject         bool
 	Writer        WriterOptions
 }
 
@@ -25,7 +30,8 @@ type HelperRequest struct {
 // requests in-process and never serializes). TestHelperArgsRoundTrip pins the
 // two directions against each other.
 func (r HelperRequest) Args() []string {
-	if r.Release {
+	switch {
+	case r.Release:
 		args := []string{"--release"}
 		if r.ReleaseSerial != "" {
 			args = append(args, "--serial", r.ReleaseSerial)
@@ -34,6 +40,10 @@ func (r HelperRequest) Args() []string {
 			args = append(args, "--port", r.ReleasePort)
 		}
 		return args
+	case r.Unmount:
+		return []string{"--unmount", "--device", r.Writer.Device}
+	case r.Eject:
+		return []string{"--eject", "--device", r.Writer.Device}
 	}
 	w := r.Writer
 	args := []string{"--device", w.Device}
@@ -89,6 +99,10 @@ func ParseWriterArgs(args []string) (HelperRequest, error) {
 			i++
 		case "--release":
 			req.Release = true
+		case "--unmount":
+			req.Unmount = true
+		case "--eject":
+			req.Eject = true
 		case "--serial":
 			req.ReleaseSerial, err = next(i, flag)
 			i++
@@ -108,8 +122,14 @@ func ParseWriterArgs(args []string) (HelperRequest, error) {
 // RunHelperRequest executes a parsed helper request, writing "PROGRESS"
 // lines to progress (may be nil).
 func RunHelperRequest(req HelperRequest, progress io.Writer) error {
-	if req.Release {
+	switch {
+	case req.Release:
 		return ReleaseUSB(req.ReleaseSerial, req.ReleasePort)
+	case req.Unmount:
+		return unmountUMSDisk(UMSDisk{DevPath: req.Writer.Device})
+	case req.Eject:
+		ejectUMSDisk(UMSDisk{DevPath: req.Writer.Device})
+		return nil
 	}
 	opts := req.Writer
 	opts.Progress = progress
