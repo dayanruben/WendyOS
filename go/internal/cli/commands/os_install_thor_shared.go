@@ -80,6 +80,12 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	if err != nil {
 		return err
 	}
+	if plan.offline {
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Offline — using cached WendyOS %s; cannot confirm it is the latest build.", plan.version)))
+	}
+	if plan.refreshed {
+		fmt.Println(tui.Dim(fmt.Sprintf("Cached WendyOS %s is outdated; downloading the current build.", plan.version)))
+	}
 
 	// Fail fast on a full disk, before the user starts cabling the Thor.
 	if err := checkThorDiskSpace(cacheDir, plan); err != nil {
@@ -287,26 +293,53 @@ func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceN
 
 // thorFlashPlan is the resolved flashpack to install and whether it is cached.
 type thorFlashPlan struct {
-	version string
-	cached  bool
-	info    *thorFlashpackInfo
+	version   string
+	cached    bool
+	offline   bool // resolved from cache without reaching the manifest (unverifiable)
+	refreshed bool // a stale cached copy was purged; a fresh download will run
+	info      *thorFlashpackInfo
 }
 
+// planThorFlashpack decides whether to reuse the cache or download. It always
+// tries the manifest first so it can compare the published checksum against the
+// cached copy's provenance stamp: a --pr build keeps a stable "pr-N" version tag
+// across re-pushes, so an existence-only cache check would silently flash an
+// outdated build. On a checksum change it purges and re-downloads; when the
+// manifest is unreachable it falls back to a nameable cached copy so an offline
+// bench flash isn't blocked.
 func planThorFlashpack(cacheDir, version string, nightly bool, pr int) (thorFlashPlan, error) {
-	if version != "" && flashpackCached(cacheDir, version) {
-		return thorFlashPlan{version: version, cached: true}, nil
-	}
 	info, err := getThorFlashpackInfo(version, nightly, pr)
 	if err != nil {
+		if v := offlineThorVersion(version, pr); v != "" && flashpackCached(cacheDir, v) {
+			return thorFlashPlan{version: v, cached: true, offline: true}, nil
+		}
 		if version != "" {
 			return thorFlashPlan{}, fmt.Errorf("flashpack %s not in cache and manifest lookup failed: %w", version, err)
 		}
 		return thorFlashPlan{}, err
 	}
 	if flashpackCached(cacheDir, info.Version) {
+		extracted := filepath.Join(cacheDir, flashpack.FlashpackName(info.Version))
+		if flashpack.StampStale(extracted, info.Checksum) {
+			flashpack.Purge(extracted, flashpack.TarballCachePath(cacheDir, info.Version))
+			return thorFlashPlan{version: info.Version, refreshed: true, info: info}, nil
+		}
 		return thorFlashPlan{version: info.Version, cached: true}, nil
 	}
 	return thorFlashPlan{version: info.Version, info: info}, nil
+}
+
+// offlineThorVersion names the cached flashpack to try when the manifest can't be
+// reached: the explicit --version, or a PR's conventional "pr-N" tag. Empty when
+// neither applies (a bare latest/nightly needs the manifest to resolve a tag).
+func offlineThorVersion(version string, pr int) string {
+	if version != "" {
+		return version
+	}
+	if pr > 0 {
+		return fmt.Sprintf("pr-%d", pr)
+	}
+	return ""
 }
 
 func flashpackCached(cacheDir, version string) bool {
@@ -378,6 +411,11 @@ func downloadAndExtractFlashpack(cacheDir string, plan thorFlashPlan, detail fun
 			os.Remove(tmp)
 			return nil, false, fmt.Errorf("caching flashpack: %w", err)
 		}
+		// Record provenance next to the (soon-to-be) extracted tree so a later
+		// resolve can detect an upstream re-publish under the same version tag.
+		// Best-effort: a missing stamp is grandfathered as current, so a write
+		// failure forfeits only the staleness check, never the flash.
+		_ = flashpack.WriteStamp(filepath.Join(cacheDir, flashpack.FlashpackName(plan.version)), plan.info.Checksum)
 	}
 	detail("extracting")
 	fp, err := flashpack.Resolve(cacheDir, plan.version)

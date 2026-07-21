@@ -47,6 +47,16 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	}
 	ref := flashpack.RecoveryRef{Device: opts.DeviceType, Storage: opts.Storage, Version: opts.Version}
 
+	// Announce a stale cache before the flash UI takes over, mirroring the Thor
+	// path. resolveT234Flashpack does the same detection later, but reports it via
+	// a step-status line that the download progress immediately overwrites — so the
+	// reason for the re-download would otherwise be invisible.
+	if extracted := flashpack.RecoveryExtractedCachePath(cacheDir, ref); flashpack.StampStale(extracted, opts.Artifact.Checksum) {
+		if _, err := os.Stat(filepath.Join(extracted, "manifest.json")); err == nil {
+			fmt.Println(tui.Dim(fmt.Sprintf("Cached WendyOS %s is outdated; downloading the current build.", opts.Version)))
+		}
+	}
+
 	// Identity/verify/status files pass between this process and the root
 	// __t234-write helper. Keep them in a private 0700 dir, not shared /tmp:
 	// Linux fs.protected_regular denies root an O_CREAT open of a file this
@@ -257,55 +267,77 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 }
 
 func resolveT234Flashpack(cacheDir string, ref flashpack.RecoveryRef, info *recoveryFlashpackInfo, detail func(string)) (*flashpack.Flashpack, bool, error) {
+	if info.Checksum == "" {
+		return nil, false, fmt.Errorf("manifest entry has no recovery flashpack checksum")
+	}
 	extracted := flashpack.RecoveryExtractedCachePath(cacheDir, ref)
 	tarball := flashpack.RecoveryTarballCachePath(cacheDir, ref)
+
+	// A cached tree whose recorded source checksum still matches the manifest is
+	// current — use it. If the manifest republished this version (e.g. a --pr
+	// re-push, whose tag is stable), the stamp differs: drop the stale tree and
+	// re-download. A tree with no stamp predates stamping and is trusted as-is.
 	if _, err := os.Stat(filepath.Join(extracted, "manifest.json")); err == nil {
-		fp, err := flashpack.ResolveRecovery(cacheDir, ref)
-		if err == nil {
-			// Reclaim a tarball an earlier interrupted run left behind: the
-			// extracted tree is the cache from here on.
-			_ = os.Remove(tarball)
+		if !flashpack.StampStale(extracted, info.Checksum) {
+			fp, err := flashpack.ResolveRecovery(cacheDir, ref)
+			return fp, true, err
 		}
-		return fp, true, err
+		detail("cached build is outdated — refreshing")
+		flashpack.Purge(extracted, tarball)
 	}
+
 	cached := true
 	if _, err := os.Stat(tarball); err != nil {
 		cached = false
-		if info.Checksum == "" {
-			return nil, false, fmt.Errorf("manifest entry has no recovery flashpack checksum")
-		}
-		img := &imageInfo{DownloadURL: info.URL, ImageSize: info.SizeBytes, Version: info.Version}
-		tmp, err := downloadImageInto(img, throttledDetail(detail, byteProgress))
-		if err != nil {
-			return nil, false, fmt.Errorf("downloading recovery flashpack: %w", err)
-		}
-		detail("verifying download")
-		if err := verifySHA256(tmp, info.Checksum); err != nil {
-			_ = os.Remove(tmp)
+		if err := downloadRecoveryTarball(info, tarball, detail); err != nil {
 			return nil, false, err
-		}
-		if err := os.Rename(tmp, tarball); err != nil {
-			_ = os.Remove(tmp)
-			return nil, false, fmt.Errorf("caching recovery flashpack: %w", err)
 		}
 	} else {
 		detail("verifying cached recovery download")
-		if info.Checksum == "" {
-			return nil, true, fmt.Errorf("manifest entry has no recovery flashpack checksum")
-		}
 		if err := verifySHA256(tarball, info.Checksum); err != nil {
-			return nil, true, fmt.Errorf("cached recovery flashpack failed verification: %w", err)
+			// A leftover tarball that no longer matches the manifest is a stale or
+			// interrupted download; replace it rather than failing the flash.
+			cached = false
+			_ = os.Remove(tarball)
+			if err := downloadRecoveryTarball(info, tarball, detail); err != nil {
+				return nil, false, err
+			}
 		}
 	}
+
+	// The tarball on disk now matches the manifest. Stamp provenance before
+	// extraction so even an interrupted extraction leaves a stale-detectable
+	// cache. Best-effort: a missing stamp is grandfathered as current.
+	_ = flashpack.WriteStamp(extracted, info.Checksum)
+
 	detail("extracting and verifying every consumed file")
+	// ResolveRecovery drops the .tar.zst once the extracted tree verifies, so a
+	// version's on-disk footprint isn't doubled.
 	fp, err := flashpack.ResolveRecovery(cacheDir, ref)
 	if err != nil {
 		return nil, cached, err
 	}
-	// The extracted tree is the cache; drop the large .tar.zst so a version's
-	// on-disk footprint isn't doubled (mirrors the pre-schema-v2 bundle flow).
-	_ = os.Remove(tarball)
 	return fp, cached, nil
+}
+
+// downloadRecoveryTarball fetches info's artifact to tarball, verifying its
+// checksum before it lands in the cache.
+func downloadRecoveryTarball(info *recoveryFlashpackInfo, tarball string, detail func(string)) error {
+	img := &imageInfo{DownloadURL: info.URL, ImageSize: info.SizeBytes, Version: info.Version}
+	tmp, err := downloadImageInto(img, throttledDetail(detail, byteProgress))
+	if err != nil {
+		return fmt.Errorf("downloading recovery flashpack: %w", err)
+	}
+	detail("verifying download")
+	if err := verifySHA256(tmp, info.Checksum); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, tarball); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("caching recovery flashpack: %w", err)
+	}
+	return nil
 }
 
 // prepareT234Workspace hard-links immutable partition images into a per-run
