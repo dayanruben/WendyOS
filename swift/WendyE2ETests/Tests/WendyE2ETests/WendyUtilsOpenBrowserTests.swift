@@ -113,7 +113,7 @@ struct `'wendy utils open-browser'` {
      */
     @Test(
         .disabled(
-            "Requires a controllable platform opener, and the command currently exits 0 even when the opener fails (it prints 'Could not open browser' to stderr but returns success), contradicting the non-zero-exit spec. Follow-up tracking issue pending."
+            "Requires a controllable platform opener; the command also exits 0 even when the opener fails (it prints 'Could not open browser' to stderr but returns success), contradicting the non-zero-exit spec."
         )
     )
     func `reports platform opener failures clearly`() async throws {

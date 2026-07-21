@@ -98,7 +98,7 @@ struct `'wendy project entitlements list'` {
      */
     @Test(
         .disabled(
-            "Product gap: 'wendy project entitlements list' writes the entitlement listing to stderr and leaves stdout empty, unlike 'wendy info' / 'wendy cache list'. Follow-up tracking issue pending."
+            "WDY-1935: 'wendy project entitlements list' writes the entitlement listing to stderr and leaves stdout empty, unlike 'wendy info' / 'wendy cache list'."
         )
     )
     func `lists entitlements from the current project`() async throws {
@@ -112,7 +112,7 @@ struct `'wendy project entitlements list'` {
      */
     @Test(
         .disabled(
-            "Product gap: 'wendy project entitlements list --json' writes JSON to stderr instead of stdout. Follow-up tracking issue pending."
+            "WDY-1935: 'wendy project entitlements list --json' writes JSON to stderr instead of stdout."
         )
     )
     func `prints JSON entitlements for automation`() async throws {
@@ -125,7 +125,7 @@ struct `'wendy project entitlements list'` {
      */
     @Test(
         .disabled(
-            "Product gap: 'wendy project entitlements list' silently accepts and ignores extra positional arguments. Follow-up tracking issue pending."
+            "WDY-1934: 'wendy project entitlements list' silently accepts and ignores extra positional arguments."
         )
     )
     func `rejects unexpected positional arguments`() async throws {

@@ -177,7 +177,7 @@ struct `'wendy init'` {
      */
     @Test(
         .disabled(
-            "Product gap: '--git-init' is only honored in the template flow (which requires network); the non-template scaffold never initializes git regardless of --git-init yes/no. Follow-up tracking issue pending."
+            "WDY-1936: '--git-init' is only honored in the template flow (which requires network); the non-template scaffold never initializes git regardless of --git-init yes/no."
         )
     )
     func `initializes git only when requested`() async throws {

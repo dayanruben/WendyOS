@@ -227,7 +227,7 @@ struct `'wendy os cache clear'` {
      */
     @Test(
         .disabled(
-            "Product gap: 'wendy os cache clear' silently accepts and ignores extra positional arguments instead of rejecting them like 'wendy os cache list'. Follow-up tracking issue pending."
+            "WDY-1934: 'wendy os cache clear' silently accepts and ignores extra positional arguments instead of rejecting them like 'wendy os cache list'."
         )
     )
     func `rejects unexpected positional arguments`() async throws {
