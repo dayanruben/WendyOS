@@ -1,93 +1,95 @@
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy device enroll'` {
-    /**
-     Displays usage for `wendy device enroll`. The output includes the command
-     synopsis, local flags, inherited global flags, and concise
-     descriptions. Help exits successfully, writes to stdout, emits no
-     stderr, and leaves configuration, cache, project, cloud, and device
-     state untouched.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    let scenario = CLIAndAgentScenario()
+
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device enroll --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Creates an enrollment token"))
+                #expect(result.stdout.contains("wendy device enroll [flags]"))
+                #expect(result.stdout.contains("--name"))
+                #expect(result.stdout.contains("--org"))
+                #expect(result.stdout.contains("--cloud-grpc"))
+                #expect(result.stdout.contains("--device"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
-    /**
-     `--device` selects the target device hostname and skips discovery and
-     pickers. The command does not read or change the saved default device when
-     an explicit target is supplied.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `uses explicit device selection without prompting`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1949: explicit-target enrollment needs isolated auth, PKI/cloud, and disposable provisioning fixtures."
+        )
+    )
+    func `uses explicit device selection without prompting`() async throws {}
 
-    /**
-     Without an explicit or configured device in a non-interactive context,
-     reports that a device selection is required, emits no prompt escape
-     sequences, and performs no device operation.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `reports missing device selection in non-interactive mode`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device enroll --name Example --org 1 --json") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("no device specified"))
+                #expect(!result.stderr.contains("Select a device"))
+            }
+        }
     }
 
-    /**
-     Connection failures, timeouts, and incompatible agent responses produce
-     stderr diagnostics and a failure status. Output does not claim that the
-     operation succeeded.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `reports unreachable devices without partial success`() async throws {
-        // TODO: implement.
+    @Test(
+        .disabled(
+            "WDY-1949: connection and incompatible-RPC failures need disposable provisioning and auth fixtures."
+        )
+    )
+    func `reports unreachable devices without partial success`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1949: successful enrollment needs isolated auth, token issuance, certificate, and disposable device fixtures."
+        )
+    )
+    func `enrolls the selected device with Wendy Cloud`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1959: auth is currently resolved only after target connection and optional WiFi inspection."
+        )
+    )
+    func `reports missing auth before touching the device`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1949: partial-failure rollback needs controllable token, certificate, and provisioning failure fixtures."
+        )
+    )
+    func `does not leave partial credentials on enrollment failure`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1949: JSON enrollment metadata needs isolated successful PKI/cloud and device fixtures."
+        )
+    )
+    func `prints JSON enrollment metadata`() async throws {}
+
+    @Test
+    func `rejects undocumented flags`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device enroll --bogus") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("unknown flag"))
+            }
+        }
     }
 
-    /**
-     Uses the stored auth session to create an enrollment token and provisions
-     the device with mTLS credentials and an optional name.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `enrolls the selected device with Wendy Cloud`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     Without a usable auth session, reports that login is required and performs
-     no device provisioning.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `reports missing auth before touching the device`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     Token creation, certificate issuance, or device provisioning failures
-     leave previous device credentials usable and report the failing stage.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `does not leave partial credentials on enrollment failure`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     With `--json`, emits enrollment status and certificate metadata without
-     printing tokens or private keys.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `prints JSON enrollment metadata`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     Accepts only the documented arguments and flags for `wendy device enroll`.
-     Extra positional arguments or unknown flags produce a usage diagnostic
-     on stderr, return a failure status, emit no success output, and leave
-     existing state unchanged.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1934: 'wendy device enroll' silently accepts positional arguments because the leaf command has no cobra.NoArgs validator."
+        )
+    )
+    func `rejects undocumented positional arguments`() async throws {}
 }
