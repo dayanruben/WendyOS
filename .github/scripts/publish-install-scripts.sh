@@ -7,7 +7,8 @@ set -euo pipefail
 
 : "${VERSION:?}" "${IS_RELEASE:?}" "${BUCKET:?}" "${PROJECT:?}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# SCRIPT_DIR is .github/scripts, so go up two levels to reach the repo root.
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DOCS_DIR="${REPO_ROOT}/go/internal/cli/assets/docs"
 gcloud config set project "$PROJECT" >/dev/null
 
