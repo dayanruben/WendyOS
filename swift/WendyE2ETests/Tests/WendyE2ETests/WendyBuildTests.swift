@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy build'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays builder selection usage without inspecting the project or toolchains. */
+    /**
+     Displays usage for `wendy build`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -23,6 +29,12 @@ struct `'wendy build'` {
         }
     }
 
+    /**
+     Reads `wendy.json` and project markers from the current directory,
+     selects the build strategy, and produces a container image for the
+     target WendyOS architecture. Success output names the image and build
+     type.
+     */
     @Test(
         .disabled(
             "WDY-1950: successful builds need pinned sample projects, builders/toolchains, image namespaces, and cleanup rather than ambient runner installations."
@@ -32,6 +44,11 @@ struct `'wendy build'` {
         // TODO: enable with isolated build fixtures (WDY-1950).
     }
 
+    /**
+     When Docker, Swift, or Python markers coexist, `--build-type` selects
+     the intended builder. The chosen strategy is reflected in output and no
+     other builder mutates the project.
+     */
     @Test(
         .disabled(
             "WDY-1950: overlapping-marker strategy coverage needs maintained Docker/Swift/Python fixtures and controlled builder availability."
@@ -41,7 +58,12 @@ struct `'wendy build'` {
         // TODO: enable with overlapping project fixtures (WDY-1950).
     }
 
-    /** A directory with no supported project marker fails without creating artifacts. */
+    /**
+     Reports that the working directory is not a Wendy project when required
+     project configuration is absent.
+
+     The command fails before invoking a builder or producing build artifacts.
+     */
     @Test
     func `reports missing project configuration`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -58,7 +80,12 @@ struct `'wendy build'` {
         }
     }
 
-    /** Invalid builder and mutually exclusive builder options fail before toolchain access. */
+    /**
+     Validates the requested builder against the command's supported builder
+     choices.
+
+     Invalid values fail before project compilation or remote builder access.
+     */
     @Test
     func `validates builder selection locally`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -78,6 +105,11 @@ struct `'wendy build'` {
         }
     }
 
+    /**
+     With `--json`, emits one JSON object describing the selected builder,
+     image reference, target architecture, cache usage, and build result.
+     Progress logs stay out of stdout JSON.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy build' does not implement global --json; WDY-1950 tracks the isolated successful build fixture needed for metadata."
@@ -87,7 +119,12 @@ struct `'wendy build'` {
         // TODO: enable when build implements JSON and has isolated fixtures (WDY-1909, WDY-1950).
     }
 
-    /** Unknown flags fail before project or toolchain access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -100,6 +137,12 @@ struct `'wendy build'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy build' silently accepts extra positional arguments because the command has no cobra.NoArgs validator."

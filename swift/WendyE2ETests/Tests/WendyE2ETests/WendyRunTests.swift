@@ -5,7 +5,12 @@ import WendyE2ETesting
 struct `'wendy run'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays build, deploy, target, and log-stream controls without resolving a device. */
+    /**
+     Displays usage for `wendy run`. The output includes the command synopsis,
+     local flags, inherited global flags, and concise descriptions. Help exits
+     successfully, writes to stdout, emits no stderr, and leaves configuration,
+     cache, project, cloud, and device state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -25,6 +30,12 @@ struct `'wendy run'` {
         }
     }
 
+    /**
+     Reads the project configuration, builds the application image,
+     deploys it over the selected direct device connection, and starts the
+     container. Success output makes the running app and target device
+     clear.
+     */
     @Test(
         .disabled(
             "WDY-1950: end-to-end build/deploy/start needs pinned sample projects, isolated image namespaces, and a disposable managed-agent target."
@@ -34,6 +45,11 @@ struct `'wendy run'` {
         // TODO: enable with isolated build and managed-deploy fixtures (WDY-1950).
     }
 
+    /**
+     `--deploy` creates or updates the container on the target device and
+     leaves it stopped. The command exits successfully after deployment and
+     prints no live log stream.
+     */
     @Test(
         .disabled(
             "WDY-1950: stopped deployment state needs a disposable managed agent with observable container lifecycle and cleanup."
@@ -43,6 +59,10 @@ struct `'wendy run'` {
         // TODO: enable with the managed-deploy fixture (WDY-1950).
     }
 
+    /**
+     `--detach` starts the application and returns after start-up status is
+     known. Output includes the app name and how to view logs later.
+     */
     @Test(
         .disabled(
             "WDY-1950: detach success and follow-up log guidance need an isolated built app and disposable managed-agent target."
@@ -52,6 +72,11 @@ struct `'wendy run'` {
         // TODO: enable with isolated build and managed-deploy fixtures (WDY-1950).
     }
 
+    /**
+     `--user-args` preserves argument boundaries and forwards the provided
+     values to the started application without interpreting secrets or shell
+     metacharacters locally.
+     */
     @Test(
         .disabled(
             "WDY-1950: user-argument boundary verification needs a fixture app that reports received argv from a disposable managed target."
@@ -61,6 +86,11 @@ struct `'wendy run'` {
         // TODO: enable with an argv-reporting app fixture (WDY-1950).
     }
 
+    /**
+     `--prefix` selects the project directory and `--device` selects the target
+     device and skips the picker. The command does not read unrelated
+     `wendy.json` files or open interactive device selection.
+     */
     @Test(
         .disabled(
             "WDY-1950: explicit prefix/device success needs isolated projects and a disposable managed target without physical device selection."
@@ -70,6 +100,11 @@ struct `'wendy run'` {
         // TODO: enable with isolated project and managed-target fixtures (WDY-1950).
     }
 
+    /**
+     Build failures, invalid project configuration, unreachable devices, or
+     deployment errors return a failure status. Partial remote resources are
+     either cleaned up or identified clearly for manual cleanup.
+     */
     @Test(
         .disabled(
             "WDY-1950: build/deploy failure cleanup needs controllable builder and managed-agent failure modes with observable remote resources."
@@ -79,6 +114,10 @@ struct `'wendy run'` {
         // TODO: enable with isolated build/deploy failure fixtures (WDY-1950).
     }
 
+    /**
+     With `--json`, emits structured build, deploy, start, and app metadata.
+     Progress and streamed container logs do not corrupt stdout JSON.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy run' does not implement a complete global --json result; WDY-1950 tracks the isolated deployment fixture needed to verify log separation."
@@ -88,7 +127,12 @@ struct `'wendy run'` {
         // TODO: enable when run JSON and managed-deploy fixtures exist (WDY-1909, WDY-1950).
     }
 
-    /** Invalid local prefix and chunking options fail before device selection or build work. */
+    /**
+     Validates local run options before selecting or contacting a target device.
+
+     Invalid option combinations fail without discovery, build, deployment, or
+     device state changes.
+     */
     @Test
     func `validates local options before selecting a device`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -107,7 +151,12 @@ struct `'wendy run'` {
         }
     }
 
-    /** Missing device selection fails without building or creating project artifacts. */
+    /**
+     Reports a missing device target before starting a project build.
+
+     Non-interactive failure leaves build artifacts, deployments, and device state
+     unchanged.
+     */
     @Test
     func `reports missing target before building`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -120,7 +169,12 @@ struct `'wendy run'` {
         }
     }
 
-    /** Unknown flags fail before project, build, or device access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects unknown flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -133,6 +187,12 @@ struct `'wendy run'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy run' silently accepts extra positional arguments because the command has no cobra.NoArgs validator."

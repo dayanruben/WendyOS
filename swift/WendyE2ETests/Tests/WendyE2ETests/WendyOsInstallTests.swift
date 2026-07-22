@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy os install'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays install modes, destructive safeguards, and preseed flags without listing drives. */
+    /**
+     Displays usage for `wendy os install`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -24,7 +30,11 @@ struct `'wendy os install'` {
         }
     }
 
-    /** Writes a selected image only to a protected disposable drive after confirmation. */
+    /**
+     Writes the selected WendyOS image or firmware to the target drive
+     after the user confirms the destructive operation. Output reports
+     progress and final device preparation status.
+     */
     @Test(
         .disabled(
             "WDY-1944: install success requires a disposable virtual block device and pinned image fixture with safeguards against host disks."
@@ -34,7 +44,11 @@ struct `'wendy os install'` {
         // TODO: enable with the protected virtual-drive fixture (WDY-1944).
     }
 
-    /** Runs image-plus-drive mode without prompts while retaining drive safety checks. */
+    /**
+     When image path, drive id, and `--force` are provided, skips
+     interactive pickers and confirmation prompts while preserving the
+     same safety checks for drive identity.
+     */
     @Test(
         .disabled(
             "WDY-1944: non-interactive flashing still requires a disposable virtual drive; physical runner disks must remain unavailable to E2E."
@@ -44,7 +58,11 @@ struct `'wendy os install'` {
         // TODO: enable with the protected virtual-drive fixture (WDY-1944).
     }
 
-    /** Refuses protected internal drives unless the dedicated consent flag is present. */
+    /**
+     Internal or non-removable drives are protected. Non-interactive
+     installs require the dedicated overwrite flag before any bytes are
+     written.
+     */
     @Test(
         .disabled(
             "WDY-1944: internal-drive safety needs a synthetic inventory and disposable target; it cannot be asserted against a runner's real disks."
@@ -54,7 +72,11 @@ struct `'wendy os install'` {
         // TODO: enable with the protected virtual-drive inventory (WDY-1944).
     }
 
-    /** Validates and writes WiFi/device identity into a disposable image before flashing. */
+    /**
+     WiFi flags and device-name flags are written into first-boot
+     configuration for the image. Invalid WiFi definitions fail before
+     the target drive is modified.
+     */
     @Test(
         .disabled(
             "WDY-1944: first-boot preseed verification requires a pinned image that can be mounted and inspected without touching a physical drive."
@@ -64,7 +86,11 @@ struct `'wendy os install'` {
         // TODO: enable with the protected image and virtual-drive fixture (WDY-1944).
     }
 
-    /** Pre-enrollment uses a dedicated protected cloud session and disposable image. */
+    /**
+     `--pre-enroll` uses the stored auth session to add enrollment data
+     to the image. Missing or expired auth fails before writing the
+     drive.
+     */
     @Test(
         .disabled(
             "WDY-1944: pre-enrollment needs protected auth, a pinned image, and a disposable drive fixture; personal auth and physical disks are prohibited."
@@ -74,7 +100,10 @@ struct `'wendy os install'` {
         // TODO: enable with protected cloud and OS install fixtures (WDY-1944).
     }
 
-    /** Emits one JSON result without progress text corrupting stdout. */
+    /**
+     With `--json`, emits structured drive, image, version, and outcome
+     metadata. Progress output does not corrupt stdout JSON.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy os install' does not implement global --json; WDY-1944 tracks the protected fixture needed for a successful install."
@@ -120,7 +149,12 @@ struct `'wendy os install'` {
         }
     }
 
-    /** Unknown flags fail before image or drive access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects unknown flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in

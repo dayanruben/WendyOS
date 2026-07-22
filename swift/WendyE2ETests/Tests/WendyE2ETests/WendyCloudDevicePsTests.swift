@@ -6,6 +6,12 @@ import WendyE2ETesting
 struct `'wendy cloud device ps'` {
     let scenario = CLIAndAgentScenario()
 
+    /**
+     Displays help for the cloud `ps` compatibility alias.
+
+     The output directs users to the canonical application-list behavior and
+     exits without authentication or device access.
+     */
     @Test
     func `prints cloud device ps alias help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -22,6 +28,13 @@ struct `'wendy cloud device ps'` {
         }
     }
 
+    /**
+     Routes the cloud `ps` compatibility command to the canonical application-list
+     implementation.
+
+     Device selection, output, and failure behavior remain consistent with the
+     canonical command.
+     */
     @Test(
         .disabled(
             "WDY-1952: cloud-routed alias equivalence needs seeded tunnel/auth and managed-agent application state."
@@ -29,6 +42,12 @@ struct `'wendy cloud device ps'` {
     )
     func `aliases cloud device apps list`() async throws {}
 
+    /**
+     Keeps machine-readable application-list output on stdout when the cloud `ps`
+     alias is used with `--json`.
+
+     Diagnostics remain on stderr so automation can parse stdout independently.
+     */
     @Test(
         .disabled(
             "WDY-1952: cloud-routed JSON schema equivalence needs seeded tunnel/auth and managed-agent application state."

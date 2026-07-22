@@ -5,6 +5,13 @@ import WendyE2ETesting
 struct `'wendy cloud device wifi forget'` {
     let scenario = CLIAndAgentScenario()
 
+    /**
+     Displays usage for `wendy cloud device wifi forget`. The output includes
+     the command synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -19,6 +26,11 @@ struct `'wendy cloud device wifi forget'` {
         }
     }
 
+    /**
+     `--device` selects the cloud device and skips local discovery and pickers.
+     The command does not read or change the saved default device when an
+     explicit target is supplied.
+     */
     @Test(
         .disabled(
             "WDY-1949/WDY-1952: explicit cloud-target forget needs a seeded managed agent and simulated WiFi capability without physical radios."
@@ -26,6 +38,11 @@ struct `'wendy cloud device wifi forget'` {
     )
     func `uses explicit device selection without prompting`() async throws {}
 
+    /**
+     Without an explicit or configured device in a non-interactive context,
+     reports that a device selection is required, emits no prompt escape
+     sequences, and performs no device operation.
+     */
     @Test(
         .disabled(
             "WDY-1949: missing cloud-device selection can only be observed after injecting valid isolated auth."
@@ -33,6 +50,11 @@ struct `'wendy cloud device wifi forget'` {
     )
     func `reports missing device selection in non-interactive mode`() async throws {}
 
+    /**
+     Cloud-routed device commands validate the selected Wendy Cloud auth
+     session before connecting to the broker. Missing or ambiguous auth fails
+     before device state changes.
+     */
     @Test
     func `requires cloud authentication before opening a tunnel`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -46,6 +68,11 @@ struct `'wendy cloud device wifi forget'` {
         }
     }
 
+    /**
+     Connection failures, timeouts, and incompatible agent responses produce
+     stderr diagnostics and a failure status. Output does not claim that the
+     operation succeeded.
+     */
     @Test(
         .disabled(
             "WDY-1952: connection and incompatible-RPC failures need controllable seeded managed-agent responses."
@@ -53,11 +80,18 @@ struct `'wendy cloud device wifi forget'` {
     )
     func `reports unreachable devices without partial success`() async throws {}
 
+    /**
+     Removes saved credentials for the requested SSID without affecting other
+     known networks or current nonmatching connections.
+     */
     @Test(
         .disabled("WDY-1952: successful forget needs simulated managed-agent saved-network state.")
     )
     func `forgets a known WiFi network`() async throws {}
 
+    /**
+     Missing `--ssid` produces a usage diagnostic and no WiFi operation.
+     */
     @Test
     func `requires an SSID`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -69,6 +103,10 @@ struct `'wendy cloud device wifi forget'` {
         }
     }
 
+    /**
+     Forgetting an SSID that is not saved reports a clear result and leaves all
+     known networks unchanged.
+     */
     @Test(
         .disabled(
             "WDY-1952: unknown-network isolation needs seeded neighboring managed-agent network profiles."
@@ -76,6 +114,12 @@ struct `'wendy cloud device wifi forget'` {
     )
     func `reports unknown networks without changing saved credentials`() async throws {}
 
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -87,6 +131,12 @@ struct `'wendy cloud device wifi forget'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy cloud device wifi forget' silently accepts positional arguments because the leaf command has no cobra.NoArgs validator."

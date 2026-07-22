@@ -6,7 +6,13 @@ import WendyE2ETesting
 struct `'wendy cloud device set-default'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays positional hostname usage without auth, discovery, or config access. */
+    /**
+     Displays usage for `wendy cloud device set-default`. The output includes
+     the command synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -25,6 +31,11 @@ struct `'wendy cloud device set-default'` {
         }
     }
 
+    /**
+     Without an explicit or configured device in a non-interactive context,
+     reports that a device selection is required, emits no prompt escape
+     sequences, and performs no device operation.
+     */
     @Test(
         .disabled(
             "WDY-1943: omitted-hostname selection enters physical discovery/picker flow; deterministic non-interactive behavior needs injected discovery fixtures."
@@ -34,7 +45,12 @@ struct `'wendy cloud device set-default'` {
         // TODO: enable with deterministic picker/discovery fixtures (WDY-1943).
     }
 
-    /** Stores an offline hostname locally; cloud reachability pinning remains best-effort. */
+    /**
+     Saves an explicit default-device hostname in local Wendy configuration.
+
+     The local preference is updated even when cloud authentication and remote
+     reachability are unavailable.
+     */
     @Test
     func `saves the default device hostname without cloud authentication`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -52,7 +68,13 @@ struct `'wendy cloud device set-default'` {
         }
     }
 
-    /** Preserves unrelated known config while changing only the default hostname. */
+    /**
+     Changes only the default-device setting while preserving other recognized
+     Wendy configuration values.
+
+     Analytics preferences, update metadata, and completion settings retain their
+     existing values after the mutation.
+     */
     @Test
     func `preserves unrelated known configuration keys`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -85,6 +107,13 @@ struct `'wendy cloud device set-default'` {
         }
     }
 
+    /**
+     Preserves unrecognized top-level configuration values while changing the
+     default-device setting.
+
+     This allows newer or third-party settings to survive a mutation performed by
+     the current CLI.
+     */
     @Test(
         .disabled(
             "WDY-1940: typed config load/save discards unknown top-level keys during default-device mutation."
@@ -94,6 +123,12 @@ struct `'wendy cloud device set-default'` {
         // TODO: enable when config mutations round-trip unknown keys (WDY-1940).
     }
 
+    /**
+     Requires an explicit hostname to contain a nonempty device address.
+
+     Empty or whitespace-only values fail validation without changing the saved
+     default device.
+     */
     @Test(
         .disabled(
             "WDY-1953: an explicit empty hostname is accepted, saved as an empty default, and reported as success instead of failing validation."
@@ -103,7 +138,12 @@ struct `'wendy cloud device set-default'` {
         // TODO: enable when empty/whitespace hostnames are rejected (WDY-1953).
     }
 
-    /** Too many positional arguments and unknown flags fail before config mutation. */
+    /**
+     Accepts only the documented arguments and flags for `wendy cloud device
+     set-default`. Extra positional arguments or unknown flags produce a
+     usage diagnostic on stderr, return a failure status, emit no success
+     output, and leave existing state unchanged.
+     */
     @Test
     func `rejects undocumented arguments and flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in

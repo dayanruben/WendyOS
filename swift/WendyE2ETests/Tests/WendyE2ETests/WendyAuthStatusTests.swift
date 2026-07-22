@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy auth status'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays local auth-status usage without reading credentials. */
+    /**
+     Displays usage for `wendy auth status`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -19,7 +25,11 @@ struct `'wendy auth status'` {
         }
     }
 
-    /** Reports logged-out state locally without creating a config file. */
+    /**
+     With no stored credentials, reports that the user is not logged in,
+     exits successfully, emits no stderr, and does not create config
+     files.
+     */
     @Test
     func `prints logged-out status without contacting the cloud`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -37,7 +47,11 @@ struct `'wendy auth status'` {
         }
     }
 
-    /** Prints non-secret endpoint, user, and organization metadata from local config. */
+    /**
+     With a stored session, reports the cloud identity and account or
+     organization summary available locally. Secrets and private key
+     material are never printed.
+     */
     @Test
     func `prints logged-in status from stored credentials`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -63,6 +77,11 @@ struct `'wendy auth status'` {
         }
     }
 
+    /**
+     Expired, malformed, or incomplete credentials produce an actionable
+     status that distinguishes local credential problems from cloud
+     connectivity problems.
+     */
     @Test(
         .disabled(
             "WDY-1948: auth status does not consistently classify malformed/incomplete certificate material; malformed PEM can be silently ignored."
@@ -72,6 +91,11 @@ struct `'wendy auth status'` {
         // TODO: enable when local credential states are explicit and actionable (WDY-1948).
     }
 
+    /**
+     With `--json`, emits one JSON object containing login state, cloud
+     endpoint identity, and certificate validity fields. JSON mode emits
+     no prompt text and no stderr on success.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy auth status --json' ignores JSON mode and prints human status; WDY-1948 tracks missing structured credential validity states."
@@ -81,7 +105,12 @@ struct `'wendy auth status'` {
         // TODO: enable when auth status implements structured JSON (WDY-1909, WDY-1948).
     }
 
-    /** Malformed CLI config fails locally and remains unchanged. */
+    /**
+     Reads the Wendy CLI configuration before performing work that depends on
+     user state. Malformed configuration is reported as a configuration error,
+     no prompts open, no network connection is attempted, and the original file
+     remains byte-for-byte unchanged.
+     */
     @Test
     func `reports invalid CLI configuration before acting`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -107,7 +136,12 @@ struct `'wendy auth status'` {
         }
     }
 
-    /** Unknown flags fail before config access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -120,6 +154,12 @@ struct `'wendy auth status'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy auth status' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."

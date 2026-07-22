@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy os download'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays image-download usage and cache controls without fetching a manifest. */
+    /**
+     Displays usage for `wendy os download`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -22,7 +28,11 @@ struct `'wendy os download'` {
         }
     }
 
-    /** Downloads and verifies a pinned image into an isolated OS cache. */
+    /**
+     Downloads the requested WendyOS image version, verifies the artifact,
+     and stores it in the OS cache for later installation. Success
+     output includes device type, version, cache path, and size.
+     */
     @Test(
         .disabled(
             "WDY-1944: deterministic download success requires a pinned local manifest/artifact server and checksum fixture rather than the mutable public catalog."
@@ -32,7 +42,11 @@ struct `'wendy os download'` {
         // TODO: enable with the protected OS artifact fixture (WDY-1944).
     }
 
-    /** Reuses a verified cached image unless overwrite is explicitly requested. */
+    /**
+     When the requested image already exists and verifies successfully,
+     uses the cached artifact. `--overwrite` replaces it after a
+     successful new download.
+     */
     @Test(
         .disabled(
             "WDY-1944: cache-hit and overwrite coverage requires a pinned manifest plus known artifact/checksum bytes."
@@ -42,7 +56,11 @@ struct `'wendy os download'` {
         // TODO: enable with the protected OS artifact fixture (WDY-1944).
     }
 
-    /** Download and verification failures preserve an existing cached artifact. */
+    /**
+     Unknown versions, unavailable manifests, network failures, or failed
+     verification leave existing cached artifacts untouched and report a
+     failure on stderr.
+     */
     @Test(
         .disabled(
             "WDY-1944: unavailable-version, network-failure, and checksum-failure paths need a controllable local manifest/artifact server."
@@ -52,7 +70,10 @@ struct `'wendy os download'` {
         // TODO: enable with failure modes from the protected OS artifact fixture (WDY-1944).
     }
 
-    /** Emits structured version, path, checksum, size, and cache-hit metadata. */
+    /**
+     With `--json`, emits one JSON object containing version, device type,
+     artifact path, checksum, byte count, and cache-hit status.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy os download' does not implement global --json; WDY-1944 tracks the deterministic artifact fixture needed to exercise a successful result."
@@ -62,7 +83,12 @@ struct `'wendy os download'` {
         // TODO: enable when download implements JSON and has a pinned fixture (WDY-1909, WDY-1944).
     }
 
-    /** Unknown flags fail before manifest or cache access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -75,7 +101,12 @@ struct `'wendy os download'` {
         }
     }
 
-    /** Extra positional arguments are rejected before manifest or cache access. */
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy os download' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."
