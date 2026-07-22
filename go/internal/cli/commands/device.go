@@ -2179,7 +2179,8 @@ func newDeviceUpdateCmd() *cobra.Command {
 					}
 				}
 			} else {
-				// Auto-download: detect arch, fetch release, download binary.
+				// Auto-download: detect arch, resolve the release version, and
+				// download the binary only when the device isn't already on it.
 				if !jsonOutput {
 					fmt.Println(tui.InfoMessage("Detecting device architecture..."))
 				}
@@ -2197,33 +2198,47 @@ func newDeviceUpdateCmd() *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
-				if !jsonOutput {
-					releaseType := "stable"
-					if nightly {
-						releaseType = "nightly"
-					}
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
-				}
-
-				var source, resolvedVer string
-				binaryData, resolvedVer, source, err = resolveAgentBinary(arch, nightly)
+				// Resolve the version first — this reads only manifest/release
+				// metadata, so an already-current device never downloads the
+				// tarball. Record it so an upload whose confirmation was lost to
+				// a mid-stream agent restart can still be verified.
+				resolvedVer, source, err := resolveAgentVersion(nightly)
 				if err != nil {
-					return fmt.Errorf("resolving agent binary: %w", err)
+					return fmt.Errorf("resolving agent version: %w", err)
 				}
-				// Record the resolved version so an upload whose confirmation
-				// was lost to a mid-stream agent restart can still be verified.
 				expectedAgentVersion = resolvedVer
 				if !jsonOutput {
 					fmt.Printf("%s %s %s\n", tui.Dim("Release:"), tui.Value(resolvedVer), tui.Dim("(from "+source+")"))
 				}
 				// Reported >= resolved means the device is already at (or ahead
-				// of) the version we'd install; nothing to upload.
-				agentAlreadyCurrent = agentUpdateVerified(preUpdateVersion.GetVersion(), resolvedVer)
+				// of) the version we'd install; nothing to upload. A dev build
+				// compares as newest, but an explicit update must overwrite it
+				// with the release, so dev builds never count as current here.
+				agentAlreadyCurrent = !version.IsDev(preUpdateVersion.GetVersion()) &&
+					agentUpdateVerified(preUpdateVersion.GetVersion(), resolvedVer)
+
+				if !agentAlreadyCurrent {
+					if !jsonOutput {
+						releaseType := "stable"
+						if nightly {
+							releaseType = "nightly"
+						}
+						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
+					}
+					binaryData, _, _, err = resolveAgentBinary(arch, nightly)
+					if err != nil {
+						return fmt.Errorf("resolving agent binary: %w", err)
+					}
+				}
 			}
 
-			// Compute SHA256.
-			h := sha256.Sum256(binaryData)
-			sha256Hash := hex.EncodeToString(h[:])
+			// Hash the binary we're about to upload. Skipped when already
+			// current: no binary was downloaded and no upload happens.
+			var sha256Hash string
+			if !agentAlreadyCurrent {
+				h := sha256.Sum256(binaryData)
+				sha256Hash = hex.EncodeToString(h[:])
+			}
 
 			if agentAlreadyCurrent {
 				if jsonOutput {
