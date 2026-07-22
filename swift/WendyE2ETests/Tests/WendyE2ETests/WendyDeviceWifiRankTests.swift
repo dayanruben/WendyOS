@@ -5,6 +5,13 @@ import WendyE2ETesting
 struct `'wendy device wifi rank'` {
     let scenario = CLIAndAgentScenario()
 
+    /**
+     Displays usage for `wendy device wifi rank`. The output includes the
+     command synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -21,6 +28,11 @@ struct `'wendy device wifi rank'` {
         }
     }
 
+    /**
+     `--device` selects the target device hostname and skips discovery and
+     pickers. The command does not read or change the saved default device when
+     an explicit target is supplied.
+     */
     @Test(
         .disabled(
             "WDY-1952: explicit-target ranking needs seeded managed-agent saved-network state without physical radios."
@@ -28,6 +40,11 @@ struct `'wendy device wifi rank'` {
     )
     func `uses explicit device selection without prompting`() async throws {}
 
+    /**
+     Without an explicit or configured device in a non-interactive context,
+     reports that a device selection is required, emits no prompt escape
+     sequences, and performs no device operation.
+     */
     @Test
     func `reports missing device selection in non-interactive mode`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -41,6 +58,11 @@ struct `'wendy device wifi rank'` {
         }
     }
 
+    /**
+     Connection failures, timeouts, and incompatible agent responses produce
+     stderr diagnostics and a failure status. Output does not claim that the
+     operation succeeded.
+     */
     @Test(
         .disabled(
             "WDY-1952: connection and incompatible-RPC failures need controllable seeded managed-agent responses."
@@ -48,6 +70,10 @@ struct `'wendy device wifi rank'` {
     )
     func `reports unreachable devices without partial success`() async throws {}
 
+    /**
+     `--ssid` with `--priority` updates one saved network's autoconnect
+     priority and leaves other priorities unchanged.
+     */
     @Test(
         .disabled(
             "WDY-1952: single-network ranking needs seeded neighboring managed-agent priority state."
@@ -55,6 +81,10 @@ struct `'wendy device wifi rank'` {
     )
     func `sets priority for a single known network`() async throws {}
 
+    /**
+     `--order` assigns priorities to the listed SSIDs from highest to lowest
+     while preserving unlisted known networks.
+     */
     @Test(
         .disabled(
             "WDY-1952: bulk ranking needs seeded listed/unlisted managed-agent priority state."
@@ -62,6 +92,10 @@ struct `'wendy device wifi rank'` {
     )
     func `bulk reorders known networks`() async throws {}
 
+    /**
+     Supplying incomplete or conflicting ranking flags produces a usage
+     diagnostic before WiFi settings are changed.
+     */
     @Test
     func `validates mutually exclusive ranking modes`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -84,6 +118,12 @@ struct `'wendy device wifi rank'` {
         }
     }
 
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -95,6 +135,12 @@ struct `'wendy device wifi rank'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy device wifi rank' silently accepts positional arguments because the leaf command has no cobra.NoArgs validator."

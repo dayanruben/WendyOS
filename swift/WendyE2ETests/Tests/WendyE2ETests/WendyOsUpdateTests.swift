@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy os update'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays local, remote, nightly, and PR update modes without connecting to a device. */
+    /**
+     Displays usage for `wendy os update`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -23,7 +29,11 @@ struct `'wendy os update'` {
         }
     }
 
-    /** Serves a pinned local Mender artifact to a hosted update-capable WendyOS target. */
+    /**
+     Serves the provided Mender artifact to the selected device and
+     requests an OS update. Success output identifies the artifact and
+     device update status.
+     */
     @Test(
         .disabled(
             "WDY-1944: local-artifact OTA success requires a hosted update-capable WendyOS fixture and pinned Mender artifact."
@@ -33,7 +43,10 @@ struct `'wendy os update'` {
         // TODO: enable with the protected hosted OTA fixture (WDY-1944).
     }
 
-    /** Validates a remote artifact URL locally before contacting the target device. */
+    /**
+     `--artifact-url` instructs the device to fetch a remote artifact
+     directly. The URL is validated before the update request is sent.
+     */
     @Test(
         .disabled(
             "WDY-1945: --artifact-url is not validated until after device connection and version RPCs, so malformed URLs cannot fail locally as specified."
@@ -43,7 +56,10 @@ struct `'wendy os update'` {
         // TODO: enable when URL validation precedes device access (WDY-1945).
     }
 
-    /** Resolves pinned nightly artifacts and applies them to a hosted OTA target. */
+    /**
+     `--nightly` selects the latest prerelease OS and agent artifacts
+     from the manifest and reports the chosen versions before updating.
+     */
     @Test(
         .disabled(
             "WDY-1944: nightly resolution and update success need a pinned manifest plus hosted update-capable WendyOS fixture."
@@ -53,7 +69,10 @@ struct `'wendy os update'` {
         // TODO: enable with protected manifest and OTA fixtures (WDY-1944).
     }
 
-    /** Cleans up a temporary local artifact server when the hosted target is unreachable. */
+    /**
+     If the target device cannot be reached, the command stops any
+     temporary local artifact server and exits with a clear diagnostic.
+     */
     @Test(
         .disabled(
             "WDY-1944: cleanup observation needs a controllable hosted OTA target and local artifact-server fixture rather than a physical device."
@@ -63,7 +82,10 @@ struct `'wendy os update'` {
         // TODO: enable with protected OTA and artifact-server fixtures (WDY-1944).
     }
 
-    /** Emits structured device, artifact, version, and request-status metadata. */
+    /**
+     With `--json`, emits one JSON object containing device, artifact,
+     version, and update request status fields.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy os update' does not implement global --json; WDY-1944 tracks the hosted fixture needed for update metadata."
@@ -73,7 +95,12 @@ struct `'wendy os update'` {
         // TODO: enable when update implements JSON and has a hosted fixture (WDY-1909, WDY-1944).
     }
 
-    /** Rejects conflicting artifact sources before device access. */
+    /**
+     Rejects requests that specify more than one operating-system artifact source.
+
+     Source validation fails before downloading, contacting update services, or
+     changing a device.
+     */
     @Test
     func `rejects conflicting artifact sources locally`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -92,7 +119,12 @@ struct `'wendy os update'` {
         }
     }
 
-    /** Rejects too many positional arguments and unknown flags before device access. */
+    /**
+     Accepts only the documented arguments and flags for `wendy os update`.
+     Extra positional arguments or unknown flags produce a usage diagnostic
+     on stderr, return a failure status, emit no success output, and leave
+     existing state unchanged.
+     */
     @Test
     func `rejects undocumented arguments and flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in

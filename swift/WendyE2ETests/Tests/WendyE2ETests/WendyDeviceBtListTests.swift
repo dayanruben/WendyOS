@@ -6,7 +6,11 @@ import WendyE2ETesting
 struct `'wendy device bt list'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Resolves `bt` to the canonical Bluetooth list command and option surface. */
+    /**
+     Resolves through the `bt` alias and displays the same help as `wendy device
+     bluetooth list`, including inherited device/global flags and validation
+     behavior.
+     */
     @Test
     func `prints '... bluetooth list help' through the 'bt' alias`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -23,6 +27,11 @@ struct `'wendy device bt list'` {
         }
     }
 
+    /**
+     Lists Bluetooth peripherals using the same output contract as `wendy device
+     bluetooth list`. The alias does not change target selection, JSON output,
+     or error diagnostics.
+     */
     @Test(
         .disabled(
             "WDY-1952: canonical/alias peripheral inventory equivalence needs seeded managed-agent Bluetooth responses without physical hardware."
@@ -32,7 +41,12 @@ struct `'wendy device bt list'` {
         // TODO: enable with seeded managed-agent Bluetooth fixtures (WDY-1952).
     }
 
-    /** Missing target fails before scanning or prompting. */
+    /**
+     Reports that no device target was supplied without starting device discovery.
+
+     Non-interactive invocation fails cleanly and leaves saved selection and device
+     state unchanged.
+     */
     @Test
     func `reports missing device without scanning`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in

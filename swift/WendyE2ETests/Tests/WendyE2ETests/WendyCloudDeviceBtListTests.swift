@@ -6,6 +6,13 @@ import WendyE2ETesting
 struct `'wendy cloud device bt list'` {
     let scenario = CLIAndAgentScenario()
 
+    /**
+     Displays the canonical Bluetooth-list help when invoked through the legacy
+     `bt list` alias.
+
+     The output identifies the current command interface and exits successfully
+     without contacting a device.
+     */
     @Test
     func `prints canonical Bluetooth list help through the bt alias`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -22,6 +29,13 @@ struct `'wendy cloud device bt list'` {
         }
     }
 
+    /**
+     Routes the cloud `bt list` compatibility command to the canonical Bluetooth
+     list implementation.
+
+     Selection, output, failure, and JSON behavior remain consistent with the
+     canonical command.
+     */
     @Test(
         .disabled(
             "WDY-1952: cloud-routed alias equivalence needs seeded tunnel/auth and simulated managed-agent Bluetooth state."

@@ -16,7 +16,7 @@ struct `'wendy cloud tunnel'` {
         // AI: Review the full help output as CLI documentation for a networking
         // command. Flag confusing port-mapping wording, missing safety cues,
         // duplicated global flags, or formatting that would make setup hard.
-        try await self.scenario.run { cli, _ in
+        try await self.scenario.run(authenticated: false) { cli, _ in
             try await cli.sh("wendy cloud tunnel --help") { result in
                 let stdout = result.stdout
 
@@ -72,7 +72,7 @@ struct `'wendy cloud tunnel'` {
      */
     @Test
     func `rejects invalid port mappings before listening`() async throws {
-        try await self.scenario.run { cli, _ in
+        try await self.scenario.run(authenticated: false) { cli, _ in
             try await cli.sh("wendy cloud tunnel notaport") { result in
                 let stderr = result.stderr
 

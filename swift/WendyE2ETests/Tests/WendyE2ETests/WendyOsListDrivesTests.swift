@@ -6,7 +6,13 @@ import WendyE2ETesting
 struct `'wendy os list-drives'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays drive-listing usage and flags without enumerating disks. */
+    /**
+     Displays usage for `wendy os list-drives`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -82,7 +88,12 @@ struct `'wendy os list-drives'` {
         // TODO: enable when structured drive safety metadata is available (WDY-1946).
     }
 
-    /** Unknown flags fail before disk enumeration. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -95,7 +106,12 @@ struct `'wendy os list-drives'` {
         }
     }
 
-    /** Extra positional arguments are rejected before disk enumeration. */
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy os list-drives' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."

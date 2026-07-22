@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy auth refresh-certs'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays certificate-refresh usage without loading or contacting auth state. */
+    /**
+     Displays usage for `wendy auth refresh-certs`. The output includes the
+     command synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -19,6 +25,12 @@ struct `'wendy auth refresh-certs'` {
         }
     }
 
+    /**
+     Uses an existing auth session to generate a new key pair and CSR,
+     obtains fresh client certificates, and atomically replaces the old
+     certificate material. Success output identifies the refreshed
+     session without printing secrets.
+     */
     @Test(
         .disabled(
             "WDY-1949: certificate refresh success needs a protected PKI/cloud endpoint with ephemeral stored credentials; personal sessions are prohibited."
@@ -28,7 +40,11 @@ struct `'wendy auth refresh-certs'` {
         // TODO: enable with the protected PKI/cloud fixture (WDY-1949).
     }
 
-    /** Missing auth fails locally without generating keys or creating config. */
+    /**
+     When no login session is available, reports that authentication is
+     required. No key pair, CSR, certificate, or partial configuration
+     update is written.
+     */
     @Test
     func `reports missing auth session without creating credentials`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -46,6 +62,11 @@ struct `'wendy auth refresh-certs'` {
         }
     }
 
+    /**
+     Network, authorization, or certificate issuance failures leave the
+     previous working credentials in place and report the failing stage
+     on stderr.
+     */
     @Test(
         .disabled(
             "WDY-1949: issuance/network/authorization failure preservation needs a controllable protected PKI endpoint and known prior certificates."
@@ -55,6 +76,11 @@ struct `'wendy auth refresh-certs'` {
         // TODO: enable with protected PKI failure modes (WDY-1949).
     }
 
+    /**
+     With `--json`, emits one JSON object with the cloud identity and
+     certificate validity metadata. Secret key material never appears in
+     stdout, stderr, or command records.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy auth refresh-certs --json' ignores JSON mode; WDY-1949 tracks the protected fixture required for refresh metadata."
@@ -64,7 +90,12 @@ struct `'wendy auth refresh-certs'` {
         // TODO: enable when refresh implements JSON and has protected fixtures (WDY-1909, WDY-1949).
     }
 
-    /** Malformed config fails locally and remains unchanged. */
+    /**
+     Reads the Wendy CLI configuration before performing work that depends on
+     user state. Malformed configuration is reported as a configuration error,
+     no prompts open, no network connection is attempted, and the original file
+     remains byte-for-byte unchanged.
+     */
     @Test
     func `reports invalid CLI configuration before acting`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -90,7 +121,12 @@ struct `'wendy auth refresh-certs'` {
         }
     }
 
-    /** Unknown flags fail before config or PKI access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -103,6 +139,12 @@ struct `'wendy auth refresh-certs'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy auth refresh-certs' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."

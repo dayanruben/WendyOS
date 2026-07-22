@@ -6,7 +6,13 @@ import WendyE2ETesting
 struct `'wendy cloud device unset-default'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays local clear-default usage without reading config or selecting a device. */
+    /**
+     Displays usage for `wendy cloud device unset-default`. The output includes
+     the command synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -23,7 +29,10 @@ struct `'wendy cloud device unset-default'` {
         }
     }
 
-    /** Clears only the saved default and preserves unrelated known config. */
+    /**
+     Removes the saved default device from CLI configuration and prints a
+     concise confirmation. Other configuration keys remain intact.
+     */
     @Test
     func `clears the saved default device`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -57,6 +66,10 @@ struct `'wendy cloud device unset-default'` {
         }
     }
 
+    /**
+     With no saved default device, reports a no-op success and avoids creating
+     unrelated configuration state.
+     */
     @Test(
         .disabled(
             "WDY-1953: with no saved default, unset-default creates/rewrites config and reports a clear instead of remaining a non-mutating no-op."
@@ -66,7 +79,12 @@ struct `'wendy cloud device unset-default'` {
         // TODO: enable when no-default unset is non-mutating (WDY-1953).
     }
 
-    /** Unknown flags fail before config mutation. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -83,6 +101,12 @@ struct `'wendy cloud device unset-default'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy cloud device unset-default' silently accepts extra positional arguments because the mirrored leaf command has no cobra.NoArgs validator."

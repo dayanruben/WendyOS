@@ -6,7 +6,12 @@ import WendyE2ETesting
 struct `'wendy device version'` {
     let scenario = CLIAndAgentScenario()
 
-    /** The hidden alias stays absent from parent help while direct help mirrors `device info`. */
+    /**
+     The hidden command remains directly invocable for older scripts, but
+     `wendy device --help` does not advertise it. Direct help preserves the
+     `wendy device info` option surface for users who still discover the legacy
+     command explicitly.
+     */
     @Test
     func `is hidden from parent help while direct help mirrors '... device info'`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -29,6 +34,9 @@ struct `'wendy device version'` {
         }
     }
 
+    /**
+     In human-readable mode, the deprecated command reports the same device information as `wendy device info` and directs users to the replacement command.
+     */
     @Test(
         .disabled(
             "WDY-1952: human alias equivalence and deprecation output need a seeded managed-agent info response without a physical device."
@@ -38,7 +46,9 @@ struct `'wendy device version'` {
         // TODO: enable with the seeded managed-agent fixture (WDY-1952).
     }
 
-    /** JSON mode fails cleanly before deprecation text when no target is selected. */
+    /**
+     With `--json`, deprecation guidance stays out of stdout and stderr so existing scripts can continue parsing the response.
+     */
     @Test
     func `'--json' keeps JSON output clean`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in

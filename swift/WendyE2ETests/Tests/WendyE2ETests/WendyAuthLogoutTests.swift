@@ -6,7 +6,13 @@ import WendyE2ETesting
 struct `'wendy auth logout'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays logout usage without reading or changing config. */
+    /**
+     Displays usage for `wendy auth logout`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -20,7 +26,11 @@ struct `'wendy auth logout'` {
         }
     }
 
-    /** Removes a sole stored session while preserving unrelated known config fields. */
+    /**
+     Deletes stored Wendy Cloud credentials for the selected session and
+     prints a concise confirmation. Other configuration keys and cached
+     project files remain intact.
+     */
     @Test
     func `removes the active auth session`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -54,6 +64,10 @@ struct `'wendy auth logout'` {
         }
     }
 
+    /**
+     With no stored auth session, reports that the user is logged out and
+     exits successfully without creating configuration files.
+     */
     @Test(
         .disabled(
             "WDY-1947: already-logged-out logout creates/rewrites config and claims credentials were removed instead of remaining a non-mutating no-op."
@@ -63,6 +77,10 @@ struct `'wendy auth logout'` {
         // TODO: enable when logged-out logout does not create state (WDY-1947).
     }
 
+    /**
+     When more than one auth session exists, targets the active or
+     explicitly selected cloud and leaves unrelated sessions available.
+     */
     @Test(
         .disabled(
             "WDY-1947: logout always clears every auth entry and has no active/explicit session selector, so unrelated cloud sessions cannot be preserved."
@@ -72,6 +90,11 @@ struct `'wendy auth logout'` {
         // TODO: enable when logout is session-aware (WDY-1947).
     }
 
+    /**
+     With `--json`, emits one JSON object describing whether credentials
+     were removed. JSON mode emits no human confirmation text and no
+     stderr on success.
+     */
     @Test(
         .disabled(
             "WDY-1909: 'wendy auth logout --json' ignores JSON mode and prints a human confirmation."
@@ -81,7 +104,12 @@ struct `'wendy auth logout'` {
         // TODO: enable when auth logout implements global --json (WDY-1909).
     }
 
-    /** Malformed config fails without mutation. */
+    /**
+     Reads the Wendy CLI configuration before performing work that depends on
+     user state. Malformed configuration is reported as a configuration error,
+     no prompts open, no network connection is attempted, and the original file
+     remains byte-for-byte unchanged.
+     */
     @Test
     func `reports invalid CLI configuration before acting`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -107,7 +135,12 @@ struct `'wendy auth logout'` {
         }
     }
 
-    /** Unknown flags fail before config mutation. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects undocumented flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -125,6 +158,12 @@ struct `'wendy auth logout'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy auth logout' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."

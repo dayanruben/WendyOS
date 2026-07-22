@@ -5,7 +5,13 @@ import WendyE2ETesting
 struct `'wendy auth login'` {
     let scenario = CLIAndAgentScenario()
 
-    /** Displays browser and API-key login modes without opening a browser. */
+    /**
+     Displays usage for `wendy auth login`. The output includes the command
+     synopsis, local flags, inherited global flags, and concise
+     descriptions. Help exits successfully, writes to stdout, emits no
+     stderr, and leaves configuration, cache, project, cloud, and device
+     state untouched.
+     */
     @Test
     func `prints command help`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -23,6 +29,12 @@ struct `'wendy auth login'` {
         }
     }
 
+    /**
+     Without `--api-key`, starts the Wendy Cloud browser login flow,
+     receives the callback token, generates client credentials, and
+     stores the resulting session in the CLI configuration. Success
+     output gives concise next-step guidance and stderr stays empty.
+     */
     @Test(
         .disabled(
             "WDY-1949: browser login needs a protected callback/token/PKI fixture and injectable browser; real browsers and personal cloud auth are prohibited."
@@ -32,6 +44,11 @@ struct `'wendy auth login'` {
         // TODO: enable with protected browser and auth fixtures (WDY-1949).
     }
 
+    /**
+     With `--api-key`, authenticates against the selected cloud gRPC or
+     local pki-core endpoint using the provided bearer token. The token
+     is not echoed to stdout, stderr, command records, or saved config.
+     */
     @Test(
         .disabled(
             "WDY-1949: API-key login needs an ephemeral protected pki-core endpoint with recorder redaction; production or personal keys cannot be used."
@@ -41,6 +58,11 @@ struct `'wendy auth login'` {
         // TODO: enable with protected PKI and secret-redaction fixtures (WDY-1949).
     }
 
+    /**
+     `--cloud` and `--cloud-grpc` bind the login to a specific Wendy
+     Cloud environment. The stored session records enough endpoint
+     identity for later commands to choose the same environment.
+     */
     @Test(
         .disabled(
             "WDY-1949: endpoint selection needs multiple protected cloud/PKI fixtures so stored identity can be verified without production auth."
@@ -50,6 +72,11 @@ struct `'wendy auth login'` {
         // TODO: enable with protected multi-cloud fixtures (WDY-1949).
     }
 
+    /**
+     Cancelling or timing out the browser callback reports a login
+     failure, exits non-zero, and leaves prior authentication state
+     unchanged.
+     */
     @Test(
         .disabled(
             "WDY-1949: cancellation and timeout require controllable browser callback process state rather than opening a real browser."
@@ -59,6 +86,11 @@ struct `'wendy auth login'` {
         // TODO: enable with the protected browser callback fixture (WDY-1949).
     }
 
+    /**
+     A successful login for a cloud that already has stored credentials
+     replaces the old credentials atomically while preserving sessions
+     for other clouds.
+     */
     @Test(
         .disabled(
             "WDY-1949: atomic session replacement needs protected certificate issuance for two cloud identities without personal auth state."
@@ -68,7 +100,12 @@ struct `'wendy auth login'` {
         // TODO: enable with protected multi-session auth fixtures (WDY-1949).
     }
 
-    /** Malformed config fails before browser or network activity and remains unchanged. */
+    /**
+     Reads the Wendy CLI configuration before performing work that depends on
+     user state. Malformed configuration is reported as a configuration error,
+     no prompts open, no network connection is attempted, and the original file
+     remains byte-for-byte unchanged.
+     */
     @Test
     func `reports invalid CLI configuration before acting`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -96,7 +133,13 @@ struct `'wendy auth login'` {
         }
     }
 
-    /** API-key mode requires a local/cloud gRPC endpoint before network access. */
+    /**
+     Requires the API endpoint needed to exchange an API key for a Wendy auth
+     session.
+
+     Missing endpoint configuration fails locally without writing partial
+     credentials.
+     */
     @Test
     func `requires an endpoint for API key login`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -109,7 +152,12 @@ struct `'wendy auth login'` {
         }
     }
 
-    /** Unknown flags fail before browser or network access. */
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
     @Test
     func `rejects unknown flags`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
@@ -122,6 +170,12 @@ struct `'wendy auth login'` {
         }
     }
 
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
     @Test(
         .disabled(
             "WDY-1934: 'wendy auth login' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."
