@@ -1,93 +1,95 @@
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy device wifi connect'` {
-    /**
-     Displays usage for `wendy device wifi connect`. The output includes the
-     command synopsis, local flags, inherited global flags, and concise
-     descriptions. Help exits successfully, writes to stdout, emits no
-     stderr, and leaves configuration, cache, project, cloud, and device
-     state untouched.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    let scenario = CLIAndAgentScenario()
+
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device wifi connect --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Connect to a WiFi network"))
+                #expect(result.stdout.contains("wendy device wifi connect [flags]"))
+                #expect(result.stdout.contains("--ssid"))
+                #expect(result.stdout.contains("--password"))
+                #expect(result.stdout.contains("--device"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
-    /**
-     `--device` selects the target device hostname and skips discovery and
-     pickers. The command does not read or change the saved default device when
-     an explicit target is supplied.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `uses explicit device selection without prompting`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: explicit-target connection needs a seeded managed agent and simulated WiFi capability without physical radios."
+        )
+    )
+    func `uses explicit device selection without prompting`() async throws {}
 
-    /**
-     Without an explicit or configured device in a non-interactive context,
-     reports that a device selection is required, emits no prompt escape
-     sequences, and performs no device operation.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `reports missing device selection in non-interactive mode`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device wifi connect --ssid Example --json") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("no device specified"))
+                #expect(!result.stderr.contains("Password"))
+                #expect(!result.stderr.contains("Select a device"))
+            }
+        }
     }
 
-    /**
-     Connection failures, timeouts, and incompatible agent responses produce
-     stderr diagnostics and a failure status. Output does not claim that the
-     operation succeeded.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `reports unreachable devices without partial success`() async throws {
-        // TODO: implement.
+    @Test(
+        .disabled(
+            "WDY-1952: connection and incompatible-RPC failures need controllable seeded managed-agent responses."
+        )
+    )
+    func `reports unreachable devices without partial success`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1952: successful connection needs simulated managed-agent WiFi association state without physical radios."
+        )
+    )
+    func `connects to a WiFi network`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1952: password prompting and redaction need a scripted PTY plus simulated secured-network state."
+        )
+    )
+    func `prompts for missing password only in interactive mode`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1952: omitted SSID intentionally opens a device-backed network picker and needs simulated scan results."
+        )
+    )
+    func `selects a missing SSID interactively`() async throws {}
+
+    @Test(
+        .disabled(
+            "WDY-1952: failed-credential preservation needs seeded neighboring managed-agent network profiles."
+        )
+    )
+    func `does not save failed credentials`() async throws {}
+
+    @Test
+    func `rejects undocumented flags`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device wifi connect --bogus") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("unknown flag"))
+            }
+        }
     }
 
-    /**
-     Connects the device to the requested SSID using the supplied password when
-     needed and reports the resulting connection status.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `connects to a WiFi network`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     For secured networks without `--password`, prompts in an interactive
-     terminal without echoing the secret. Non-interactive mode reports that a
-     password is required.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `prompts for missing password only in interactive mode`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     Missing `--ssid` produces a usage diagnostic and no WiFi operation.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `requires an SSID`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     Authentication or association failures report the error and do not replace
-     existing working network credentials.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `does not save failed credentials`() async throws {
-        // TODO: implement.
-    }
-
-    /**
-     Accepts only the documented arguments and flags for `wendy device wifi
-     connect`. Extra positional arguments or unknown flags produce a usage
-     diagnostic on stderr, return a failure status, emit no success output,
-     and leave existing state unchanged.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1934: 'wendy device wifi connect' silently accepts positional arguments because the leaf command has no cobra.NoArgs validator."
+        )
+    )
+    func `rejects undocumented positional arguments`() async throws {}
 }
