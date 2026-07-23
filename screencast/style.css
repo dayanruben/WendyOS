@@ -34,7 +34,7 @@
   right: 64px;
   width: 184px;
   height: 45px;
-  background: url('/brand/wendy-logo-slate.svg') right center / contain no-repeat;
+  background: url('./support/wendy-logo-slate.svg') right center / contain no-repeat;
   content: '';
 }
 

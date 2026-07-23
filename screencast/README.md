@@ -77,7 +77,7 @@ Follow the canonical guidance at <https://wendy.dev/brand>:
   (`#9FE2BF`) for key calls to action; it is not a decorative highlight color.
 - Use slate marks on light slides and cream marks on dark terminal surfaces. Do
   not recolor, stretch, rotate, or add effects to the marks under
-  `public/brand/`.
+  `support/`.
 - Use Geist Mono for terminal recordings when it is installed. The fallback
   remains the platform monospace so tapes still render on a clean machine.
 
