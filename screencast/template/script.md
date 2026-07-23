@@ -88,7 +88,7 @@ The script is not a build file. It is the creative plan. The agent uses it to ge
 ### Show (code)
 
 ```md
-## 03 Developer Flow
+## 03 Developer flow
 
 ### Say
 
