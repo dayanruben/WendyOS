@@ -100,6 +100,7 @@ struct `report command` {
         #expect(html.contains("font: 16px/1.6 \"Geist\""))
         #expect(html.contains("font-family: \"Geist Mono\""))
         #expect(html.contains("viewBox=\"0 0 749.97 181.81\""))
+        #expect(html.contains("class=\"brand-mark\" role=\"img\" aria-label=\"Wendy\""))
         #expect(html.contains("Swift E2E · Run report"))
         #expect(html.contains(":where(a, button, input, summary):focus-visible"))
         #expect(!html.contains("fonts.googleapis.com"))
