@@ -6,8 +6,11 @@
   --wendy-slate: #171c23;
   --wendy-card: #1e242d;
   --wendy-muted: #242b35;
+  --wendy-sand: #e6e2d8;
   --wendy-warm-grey: #5b5a56;
+  --wendy-border: #dedede;
   --wendy-seafoam: #9fe2bf;
+  --wendy-seafoam-link: #2a7050;
   --wendy-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --wendy-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
     monospace;
@@ -17,8 +20,8 @@
   position: relative;
   box-sizing: border-box;
   padding: 72px 80px 64px;
-  background: var(--wendy-slate);
-  color: var(--wendy-cream);
+  background: var(--wendy-cream);
+  color: var(--wendy-slate);
   font-family: var(--wendy-sans);
   font-size: 28px;
   font-weight: 400;
@@ -31,14 +34,14 @@
   right: 64px;
   width: 184px;
   height: 45px;
-  background: url('/brand/wendy-logo-cream.svg') right center / contain no-repeat;
+  background: url('/brand/wendy-logo-slate.svg') right center / contain no-repeat;
   content: '';
 }
 
 .slidev-layout h1,
 .slidev-layout h2,
 .slidev-layout h3 {
-  color: var(--wendy-cream);
+  color: var(--wendy-slate);
   font-family: var(--wendy-sans);
   font-weight: 500;
   letter-spacing: 0;
@@ -65,7 +68,7 @@
 
 .slidev-layout p,
 .slidev-layout li {
-  color: var(--wendy-cream);
+  color: var(--wendy-slate);
 }
 
 .slidev-layout strong {
@@ -73,7 +76,7 @@
 }
 
 .slidev-layout a {
-  color: var(--wendy-seafoam);
+  color: var(--wendy-seafoam-link);
   text-decoration-color: currentColor;
 }
 
@@ -87,18 +90,18 @@
 .slidev-layout :not(pre) > code {
   padding: 0.12em 0.3em;
   border-radius: 0;
-  background: var(--wendy-muted);
-  color: var(--wendy-cream);
+  background: var(--wendy-sand);
+  color: var(--wendy-slate);
   font-size: 0.88em;
 }
 
 .slidev-layout pre,
 .slidev-layout .slidev-code {
-  border: 1px solid var(--wendy-muted);
+  border: 1px solid var(--wendy-border);
   border-radius: 0;
-  background: var(--wendy-card) !important;
+  background: var(--wendy-sand) !important;
   box-shadow: none;
-  color: var(--wendy-cream);
+  color: var(--wendy-slate);
 }
 
 .slidev-layout pre code,
@@ -108,19 +111,19 @@
 }
 
 .slidev-layout blockquote {
-  border-left-color: var(--wendy-cream);
-  color: var(--wendy-cream);
+  border-left-color: var(--wendy-slate);
+  color: var(--wendy-slate);
 }
 
 .slidev-layout hr {
-  border-color: var(--wendy-muted);
+  border-color: var(--wendy-border);
 }
 
 .slidev-layout table {
-  border-color: var(--wendy-muted);
+  border-color: var(--wendy-border);
 }
 
 .slidev-layout th,
 .slidev-layout td {
-  border-color: var(--wendy-muted);
+  border-color: var(--wendy-border);
 }

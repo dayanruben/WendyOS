@@ -60,30 +60,31 @@ under `screencast/`.
 
 ## Wendy brand
 
-The renderer applies Wendy's dark presentation theme to every `slide.md`
-automatically. Slides use the published deep slate and cream pairing, Geist for
-headlines and body copy, Geist Mono for code, and the official cream wordmark.
-The font packages and logo files are kept local so rendering does not depend on
-a network connection.
+The renderer applies Wendy's default light presentation theme to every
+`slide.md` automatically. Slides use cream paper, slate ink, Geist for headlines
+and body copy, Geist Mono for code, and the official slate wordmark. Terminal
+recordings use the complementary dark slate treatment. The font packages and
+logo files are kept local so rendering does not depend on a network connection.
 
 Follow the canonical guidance at <https://wendy.dev/brand>:
 
 - Write headings and body copy in sentence case. Use uppercase only for short
   mono labels.
-- Keep slide backgrounds slate (`#171C23`), raised code surfaces slate card
-  (`#1E242D`), and primary text cream (`#F1EEE7`). Never substitute pure black
-  or cool grey.
-- Reserve seafoam (`#9FE2BF`) for links and key calls to action. It is not a
-  decorative highlight color.
-- Use cream marks on dark surfaces and slate marks on light footage. Do not
-  recolor, stretch, rotate, or add effects to the marks under `public/brand/`.
+- Keep slide backgrounds cream (`#F1EEE7`), quiet code surfaces sand
+  (`#E6E2D8`), and primary text slate (`#171C23`). Dark terminal footage uses
+  slate rather than pure black.
+- Use seafoam ink (`#2A7050`) for links on light slides. Reserve seafoam fill
+  (`#9FE2BF`) for key calls to action; it is not a decorative highlight color.
+- Use slate marks on light slides and cream marks on dark terminal surfaces. Do
+  not recolor, stretch, rotate, or add effects to the marks under
+  `public/brand/`.
 - Use Geist Mono for terminal recordings when it is installed. The fallback
   remains the platform monospace so tapes still render on a clean machine.
 
 The global style lives in `style.css`. Keep scene Markdown focused on content;
-do not repeat brand CSS in individual slides. When a scene intentionally uses
-light artwork or captured application footage, preserve that footage rather
-than placing a dark filter over it.
+do not repeat brand CSS in individual slides. Preserve dark terminals and
+captured application footage as authored rather than forcing the light slide
+palette onto them.
 
 `render-slide` uses Slidev under the hood to render one `slide.md` at a time.
 There is no aggregate deck and no timeline file.
