@@ -8,6 +8,13 @@ Set Theme { "name": "Wendy Dark", "black": "#171C23", "red": "#F1EEE7", "green":
 Set Framerate 10
 Set CursorBlink false
 
+Hide
+Type "export PS1='$ '"
+Enter
+Type "clear"
+Enter
+Show
+
 Sleep 1s
 
 Type "cat > /tmp/screencast-render.sh <<'COMMANDS'"
