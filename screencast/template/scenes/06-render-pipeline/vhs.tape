@@ -3,7 +3,8 @@ Set Shell zsh
 Set Width 1440
 Set Height 900
 Set FontSize 20
-Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrainsMono Nerd Font Mono, monospace"
+Set FontFamily "Geist Mono, monospace"
+Set Theme { "name": "Wendy Dark", "black": "#171C23", "red": "#F1EEE7", "green": "#9FE2BF", "yellow": "#E6E2D8", "blue": "#CBCBCB", "magenta": "#DEDEDE", "cyan": "#86D3A8", "white": "#F1EEE7", "brightBlack": "#5B5A56", "brightRed": "#F1EEE7", "brightGreen": "#9FE2BF", "brightYellow": "#E6E2D8", "brightBlue": "#CBCBCB", "brightMagenta": "#DEDEDE", "brightCyan": "#9FE2BF", "brightWhite": "#F1EEE7", "background": "#171C23", "foreground": "#F1EEE7", "selection": "#242B35", "cursor": "#9FE2BF" }
 Set Framerate 10
 Set CursorBlink false
 

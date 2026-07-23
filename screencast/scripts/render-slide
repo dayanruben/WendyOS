@@ -135,7 +135,7 @@ async function main() {
   const userDataDir = join(workdir, 'chrome-profile');
   await mkdir(userDataDir, { recursive: true });
   const body = (await readFile(source, 'utf8')).trimEnd();
-  await writeFile(deckPath, `---\ntheme: default\ncolorSchema: dark\nclass: text-left\ndrawings:\n  persist: false\ntransition: fade-out\nmdc: true\n---\n\n${body}\n`);
+  await writeFile(deckPath, `---\ntheme: default\ncolorSchema: dark\naspectRatio: ${width}/${height}\ncanvasWidth: ${width}\nclass: text-left\ndrawings:\n  persist: false\ntransition: fade-out\nmdc: true\n---\n\n${body}\n`);
 
   const slidevPort = Number(process.env.SLIDEV_PORT ?? 3030);
   const chromePort = 9222 + Math.floor(Math.random() * 1000);
