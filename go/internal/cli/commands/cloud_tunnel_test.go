@@ -15,6 +15,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"google.golang.org/grpc/metadata"
 )
 
 func TestCloudHILPickerShowsSingletonAndPreservesExplicitSelection(t *testing.T) {
@@ -49,6 +50,32 @@ func TestCloudHILPickerShowsSingletonAndPreservesExplicitSelection(t *testing.T)
 	}
 	if _, err := pickCloudDeviceFromRoster(context.Background(), &config.AuthConfig{}, "", "", assets, true); !errors.Is(err, ErrUserCancelled) {
 		t.Fatalf("picker cancellation was not preserved: %v", err)
+	}
+}
+
+func TestCloudContextSupportsFreshTokenOnlySession(t *testing.T) {
+	auth := &config.AuthConfig{
+		APIKey:         "access-token",
+		OAuthIssuer:    "https://auth.dev.wendy.sh/realms/acme",
+		OAuthExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	ctx, err := cloudContext(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("cloudContext: %v", err)
+	}
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok || len(md.Get("authorization")) != 1 || md.Get("authorization")[0] != "Bearer access-token" {
+		t.Fatalf("authorization metadata = %v", md.Get("authorization"))
+	}
+}
+
+func TestDialCloudGRPCSupportsTokenOnlyPublicTLS(t *testing.T) {
+	conn, err := dialCloudGRPC(&config.AuthConfig{CloudGRPC: "api.dev.wendy.sh:443", APIKey: "access-token"})
+	if err != nil {
+		t.Fatalf("dialCloudGRPC: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
