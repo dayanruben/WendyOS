@@ -422,7 +422,9 @@ func (p *MicroWendyProvider) streamDevices(
 			}
 			ble = make([]models.ExternalDevice, 0, len(snap))
 			for _, dev := range snap {
-				ble = append(ble, p.bleExternalDevice(dev))
+				if dev.Info.MTLSEnabled {
+					ble = append(ble, p.bleExternalDevice(dev))
+				}
 			}
 		case <-ctx.Done():
 			return
