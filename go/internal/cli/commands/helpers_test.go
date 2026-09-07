@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2021,11 +2022,11 @@ func (p *fakeProvider) GetDeviceInfo(context.Context, models.ExternalDevice) (*p
 // fakeContinuousProvider additionally implements ContinuousDiscoverer.
 type fakeContinuousProvider struct {
 	fakeProvider
-	ch  chan models.ExternalDevice
+	ch  chan []models.ExternalDevice
 	err error
 }
 
-func (p *fakeContinuousProvider) DiscoverDevicesContinuous(context.Context) (<-chan models.ExternalDevice, error) {
+func (p *fakeContinuousProvider) DiscoverDevicesContinuous(context.Context) (<-chan []models.ExternalDevice, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -2038,31 +2039,37 @@ var (
 )
 
 // runDiscoverProviderForPicker starts the discovery loop in a goroutine and
-// returns a channel of items sent to the picker plus a done channel closed
-// when the loop returns.
-func runDiscoverProviderForPicker(ctx context.Context, prov providers.DeviceProvider) (<-chan tui.PickerItem, <-chan struct{}) {
-	got := make(chan tui.PickerItem, 16)
+// returns a channel of the batches sent to the picker plus a done channel
+// closed when the loop returns. Batches are kept whole rather than flattened:
+// each send is one snapshot, and a snapshot legitimately repeats devices the
+// previous one already carried.
+func runDiscoverProviderForPicker(ctx context.Context, prov providers.DeviceProvider) (<-chan []tui.PickerItem, <-chan struct{}) {
+	got := make(chan []tui.PickerItem, 16)
 	done := make(chan struct{})
 	go func() {
 		discoverProviderForPicker(ctx, prov, func(items []tui.PickerItem) {
-			for _, item := range items {
-				got <- item
-			}
+			got <- items
 		})
 		close(done)
 	}()
 	return got, done
 }
 
-func awaitPickerItem(t *testing.T, got <-chan tui.PickerItem, wantName string) {
+// awaitPickerBatch asserts the next batch sent to the picker holds exactly
+// wantNames, in order.
+func awaitPickerBatch(t *testing.T, got <-chan []tui.PickerItem, wantNames ...string) {
 	t.Helper()
 	select {
-	case item := <-got:
-		if item.Name != wantName {
-			t.Fatalf("picker item name = %q, want %q", item.Name, wantName)
+	case items := <-got:
+		names := make([]string, 0, len(items))
+		for _, item := range items {
+			names = append(names, item.Name)
+		}
+		if !slices.Equal(names, wantNames) {
+			t.Fatalf("picker batch = %v, want %v", names, wantNames)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for picker item %q", wantName)
+		t.Fatalf("timed out waiting for picker batch %v", wantNames)
 	}
 }
 
@@ -2100,16 +2107,20 @@ func TestDiscoverProviderForPickerStreamsContinuous(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	one := models.ExternalDevice{ID: "fake:1", DisplayName: "one", ProviderKey: "fake"}
+	two := models.ExternalDevice{ID: "fake:2", DisplayName: "two", ProviderKey: "fake"}
+
 	prov := &fakeContinuousProvider{
 		fakeProvider: fakeProvider{key: "fake"},
-		ch:           make(chan models.ExternalDevice),
+		ch:           make(chan []models.ExternalDevice),
 	}
 	got, done := runDiscoverProviderForPicker(ctx, prov)
 
-	prov.ch <- models.ExternalDevice{ID: "fake:1", DisplayName: "one", ProviderKey: "fake"}
-	awaitPickerItem(t, got, "one")
-	prov.ch <- models.ExternalDevice{ID: "fake:2", DisplayName: "two", ProviderKey: "fake"}
-	awaitPickerItem(t, got, "two")
+	// Snapshots, not increments: the second one re-carries the first device.
+	prov.ch <- []models.ExternalDevice{one}
+	awaitPickerBatch(t, got, "one")
+	prov.ch <- []models.ExternalDevice{one, two}
+	awaitPickerBatch(t, got, "one", "two")
 
 	// Cancel then close the stream, as a real implementation would on ctx
 	// cancellation; the loop must return without falling back to polling.
@@ -2141,7 +2152,7 @@ func TestDiscoverProviderForPickerPollingFallback(t *testing.T) {
 			defer cancel()
 
 			got, done := runDiscoverProviderForPicker(ctx, tt.prov)
-			awaitPickerItem(t, got, "polled")
+			awaitPickerBatch(t, got, "polled")
 			cancel()
 			awaitDone(t, done)
 		})
@@ -2157,13 +2168,13 @@ func TestDiscoverProviderForPickerStreamDeathFallsBackToPolling(t *testing.T) {
 			key:     "fake",
 			devices: []models.ExternalDevice{{ID: "fake:1", DisplayName: "polled", ProviderKey: "fake"}},
 		},
-		ch: make(chan models.ExternalDevice),
+		ch: make(chan []models.ExternalDevice),
 	}
 	got, done := runDiscoverProviderForPicker(ctx, prov)
 
 	// Stream dies while the picker is still open: polling must take over.
 	close(prov.ch)
-	awaitPickerItem(t, got, "polled")
+	awaitPickerBatch(t, got, "polled")
 	cancel()
 	awaitDone(t, done)
 }

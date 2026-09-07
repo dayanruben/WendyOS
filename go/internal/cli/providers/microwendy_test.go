@@ -291,22 +291,23 @@ func TestBLELiteDisplayName(t *testing.T) {
 }
 
 // collectExternalDevices runs streamDevices over the given sources and returns
-// everything it emitted before the stream ended.
+// its last emission — every snapshot is the whole set, so the final one is the
+// state the stream ended on.
 func collectExternalDevices(
 	ctx context.Context,
 	svcCh <-chan discovery.MDNSService,
 	serialUpdates <-chan []discovery.SerialDevice,
 	bleCh <-chan []discovery.BLELiteDevice,
 ) []models.ExternalDevice {
-	out := make(chan models.ExternalDevice, 16)
+	out := make(chan []models.ExternalDevice, 16)
 	go func() {
 		defer close(out)
 		(&MicroWendyProvider{}).streamDevices(ctx, svcCh, serialUpdates, bleCh, nil, out)
 	}()
 
 	var devices []models.ExternalDevice
-	for dev := range out {
-		devices = append(devices, dev)
+	for snapshot := range out {
+		devices = snapshot
 	}
 	return devices
 }
@@ -358,6 +359,56 @@ func TestStreamDevicesSurvivesBLEStreamEnding(t *testing.T) {
 	devices := collectExternalDevices(ctx, svcCh, nil, bleCh)
 	if len(devices) != 1 || devices[0].ConnectionType() != "LAN" {
 		t.Fatalf("a closed BLE stream must not stop mDNS discovery; got %+v", devices)
+	}
+}
+
+// TestStreamDevicesSnapshotMirrorsEachSource pins the ContinuousDiscoverer
+// contract: an emission is the union of the sources, and each source's shape
+// is respected — the newest serial set replaces the previous one (so an
+// unplugged board drops out) while mDNS rows, which only ever arrive as
+// announcements, stay.
+func TestStreamDevicesSnapshotMirrorsEachSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Unbuffered, so each send lands before the next one is attempted and the
+	// sequence below is the order streamDevices sees.
+	svcCh := make(chan discovery.MDNSService)
+	serialUpdates := make(chan []discovery.SerialDevice)
+
+	go func() {
+		serialUpdates <- []discovery.SerialDevice{
+			{Port: "/dev/ttyUSB0", ID: "board", Name: "board", DisplayName: "Board", Responsive: true},
+		}
+		svcCh <- discovery.MDNSService{Hostname: "lite.local", IPAddress: "192.0.2.10", Port: 5054}
+		// The board is unplugged: the scanner now reports an empty set.
+		serialUpdates <- nil
+		time.Sleep(50 * time.Millisecond)
+		close(svcCh)
+	}()
+
+	devices := collectExternalDevices(ctx, svcCh, serialUpdates, nil)
+	if len(devices) != 1 || devices[0].ConnectionType() != "LAN" {
+		t.Fatalf("the unplugged board must drop out and the mDNS row must stay; got %+v", devices)
+	}
+}
+
+// TestStreamDevicesDeduplicatesRepeatedMDNSService proves a re-announced
+// service updates its row in place instead of appending a second one — a
+// browse re-sends records freely, and every snapshot is consumed as-is.
+func TestStreamDevicesDeduplicatesRepeatedMDNSService(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	svcCh := make(chan discovery.MDNSService, 2)
+	svc := discovery.MDNSService{Hostname: "lite.local", IPAddress: "192.0.2.10", Port: 5054}
+	svcCh <- svc
+	svcCh <- svc
+	close(svcCh)
+
+	devices := collectExternalDevices(ctx, svcCh, nil, nil)
+	if len(devices) != 1 {
+		t.Fatalf("a re-announced service must not duplicate its row; got %+v", devices)
 	}
 }
 

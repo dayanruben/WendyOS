@@ -54,6 +54,15 @@ func (p *MicroWendyProvider) CheckRequirements(ctx context.Context) error {
 	return nil
 }
 
+// DiscoverDevices finds Wendy Lite boards plugged in over USB serial and
+// reachable on the LAN via mDNS.
+//
+// Bluetooth boards cannot be discovered through this method — use
+// DiscoverDevicesContinuous instead. A BLE scan has no end of its own (see
+// DeviceProvider.DiscoverDevices), and every candidate then needs a
+// connect-and-read of its info service on a radio that can take seconds just
+// to come up (see startBLELiteSource), so folding it in would stretch this
+// one-shot call far past the wait a caller expects here.
 func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.ExternalDevice, error) {
 	sd := discovery.GetSerialDiscovery()
 	sd.StartScan(0)
@@ -249,8 +258,12 @@ func bleLiteDisplayName(dev discovery.BLELiteDevice) string {
 // the browse itself fails to start.
 //
 // BLE reaches a board that is neither plugged in nor on the network, which is
-// the case the other two sources cannot cover at all.
-func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error) {
+// the case the other two sources cannot cover at all — and the case
+// DiscoverDevices cannot serve.
+//
+// Each emission is the whole set discovered so far across the three sources,
+// per the ContinuousDiscoverer contract; see streamDevices for how they merge.
+func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan []models.ExternalDevice, error) {
 	svcCh, err := discovery.BrowseMDNSServicesContinuous(ctx, microWendyServiceType)
 	if err != nil {
 		return nil, err
@@ -278,7 +291,7 @@ func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-c
 		}
 	})
 
-	ch := make(chan models.ExternalDevice, 16)
+	ch := make(chan []models.ExternalDevice, 16)
 	go func() {
 		defer close(ch)
 		defer sd.RemoveListener(listenerID)
@@ -320,6 +333,13 @@ func startBLELiteSource(ctx context.Context) <-chan []discovery.BLELiteDevice {
 // or the mDNS browse ends. known is the serial backlog — the devices the
 // scanner had already found before the listener was registered.
 //
+// Each source's latest view is kept here and every emission carries the union
+// of all three, as ContinuousDiscoverer requires. The sources report shapes
+// that differ, and the merge mirrors each one: serial and BLE deliver whole
+// sets, so the newest set replaces the previous and a board that stopped being
+// reported drops out; the mDNS browse only announces arrivals, so its rows
+// accumulate (re-announcements update in place rather than duplicating).
+//
 // Split out from DiscoverDevicesContinuous so the merge can be exercised with
 // plain channels: the real sources browse the network and open serial ports.
 func (p *MicroWendyProvider) streamDevices(
@@ -328,21 +348,52 @@ func (p *MicroWendyProvider) streamDevices(
 	serialUpdates <-chan []discovery.SerialDevice,
 	bleCh <-chan []discovery.BLELiteDevice,
 	known []discovery.SerialDevice,
-	out chan<- models.ExternalDevice,
+	out chan<- []models.ExternalDevice,
 ) {
-	send := func(dev models.ExternalDevice) bool {
+	var mdns, serial, ble []models.ExternalDevice
+
+	upsertMDNS := func(dev models.ExternalDevice) {
+		for i := range mdns {
+			if mdns[i].ID == dev.ID {
+				mdns[i] = dev
+				return
+			}
+		}
+		mdns = append(mdns, dev)
+	}
+
+	serialDevices := func(snap []discovery.SerialDevice) []models.ExternalDevice {
+		devices := make([]models.ExternalDevice, 0, len(snap))
+		for _, dev := range snap {
+			devices = append(devices, p.serialExternalDevice(dev))
+		}
+		return devices
+	}
+
+	// emit builds a fresh slice every time rather than handing out the
+	// per-source ones: the consumer keeps a snapshot (and pointers into it)
+	// past the next update, so the two must not share backing arrays. An empty
+	// union is not sent — there is nothing to report yet, and the seeding call
+	// below would otherwise emit one for an empty backlog.
+	emit := func() bool {
+		if len(mdns)+len(serial)+len(ble) == 0 {
+			return true
+		}
+		snapshot := make([]models.ExternalDevice, 0, len(mdns)+len(serial)+len(ble))
+		snapshot = append(snapshot, mdns...)
+		snapshot = append(snapshot, serial...)
+		snapshot = append(snapshot, ble...)
 		select {
-		case out <- dev:
+		case out <- snapshot:
 			return true
 		case <-ctx.Done():
 			return false
 		}
 	}
 
-	for _, dev := range known {
-		if !send(p.serialExternalDevice(dev)) {
-			return
-		}
+	serial = serialDevices(known)
+	if !emit() {
+		return
 	}
 
 	for {
@@ -356,31 +407,30 @@ func (p *MicroWendyProvider) streamDevices(
 			if !connectableLiteMDNSService(svc) {
 				continue
 			}
-			if !send(p.mdnsExternalDevice(svc)) {
-				return
-			}
+			upsertMDNS(p.mdnsExternalDevice(svc))
 		case snap := <-serialUpdates:
-			for _, dev := range snap {
-				if !send(p.serialExternalDevice(dev)) {
-					return
-				}
-			}
+			serial = serialDevices(snap)
 		case snap, ok := <-bleCh:
 			if !ok {
 				// Unlike the mDNS browse, a BLE stream that ends is not a
 				// reason to stop: drop the source and keep the other two
 				// running. Nothing to tear down — the scan stops with ctx.
+				// The rows it already found stay in the snapshot; the source
+				// going away is not evidence the boards did.
 				bleCh = nil
 				continue
 			}
-			// Each emit is the whole set, re-sent rather than diffed, as with
-			// the serial snapshots above: the consumer deduplicates.
+			ble = make([]models.ExternalDevice, 0, len(snap))
 			for _, dev := range snap {
-				if !send(p.bleExternalDevice(dev)) {
-					return
-				}
+				ble = append(ble, p.bleExternalDevice(dev))
 			}
 		case <-ctx.Done():
+			return
+		}
+
+		// Reached only when a source actually changed: the continue paths
+		// above (an unusable mDNS record, the BLE source closing) skip it.
+		if !emit() {
 			return
 		}
 	}
