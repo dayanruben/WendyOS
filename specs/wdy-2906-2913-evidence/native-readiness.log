@@ -1,0 +1,15 @@
+Syncing files...
+  data/input.txt                           19 B / 19 B     100.0%   97 kB/s   [1/3]
+  startup.py                              438 B / 438 B    100.0%  357 kB/s   [2/3]
+  wendy.json                              535 B / 535 B    100.0%  400 kB/s   [3/3]
+Total: 992 B in 3 file(s)
+Container sh.wendy.wdy2910.readiness created.
+Application sh.wendy.wdy2910.readiness started.
+Waiting for 127.0.0.1:18088 to be ready...
+{"cwd": "/Users/ethan/Library/Application Support/sh.wendy.WendyAgentMac/apps/sh.wendy.wdy2910.readiness/data", "value": "cli", "empty": "", "identity": "sh.wendy.wdy2910.readiness"}
+Application sh.wendy.wdy2910.readiness is still starting after 1s; continuing readiness checks every 5 seconds.
+native probe server ready
+Application sh.wendy.wdy2910.readiness ready after 11s.
+Hook postStart: echo ready >> /private/tmp/wdy2910-native-hook-count
+                                               
+Application sh.wendy.wdy2910.readiness stopped.

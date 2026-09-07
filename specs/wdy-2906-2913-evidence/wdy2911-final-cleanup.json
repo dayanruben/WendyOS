@@ -1,0 +1,6 @@
+{
+  "portsClosedAfterStop": {
+    "8080": true,
+    "11435": true
+  }
+}
