@@ -76,11 +76,14 @@ func ReadLiteInfoAt(address string, timeout time.Duration) (*LiteInfo, error) {
 // ReadLiteInfo reads the device's GATT info service, which carries the L2CAP
 // PSM to open along with the identity the device advertises for itself.
 //
-// It is a best-effort lookup: every failure is wrapped in
-// ErrLiteInfoUnavailable so a caller can fall back to its own default PSM —
-// liteclient.DefaultL2CAPPSM for the Lite path. Only the PSM characteristic is
-// required; the identity and mTLS characteristics are read opportunistically
-// and left zero when a device omits them.
+// Every characteristic in the service is required — identity, mTLS, and PSM
+// alike; a device that answers some but not all of them is not recognized, and
+// this returns ErrLiteInfoUnavailable rather than a partially filled LiteInfo.
+// A caller must never be handed a partial identity — bleExternalDevice would
+// surface a blank name, and MicroWendyProvider's mTLS filter cannot tell "not
+// provisioned" from "couldn't read it". Every failure is wrapped in
+// ErrLiteInfoUnavailable so a caller can fall back to its own default PSM, as
+// liteclient.DefaultL2CAPPSM does.
 func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, error) {
 	// Required before any characteristic op: both backends resolve a
 	// characteristic against what discovery found, and report "not found"
@@ -105,26 +108,46 @@ func ReadLiteInfo(conn *central.Connection, timeout time.Duration) (*LiteInfo, e
 		return nil, fmt.Errorf("%w: device published PSM 0", ErrLiteInfoUnavailable)
 	}
 
-	info := &LiteInfo{PSM: psm}
-	// Best-effort from here: a device that answers with the PSM but not its
-	// name is still perfectly reachable, and the PSM is the only field any
-	// caller currently needs.
-	info.DeviceID = readLiteInfoString(conn, liteInfoDeviceIDUUID)
-	info.DeviceName = readLiteInfoString(conn, liteInfoDeviceNameUUID)
-	info.DisplayName = readLiteInfoString(conn, liteInfoDisplayNameUUID)
-	if mtls, err := conn.ReadCharacteristic(LiteInfoServiceUUID, liteInfoMTLSUUID); err == nil && len(mtls) > 0 {
-		info.MTLSEnabled = mtls[0] != 0
+	deviceID, err := readLiteInfoString(conn, liteInfoDeviceIDUUID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading device ID: %w", ErrLiteInfoUnavailable, err)
 	}
-	return info, nil
+	deviceName, err := readLiteInfoString(conn, liteInfoDeviceNameUUID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading device name: %w", ErrLiteInfoUnavailable, err)
+	}
+	displayName, err := readLiteInfoString(conn, liteInfoDisplayNameUUID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading display name: %w", ErrLiteInfoUnavailable, err)
+	}
+	mtls, err := conn.ReadCharacteristic(LiteInfoServiceUUID, liteInfoMTLSUUID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading mTLS flag: %w", ErrLiteInfoUnavailable, err)
+	}
+	if len(mtls) == 0 {
+		return nil, fmt.Errorf("%w: mTLS characteristic is empty", ErrLiteInfoUnavailable)
+	}
+
+	return &LiteInfo{
+		PSM:         psm,
+		DeviceID:    deviceID,
+		DeviceName:  deviceName,
+		DisplayName: displayName,
+		MTLSEnabled: mtls[0] != 0,
+	}, nil
 }
 
-// readLiteInfoString reads one UTF-8 characteristic, yielding "" for both a
-// read failure and an empty value (ReadCharacteristic returns (nil, nil) when
-// the characteristic holds no bytes).
-func readLiteInfoString(conn *central.Connection, charUUID string) string {
+// readLiteInfoString reads one UTF-8 characteristic. Every characteristic in
+// the service is required (see ReadLiteInfo), so an empty value is as much a
+// failure here as a GATT read error — ReadCharacteristic returns (nil, nil)
+// when the characteristic holds no bytes, which this turns into an error too.
+func readLiteInfoString(conn *central.Connection, charUUID string) (string, error) {
 	data, err := conn.ReadCharacteristic(LiteInfoServiceUUID, charUUID)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return string(data)
+	if len(data) == 0 {
+		return "", fmt.Errorf("characteristic %s is empty", charUUID)
+	}
+	return string(data), nil
 }

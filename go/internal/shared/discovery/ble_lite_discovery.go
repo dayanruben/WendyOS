@@ -70,7 +70,8 @@ var (
 // the life of the stream and are never removed, inheriting the scanner's
 // policy: BLE offers no "device went away" signal.
 //
-// A board appears only once its info service was read, which takes a GATT
+// A board appears only once its info service was read completely — every
+// characteristic, not just PSM (see ble.ReadLiteInfo) — which takes a GATT
 // connection: Windows has no GATT client at all (see
 // ble.ErrLiteInfoUnavailable), so the stream stays empty there. A new emit
 // happens when a board is identified, not when its signal moves — RSSI changes
