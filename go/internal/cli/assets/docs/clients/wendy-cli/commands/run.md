@@ -422,3 +422,10 @@ Device info exposes `gpuCapabilities`, one entry per detected GPU with its
 whose backend list is empty has no supported backend; no entries at all on a
 device that reports a GPU means an older agent. `containerStorage` identifies the filesystem used by
 containerd; the existing disk scalar fields continue to describe the root filesystem.
+
+Attached runs keep observing slow startup after the initial readiness budget.
+If the relevant service is still running, the CLI reports “still starting” and
+checks every five seconds while streaming logs. Browser opening and host
+`postStart` commands run once readiness succeeds. Stopping the service,
+canceling the session, or replacing a watch deployment cancels its probes.
+Detached and create-only runs continue to skip host readiness and hooks.

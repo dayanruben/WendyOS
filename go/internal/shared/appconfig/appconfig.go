@@ -991,6 +991,7 @@ func ValidateJSON(data []byte) []string {
 	}
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
 	warnings = append(warnings, validateHooksJSON(raw["hooks"], "hooks")...)
+	warnings = append(warnings, validateReadinessJSON(raw["readiness"], "readiness")...)
 	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
 
 	// Validate service-level entitlements, frameworks, and hooks when a
@@ -1011,6 +1012,7 @@ func ValidateJSON(data []byte) []string {
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
 				warnings = append(warnings, validateHooksJSON(svc["hooks"], fmt.Sprintf("services[%q].hooks", name))...)
+				warnings = append(warnings, validateReadinessJSON(svc["readiness"], fmt.Sprintf("services[%q].readiness", name))...)
 			}
 
 			// A top-level hooks.postStart.agent has no app-level container to
@@ -1280,4 +1282,17 @@ func (a *AppConfig) GetROS2Config() *ROS2Config {
 		return nil
 	}
 	return a.Frameworks.ROS2
+}
+
+func validateReadinessJSON(data json.RawMessage, prefix string) []string {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	warnings := unknownKeyWarnings(raw, prefix, jsonFieldNames(reflect.TypeOf(ReadinessConfig{})))
+	var tcp map[string]json.RawMessage
+	if json.Unmarshal(raw["tcpSocket"], &tcp) == nil {
+		warnings = append(warnings, unknownKeyWarnings(tcp, prefix+".tcpSocket", jsonFieldNames(reflect.TypeOf(TCPSocketProbe{})))...)
+	}
+	return warnings
 }
