@@ -2192,7 +2192,7 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			ProviderKey:     "wendy-lite",
 			AgentVersion:    "1.2.3",
 			CPUArchitecture: "riscv",
-			ConnectionInfo:  map[string]string{"type": "LAN", "ip": "10.0.0.9"},
+			ConnectionInfo:  map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1"},
 		}
 		item := externalProviderPickerItem(prov, &dev)
 
@@ -2211,8 +2211,8 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		}
 		// A LAN row carries no serial port, so it must not take part in the
 		// unflashed-row supersede at all.
-		if item.DedupKey != dev.DisplayName || item.Supersedes != "" {
-			t.Errorf("DedupKey = %q, Supersedes = %q, want the display name and no supersede",
+		if item.DedupKey != dev.ConnectionInfo["deviceId"] || item.Supersedes != "" {
+			t.Errorf("DedupKey = %q, Supersedes = %q, want the device id and no supersede",
 				item.DedupKey, item.Supersedes)
 		}
 	})
@@ -2250,13 +2250,13 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			DisplayName: "Lite Board",
 			ProviderKey: "wendy-lite",
 			ConnectionInfo: map[string]string{
-				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "name": "lite-board",
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "name": "lite-board", "deviceId": "lite-board-1",
 			},
 		}
 		item := externalProviderPickerItem(prov, &dev)
 
-		if item.DedupKey != dev.DisplayName {
-			t.Errorf("DedupKey = %q, want the display name so LAN/USB rows still merge", item.DedupKey)
+		if item.DedupKey != dev.ConnectionInfo["deviceId"] {
+			t.Errorf("DedupKey = %q, want the device id so LAN/USB rows still merge", item.DedupKey)
 		}
 		if want := unflashedLiteDedupKey("/dev/cu.usbmodem2101"); item.Supersedes != want {
 			t.Errorf("Supersedes = %q, want %q", item.Supersedes, want)
