@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"log"
 	"math"
 	"sort"
 	"time"
@@ -155,9 +154,6 @@ func runBLELiteDiscovery(ctx context.Context, sightings <-chan []scan.BLEDeviceI
 
 		case devices, ok := <-sightings:
 			if !ok {
-				if ctx.Err() == nil {
-					log.Printf("discovery: BLE scan for Wendy Lite devices stopped")
-				}
 				return
 			}
 			for _, d := range devices {
