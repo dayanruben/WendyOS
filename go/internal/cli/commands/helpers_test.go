@@ -2302,6 +2302,112 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		}
 	})
 
+	// An unenrolled Wendy Lite board advertises mtls=false and connectClient
+	// then dials it with ConnectInsecure, so its row must carry the same
+	// warning a plaintext WendyOS device gets.
+	t.Run("insecure flag follows the transport's mtls key", func(t *testing.T) {
+		tests := []struct {
+			name string
+			info map[string]string
+			want bool
+		}{
+			{
+				name: "LAN board that is not enrolled",
+				info: map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1", "mtls": "false"},
+				want: true,
+			},
+			{
+				name: "LAN board that is enrolled",
+				info: map[string]string{"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1", "mtls": "true"},
+				want: false,
+			},
+			// Serial carries no mtls key at all, so an absent key must not be
+			// read as an unsecured connection (an `!= "true"` test would).
+			{
+				name: "USB board reports no mtls at all",
+				info: map[string]string{"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "deviceId": "lite-board-1"},
+				want: false,
+			},
+			{
+				name: "unflashed board reports no mtls at all",
+				info: map[string]string{"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "needsInstall": "true"},
+				want: false,
+			},
+		}
+
+		prov := &fakeProvider{key: "wendy-lite"}
+		for _, tt := range tests {
+			dev := models.ExternalDevice{
+				ID:             "wendy-lite:board",
+				DisplayName:    "Lite Board",
+				ProviderKey:    "wendy-lite",
+				ConnectionInfo: tt.info,
+			}
+			if got := externalProviderPickerItem(prov, &dev).Insecure; got != tt.want {
+				t.Errorf("%s: Insecure = %v, want %v", tt.name, got, tt.want)
+			}
+		}
+	})
+
+	// End to end over the picker: the reported gap was an unenrolled Lite board
+	// presented as if its connection were secure.
+	t.Run("insecure Lite row warns in the picker", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		lan := models.ExternalDevice{
+			ID:          "wendy-lite:board.local",
+			DisplayName: "Lite Board",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "LAN", "ip": "10.0.0.9", "deviceId": "lite-board-1", "mtls": "false",
+			},
+		}
+		usb := models.ExternalDevice{
+			ID:          "wendy-lite:/dev/cu.usbmodem2101",
+			DisplayName: "Lite Board",
+			ProviderKey: "wendy-lite",
+			ConnectionInfo: map[string]string{
+				"type": "USB", "serialPort": "/dev/cu.usbmodem2101", "deviceId": "lite-board-1",
+			},
+		}
+
+		pickerView := func(devs ...*models.ExternalDevice) string {
+			picker := tui.NewPicker()
+			picker.MergeItem = mergePickerItem
+			model, _ := picker.Update(tui.PickerAddMsg{
+				Items: []tui.PickerItem{externalProviderPickerItem(prov, devs[0])},
+			})
+			for _, dev := range devs[1:] {
+				model, _ = model.(tui.PickerModel).Update(tui.PickerAddMsg{
+					Items: []tui.PickerItem{externalProviderPickerItem(prov, dev)},
+				})
+			}
+			return model.(tui.PickerModel).View()
+		}
+
+		view := pickerView(&lan)
+		if !strings.Contains(view, "Connection is not secured with mTLS") {
+			t.Errorf("picker does not warn about the unenrolled board:\n%s", view)
+		}
+		if !strings.Contains(view, tui.LegendInsecure) {
+			t.Errorf("picker legend does not document the warning glyph:\n%s", view)
+		}
+
+		// The merged row must describe the connection pickerSelection would
+		// actually make: USB outranks LAN, and serial is not an mTLS question —
+		// so the warning goes away, whichever order the transports arrive in.
+		for _, order := range [][]*models.ExternalDevice{{&lan, &usb}, {&usb, &lan}} {
+			view := pickerView(order...)
+			if strings.Contains(view, "Connection is not secured with mTLS") {
+				t.Errorf("%s then %s: merged row still warns although it connects over USB:\n%s",
+					order[0].ConnectionInfo["type"], order[1].ConnectionInfo["type"], view)
+			}
+			if strings.Contains(view, tui.LegendInsecure) {
+				t.Errorf("%s then %s: merged row still documents the warning glyph:\n%s",
+					order[0].ConnectionInfo["type"], order[1].ConnectionInfo["type"], view)
+			}
+		}
+	})
+
 	t.Run("other providers keep provider row layout", func(t *testing.T) {
 		prov := &fakeProvider{key: "fake"}
 		dev := models.ExternalDevice{ID: "fake:1", DisplayName: "Dev", ProviderKey: "fake"}

@@ -3522,6 +3522,14 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 		existing.Provisioned = incoming.Provisioned
 		existing.Hint = incoming.Hint
 	}
+	// A Wendy Lite row has no LAN probe to speak for it: each of its transports
+	// reports its own mTLS state, and pickerSelection connects over the
+	// highest-ranked one (Externals[0], kept sorted above). Recompute from that
+	// transport so the warning describes the connection we would actually make,
+	// whichever order the transports were discovered in.
+	if md.LAN == nil && len(md.Externals) > 0 {
+		existing.Insecure = liteExternalInsecure(md.Externals[0])
+	}
 	// The no-access hint must stay consistent with the version cell no matter
 	// which transport supplied the version: AgentVersion is carried over from
 	// earlier LAN probes or backfilled from BLE above, and a hint claiming
@@ -3575,6 +3583,16 @@ func hideLocalProviders(excludes map[string]bool) map[string]bool {
 	return merged
 }
 
+// liteExternalInsecure reports whether a Wendy Lite transport will run without
+// mTLS. The Lite firmware advertises mtls=false until it is enrolled (see the
+// wendy-com doc), and connectClient dials such a device with ConnectInsecure —
+// so the row deserves the same warning a plaintext WendyOS device gets. Only an
+// explicit "false" counts: a serial row carries no mtls key at all, and an
+// absent key is not evidence of an unsecured connection.
+func liteExternalInsecure(dev *models.ExternalDevice) bool {
+	return dev != nil && dev.ConnectionInfo["mtls"] == "false"
+}
+
 // unflashedLiteDedupKey keys a board with no Wendy Lite firmware by its port
 // rather than its synthetic display name, so the row it gets once it identifies
 // itself can supersede it.
@@ -3592,6 +3610,7 @@ func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.Exter
 			DedupKey:     dev.ConnectionInfo["deviceId"],
 			Type:         dev.ConnectionType() + " (Lite)",
 			Address:      dev.ConnectionInfo["ip"],
+			Insecure:     liteExternalInsecure(dev),
 			AgentVersion: dev.AgentVersion,
 			OS:           dev.OS,
 			OSVersion:    dev.OSVersion,
