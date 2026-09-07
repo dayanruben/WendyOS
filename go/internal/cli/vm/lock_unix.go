@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package commands
+package vm
 
 import (
 	"errors"
@@ -26,4 +26,18 @@ func tryLockFile(f *os.File) (bool, error) {
 // unlockFile releases the advisory lock held on f.
 func unlockFile(f *os.File) error {
 	return unix.Flock(int(f.Fd()), unix.LOCK_UN)
+}
+
+// trySharedLock probes whether anyone holds the exclusive lock, without ever
+// taking it. A status read that grabbed LOCK_EX -- even for microseconds --
+// would make a concurrent start fail with a spurious ErrAlreadyRunning.
+func trySharedLock(f *os.File) (bool, error) {
+	err := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return false, nil
+	}
+	return false, err
 }

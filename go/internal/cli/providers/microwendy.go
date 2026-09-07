@@ -18,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -936,9 +937,7 @@ func connectWithCLIIdentities(connect func(cert tls.Certificate, rootCAs x509.Ce
 			return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
 		}
 		rootCAs := x509.NewCertPool()
-		if certInfo.PemCertificateChain != "" {
-			rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
-		}
+		certs.AppendChainToPool(rootCAs, certInfo.PemCertificateChain)
 		if err := connect(cert, *rootCAs); err != nil {
 			connectErrs = append(connectErrs, err)
 			continue

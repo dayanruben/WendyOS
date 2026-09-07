@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/sessionbroker"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/permission"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -36,7 +37,7 @@ func NewRootCmd() *cobra.Command {
 			// avoids config/analytics writes (and an update check) as root, and
 			// keeps the first-run banner out of the helper's captured output.
 			switch cmd.Name() {
-			case permission.CheckArg, "__usb-setup", "__t234-write", "open-browser":
+			case permission.CheckArg, "__session-broker", "__usb-setup", "__t234-write", "open-browser":
 				return nil
 			}
 
@@ -205,6 +206,27 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	var sessionSpec string
+	var sessionParentLease bool
+	sessionBrokerCmd := &cobra.Command{
+		Use:    "__session-broker",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// --parent-lease means the launcher passed its lease pipe's read
+			// end as fd 3 (exec.Cmd.ExtraFiles); its EOF is the exact "parent
+			// invocation exited" signal.
+			var parentLease *os.File
+			if sessionParentLease {
+				parentLease = os.NewFile(3, "parent-lease")
+			}
+			return sessionbroker.Run(cmd.Context(), sessionSpec, sessionbroker.DefaultIdleTTL, parentLease)
+		},
+	}
+	sessionBrokerCmd.Flags().StringVar(&sessionSpec, "spec", "", "Encoded session connection recipe")
+	sessionBrokerCmd.Flags().BoolVar(&sessionParentLease, "parent-lease", false, "Parent invocation's lease pipe was inherited as fd 3")
+	_ = sessionBrokerCmd.MarkFlagRequired("spec")
+
 	var bmapDevice, bmapFile, bmapSource string
 	var bmapWriters int
 	bmapWriteCmd := &cobra.Command{
@@ -233,6 +255,7 @@ func NewRootCmd() *cobra.Command {
 		// Manage
 		projectCmd,
 		deviceCmd,
+		newVMCmd(),
 		fleetCmd,
 		// Cloud
 		cloudCmd,
@@ -241,6 +264,7 @@ func NewRootCmd() *cobra.Command {
 		cacheCmd,
 		// Hidden
 		bleCheckCmd,
+		sessionBrokerCmd,
 		bmapWriteCmd,
 		newT234WriteCmd(),
 		newUSBSetupHiddenCmd(),
