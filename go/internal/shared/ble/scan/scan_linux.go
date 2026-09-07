@@ -76,7 +76,6 @@ func newScanner(ctx context.Context, services []string) (scanner, error) {
 	if call := adapter.CallWithContext(ctx, bluez.AdapterIface+".SetDiscoveryFilter", 0, filter); call.Err != nil {
 		// Not fatal: an older BlueZ may reject a key, and an unfiltered scan
 		// still produces correct results once the engine filters in Go.
-		_ = call.Err
 	}
 
 	if call := adapter.CallWithContext(ctx, bluez.AdapterIface+".StartDiscovery", 0); call.Err != nil {
