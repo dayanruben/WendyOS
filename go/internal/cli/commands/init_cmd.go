@@ -259,7 +259,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
 	cmd.Flags().BoolVar(&opts.here, "here", false, "Scaffold into the current directory instead of creating a subdirectory")
 	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json), wendy-lite, or darwin")
-	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, or cpp")
+	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, cpp, or mojo")
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
 	cmd.Flags().StringVar(&opts.branch, "branch", "", fmt.Sprintf("Branch of the templates repo to use (default: %s)", templateRepoBranch))
 	cmd.Flags().StringSliceVar(&opts.vars, "var", nil, "Template variable override (repeatable, KEY=VALUE)")

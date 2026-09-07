@@ -33,6 +33,7 @@ All commands below passed after the final applicable changes:
 - `WENDY_TEMPLATES_CHECKOUT=<templates checkout> TMPDIR=/private/tmp go test ./go/internal/cli/commands -run 'TestMacLLMTemplateScaffold|TestOfferPortBusyRetry|TestNativeCommand'`
 - Linux arm64 Go 1.26.6: `go test -race ./go/internal/agent/containerd ./go/internal/agent/services ./go/internal/cli/commands ./go/internal/cli/mcp ./go/internal/agent/gpudiscovery ./go/internal/shared/appconfig`
 - Repository-wide `go build ./go/...` and `go vet ./go/...` on macOS arm64 and Linux arm64.
+- Windows amd64 CLI cross-build and CLI test-binary compilation passed.
 - `make -C swift test`: **359 tests in 59 suites passed**. Required `make -C swift format` completed before Swift commits.
 - Templates: `python3 -m pytest -q --ignore=common/mojo/wendynet/test_ws_echo.py`: **35 passed**. The excluded fixture needs a separately running Mojo echo server and is unchanged.
 - `docker build --check --build-arg WENDY_GPU_VENDOR=broadcom --build-arg WENDY_JETPACK_MAJOR=0 python/llm/ollama`: passed without warnings.
@@ -65,6 +66,8 @@ Swift **6.2**. Agent startup/restart/stop used the repository Makefile workflow;
 | Native environment/cwd | CLI repeat uses last value, empty override retained, cwd is the synced `data` subdirectory, agent app identity applied |
 | Slow startup | Initial deadline 1 s; “still starting”; ready at 11 s; exactly one host hook |
 | Mac chat | MAX binds `127.0.0.1:11435`; WebUI serves port 8080; browser-chat API lists the model and returns “Hello!” via MAX |
+| Final fresh runtime | Uninterrupted package installation, model download, compile, and browser readiness in approximately 465.5 s; MAX healthy after 109.6 s; default browser hook opened exactly once after readiness |
+| CLI scaffold | Final CLI fetched the published branch and scaffolded `mac-llm` with `--target darwin --language mojo`; generated configuration and launcher match the template |
 | Cold model | Download 28.6 s, compile 29.3 s, MAX healthy in 83.8 s |
 | Warm redeploy | Environments reused, compile 0.6 s, MAX healthy in 9.1 s; prior launcher stopped |
 | Persistence | Installation stamps, secret and runtime marker retained byte-for-byte and by inode across redeploy and agent restart; WebUI account remains usable |
@@ -75,14 +78,18 @@ Swift **6.2**. Agent startup/restart/stop used the repository Makefile workflow;
 
 The first package-install run exposed a MAX 26.5 CLI mismatch: `--host` is not
 supported. The delivered launcher uses the installed version's
-`MAX_SERVE_HOST=127.0.0.1` setting. Package installation, corrected cold-model
-startup, and warm reuse were verified in successive runs; no uninterrupted
-fresh-machine cold-start claim is made.
+`MAX_SERVE_HOST=127.0.0.1` setting. After the corrected model-cold and warm runs,
+the delivered template completed an uninterrupted deployment under a new app ID
+with an initially absent runtime directory. Both environments, model/cache, and
+WebUI data were created afresh. It reached browser readiness within the 600 s
+budget, opened the browser once, and answered through WebUI. This is fresh-runtime
+evidence on the same Mac, which already had uv installed.
 
 Evidence is in [wdy-2906-2913-evidence](wdy-2906-2913-evidence/). Development
 artifact SHA-256 values:
 
 - CLI: `e7090a14c8b746652ba5edc84ef3f78a4b97788d7fd91e7d70b93e77828e256a`
+- Final CLI used for scaffold and final shutdown: `bf754a3acab84baa68ffaea460cc733574aca0a252fe2e565d97300d279e6438`
 - Mac agent archive: `3810dbc9971d2c986cabbcfced51a18399202cd0e9674ac025d932383978b4b2`
 
 ## Required before release / issue closure
@@ -102,7 +109,6 @@ Still required:
   and CNI cleanup without agent restart or app removal.
 - One ten-minute silent subscription over **real direct WiFi and cloud**. Local
   loopback and simulated clocks do not substitute for those routes.
-- A final clean cold deployment of the delivered Mac template on a fresh runtime.
 
 No stable agent/CLI release or issue closure has been performed. After hardware
 acceptance, publish the reviewed agent/CLI release, then update
