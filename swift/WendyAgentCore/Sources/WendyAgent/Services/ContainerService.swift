@@ -1502,6 +1502,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_CreateContainerResponse> {
         let appName = request.message.appName
         let imageName = request.message.imageName
+        // Validate the app component separately from cwd, where an empty value
+        // intentionally means the app directory.
+        _ = try validateContainedPath(base: appsBase, relative: appName)
         logger.info(
             "CreateContainer called",
             metadata: ["app_name": "\(appName)", "image_name": "\(imageName)"]
