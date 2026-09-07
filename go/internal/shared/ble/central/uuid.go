@@ -18,11 +18,12 @@ const bluetoothBaseUUID = "00000000-0000-1000-8000-00805F9B34FB"
 // 128-bit while callers pass uppercase, so raw string comparison would miss
 // every match on Linux.
 //
-// This is a copy of scan.CanonicalUUID and must stay byte-identical to it:
-// central deliberately does not import scan (that would invert the
-// address-producer/consumer relationship and pull scan's cgo into central's
-// build graph), but a UUID that passes the scan filter has to match the service
-// discovery finds. The two test tables are the same for that reason.
+// This is a logic copy of scan.CanonicalUUID and must produce identical
+// output for identical input: central deliberately does not import scan
+// (that would invert the address-producer/consumer relationship and pull
+// scan's cgo into central's build graph), but a UUID that passes the scan
+// filter has to match what service discovery finds. The two test tables are
+// kept in sync for that reason.
 //
 // This file carries no build tag so its test runs on every platform.
 func canonicalUUID(s string) string {
