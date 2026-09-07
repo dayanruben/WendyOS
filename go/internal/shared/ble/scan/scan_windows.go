@@ -211,7 +211,9 @@ func (s *windowsScanner) drainStderr(stderr io.ReadCloser) {
 	s.mu.Unlock()
 }
 
-func (s *windowsScanner) Snapshot() ([]BLEDeviceInfo, error) {
+// Snapshot ignores ctx: it reads in-memory state a background PowerShell
+// watcher already populated, so there is nothing here that can hang.
+func (s *windowsScanner) Snapshot(_ context.Context) ([]BLEDeviceInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

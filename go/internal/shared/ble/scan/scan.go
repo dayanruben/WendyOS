@@ -83,7 +83,10 @@ var newScannerFn = newScanner
 // restarting) cannot shrink the emitted array.
 type scanner interface {
 	// Snapshot returns the devices visible now. A non-nil error ends the scan.
-	Snapshot() ([]BLEDeviceInfo, error)
+	// ctx is the scan's own lifetime context, so a backend whose read can block
+	// (a D-Bus round trip, say) can return promptly once the caller cancels
+	// instead of wedging the sampling loop.
+	Snapshot(ctx context.Context) ([]BLEDeviceInfo, error)
 	// Close stops scanning and releases the backend. Safe to call once.
 	Close()
 }
@@ -158,7 +161,7 @@ func runScan(ctx context.Context, sc scanner, want []string, interval time.Durat
 // sample takes one backend reading and emits if anything is pending. It reports
 // whether the scan should continue.
 func sample(ctx context.Context, sc scanner, want []string, store *deviceStore, out chan<- []BLEDeviceInfo) bool {
-	devices, err := sc.Snapshot()
+	devices, err := sc.Snapshot(ctx)
 	if err != nil {
 		return false
 	}

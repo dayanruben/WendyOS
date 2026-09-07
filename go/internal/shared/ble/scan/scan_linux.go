@@ -7,11 +7,19 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/bluez"
 )
+
+// snapshotTimeout bounds a single GetManagedObjects round trip, matching the
+// D-Bus timeouts the sibling central package uses for BlueZ calls that can
+// hang (gattOpTimeout, stopDiscoveryTimeout). Without it, a wedged bluetoothd
+// would stall the sampling loop indefinitely even when the caller never
+// cancels — the loop calls Snapshot synchronously on every tick.
+const snapshotTimeout = 5 * time.Second
 
 // RunBLECheck is a no-op on Linux. The CoreBluetooth entitlement problem it
 // exists for is macOS-only, and BlueZ reports adapter trouble as an ordinary
@@ -82,14 +90,20 @@ func newScanner(ctx context.Context, services []string) (scanner, error) {
 // Snapshot re-reads the object tree. Device properties are read as typed D-Bus
 // values rather than parsed out of bluetoothctl's text output, which is what
 // makes service UUIDs and RSSI available at all.
-func (s *linuxScanner) Snapshot() ([]BLEDeviceInfo, error) {
+//
+// ctx is wrapped with snapshotTimeout rather than passed straight through: that
+// way both a caller cancellation and a bluetoothd that simply stops replying
+// unblock this call, instead of only the former.
+func (s *linuxScanner) Snapshot(ctx context.Context) ([]BLEDeviceInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, fmt.Errorf("BLE scan session is closed")
 	}
 
-	managed, err := bluez.GetManagedObjects(context.Background(), s.conn)
+	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+	managed, err := bluez.GetManagedObjects(ctx, s.conn)
 	if err != nil {
 		return nil, err
 	}

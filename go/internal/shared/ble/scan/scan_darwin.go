@@ -49,7 +49,9 @@ func newScanner(_ context.Context, _ []string) (scanner, error) {
 	return &darwinScanner{handle: handle}, nil
 }
 
-func (s *darwinScanner) Snapshot() ([]BLEDeviceInfo, error) {
+// Snapshot ignores ctx: it reads CoreBluetooth's already-cached state through a
+// non-blocking cgo call, so there is nothing here that can hang.
+func (s *darwinScanner) Snapshot(_ context.Context) ([]BLEDeviceInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.handle == nil {

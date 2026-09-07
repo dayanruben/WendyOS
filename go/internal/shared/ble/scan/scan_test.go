@@ -21,7 +21,7 @@ type fakeScanner struct {
 
 // Snapshot returns each queued reading in turn, then repeats the last one — a
 // real backend keeps reporting what it can see, it does not run out.
-func (f *fakeScanner) Snapshot() ([]BLEDeviceInfo, error) {
+func (f *fakeScanner) Snapshot(_ context.Context) ([]BLEDeviceInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
