@@ -28,7 +28,12 @@ both Go and Swift bindings together in one reviewable protocol change.
 Before splitting, GitHub's Go tests, Swift tests, Mac build, local macOS/Ubuntu
 E2E, format/vet/lint, vulnerability scan, CodeQL and docs checks passed. After
 final generation, affected Go tests and all 359 Swift tests passed again.
-The component PRs run their own checks; their live GitHub status is authoritative.
+The component PRs run their own build/test checks; their live GitHub status is
+authoritative. Security, API and docs review workflows are scoped to PRs targeting
+`main`. Those reviews must run for each component as its predecessor lands and it
+is retargeted to `main`; retargeting alone is not a configured security trigger,
+so a subsequent synchronize/reopen event is required before merging. Stacked
+base branches do not waive any main-branch review requirement.
 
 Existing `.mojo` rendering, single-service entitlement fingerprints, startup
 ordering, cloud client keepalive intervals, and persisted CNI cleanup were

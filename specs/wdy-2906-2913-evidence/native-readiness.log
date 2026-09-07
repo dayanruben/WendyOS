@@ -11,5 +11,5 @@ Application sh.wendy.wdy2910.readiness is still starting after 1s; continuing re
 native probe server ready
 Application sh.wendy.wdy2910.readiness ready after 11s.
 Hook postStart: echo ready >> /private/tmp/wdy2910-native-hook-count
-                                               
+
 Application sh.wendy.wdy2910.readiness stopped.
