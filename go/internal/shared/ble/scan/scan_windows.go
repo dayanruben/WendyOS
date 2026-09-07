@@ -172,6 +172,27 @@ func (s *windowsScanner) readLoop(stdout io.ReadCloser) {
 		s.devices[dev.Address] = dev
 		s.mu.Unlock()
 	}
+
+	// Scan stops on a clean EOF (Err() == nil) when Close kills the process —
+	// expected, nothing to report. Any other Err() (a pipe I/O error, or
+	// bufio.ErrTooLong from a pathologically long line) means stdout has
+	// stopped being drained while the process may still be running and
+	// writing: left alone it will eventually block on a full pipe. Cancel it
+	// so it can't leak, and record why.
+	if err := scanner.Err(); err != nil {
+		s.setReadErr(fmt.Errorf("PowerShell BLE watcher stdout: %w", err))
+		s.cancel()
+	}
+}
+
+// setReadErr records the first fatal error, ignoring later ones so the
+// original cause of failure is preserved.
+func (s *windowsScanner) setReadErr(err error) {
+	s.mu.Lock()
+	if s.readErr == nil {
+		s.readErr = err
+	}
+	s.mu.Unlock()
 }
 
 // reap records that PowerShell exited. The watcher is meant to run until Close
@@ -179,16 +200,11 @@ func (s *windowsScanner) readLoop(stdout io.ReadCloser) {
 // Snapshot returning a frozen set forever. A Close-initiated kill also lands
 // here, which is harmless: the engine has already stopped sampling by then.
 func (s *windowsScanner) reap(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.readErr != nil {
-		return
-	}
 	if err != nil {
-		s.readErr = fmt.Errorf("PowerShell BLE watcher exited: %w", err)
+		s.setReadErr(fmt.Errorf("PowerShell BLE watcher exited: %w", err))
 		return
 	}
-	s.readErr = fmt.Errorf("PowerShell BLE watcher exited unexpectedly")
+	s.setReadErr(fmt.Errorf("PowerShell BLE watcher exited unexpectedly"))
 }
 
 // drainStderr keeps the stderr pipe empty and captures the first line, which is
@@ -204,11 +220,7 @@ func (s *windowsScanner) drainStderr(stderr io.ReadCloser) {
 	if first == "" {
 		return
 	}
-	s.mu.Lock()
-	if s.readErr == nil {
-		s.readErr = fmt.Errorf("PowerShell BLE watcher: %s", first)
-	}
-	s.mu.Unlock()
+	s.setReadErr(fmt.Errorf("PowerShell BLE watcher: %s", first))
 }
 
 // Snapshot ignores ctx: it reads in-memory state a background PowerShell
