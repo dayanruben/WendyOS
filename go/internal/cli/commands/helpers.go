@@ -3502,6 +3502,16 @@ func providerPollDelay(elapsed time.Duration) time.Duration {
 // out of a later snapshot stays on screen. Removal would need PickerSetMsg,
 // which replaces the picker's entire list — and one of these runs per
 // provider into a shared picker, so each would clobber the others' rows.
+//
+// discoverModel (the `wendy discover` TUI) applies the same stream-else-poll
+// choice, but its own way and with one deliberate difference: it does not fall
+// back to polling when a stream closes, because DiscoverDevices cannot see BLE
+// (see waitExternalSnapshot). The two are not shared code — this owns a
+// goroutine and a send callback where that is a bubbletea message loop, and
+// they scan different provider sets (AvailableProviders here so the picker only
+// offers targets that can build, AllProviders there so discovery reports
+// hardware regardless of toolchain) with different cadences and, as above,
+// different accumulation semantics.
 func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvider, send func([]tui.PickerItem)) {
 	if cd, ok := prov.(providers.ContinuousDiscoverer); ok {
 		if ch, err := cd.DiscoverDevicesContinuous(ctx); err == nil {

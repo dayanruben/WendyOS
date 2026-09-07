@@ -1993,6 +1993,7 @@ func TestHideLocalProviders(t *testing.T) {
 type fakeProvider struct {
 	key           string
 	devices       []models.ExternalDevice
+	discoverErr   error // when set, DiscoverDevices reports this instead of devices
 	discoverCalls atomic.Int32
 }
 
@@ -2002,6 +2003,9 @@ func (p *fakeProvider) IsAvailable(context.Context) bool        { return true }
 func (p *fakeProvider) CheckRequirements(context.Context) error { return nil }
 func (p *fakeProvider) DiscoverDevices(context.Context) ([]models.ExternalDevice, error) {
 	p.discoverCalls.Add(1)
+	if p.discoverErr != nil {
+		return nil, p.discoverErr
+	}
 	return p.devices, nil
 }
 func (p *fakeProvider) SupportedBuildTypes() []string { return nil }
