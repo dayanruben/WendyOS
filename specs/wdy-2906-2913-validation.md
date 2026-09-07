@@ -7,18 +7,28 @@ WendyOS-Builder `61fdb278944280b8d1ea892e1229336d27df2208`, and templates
 
 ## Reviewable changes
 
-| Commit | Change |
-|---|---|
-| `5f48e80a7` | WDY-2907: effective service environment, CLI precedence, fingerprints/watch, extended ComposeEnv fixture |
-| `b49540b76` | WDY-2906/2913: actionable network warnings, explicit none/bridge selection, empty isolation cache state, persisted CNI cleanup |
-| `c59cbd1dc` | WDY-2908/2909: container-storage filesystem, shared GPU discovery and compute capabilities, v1/v2 Go/Swift protobufs, CLI/MCP and CUDA build hint |
-| `12afcca3b` | WDY-2910: continued readiness, service state inspection, lifecycle cancellation, deferred hooks/browser actions, unknown-key warnings |
-| `3f09df519` | WDY-2911: native command/cwd, file sync, capability negotiation, environment and resolved launch persistence, PID birth identity |
-| `ee65a42d7` | WDY-2912: quiet log heartbeats, MCP filtering, Go ACK timeout 20 seconds |
-| `2d07f11e5` | Darwin template language selection |
-| `24e9d41d3` | Cross-repository native scaffold acceptance and portable Linux process fixtures |
-| templates `73f275e` | CUDA template migration and generic Ollama vendor path |
-| templates `421087d` | Mojo/MAX Mac chat, supervisor tests, catalog and verified findings |
+| PR | Commit | Change |
+|---|---|---|
+| [1906](https://github.com/wendylabsinc/WendyOS/pull/1906) | `5f48e80a7` | WDY-2907: effective service environment, CLI precedence, fingerprints/watch, extended ComposeEnv fixture |
+| [1907](https://github.com/wendylabsinc/WendyOS/pull/1907) | `b49540b76` | WDY-2906/2913: actionable network warnings, explicit none/bridge selection, empty isolation cache state, persisted CNI cleanup |
+| [1908](https://github.com/wendylabsinc/WendyOS/pull/1908) | `a55ad5e04` | Compatible v1/v2 storage and GPU capability fields with Go/Swift bindings regenerated together |
+| [1909](https://github.com/wendylabsinc/WendyOS/pull/1909) | `bd364f9ee` | WDY-2908/2909: container-storage filesystem, shared GPU discovery and compute capabilities, CLI/MCP and CUDA build hint |
+| [1910](https://github.com/wendylabsinc/WendyOS/pull/1910) | `98c2a8585` | WDY-2910: continued readiness, service state inspection, lifecycle cancellation, deferred hooks/browser actions, unknown-key warnings |
+| [1911](https://github.com/wendylabsinc/WendyOS/pull/1911) | `5309c62dd` | WDY-2911: native command/cwd, file sync, capability negotiation, environment and resolved launch persistence, PID birth identity |
+| [1912](https://github.com/wendylabsinc/WendyOS/pull/1912) | `86b2bdd69` | WDY-2912: quiet log heartbeats, MCP filtering, Go ACK timeout 20 seconds |
+| [1905](https://github.com/wendylabsinc/WendyOS/pull/1905) | `c6537821b`, `a9d79b63b`, `1bcea3265` | Darwin template selection, cross-repository scaffold acceptance, native app-ID guard, portable process fixtures, validation evidence |
+| [templates 103](https://github.com/wendylabsinc/templates/pull/103) | `73f275e`, `421087d`, `f1450b1` | CUDA migration, generic Ollama vendor path, Mojo/MAX Mac chat, catalog, supervisor tests and findings |
+
+The agent PRs are stacked in the order above. Each diff is below the security
+review's 140,000-byte limit. The original aggregate PR exceeded that limit, so
+no partial security review was accepted. Regenerating with the pinned Swift
+plugin removed unrelated changes; separating protocol from consumers keeps
+both Go and Swift bindings together in one reviewable protocol change.
+
+Before splitting, GitHub's Go tests, Swift tests, Mac build, local macOS/Ubuntu
+E2E, format/vet/lint, vulnerability scan, CodeQL and docs checks passed. After
+final generation, affected Go tests and all 359 Swift tests passed again.
+The component PRs run their own checks; their live GitHub status is authoritative.
 
 Existing `.mojo` rendering, single-service entitlement fingerprints, startup
 ordering, cloud client keepalive intervals, and persisted CNI cleanup were
