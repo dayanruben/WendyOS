@@ -225,21 +225,20 @@ func (s *windowsScanner) drainStderr(stderr io.ReadCloser) {
 
 // Snapshot ignores ctx: it reads in-memory state a background PowerShell
 // watcher already populated, so there is nothing here that can hang.
+//
+// Devices and a fatal readErr are returned together rather than favoring one
+// or the other — sample in scan.go merges and emits whatever is here before
+// honoring a non-nil error, so nothing found right up to the moment the
+// watcher died is lost.
 func (s *windowsScanner) Snapshot(_ context.Context) ([]BLEDeviceInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// Report devices already collected even alongside an error, so a watcher
-	// that dies after finding something still yields it.
-	if len(s.devices) == 0 && s.readErr != nil {
-		return nil, s.readErr
-	}
 
 	out := make([]BLEDeviceInfo, 0, len(s.devices))
 	for _, d := range s.devices {
 		out = append(out, d)
 	}
-	return out, nil
+	return out, s.readErr
 }
 
 // Close stops the watcher process. Idempotent.

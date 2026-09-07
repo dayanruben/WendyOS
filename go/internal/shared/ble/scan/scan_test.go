@@ -15,8 +15,13 @@ type fakeScanner struct {
 	mu       sync.Mutex
 	readings [][]BLEDeviceInfo
 	err      error
-	calls    int
-	closed   bool
+	// errWithLastReading, if set, is returned alongside the final configured
+	// reading instead of nil — simulating a backend that reports something new
+	// in the very call that it reports a fatal error, the way windowsScanner's
+	// accumulated map can.
+	errWithLastReading error
+	calls              int
+	closed             bool
 }
 
 // Snapshot returns each queued reading in turn, then repeats the last one — a
@@ -31,10 +36,10 @@ func (f *fakeScanner) Snapshot(_ context.Context) ([]BLEDeviceInfo, error) {
 	if len(f.readings) == 0 {
 		return nil, nil
 	}
-	if f.calls-1 < len(f.readings) {
+	if f.calls-1 < len(f.readings)-1 {
 		return f.readings[f.calls-1], nil
 	}
-	return f.readings[len(f.readings)-1], nil
+	return f.readings[len(f.readings)-1], f.errWithLastReading
 }
 
 func (f *fakeScanner) Close() {
@@ -350,6 +355,55 @@ func TestDiscoverEndsStreamOnBackendError(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("stream did not end when the backend failed")
+	}
+}
+
+// TestDiscoverFlushesFinalReadingBeforeEndingOnBackendError guards the fix for
+// a backend (windowsScanner) that can report a newly-seen device in the very
+// same call that it reports the fatal error which ends the backend for good.
+// That device must still reach the consumer before the stream closes.
+func TestDiscoverFlushesFinalReadingBeforeEndingOnBackendError(t *testing.T) {
+	fake := &fakeScanner{
+		readings: [][]BLEDeviceInfo{
+			{{Address: "01", Name: "first", RSSI: -50}},
+			{{Address: "01", Name: "first", RSSI: -50}, {Address: "02", Name: "second", RSSI: -40}},
+		},
+		errWithLastReading: errors.New("watcher died"),
+	}
+	withFakeScanner(t, fake)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := DiscoverBluetoothContinuous(ctx, Options{Interval: testInterval})
+	if err != nil {
+		t.Fatalf("DiscoverBluetoothContinuous: %v", err)
+	}
+
+	recv(t, ch) // the first reading, no error yet
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got, ok := <-ch:
+			if !ok {
+				t.Fatal("channel closed before the final reading was flushed")
+			}
+			if len(got) != 2 {
+				continue // not yet the reading paired with the error
+			}
+			select {
+			case _, ok := <-ch:
+				if ok {
+					t.Fatal("stream kept emitting after a fatal backend error")
+				}
+				return
+			case <-time.After(2 * time.Second):
+				t.Fatal("stream did not end after the fatal backend error")
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the final reading to be flushed")
+		}
 	}
 }
 

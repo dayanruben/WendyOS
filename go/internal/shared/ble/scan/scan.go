@@ -82,7 +82,9 @@ var newScannerFn = newScanner
 // backend that forgets a device (BlueZ evicting a stale entry, a watcher
 // restarting) cannot shrink the emitted array.
 type scanner interface {
-	// Snapshot returns the devices visible now. A non-nil error ends the scan.
+	// Snapshot returns the devices visible now. A non-nil error ends the scan
+	// after this call's devices, if any, are merged and emitted — a backend
+	// may report something new in the same call that it reports a fatal error.
 	// ctx is the scan's own lifetime context, so a backend whose read can block
 	// (a D-Bus round trip, say) can return promptly once the caller cancels
 	// instead of wedging the sampling loop.
@@ -162,10 +164,12 @@ func runScan(ctx context.Context, sc scanner, want []string, interval time.Durat
 // whether the scan should continue.
 func sample(ctx context.Context, sc scanner, want []string, store *deviceStore, out chan<- []BLEDeviceInfo) bool {
 	devices, err := sc.Snapshot(ctx)
-	if err != nil {
-		return false
-	}
 
+	// Merge and try to emit whatever the backend returned even when err is
+	// non-nil: a backend that just died may still report something new in this
+	// same call (windowsScanner's accumulated map, say), and dropping it on the
+	// floor would lose it for good — the stream is ending either way, so this
+	// is the last chance to flush it.
 	for _, d := range devices {
 		if d.Address == "" {
 			continue
@@ -176,24 +180,22 @@ func sample(ctx context.Context, sc scanner, want []string, store *deviceStore, 
 		}
 		store.merge(d)
 	}
-	if !store.pending {
-		return true
+	if store.pending {
+		// Non-blocking send: a consumer that is behind simply misses this emit
+		// and gets a superset on the next tick, with pending still set so the
+		// retry happens even if no new advertisement arrives in the meantime.
+		// Blocking here instead would stall sampling behind rendering.
+		snapshot := store.snapshot()
+		select {
+		case <-ctx.Done():
+			return false
+		case out <- snapshot:
+			store.pending = false
+		default:
+		}
 	}
 
-	// Non-blocking send: a consumer that is behind simply misses this emit and
-	// gets a superset on the next tick, with pending still set so the retry
-	// happens even if no new advertisement arrives in the meantime. Blocking
-	// here instead would stall sampling behind rendering.
-	snapshot := store.snapshot()
-	select {
-	case <-ctx.Done():
-		return false
-	case out <- snapshot:
-		store.pending = false
-		return true
-	default:
-		return true
-	}
+	return err == nil
 }
 
 // deviceStore accumulates sightings across samples, keyed by address.

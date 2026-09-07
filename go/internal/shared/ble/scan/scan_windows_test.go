@@ -99,21 +99,23 @@ func TestReadLoopCleanEOFRecordsNoError(t *testing.T) {
 	}
 }
 
-// TestSnapshotPrefersStaleDevicesOverError locks in the deliberate policy at
-// Snapshot: once at least one device has been collected, a recorded readErr
-// stays internal rather than ending the stream, so a watcher that dies after
-// finding something keeps reporting it.
-func TestSnapshotPrefersStaleDevicesOverError(t *testing.T) {
+// TestSnapshotAlwaysReturnsDevicesAndError locks in the current policy:
+// Snapshot never favors one over the other. sample in scan.go is the one that
+// decides what to do with a fatal error — it merges and emits whatever
+// devices came back, then ends the stream — so Snapshot itself just reports
+// both, matching darwinScanner and linuxScanner.
+func TestSnapshotAlwaysReturnsDevicesAndError(t *testing.T) {
 	s, _ := newTestScanner()
 	s.devices["AA:BB:CC:DD:EE:FF"] = BLEDeviceInfo{Address: "AA:BB:CC:DD:EE:FF"}
-	s.readErr = errors.New("watcher died")
+	sentinel := errors.New("watcher died")
+	s.readErr = sentinel
 
 	devices, err := s.Snapshot(context.Background())
-	if err != nil {
-		t.Errorf("expected no error while stale devices exist, got %v", err)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected Snapshot to surface the error alongside the devices, got %v", err)
 	}
 	if len(devices) != 1 {
-		t.Errorf("expected the stale device to still be reported, got %d devices", len(devices))
+		t.Errorf("expected the collected device to still be reported, got %d devices", len(devices))
 	}
 }
 
@@ -126,7 +128,7 @@ func TestSnapshotSurfacesErrorWhenEmpty(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected Snapshot to surface the error on an empty device set, got %v", err)
 	}
-	if devices != nil {
+	if len(devices) != 0 {
 		t.Errorf("expected no devices alongside the error, got %v", devices)
 	}
 }
