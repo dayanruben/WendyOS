@@ -136,6 +136,26 @@ func TestBLELiteDiscoverySortsByRSSIDescending(t *testing.T) {
 	}
 }
 
+func TestNextBLELiteProbePrefersKnownRSSIOverUnreported(t *testing.T) {
+	entries := map[string]*bleLiteEntry{
+		"unreported": {rssi: 0},
+		"weak":       {rssi: -90},
+	}
+	if got := nextBLELiteProbe(entries); got != "weak" {
+		t.Errorf("got %q, want %q: a known signal must outrank an unreported one", got, "weak")
+	}
+}
+
+func TestNextBLELiteProbeTiesBreakByAddressWhenAllUnreported(t *testing.T) {
+	entries := map[string]*bleLiteEntry{
+		"b": {rssi: 0},
+		"a": {rssi: 0},
+	}
+	if got := nextBLELiteProbe(entries); got != "a" {
+		t.Errorf("got %q, want %q", got, "a")
+	}
+}
+
 func TestBLELiteDiscoveryRetriesThenAbandons(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0

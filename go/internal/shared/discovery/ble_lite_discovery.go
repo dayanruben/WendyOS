@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"log"
+	"math"
 	"sort"
 	"time"
 
@@ -204,13 +205,19 @@ func runBLELiteDiscovery(ctx context.Context, sightings <-chan []scan.BLEDeviceI
 func nextBLELiteProbe(entries map[string]*bleLiteEntry) string {
 	now := time.Now()
 	best := ""
-	bestRSSI := 0
+	bestRSSI := math.MinInt
 	for address, entry := range entries {
 		if entry.info != nil || entry.attempts >= bleLiteProbeAttempts || now.Before(entry.retryAt) {
 			continue
 		}
-		if best == "" || entry.rssi > bestRSSI || (entry.rssi == bestRSSI && address < best) {
-			best, bestRSSI = address, entry.rssi
+		// RSSI 0 means "not reported" (see BLELiteDevice.RSSI), not an actual
+		// reading, so it must never outrank a real (negative) signal.
+		rssi := entry.rssi
+		if rssi == 0 {
+			rssi = math.MinInt
+		}
+		if best == "" || rssi > bestRSSI || (rssi == bestRSSI && address < best) {
+			best, bestRSSI = address, rssi
 		}
 	}
 	return best
