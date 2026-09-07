@@ -318,8 +318,8 @@ func TestStreamDevicesEmitsBLEDevices(t *testing.T) {
 
 	bleCh := make(chan []discovery.BLELiteDevice, 1)
 	bleCh <- []discovery.BLELiteDevice{
-		{Address: "aa", Info: ble.LiteInfo{PSM: 128, DisplayName: "one"}},
-		{Address: "bb", Info: ble.LiteInfo{PSM: 128, DisplayName: "two"}},
+		{Address: "aa", Info: ble.LiteInfo{PSM: 128, DisplayName: "one", MTLSEnabled: true}},
+		{Address: "bb", Info: ble.LiteInfo{PSM: 128, DisplayName: "two", MTLSEnabled: true}},
 	}
 	close(bleCh)
 
