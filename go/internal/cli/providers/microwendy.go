@@ -623,8 +623,24 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 		}
 	}
 
+	// verify the configuration
+	sdkconfig, err := espidftoolchain.ReadSdkconfig(projectPath, []string{
+		"CONFIG_WENDY_CORE",
+		"CONFIG_WENDY_USJ",
+		"CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading sdkconfig: %w", err)
+	}
+	if sdkconfig["CONFIG_WENDY_USJ"] == true && sdkconfig["CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED"] == true {
+		return nil, errors.New("Wendy Lite owns the USB Serial/JTAG controller, so the console must not be routed to it — set CONFIG_ESP_CONSOLE_UART_DEFAULT=y and CONFIG_ESP_CONSOLE_SECONDARY_NONE=y in sdkconfig")
+	}
+	if sdkconfig["CONFIG_WENDY_CORE"] != true {
+		return nil, errors.New("this project does not include the wendy_core component — add it to the project's dependencies, then call wendy_core_init() as the very first statement of app_main()")
+	}
+
 	// build the project
-	cmd := espidftoolchain.IdfCommandContext(ctx, "build")
+	cmd := espidftoolchain.IdfCommandContext(ctx, "gen_project_binary") // build only the app binary, not the whole firmware image
 	cmd.Dir = projectPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
