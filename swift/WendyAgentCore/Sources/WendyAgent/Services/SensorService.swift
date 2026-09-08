@@ -77,7 +77,8 @@ struct SensorService: Wendy_Agent_Services_V2_WendySensorService.ServiceProtocol
     }
 
     private static func pumpMic(
-        _ audio: any AudioManaging, into writer: SerializedFrameWriter
+        _ audio: any AudioManaging,
+        into writer: SerializedFrameWriter
     ) async throws {
         var seq: UInt32 = 0
         for try await chunk in audio.audio(deviceID: 0, sampleRate: 48000, channels: 1) {
@@ -91,7 +92,9 @@ struct SensorService: Wendy_Agent_Services_V2_WendySensorService.ServiceProtocol
     }
 
     private static func pumpCamera(
-        _ camera: any CameraCapturing, channel: UInt32, into writer: SerializedFrameWriter
+        _ camera: any CameraCapturing,
+        channel: UInt32,
+        into writer: SerializedFrameWriter
     ) async throws {
         var seq: UInt32 = 0
         for try await cameraFrame in camera.frames() {
@@ -111,7 +114,9 @@ struct SensorService: Wendy_Agent_Services_V2_WendySensorService.ServiceProtocol
     /// Probing needs live CoreAudio/AVAudioEngine access, which only the real
     /// `AudioController` has — a fake used in tests gets a fixed, documented
     /// default instead of a live probe.
-    private static func micFormat(_ audio: any AudioManaging) -> (
+    private static func micFormat(
+        _ audio: any AudioManaging
+    ) -> (
         sampleRate: UInt32, channels: UInt32
     ) {
         guard audio is AudioController else { return (sampleRate: 48000, channels: 1) }

@@ -109,7 +109,9 @@ struct CameraCapture: CameraCapturing {
         video.codec = .h264
         video.width = UInt32(max(0, dims.width))
         video.height = UInt32(max(0, dims.height))
-        video.fps = UInt32(device.activeFormat.videoSupportedFrameRateRanges.first?.maxFrameRate ?? 30)
+        video.fps = UInt32(
+            device.activeFormat.videoSupportedFrameRateRanges.first?.maxFrameRate ?? 30
+        )
         descriptor.video = video
         return descriptor
     }
@@ -201,19 +203,32 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
         )
         guard status == noErr, let session else { throw CameraError.vtStatus("create", status) }
 
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_ProfileLevel,
-            value: kVTProfileLevel_H264_Main_AutoLevel)
+            session,
+            key: kVTCompressionPropertyKey_RealTime,
+            value: kCFBooleanTrue
+        )
+        VTSessionSetProperty(
+            session,
+            key: kVTCompressionPropertyKey_ProfileLevel,
+            value: kVTProfileLevel_H264_Main_AutoLevel
+        )
         // No B-frames: low latency, and every access unit is decodable in order.
         VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+            session,
+            key: kVTCompressionPropertyKey_AllowFrameReordering,
+            value: kCFBooleanFalse
+        )
         VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
-            value: NSNumber(value: 60))
+            session,
+            key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
+            value: NSNumber(value: 60)
+        )
         VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_AverageBitRate,
-            value: NSNumber(value: bitRate))
+            session,
+            key: kVTCompressionPropertyKey_AverageBitRate,
+            value: NSNumber(value: bitRate)
+        )
         VTCompressionSessionPrepareToEncodeFrames(session)
         compressionSession = session
     }
@@ -281,15 +296,20 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
         // access units); a non-contiguous buffer would need CMBlockBufferCopyDataBytes.
         guard
             CMBlockBufferGetDataPointer(
-                dataBuffer, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset,
-                totalLengthOut: &totalLength, dataPointerOut: &pointer) == kCMBlockBufferNoErr,
+                dataBuffer,
+                atOffset: 0,
+                lengthAtOffsetOut: &lengthAtOffset,
+                totalLengthOut: &totalLength,
+                dataPointerOut: &pointer
+            ) == kCMBlockBufferNoErr,
             let pointer
         else { return }
 
         let avcc = Data(bytes: pointer, count: totalLength)
         let frame = CameraFrame(
             annexB: annexBFromAVCC(avcc, sps: sps, pps: pps, isKeyframe: isKeyframe),
-            isKeyframe: isKeyframe)
+            isKeyframe: isKeyframe
+        )
 
         switch continuation.yield(frame) {
         case .dropped:
@@ -308,7 +328,9 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private static func isKeyframe(_ sampleBuffer: CMSampleBuffer) -> Bool {
         guard
             let attachments = CMSampleBufferGetSampleAttachmentsArray(
-                sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],
+                sampleBuffer,
+                createIfNecessary: false
+            ) as? [[CFString: Any]],
             let first = attachments.first,
             let notSync = first[kCMSampleAttachmentKey_NotSync] as? Bool
         else {
@@ -321,8 +343,13 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private static func parameterSets(_ format: CMFormatDescription) -> ([Data], [Data]) {
         var count = 0
         CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-            format, parameterSetIndex: 0, parameterSetPointerOut: nil,
-            parameterSetSizeOut: nil, parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            format,
+            parameterSetIndex: 0,
+            parameterSetPointerOut: nil,
+            parameterSetSizeOut: nil,
+            parameterSetCountOut: &count,
+            nalUnitHeaderLengthOut: nil
+        )
 
         var sps: [Data] = []
         var pps: [Data] = []
@@ -331,9 +358,13 @@ final class CameraCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBuffer
             var size = 0
             guard
                 CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                    format, parameterSetIndex: index, parameterSetPointerOut: &pointer,
-                    parameterSetSizeOut: &size, parameterSetCountOut: nil,
-                    nalUnitHeaderLengthOut: nil) == noErr,
+                    format,
+                    parameterSetIndex: index,
+                    parameterSetPointerOut: &pointer,
+                    parameterSetSizeOut: &size,
+                    parameterSetCountOut: nil,
+                    nalUnitHeaderLengthOut: nil
+                ) == noErr,
                 let pointer
             else { continue }
             let data = Data(bytes: pointer, count: size)

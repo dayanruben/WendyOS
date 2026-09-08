@@ -49,7 +49,11 @@ struct BonjourAdvertiser {
     /// discovery_*.go). `caps` advertises optional capabilities (e.g. "sensors")
     /// as a comma-joined list; omitted when empty.
     static func encodeTXT(
-        displayName: String, deviceID: String, tls: Bool, assetID: Int32?, orgID: Int32?,
+        displayName: String,
+        deviceID: String,
+        tls: Bool,
+        assetID: Int32?,
+        orgID: Int32?,
         caps: [String]
     ) -> Data {
         var fields = ["displayname=\(displayName)", "id=\(deviceID)", "tls=\(tls)"]
