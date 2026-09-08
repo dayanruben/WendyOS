@@ -16,6 +16,10 @@ on:
         description: "Publish artifacts and create a stable release"
         type: boolean
         default: false
+      skip_integration_tests:
+        description: "Skip macOS hardware integration tests"
+        type: boolean
+        default: false
 
 concurrency:
   group: build-${{ github.ref }}
@@ -1019,6 +1023,7 @@ jobs:
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_integration_tests
     uses: ./.github/workflows/integration-tests.yml
     with:
       platform: macos
