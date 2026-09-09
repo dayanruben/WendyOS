@@ -330,16 +330,23 @@ func startBLELiteSource(ctx context.Context) <-chan []discovery.BLELiteDevice {
 	return out
 }
 
-// streamDevices merges the three discovery sources onto out until ctx is done
-// or the mDNS browse ends. known is the serial backlog — the devices the
-// scanner had already found before the listener was registered.
+// streamDevices merges the three discovery sources onto out until ctx is
+// done. known is the serial backlog — the devices the scanner had already
+// found before the listener was registered.
+//
+// A source dying — the mDNS browse channel or the BLE channel closing — is
+// not a reason to stop: each drops out and the merge keeps running on
+// whatever's left, since neither consumer has a way to recover BLE coverage
+// on its own (see startBLELiteSource and DiscoverDevicesContinuous). Only
+// ctx.Done() ends the stream.
 //
 // Each source's latest view is kept here and every emission carries the union
 // of all three, as ContinuousDiscoverer requires. The sources report shapes
 // that differ, and the merge mirrors each one: serial and BLE deliver whole
 // sets, so the newest set replaces the previous and a board that stopped being
 // reported drops out; the mDNS browse only announces arrivals, so its rows
-// accumulate (re-announcements update in place rather than duplicating).
+// accumulate (re-announcements update in place rather than duplicating) until
+// the browse itself ends, after which they simply stay as last reported.
 //
 // Split out from DiscoverDevicesContinuous so the merge can be exercised with
 // plain channels: the real sources browse the network and open serial ports.
@@ -401,9 +408,13 @@ func (p *MicroWendyProvider) streamDevices(
 		select {
 		case svc, ok := <-svcCh:
 			if !ok {
-				// Browse stream died; ending the stream lets the consumer fall
-				// back to polling.
-				return
+				// The mDNS browse ending (typically a backend error — see
+				// discovery.BrowseMDNSServicesContinuous) is not a reason to
+				// stop, mirroring the BLE case below: drop the source and
+				// keep the other two running. The rows already found stay in
+				// the snapshot; new arrivals just stop.
+				svcCh = nil
+				continue
 			}
 			if !connectableLiteMDNSService(svc) {
 				continue
@@ -432,7 +443,8 @@ func (p *MicroWendyProvider) streamDevices(
 		}
 
 		// Reached only when a source actually changed: the continue paths
-		// above (an unusable mDNS record, the BLE source closing) skip it.
+		// above (an unusable mDNS record, the mDNS browse closing, the BLE
+		// source closing) skip it.
 		if !emit() {
 			return
 		}

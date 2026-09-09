@@ -292,7 +292,9 @@ func TestBLELiteDisplayName(t *testing.T) {
 
 // collectExternalDevices runs streamDevices over the given sources and returns
 // its last emission — every snapshot is the whole set, so the final one is the
-// state the stream ended on.
+// state the stream ended on. The caller ends the stream by cancelling ctx
+// (streamDevices no longer returns just because one source's channel closes —
+// see TestStreamDevicesSurvivesMDNSStreamEnding).
 func collectExternalDevices(
 	ctx context.Context,
 	svcCh <-chan discovery.MDNSService,
@@ -323,12 +325,12 @@ func TestStreamDevicesEmitsBLEDevices(t *testing.T) {
 	}
 	close(bleCh)
 
-	// The mDNS channel closing is what ends the stream, so the BLE snapshot
-	// above is fully drained first.
 	svcCh := make(chan discovery.MDNSService)
 	go func() {
+		// Give the BLE snapshot above time to be drained before ending the
+		// stream.
 		time.Sleep(50 * time.Millisecond)
-		close(svcCh)
+		cancel()
 	}()
 
 	devices := collectExternalDevices(ctx, svcCh, nil, bleCh)
@@ -353,12 +355,44 @@ func TestStreamDevicesSurvivesBLEStreamEnding(t *testing.T) {
 	svcCh <- discovery.MDNSService{Hostname: "lite.local", IPAddress: "192.0.2.10", Port: 5054}
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		close(svcCh)
+		cancel()
 	}()
 
 	devices := collectExternalDevices(ctx, svcCh, nil, bleCh)
 	if len(devices) != 1 || devices[0].ConnectionType() != "LAN" {
 		t.Fatalf("a closed BLE stream must not stop mDNS discovery; got %+v", devices)
+	}
+}
+
+// TestStreamDevicesSurvivesMDNSStreamEnding is the regression test for the
+// mirror-image bug: streamDevices used to treat the mDNS browse closing as a
+// reason to end the whole merge, which stopped draining bleCh — against the
+// real sources, that left startBLELiteSource's forwarder permanently blocked
+// on an unbuffered send (see startBLELiteSource), keeping BLE scan goroutines
+// and the radio alive for no reason. Against these plain channels, the same
+// bug deadlocks this test: the goroutine below would block forever sending to
+// bleCh once svcCh has already ended the stream.
+func TestStreamDevicesSurvivesMDNSStreamEnding(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	svcCh := make(chan discovery.MDNSService)
+	close(svcCh) // mDNS browse died immediately; ctx stays live.
+
+	bleCh := make(chan []discovery.BLELiteDevice)
+	go func() {
+		// Sent after svcCh has already closed, so this only succeeds if the
+		// merge loop is still running (and still reading bleCh) rather than
+		// having returned when mDNS died.
+		bleCh <- []discovery.BLELiteDevice{
+			{Address: "aa", Info: ble.LiteInfo{PSM: 128, DisplayName: "one", MTLSEnabled: true}},
+		}
+		cancel()
+	}()
+
+	devices := collectExternalDevices(ctx, svcCh, nil, bleCh)
+	if len(devices) != 1 || devices[0].ConnectionType() != "BLE" {
+		t.Fatalf("a closed mDNS browse must not stop BLE discovery; got %+v", devices)
 	}
 }
 
@@ -384,7 +418,7 @@ func TestStreamDevicesSnapshotMirrorsEachSource(t *testing.T) {
 		// The board is unplugged: the scanner now reports an empty set.
 		serialUpdates <- nil
 		time.Sleep(50 * time.Millisecond)
-		close(svcCh)
+		cancel()
 	}()
 
 	devices := collectExternalDevices(ctx, svcCh, serialUpdates, nil)
@@ -404,7 +438,12 @@ func TestStreamDevicesDeduplicatesRepeatedMDNSService(t *testing.T) {
 	svc := discovery.MDNSService{Hostname: "lite.local", IPAddress: "192.0.2.10", Port: 5054}
 	svcCh <- svc
 	svcCh <- svc
-	close(svcCh)
+	go func() {
+		// Give both buffered sends time to be drained before ending the
+		// stream.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
 
 	devices := collectExternalDevices(ctx, svcCh, nil, nil)
 	if len(devices) != 1 {
