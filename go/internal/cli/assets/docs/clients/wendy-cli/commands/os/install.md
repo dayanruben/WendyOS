@@ -143,7 +143,7 @@ Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor`
 2. **Stage 2 partition flash** — flashes QSPI and the internal NVMe through the Thor flashing gadget. Expect around 25 minutes: USB transfers and device-side writes are deliberately serialized (concurrent USB access could crash the flash tooling, most notably on macOS), so this stage does not parallelize.
 3. **Power-cycle** — after a successful flash, power-cycle the Thor out of recovery mode to boot WendyOS.
 
-The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS, Linux, and Windows. On Windows, Wendy checks the selected recovery device's driver and then checks the flashing gadget's actual binding at the same physical USB port. Missing or outdated bindings require administrator approval (UAC); compatible bindings are reused. Driver setup runs in a helper so the flash continues in the same session. A different working Jetson or Dragonwing does not suppress these checks.
+The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. On Windows, installing or updating the USB driver requires administrator approval (UAC).
 
 ## Dragonwing IQ-8275 path
 
@@ -151,11 +151,9 @@ The CLI prompts for confirmation before erasing the Thor. No external USB drive 
 wendy install --nightly --device-type dragonwing-iq-8275
 ```
 
-Supported on macOS, Linux, and Windows. Connect the USB-C debug/EDL port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the qcomflash bundle, uploads the Firehose programmer through Sahara, and programs the board's UFS. Set DIP switch 3 OFF and power-cycle after success.
+Connect the USB0 (USB-C) port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the bundle, and programs the board. Set DIP switch 3 OFF and power-cycle after success.
 
-Windows uses a separate Qualcomm EDL WinUSB package; Jetson bindings are retained. Wendy installs or updates the selected board's binding as needed, with administrator approval. Driver setup runs in a helper, preserving the selected board and setup answers in the original window. This replaces a QDLoader binding on that EDL device if one is installed. Driver installation requires other devices with the same generic `05c6:9008` ID to be disconnected. No external qdl executable, libusb, WSL, or USB disk selection is required.
-
-Both OS slots and the partition table are rewritten. Existing config/data payloads are skipped; this preserves configuration on a compatible WendyOS layout, not arbitrary vendor partition layouts. Installation-time name, Wi-Fi, and enrollment seeding remain unsupported. Configure these after boot. A log is saved as `dragonwing-flash-<timestamp>.log`.
+Both OS slots and the partition table are rewritten. Existing configuration and data are preserved when flashing a compatible WendyOS layout.
 
 ### Stage 2 flash errors and recovery
 

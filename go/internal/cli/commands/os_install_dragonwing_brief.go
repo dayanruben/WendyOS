@@ -28,7 +28,7 @@ func dragonwingEDLBriefingBox() string {
 		"  identity and saved Wi-Fi survive; this is not a factory reset.",
 		"",
 		section("USB cabling"),
-		"  Connect this computer to the board's " + briefPort.Render("USB-C debug/EDL port") + ".",
+		"  Connect this computer to the board's " + briefPort.Render("USB0 (USB-C) port") + ".",
 		"",
 		section("Entering EDL mode"),
 		"  EDL is selected by a " + briefKey.Render("DIP switch") + ", not a button, so it stays set until",
@@ -74,7 +74,7 @@ func dragonwingEDLHints() recoveryWaitHints {
 		label:       "Dragonwing",
 		family:      "Dragonwing",
 		mode:        "EDL mode",
-		cablingLine: "the USB-C cable is in the " + briefPort.Render("debug/EDL port"),
+		cablingLine: "the USB-C cable is in the " + briefPort.Render("USB0 port"),
 		buttonLine:  briefKey.Render("DIP switch 3") + " is " + briefKey.Render("ON") + ", and the board was power-cycled after setting it",
 	}
 }
