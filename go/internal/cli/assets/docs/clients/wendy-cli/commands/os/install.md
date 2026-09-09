@@ -145,6 +145,18 @@ Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor`
 
 The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS, Linux, and Windows. On Windows, the first flash installs a WinUSB driver for the Jetson recovery device — expect a one-time administrator (UAC) prompt.
 
+## Dragonwing IQ-8275 path
+
+```sh
+wendy install --nightly --device-type dragonwing-iq-8275
+```
+
+Supported on macOS, Linux, and Windows. Connect the USB-C debug/EDL port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the qcomflash bundle, uploads the Firehose programmer through Sahara, and programs the board's UFS. Set DIP switch 3 OFF and power-cycle after success.
+
+Windows uses a separate Qualcomm EDL WinUSB package; Jetson bindings are retained. Wendy installs or updates the selected board's binding as needed, with administrator approval. Driver setup runs in a helper, preserving the selected board and setup answers in the original window. This replaces a QDLoader binding on that EDL device if one is installed. Driver installation requires other devices with the same generic `05c6:9008` ID to be disconnected. No external qdl executable, libusb, WSL, or USB disk selection is required.
+
+Both OS slots and the partition table are rewritten. Existing config/data payloads are skipped; this preserves configuration on a compatible WendyOS layout, not arbitrary vendor partition layouts. Installation-time name, Wi-Fi, and enrollment seeding remain unsupported. Configure these after boot. A log is saved as `dragonwing-flash-<timestamp>.log`.
+
 ### Stage 2 flash errors and recovery
 
 A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI prints a recovery guide when that is possible. In all of the cases below, the fix ends the same way: power-cycle the Thor back into USB recovery mode and re-run `wendy install`.

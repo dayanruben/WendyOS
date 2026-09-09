@@ -6,6 +6,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -40,6 +41,12 @@ func dragonwingEDLBriefingBox() string {
 		"",
 		"  " + briefDim.Render("After flashing, set DIP switch 3 back to OFF and power-cycle,"),
 		"  " + briefDim.Render("otherwise the board will keep booting into EDL."),
+	}
+	if runtime.GOOS == "windows" {
+		lines = append(lines, "", section("Windows USB driver"),
+			"  Wendy checks the selected board's driver and installs or updates its",
+			"  WinUSB binding if needed. Windows will ask for administrator access.",
+			"  This replaces the selected EDL device's QDLoader binding if installed.")
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }
