@@ -139,10 +139,15 @@ didDisconnectPeripheral:(CBPeripheral *)peripheral
                  error:(NSError *)error {
     self.connected = NO;
     self.l2capIORunning = NO; // wake the I/O thread so it exits
-    // Signal any blocked operations
+    // Signal any blocked operations. A stray signal left on a semaphore nobody is
+    // currently waiting on is harmless: every caller below checks conn.connected
+    // before it would ever reach dispatch_semaphore_wait again.
     dispatch_semaphore_signal(self.readSema);
     dispatch_semaphore_signal(self.writeSema);
     dispatch_semaphore_signal(self.l2capRecvSema);
+    dispatch_semaphore_signal(self.notifySema);
+    dispatch_semaphore_signal(self.discoverSema);
+    dispatch_semaphore_signal(self.l2capSema);
 }
 
 // ── CBPeripheralDelegate ────────────────────────────────────────────
@@ -373,6 +378,7 @@ WendyBLEError wendy_ble_discover_services(WendyBLEConn handle, int timeout_secon
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_seconds * NSEC_PER_SEC));
 
     if (result != 0) return WENDY_BLE_ERR_TIMEOUT;
+    if (!conn.connected) return WENDY_BLE_ERR_DISCONNECTED;
     if (conn.discoverError) return WENDY_BLE_ERR_DISCOVER_FAILED;
     return WENDY_BLE_OK;
 }
@@ -394,6 +400,7 @@ WendyBLEError wendy_ble_write_characteristic(WendyBLEConn handle, const char *se
         dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
 
     if (result != 0) return WENDY_BLE_ERR_TIMEOUT;
+    if (!conn.connected) return WENDY_BLE_ERR_DISCONNECTED;
     if (conn.writeError) return WENDY_BLE_ERR_WRITE_FAILED;
     return WENDY_BLE_OK;
 }
@@ -430,6 +437,7 @@ WendyBLEReadResult wendy_ble_read_characteristic(WendyBLEConn handle, const char
         dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
 
     if (result != 0) { res.error = WENDY_BLE_ERR_TIMEOUT; return res; }
+    if (!conn.connected) { res.error = WENDY_BLE_ERR_DISCONNECTED; return res; }
     if (conn.readError) { res.error = WENDY_BLE_ERR_READ_FAILED; return res; }
 
     if (conn.readData && conn.readData.length > 0) {
@@ -463,6 +471,7 @@ WendyBLEError wendy_ble_subscribe(WendyBLEConn handle, const char *service_uuid,
         dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
 
     if (result != 0) return WENDY_BLE_ERR_TIMEOUT;
+    if (!conn.connected) return WENDY_BLE_ERR_DISCONNECTED;
     return WENDY_BLE_OK;
 }
 
@@ -511,7 +520,7 @@ WendyBLEReadResult wendy_ble_wait_notification(WendyBLEConn handle, const char *
     }
     [conn.notifyLock unlock];
 
-    res.error = WENDY_BLE_ERR_TIMEOUT;
+    res.error = conn.connected ? WENDY_BLE_ERR_TIMEOUT : WENDY_BLE_ERR_DISCONNECTED;
     return res;
 }
 
@@ -527,6 +536,7 @@ WendyBLEError wendy_ble_open_l2cap(WendyBLEConn handle, uint16_t psm, int timeou
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_seconds * NSEC_PER_SEC));
 
     if (result != 0) return WENDY_BLE_ERR_TIMEOUT;
+    if (!conn.connected) return WENDY_BLE_ERR_DISCONNECTED;
     if (conn.l2capError || !conn.l2capChannel) return WENDY_BLE_ERR_L2CAP_FAILED;
 
     return WENDY_BLE_OK;
