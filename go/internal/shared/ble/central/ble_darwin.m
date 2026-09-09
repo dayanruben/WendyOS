@@ -2,6 +2,42 @@
 #import <Foundation/Foundation.h>
 #include "ble_darwin.h"
 
+// Longest GATT characteristic value the Bluetooth core spec allows (Vol 3,
+// Part F). A compliant peripheral cannot exceed this, so a longer value is
+// treated as an error rather than truncated: a GATT value is one indivisible
+// unit, and silently shortening it would corrupt the protocol above us.
+static const NSUInteger kWendyBLEMaxGATTValue = 512;
+
+// Most bytes one wendy_ble_l2cap_recv hands back. L2CAP is a byte stream, so
+// returning less than is buffered is lossless — the remainder stays queued for
+// the next call. Matches the linux path's per-read buffer (ble_linux.go), so
+// both platforms cap a chunk at the same size.
+static const NSUInteger kWendyBLEMaxL2CAPChunk = 65536;
+
+// Copies n bytes into a fresh malloc'd buffer for the Go side to take over.
+//
+// Result lengths cross into Go as a 32-bit signed int while the sources are
+// NSUInteger, so an unbounded cast could truncate or go negative and leave
+// malloc, memcpy and C.GoBytes disagreeing about the size. Callers bound n
+// first; this keeps all three agreeing on that one already-bounded value.
+// Returns NO if the allocation fails, so no caller memcpys into NULL.
+static BOOL wendyBLECopyOut(const void *bytes, NSUInteger n, uint8_t **outData, int *outLength) {
+    // malloc(0) may legally return NULL, which would look like failure here.
+    // An empty value is not an error: hand back NULL/0, which the Go side
+    // already reads as "no data" and frees harmlessly.
+    if (n == 0) {
+        *outData = NULL;
+        *outLength = 0;
+        return YES;
+    }
+    uint8_t *copy = (uint8_t *)malloc(n);
+    if (!copy) return NO;
+    memcpy(copy, bytes, n);
+    *outData = copy;
+    *outLength = (int)n;
+    return YES;
+}
+
 // ── WendyBLEConnection ──────────────────────────────────────────────
 // Manages a single connection to a BLE peripheral including GATT and L2CAP.
 
@@ -443,9 +479,10 @@ WendyBLEReadResult wendy_ble_read_characteristic(WendyBLEConn handle, const char
     if (conn.readError) { res.error = WENDY_BLE_ERR_READ_FAILED; return res; }
 
     if (conn.readData && conn.readData.length > 0) {
-        res.length = (int)conn.readData.length;
-        res.data = (uint8_t *)malloc(res.length);
-        memcpy(res.data, conn.readData.bytes, res.length);
+        if (conn.readData.length > kWendyBLEMaxGATTValue ||
+            !wendyBLECopyOut(conn.readData.bytes, conn.readData.length, &res.data, &res.length)) {
+            res.error = WENDY_BLE_ERR_READ_FAILED;
+        }
     }
     return res;
 }
@@ -506,9 +543,10 @@ WendyBLEReadResult wendy_ble_wait_notification(WendyBLEConn handle, const char *
         [queue removeObjectAtIndex:0];
         [conn.notifyLock unlock];
 
-        res.length = (int)data.length;
-        res.data = (uint8_t *)malloc(res.length);
-        memcpy(res.data, data.bytes, res.length);
+        if (data.length > kWendyBLEMaxGATTValue ||
+            !wendyBLECopyOut(data.bytes, data.length, &res.data, &res.length)) {
+            res.error = WENDY_BLE_ERR_READ_FAILED;
+        }
         return res;
     }
     [conn.notifyLock unlock];
@@ -526,9 +564,10 @@ WendyBLEReadResult wendy_ble_wait_notification(WendyBLEConn handle, const char *
         [queue removeObjectAtIndex:0];
         [conn.notifyLock unlock];
 
-        res.length = (int)data.length;
-        res.data = (uint8_t *)malloc(res.length);
-        memcpy(res.data, data.bytes, res.length);
+        if (data.length > kWendyBLEMaxGATTValue ||
+            !wendyBLECopyOut(data.bytes, data.length, &res.data, &res.length)) {
+            res.error = WENDY_BLE_ERR_READ_FAILED;
+        }
         return res;
     }
     [conn.notifyLock unlock];
@@ -580,10 +619,15 @@ WendyBLEL2CAPRecvResult wendy_ble_l2cap_recv(WendyBLEConn handle, int timeout_se
     // Check if data is already buffered
     [conn.l2capRecvLock lock];
     if (conn.l2capRecvBuffer.length > 0) {
-        res.length = (int)conn.l2capRecvBuffer.length;
-        res.data = (uint8_t *)malloc(res.length);
-        memcpy(res.data, conn.l2capRecvBuffer.bytes, res.length);
-        conn.l2capRecvBuffer.length = 0;
+        // Drain at most one chunk and keep the rest queued. L2CAP is a byte
+        // stream, so a short return is lossless — l2capNetConn.Read stashes
+        // whatever it can't take and the next call picks the remainder up here.
+        NSUInteger n = MIN(conn.l2capRecvBuffer.length, kWendyBLEMaxL2CAPChunk);
+        if (!wendyBLECopyOut(conn.l2capRecvBuffer.bytes, n, &res.data, &res.length)) {
+            res.error = WENDY_BLE_ERR_L2CAP_FAILED;
+        } else {
+            [conn.l2capRecvBuffer replaceBytesInRange:NSMakeRange(0, n) withBytes:NULL length:0];
+        }
         [conn.l2capRecvLock unlock];
         return res;
     }
@@ -597,17 +641,22 @@ WendyBLEL2CAPRecvResult wendy_ble_l2cap_recv(WendyBLEConn handle, int timeout_se
 
     [conn.l2capRecvLock lock];
     if (conn.l2capRecvBuffer.length > 0) {
-        res.length = (int)conn.l2capRecvBuffer.length;
-        res.data = (uint8_t *)malloc(res.length);
-        memcpy(res.data, conn.l2capRecvBuffer.bytes, res.length);
-        conn.l2capRecvBuffer.length = 0;
+        // Drain at most one chunk and keep the rest queued. L2CAP is a byte
+        // stream, so a short return is lossless — l2capNetConn.Read stashes
+        // whatever it can't take and the next call picks the remainder up here.
+        NSUInteger n = MIN(conn.l2capRecvBuffer.length, kWendyBLEMaxL2CAPChunk);
+        if (!wendyBLECopyOut(conn.l2capRecvBuffer.bytes, n, &res.data, &res.length)) {
+            res.error = WENDY_BLE_ERR_L2CAP_FAILED;
+        } else {
+            [conn.l2capRecvBuffer replaceBytesInRange:NSMakeRange(0, n) withBytes:NULL length:0];
+        }
     } else if (conn.connected && conn.l2capIORunning && !conn.l2capError) {
-        // The buffered fast path above drains everything in one copy without
-        // consuming a semaphore count, so several signalled arrivals collapse
-        // into one return and leave the semaphore over-signalled. A later wait
-        // then succeeds immediately with the buffer already empty. The channel
-        // is still up, so report a timeout and let the caller retry rather than
-        // tearing the link down.
+        // The buffered fast path above returns a whole chunk in one copy
+        // without consuming a semaphore count, so several signalled arrivals
+        // collapse into one return and leave the semaphore over-signalled. A
+        // later wait then succeeds immediately with the buffer already empty.
+        // The channel is still up, so report a timeout and let the caller retry
+        // rather than tearing the link down.
         res.error = WENDY_BLE_ERR_TIMEOUT;
     } else {
         res.error = WENDY_BLE_ERR_DISCONNECTED;
