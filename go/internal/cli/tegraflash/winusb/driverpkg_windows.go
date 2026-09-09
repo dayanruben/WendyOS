@@ -48,10 +48,6 @@ func jetsonModels() []struct{ desc, id string } {
 	return append(models, struct{ desc, id string }{"NVIDIA Jetson flashing gadget", hwid(ProductGadget)})
 }
 
-// Legacy Thor helpers, removed when its caller adopts driver profiles.
-func jetsonHardwareIDs() []string { return JetsonDriver().hardwareIDs() }
-func generateINF() string         { return generateProfileINF(JetsonDriver()) }
-
 func generateProfileINF(profile DriverProfile) string {
 	// Per-model device lines shared by both arch sections.
 	models := profile.models

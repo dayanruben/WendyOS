@@ -213,15 +213,6 @@ func devInterfacePath(instanceID string) string {
 	return paths[0]
 }
 
-// InterfacePresent reports whether any present device currently exposes wendy's
-// Jetson WinUSB interface — i.e. our driver is installed and bound. Unlike a
-// device merely reporting "no problem", this is true only when OUR WinUSB driver
-// (not some other driver, e.g. a prior Zadig install) is bound.
-func InterfacePresent() bool {
-	paths, err := openDevicePaths()
-	return err == nil && len(paths) > 0
-}
-
 func openPath(devPath string) (*USBDevice, error) {
 	wpath, err := windows.UTF16PtrFromString(devPath)
 	if err != nil {
