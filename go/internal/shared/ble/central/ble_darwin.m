@@ -173,10 +173,12 @@ didDiscoverServices:(NSError *)error {
 - (void)peripheral:(CBPeripheral *)peripheral
 didDiscoverCharacteristicsForService:(CBService *)service
              error:(NSError *)error {
+    if (error) {
+        self.discoverError = YES;
+    }
     self.pendingCharDiscovery--;
     if (self.pendingCharDiscovery <= 0) {
-        self.discoverDone = !error;
-        self.discoverError = (error != nil);
+        self.discoverDone = !self.discoverError;
         dispatch_semaphore_signal(self.discoverSema);
     }
 }
