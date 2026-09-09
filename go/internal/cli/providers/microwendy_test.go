@@ -380,17 +380,30 @@ func TestStreamDevicesSurvivesMDNSStreamEnding(t *testing.T) {
 	close(svcCh) // mDNS browse died immediately; ctx stays live.
 
 	bleCh := make(chan []discovery.BLELiteDevice)
+	out := make(chan []models.ExternalDevice, 16)
 	go func() {
-		// Sent after svcCh has already closed, so this only succeeds if the
-		// merge loop is still running (and still reading bleCh) rather than
-		// having returned when mDNS died.
-		bleCh <- []discovery.BLELiteDevice{
-			{Address: "aa", Info: ble.LiteInfo{PSM: 128, DisplayName: "one", MTLSEnabled: true}},
-		}
-		cancel()
+		defer close(out)
+		(&MicroWendyProvider{}).streamDevices(ctx, svcCh, nil, bleCh, nil, out)
 	}()
 
-	devices := collectExternalDevices(ctx, svcCh, nil, bleCh)
+	// Sent after svcCh has already closed, so this only succeeds if the merge
+	// loop is still running (and still reading bleCh) rather than having
+	// returned when mDNS died. If that regression comes back this send blocks
+	// forever and the test times out, which is the failure we want.
+	bleCh <- []discovery.BLELiteDevice{
+		{Address: "aa", Info: ble.LiteInfo{PSM: 128, DisplayName: "one", MTLSEnabled: true}},
+	}
+
+	// Take the snapshot before cancelling, rather than cancelling straight
+	// after the send. emit() selects between sending to out and ctx.Done(), so
+	// once the context is already cancelled both cases are ready — out has room
+	// — and Go picks at random, dropping the snapshot often enough to fail this
+	// test roughly 3% of the time under -race.
+	devices := <-out
+	cancel()
+	for range out { //nolint:revive // drain so streamDevices' goroutine can exit
+	}
+
 	if len(devices) != 1 || devices[0].ConnectionType() != "BLE" {
 		t.Fatalf("a closed mDNS browse must not stop BLE discovery; got %+v", devices)
 	}
