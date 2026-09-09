@@ -226,7 +226,7 @@ didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
 - (void)peripheral:(CBPeripheral *)peripheral
 didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic
              error:(NSError *)error {
-    // Handled by subscribe call checking isNotifying
+    self.writeError = (error != nil);
     dispatch_semaphore_signal(self.writeSema); // reuse write sema for subscribe ack
 }
 
@@ -459,14 +459,19 @@ WendyBLEError wendy_ble_subscribe(WendyBLEConn handle, const char *service_uuid,
                                            inService:[NSString stringWithUTF8String:service_uuid]];
     if (!chr) return WENDY_BLE_ERR_NOT_FOUND;
 
-    // Set up notification queue
+    // Key the notification queue off CoreBluetooth's own CBUUID.UUIDString (via the
+    // resolved characteristic) rather than the caller's spelling: for 16/32-bit UUIDs
+    // CoreBluetooth's UUIDString is the short form ("180F"), which can differ from a
+    // caller-supplied expanded 128-bit form. chr is the same CBCharacteristic instance
+    // CoreBluetooth will hand back to didUpdateValueForCharacteristic:, so this
+    // guarantees the keys match exactly.
     NSString *key = [NSString stringWithFormat:@"%@:%@",
-                     [NSString stringWithUTF8String:service_uuid],
-                     [NSString stringWithUTF8String:char_uuid]];
+                     chr.service.UUID.UUIDString, chr.UUID.UUIDString];
     [conn.notifyLock lock];
     conn.notifyQueues[key] = [NSMutableArray array];
     [conn.notifyLock unlock];
 
+    conn.writeError = NO;
     [conn.peripheral setNotifyValue:YES forCharacteristic:chr];
 
     long result = dispatch_semaphore_wait(conn.writeSema,
@@ -474,6 +479,7 @@ WendyBLEError wendy_ble_subscribe(WendyBLEConn handle, const char *service_uuid,
 
     if (result != 0) return WENDY_BLE_ERR_TIMEOUT;
     if (!conn.connected) return WENDY_BLE_ERR_DISCONNECTED;
+    if (conn.writeError) return WENDY_BLE_ERR_SUBSCRIBE_FAILED;
     return WENDY_BLE_OK;
 }
 
@@ -483,9 +489,14 @@ WendyBLEReadResult wendy_ble_wait_notification(WendyBLEConn handle, const char *
     WendyBLEConnection *conn = (__bridge WendyBLEConnection *)handle;
     if (!conn.connected) { res.error = WENDY_BLE_ERR_DISCONNECTED; return res; }
 
+    // Re-resolve the characteristic to derive the same canonical key wendy_ble_subscribe
+    // used — see the comment there.
+    CBCharacteristic *chr = [conn findCharacteristic:[NSString stringWithUTF8String:char_uuid]
+                                           inService:[NSString stringWithUTF8String:service_uuid]];
+    if (!chr) { res.error = WENDY_BLE_ERR_NOT_FOUND; return res; }
+
     NSString *key = [NSString stringWithFormat:@"%@:%@",
-                     [NSString stringWithUTF8String:service_uuid],
-                     [NSString stringWithUTF8String:char_uuid]];
+                     chr.service.UUID.UUIDString, chr.UUID.UUIDString];
 
     // Check if there's already a queued notification
     [conn.notifyLock lock];
