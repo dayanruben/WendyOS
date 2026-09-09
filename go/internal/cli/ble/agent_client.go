@@ -91,10 +91,9 @@ func (c *AgentClient) sendCommand(cmd *agentpb.BluetoothCommand) (*agentpb.Bluet
 	}
 
 	// Read the 2-byte length header, then the body. The deadline is per-read
-	// rather than one budget for the whole exchange: a command like WiFi
-	// connect can legitimately keep the device busy for longer than
-	// agentReadTimeout before the first byte comes back, but once a reply
-	// starts arriving the rest of it should follow promptly.
+	// (reset between header and body) rather than one budget for the whole exchange:
+	// long-running commands must still begin replying within agentReadTimeout, and
+	// once a reply starts arriving the rest of it should follow promptly.
 	defer c.tlsConn.SetReadDeadline(time.Time{}) //nolint:errcheck
 
 	var header [2]byte
