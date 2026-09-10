@@ -34,7 +34,8 @@ On GPU-capable devices, the following GPU fields are included. Each is omitted f
 | `gpuVendor` | `GPU:` | GPU vendor (e.g. `nvidia`, `qualcomm`); shown as `unknown` in human-readable output when a GPU is present but the vendor is unreported. |
 | `jetpackVersion` | `JetPack:` | JetPack/L4T version string (Jetson only). |
 | `cudaVersion` | `CUDA:` | CUDA toolkit version (e.g. `12.6`). |
-| `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA). |
+| `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA, `a623` for a Qualcomm Adreno). |
+| `gpuCapabilities[]` | `GPU Compute:` | One entry per detected GPU: `vendor`, `path` (the device node that identified it, e.g. `/dev/dri/card0`), and `computeBackends` (`cuda`, `rocm`, `metal`, or `qnn`, the Qualcomm Hexagon NPU over FastRPC on Dragonwing). A single GPU prints its backends, or `none detected`; several GPUs print each one with its vendor and path. No entries means an older agent. |
 
 ### NPU output fields
 
