@@ -3589,7 +3589,7 @@ func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.Exter
 	if prov.Key() == "wendy-lite" {
 		item := tui.PickerItem{
 			Name:         dev.DisplayName,
-			DedupKey:     dev.DisplayName,
+			DedupKey:     dev.ConnectionInfo["deviceId"],
 			Type:         dev.ConnectionType() + " (Lite)",
 			Address:      dev.ConnectionInfo["ip"],
 			AgentVersion: dev.AgentVersion,
@@ -3646,11 +3646,33 @@ func providerPollDelay(elapsed time.Duration) time.Duration {
 // from the start of each scan (with a 500ms minimum gap, so slow scans don't
 // stretch the period). If the stream fails to start or closes while the
 // picker is still open, discovery falls back to polling.
+//
+// Both paths deliver a whole set of devices per send, and both are additive
+// only: the picker merges them with tui.PickerAddMsg, so a device that drops
+// out of a later snapshot stays on screen. Removal would need PickerSetMsg,
+// which replaces the picker's entire list — and one of these runs per
+// provider into a shared picker, so each would clobber the others' rows.
+//
+// discoverModel (the `wendy discover` TUI) applies the same stream-else-poll
+// choice, but its own way and with one deliberate difference: it does not fall
+// back to polling when a stream closes, because DiscoverDevices cannot see BLE
+// (see waitExternalSnapshot). The two are not shared code — this owns a
+// goroutine and a send callback where that is a bubbletea message loop, and
+// they scan different provider sets (AvailableProviders here so the picker only
+// offers targets that can build, AllProviders there so discovery reports
+// hardware regardless of toolchain) with different cadences and, as above,
+// different accumulation semantics.
 func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvider, send func([]tui.PickerItem)) {
 	if cd, ok := prov.(providers.ContinuousDiscoverer); ok {
 		if ch, err := cd.DiscoverDevicesContinuous(ctx); err == nil {
-			for dev := range ch {
-				send([]tui.PickerItem{externalProviderPickerItem(prov, &dev)})
+			for devices := range ch {
+				items := make([]tui.PickerItem, 0, len(devices))
+				for i := range devices {
+					items = append(items, externalProviderPickerItem(prov, &devices[i]))
+				}
+				if len(items) > 0 {
+					send(items)
+				}
 			}
 			if ctx.Err() != nil {
 				return
