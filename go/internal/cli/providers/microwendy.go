@@ -645,7 +645,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("idf.py build: %w", err)
+		return nil, fmt.Errorf("build: idf.py gen_project_binary: %w", err)
 	}
 
 	// verify the presence of the output bin file
