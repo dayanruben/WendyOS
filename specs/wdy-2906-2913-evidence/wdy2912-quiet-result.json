@@ -1,7 +1,0 @@
-{
-  "route": "local Mac loopback gRPC",
-  "elapsedSeconds": 625.2505509170005,
-  "subscriptionCount": 1,
-  "sentinelReceived": true,
-  "outputLines": 1
-}

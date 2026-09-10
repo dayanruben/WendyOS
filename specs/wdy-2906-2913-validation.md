@@ -100,7 +100,9 @@ WebUI data were created afresh. It reached browser readiness within the 600 s
 budget, opened the browser once, and answered through WebUI. This is fresh-runtime
 evidence on the same Mac, which already had uv installed.
 
-Evidence is in [wdy-2906-2913-evidence](wdy-2906-2913-evidence/). Development
+The raw run outputs behind the table above (browser chat result, readiness log,
+deploy/restart/child-failure/cleanup results, quiet-subscription result) were
+reviewed for this record and are not kept in the repository. Development
 artifact SHA-256 values:
 
 - CLI: `e7090a14c8b746652ba5edc84ef3f78a4b97788d7fd91e7d70b93e77828e256a`
