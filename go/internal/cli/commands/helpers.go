@@ -3585,7 +3585,7 @@ func hideLocalProviders(excludes map[string]bool) map[string]bool {
 
 // liteExternalInsecure reports whether a Wendy Lite transport will run without
 // mTLS. The Lite firmware advertises mtls=false until it is enrolled (see the
-// wendy-com doc), and connectClient dials such a device with ConnectInsecure —
+// wendy-com doc), and connectClient dials such a device with ConnectInsecure (or ConnectViaBLEInsecure for BLE) —
 // so the row deserves the same warning a plaintext WendyOS device gets. Only an
 // explicit "false" counts: a serial row carries no mtls key at all, and an
 // absent key is not evidence of an unsecured connection.
