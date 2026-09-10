@@ -208,12 +208,28 @@ func TestReadSdkconfig(t *testing.T) {
 			},
 		},
 		{
+			name:    "unbalanced quote is kept as-is, not stripped",
+			content: "CONFIG_IDF_TARGET=\"esp32c6\n",
+			keys:    []string{"CONFIG_IDF_TARGET"},
+			want: map[string]any{
+				"CONFIG_IDF_TARGET": "\"esp32c6",
+			},
+		},
+		{
 			name:    "integer values, decimal and hex",
 			content: "CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200\nCONFIG_PARTITION_TABLE_OFFSET=0x8000\n",
 			keys:    []string{"CONFIG_ESP_CONSOLE_UART_BAUDRATE", "CONFIG_PARTITION_TABLE_OFFSET"},
 			want: map[string]any{
 				"CONFIG_ESP_CONSOLE_UART_BAUDRATE": 115200,
 				"CONFIG_PARTITION_TABLE_OFFSET":    32768,
+			},
+		},
+		{
+			name:    "trailing comment after a value is not stripped",
+			content: "CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200 # default baud rate\n",
+			keys:    []string{"CONFIG_ESP_CONSOLE_UART_BAUDRATE"},
+			want: map[string]any{
+				"CONFIG_ESP_CONSOLE_UART_BAUDRATE": "115200 # default baud rate",
 			},
 		},
 		{
