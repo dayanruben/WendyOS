@@ -69,24 +69,3 @@ wendy run --device <name>
 ```
 
 Wendy selects the connected device's target, runs the standard ESP-IDF build, uploads the application firmware, reboots, and reconnects to its console. See [`deploying.md`](deploying.md) for the complete workflow.
-
-## Optional WASM Guest Languages
-
-| Language | Entry point | Library |
-|----------|-------------|---------|
-| Swift | `@main` on `WendyLiteApp` | SwiftPM: `WendyLite` (this repo) |
-| Rust | `#[no_mangle] pub extern "C" fn _start()` | Cargo: `wendy-lite` (this repo) |
-| C / C++ | `void _start(void)` | Include `Sources/CWendyLite/include/wendy.h` |
-| AssemblyScript | `export function _start()` | `@external("wendy", ...)` declarations |
-| WAT | `(export "_start" ...)` | Direct import from `"wendy"` module |
-
-See [`host-api.md`](host-api.md) for the full function reference, [`swift-sdk.md`](swift-sdk.md) for Swift-specific internals, [`deploying.md`](deploying.md) for the full build-to-device flow including OTA updates, and [`wendy-com.md`](wendy-com.md) for the WendyCom protocol reference.
-
-## Manually Embedding a WASM App
-
-For low-level firmware development, a WASM guest can still be embedded directly:
-
-1. Build your app to `.wasm`.
-2. Convert the binary to a C header array: `./wasm_apps/wasm2header.sh my_app.wasm main/demo_wasm.h`
-3. Rebuild the firmware: `idf.py build`
-4. Flash: `idf.py flash`

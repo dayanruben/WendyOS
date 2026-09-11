@@ -74,15 +74,7 @@ You can always fall back to `idf.py flash` over USB when you want to manage the 
 
 ## WASM Apps (Optional)
 
-Wendy Lite firmware variants with WASM support can run Swift, Rust, C/C++, AssemblyScript, or WAT guests. This path trades direct access to all of ESP-IDF for a smaller portable application boundary and Wendy's host-imported hardware APIs.
-
-For Swift projects, `wendy run` builds the package for `wasm32-unknown-wasip1`, uploads the `.wasm` application, and attaches to its console. The lower-level manual flow is:
-
-1. Build the application as `.wasm`.
-2. Convert it to a C header with `wasm2header.sh` when embedding it in a firmware build.
-3. Rebuild and flash the Wendy Lite firmware.
-
-See the [host API](host-api.md), [Swift SDK](swift-sdk.md), and [StdIO](stdio.md) references for WASM-specific development details.
+See [`wasm-apps.md`](wasm-apps.md) for building and deploying WASM guest apps (Swift, Rust, C/C++, AssemblyScript, WAT).
 
 ## Provisioning and Discovery
 
