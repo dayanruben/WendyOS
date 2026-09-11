@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -19,9 +20,11 @@ import (
 // WendySensorService (the gRPC path for agent-hosted sensor sources, as
 // opposed to tcpTransport's raw-TCP path for MCUs).
 type grpcTransport struct {
-	logger *zap.Logger
-	cc     *grpc.ClientConn
-	client agentpbv2.WendySensorServiceClient
+	closeOnce sync.Once
+	closeErr  error
+	logger    *zap.Logger
+	cc        *grpc.ClientConn
+	client    agentpbv2.WendySensorServiceClient
 }
 
 // NewGRPCTransport dials the source's mTLS agent endpoint, pinning its identity.
@@ -78,6 +81,11 @@ func (t *grpcTransport) Stream(ctx context.Context, channels []uint32) (<-chan *
 			}
 		}
 	}()
-	closeFn := func() error { cancel(); return t.cc.Close() }
+	closeFn := func() error { cancel(); return nil }
 	return frames, closeFn, nil
+}
+
+func (t *grpcTransport) Close() error {
+	t.closeOnce.Do(func() { t.closeErr = t.cc.Close() })
+	return t.closeErr
 }

@@ -155,6 +155,7 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	if err != nil {
 		return false, fmt.Errorf("mcusource: resolving transport for source %d: %w", p.SourceAssetID, err)
 	}
+	defer tr.Close()
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
 	manifest, err := tr.FetchManifest(ctx)
 	if err != nil {
@@ -230,6 +231,7 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	if err != nil {
 		return false, err
 	}
+	closeStream = sync.OnceValue(closeStream)
 	defer closeStream()
 	// The reader goroutine inside Connect only unblocks when the conn is
 	// closed or a read fails; without this, an idle source (no frames, no

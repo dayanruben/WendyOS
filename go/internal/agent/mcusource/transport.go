@@ -9,6 +9,8 @@ import (
 // SensorTransport abstracts how a source's manifest and frames are obtained,
 // so the supervisor is transport-agnostic (raw-TCP for MCUs, gRPC for agents).
 type SensorTransport interface {
+	// Close releases transport resources, even if no stream was opened.
+	Close() error
 	FetchManifest(ctx context.Context) (*sensorlinkpb.SensorManifest, error)
 	Stream(ctx context.Context, channels []uint32) (<-chan *sensorlinkpb.SensorFrame, func() error, error)
 }
@@ -40,3 +42,6 @@ func (t *tcpTransport) Stream(ctx context.Context, channels []uint32) (<-chan *s
 	}
 	return s.Frames, s.Close, nil
 }
+
+// TCP sessions own their connections; FetchManifest and the stream closer release them.
+func (t *tcpTransport) Close() error { return nil }

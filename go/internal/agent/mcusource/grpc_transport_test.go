@@ -46,6 +46,7 @@ func TestGRPCTransportStreamsFromStubServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Close()
 	ctx := context.Background()
 	m, err := tr.FetchManifest(ctx)
 	if err != nil || m.GetDeviceAssetId() != 7 {
