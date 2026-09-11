@@ -13,7 +13,7 @@ steps, ending with an existing example built and deployed on your device.
 You need two tools.
 
 **Wendy CLI** — your entry point to the device: installs Wendy Lite, configures
-it, builds and deploys applications. Install it with:
+it, builds and deploys applications. Run this command to install Wendy CLI:
 
 ```sh
 curl -fsSL https://install.wendy.dev/cli.sh | bash

@@ -2,9 +2,9 @@
 
 ## Overview
 
-Wendy Lite runs on Espressif ESP32 microcontrollers. It lets you write your
-own **native applications**, build them, and deploy them to any device
-running Wendy Lite.
+Wendy Lite is a runtime for Espressif ESP32 microcontrollers. It handles your
+device's connectivity and lets you write your own **native applications**,
+build them, and deploy them to it.
 
 Native apps are built with Espressif's tooling, in particular
 [ESP-IDF](https://docs.espressif.com/projects/esp-idf/), version **5.5**.
@@ -41,12 +41,12 @@ Before you start, you need:
   environment for you, so you never need to pin a version yourself.
 - a device already flashed with Wendy Lite.
 
+[Getting Started with Wendy Lite](getting-started.md) walks through
+installing both tools and flashing a device.
+
 When you install Wendy Lite on your device, ensure you pick the variant
 labeled **native app support**. If you are not sure whether your installed
 version supports native apps, run `wendy device info` to check.
-
-[Getting Started with Wendy Lite](getting-started.md) walks through
-installing both tools and flashing a device.
 
 ## Anatomy of a Wendy Lite native app
 
