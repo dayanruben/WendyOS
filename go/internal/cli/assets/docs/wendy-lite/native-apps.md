@@ -94,9 +94,11 @@ my-app/
 }
 ```
 
-Keep your configuration in `sdkconfig.defaults`, not `sdkconfig`: the Wendy
-CLI regenerates `sdkconfig` on build, so any changes made directly to it are
-lost.
+> **`sdkconfig` is generated, not authored.**
+> It's created on first build and can be regenerated whenever the target
+> changes, so changes made directly to it can be lost. Store your
+> configuration in `sdkconfig.defaults` instead, or, if you really want to
+> rely on it, keep `sdkconfig` itself in your git repo.
 
 ### Step 2 — Declare the `wendy_core` dependency
 
