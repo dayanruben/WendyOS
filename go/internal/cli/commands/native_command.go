@@ -75,8 +75,8 @@ func validateNativeCommandOptions(cfg *appconfig.AppConfig, opts runOptions, ver
 	if version.GetOs() != "darwin" {
 		return fmt.Errorf("run.command requires a native Darwin agent target")
 	}
-	if !slices.Contains(version.GetFeatureset(), "native-process-v1") {
-		return fmt.Errorf("this Mac agent does not support run.command; update Wendy Agent on the target Mac to a version advertising native-process-v1, then run again")
+	if !slices.Contains(version.GetFeatureset(), "native-process") {
+		return fmt.Errorf("this Mac agent does not support run.command; update Wendy Agent on the target Mac to a version advertising native-process, then run again")
 	}
 	if opts.buildType != "" || opts.dockerfile != "" || opts.builder != "" || opts.buildHost != "" || opts.product != "" || opts.debug || opts.gpuArch != "" {
 		return fmt.Errorf("run.command cannot be combined with build selections (--build-type, --dockerfile, --builder, --build-host, --product, --debug, or --gpu-arch)")

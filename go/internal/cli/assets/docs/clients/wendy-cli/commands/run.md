@@ -452,7 +452,7 @@ symlink resolution. Arguments are passed directly; shell expressions are literal
 unless you explicitly choose a shell executable. The CLI selects this mode before
 project detection and rejects conflicting build flags and non-Darwin targets.
 
-The target must advertise `native-process-v1`; update Wendy Agent for Mac if the
+The target must advertise `native-process`; update Wendy Agent for Mac if the
 CLI requests it. Declared files, `wendy.json`, an optional `sandbox.sb`, and the
 configured Brewfile (or auto-detected `Brewfile.wendy`) use native file sync.
 Homebrew installation completes before the agent validates the executable.

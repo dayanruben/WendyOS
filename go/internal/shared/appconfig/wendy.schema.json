@@ -478,7 +478,7 @@
       "properties": {
         "command": {
           "type": "string", "minLength": 1,
-          "description": "Single native Darwin app: a synced executable relative to the app directory, or an absolute executable on the target. Arguments are executed directly without shell parsing. Requires agent feature native-process-v1."
+          "description": "Single native Darwin app: a synced executable relative to the app directory, or an absolute executable on the target. Arguments are executed directly without shell parsing. Requires agent feature native-process."
         },
         "cwd": {
           "type": "string", "minLength": 1,

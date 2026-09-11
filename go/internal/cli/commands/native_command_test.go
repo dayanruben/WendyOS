@@ -36,7 +36,7 @@ func TestNativeCommandDeployment(t *testing.T) {
 	state := &fakeMacRunState{}
 	conn, cleanup := startFakeMacRunServer(t, state)
 	defer cleanup()
-	version := &agentpb.GetAgentVersionResponse{Os: "darwin", Featureset: []string{"native-process-v1"}}
+	version := &agentpb.GetAgentVersionResponse{Os: "darwin", Featureset: []string{"native-process"}}
 	opts := runOptions{deploy: true, env: []string{"MODE=first", "MODE=cli", "EMPTY="}, noRestart: true}
 	if err := runNativeCommandWithAgent(context.Background(), conn, dir, cfg, opts, version); err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestNativeCommandWatchDetectsLaunchAndFileChanges(t *testing.T) {
 	state := &fakeMacRunState{}
 	conn, cleanup := startFakeMacRunServer(t, state)
 	defer cleanup()
-	version := &agentpb.GetAgentVersionResponse{Os: "darwin", Featureset: []string{"native-process-v1"}}
+	version := &agentpb.GetAgentVersionResponse{Os: "darwin", Featureset: []string{"native-process"}}
 	opts := runOptions{detach: true, watchState: &watchDeployState{hashes: map[string]string{}}}
 	run := func(want int) {
 		t.Helper()
@@ -101,7 +101,7 @@ func TestNativeCommandRequiresCapabilityAndRejectsBuildOptions(t *testing.T) {
 	if err := validateNativeCommandOptions(cfg, runOptions{}, version); err == nil {
 		t.Fatal("older agent accepted")
 	}
-	version.Featureset = []string{"native-process-v1"}
+	version.Featureset = []string{"native-process"}
 	for _, opts := range []runOptions{{buildType: "docker"}, {dockerfile: "Dockerfile"}, {product: "App"}, {buildHost: "device"}, {debug: true}} {
 		if err := validateNativeCommandOptions(cfg, opts, version); err == nil {
 			t.Fatalf("accepted %+v", opts)

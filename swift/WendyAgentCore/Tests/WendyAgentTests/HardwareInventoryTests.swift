@@ -28,6 +28,23 @@ struct HardwareInventoryParsingTests {
         #expect(response.gpuCapabilities.map(\.computeBackends) == [["metal"]])
     }
 
+    @Test("advertises the native-process feature without a version suffix")
+    func advertisesNativeProcessFeature() async throws {
+        let service = AgentService(
+            gpuDiscovery: GPUDiscovery(devices: { [] }),
+            reportedVersion: { "test" }
+        )
+        let response = try await service.getAgentVersion(
+            request: ServerRequest(
+                metadata: [:],
+                message: Wendy_Agent_Services_V1_GetAgentVersionRequest()
+            ),
+            context: makeHardwareContext()
+        ).message
+        #expect(response.featureset.contains("native-process"))
+        #expect(!response.featureset.contains { $0.hasSuffix("-v1") })
+    }
+
     @Test("device metadata lists no GPU entries when Metal finds no device")
     func noMetalDevices() async throws {
         let service = AgentService(
