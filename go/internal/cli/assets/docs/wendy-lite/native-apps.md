@@ -45,7 +45,7 @@ When you install Wendy Lite on your device, ensure you pick the variant
 labeled **native app support**. If you are not sure whether your installed
 version supports native apps, run `wendy device info` to check.
 
-[Getting Started with Wendy Lite](native-apps-getting-started.md) walks through
+[Getting Started with Wendy Lite](getting-started.md) walks through
 installing both tools and flashing a device.
 
 ## Anatomy of a Wendy Lite native app

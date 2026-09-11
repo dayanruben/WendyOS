@@ -27,7 +27,7 @@ Native app capability is firmware-specific; where the installer offers multiple 
 ## Documentation
 
 ### User Guides
-- [Getting Started](native-apps-getting-started.md)
+- [Getting Started](getting-started.md)
 - [Native Apps](native-apps.md)
 - [WASM Apps](wasm-apps.md)
   - [Host API Reference](host-api.md)
