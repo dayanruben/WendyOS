@@ -549,16 +549,6 @@ func (p *MicroWendyProvider) buildSwift(ctx context.Context, device models.Exter
 	}, nil
 }
 
-// boardToTarget returns the IDF target (SoC name, e.g. "esp32c6") firmware
-// must be built for to run on the given board. A board and a target are
-// different concepts: the device reports "esp32c6" meaning "generic esp32c6
-// board", not the SoC name — they merely coincide for the boards supported
-// today, so the mapping is the identity for now. A real lookup goes here once
-// board names diverge from SoC names.
-func boardToTarget(board string) string {
-	return board
-}
-
 // espIdfBinaryPath returns the path of the firmware binary an ESP-IDF build
 // produces in projectPath's build folder. The binary is named after the CMake
 // project() name, falling back to product when no project() declaration is
@@ -608,7 +598,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 	}
 
 	// check if the project has been configured for the right target
-	target := boardToTarget(di.DeviceType)
+	target := di.DeviceType
 	if strings.ContainsAny(target, " \t\r\n") {
 		return nil, fmt.Errorf("invalid device target %q", target)
 	}
@@ -845,7 +835,7 @@ func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.Ex
 		OS:               di.OS,
 		OSVersion:        di.OSVersion,
 		CPUArchitecture:  di.CPUArchitecture,
-		DeviceType:       di.Board,
+		DeviceType:       di.Target,
 		WasmAppSupport:   di.WasmAppSupport,
 		NativeAppSupport: di.NativeAppSupport,
 	}, nil
