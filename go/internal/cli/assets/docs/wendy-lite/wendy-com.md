@@ -249,6 +249,7 @@ Queries the device for information about its hardware and software. The device r
 - `os` — the operating system name, typically `wendy-lite`.
 - `os_version` — the operating system version.
 - `cpu_architecture` — the CPU architecture.
-- `board` — the board identifier (e.g. `esp32c6`, meaning a generic ESP32-C6 board).
+- `target` — the SoC name (e.g. `esp32c6` or `esp32s3`).
 - `wasm_app_support` — whether the device can run WASM applications.
 - `native_app_support` — whether the device can run native applications.
+- `board` — the board identifier (e.g. `esp32c6_generic` or `esp32s3_seeed_xiao_native`). Empty when the board is not known.
