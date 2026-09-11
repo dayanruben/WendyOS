@@ -2,9 +2,9 @@
 
 ## Overview
 
-Wendy Lite runs on Espressif ESP32 microcontrollers. On top of the operating
-system, you can write your own **native applications**, build them, and deploy
-them to any device running Wendy Lite.
+Wendy Lite runs on Espressif ESP32 microcontrollers. It lets you write your
+own **native applications**, build them, and deploy them to any device
+running Wendy Lite.
 
 Native apps are built with Espressif's tooling, in particular
 [ESP-IDF](https://docs.espressif.com/projects/esp-idf/), version **5.5**.
@@ -29,9 +29,6 @@ Configuring a device can additionally go over **Bluetooth Low Energy (BLE)**.
 BLE is there mainly to reach a device in the situations where neither Wi-Fi nor
 USB is available.
 
-<!-- TODO: list the exact ESP32 targets supported (esp32s3, esp32c5, esp32c6,
-     esp32c61, esp32p4, ...). -->
-
 ## Prerequisites
 
 Before you start, you need:
@@ -40,19 +37,23 @@ Before you start, you need:
   and deploys your application.
 - **EIM**, the ESP-IDF Installation Manager — Espressif's tool for managing the
   ESP-IDF development environment (toolchains, Python environment, SDK
-  versions). Wendy Lite supports **ESP-IDF 5.5**.
+  versions). Wendy Lite supports **ESP-IDF 5.5**; the Wendy CLI manages this
+  environment for you, so you never need to pin a version yourself.
 - a device already flashed with Wendy Lite.
+
+When you install Wendy Lite on your device, ensure you pick the variant
+labeled **native app support**. If you are not sure whether your installed
+version supports native apps, run `wendy device info` to check.
 
 [Getting Started with Wendy Lite](native-apps-getting-started.md) walks through
 installing both tools and flashing a device.
 
-You do not have to pin an ESP-IDF version yourself: `wendy run` picks the right
-toolchain for you from the environments EIM manages.
-
 ## Anatomy of a Wendy Lite native app
 
-A Wendy Lite native app is an ordinary ESP-IDF project with one addition: it
-includes the **`wendy_core`** component.
+A Wendy Lite native app is an ordinary ESP-IDF project with two additions:
+
+- a `wendy.json` manifest in the project root.
+- the **`wendy_core`** component.
 
 `wendy_core` is what makes your application a Wendy app rather than a bare
 ESP-IDF firmware. It runs your code inside the Wendy environment, so that the
@@ -67,10 +68,35 @@ Creating an app therefore comes down to three steps:
 ### Step 1 — Create an ESP-IDF project
 
 Use the standard ESP-IDF project layout: a top-level `CMakeLists.txt`, a `main`
-component, and a `sdkconfig.defaults` holding your build configuration.
+component, a `sdkconfig.defaults` holding your build configuration, and a
+`wendy.json` manifest:
 
-<!-- TODO: document `wendy.json` (appId, version, entitlements) — it is present
-     in every example project but its role is not described yet. -->
+```text
+my-app/
+├── CMakeLists.txt
+├── sdkconfig.defaults
+├── wendy.json
+└── main/
+    ├── CMakeLists.txt
+    ├── idf_component.yml
+    └── main.c
+```
+
+`wendy.json` looks like this:
+
+```json
+{
+  "$schema": "https://wendy.dev/schemas/wendy.json",
+  "appId": "com.example.my-esp32-app",
+  "version": "0.1.0",
+  "platform": "wendy-lite",
+  "entitlements": []
+}
+```
+
+Keep your configuration in `sdkconfig.defaults`, not `sdkconfig`: the Wendy
+CLI regenerates `sdkconfig` on build, so any changes made directly to it are
+lost.
 
 ### Step 2 — Declare the `wendy_core` dependency
 
@@ -118,7 +144,8 @@ The quickest way to start a project is to copy an existing one. The
 project is a deliberately minimal example: it shows
 how a project for Wendy Lite is laid out and how `wendy_core` is integrated.
 
-Its `main/main.c` is essentially the three-step recipe above plus a blink loop:
+Its `main/main.c` calls `wendy_core_init()` first, as in Step 3 above, then
+adds a simple blink loop:
 
 ```c
 #include <stdio.h>
@@ -150,10 +177,6 @@ void app_main(void)
 }
 ```
 
-<!-- TODO: add the other example projects (blink, blink-arduino, m5-stamp-fly,
-     xiao-esp32s3-camera, xiao-esp32s3-camera-stream) and say what each one
-     demonstrates. -->
-
 ## What Wendy Lite owns, and what your app must not touch
 
 Wendy Lite handles communication for you. It owns and initializes the
@@ -163,7 +186,6 @@ communication controllers and peripherals:
 - **Wi-Fi**
 - **Bluetooth Low Energy (BLE)** — the system uses it above all to configure the
   device when Wi-Fi and USB are not available.
-- **Cloud connectivity**
 
 Your application is free to *use* these channels, but it must
 never configure them itself. Do not initialize the Wi-Fi or BLE controller, and
@@ -173,10 +195,6 @@ do not set up the network stack: use what Wendy Lite has already configured.
 > Wendy Lite claims that peripheral and drives the console itself. Configuring
 > it from your application, or using it for your own I/O, will conflict with
 > the system.
-
-<!-- TODO: spell out the concrete "do use" side for each channel: which API an
-     app should call to open a socket, to advertise/serve over BLE, to send
-     data to the cloud. -->
 
 ## Building and deploying
 
@@ -191,5 +209,7 @@ device, and starts it. It selects the right ESP-IDF toolchain version for you,
 so you do not have to pin one yourself. The application is pushed over USB, over
 the local network, or (soon) through the cloud.
 
-<!-- TODO: how to choose the transport / target device, and how to read logs
-     back from the running application. -->
+To rebuild the project entirely from scratch, delete `build`, `sdkconfig`,
+and `managed_components`, then run `wendy run` again. Also delete
+`dependencies.lock` if you want to move to more recent versions of your
+dependencies (such as `wendy_core`).
