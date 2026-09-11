@@ -66,8 +66,10 @@ func TestEndToEndCameraMount(t *testing.T) {
 	})
 
 	sup := mcusource.NewSupervisor(zap.NewNop(), lb,
-		func(mcusource.SensorPairing) (mcusource.Dialer, error) { return tcpDialer{}, nil },
-		ros2camera.NewFrameWriter,
+		func(_ mcusource.SensorPairing, addr string) (mcusource.SensorTransport, error) {
+			return mcusource.NewTCPTransport(tcpDialer{}, addr), nil
+		},
+		ros2camera.NewFrameWriter, noAudioLoop{},
 	)
 
 	pairing := mcusource.SensorPairing{SourceAssetID: 42, OrgID: 1, Name: "e2e"}
