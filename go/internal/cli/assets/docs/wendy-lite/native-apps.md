@@ -235,7 +235,15 @@ idf.py build
 idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-There is no CLI command yet to fetch this partition table. Instead, extract
-the `partitions.csv` file that corresponds to your Wendy Lite variant from
-the [wendy-lite repository](https://github.com/wendylabsinc/wendy-lite) and
-use it as your project's partition table.
+There is no CLI command yet to fetch this partition table. Extract the
+`partitions.csv` file that corresponds to your Wendy Lite variant from the
+[wendy-lite repository](https://github.com/wendylabsinc/wendy-lite), add it
+to your project, and enable it in `sdkconfig.defaults`:
+
+```ini
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+```
+
+Without this, `idf.py flash` uses the project's default partition table
+instead, which can overwrite or omit Wendy Lite's reserved partitions.
