@@ -60,6 +60,7 @@ jobs:
           fetch-depth: 0
           sparse-checkout: .github/scripts
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Fetch PR metadata and diff
         env:
@@ -86,7 +87,7 @@ jobs:
           # GitHub's diff endpoint has a 300-file limit. Use the exact reviewed
           # commits without checking out or executing any PR application code.
           diff_base_sha="$(git -C review-history merge-base "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA")"
-          git -C review-history diff --no-ext-diff --no-textconv \
+          git -C review-history diff --no-ext-diff --no-textconv --find-renames \
             "$diff_base_sha" "$EXPECTED_HEAD_SHA" -- > "$diff_tmp"
 
           jq '{title, body, number, additions, deletions, changed_files, user: {login: .user.login, id: .user.id, type: .user.type}, head: {ref: .head.ref, repo: .head.repo.full_name, sha: .head.sha}}' \
@@ -328,7 +329,9 @@ jobs:
 
       - name: Test security review automation
         if: env.IS_DEPENDABOT != 'true'
-        run: python3 .github/scripts/security_review_test.py
+        run: |
+          python3 .github/scripts/review_diff_test.py
+          python3 .github/scripts/security_review_test.py
 
       - name: Validate complete review input
         if: env.IS_DEPENDABOT != 'true'
