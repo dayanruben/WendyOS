@@ -12,18 +12,27 @@ renumbered clear of the NPU fields in #1936, and Qualcomm Dragonwing support
 (`qnn` compute backend, Adreno render-node grant in the `gpu` entitlement) was
 added per review. Go/Swift builds and the test suites listed below passed again.
 
+On 2026-09-11 the stack was rebased onto WendyOS main `9a474f749`, past the NPU
+fields that #1936 merged; the field renumbering folded into the single protocol
+commit. Per review, `gpu_capabilities` became a repeated per-GPU list (each entry
+carries `vendor`, `path`, and `compute_backends`, so a host with an AMD and an
+NVIDIA card reports rocm and cuda against the right GPU; no entries on a device
+that reports a GPU identifies an older agent), and the Mac agent feature was
+renamed from `native-process-v1` to `native-process` to match the unsuffixed
+feature vocabulary. Go/Swift builds and the test suites listed below passed again.
+
 ## Reviewable changes
 
 | PR | Commit | Change |
 |---|---|---|
-| [1906](https://github.com/wendylabsinc/WendyOS/pull/1906) | `361e16de9` | WDY-2907: effective service environment, CLI precedence, fingerprints/watch, extended ComposeEnv fixture |
-| [1907](https://github.com/wendylabsinc/WendyOS/pull/1907) | `33b0695db` | WDY-2906/2913: actionable network warnings, explicit none/bridge selection, empty isolation cache state, persisted CNI cleanup |
-| [1908](https://github.com/wendylabsinc/WendyOS/pull/1908) | `26396b67a`, `ededc9a04` | Compatible v1/v2 storage and GPU capability fields with Go/Swift bindings regenerated together |
-| [1909](https://github.com/wendylabsinc/WendyOS/pull/1909) | `bec28dbb3`, `304cba355` | WDY-2908/2909: container-storage filesystem, shared GPU discovery and compute capabilities, CLI/MCP and CUDA build hint |
-| [1910](https://github.com/wendylabsinc/WendyOS/pull/1910) | `10c455b67` | WDY-2910: continued readiness, service state inspection, lifecycle cancellation, deferred hooks/browser actions, unknown-key warnings |
-| [1911](https://github.com/wendylabsinc/WendyOS/pull/1911) | `5a5e48636` | WDY-2911: native command/cwd, file sync, capability negotiation, environment and resolved launch persistence, PID birth identity |
-| [1912](https://github.com/wendylabsinc/WendyOS/pull/1912) | `60cdfe51b` | WDY-2912: quiet log heartbeats, MCP filtering, Go ACK timeout 20 seconds |
-| [1905](https://github.com/wendylabsinc/WendyOS/pull/1905) | `4aa2d9f4c`, `f3eb35426`, `a781192e3`, `13d076b42`, `3b134b2bb`, `5aaaea6cc`, `ec1aae193` | Darwin template selection, cross-repository scaffold acceptance, native app-ID guard, portable process fixtures, validation evidence |
+| [1906](https://github.com/wendylabsinc/WendyOS/pull/1906) | `e3b786a7d` | WDY-2907: effective service environment, CLI precedence, fingerprints/watch, extended ComposeEnv fixture |
+| [1907](https://github.com/wendylabsinc/WendyOS/pull/1907) | `385b621df` | WDY-2906/2913: actionable network warnings, explicit none/bridge selection, empty isolation cache state, persisted CNI cleanup |
+| [1908](https://github.com/wendylabsinc/WendyOS/pull/1908) | `e29230eea` | Compatible v1/v2 storage and GPU capability fields with Go/Swift bindings regenerated together |
+| [1909](https://github.com/wendylabsinc/WendyOS/pull/1909) | `42eaa94b2`, `95415bebe` | WDY-2908/2909: container-storage filesystem, shared GPU discovery and compute capabilities, CLI/MCP and CUDA build hint |
+| [1910](https://github.com/wendylabsinc/WendyOS/pull/1910) | `b9bc3f35f` | WDY-2910: continued readiness, service state inspection, lifecycle cancellation, deferred hooks/browser actions, unknown-key warnings |
+| [1911](https://github.com/wendylabsinc/WendyOS/pull/1911) | `28c5e6e84`, `216896637` | WDY-2911: native command/cwd, file sync, capability negotiation, environment and resolved launch persistence, PID birth identity |
+| [1912](https://github.com/wendylabsinc/WendyOS/pull/1912) | `546e712e8` | WDY-2912: quiet log heartbeats, MCP filtering, Go ACK timeout 20 seconds |
+| [1905](https://github.com/wendylabsinc/WendyOS/pull/1905) | `1371ee0f5`, `79d986f55`, `e993a1cf9`, `2084c9887`, `de599bfdf`, `41cf135db`, `37b968d0b`, `664a7201a` | Darwin template selection, cross-repository scaffold acceptance, native app-ID guard, portable process fixtures, validation evidence |
 | [templates 103](https://github.com/wendylabsinc/templates/pull/103) | `73f275e`, `421087d`, `f1450b1` | CUDA migration, generic Ollama vendor path, Mojo/MAX Mac chat, catalog, supervisor tests and findings |
 
 The agent PRs are stacked in the order above. Each diff is below the security
@@ -84,7 +93,7 @@ Swift **6.2**. Agent startup/restart/stop used the repository Makefile workflow;
 
 | Check | Verified outcome |
 |---|---|
-| Metadata | `hasGpu: true`, vendor `apple`, `computeBackends: [metal]` |
+| Metadata | `hasGpu: true`, vendor `apple`, `gpuCapabilities: [{vendor: apple, computeBackends: [metal]}]` |
 | Native environment/cwd | CLI repeat uses last value, empty override retained, cwd is the synced `data` subdirectory, agent app identity applied |
 | Slow startup | Initial deadline 1 s; “still starting”; ready at 11 s; exactly one host hook |
 | Mac chat | MAX binds `127.0.0.1:11435`; WebUI serves port 8080; browser-chat API lists the model and returns “Hello!” via MAX |
