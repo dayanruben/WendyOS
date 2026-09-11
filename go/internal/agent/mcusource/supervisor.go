@@ -35,6 +35,9 @@ type Supervisor struct {
 	newWriter    func(path string) ros2camera.CameraWriter
 	audioLoop    AudioLoop
 
+	statusMu  sync.Mutex
+	connected map[int32]bool
+
 	nodeIDsMu sync.Mutex
 	nodeIDs   map[string]uint32 // "sourceAssetID:channelID" -> MCU-band node id
 }
@@ -44,7 +47,25 @@ type Supervisor struct {
 // mirroring mesh_dialer.go's per-target pinning — a single shared transport
 // cannot do that across pairings with different SourceAssetID/OrgID.
 func NewSupervisor(logger *zap.Logger, lb Loopback, transportFor TransportFactory, newWriter func(path string) ros2camera.CameraWriter, audioLoop AudioLoop) *Supervisor {
-	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, audioLoop: audioLoop, nodeIDs: make(map[string]uint32)}
+	return &Supervisor{logger: logger, lb: lb, transportFor: transportFor, newWriter: newWriter, audioLoop: audioLoop, nodeIDs: make(map[string]uint32), connected: make(map[int32]bool)}
+}
+
+// IsConnected reports whether the current stream has delivered a frame to a
+// mounted sensor. A retrying supervisor alone is not a live connection.
+func (s *Supervisor) IsConnected(sourceAssetID int32) bool {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.connected[sourceAssetID]
+}
+
+func (s *Supervisor) setConnected(sourceAssetID int32, connected bool) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if connected {
+		s.connected[sourceAssetID] = true
+	} else {
+		delete(s.connected, sourceAssetID)
+	}
 }
 
 // nodeID returns a stable MCU-band node id for (sourceAssetID, channelID),
@@ -151,6 +172,8 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 // delivered reports whether at least one frame was written, so the caller
 // can reset its reconnect backoff after a stream that was actually healthy.
 func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr string) (delivered bool, err error) {
+	s.setConnected(p.SourceAssetID, false)
+	defer s.setConnected(p.SourceAssetID, false)
 	tr, err := s.transportFor(p, addr)
 	if err != nil {
 		return false, fmt.Errorf("mcusource: resolving transport for source %d: %w", p.SourceAssetID, err)
@@ -251,10 +274,16 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 			if err := w.WriteFrame(frameToCamera(f, cams)); err != nil {
 				return delivered, err
 			}
+			if !delivered {
+				s.setConnected(p.SourceAssetID, true)
+			}
 			delivered = true
 		} else if aw := audioWriters[f.ChannelId]; aw != nil {
 			if err := aw.WritePCM(f.Payload); err != nil {
 				return delivered, err
+			}
+			if !delivered {
+				s.setConnected(p.SourceAssetID, true)
 			}
 			delivered = true
 		}

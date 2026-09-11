@@ -14,18 +14,17 @@ type StartPairingFunc func(p mcusource.SensorPairing, addr string)
 // StopPairingFunc cancels a running supervisor.
 type StopPairingFunc func(sourceAssetID int32)
 
-// IsRunningFunc reports whether a supervisor goroutine is currently active
-// for sourceAssetID.
-type IsRunningFunc func(sourceAssetID int32) bool
+// IsConnectedFunc reports whether a pairing is delivering sensor frames.
+type IsConnectedFunc func(sourceAssetID int32) bool
 
 type SensorPairingService struct {
 	agentpbv2.UnimplementedWendySensorPairingServiceServer
-	logger     *zap.Logger
-	store      *mcusource.PairingStore
-	agentOrgID func() int32
-	start      StartPairingFunc
-	stop       StopPairingFunc
-	isRunning  IsRunningFunc
+	logger      *zap.Logger
+	store       *mcusource.PairingStore
+	agentOrgID  func() int32
+	start       StartPairingFunc
+	stop        StopPairingFunc
+	isConnected IsConnectedFunc
 }
 
 // agentOrgID returns this agent's own current provisioning org id, read
@@ -36,8 +35,8 @@ type SensorPairingService struct {
 // agent's own org — that's the identity the per-pairing mTLS dialer pins
 // against on the handshake, so a wrong org here means no real source can
 // ever connect.
-func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentOrgID func() int32, start StartPairingFunc, stop StopPairingFunc, isRunning IsRunningFunc) *SensorPairingService {
-	return &SensorPairingService{logger: logger, store: store, agentOrgID: agentOrgID, start: start, stop: stop, isRunning: isRunning}
+func NewSensorPairingService(logger *zap.Logger, store *mcusource.PairingStore, agentOrgID func() int32, start StartPairingFunc, stop StopPairingFunc, isConnected IsConnectedFunc) *SensorPairingService {
+	return &SensorPairingService{logger: logger, store: store, agentOrgID: agentOrgID, start: start, stop: stop, isConnected: isConnected}
 }
 
 func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv2.AddSensorPairingRequest) (*agentpbv2.AddSensorPairingResponse, error) {
@@ -54,8 +53,7 @@ func (s *SensorPairingService) AddSensorPairing(_ context.Context, req *agentpbv
 	if s.start != nil {
 		s.start(p, req.SourceAddress)
 	}
-	// Connected is unknown at Add time (the supervisor hasn't dialed yet);
-	// match ListSensorPairings, which always reports false too.
+	// The supervisor has not delivered a frame yet.
 	return &agentpbv2.AddSensorPairingResponse{Pairing: toProto(p, false)}, nil
 }
 
@@ -73,7 +71,7 @@ func (s *SensorPairingService) ListSensorPairings(_ context.Context, _ *agentpbv
 	list := s.store.List()
 	out := make([]*agentpbv2.SensorPairing, 0, len(list))
 	for _, p := range list {
-		connected := s.isRunning != nil && s.isRunning(p.SourceAssetID)
+		connected := s.isConnected != nil && s.isConnected(p.SourceAssetID)
 		out = append(out, toProto(p, connected))
 	}
 	return &agentpbv2.ListSensorPairingsResponse{Pairings: out}, nil
