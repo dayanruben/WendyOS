@@ -220,9 +220,8 @@ dependencies (such as `wendy_core`).
 
 Your application can use all ESP-IDF components, managed components, Kconfig
 options, and peripheral drivers, exactly as in any other ESP-IDF project.
-Wendy neither helps nor interferes at that level — this is especially
-important for displays, cameras, audio, and other hardware that needs full
-access to the native ESP-IDF APIs.
+This is especially important for displays, cameras, audio, and other
+hardware that needs full access to the native ESP-IDF APIs.
 
 By including a partition table that matches the one Wendy Lite itself uses
 for the installed firmware variant, you can still compile and deploy through
