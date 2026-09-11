@@ -72,8 +72,8 @@ type Manager struct {
 	logger *zap.Logger
 	deps   deps
 
-	modprobeOnce sync.Once
-	modprobeErr  error
+	moduleMu     sync.Mutex
+	moduleLoaded bool
 
 	mu   sync.Mutex
 	subs map[string]alloc // "sourceAssetID:channelID" -> allocation
@@ -89,13 +89,21 @@ func NewManager(logger *zap.Logger) *Manager {
 	}
 }
 
-// EnsureModule loads snd-aloop, once. Subsequent calls reuse the first
-// attempt's result rather than re-running modprobe every time.
+// EnsureModule caches successful loads, but retries failed or cancelled attempts.
 func (m *Manager) EnsureModule(ctx context.Context) error {
-	m.modprobeOnce.Do(func() {
-		m.modprobeErr = m.deps.modprobe(ctx)
-	})
-	return m.modprobeErr
+	m.moduleMu.Lock()
+	defer m.moduleMu.Unlock()
+	if m.moduleLoaded {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := m.deps.modprobe(ctx); err != nil {
+		return err
+	}
+	m.moduleLoaded = true
+	return nil
 }
 
 // Allocate returns a stable snd-aloop subdevice index for (sourceAssetID,

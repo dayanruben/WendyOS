@@ -1,6 +1,10 @@
 package audioloop
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestAllocateStableAndUnique(t *testing.T) {
 	m := NewManager(nil)
@@ -64,5 +68,37 @@ func TestAplayArgs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("arg %d: %q != %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestEnsureModuleRetriesFailureAndCachesSuccess(t *testing.T) {
+	m := NewManager(nil)
+	attempts := 0
+	m.deps.modprobe = func(context.Context) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("module temporarily unavailable")
+		}
+		return nil
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.EnsureModule(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled load: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatal("attempted load with cancelled context")
+	}
+	if err := m.EnsureModule(context.Background()); err == nil {
+		t.Fatal("expected initial failure")
+	}
+	if err := m.EnsureModule(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.EnsureModule(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("got %d attempts, want 2", attempts)
 	}
 }
