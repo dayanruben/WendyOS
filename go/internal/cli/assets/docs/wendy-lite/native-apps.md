@@ -218,10 +218,11 @@ dependencies (such as `wendy_core`).
 
 ## The Project Remains a Normal ESP-IDF Project
 
-Your application can use all ESP-IDF components, managed components, Kconfig
-options, and peripheral drivers, exactly as in any other ESP-IDF project.
-This is especially important for displays, cameras, audio, and other
-hardware that needs full access to the native ESP-IDF APIs.
+Your application can use ESP-IDF components, managed components, Kconfig
+options, and peripheral drivers, exactly as in any other ESP-IDF project —
+except for the restrictions listed above. This is especially important for
+displays, cameras, audio, and other hardware that needs full access to the
+native ESP-IDF APIs.
 
 By including a partition table that matches the one Wendy Lite itself uses
 for the installed firmware variant, you can still compile and deploy through
