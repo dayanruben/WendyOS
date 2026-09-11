@@ -284,6 +284,7 @@ func NewRootCmd() *cobra.Command {
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
 
+	addUSBDriverCommand(root)
 	rejectStrayArguments(root)
 
 	root.Version = version.Version
