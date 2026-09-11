@@ -19,7 +19,9 @@ carries `vendor`, `path`, and `compute_backends`, so a host with an AMD and an
 NVIDIA card reports rocm and cuda against the right GPU; no entries on a device
 that reports a GPU identifies an older agent), and the Mac agent feature was
 renamed from `native-process-v1` to `native-process` to match the unsuffixed
-feature vocabulary. Go/Swift builds and the test suites listed below passed again.
+feature vocabulary. The docs-coverage review's findings were addressed: the device
+info reference documents `containerStorage`, and the init reference describes
+`mojo` on `darwin`. Go/Swift builds and the test suites listed below passed again.
 
 ## Reviewable changes
 
@@ -28,11 +30,11 @@ feature vocabulary. Go/Swift builds and the test suites listed below passed agai
 | [1906](https://github.com/wendylabsinc/WendyOS/pull/1906) | `e3b786a7d` | WDY-2907: effective service environment, CLI precedence, fingerprints/watch, extended ComposeEnv fixture |
 | [1907](https://github.com/wendylabsinc/WendyOS/pull/1907) | `385b621df` | WDY-2906/2913: actionable network warnings, explicit none/bridge selection, empty isolation cache state, persisted CNI cleanup |
 | [1908](https://github.com/wendylabsinc/WendyOS/pull/1908) | `e29230eea` | Compatible v1/v2 storage and GPU capability fields with Go/Swift bindings regenerated together |
-| [1909](https://github.com/wendylabsinc/WendyOS/pull/1909) | `42eaa94b2`, `95415bebe` | WDY-2908/2909: container-storage filesystem, shared GPU discovery and compute capabilities, CLI/MCP and CUDA build hint |
-| [1910](https://github.com/wendylabsinc/WendyOS/pull/1910) | `b9bc3f35f` | WDY-2910: continued readiness, service state inspection, lifecycle cancellation, deferred hooks/browser actions, unknown-key warnings |
-| [1911](https://github.com/wendylabsinc/WendyOS/pull/1911) | `28c5e6e84`, `216896637` | WDY-2911: native command/cwd, file sync, capability negotiation, environment and resolved launch persistence, PID birth identity |
-| [1912](https://github.com/wendylabsinc/WendyOS/pull/1912) | `546e712e8` | WDY-2912: quiet log heartbeats, MCP filtering, Go ACK timeout 20 seconds |
-| [1905](https://github.com/wendylabsinc/WendyOS/pull/1905) | `1371ee0f5`, `79d986f55`, `e993a1cf9`, `2084c9887`, `de599bfdf`, `41cf135db`, `37b968d0b`, `664a7201a` | Darwin template selection, cross-repository scaffold acceptance, native app-ID guard, portable process fixtures, validation evidence |
+| [1909](https://github.com/wendylabsinc/WendyOS/pull/1909) | `42eaa94b2`, `95415bebe`, `f971cafc9` | WDY-2908/2909: container-storage filesystem, shared GPU discovery and compute capabilities, CLI/MCP and CUDA build hint |
+| [1910](https://github.com/wendylabsinc/WendyOS/pull/1910) | `f8952b09d` | WDY-2910: continued readiness, service state inspection, lifecycle cancellation, deferred hooks/browser actions, unknown-key warnings |
+| [1911](https://github.com/wendylabsinc/WendyOS/pull/1911) | `b25cd8189`, `5bdc857cb` | WDY-2911: native command/cwd, file sync, capability negotiation, environment and resolved launch persistence, PID birth identity |
+| [1912](https://github.com/wendylabsinc/WendyOS/pull/1912) | `99544c2d4` | WDY-2912: quiet log heartbeats, MCP filtering, Go ACK timeout 20 seconds |
+| [1905](https://github.com/wendylabsinc/WendyOS/pull/1905) | `ce139bf00`, `5952f9a76`, `c8cc6e996`, `e63dbcf8d`, `83311db7a`, `97ace30a0`, `01a30e291`, `d5874783b`, `b7e0c627e` | Darwin template selection, cross-repository scaffold acceptance, native app-ID guard, portable process fixtures, validation evidence |
 | [templates 103](https://github.com/wendylabsinc/templates/pull/103) | `73f275e`, `421087d`, `f1450b1` | CUDA migration, generic Ollama vendor path, Mojo/MAX Mac chat, catalog, supervisor tests and findings |
 
 The agent PRs are stacked in the order above. Each diff is below the security
