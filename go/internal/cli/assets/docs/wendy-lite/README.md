@@ -8,18 +8,33 @@ The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetso
 
 > **Recommendation:** Start new applications as regular native ESP-IDF projects. Use the optional WASM runtime when portability or sandboxing matters more than full ESP-IDF access. Camera and display/framebuffer peripherals are not exposed to WASM guests and should be driven by native ESP-IDF drivers.
 
-## Supported Targets
+## Supported Targets and Boards
 
-| Target | Status |
-|--------|--------|
-| ESP32-C5 | CI-built, nightly releases |
-| ESP32-C6 | CI-built, nightly releases |
-| ESP32-C61 | CI-built, nightly releases |
-| ESP32-P4 | Supported boards are listed by `wendy install` |
-| ESP32-S3 | CI-built, nightly releases |
+Wendy Lite supports the following ESP32 targets:
 
-Boards without a published Wendy firmware variant are not shown by `wendy install`. Native app capability is firmware-specific; where the installer offers multiple choices, select a board variant labeled **native app support**.
+- ESP32-C5
+- ESP32-C6
+- ESP32-C61
+- ESP32-P4
+- ESP32-S3
 
-Native applications are built with ESP-IDF 5.5.4 through the ESP-IDF Installation Manager (`eim`).
+For each target, Wendy Lite supports several boards, listed by `wendy install`. Most targets have a **generic** board, which represents any board that exposes the SoC over USB with no further customization; targets can also have other, specific boards. Choosing a board selects a Wendy Lite firmware variant pre-configured with that board's flash size, RAM, and peripherals.
 
-See [`repository.md`](repository.md) for the repository layout and CI/release process.
+Boards without a published Wendy firmware variant are not shown by `wendy install`.
+
+Native app capability is firmware-specific; where the installer offers multiple choices, select a board variant labeled **native app support**. Native applications are built with ESP-IDF 5.5.4 through the ESP-IDF Installation Manager (`eim`).
+
+## Documentation
+
+### User Guides
+- [Getting Started](native-apps-getting-started.md)
+- [Native Apps](native-apps.md)
+- [WASM Apps](wasm-apps.md)
+  - [Host API Reference](host-api.md)
+- [Deploying Apps](deploying.md)
+
+### Implementation Details
+- [Source Code](repository.md)
+- [Swift SDK Internals](swift-sdk.md)
+- [StdIO](stdio.md)
+- [WendyCom Protocol](wendy-com.md)
