@@ -107,7 +107,7 @@ dependencies:
   idf:
     version: ">=5.5.0"
   wendy_core:
-    git: "git@github.com:wendylabsinc/wendy-lite.git"
+    git: "https://github.com/wendylabsinc/wendy-lite.git"
     path: "components/wendy_core"
 ```
 
