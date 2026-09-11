@@ -185,11 +185,20 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 wendy run --build-host spark-office
 ```
 
-The build host pushes the finished image directly into the target device's
-registry over the mesh, using a direct LAN connection when possible and the
-cloud broker otherwise. It addresses the provisioned target by asset ID without
-resolving a hostname, so delivery does not depend on the build host resolving
-`device-<id>.cloud.wendy.dev`. The image never travels through your machine.
+The build runs on that device, and it delivers the finished image to the target
+device over the mesh — LAN-direct when possible, via the cloud broker otherwise.
+It addresses the provisioned target by asset ID without resolving a hostname, so
+delivery does not depend on the build host resolving `device-<id>.cloud.wendy.dev`.
+The image never travels through your machine.
+
+Delivery works the way `wendy run` deploys from your laptop: the build host asks
+the device which layers and chunks it already holds and sends only the missing
+bytes into its content store, so a rebuild that changed one layer transfers a
+few chunks rather than the image. A link that drops mid-transfer is resumed —
+chunks the device already staged are never re-sent — and a deploy you cancel
+and re-run picks up where it stopped. A device whose agent predates chunked
+delivery receives a registry push instead, and the build log says so.
+`--chunking` governs this leg too; see [Deploy path: `--chunking`](#deploy-path---chunking).
 
 Use a remote host for builds that need its GPU or CPU architecture, such as an
 arm64 build that would otherwise use QEMU emulation on an x86 development machine.
@@ -297,6 +306,14 @@ an app that reads stdin.
 | `auto` (default) | Try chunk-diff; fall back to a registry push on failure. |
 | `force` | Use chunk-diff only. If chunk-diff fails the error is returned and no registry-push fallback is attempted. Cancellation still exits cleanly. |
 | `off` | Skip chunk-diff entirely; go straight to the registry push. |
+
+> **Note:** With `--build-host`, the same modes govern the build host's delivery
+> to the device. `auto` delivers by chunks and falls back to a registry push only
+> for a device whose agent predates chunked delivery, saying so in the build
+> log. `force` turns that fallback into a delivery failure, and is refused up
+> front against a build host too old to honour it. `off` takes the registry
+> route for every device, as build hosts delivered before chunked delivery
+> existed.
 
 > **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
 
