@@ -1251,6 +1251,14 @@ func TestStreamKeepsIPv4TargetOverLinkLocalIPv6(t *testing.T) {
 	v6 := wendyService("dev-52", "orin", "orin.local", "fe80::1%eth0", 50051)
 	v6.InterfaceName = "eth0"
 	fb.emit(t, v6)
+	updated := collectEvents(t, events, 1, 5*time.Second)[0]
+	if updated.Kind != LANUpdated || updated.Device.IPAddress != found.Device.IPAddress {
+		t.Fatalf("address update changed primary: %+v", updated)
+	}
+	if len(updated.Device.Addresses) != 2 || updated.Device.Addresses[1] != "fe80::1%eth0" {
+		t.Fatalf("sibling missing from event: %+v", updated.Device)
+	}
+	fb.emit(t, v6)
 	expectQuiet(t, events, 200*time.Millisecond)
 	stop()
 

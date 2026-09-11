@@ -2,6 +2,7 @@ package mcusource
 
 import (
 	"context"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"net"
 	"strconv"
 	"sync"
@@ -11,7 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// resolveLANAddr is a seam over discovery.Discover so tests can stub LAN
+// resolveLANAddrs is a seam over discovery.Discover so tests can stub LAN
 // resolution without a real mDNS browse.
 //
 // transport selects which port to dial: for "grpc" pairings (agent-hosted
@@ -21,26 +22,41 @@ import (
 // sensorlink port the source's SensorPairing service listens on — so dial
 // the well-known sensorlink.Port instead, agreeing with the address the CLI
 // builds on `device pair`.
-// discoverFn is a seam over discovery.Discover so resolveLANAddr's own
+// discoverFn is a seam over discovery.Discover so resolveLANAddrs's own
 // transport→port selection logic can be exercised with a fake device list,
 // without a real mDNS browse.
 var discoverFn = discovery.Discover
 
-var resolveLANAddr = func(ctx context.Context, sourceAssetID int32, transport string) (string, bool) {
-	devices, err := discoverFn(ctx, discovery.DiscoveryOptions{})
+var resolveLANAddrs = func(ctx context.Context, sourceAssetID int32, transport string) ([]string, bool) {
+	devices, err := discoverFn(ctx, discovery.DiscoveryOptions{Types: []models.InterfaceType{models.InterfaceLAN}})
 	if err != nil {
-		return "", false
+		return nil, false
 	}
+	var addresses []string
+	seen := make(map[string]bool)
 	for _, d := range devices.LANDevices {
-		if d.AssetID == sourceAssetID && d.IsMTLS && d.IPAddress != "" {
-			port := sensorlink.Port
-			if transport == "grpc" {
-				port = d.Port
+		if d.AssetID != sourceAssetID || !d.IsMTLS {
+			continue
+		}
+		port := sensorlink.Port
+		if transport == "grpc" {
+			port = d.Port
+		}
+		if port <= 0 {
+			continue
+		}
+		for _, host := range append([]string{d.IPAddress}, d.Addresses...) {
+			if host == "" {
+				continue
 			}
-			return net.JoinHostPort(d.IPAddress, strconv.Itoa(port)), true
+			addr := net.JoinHostPort(host, strconv.Itoa(port))
+			if !seen[addr] {
+				addresses = append(addresses, addr)
+				seen[addr] = true
+			}
 		}
 	}
-	return "", false
+	return addresses, len(addresses) > 0
 }
 
 // Runner owns one cancelable goroutine per active pairing, all driven through

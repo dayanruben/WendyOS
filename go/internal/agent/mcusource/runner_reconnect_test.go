@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	sensorlinkpb "github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
 	"go.uber.org/zap"
 )
 
@@ -15,15 +16,15 @@ import (
 // (which fails to dial), the source then reappears at a DIFFERENT addr B, and
 // a later reconnect must dial B rather than forever redialing the stale A.
 func TestRunPairingReResolvesChangedAddress(t *testing.T) {
-	orig := resolveLANAddr
-	t.Cleanup(func() { resolveLANAddr = orig })
+	orig := resolveLANAddrs
+	t.Cleanup(func() { resolveLANAddrs = orig })
 
 	var calls int32
-	resolveLANAddr = func(context.Context, int32, string) (string, bool) {
+	resolveLANAddrs = func(context.Context, int32, string) ([]string, bool) {
 		if atomic.AddInt32(&calls, 1) == 1 {
-			return "10.0.0.1:9000", true // addr A: first sighting
+			return []string{"10.0.0.1:9000"}, true // addr A: first sighting
 		}
-		return "10.0.0.2:9000", true // addr B: source moved (new IP)
+		return []string{"10.0.0.2:9000"}, true // addr B: source moved (new IP)
 	}
 
 	dialed := make(chan string, 8)
@@ -59,11 +60,11 @@ func TestRunPairingReResolvesChangedAddress(t *testing.T) {
 // TestRunPairingPinnedAddressNeverReResolves proves a non-empty (pinned) addr
 // is reused unchanged across reconnects and never triggers a re-resolve.
 func TestRunPairingPinnedAddressNeverReResolves(t *testing.T) {
-	orig := resolveLANAddr
-	t.Cleanup(func() { resolveLANAddr = orig })
-	resolveLANAddr = func(context.Context, int32, string) (string, bool) {
+	orig := resolveLANAddrs
+	t.Cleanup(func() { resolveLANAddrs = orig })
+	resolveLANAddrs = func(context.Context, int32, string) ([]string, bool) {
 		t.Error("pinned address must not be re-resolved")
-		return "", false
+		return nil, false
 	}
 
 	dialed := make(chan string, 4)
@@ -81,5 +82,65 @@ func TestRunPairingPinnedAddressNeverReResolves(t *testing.T) {
 
 	if got := <-dialed; got != "192.168.1.50:9000" {
 		t.Fatalf("pinned dial = %q, want 192.168.1.50:9000", got)
+	}
+}
+
+func TestRunPairingTriesSiblingBeforeBackingOff(t *testing.T) {
+	orig := resolveLANAddrs
+	t.Cleanup(func() { resolveLANAddrs = orig })
+	resolveLANAddrs = func(context.Context, int32, string) ([]string, bool) { return []string{"wifi", "usb"}, true }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var dialed []string
+	sup := NewSupervisor(zap.NewNop(), nil, func(_ SensorPairing, addr string) (SensorTransport, error) {
+		dialed = append(dialed, addr)
+		if addr == "usb" {
+			cancel()
+		}
+		return nil, errors.New("unavailable")
+	}, nil, nil)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = sup.RunPairing(ctx, SensorPairing{SourceAssetID: 1}, "") }()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("backed off before trying sibling address")
+	}
+	if len(dialed) != 2 || dialed[0] != "wifi" || dialed[1] != "usb" {
+		t.Fatalf("dialed %v", dialed)
+	}
+}
+
+type silentManifestTransport struct{ cleanupTransport }
+
+func (*silentManifestTransport) FetchManifest(ctx context.Context) (*sensorlinkpb.SensorManifest, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func TestRunPairingTimesOutSilentManifestAndTriesSibling(t *testing.T) {
+	orig := resolveLANAddrs
+	t.Cleanup(func() { resolveLANAddrs = orig })
+	resolveLANAddrs = func(context.Context, int32, string) ([]string, bool) { return []string{"silent", "reachable"}, true }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tr := &silentManifestTransport{}
+	reached := false
+	sup := NewSupervisor(zap.NewNop(), nil, func(_ SensorPairing, addr string) (SensorTransport, error) {
+		if addr == "silent" {
+			return tr, nil
+		}
+		reached = true
+		cancel()
+		return nil, errors.New("test finished")
+	}, nil, nil)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = sup.RunPairing(ctx, SensorPairing{SourceAssetID: 1}, "") }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("silent source blocked fallback")
+	}
+	if !reached || tr.closes != 1 {
+		t.Fatalf("fallback=%v, closes=%d", reached, tr.closes)
 	}
 }

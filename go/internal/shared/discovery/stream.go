@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -570,12 +571,11 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 	// answers on several interfaces (WiFi, USB link-local, IPv6) and the CLI may
 	// only be able to reach it on one of them. Union every sighted address so the
 	// dial ladder can try them all instead of collapsing to the primary alone.
-	// This deliberately does NOT force an event on its own: a re-sighting that
-	// only adds a downgrade address (an IPv6 link-local behind an IPv4 primary)
-	// stays quiet to avoid interface churn; the union still rides the next event
-	// a real change (a target move to the USB link, an interface or TXT change)
-	// emits, which is exactly when the extra address matters.
-	updated.Addresses = unionAddresses(prevAddrs, updated.IPAddress, dev.IPAddress)
+	// Address-only updates must reach CollectLAN and picker subscribers too:
+	// otherwise they retain the earlier event without the reachable sibling.
+	updated.Addresses = unionAddresses([]string{updated.IPAddress}, prevAddrs...)
+	updated.Addresses = unionAddresses(updated.Addresses, dev.IPAddress)
+	changed = changed || !slices.Equal(prevAddrs, updated.Addresses)
 	st.dev = updated
 	if targetMoved {
 		// Nothing has verified this address yet, so the row must stop claiming
@@ -985,7 +985,7 @@ func stripZone(addr string) string {
 // unionAddresses returns existing with each addr appended if not already
 // present, dropping blanks and preserving first-seen order. It accumulates every
 // interface a device answers on across sightings so the dial ladder can try them
-// all; existing order is kept so the primary (IPAddress) stays first.
+// all; callers put the primary address first.
 func unionAddresses(existing []string, addrs ...string) []string {
 	out := make([]string, 0, len(existing)+len(addrs))
 	seen := make(map[string]bool, len(existing)+len(addrs))

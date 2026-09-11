@@ -111,7 +111,7 @@ func backoffDelay(level int) time.Duration {
 // explicitly-pinned target (a caller that wants this exact address) and is
 // reused unchanged for the life of the pairing. An empty addr is the dynamic,
 // identity-resolved case — the common `device pair` path, which sends no
-// address — and is RE-resolved by asset id (via the resolveLANAddr seam)
+// address — and is RE-resolved by asset id (via the resolveLANAddrs seam)
 // before every attempt: when the source's address changes (e.g. a Mac
 // rejoins WiFi with a new IP), the next reconnect re-browses mDNS and dials
 // the source's CURRENT address instead of forever redialing the stale one.
@@ -122,10 +122,10 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		dialAddr := addr
+		dialAddrs := []string{addr}
 		if !pinned {
 			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-			resolved, ok := resolveLANAddr(rctx, p.SourceAssetID, p.Transport)
+			resolved, ok := resolveLANAddrs(rctx, p.SourceAssetID, p.Transport)
 			rcancel()
 			if !ok {
 				// Source not (yet) on the LAN — boot-resume before it's up, or
@@ -142,9 +142,16 @@ func (s *Supervisor) RunPairing(ctx context.Context, p SensorPairing, addr strin
 				}
 				continue
 			}
-			dialAddr = resolved
+			dialAddrs = resolved
 		}
-		delivered, err := s.streamOnce(ctx, p, dialAddr)
+		var delivered bool
+		var err error
+		for _, dialAddr := range dialAddrs {
+			delivered, err = s.streamOnce(ctx, p, dialAddr)
+			if delivered || ctx.Err() != nil {
+				break
+			}
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -180,7 +187,9 @@ func (s *Supervisor) streamOnce(ctx context.Context, p SensorPairing, addr strin
 	}
 	defer tr.Close()
 	// Peek the manifest first (subscribe to nothing) to learn the channels.
-	manifest, err := tr.FetchManifest(ctx)
+	manifestCtx, cancelManifest := context.WithTimeout(ctx, 3*time.Second)
+	manifest, err := tr.FetchManifest(manifestCtx)
+	cancelManifest()
 	if err != nil {
 		return false, err
 	}
