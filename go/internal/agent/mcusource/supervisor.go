@@ -3,6 +3,7 @@ package mcusource
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,11 +18,13 @@ import (
 type Loopback interface {
 	EnsureNode(ctx context.Context, id uint32, label string) error
 	NodePath(id uint32) (string, bool)
+	RemoveCamera(id uint32)
 }
 
 // AudioLoop is the subset of audioloop.Manager the supervisor needs to fan
 // microphone channels out to snd-aloop PCM sinks.
 type AudioLoop interface {
+	ReleaseSource(sourceAssetID int32)
 	Allocate(sourceAssetID int32, channelID uint32, sensorName string) (int, error)
 	OpenWriter(ctx context.Context, sub int, f audioloop.PCMFormat) (audioloop.AudioWriter, error)
 }
@@ -90,6 +93,27 @@ func (s *Supervisor) nodeID(sourceAssetID int32, channelID uint32) (uint32, erro
 		}
 	}
 	return 0, fmt.Errorf("mcusource: MCU node band [%d,%d] exhausted", ipcam.MCUBandStart, ipcam.MCUBandEnd)
+}
+
+// releaseSource runs only after the pairing's supervisor has exited. Camera
+// nodes still held open by consumers remain reserved if removal fails, so a
+// different source cannot reuse a node that still belongs to the old one.
+func (s *Supervisor) releaseSource(sourceAssetID int32) {
+	if s.audioLoop != nil {
+		s.audioLoop.ReleaseSource(sourceAssetID)
+	}
+	s.nodeIDsMu.Lock()
+	defer s.nodeIDsMu.Unlock()
+	prefix := fmt.Sprintf("%d:", sourceAssetID)
+	for key, id := range s.nodeIDs {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		s.lb.RemoveCamera(id)
+		if _, exists := s.lb.NodePath(id); !exists {
+			delete(s.nodeIDs, key)
+		}
+	}
 }
 
 const (

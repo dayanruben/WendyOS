@@ -14,7 +14,7 @@ func defaultDeps() deps {
 		modprobe: func(context.Context) error {
 			return errLinuxOnly
 		},
-		newWriter: func(hwID string, f PCMFormat) (AudioWriter, error) {
+		newWriter: func(_ context.Context, hwID string, f PCMFormat) (AudioWriter, error) {
 			return nil, errLinuxOnly
 		},
 	}

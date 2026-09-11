@@ -44,7 +44,7 @@ type deps struct {
 	modprobe func(ctx context.Context) error
 	// newWriter opens an aplay-backed PCM sink on the given ALSA hw ID
 	// (e.g. "hw:Loopback,0,3").
-	newWriter func(hwID string, f PCMFormat) (AudioWriter, error)
+	newWriter func(ctx context.Context, hwID string, f PCMFormat) (AudioWriter, error)
 }
 
 // Mount is one active snd-aloop subdevice allocation, so the audio device
@@ -135,6 +135,18 @@ func (m *Manager) Allocate(sourceAssetID int32, channelID uint32, sensorName str
 	return 0, fmt.Errorf("audioloop: snd-aloop subdevice band [0,%d) exhausted", MaxSubdevices)
 }
 
+// ReleaseSource frees all slots for a permanently removed pairing. The caller
+// must stop and close its writers first; reconnects deliberately keep slots.
+func (m *Manager) ReleaseSource(sourceAssetID int32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, a := range m.subs {
+		if a.assetID == sourceAssetID {
+			delete(m.subs, key)
+		}
+	}
+}
+
 // Mounts returns every active subdevice allocation, sorted by subdevice index,
 // so the audio device enumeration can name each Loopback capture subdevice
 // after the remote source it carries.
@@ -156,7 +168,7 @@ func (m *Manager) OpenWriter(ctx context.Context, sub int, f PCMFormat) (AudioWr
 		return nil, err
 	}
 	hwID := "hw:Loopback,0," + strconv.Itoa(sub)
-	return m.deps.newWriter(hwID, f)
+	return m.deps.newWriter(ctx, hwID, f)
 }
 
 // aplayArgs builds the argv aplay needs to play raw S16_LE PCM into hwID.

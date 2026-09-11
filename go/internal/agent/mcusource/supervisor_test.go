@@ -19,6 +19,8 @@ import (
 // called.
 type noAudioLoop struct{}
 
+func (noAudioLoop) ReleaseSource(int32) {}
+
 func (noAudioLoop) Allocate(int32, uint32, string) (int, error) { return 0, nil }
 func (noAudioLoop) OpenWriter(context.Context, int, audioloop.PCMFormat) (audioloop.AudioWriter, error) {
 	return nil, nil
@@ -47,6 +49,8 @@ func (w *recordingAudioWriter) count() int {
 // fakeAudioLoop is a stub AudioLoop that always returns the given writer.
 type fakeAudioLoop struct{ w *recordingAudioWriter }
 
+func (*fakeAudioLoop) ReleaseSource(int32) {}
+
 func (f *fakeAudioLoop) Allocate(int32, uint32, string) (int, error) { return 0, nil }
 func (f *fakeAudioLoop) OpenWriter(context.Context, int, audioloop.PCMFormat) (audioloop.AudioWriter, error) {
 	return f.w, nil
@@ -65,6 +69,7 @@ func (f *fakeLoopback) EnsureNode(_ context.Context, id uint32, label string) er
 	f.labels = append(f.labels, label)
 	return nil
 }
+func (f *fakeLoopback) RemoveCamera(uint32)               {}
 func (f *fakeLoopback) NodePath(id uint32) (string, bool) { return "/dev/video-fake", true }
 
 // idsForLabel returns every node id EnsureNode was called with for label, in

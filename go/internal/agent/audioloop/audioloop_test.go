@@ -102,3 +102,22 @@ func TestEnsureModuleRetriesFailureAndCachesSuccess(t *testing.T) {
 		t.Fatalf("got %d attempts, want 2", attempts)
 	}
 }
+
+func TestUnpairedSourcesDoNotExhaustSlots(t *testing.T) {
+	m := NewManager(nil)
+	retained, _ := m.Allocate(100, 1, "retained")
+	for source := int32(1); source <= MaxSubdevices*2; source++ {
+		sub, err := m.Allocate(source, 1, "mic")
+		if err != nil {
+			t.Fatalf("source %d: %v", source, err)
+		}
+		if sub == retained {
+			t.Fatal("reused another pairing's slot")
+		}
+		m.ReleaseSource(source)
+		mounts := m.Mounts()
+		if len(mounts) != 1 || mounts[0].SourceAssetID != 100 {
+			t.Fatalf("stale mounts: %v", mounts)
+		}
+	}
+}

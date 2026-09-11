@@ -36,8 +36,8 @@ type aplayWriter struct {
 	closed bool
 }
 
-func newAplayWriter(hwID string, f PCMFormat) (AudioWriter, error) {
-	cmd := exec.CommandContext(context.Background(), "aplay", aplayArgs(hwID, f)...)
+func newAplayWriter(ctx context.Context, hwID string, f PCMFormat) (AudioWriter, error) {
+	cmd := exec.CommandContext(ctx, "aplay", aplayArgs(hwID, f)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("aplay stdin pipe: %w", err)

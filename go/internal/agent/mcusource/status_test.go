@@ -23,6 +23,8 @@ func (t *statusTransport) Stream(context.Context, []uint32) (<-chan *sensorlinkp
 
 type statusLoopback struct{}
 
+func (statusLoopback) RemoveCamera(uint32) {}
+
 func (statusLoopback) EnsureNode(context.Context, uint32, string) error { return nil }
 func (statusLoopback) NodePath(uint32) (string, bool)                   { return "camera", true }
 
