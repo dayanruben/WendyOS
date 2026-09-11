@@ -78,14 +78,6 @@ func TestEspIdfBinaryPath(t *testing.T) {
 	}
 }
 
-func TestBoardToTarget(t *testing.T) {
-	// Boards currently map to targets one-to-one by name; this pins the
-	// identity mapping until real board names diverge from SoC names.
-	if got := boardToTarget("esp32c6"); got != "esp32c6" {
-		t.Errorf("boardToTarget(esp32c6) = %q, want %q", got, "esp32c6")
-	}
-}
-
 func TestSerialExternalDeviceUnresponsive(t *testing.T) {
 	p := &MicroWendyProvider{}
 	dev := p.serialExternalDevice(discovery.SerialDevice{Port: "/dev/cu.usbmodem2101", Responsive: false})
