@@ -53,7 +53,7 @@ Rather than writing an application from scratch, start from an existing one.
 Get the examples and enter the project directory:
 
 ```sh
-git clone git@github.com:wendylabsinc/wendy-lite-native-apps.git
+git clone https://github.com/wendylabsinc/wendy-lite-native-apps.git
 cd wendy-lite-native-apps/blink-rgb
 ```
 
