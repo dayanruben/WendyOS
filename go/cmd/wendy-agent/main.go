@@ -860,7 +860,7 @@ func main() {
 			grpc.KeepaliveParams(keepalive.ServerParameters{
 				MaxConnectionIdle: 5 * time.Minute,
 				Time:              30 * time.Second,
-				Timeout:           10 * time.Second,
+				Timeout:           20 * time.Second,
 			}),
 			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 				MinTime:             10 * time.Second,
@@ -1004,7 +1004,7 @@ func main() {
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 5 * time.Minute,
 			Time:              30 * time.Second,
-			Timeout:           10 * time.Second,
+			Timeout:           20 * time.Second,
 		}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             10 * time.Second,
