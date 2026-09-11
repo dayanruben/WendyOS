@@ -44,15 +44,17 @@ func handleConn(ctx context.Context, conn net.Conn, opts Options) {
 	if err := sensorlink.WriteMessage(conn, &sensorlinkpb.Envelope{Msg: &sensorlinkpb.Envelope_Manifest{Manifest: opts.Manifest}}); err != nil {
 		return
 	}
-	if len(opts.Frames) == 0 {
-		return
-	}
 	env, err := sensorlink.ReadMessage(conn)
 	if err != nil {
 		return
 	}
 	sub := env.GetSubscribe()
 	if sub == nil || len(sub.ChannelId) == 0 {
+		return
+	}
+	// Complete the subscribe handshake before closing an empty stream.
+	// Otherwise the client races our close while writing its subscription.
+	if len(opts.Frames) == 0 {
 		return
 	}
 	interval := opts.FrameInterval
