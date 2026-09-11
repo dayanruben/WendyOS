@@ -213,3 +213,27 @@ To rebuild the project entirely from scratch, delete `build`, `sdkconfig`,
 and `managed_components`, then run `wendy run` again. Also delete
 `dependencies.lock` if you want to move to more recent versions of your
 dependencies (such as `wendy_core`).
+
+## The Project Remains a Normal ESP-IDF Project
+
+Your application can use all ESP-IDF components, managed components, Kconfig
+options, and peripheral drivers, exactly as in any other ESP-IDF project.
+Wendy neither helps nor interferes at that level — this is especially
+important for displays, cameras, audio, and other hardware that needs full
+access to the native ESP-IDF APIs.
+
+By including a partition table that matches the one Wendy Lite itself uses
+for the installed firmware variant, you can still compile and deploy through
+classic IDF commands:
+
+```bash
+idf.py set-target esp32c6
+idf.py menuconfig
+idf.py build
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
+```
+
+There is no CLI command yet to fetch this partition table. Instead, extract
+the `partitions.csv` file that corresponds to your Wendy Lite variant from
+the [wendy-lite repository](https://github.com/wendylabsinc/wendy-lite) and
+use it as your project's partition table.
