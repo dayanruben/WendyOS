@@ -145,16 +145,6 @@ Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor`
 
 The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. On Windows, installing or updating the USB driver requires administrator approval (UAC).
 
-## Dragonwing IQ-8275 path
-
-```sh
-wendy install --nightly --device-type dragonwing-iq-8275
-```
-
-Connect the USB0 (USB-C) port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the bundle, and programs the board. Set DIP switch 3 OFF and power-cycle after success.
-
-Both OS slots and the partition table are rewritten. Existing configuration and data are preserved when flashing a compatible WendyOS layout.
-
 ### Stage 2 flash errors and recovery
 
 A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI prints a recovery guide when that is possible. In all of the cases below, the fix ends the same way: power-cycle the Thor back into USB recovery mode and re-run `wendy install`.
@@ -167,6 +157,16 @@ A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI p
 | `USB access denied opening the flashing gadget` | Linux: install the wendy udev rule (USB vendor 0955) or run with sudo. macOS: quit whatever holds the gadget (e.g. `adb kill-server`). |
 
 Every failure prints the path of the full flash log (`thor-flash-<timestamp>.log`), which contains the complete tooling output.
+
+## Dragonwing IQ-8275 path
+
+```sh
+wendy install --device-type dragonwing-iq-8275
+```
+
+Connect the USB0 (USB-C) port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the bundle, and programs the board. Set DIP switch 3 OFF and power-cycle after success.
+
+Both OS slots and the partition table are rewritten. Existing configuration and data are preserved when flashing a compatible WendyOS layout.
 
 ## Linux Desktop / Headless Mac path
 
