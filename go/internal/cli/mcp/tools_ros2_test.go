@@ -290,6 +290,25 @@ func TestROS2HzUsesDeviceMeasurements(t *testing.T) {
 	}
 }
 
+func TestROS2PeerDeadlineBeforeLocalTimerEndsObservation(t *testing.T) {
+	fake := &fakeROS2Server{
+		echo: func(*agentpbv2.EchoROS2TopicRequest, grpc.ServerStreamingServer[agentpbv2.ROS2Message]) error {
+			return status.Error(codes.DeadlineExceeded, "peer observation deadline")
+		},
+		hz: func(*agentpbv2.MonitorROS2HzRequest, grpc.ServerStreamingServer[agentpbv2.ROS2HzSample]) error {
+			return status.Error(codes.DeadlineExceeded, "peer observation deadline")
+		},
+	}
+	s := ros2TestServer(t, fake)
+	for _, name := range []string{"ros2_topic_sample", "ros2_topic_hz"} {
+		result := ros2Call(t, s, context.Background(), name, map[string]any{"topic": "/lidar", "duration_seconds": 60})
+		env := structuredMap(t, result)
+		if result.IsError || env["status"] != "unknown" || env["stop_reason"] != "time_limit" {
+			t.Fatalf("%s: peer deadline should end the observation window: %+v", name, env)
+		}
+	}
+}
+
 func TestROS2ReceiveLimitAndUnsupportedAgent(t *testing.T) {
 	for _, code := range []codes.Code{codes.ResourceExhausted, codes.Unimplemented} {
 		t.Run(code.String(), func(t *testing.T) {

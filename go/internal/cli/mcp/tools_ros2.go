@@ -299,7 +299,9 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 			case parent.Err() != nil:
 				env["stop_reason"] = "cancelled"
 				err = parent.Err()
-			case ctx.Err() == context.DeadlineExceeded:
+			case ctx.Err() == context.DeadlineExceeded || status.Code(recvErr) == codes.DeadlineExceeded:
+				// The peer can report the propagated RPC deadline before the
+				// local context timer fires. Both end the observation window.
 				env["stop_reason"] = "time_limit"
 			case recvErr == io.EOF:
 				env["stop_reason"] = "end_of_stream"
