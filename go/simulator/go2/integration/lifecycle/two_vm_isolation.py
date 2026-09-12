@@ -93,7 +93,7 @@ def main():
               "cli_sha256": hashlib.sha256(args.cli.read_bytes()).hexdigest(),
               "endpoints": {primary.name: primary.url, peer.name: peer.url},
               "commands": [], "checks": [], "samples": [],
-              "limits": {"velocity_mps": 0.2, "armed_seconds": 3.0,
+              "limits": {"velocity_mps": 0.3, "armed_seconds": 3.0,
                          "primary_maximum_drift_m": 0.03, "peer_minimum_displacement_m": 0.2},
               "limitations": ["Bounded two-VM test, not a sustained throughput benchmark.",
                               "Checks normal local DDS discovery and command ingress; no packet escape probe.",
@@ -152,7 +152,7 @@ def main():
         check("independent_native_graphs_before", publishers=before_gids)
         known = {source["publisher_gid"] for source in peer.status()["ros_commands"]["sources"]}
         command = cli(peer.name, "topic", "pub", "/cmd_vel", "geometry_msgs/msg/Twist",
-                      "{linear: {x: 0.2}, angular: {z: 0.0}}", "--rate", "20", "--times", "120",
+                      "{linear: {x: 0.3}, angular: {z: 0.0}}", "--rate", "20", "--times", "120",
                       "--print", "20", "--qos-durability", "volatile",
                       "--node-name", "wendy_go2_two_vm_isolation")
         result["commands"].append({"argv": command, "phase": "peer_motion"})

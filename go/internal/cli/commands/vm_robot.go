@@ -22,11 +22,62 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/flock"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	g1bundle "github.com/wendylabsinc/wendy/go/simulator/g1"
 	go2bundle "github.com/wendylabsinc/wendy/go/simulator/go2"
 )
 
-const robotRuntimeAppID = "sh.wendy.simulator.go2"
-const go2PolicyBundle = "go2-moe-cts-164k-0.6715-v1"
+const (
+	go2RuntimeAppID = "sh.wendy.simulator.go2"
+	g1RuntimeAppID  = "sh.wendy.simulator.g1"
+	go2PolicyBundle = "go2-moe-cts-164k-0.6715-v1"
+	g1PolicyBundle  = "g1-29dof-velocity-v0-4960b847-v1"
+)
+
+type robotRuntime struct {
+	name, appID, agentFeature, policyBundle, envPrefix string
+	sourceDigest                                       func() string
+	materialize                                        func(string) (string, error)
+}
+
+func robotRuntimeForKind(kind string) (robotRuntime, error) {
+	switch kind {
+	case vm.RobotKindGo2:
+		return robotRuntime{
+			name: "Unitree Go2", appID: go2RuntimeAppID, agentFeature: "go2-virtual-robot",
+			policyBundle: go2PolicyBundle, envPrefix: "GO2_",
+			sourceDigest: go2bundle.SourceDigest, materialize: go2bundle.Materialize,
+		}, nil
+	case vm.RobotKindG1:
+		return robotRuntime{
+			name: "Unitree G1", appID: g1RuntimeAppID, agentFeature: "g1-virtual-robot",
+			policyBundle: g1PolicyBundle, envPrefix: "G1_",
+			sourceDigest: g1bundle.SourceDigest, materialize: g1bundle.Materialize,
+		}, nil
+	default:
+		return robotRuntime{}, fmt.Errorf("unsupported robot kind %q", kind)
+	}
+}
+
+func (r robotRuntime) environment(name string, profile vm.RobotProfile) []string {
+	return []string{r.envPrefix + "VM_NAME=" + name, r.envPrefix + "SOURCE_DIGEST=" + profile.SourceDigest,
+		r.envPrefix + "WORLD=" + profile.World, r.envPrefix + "SEED=" + strconv.FormatUint(uint64(profile.Seed), 10),
+		r.envPrefix + "VISUAL_DETAIL=" + profile.VisualDetail}
+}
+
+func (r robotRuntime) validateSource(name string, profile vm.RobotProfile) error {
+	if profile.SourceDigest != r.sourceDigest() {
+		return &robotSourceMismatchError{name: name, runtimeName: r.name}
+	}
+	return nil
+}
+
+type robotSourceMismatchError struct {
+	name, runtimeName string
+}
+
+func (e *robotSourceMismatchError) Error() string {
+	return fmt.Sprintf("VM %q pins a different %s runtime source; use 'wendy vm robot update %s' to apply this CLI's runtime", e.name, e.runtimeName, e.name)
+}
 
 // Tests provide a temporary store without redirecting the user's home or
 // inspecting any real VM. Every production call uses the standard VM store.
@@ -37,12 +88,13 @@ var pickSimulatorProfileFn = func() (string, error) {
 	return pickFromItems("Choose a simulator", []tui.PickerItem{
 		{Name: "Generic WendyOS", Description: "An ordinary VM for application development", Value: "generic"},
 		{Name: "Unitree Go2", Description: "A walking virtual robot with ROS 2 and a MuJoCo sandbox", Value: "go2"},
+		{Name: "Unitree G1", Description: "A humanoid virtual robot with ROS 2 and a MuJoCo sandbox", Value: "g1"},
 	})
 }
 
 func validateSimulatorProfile(kind string) error {
-	if kind != "generic" && kind != vm.RobotKindGo2 {
-		return fmt.Errorf("unsupported simulator profile %q; choose generic or go2", kind)
+	if kind != "generic" && kind != vm.RobotKindGo2 && kind != vm.RobotKindG1 {
+		return fmt.Errorf("unsupported simulator profile %q; choose generic, go2 or g1", kind)
 	}
 	return nil
 }
@@ -57,7 +109,11 @@ func attachSimulatorProfile(name, kind string) error {
 	if err := vm.ValidName(name); err != nil {
 		return err
 	}
-	profile, err := vm.NewGo2RobotProfile(go2bundle.SourceDigest(), go2PolicyBundle)
+	runtime, err := robotRuntimeForKind(kind)
+	if err != nil {
+		return err
+	}
+	profile, err := vm.NewRobotProfile(kind, runtime.sourceDigest(), runtime.policyBundle)
 	if err != nil {
 		return err
 	}
@@ -74,7 +130,7 @@ func attachSimulatorProfile(name, kind string) error {
 	if err := store.CreateRobotProfile(name, profile); err != nil {
 		return err
 	}
-	cliLogln("Unitree Go2 profile created. Run 'wendy vm robot start %s' or connect to vm:%s to build and start its robot runtime.", name, name)
+	cliLogln("%s profile created. Run 'wendy vm robot start %s' or connect to vm:%s to build and start its robot runtime.", runtime.name, name, name)
 	return nil
 }
 
@@ -109,9 +165,9 @@ func validateRobotVMResources(conn *grpcclient.AgentConnection, profile vm.Robot
 		if status.State.CPUs >= profile.CPUs && status.State.MemoryMiB >= profile.MemoryMiB {
 			return nil
 		}
-		return fmt.Errorf("VM %q is running with %d CPUs and %d MiB; its Go2 profile requires at least %d CPUs and %d MiB. "+
+		return fmt.Errorf("VM %q is running with %d CPUs and %d MiB; its %s profile requires at least %d CPUs and %d MiB. "+
 			"Run 'wendy vm stop %s', then 'wendy vm robot start %s' to apply the profile's resources",
-			name, status.State.CPUs, status.State.MemoryMiB, profile.CPUs, profile.MemoryMiB, name, name)
+			name, status.State.CPUs, status.State.MemoryMiB, profile.Kind, profile.CPUs, profile.MemoryMiB, name, name)
 	}
 	return fmt.Errorf("VM %q stopped while checking robot resources; reconnect to vm:%s", name, name)
 }
@@ -252,6 +308,16 @@ var reconcileSimulatorRobotFn func(context.Context, *grpcclient.AgentConnection)
 func init() { reconcileSimulatorRobotFn = reconcileSimulatorRobot }
 
 type robotAgentMaintenanceKey struct{}
+type robotRuntimeNonInteractiveKey struct{}
+
+// Carry the resolver's prompt policy through VM selection and connection.
+// NonInteractive suppresses prompts; it does not authorize runtime updates.
+func robotRuntimePromptContext(ctx context.Context, nonInteractive bool) context.Context {
+	if nonInteractive {
+		return context.WithValue(ctx, robotRuntimeNonInteractiveKey{}, true)
+	}
+	return ctx
+}
 
 // Agent repair must remain reachable when a VM's robot cannot start. The two
 // agent-update commands use this private context; VM discovery, transport and
@@ -264,12 +330,34 @@ func reconcileSimulatorRobot(ctx context.Context, conn *grpcclient.AgentConnecti
 	if maintenance, _ := ctx.Value(robotAgentMaintenanceKey{}).(bool); maintenance {
 		return nil
 	}
-	return reconcileRobot(ctx, conn, false)
+	err := reconcileRobot(ctx, conn, false)
+	var mismatch *robotSourceMismatchError
+	nonInteractive, _ := ctx.Value(robotRuntimeNonInteractiveKey{}).(bool)
+	if !errors.As(err, &mismatch) || nonInteractive || jsonOutput || !isInteractiveTerminalFn() {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The failed reconciliation released its provisioning lock before asking.
+	// Reuse the explicit update path after approval, including readiness checks.
+	question := fmt.Sprintf("%s in simulator %q needs a runtime update. Rebuild it and reset its robot world now?", mismatch.runtimeName, mismatch.name)
+	if !confirmFn(question) {
+		return ErrUserCancelled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return reconcileRobot(ctx, conn, true)
 }
 
-func requireGo2AgentCapability(ctx context.Context, conn *grpcclient.AgentConnection) error {
+func requireRobotAgentCapability(ctx context.Context, conn *grpcclient.AgentConnection, kind string) error {
+	runtime, err := robotRuntimeForKind(kind)
+	if err != nil {
+		return err
+	}
 	if conn == nil || conn.AgentService == nil {
-		return fmt.Errorf("managed Go2 runtime requires a verified agent connection")
+		return fmt.Errorf("managed %s runtime requires a verified agent connection", runtime.name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -277,12 +365,12 @@ func requireGo2AgentCapability(ctx context.Context, conn *grpcclient.AgentConnec
 	if err != nil {
 		return fmt.Errorf("checking virtual robot agent support: %w", err)
 	}
-	if (info.GetOs() == "linux" || info.GetOs() == "wendyos") && info.GetDeviceType() == "vm-arm64" && slices.Contains(info.GetFeatureset(), "go2-virtual-robot") {
+	if (info.GetOs() == "linux" || info.GetOs() == "wendyos") && info.GetDeviceType() == "vm-arm64" && slices.Contains(info.GetFeatureset(), runtime.agentFeature) {
 		return nil
 	}
-	return fmt.Errorf("VM %q agent %q lacks go2-virtual-robot support. Update it with 'wendy --device vm:%s device update', "+
+	return fmt.Errorf("VM %q agent %q lacks %s support. Update it with 'wendy --device vm:%s device update', "+
 		"or use 'wendy --device vm:%s device update --binary <path-to-agent-binary>' for a development build. "+
-		"The selected release or binary must include virtual robot support", conn.SimulatorName, info.GetVersion(), conn.SimulatorName, conn.SimulatorName)
+		"The selected release or binary must include virtual robot support", conn.SimulatorName, info.GetVersion(), runtime.agentFeature, conn.SimulatorName, conn.SimulatorName)
 }
 
 func reconcileRobot(ctx context.Context, conn *grpcclient.AgentConnection, update bool) error {
@@ -313,7 +401,11 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	name := conn.SimulatorName
 	if update {
 		if err := store.UpdateRobotProfile(name, func(p *vm.RobotProfile) error {
-			p.SourceDigest, p.PolicyBundle, p.RuntimeDigest = go2bundle.SourceDigest(), go2PolicyBundle, ""
+			runtime, err := robotRuntimeForKind(p.Kind)
+			if err != nil {
+				return err
+			}
+			p.SourceDigest, p.PolicyBundle, p.RuntimeDigest = runtime.sourceDigest(), runtime.policyBundle, ""
 			return nil
 		}); err != nil {
 			return err
@@ -326,13 +418,17 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if !exists {
 		return vm.ErrRobotProfileMissing
 	}
-	if profile.SourceDigest != go2bundle.SourceDigest() {
-		return fmt.Errorf("VM %q pins a different Go2 runtime source; use 'wendy vm robot update %s' to apply this CLI's runtime", name, name)
+	runtime, err := robotRuntimeForKind(profile.Kind)
+	if err != nil {
+		return err
+	}
+	if err := runtime.validateSource(name, profile); err != nil {
+		return err
 	}
 	if err := validateRobotVMResources(conn, profile); err != nil {
 		return err
 	}
-	if err := requireGo2AgentCapability(ctx, conn); err != nil {
+	if err := requireRobotAgentCapability(ctx, conn, profile.Kind); err != nil {
 		return err
 	}
 	port, err := robotSandboxPort(store, ctx, name)
@@ -351,15 +447,15 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 		}
 		return fmt.Errorf("robot runtime is unhealthy: %s; inspect 'wendy vm robot status %s' or recover with 'wendy vm robot restart %s'", current.Error, name, name)
 	}
-	app, err := findRobotContainer(ctx, conn)
+	app, err := findRobotContainer(ctx, conn, runtime.appID)
 	if err != nil {
 		return err
 	}
 	if !update && app != nil && app.GetAppVersion() == robotAppVersion(profile) {
 		if app.GetRunningState() != agentpb.AppRunningState_RUNNING {
-			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{AppName: robotRuntimeAppID})
+			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{AppName: runtime.appID})
 			if err != nil {
-				return fmt.Errorf("starting managed Go2 runtime: %w", err)
+				return fmt.Errorf("starting managed %s runtime: %w", runtime.name, err)
 			}
 			if err := awaitStarted(stream); err != nil {
 				return err
@@ -371,7 +467,7 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if err != nil {
 		return err
 	}
-	source, err := go2bundle.Materialize(filepath.Join(cache, "simulator"))
+	source, err := runtime.materialize(filepath.Join(cache, "simulator"))
 	if err != nil {
 		return err
 	}
@@ -379,28 +475,27 @@ func reconcileRobotLocked(ctx context.Context, conn *grpcclient.AgentConnection,
 	if err != nil {
 		return err
 	}
-	if cfg.AppID != robotRuntimeAppID {
-		return fmt.Errorf("embedded Go2 manifest has an unexpected app ID")
+	if cfg.AppID != runtime.appID {
+		return fmt.Errorf("embedded %s manifest has an unexpected app ID", runtime.name)
 	}
 	cfg.Version = robotAppVersion(profile)
 	cfg.Readiness, cfg.Hooks = nil, nil // This runtime uses its own mapped HTTP identity/readiness check.
 	if _, err := userVMForConnection(conn); err != nil {
 		return err
 	}
-	cliLogln("Building and provisioning Unitree Go2 in %s (the first build downloads pinned assets and ROS dependencies)...", name)
+	cliLogln("Building and provisioning %s in %s (the first build downloads pinned assets and ROS dependencies)...", runtime.name, name)
 	err = runWithAgent(ctx, conn, source, cfg, runOptions{
 		managedRobot: true, buildType: "docker", builder: "docker", dockerfile: "Dockerfile",
 		detach: true, yes: true, restartUnlessStopped: true,
-		env: []string{"GO2_VM_NAME=" + name, "GO2_SOURCE_DIGEST=" + profile.SourceDigest, "GO2_WORLD=" + profile.World,
-			"GO2_SEED=" + strconv.FormatUint(uint64(profile.Seed), 10), "GO2_VISUAL_DETAIL=" + profile.VisualDetail},
+		env: runtime.environment(name, profile),
 	})
 	if err != nil {
-		return fmt.Errorf("provisioning Go2 runtime: %w", err)
+		return fmt.Errorf("provisioning %s runtime: %w", runtime.name, err)
 	}
 	if err := waitForRobot(ctx, name, port, profile); err != nil {
 		return err
 	}
-	cliLogln("Unitree Go2 ready. Sandbox: %s", robotURL(port))
+	cliLogln("%s ready. Sandbox: %s", runtime.name, robotURL(port))
 	return nil
 }
 
@@ -425,16 +520,20 @@ func restartRobot(ctx context.Context, conn *grpcclient.AgentConnection) error {
 	if !exists {
 		return vm.ErrRobotProfileMissing
 	}
-	if profile.SourceDigest != go2bundle.SourceDigest() {
-		return fmt.Errorf("VM %q pins a different Go2 runtime source; use 'wendy vm robot update %s' to apply this CLI's runtime", name, name)
+	runtime, err := robotRuntimeForKind(profile.Kind)
+	if err != nil {
+		return err
+	}
+	if err := runtime.validateSource(name, profile); err != nil {
+		return err
 	}
 	if err := validateRobotVMResources(conn, profile); err != nil {
 		return err
 	}
-	if err := requireGo2AgentCapability(ctx, conn); err != nil {
+	if err := requireRobotAgentCapability(ctx, conn, profile.Kind); err != nil {
 		return err
 	}
-	app, err := findRobotContainer(ctx, conn)
+	app, err := findRobotContainer(ctx, conn, runtime.appID)
 	if err != nil {
 		return err
 	}
@@ -459,17 +558,17 @@ func restartRobot(ctx context.Context, conn *grpcclient.AgentConnection) error {
 	if _, err := userVMForConnection(conn); err != nil {
 		return err
 	}
-	if _, err := conn.ContainerService.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: robotRuntimeAppID}); err != nil {
-		return fmt.Errorf("stopping managed Go2 runtime for restart: %w", err)
+	if _, err := conn.ContainerService.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: runtime.appID}); err != nil {
+		return fmt.Errorf("stopping managed %s runtime for restart: %w", runtime.name, err)
 	}
 	if _, err := userVMForConnection(conn); err != nil {
 		return err
 	}
 	stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
-		AppName: robotRuntimeAppID, RestartPolicy: &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		AppName: runtime.appID, RestartPolicy: &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
 	})
 	if err != nil {
-		return fmt.Errorf("restarting managed Go2 runtime: %w", err)
+		return fmt.Errorf("restarting managed %s runtime: %w", runtime.name, err)
 	}
 	if err := awaitStarted(stream); err != nil {
 		return err
@@ -477,7 +576,7 @@ func restartRobot(ctx context.Context, conn *grpcclient.AgentConnection) error {
 	if err := waitForRobot(ctx, name, port, profile); err != nil {
 		return err
 	}
-	cliLogln("Restarted Unitree Go2 in %s. Sandbox: %s", name, robotURL(port))
+	cliLogln("Restarted %s in %s. Sandbox: %s", runtime.name, name, robotURL(port))
 	return nil
 }
 
@@ -485,7 +584,7 @@ func robotAppVersion(p vm.RobotProfile) string {
 	return "0.1.0-" + strings.TrimPrefix(p.SourceDigest, "sha256:")[:12]
 }
 
-func findRobotContainer(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpb.AppContainer, error) {
+func findRobotContainer(ctx context.Context, conn *grpcclient.AgentConnection, appID string) (*agentpb.AppContainer, error) {
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
 		return nil, err
@@ -499,7 +598,7 @@ func findRobotContainer(ctx context.Context, conn *grpcclient.AgentConnection) (
 		if err != nil {
 			return nil, fmt.Errorf("reading managed robot container: %w", err)
 		}
-		if c := response.GetContainer(); c != nil && c.GetAppName() == robotRuntimeAppID {
+		if c := response.GetContainer(); c != nil && c.GetAppName() == appID {
 			found = c
 		}
 	}
@@ -528,16 +627,18 @@ func robotEndpoint(ctx context.Context, name string) (*vm.Store, vm.RobotProfile
 
 func newVMRobotCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "robot", Short: "Inspect and manage a simulator's virtual robot"}
-	cmd.AddCommand(&cobra.Command{
+	configure := &cobra.Command{
 		Use:   "configure <name>",
-		Short: "Attach a Unitree Go2 profile to an existing VM",
-		Long: "Attach a Unitree Go2 profile to an existing VM, pinning this CLI's robot runtime. " +
+		Short: "Attach a Unitree robot profile to an existing VM",
+		Long: "Attach a Unitree Go2 or G1 profile to an existing VM, pinning this CLI's robot runtime. " +
 			"Existing robot profiles are never replaced.\n\n" +
 			"This records the profile without booting or restarting the VM. " +
 			"Run 'wendy vm robot start <name>' to build and start the robot runtime.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error { return runVMRobot(c, "configure", args[0]) },
-	})
+	}
+	configure.Flags().String("profile", vm.RobotKindGo2, "Robot profile: go2 or g1")
+	cmd.AddCommand(configure)
 	for _, action := range []string{"status", "open", "reset", "start", "restart", "update"} {
 		cmd.AddCommand(&cobra.Command{
 			Use: action + " <name>", Short: map[string]string{
@@ -557,7 +658,18 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 		return err
 	}
 	if action == "configure" {
-		return attachSimulatorProfile(name, vm.RobotKindGo2)
+		kind := vm.RobotKindGo2
+		if cmd.Flags().Lookup("profile") != nil {
+			var err error
+			kind, err = cmd.Flags().GetString("profile")
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := robotRuntimeForKind(kind); err != nil {
+			return err
+		}
+		return attachSimulatorProfile(name, kind)
 	}
 	ctx := cmd.Context()
 	if action == "start" || action == "restart" || action == "update" {
@@ -569,8 +681,14 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 			return err
 		} else if !exists {
 			return vm.ErrRobotProfileMissing
-		} else if action != "update" && profile.SourceDigest != go2bundle.SourceDigest() {
-			return fmt.Errorf("VM %q pins a different Go2 runtime source; use 'wendy vm robot update %s' to apply this CLI's runtime", name, name)
+		} else if action != "update" {
+			runtime, err := robotRuntimeForKind(profile.Kind)
+			if err != nil {
+				return err
+			}
+			if err := runtime.validateSource(name, profile); err != nil {
+				return err
+			}
 		}
 	}
 	if action == "update" || action == "restart" {
@@ -600,6 +718,10 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 	if err != nil {
 		return err
 	}
+	runtime, err := robotRuntimeForKind(profile.Kind)
+	if err != nil {
+		return err
+	}
 	state, err := readRobotStatus(ctx, port)
 	if err != nil {
 		return err
@@ -615,7 +737,7 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 				SandboxURL string `json:"sandbox_url"`
 			}{robotRuntimeStatus: state, SandboxURL: robotURL(port)})
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: Unitree Go2, %s, healthy=%t, ready=%t, epoch=%d\nSandbox: %s\n", name, state.Mode, state.Healthy, state.Ready, state.Epoch, robotURL(port))
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s, %s, healthy=%t, ready=%t, epoch=%d\nSandbox: %s\n", name, runtime.name, state.Mode, state.Healthy, state.Ready, state.Epoch, robotURL(port))
 	case "open":
 		return browserOpen(robotURL(port))
 	case "reset":
@@ -658,8 +780,8 @@ func prepareRobotAppConfig(conn *grpcclient.AgentConnection, cfg *appconfig.AppC
 	if !exists {
 		return cfg, nil
 	}
-	if cfg.AppID == robotRuntimeAppID {
-		return nil, fmt.Errorf("%s is reserved for the managed robot; use 'wendy vm robot update %s'", robotRuntimeAppID, conn.SimulatorName)
+	if cfg.AppID == go2RuntimeAppID || cfg.AppID == g1RuntimeAppID {
+		return nil, fmt.Errorf("%s is reserved for the managed robot; use 'wendy vm robot update %s'", cfg.AppID, conn.SimulatorName)
 	}
 	return normalizeRobotROSConfig(cfg, overrides)
 }
@@ -671,27 +793,27 @@ func normalizeRobotROSConfig(cfg *appconfig.AppConfig, overrides []string) (*app
 			return nil, entitlements, nil
 		}
 		if ros.DomainID != nil && *ros.DomainID != 0 {
-			return nil, nil, fmt.Errorf("%s: Go2 requires ROS domain 0", scope)
+			return nil, nil, fmt.Errorf("%s: managed robot requires ROS domain 0", scope)
 		}
 		if ros.ResolvedDistro() != "humble" {
-			return nil, nil, fmt.Errorf("%s: Go2 requires ROS 2 Humble", scope)
+			return nil, nil, fmt.Errorf("%s: managed robot requires ROS 2 Humble", scope)
 		}
 		if ros.ResolvedRMW() != "rmw_cyclonedds_cpp" {
-			return nil, nil, fmt.Errorf("%s: Go2 requires CycloneDDS", scope)
+			return nil, nil, fmt.Errorf("%s: managed robot requires CycloneDDS", scope)
 		}
 		if ros.ResolvedDiscoveryScope() != "app" {
-			return nil, nil, fmt.Errorf("%s: Go2 requires discoveryScope app on guest loopback", scope)
+			return nil, nil, fmt.Errorf("%s: managed robot requires discoveryScope app on guest loopback", scope)
 		}
 		for _, entry := range env {
 			key, value, _ := strings.Cut(entry, "=")
 			switch key {
 			case "ROS_DOMAIN_ID":
 				if value != "0" {
-					return nil, nil, fmt.Errorf("%s: ROS_DOMAIN_ID conflicts with Go2 domain 0", scope)
+					return nil, nil, fmt.Errorf("%s: ROS_DOMAIN_ID conflicts with managed robot domain 0", scope)
 				}
 			case "RMW_IMPLEMENTATION":
 				if value != "rmw_cyclonedds_cpp" {
-					return nil, nil, fmt.Errorf("%s: RMW_IMPLEMENTATION conflicts with Go2 CycloneDDS", scope)
+					return nil, nil, fmt.Errorf("%s: RMW_IMPLEMENTATION conflicts with managed robot CycloneDDS", scope)
 				}
 			case "ROS_LOCALHOST_ONLY":
 				if value != "1" {
@@ -713,7 +835,7 @@ func normalizeRobotROSConfig(cfg *appconfig.AppConfig, overrides []string) (*app
 			if ent.Type == appconfig.EntitlementNetwork {
 				network = true
 				if ent.Mode != "host" {
-					return nil, nil, fmt.Errorf("%s: Go2 ROS applications require network mode host inside the VM", scope)
+					return nil, nil, fmt.Errorf("%s: managed robot ROS applications require network mode host inside the VM", scope)
 				}
 			}
 		}
@@ -786,7 +908,12 @@ func readSimulatorRobots(ctx context.Context, statuses []vm.Status) map[string]s
 		if !exists {
 			continue
 		}
-		info := simulatorRobotInfo{Kind: "Unitree Go2", State: "stopped", Hint: "Connect to start the robot and open its sandbox with 'wendy vm robot open " + status.Name + "'."}
+		runtime, err := robotRuntimeForKind(profile.Kind)
+		if err != nil {
+			result[status.Name] = simulatorRobotInfo{Kind: "Invalid", State: "profile error", Hint: err.Error()}
+			continue
+		}
+		info := simulatorRobotInfo{Kind: runtime.name, State: "stopped", Hint: "Connect to start the robot and open its sandbox with 'wendy vm robot open " + status.Name + "'."}
 		if !status.Running {
 			result[status.Name] = info
 			continue

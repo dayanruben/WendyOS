@@ -1,4 +1,4 @@
-"""Wall-paced physics with an independent, bounded-rate observer renderer."""
+"""Wall-paced physics, browser pose snapshots, and a real sensor-camera renderer."""
 
 from collections import deque
 import io
@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from .simulation import Simulation, TIMESTEP
+from .scene import BrowserScene
 
 
 def timing_summary(values):
@@ -40,11 +41,24 @@ class Runtime:
             raise ValueError("GO2_SEED must be an unsigned 32-bit integer")
         self.policy_bundle = json.loads((Path(__file__).resolve().parents[1] /
                                          "assets.lock.json").read_text())["bundle"]
-        if simulation is None and ros:
+        if simulation is None:
             from .sensors import instrumented_model
             from .simulation import DEFAULT_ASSETS
             simulation = Simulation(model=instrumented_model(DEFAULT_ASSETS))
         self.sim = simulation or Simulation()
+        self.visual_detail = os.environ.get("GO2_VISUAL_DETAIL", "full")
+        self.visual_model = self.sim.model
+        if self.visual_detail == "balanced":
+            from .sensors import instrumented_model
+            visual_mesh_dir = self.sim.assets / "visuals"
+            if not visual_mesh_dir.is_dir():
+                raise RuntimeError("balanced visual assets missing; run tools/build_visuals.py")
+            sandbox = mujoco.mj_name2id(self.sim.model, mujoco.mjtObj.mjOBJ_GEOM, "east_wall") >= 0
+            self.visual_model = instrumented_model(self.sim.assets, sandbox=sandbox,
+                                                  visual_mesh_dir=visual_mesh_dir)
+        elif self.visual_detail != "full":
+            raise ValueError("GO2_VISUAL_DETAIL must be full or balanced")
+        self.scene = BrowserScene(self.sim.model, visual_model=self.visual_model)
         # Lifecycle operations take this before lock. ROS may publish without
         # holding the physics lock, while reset/pause waits for that sample.
         self.observation_lock = threading.RLock()
@@ -57,16 +71,12 @@ class Runtime:
         self.camera_frames = 0
         self.stop_event = threading.Event()
         self.render = render
-        # Software OpenGL in the VM is dominated by multisampling and extra
-        # shadow/reflection passes. These affect only the observer rendering.
+        # Software OpenGL is needed only for actual camera sensor exposures.
         if render:
-            self.sim.model.vis.quality.offsamples = 0
-        self.jpeg = None
-        self.frame_count = 0
+            self.visual_model.vis.quality.offsamples = 0
         self.errors = {}
         self.started = time.monotonic()
         self.last_physics = self.started
-        self.last_frame = None
         self.physics_steps = 0
         self.overruns = 0
         self.step_ms = deque(maxlen=30000)
@@ -78,6 +88,8 @@ class Runtime:
         self.pending_command = None
         self.threads = []
         self.ros_commands = self.ros_bridge = None
+        from .browser_lidar import BrowserLidar
+        self.browser_lidar = BrowserLidar(self, ros=ros)
         if ros:
             from .commands import ROSCommands
             from .ros import ROSBridge
@@ -232,29 +244,15 @@ class Runtime:
         renderer = None
         try:
             # OpenGL contexts must be created/used/destroyed on this thread.
-            model = self.sim.model
-            detail = os.environ.get("GO2_VISUAL_DETAIL", "full")
-            if detail == "balanced":
-                from .sensors import instrumented_model
-                visual_mesh_dir = self.sim.assets / "visuals"
-                if not visual_mesh_dir.is_dir():
-                    raise RuntimeError("balanced visual assets missing; run tools/build_visuals.py")
-                sandbox = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "east_wall") >= 0
-                model = instrumented_model(self.sim.assets, sandbox=sandbox, visual_mesh_dir=visual_mesh_dir)
-                model.vis.quality.offsamples = 0
-            elif detail != "full":
-                raise ValueError("GO2_VISUAL_DETAIL must be full or balanced")
+            model = self.visual_model
+            robot_camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "front")
+            if robot_camera < 0:
+                return
             renderer = mujoco.Renderer(model, height=360, width=640)
             data = mujoco.MjData(model)
             options = mujoco.MjvOption()
-            if detail == "balanced":
-                options.geomgroup[3] = False
-            camera = mujoco.MjvCamera()
-            camera.distance = 1.8
-            camera.azimuth = 125
-            camera.elevation = -22
+            options.geomgroup[3] = False
             from .camera import CameraFrame
-            robot_camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "front")
             while not self.stop_event.is_set():
                 started = time.perf_counter()
                 thread_started = time.thread_time()
@@ -272,54 +270,44 @@ class Runtime:
                     emit_camera = (robot_camera >= 0 and self.sensor_settings["camera_enabled"]
                                    and self.sim.mode not in {"paused", "fault"})
                 stages["capture_lock"] = (time.perf_counter() - started) * 1000
+                if not emit_camera:
+                    self.stop_event.wait(1 / 15)
+                    continue
+                if not (np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()
+                        and np.isfinite(data.mocap_pos).all() and np.isfinite(data.mocap_quat).all()):
+                    self.stop_event.wait(1 / 15)
+                    continue
                 stage_started = time.perf_counter()
                 mujoco.mj_forward(model, data)
                 stages["mj_forward"] = (time.perf_counter() - stage_started) * 1000
                 stage_started = time.perf_counter()
-                camera.lookat[:] = data.qpos[:3]
-                renderer.update_scene(data, camera=camera, scene_option=options)
+                renderer.update_scene(data, camera=robot_camera, scene_option=options)
                 renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
                 renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = False
-                stages["observer_scene"] = (time.perf_counter() - stage_started) * 1000
+                stages["camera_scene"] = (time.perf_counter() - stage_started) * 1000
                 stage_started = time.perf_counter()
-                frame = renderer.render()
-                stages["observer_render"] = (time.perf_counter() - stage_started) * 1000
+                rgb = renderer.render()
+                stages["camera_render"] = (time.perf_counter() - stage_started) * 1000
                 stage_started = time.perf_counter()
-                buffer = io.BytesIO()
-                Image.fromarray(frame).save(buffer, format="JPEG", quality=80)
-                self.jpeg = buffer.getvalue()
-                self.last_frame = time.monotonic()
-                self.frame_count += 1
-                stages["observer_jpeg"] = (time.perf_counter() - stage_started) * 1000
-                if emit_camera:
-                    stage_started = time.perf_counter()
-                    renderer.update_scene(data, camera=robot_camera, scene_option=options)
-                    renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
-                    renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = False
-                    stages["camera_scene"] = (time.perf_counter() - stage_started) * 1000
-                    stage_started = time.perf_counter()
-                    rgb = renderer.render()
-                    stages["camera_render"] = (time.perf_counter() - stage_started) * 1000
-                    stage_started = time.perf_counter()
-                    frame = CameraFrame(epoch, generation, float(data.time), wall_timestamp_ns,
-                                        rgb)
-                    stages["camera_copy"] = (time.perf_counter() - stage_started) * 1000
-                    stage_started = time.perf_counter()
-                    camera_buffer = io.BytesIO()
-                    Image.fromarray(frame.rgb).save(camera_buffer, format="JPEG", quality=80)
-                    stages["camera_jpeg"] = (time.perf_counter() - stage_started) * 1000
-                    # A lifecycle operation may finish during software rendering.
-                    # Never make that old exposure available to a ROS publisher.
-                    stage_started = time.perf_counter()
-                    with self.observation_lock, self.lock:
-                        stages["publish_fence_wait"] = (time.perf_counter() - stage_started) * 1000
-                        if (epoch == self.sim.epoch and generation == self.observation_generation
-                                and self.sim.mode not in {"paused", "fault"}
-                                and self.sensor_settings["camera_enabled"]):
-                            self.camera_frame = frame
-                            self.camera_jpeg = camera_buffer.getvalue()
-                            self.camera_frames += 1
-                    stages["publish_fence"] = (time.perf_counter() - stage_started) * 1000
+                frame = CameraFrame(epoch, generation, float(data.time), wall_timestamp_ns,
+                                    rgb)
+                stages["camera_copy"] = (time.perf_counter() - stage_started) * 1000
+                stage_started = time.perf_counter()
+                camera_buffer = io.BytesIO()
+                Image.fromarray(frame.rgb).save(camera_buffer, format="JPEG", quality=80)
+                stages["camera_jpeg"] = (time.perf_counter() - stage_started) * 1000
+                # A lifecycle operation may finish during software rendering.
+                # Never make that old exposure available to a ROS publisher.
+                stage_started = time.perf_counter()
+                with self.observation_lock, self.lock:
+                    stages["publish_fence_wait"] = (time.perf_counter() - stage_started) * 1000
+                    if (epoch == self.sim.epoch and generation == self.observation_generation
+                            and self.sim.mode not in {"paused", "fault"}
+                            and self.sensor_settings["camera_enabled"]):
+                        self.camera_frame = frame
+                        self.camera_jpeg = camera_buffer.getvalue()
+                        self.camera_frames += 1
+                stages["publish_fence"] = (time.perf_counter() - stage_started) * 1000
                 stages["work_total"] = (time.perf_counter() - started) * 1000
                 # Excludes Mesa worker threads; compare with wall work_total
                 # to identify time waiting for GL workers, locks, or the GIL.
@@ -378,19 +366,17 @@ class Runtime:
             "dds_isolation": os.environ.get("GO2_ISOLATION_STATUS", "unmanaged"),
             "policy_bundle": self.policy_bundle, "world": self.world,
             "clock_mode": "device", "seed": self.seed,
-            "visual_detail": os.environ.get("GO2_VISUAL_DETAIL", "full"),
+            "visual_detail": self.visual_detail,
             "healthy": healthy,
             "ready": healthy and result["mode"] in {"standing", "moving"} and result["time"] > 0.5 and
-                     time.monotonic() - self.last_physics < 0.5 and
-                     (not self.render or (self.jpeg is not None and self.last_frame is not None and
-                                          time.monotonic() - self.last_frame < 2.0)),
+                     time.monotonic() - self.last_physics < 0.5,
             "error": self.error,
             "metrics": {
                 "wall_seconds": elapsed,
                 "real_time_factor": self.physics_steps * TIMESTEP / elapsed,
-                "frames": self.frame_count,
+                "scene_states": self.scene.samples,
                 "camera_frames": self.camera_frames,
-                "fps": self.frame_count / elapsed,
+                "camera_fps": self.camera_frames / elapsed,
                 "physics_steps": self.physics_steps,
                 "physics_age_ms": (time.monotonic() - self.last_physics) * 1000,
                 "policy_updates": policy_updates,

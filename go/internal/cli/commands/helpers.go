@@ -1145,6 +1145,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	for _, o := range opts {
 		o(&cfg)
 	}
+	ctx = robotRuntimePromptContext(ctx, cfg.nonInteractive)
 	// connectToAgent only ever returns a gRPC connection, so a BLE device is
 	// never a usable answer here — never scan for or offer one, whatever the
 	// caller passed. BLE-capable commands use resolveTarget + IncludeBluetooth.
@@ -3186,6 +3187,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	for _, o := range opts {
 		o(&cfg)
 	}
+	ctx = robotRuntimePromptContext(ctx, cfg.nonInteractive)
 
 	// An admin-entitled on-device container reaches the agent over its local
 	// unix socket; skip all discovery/selection when WENDY_AGENT_SOCKET is set.

@@ -96,6 +96,8 @@ class SlowObservations(Node):
         # Rays run without either lifecycle or physics lock. Validate the
         # captured generation again before making the result observable.
         result = self.lidar.sample(self.sampler)
+        browser_lidar = getattr(self.runtime, "browser_lidar", None)
+        browser_record = browser_lidar.prepare(result, self.sampler, generation) if browser_lidar else None
         scan, cloud = self.scan, self.cloud
         scan.header.stamp = cloud.header.stamp = timestamp(result["wall_timestamp_ns"])
         scan.ranges = result["ranges"].tolist()
@@ -112,6 +114,8 @@ class SlowObservations(Node):
                     return
             self.scan_pub.publish(scan)
             self.cloud_pub.publish(cloud)
+            if browser_lidar:
+                browser_lidar.publish(browser_record)
             self.samples["scan"] += 1
             self.samples["cloud"] += 1
             self.last_lidar = (result["epoch"], result["time"])

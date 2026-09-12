@@ -4,8 +4,14 @@ A Go2 profile turns a WendyOS VM into a robot development target. A managed
 container runs MuJoCo, a pinned ONNX locomotion policy, ROS 2 Humble/CycloneDDS,
 and a browser sandbox. Applications in that VM receive causal robot observations
 and send ROS commands that move a freely walking, contact-supported robot.
-Inference and rendering use the CPU; the profile defaults to four vCPUs and
-4 GiB RAM on accelerated ARM64.
+Physics, policy inference and robot camera sensor rendering use the VM's CPU.
+The sandbox renders through WebGL in the browser. The profile defaults to four
+vCPUs and 4 GiB RAM on accelerated ARM64.
+
+The managed VM passed a ten-minute run with real ROS readers and continuous
+motion commands: 499.8 Hz native state, 199.9 Hz IMU, 10 Hz lidar, and 14.83 FPS
+camera delivery. Native SDK, navigation, two-VM isolation and restart/reconnect
+checks also pass. Exact scope and results are in [validation](validation/README.md).
 
 ## Create or configure a simulator
 
@@ -34,14 +40,21 @@ For an existing ordinary VM, use `wendy vm robot configure <name>` before
 applications. Each VM gets its own verified loopback sandbox URL; use
 `wendy vm robot status <name>` to find it. Do not assume a shared host port.
 
-The persisted profile pins the runtime source and policy bundle. A newer CLI
-reports a source mismatch until `wendy vm robot update <name>` is explicitly
-requested. Reconnecting preserves a running world's state; a stopped runtime
+The persisted profile pins the runtime source and policy bundle. When they
+differ from the CLI, interactive connections such as `wendy run` offer to update
+the runtime and reset its robot world, then continue after it is ready. Declining
+cancels the connection. For noninteractive runs (including `run --yes`), update
+first with `wendy vm robot update <name>`.
+Reconnecting with the same runtime preserves a running world's state; a stopped runtime
 is restarted. `wendy vm robot restart <name>` explicitly recovers a failed
 runtime. `wendy vm robot reset <name>` resets the world and revokes command
 ownership. Stopping a user application leaves the managed robot running.
 
 ## Deploy a ROS application
+
+Try the [Go2 roaming sample](examples/roam/README.md) for autonomous obstacle
+avoidance with Start/Stop controls. It runs beside a local browser preview or
+as a ROS application deployed to a Go2 VM.
 
 Declare ROS in the application's `wendy.json`:
 
@@ -104,8 +117,27 @@ uses the runtime's pinned overlay.
 ## Sandbox and command lifetime
 
 Choose **Enable controls**, then hold W/S to walk, A/D to strafe, or Q/E to
-turn. Space stops the velocity target. The browser offers independent sandbox
-and robot camera views, an adjustable obstacle, and lidar/camera fault controls.
+turn. Space stops the velocity target. The sandbox renders the MuJoCo scene in
+the browser using WebGL: scene geometry is loaded once, then pose state updates
+move the robot and obstacle. Drag to orbit, right-drag or Shift-drag to pan,
+and scroll to zoom. On a touchscreen, use one finger to orbit and two fingers
+to pan or pinch to zoom. **Reset view** centers the current robot position and
+restores the default viewing angle and distance.
+Three.js and its controls ship with the runtime and need no external CDN.
+
+**Follow robot** starts enabled and moves the viewpoint with the robot while
+preserving your chosen angle and offset. Turn it off to inspect a fixed part of
+the room. **Show lidar** displays the actual sensor returns in the 3D world.
+With ROS enabled, these are the same sampled points published to
+`/utlidar/cloud`. The standalone sandbox uses the same MuJoCo ray sampler.
+Paused, disabled or expired lidar observations disappear from the view; sensor
+dropout changes the displayed returns too.
+
+The independent **Robot camera** view displays a JPEG encoding of the actual
+MuJoCo front camera exposure. ROS `/camera/color/image_raw` publishes that
+exposure's raw RGB pixels and capture timestamp. Moving the sandbox viewpoint
+does not change the sensor camera. The browser also offers an adjustable
+obstacle and lidar/camera fault controls.
 Sensor pauses stop new samples while physics continues; lidar dropout applies
 the same seeded mask to scan and cloud. Fault settings persist across world reset.
 
@@ -116,8 +148,15 @@ Pause and reset revoke all grants and reject publishers from the previous
 world. Restart the command publisher and explicitly grant it again. Resume
 does not rearm controls. Fallen robots require reset.
 
-HTTP endpoints are `/api/health`, `/api/status`, `/api/profile`, `/frame.jpg`
-and `/camera.jpg`. Status reports the simulation identity, source digest,
+HTTP endpoints are `/api/health`, `/api/status`, `/api/profile`, `/api/scene`,
+`/api/scene/state`, `/api/scene/lidar` and `/camera.jpg`. The scene endpoint
+supplies geometry and materials; scene state supplies the current poses for
+local browser rendering. The lidar endpoint supplies the sampled sensor origin
+and world-space returns with their capture identity and freshness.
+The browser requests state at up to 30 Hz and interpolates poses between updates.
+`GO2_VISUAL_DETAIL` selects the same full or balanced meshes for both the browser
+and robot camera; physics always retains the original model.
+Status reports the simulation identity, source digest,
 control owner, world epoch, sensor settings and measured performance. A ready
 agent connection alone does not mean the robot is ready.
 
@@ -150,8 +189,49 @@ docker build -t wendy-go2-managed:dev .
 
 The production Dockerfile generates and verifies visual assets on Linux ARM64
 and builds the derived ROS overlay. Original physics assets remain unchanged.
-Use the container for software rendering; native macOS OpenGL is not the
-supported rendering path.
+The sandbox requires a browser with WebGL 2 support. Managed Linux runtimes use
+OSMesa for robot camera sensor rendering. Local macOS development can use
+MuJoCo's offscreen CGL backend when the process has access to macOS graphics.
+
+With the development dependencies and assets above available, verify the browser
+viewer against a disposable local simulator. The test resets the world and
+sends robot commands. Start a separate runtime on port 8899 from this directory.
+On macOS:
+
+```sh
+MUJOCO_GL=cgl GO2_RENDER=1 GO2_PORT=8899 .venv/bin/python -m go2_sim.server
+```
+
+Inside the Linux runtime image, use `MUJOCO_GL=osmesa` and the image's `python3`
+for this command; expose port 8899 on loopback for the browser test.
+
+In a separate terminal, also from this directory:
+
+```sh
+node tests/viewer.browser.mjs http://127.0.0.1:8899
+```
+
+The test requires Playwright and its Chromium browser. If Playwright is installed
+outside this project, set `PLAYWRIGHT_MODULE` to its local `index.mjs` path.
+When the verified `assets/visuals` directory is available, add
+`GO2_VISUAL_DETAIL=balanced` to test the managed image's lighter visual model.
+The check exercises orbit, pan, zoom, reset framing, follow controls, lidar,
+state updates, reconnects and the real front camera preview. It requires
+`GO2_RENDER=1`. For manual state-only development, `GO2_RENDER=0` leaves the 3D
+sandbox available but disables the sensor camera and cannot pass this full test.
+
+To inspect the same disposable runtime, open `http://127.0.0.1:8899`, keep
+**Camera active** enabled, and select
+**Robot camera**. Pausing the world pauses new camera exposures. The preview
+reports whether rendering is disabled, the sensor is disabled or paused, the
+renderer failed, or the first exposure is still pending. The optional camera
+checks exercise real pixel rendering and the retained exposure's JPEG encoding:
+
+```sh
+MUJOCO_GL=cgl GO2_TEST_RENDER=1 .venv/bin/python -m pytest -q tests/test_camera.py
+```
+
+Inside the Linux runtime image, use `MUJOCO_GL=osmesa` for the same checks.
 
 Separate applications exercise real DDS delivery and commands:
 

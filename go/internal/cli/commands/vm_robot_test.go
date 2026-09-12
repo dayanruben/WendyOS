@@ -18,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	g1bundle "github.com/wendylabsinc/wendy/go/simulator/g1"
 	go2bundle "github.com/wendylabsinc/wendy/go/simulator/go2"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -33,6 +34,10 @@ func robotTestStore(t *testing.T) *vm.Store {
 }
 
 func robotTestProfile(t *testing.T, store *vm.Store, name string) vm.RobotProfile {
+	return robotTestProfileForKind(t, store, name, vm.RobotKindGo2)
+}
+
+func robotTestProfileForKind(t *testing.T, store *vm.Store, name, kind string) vm.RobotProfile {
 	t.Helper()
 	if err := os.MkdirAll(store.Dir(name), 0700); err != nil {
 		t.Fatal(err)
@@ -40,7 +45,11 @@ func robotTestProfile(t *testing.T, store *vm.Store, name string) vm.RobotProfil
 	if err := os.WriteFile(store.MetaPath(name), []byte(`{"imageVersion":"test"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := vm.NewGo2RobotProfile(go2bundle.SourceDigest(), go2PolicyBundle)
+	runtime, err := robotRuntimeForKind(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := vm.NewRobotProfile(kind, runtime.sourceDigest(), runtime.policyBundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +249,7 @@ func TestRobotProfileOnlyChangesDeclaredROSonManagedVM(t *testing.T) {
 			t.Fatalf("ordinary app changed: %+v %v", got, err)
 		}
 	}
-	reserved := &appconfig.AppConfig{AppID: robotRuntimeAppID}
+	reserved := &appconfig.AppConfig{AppID: go2RuntimeAppID}
 	if _, err := prepareRobotAppConfig(&grpcclient.AgentConnection{SimulatorName: "robot"}, reserved, nil); err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Fatalf("user deployment could replace robot runtime: %v", err)
 	}
@@ -393,6 +402,171 @@ func TestRobotConfigureRejectsMissingVMAndInvalidNameWithoutCreatingFiles(t *tes
 	}
 }
 
+func TestRobotConfigureG1SelectsItsOwnBundleAndPreservesOtherVMs(t *testing.T) {
+	store := robotTestStore(t)
+	go2 := robotTestProfile(t, store, "go2-vm")
+	before, _ := os.ReadFile(store.RobotProfilePath("go2-vm"))
+	if err := os.MkdirAll(store.Dir("humanoid"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.MetaPath("humanoid"), []byte(`{"imageVersion":"existing-image"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	robotTestHTTP(t, func(*http.Request) (*http.Response, error) {
+		t.Fatal("configuration contacted a runtime")
+		return nil, errors.New("unexpected request")
+	})
+	cmd := newVMRobotCmd()
+	cmd.SetArgs([]string{"configure", "humanoid", "--profile", "g1"})
+	cmd.SetOut(io.Discard)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	profile, exists, err := store.ReadRobotProfile("humanoid")
+	if err != nil || !exists || profile.Kind != vm.RobotKindG1 || profile.SourceDigest != g1bundle.SourceDigest() || profile.PolicyBundle != "g1-29dof-velocity-v0-4960b847-v1" {
+		t.Fatalf("G1 configuration used the wrong runtime bundle: %+v %t %v", profile, exists, err)
+	}
+	if profile.SourceDigest == go2.SourceDigest || profile.SandboxHostPort != 0 || profile.RuntimeDigest != "" {
+		t.Fatalf("G1 reused Go2 provenance or invented a live runtime: %+v", profile)
+	}
+	after, _ := os.ReadFile(store.RobotProfilePath("go2-vm"))
+	if string(before) != string(after) {
+		t.Fatal("configuring G1 changed another VM's Go2 profile")
+	}
+	info := readSimulatorRobots(context.Background(), []vm.Status{{Name: "go2-vm"}, {Name: "humanoid"}})
+	if info["go2-vm"].Kind != "Unitree Go2" || info["humanoid"].Kind != "Unitree G1" || info["humanoid"].State != "stopped" {
+		t.Fatalf("picker mislabeled robot kinds: %+v", info)
+	}
+	if _, err := os.Lstat(store.StatePath("humanoid")); !os.IsNotExist(err) {
+		t.Fatalf("configuration or picker booted G1: %v", err)
+	}
+	for _, kind := range []string{"generic", "unknown"} {
+		cmd := newVMRobotCmd()
+		cmd.SetArgs([]string{"configure", "humanoid", "--profile", kind})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		if err := cmd.ExecuteContext(context.Background()); err == nil || !strings.Contains(err.Error(), "unsupported robot kind") {
+			t.Fatalf("robot configure accepted %q: %v", kind, err)
+		}
+	}
+}
+
+func TestRobotBundleEnvironmentRetainsGo2AndSeparatesG1(t *testing.T) {
+	for _, kind := range []string{vm.RobotKindGo2, vm.RobotKindG1} {
+		t.Run(kind, func(t *testing.T) {
+			runtime, err := robotRuntimeForKind(kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile, err := vm.NewRobotProfile(kind, runtime.sourceDigest(), runtime.policyBundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile.Seed, profile.VisualDetail = 42, "full"
+			prefix := map[string]string{"go2": "GO2_", "g1": "G1_"}[kind]
+			want := []string{prefix + "VM_NAME=robot", prefix + "SOURCE_DIGEST=" + profile.SourceDigest,
+				prefix + "WORLD=indoor", prefix + "SEED=42", prefix + "VISUAL_DETAIL=full"}
+			if got := runtime.environment("robot", profile); !reflect.DeepEqual(got, want) {
+				t.Fatalf("runtime environment changed the profile contract: got %v want %v", got, want)
+			}
+			state := robotTestStatus("robot", profile)
+			if err := state.matches("robot", profile); err != nil {
+				t.Fatal(err)
+			}
+			state.RobotKind = map[string]string{"go2": "g1", "g1": "go2"}[kind]
+			if err := state.matches("robot", profile); err == nil {
+				t.Fatal("accepted another robot kind with copied profile identity")
+			}
+		})
+	}
+}
+
+func TestRobotUpdateSelectsOnlyThePersistedKindsSource(t *testing.T) {
+	for _, kind := range []string{vm.RobotKindGo2, vm.RobotKindG1} {
+		t.Run(kind, func(t *testing.T) {
+			store := robotTestStore(t)
+			profile := robotTestProfileForKind(t, store, "robot", kind)
+			if err := store.UpdateRobotProfile("robot", func(p *vm.RobotProfile) error {
+				p.SourceDigest, p.PolicyBundle = "sha256:"+strings.Repeat("a", 64), "old-bundle"
+				p.RuntimeDigest, p.Seed = "sha256:"+strings.Repeat("b", 64), 42
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			conn := robotTestRunningVM(t, "robot", profile)
+			expected := errors.New("stop at verified port mapping before deployment")
+			robotSandboxPort = func(*vm.Store, context.Context, string) (int, error) { return 0, expected }
+			if err := reconcileRobot(context.Background(), conn, true); !errors.Is(err, expected) {
+				t.Fatalf("kind-specific update failed before resource/capability checks completed: %v", err)
+			}
+			got, _, err := store.ReadRobotProfile("robot")
+			if err != nil || got.Kind != kind || got.SourceDigest != profile.SourceDigest || got.PolicyBundle != profile.PolicyBundle || got.RuntimeDigest != "" || got.Seed != 42 {
+				t.Fatalf("update changed kind or pinned another robot's source: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestRobotKindsReserveBothRuntimeIDsAndSelectOnlyTheirOwnContainer(t *testing.T) {
+	for _, kind := range []string{vm.RobotKindGo2, vm.RobotKindG1} {
+		t.Run(kind, func(t *testing.T) {
+			store := robotTestStore(t)
+			robotTestProfileForKind(t, store, "robot", kind)
+			runtime, err := robotRuntimeForKind(kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, appID := range []string{go2RuntimeAppID, g1RuntimeAppID} {
+				conn := &grpcclient.AgentConnection{SimulatorName: "robot"}
+				cfg := &appconfig.AppConfig{AppID: appID}
+				if _, err := prepareRobotAppConfig(conn, cfg, nil); err == nil || !strings.Contains(err.Error(), "reserved") {
+					t.Fatalf("user deployment could claim managed app %s: %v", appID, err)
+				}
+				client := &robotRestartClient{app: &agentpb.AppContainer{AppName: appID}}
+				conn.ContainerService = client
+				selected, err := findRobotContainer(context.Background(), conn, runtime.appID)
+				if err != nil || (selected != nil) != (appID == runtime.appID) {
+					t.Fatalf("%s selected foreign managed container %s: %+v %v", kind, appID, selected, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRobotG1RejectsGo2CapabilityBeforeLifecycleOperations(t *testing.T) {
+	store := robotTestStore(t)
+	profile := robotTestProfileForKind(t, store, "robot", vm.RobotKindG1)
+	conn := robotTestRunningVM(t, "robot", profile)
+	info := conn.AgentService.(*fakeAgentVersionClient).resp
+	info.Featureset = []string{"go2-virtual-robot"}
+	robotSandboxPort = func(*vm.Store, context.Context, string) (int, error) {
+		t.Fatal("G1 used Go2 capability to reach port mapping")
+		return 0, nil
+	}
+	for _, action := range []func() error{
+		func() error { return reconcileRobot(context.Background(), conn, false) },
+		func() error { return restartRobot(context.Background(), conn) },
+	} {
+		if err := action(); err == nil || !strings.Contains(err.Error(), "g1-virtual-robot") {
+			t.Fatalf("G1 accepted Go2-only agent support: %v", err)
+		}
+	}
+	info.Featureset = append(info.Featureset, "g1-virtual-robot")
+	if err := requireRobotAgentCapability(context.Background(), conn, vm.RobotKindG1); err != nil {
+		t.Fatalf("G1 rejected an explicitly capable agent: %v", err)
+	}
+	if err := store.UpdateRobotProfile("robot", func(p *vm.RobotProfile) error { p.SourceDigest = go2bundle.SourceDigest(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"start", "restart"} {
+		cmd := &cobra.Command{}
+		cmd.SetContext(context.Background())
+		if err := runVMRobot(cmd, action, "robot"); err == nil || !strings.Contains(err.Error(), "different Unitree G1 runtime source") {
+			t.Fatalf("%s accepted the Go2 source for a G1 profile: %v", action, err)
+		}
+	}
+}
+
 func TestSimulatorRobotRefreshIsReadOnlyAndSeparatesPowerFromReadiness(t *testing.T) {
 	store := robotTestStore(t)
 	p := robotTestProfile(t, store, "robot")
@@ -467,7 +641,7 @@ func robotTestRunningVM(t *testing.T, name string, profile vm.RobotProfile) *grp
 		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
 			// GetAgentVersion reports the WendyOS distribution, although the
 			// agent's kernel platform/runtime.GOOS is Linux.
-			Os: "wendyos", DeviceType: &deviceType, Featureset: []string{"go2-virtual-robot"},
+			Os: "wendyos", DeviceType: &deviceType, Featureset: []string{profile.Kind + "-virtual-robot"},
 		}},
 	}
 }
@@ -512,42 +686,50 @@ func (*robotStartedStream) Recv() (*agentpb.RunContainerLayersResponse, error) {
 }
 
 func TestRobotRestartRecoversUnhealthyRuntimeAndSerializesProvisioning(t *testing.T) {
-	store := robotTestStore(t)
-	profile := robotTestProfile(t, store, "robot")
-	conn := robotTestRunningVM(t, "robot", profile)
-	state := robotTestStatus("robot", profile)
-	state.Healthy, state.Ready, state.Error = false, false, "renderer failed"
-	client := &robotRestartClient{app: &agentpb.AppContainer{AppName: robotRuntimeAppID, AppVersion: robotAppVersion(profile)}}
-	client.onStart = func(req *agentpb.StartContainerRequest) {
-		if req.GetRestartPolicy().GetMode() != agentpb.RestartPolicyMode_UNLESS_STOPPED {
-			t.Fatal("restart lost persisted automatic restart behavior")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
-		defer cancel()
-		if unlock, err := lockRobotProvision(ctx, store, "robot"); !errors.Is(err, context.DeadlineExceeded) {
-			if unlock != nil {
-				unlock()
+	for _, kind := range []string{vm.RobotKindGo2, vm.RobotKindG1} {
+		t.Run(kind, func(t *testing.T) {
+			store := robotTestStore(t)
+			profile := robotTestProfileForKind(t, store, "robot", kind)
+			runtime, err := robotRuntimeForKind(kind)
+			if err != nil {
+				t.Fatal(err)
 			}
-			t.Fatalf("restart released the provisioning lock before start completed: %v", err)
-		}
-		state = robotTestStatus("robot", profile)
-	}
-	conn.ContainerService = client
-	robotTestHTTP(t, func(*http.Request) (*http.Response, error) {
-		body, _ := json.Marshal(state)
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
-	})
-	before, _ := os.ReadFile(store.RobotProfilePath("robot"))
-	if err := restartRobot(context.Background(), conn); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"list", "stop:" + robotRuntimeAppID, "start:" + robotRuntimeAppID}
-	if !reflect.DeepEqual(client.calls, want) {
-		t.Fatalf("restart operations = %v, want %v", client.calls, want)
-	}
-	after, _ := os.ReadFile(store.RobotProfilePath("robot"))
-	if string(before) != string(after) {
-		t.Fatal("restart changed the pinned profile")
+			conn := robotTestRunningVM(t, "robot", profile)
+			state := robotTestStatus("robot", profile)
+			state.Healthy, state.Ready, state.Error = false, false, "renderer failed"
+			client := &robotRestartClient{app: &agentpb.AppContainer{AppName: runtime.appID, AppVersion: robotAppVersion(profile)}}
+			client.onStart = func(req *agentpb.StartContainerRequest) {
+				if req.GetRestartPolicy().GetMode() != agentpb.RestartPolicyMode_UNLESS_STOPPED {
+					t.Fatal("restart lost persisted automatic restart behavior")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+				defer cancel()
+				if unlock, err := lockRobotProvision(ctx, store, "robot"); !errors.Is(err, context.DeadlineExceeded) {
+					if unlock != nil {
+						unlock()
+					}
+					t.Fatalf("restart released the provisioning lock before start completed: %v", err)
+				}
+				state = robotTestStatus("robot", profile)
+			}
+			conn.ContainerService = client
+			robotTestHTTP(t, func(*http.Request) (*http.Response, error) {
+				body, _ := json.Marshal(state)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+			})
+			before, _ := os.ReadFile(store.RobotProfilePath("robot"))
+			if err := restartRobot(context.Background(), conn); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"list", "stop:" + runtime.appID, "start:" + runtime.appID}
+			if !reflect.DeepEqual(client.calls, want) {
+				t.Fatalf("restart operations = %v, want %v", client.calls, want)
+			}
+			after, _ := os.ReadFile(store.RobotProfilePath("robot"))
+			if string(before) != string(after) {
+				t.Fatal("restart changed the pinned profile")
+			}
+		})
 	}
 }
 
@@ -558,7 +740,7 @@ func TestRobotRestartRejectsMismatchesAndPropagatesLifecycleFailures(t *testing.
 			profile := robotTestProfile(t, store, "robot")
 			conn := robotTestRunningVM(t, "robot", profile)
 			state := robotTestStatus("robot", profile)
-			client := &robotRestartClient{app: &agentpb.AppContainer{AppName: robotRuntimeAppID, AppVersion: robotAppVersion(profile)}}
+			client := &robotRestartClient{app: &agentpb.AppContainer{AppName: go2RuntimeAppID, AppVersion: robotAppVersion(profile)}}
 			conn.ContainerService = client
 			wantCalls := 3
 			switch scenario {
@@ -676,7 +858,7 @@ func TestRobotAgentCapabilityGateUsesExplicitSupportBeforeRuntimeOperations(t *t
 				deviceType := "unitree-go2"
 				info.DeviceType = &deviceType
 			}
-			err := requireGo2AgentCapability(context.Background(), conn)
+			err := requireRobotAgentCapability(context.Background(), conn, vm.RobotKindGo2)
 			if wantSupport {
 				if err != nil {
 					t.Fatal(err)
@@ -729,7 +911,7 @@ func TestRobotAgentCapabilityAcceptsTheReportedWendyOSVMContract(t *testing.T) {
 			}
 			conn := &grpcclient.AgentConnection{SimulatorName: "go2-sim",
 				AgentService: &fakeAgentVersionClient{resp: &info}}
-			err := requireGo2AgentCapability(context.Background(), conn)
+			err := requireRobotAgentCapability(context.Background(), conn, vm.RobotKindGo2)
 			if (err == nil) != wantSupport {
 				t.Fatalf("reported OS %q, device %q, features %v: %v", info.GetOs(), info.GetDeviceType(), info.GetFeatureset(), err)
 			}

@@ -9,3 +9,10 @@ __pycache__/
 .pytest_cache/
 *.pyc
 results/
+
+# Reviewed browser dependencies are source inputs, unlike Go's vendor tree.
+!go2_sim/vendor/
+go2_sim/vendor/*
+!go2_sim/vendor/three.module.js
+!go2_sim/vendor/three.core.js
+!go2_sim/vendor/OrbitControls.js

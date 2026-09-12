@@ -67,7 +67,7 @@ def main():
         after = runtime.status()
         elapsed = after["metrics"]["wall_seconds"] - before["metrics"]["wall_seconds"]
         rates = {key: (after["metrics"][key] - before["metrics"][key]) / elapsed
-                 for key in ("physics_steps", "policy_updates", "frames", "camera_frames", "cpu_seconds")}
+                 for key in ("physics_steps", "policy_updates", "camera_frames", "cpu_seconds")}
         ros = {kind: {key: (after["ros"][kind][key] - before["ros"][kind].get(key, 0)) / elapsed
                       for key in after["ros"][kind]} for kind in ("samples", "native_samples")}
         targets = {"physics": rates["physics_steps"] >= 475,
@@ -79,7 +79,6 @@ def main():
         if os.environ.get("GO2_NATIVE") == "1":
             targets["lowstate"] = ros["native_samples"].get("lowstate", 0) >= 475
         if args.render:
-            targets["observer"] = rates["frames"] >= 14
             targets["camera"] = ros["samples"].get("camera", 0) >= 14
         queue = after["ros"]["snapshot_queue"]
         queue_delta = {key: queue[key] - before["ros"]["snapshot_queue"][key]

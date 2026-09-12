@@ -1840,7 +1840,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// skips the recovery hooks (NewTask will report an invalid stored spec).
 	storedSpec, storedSpecErr := container.Spec(ctx)
 	if storedSpecErr == nil {
-		// Managed Go2 VMs may use legacy netfilter kernels. Prepare their
+		// Managed virtual robot VMs may use legacy netfilter kernels. Prepare their
 		// fixed firewall modules on the host before the confined bootstrap;
 		// this path also runs after VM reboot and never holds c.mu.
 		if err := prepareGo2KernelModulesForStart(ctx, containerLabels, storedSpec); err != nil {

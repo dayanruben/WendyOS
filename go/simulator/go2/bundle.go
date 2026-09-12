@@ -23,7 +23,8 @@ import (
 // Keep this allowlist narrow: embedding whole directories would accidentally
 // ship downloaded meshes, Python environments, or generated ROS build output.
 //
-//go:embed go2_sim/*.py go2_sim/index.html
+//go:embed go2_sim/*.py go2_sim/index.html go2_sim/viewer.js go2_sim/lidar-view.js
+//go:embed go2_sim/vendor/three.module.js go2_sim/vendor/three.core.js go2_sim/vendor/OrbitControls.js
 //go:embed ros_ws/src/go2_command_ingress/src/command_ingress.cpp
 //go:embed ros_ws/src/go2_command_ingress/CMakeLists.txt ros_ws/src/go2_command_ingress/package.xml
 //go:embed assets.lock.json unitree.lock.json visuals.lock.json requirements*.txt

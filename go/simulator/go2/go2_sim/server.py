@@ -10,6 +10,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from .runtime import Runtime
+from .camera import preview_jpeg
+
+
+STATIC_ASSETS = {"/viewer.js": "viewer.js", "/lidar-view.js": "lidar-view.js",
+                 "/vendor/three.module.js": "vendor/three.module.js",
+                 "/vendor/three.core.js": "vendor/three.core.js",
+                 "/vendor/OrbitControls.js": "vendor/OrbitControls.js"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -20,12 +27,14 @@ class Handler(BaseHTTPRequestHandler):
     def runtime(self):
         return self.server.runtime
 
-    def send(self, code, value, mime="application/json"):
-        payload = json.dumps(value, allow_nan=False).encode() if mime == "application/json" else value
+    def send(self, code, value, mime="application/json", *, encoded=False, headers=None):
+        payload = json.dumps(value, allow_nan=False).encode() if mime == "application/json" and not encoded else value
         self.send_response(code)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -38,16 +47,40 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/profile":
                 profile = Path(__file__).resolve().parents[1] / "compatibility.json"
                 self.send(200, json.loads(profile.read_text()))
-            elif path in {"/frame.jpg", "/camera.jpg"}:
-                jpeg = self.runtime.jpeg if path == "/frame.jpg" else self.runtime.camera_jpeg
-                if jpeg is None:
-                    self.send(503, {"error": "waiting for first frame"})
-                else:
-                    self.send(200, jpeg, "image/jpeg")
+            elif path == "/api/scene":
+                scene = self.runtime.scene
+                compressed = False
+                for encoding in self.headers.get("Accept-Encoding", "").split(","):
+                    parts = [part.strip() for part in encoding.split(";")]
+                    if parts[0] == "gzip":
+                        try:
+                            compressed = all(float(part[2:]) > 0 for part in parts[1:] if part.startswith("q="))
+                        except ValueError:
+                            compressed = False
+                headers = {"Vary": "Accept-Encoding", "ETag": '"' + scene.description["id"] + '"'}
+                if compressed:
+                    headers["Content-Encoding"] = "gzip"
+                self.send(200, scene.gzip if compressed else scene.json, encoded=True, headers=headers)
+            elif path == "/api/scene/state":
+                self.send(200, self.runtime.scene.state_json(self.runtime), encoded=True)
+            elif path == "/api/scene/lidar":
+                self.send(200, self.runtime.browser_lidar.state_json(), encoded=True)
+            elif path == "/frame.jpg":
+                self.send(410, {"error": "observer images were replaced by /api/scene and /api/scene/state"})
+            elif path == "/camera.jpg":
+                self.send(200, preview_jpeg(self.runtime), "image/jpeg")
             elif path == "/":
                 self.send(200, Path(__file__).with_name("index.html").read_bytes(), "text/html; charset=utf-8")
+            elif path in STATIC_ASSETS:
+                asset = Path(__file__).parent / STATIC_ASSETS[path]
+                if asset.is_file():
+                    self.send(200, asset.read_bytes(), "text/javascript; charset=utf-8")
+                else:
+                    self.send(404, {"error": "not found"})
             else:
                 self.send(404, {"error": "not found"})
+        except RuntimeError as exc:
+            self.send(503, {"error": str(exc)})
         except (BrokenPipeError, ConnectionResetError):
             pass
 

@@ -11,12 +11,15 @@ GO2_NATIVE=1 LP_NUM_THREADS=2 python3 tools/ros_timing.py \
 
 Use the profile's loopback-only Cyclone configuration. Run one benchmark runtime
 at a time and stop other simulator containers/VM apps before comparing renderer
-settings. Full mode renders a 640×360 observer and a separate 640×360 robot
-camera, publishes actual camera frames, and emits the five-ring lidar cloud.
+settings. Full mode renders the 640×360 robot sensor camera, publishes actual
+camera frames, and emits the five-ring lidar cloud. The sandbox receives scene
+state and renders in the browser. Producer counters include `camera_frames`;
+this benchmark does not measure browser rendering performance.
 
 The clean local ARM64 Docker comparison on 2026-09-12 used the pinned MuJoCo,
-policy, and generated ROS overlays with a fixed Python source snapshot. Both
-camera and observer were enabled throughout:
+policy, and generated ROS overlays with a fixed Python source snapshot. That
+historical snapshot rendered both camera and observer images on the CPU. Its
+original measurements are retained below and predate the browser 3D renderer:
 
 | Mesa workers | Physics Hz | Policy Hz | LowState Hz | IMU Hz | Lidar Hz | Observer FPS | ROS camera FPS | CPU cores |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

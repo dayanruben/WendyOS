@@ -419,7 +419,7 @@ def soak_interval(first, last):
     require(wall > 0 and runtime_wall > 0, "soak measurement clocks did not advance")
     result = {"wall_seconds": wall,
               "real_time_factor": (last["time"] - first["time"]) / runtime_wall}
-    for counter, name in (("policy_updates", "policy_hz"), ("frames", "observer_fps"),
+    for counter, name in (("policy_updates", "policy_hz"), ("camera_frames", "camera_fps"),
                           ("physics_steps", "physics_hz")):
         delta = last["metrics"][counter] - first["metrics"][counter]
         require(delta >= 0, f"runtime {counter} counter reset during soak")
@@ -636,7 +636,6 @@ def soak(api, probe, duration):
             targets = {"window_at_least_600_seconds": measured["wall_seconds"] >= 600,
                        "real_time_factor_at_least_0_95": measured["real_time_factor"] >= 0.95,
                        "policy_hz_at_least_47_5": measured["policy_hz"] >= 47.5,
-                       "observer_fps_at_least_14": measured["observer_fps"] >= 14,
                        "all_runtime_trailing_command_p95_under_100ms":
                            len(observed_p95) == len(samples) and max(observed_p95, default=100) < 100,
                        "no_command_refresh_gaps_over_200ms": measured["command_gaps_over_200ms"] == 0}

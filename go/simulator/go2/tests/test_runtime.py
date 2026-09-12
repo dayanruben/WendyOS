@@ -2,6 +2,7 @@
 
 import http.client
 from http.server import ThreadingHTTPServer
+import gzip
 import json
 import threading
 import time
@@ -31,15 +32,17 @@ def endpoint():
     runtime.start()
     serving.start()
 
-    def request(path, body=None):
+    def request(path, body=None, *, headers=None, raw=False):
         connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2.0)
         try:
             connection.request(
                 "GET" if body is None else "POST", path,
                 body=None if body is None else json.dumps(body),
-                headers={} if body is None else {"Content-Type": "application/json"},
+                headers={**({} if body is None else {"Content-Type": "application/json"}), **(headers or {})},
             )
             response = connection.getresponse()
+            if raw:
+                return response.status, response.read(), dict(response.getheaders())
             return response.status, json.loads(response.read())
         finally:
             connection.close()
@@ -134,6 +137,7 @@ def test_http_physics_fault_is_reported_and_reset_recovers_the_live_thread(endpo
     _, grant = request("/api/arm", {})
     assert request("/api/command", {"token": grant["token"], "velocity": [0.35, 0.0, 0.0]})[0] == 200
     epoch = request("/api/status")[1]["epoch"]
+    last_pose = request("/api/scene/state")[1]
     # Corrupt a physical state value under the production synchronization lock.
     # The actual physics loop must recognize the fault and remain recoverable.
     with runtime.lock:
@@ -148,6 +152,10 @@ def test_http_physics_fault_is_reported_and_reset_recovers_the_live_thread(endpo
     assert not fault["armed"]
     assert fault["position"][0] is None, "invalid physics must still produce valid JSON diagnostics"
     assert fault["command"] == pytest.approx([0.0, 0.0, 0.0])
+    code, fault_pose = request("/api/scene/state")
+    assert code == 200 and fault_pose["valid"] is False and fault_pose["mode"] == "fault"
+    assert fault_pose["positions"] == last_pose["positions"]
+    assert fault_pose["quaternions"] == last_pose["quaternions"]
     assert runtime.threads[0].is_alive()
     assert request("/api/resume", {})[0] == 503
     assert request("/api/command", {"token": grant["token"], "velocity": [0.35, 0.0, 0.0]})[0] == 503
@@ -155,6 +163,8 @@ def test_http_physics_fault_is_reported_and_reset_recovers_the_live_thread(endpo
     code, reset = request("/api/reset", {})
     assert code == 200
     assert reset["epoch"] != epoch
+    reset_pose = request("/api/scene/state")[1]
+    assert reset_pose["epoch"] == reset["epoch"] and reset_pose["valid"]
     wait_until(lambda: request("/api/health")[0] == 200)
     healthy = request("/api/status")[1]
     assert healthy["error"] is None
@@ -232,3 +242,50 @@ def test_sensor_settings_are_strict_atomic_and_do_not_change_control_ownership(e
     assert request("/api/reset", {})[0] == 200
     assert request("/api/status")[1]["sensor_settings"] == {
         "lidar_enabled": False, "camera_enabled": False, "lidar_dropout": 0.5}
+
+
+def test_http_browser_scene_is_static_compressed_and_excludes_robot_collision_proxies(endpoint):
+    runtime, request = endpoint
+    code, scene = request("/api/scene")
+    assert code == 200 and scene["version"] == 1
+    assert len(scene["meshes"]) == runtime.sim.model.nmesh
+    names = {geom["name"] for geom in scene["geoms"]}
+    assert {"floor", "east_wall", "west_wall", "north_wall", "south_wall", "obstacle"} <= names
+    assert "base_box" not in names and "base_cyl1" not in names
+    code, compressed, headers = request("/api/scene", headers={"Accept-Encoding": "gzip"}, raw=True)
+    assert code == 200 and headers["Content-Encoding"] == "gzip"
+    assert headers["Vary"] == "Accept-Encoding"
+    assert json.loads(gzip.decompress(compressed)) == scene
+    assert len(compressed) < len(runtime.scene.json) / 2
+    for encoding in ("gzip;q=0", "gzip;q=invalid"):
+        code, payload, headers = request("/api/scene", headers={"Accept-Encoding": encoding}, raw=True)
+        assert code == 200 and "Content-Encoding" not in headers
+        assert payload == runtime.scene.json
+    assert request("/frame.jpg")[0] == 410
+    assert request("/camera.jpg")[0] == 503
+    assert request("/vendor/../../runtime.py")[0] == 404
+    assert request("/vendor/arbitrary.js")[0] == 404
+    assert request("/api/health")[0] == 200, "headless browser rendering needs no server JPEG"
+
+
+def test_http_scene_lifecycle_and_movable_obstacle_update_without_reloading_meshes(endpoint):
+    runtime, request = endpoint
+    scene = request("/api/scene")[1]
+    initial = request("/api/scene/state")[1]
+    assert initial["scene_id"] == scene["id"] and initial["valid"]
+    assert len(initial["positions"]) == len(scene["bodies"]) * 3
+    assert len(initial["quaternions"]) == len(scene["bodies"]) * 4
+    assert request("/api/pause", {})[0] == 200
+    paused = request("/api/scene/state")[1]
+    assert paused["mode"] == "paused" and paused["generation"] > initial["generation"]
+    assert request("/api/scene/state")[1] == paused, "reconnecting clients see the same paused state"
+    assert request("/api/obstacle", {"position": [3, 2]})[0] == 200
+    moved = request("/api/scene/state")[1]
+    body = runtime.sim.model.body("sandbox_obstacle").id
+    assert moved["positions"][body * 3:body * 3 + 3] == [3, 2, 0.4]
+    assert moved["generation"] > paused["generation"] and moved["scene_id"] == scene["id"]
+    assert request("/api/reset", {})[0] == 200
+    reset = request("/api/scene/state")[1]
+    assert reset["epoch"] > initial["epoch"] and reset["generation"] > moved["generation"]
+    assert reset["positions"][body * 3:body * 3 + 3] == [2.5, 1.5, 0.4]
+    assert reset["scene_id"] == scene["id"] and reset["valid"]

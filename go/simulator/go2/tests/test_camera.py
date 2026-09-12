@@ -1,15 +1,21 @@
 """Virtual camera calibration, retained exposures, and optional real GL rendering."""
 
+import io
 import math
 import os
+import threading
+import time
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
 import pytest
+from PIL import Image
 
-from go2_sim.camera import CameraFrame, intrinsics
+from go2_sim.camera import CameraFrame, intrinsics, preview_jpeg
 from go2_sim.sensors import CAMERA_POSITION, instrumented_model
 from go2_sim.simulation import DEFAULT_ASSETS, Simulation
+from go2_sim.runtime import Runtime
 
 
 def test_front_camera_optical_axes_and_intrinsics_match_mujoco_model():
@@ -39,6 +45,128 @@ def test_exposure_owns_immutable_rgb_copy_and_retains_capture_identity():
         frame.rgb[0, 0, 0] = 0
     with pytest.raises(ValueError, match="640x360 RGB uint8"):
         CameraFrame(7, 4, 1.25, 123456789, np.zeros((360, 640, 4), dtype=np.uint8))
+
+
+@pytest.mark.parametrize("setting,expected", [
+    ({"render": False}, "GO2_RENDER=0"),
+    ({"errors": {"render": "graphics unavailable"}}, "Camera renderer failed: graphics unavailable"),
+    ({"sensor_settings": {"camera_enabled": False}}, "Camera sensor is disabled"),
+    ({"sim": SimpleNamespace(mode="paused")}, "paused with the simulation"),
+    ({"sim": SimpleNamespace(mode="fault")}, "simulation fault"),
+    ({"camera_jpeg": None}, "first MuJoCo camera exposure"),
+])
+def test_camera_preview_reports_unavailable_reason_even_with_retained_bytes(setting, expected):
+    runtime = SimpleNamespace(lock=threading.RLock(), render=True, errors={},
+                              sensor_settings={"camera_enabled": True},
+                              sim=SimpleNamespace(mode="standing"), camera_jpeg=b"retained JPEG")
+    assert preview_jpeg(runtime) == b"retained JPEG"
+    runtime.__dict__.update(setting)
+    with pytest.raises(RuntimeError, match=expected):
+        preview_jpeg(runtime)
+
+
+def test_runtime_renders_only_sensor_camera_and_fences_old_exposures(monkeypatch):
+    entered, finish = threading.Event(), threading.Event()
+    cameras = []
+
+    class Renderer:
+        scene = SimpleNamespace(flags={})
+
+        def __init__(self, model, *, height, width):
+            assert (height, width) == (360, 640)
+            self.camera = model.camera("front").id
+
+        def update_scene(self, data, *, camera, scene_option):
+            assert camera == self.camera, "the server must never render an observer view"
+            assert not scene_option.geomgroup[3]
+            cameras.append(camera)
+
+        def render(self):
+            entered.set()
+            assert finish.wait(timeout=3)
+            return np.full((360, 640, 3), 123, dtype=np.uint8)
+
+        def close(self):
+            pass
+
+    def until(predicate):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError("timed out waiting for camera renderer")
+
+    monkeypatch.setattr(mujoco, "Renderer", Renderer)
+    runtime = Runtime(render=True)
+    runtime.start()
+    try:
+        assert entered.wait(timeout=3)
+        runtime.configure_sensors({"camera_enabled": False})
+        finish.set()
+        until(lambda: bool(runtime.render_stage_ms))
+        assert runtime.camera_frame is None and runtime.camera_jpeg is None
+        assert runtime.camera_frames == 0
+        until(lambda: runtime.status()["ready"])
+        assert runtime.status()["healthy"], "camera-disabled mode remains usable in the browser"
+        runtime.configure_sensors({"camera_enabled": True})
+        until(lambda: runtime.camera_frame is not None)
+        assert isinstance(runtime.camera_frame, CameraFrame)
+        assert runtime.camera_frame.generation == runtime.observation_generation
+        assert runtime.camera_frame.epoch == runtime.sim.epoch
+        assert np.all(runtime.camera_frame.rgb == 123)
+        assert runtime.camera_jpeg.startswith(b"\xff\xd8")
+        with Image.open(io.BytesIO(runtime.camera_jpeg)) as preview:
+            assert preview.size == (640, 360)
+            np.testing.assert_array_equal(np.asarray(preview.convert("RGB")), runtime.camera_frame.rgb)
+        assert cameras and runtime.error is None
+        assert not any(stage.startswith("observer_") for record in runtime.render_stage_ms for stage in record)
+    finally:
+        finish.set()
+        runtime.close()
+
+
+def test_sensor_renderer_failure_is_reported_even_with_browser_rendering(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("test camera failure")
+
+    monkeypatch.setattr(mujoco, "Renderer", fail)
+    runtime = Runtime(render=True)
+    runtime.start()
+    try:
+        runtime.threads[1].join(timeout=2)
+        status = runtime.status()
+        assert "test camera failure" in status["error"]
+        assert not status["healthy"] and not status["ready"]
+        assert runtime.scene.state_json(runtime), "the 3D viewer can still inspect the world"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.skipif(os.environ.get("GO2_TEST_RENDER") != "1", reason="requires an OpenGL renderer; use MUJOCO_GL=osmesa in the image")
+def test_live_camera_preview_encodes_the_same_mujoco_exposure_retained_for_ros():
+    runtime = Runtime(render=True)
+    runtime.start()
+    try:
+        deadline = time.monotonic() + 5
+        while runtime.camera_frame is None and time.monotonic() < deadline:
+            assert runtime.error is None, runtime.error
+            time.sleep(0.01)
+        with runtime.lock:
+            frame = runtime.camera_frame
+            assert frame is not None, "camera renderer did not publish an exposure"
+            jpeg = preview_jpeg(runtime)
+        pixels = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
+        assert pixels.shape == frame.rgb.shape == (360, 640, 3)
+        assert frame.epoch == runtime.sim.epoch
+        assert frame.generation == runtime.observation_generation
+        assert frame.wall_timestamp_ns > 0
+        assert pixels.std() > 10, "front camera must contain a visible scene"
+        # ROS publishes this immutable frame's raw RGB bytes. The browser gets
+        # its JPEG encoding, whose small differences come from lossy compression.
+        assert np.abs(pixels.astype(float) - frame.rgb).mean() < 5
+    finally:
+        runtime.close()
 
 
 @pytest.mark.skipif(os.environ.get("GO2_TEST_RENDER") != "1", reason="requires an OpenGL renderer; use MUJOCO_GL=osmesa in the image")

@@ -1,4 +1,4 @@
-# Go2 controller and robot asset provenance
+# Go2 runtime and robot asset provenance
 
 The runtime uses the published `go2_moe_cts_164k_0.6715` locomotion policy,
 the deployment parameters distributed beside its ONNX file, and the Go2 MJCF
@@ -231,19 +231,64 @@ SDK and stock ROS interoperability results.
 ## Render assets and virtual sensors
 
 Physics always loads the original verified meshes. The default `balanced`
-renderer loads a separate model whose visual meshes are generated with
-`fast-simplification==0.1.12` and `numpy==1.26.4`. `visuals.lock.json` records
+visual model shared by the browser and robot camera sensor uses meshes
+generated with `fast-simplification==0.1.12` and `numpy==1.26.4`. `visuals.lock.json` records
 every input/output hash and the generator hash. Generation runs on Linux ARM64
 in the pinned container because floating-point simplification differs between
 platforms; offline `--check` works on other hosts. Material boundaries and
 60-degree normal creases are retained. A two-millimetre bounds guard keeps the
 front lens mesh at full detail. Instanced visual triangles decrease from
 398,432 to 120,417. Collision geometry, inertia, contacts and policy inputs
-are unchanged. `GO2_VISUAL_DETAIL=full` selects the original visual meshes.
+are unchanged. `GO2_VISUAL_DETAIL=full` selects the original visual meshes for
+both browser and robot camera sensor rendering.
+
+The browser sandbox receives that visual model's compiled geometry and
+materials once from `/api/scene` (about 636 KB gzip at balanced detail). It
+applies subsequent `/api/scene/state` body
+poses locally, including obstacle changes and world resets. Its WebGL camera
+supports orbit, pan and zoom. **Reset view** centers the current robot position
+at the default viewing angle and distance. `/camera.jpg` remains a rendered
+observation from the front camera sensor described below; sandbox viewing uses
+the state endpoints.
+
+Browser lidar overlays use the actual captured lidar returns. With ROS enabled,
+the runtime retains the same sampled point cloud sent to `/utlidar/cloud` and
+transforms it using its captured sensor pose. Without ROS, a shared on-demand
+10 Hz sampler casts the same MuJoCo rays. `/api/scene/lidar` carries the capture
+epoch, generation, time, origin and world-space points. Paused, disabled or
+expired samples are omitted; seeded dropout applies to these observations.
+
+The browser renderer vendors [Three.js r180 (0.180.0)](https://github.com/mrdoob/three.js/releases/tag/r180)
+at immutable commit [`0af9729d0c143a86a1d725d6e2c3ad83301f3f34`](https://github.com/mrdoob/three.js/tree/0af9729d0c143a86a1d725d6e2c3ad83301f3f34).
+The reviewed modules under `go2_sim/vendor/` are embedded in the CLI source
+bundle and copied into both runtime images. All imports resolve to that same
+runtime; no package installation, CDN or external browser request is needed.
+The MIT notice is retained at `licenses/three.LICENSE`.
+
+| Upstream path | Vendored path | Upstream SHA-256 |
+| --- | --- | --- |
+| `build/three.module.js` | `go2_sim/vendor/three.module.js` | `c8211c69345d2e9949dc7a8ac969380497aa0600a5a8ac6a459c8cd02dd9cb8a` |
+| `build/three.core.js` | `go2_sim/vendor/three.core.js` | `eb077d2417f61d3e6d9264c317cabc4ea35769ed6b0ab533067292a550784c20` |
+| `examples/jsm/controls/OrbitControls.js` | `go2_sim/vendor/OrbitControls.js` | `b97879c748170baadeb3fb84cea1ffdf4674e283dc06042f34e2acb95a76042c` |
+| `LICENSE` | `licenses/three.LICENSE` | `bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601` |
+
+Files can be retrieved from `https://raw.githubusercontent.com/mrdoob/three.js/`
+followed by the pinned commit and upstream path above. The sole local change
+is in `OrbitControls.js`: its import source changes from `'three'` to
+`'./three.module.js'`. The resulting vendored SHA-256 is
+`06864a0fcb647730bfbc690b6c25a121199d716a3e299a40158509cbd247c3bf`.
+The other files are byte-for-byte upstream copies. `three.module.js` imports
+and re-exports `./three.core.js`; these three modules comprise the complete
+browser renderer dependency set. Preserve the pin, notice and relative import
+when updating them together.
 
 The ideal front camera is at `(0.40, 0, 0.04)` metres in `base_link`, looking
 forward, with 60-degree vertical field of view and 640×360 RGB output. Its
-optical frame follows ROS optical conventions. The virtual lidar is at
+optical frame follows ROS optical conventions. The runtime retains each MuJoCo
+RGB exposure with its physics capture identity and wall timestamp. ROS publishes
+those raw RGB bytes; `/camera.jpg` serves the same exposure encoded as JPEG.
+Browser orbit, pan and follow controls affect only the sandbox viewpoint.
+The virtual lidar is at
 `(0.28, 0, 0.08)` metres and casts five simultaneous rings at elevations
 −30, −15, 0, 15 and 30 degrees, with 360 azimuth samples per ring. `/scan`
 uses the same horizontal ring and dropout mask as `/utlidar/cloud`.

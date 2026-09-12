@@ -220,7 +220,7 @@ func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar
 	if err != nil {
 		return nil, err
 	}
-	// One anchor per distinct RMW. Prefer the managed Go2 image for its typed
+	// One anchor per distinct RMW. Prefer the managed virtual robot image for its typed
 	// Unitree overlay; otherwise retain the first running target.
 	var order []string // sidecar names, deduped, first-seen order
 	anchorByName := map[string]*services.ROS2Target{}
@@ -231,6 +231,9 @@ func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar
 		}
 		name := ros2SidecarName(t.RMW)
 		if current, dup := anchorByName[name]; dup {
+			if a, b := virtualRobotROS2Kind(t), virtualRobotROS2Kind(current); a != "" && b != "" && a != b {
+				return nil, fmt.Errorf("multiple virtual robot kinds share a ROS 2 graph; refusing to select a mismatched inspector")
+			}
 			if preferROS2Anchor(t, current) {
 				anchorByName[name] = t
 			}
@@ -308,7 +311,7 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 		anchorAlive := labels[labelKeyROS2AnchorID] == anchor.ContainerID &&
 			labels[labelKeyROS2AnchorPID] == strconv.FormatUint(uint64(anchor.TaskPID), 10) &&
 			labels[labelKeyROS2Sidecar] == anchor.Distro &&
-			(labels[labelKeyGo2Overlay] == go2OverlayVersion) == isGo2ROS2Target(anchor)
+			virtualRobotOverlayLabelsMatch(labels, anchor)
 		if anchorAlive {
 			if task, terr := existing.Task(ctx, nil); terr == nil {
 				if st, serr := task.Status(ctx); serr == nil && st.Status == containerd.Running {
@@ -446,8 +449,11 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 		labelKeyROS2AnchorPID: strconv.FormatUint(uint64(anchor.TaskPID), 10),
 		labelKeyROS2RMW:       rmw,
 	}
-	if isGo2ROS2Target(anchor) {
+	switch virtualRobotROS2Kind(anchor) {
+	case "go2":
 		labels[labelKeyGo2Overlay] = go2OverlayVersion
+	case "g1":
+		labels[labelKeyG1Overlay] = g1OverlayVersion
 	}
 	container, err := c.client.NewContainer(ctx, name,
 		containerd.WithImage(image),
@@ -910,10 +916,24 @@ func (c *Client) sidecarHasActiveExecsLocked(name string) bool {
 // entries, never shell or Python source. Host inspection retains its CLI
 // allowlist and additionally permits only this trusted read-only probe.
 func ros2ExecArgs(distro string, go2Overlay, hostInspector bool, opts services.ROS2ExecOptions) ([]string, error) {
+	kind := ""
+	if go2Overlay {
+		kind = "go2"
+	}
+	return ros2ExecArgsForRobot(distro, kind, hostInspector, opts)
+}
+
+func ros2ExecArgsForRobot(distro, robotKind string, hostInspector bool, opts services.ROS2ExecOptions) ([]string, error) {
 	if !ros2DistroPattern.MatchString(distro) {
 		return nil, fmt.Errorf("invalid distro %q on ROS 2 sidecar", distro)
 	}
-	script := ros2SourceAndExecForOverlay(distro, go2Overlay && !hostInspector)
+	if robotKind != "" && robotKind != "go2" && robotKind != "g1" {
+		return nil, fmt.Errorf("invalid virtual robot ROS overlay kind")
+	}
+	if hostInspector {
+		robotKind = ""
+	}
+	script := ros2SourceAndExecForRobot(distro, robotKind)
 	if opts.Lidar != nil {
 		if len(opts.Args) != 0 {
 			return nil, fmt.Errorf("LiDAR inspection cannot include ROS 2 CLI arguments")
@@ -984,8 +1004,14 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	if opts.DomainID < appconfig.ROS2DomainIDMin || opts.DomainID > appconfig.ROS2DomainIDMax {
 		return -1, fmt.Errorf("domain ID %d out of range [%d,%d]", opts.DomainID, appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
 	}
-	go2Overlay := !hostInspector && !systemCLI && labels[labelKeyGo2Overlay] == go2OverlayVersion
-	args, err := ros2ExecArgs(distro, go2Overlay, hostInspector, opts)
+	robotKind := ""
+	if !hostInspector && !systemCLI {
+		robotKind, err = virtualRobotOverlayKind(labels)
+		if err != nil {
+			return -1, err
+		}
+	}
+	args, err := ros2ExecArgsForRobot(distro, robotKind, hostInspector, opts)
 	if err != nil {
 		return -1, err
 	}

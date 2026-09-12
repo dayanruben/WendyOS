@@ -1,4 +1,4 @@
-"""Calibrated virtual front camera frames, independent of the observer view."""
+"""MuJoCo front camera exposures shared by ROS and the browser sensor preview."""
 
 from dataclasses import dataclass
 import math
@@ -9,6 +9,24 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 360
 CAMERA_FOVY = 60.0
 CAMERA_FRAME = "camera_optical_frame"
+
+
+def preview_jpeg(runtime):
+    """Return the retained sensor exposure or describe why none is available."""
+    with runtime.lock:
+        if not runtime.render:
+            raise RuntimeError("Camera rendering is disabled for this runtime (GO2_RENDER=0).")
+        if runtime.errors.get("render"):
+            raise RuntimeError("Camera renderer failed: " + runtime.errors["render"])
+        if not runtime.sensor_settings["camera_enabled"]:
+            raise RuntimeError("Camera sensor is disabled. Enable Camera active to resume it.")
+        if runtime.sim.mode == "paused":
+            raise RuntimeError("Camera sensor is paused with the simulation. Resume to receive images.")
+        if runtime.sim.mode == "fault":
+            raise RuntimeError("Camera sensor stopped after a simulation fault. Reset the world to recover.")
+        if runtime.camera_jpeg is None:
+            raise RuntimeError("Waiting for the first MuJoCo camera exposure.")
+        return runtime.camera_jpeg
 
 
 def intrinsics(width=CAMERA_WIDTH, height=CAMERA_HEIGHT, fovy=CAMERA_FOVY):

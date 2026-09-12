@@ -15,6 +15,7 @@ import (
 const (
 	RobotProfileVersion   = 1
 	RobotKindGo2          = "go2"
+	RobotKindG1           = "g1"
 	RobotSandboxGuestPort = 8890
 	maxRobotProfileBytes  = 64 << 10
 )
@@ -48,8 +49,16 @@ type RobotProfile struct {
 }
 
 func NewGo2RobotProfile(sourceDigest, policyBundle string) (RobotProfile, error) {
+	return NewRobotProfile(RobotKindGo2, sourceDigest, policyBundle)
+}
+
+func NewG1RobotProfile(sourceDigest, policyBundle string) (RobotProfile, error) {
+	return NewRobotProfile(RobotKindG1, sourceDigest, policyBundle)
+}
+
+func NewRobotProfile(kind, sourceDigest, policyBundle string) (RobotProfile, error) {
 	p := RobotProfile{
-		Version: RobotProfileVersion, Kind: RobotKindGo2,
+		Version: RobotProfileVersion, Kind: kind,
 		SourceDigest: sourceDigest, World: "indoor", PolicyBundle: policyBundle,
 		Interface: "lo", DomainID: 0, ClockMode: "device", VisualDetail: "balanced",
 		CPUs: DefaultCPUs, MemoryMiB: DefaultMemoryMiB,
@@ -63,7 +72,7 @@ func (p RobotProfile) Validate() error {
 	switch {
 	case p.Version != RobotProfileVersion:
 		return fmt.Errorf("unsupported robot profile version %d", p.Version)
-	case p.Kind != RobotKindGo2:
+	case p.Kind != RobotKindGo2 && p.Kind != RobotKindG1:
 		return fmt.Errorf("unsupported robot kind %q", p.Kind)
 	case !robotDigestPattern.MatchString(p.SourceDigest):
 		return fmt.Errorf("robot sourceDigest must be a lowercase sha256 digest")

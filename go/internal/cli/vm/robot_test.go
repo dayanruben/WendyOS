@@ -17,6 +17,39 @@ func testRobotProfile(t *testing.T) RobotProfile {
 	return p
 }
 
+func TestRobotProfileKindsPreserveIndependentDesiredIdentities(t *testing.T) {
+	s := newTestStore(t)
+	go2 := testRobotProfile(t)
+	g1, err := NewG1RobotProfile("sha256:"+strings.Repeat("b", 64), "g1-test-policy-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g1.Kind != RobotKindG1 || g1.SourceDigest == go2.SourceDigest || g1.PolicyBundle == go2.PolicyBundle {
+		t.Fatalf("G1 reused Go2 identity: %+v", g1)
+	}
+	for _, profile := range []RobotProfile{go2, g1} {
+		createTestVM(t, s, profile.Kind, Meta{ImageVersion: "test-image"})
+		if err := s.CreateRobotProfile(profile.Kind, profile); err != nil {
+			t.Fatal(err)
+		}
+		if got, exists, err := s.ReadRobotProfile(profile.Kind); err != nil || !exists || got != profile {
+			t.Fatalf("%s profile did not round-trip: %+v %t %v", profile.Kind, got, exists, err)
+		}
+		if profile.Version != 1 || profile.World != "indoor" || profile.Interface != "lo" || profile.DomainID != 0 || profile.ClockMode != "device" || profile.CPUs != 4 || profile.MemoryMiB != 4096 {
+			t.Fatalf("%s changed the VM isolation/resource defaults: %+v", profile.Kind, profile)
+		}
+	}
+	if err := s.CreateRobotProfile(RobotKindGo2, g1); !errors.Is(err, ErrRobotProfileExists) {
+		t.Fatalf("G1 configuration replaced an existing Go2 profile: %v", err)
+	}
+	if got, _, err := s.ReadRobotProfile(RobotKindGo2); err != nil || got != go2 {
+		t.Fatalf("Go2 profile changed while configuring G1: %+v %v", got, err)
+	}
+	if _, err := NewRobotProfile("other", go2.SourceDigest, go2.PolicyBundle); err == nil {
+		t.Fatal("constructor accepted an unsupported robot kind")
+	}
+}
+
 func TestRobotProfilePersistsDesiredConfigurationApartFromRunState(t *testing.T) {
 	s := newTestStore(t)
 	createTestVM(t, s, "robot", Meta{ImageVersion: "test-image"})

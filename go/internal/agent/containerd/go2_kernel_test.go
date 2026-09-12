@@ -169,9 +169,50 @@ func TestGo2HostIdentityUsesAuthoritativeBoardBeforeMachine(t *testing.T) {
 		"vm-arm64\n": true, "BOARD=vm-arm64\n": true, "MACHINE=vm-arm64-wendyos\n": true,
 		"BOARD=raspberrypi5\nMACHINE=vm-arm64-wendyos\n": false,
 		"BOARD=unitree-go2\n":                            false, "vm-arm64-untrusted": false, "": false,
+		"BOARD=unitree-g1\nMACHINE=vm-arm64-wendyos\n": false,
 	} {
 		if got := go2HostIsVM(content); got != want {
 			t.Fatalf("host identity %q: got %t, want %t", content, got, want)
 		}
+	}
+}
+
+func TestG1KernelPreparationPinsRobotIdentity(t *testing.T) {
+	for _, scenario := range []string{"valid", "wrong app", "mixed identity", "missing VM", "missing source", "version", "physical G1", "physical Go2"} {
+		t.Run(scenario, func(t *testing.T) {
+			labels, spec, deps, calls := go2KernelFixture(t)
+			labels[labelKeyAppID] = g1RuntimeAppID
+			for i, value := range spec.Process.Env {
+				spec.Process.Env[i] = strings.Replace(value, "GO2_", "G1_", 1)
+			}
+			switch scenario {
+			case "wrong app":
+				labels[labelKeyAppID] = go2RuntimeAppID
+			case "mixed identity":
+				spec.Process.Env = append(spec.Process.Env, "GO2_VM_NAME=another-robot")
+			case "missing VM":
+				spec.Process.Env = append(spec.Process.Env, "G1_VM_NAME=")
+			case "missing source":
+				spec.Process.Env = append(spec.Process.Env, "G1_SOURCE_DIGEST=")
+			case "version":
+				labels[labelKeyAppVersion] = "0.1.0-" + strings.Repeat("b", 12)
+			case "physical G1", "physical Go2":
+				board := "unitree-g1"
+				if scenario == "physical Go2" {
+					board = "unitree-go2"
+				}
+				deps.readFile = func(string) ([]byte, error) {
+					return []byte("BOARD=" + board + "\nMACHINE=vm-arm64-wendyos\n"), nil
+				}
+			}
+			err := prepareGo2KernelModules(context.Background(), labels, spec, deps)
+			if scenario == "valid" {
+				if err != nil || len(*calls) != 1 || !reflect.DeepEqual((*calls)[0], go2LegacyFirewallModules) {
+					t.Fatalf("G1 VM did not prepare the fixed firewall modules: %v, %v", err, *calls)
+				}
+			} else if err == nil || len(*calls) != 0 {
+				t.Fatalf("invalid G1 identity prepared host modules: %v, %v", err, *calls)
+			}
+		})
 	}
 }

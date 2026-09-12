@@ -24,10 +24,10 @@ def sample(wall, sim, *, heading=0.0, position=None):
         "ncontact": 4,
         "joint_q": [0.0] * 12,
         "metrics": {"wall_seconds": wall, "physics_steps": wall * 500,
-                    "policy_updates": wall * 50, "frames": wall * 15,
+                    "policy_updates": wall * 50, "camera_frames": wall * 15, "scene_states": 0,
                     "cpu_seconds": wall * 1.5, "overruns": 0,
                     # These lifetime averages deliberately disagree with the interval.
-                    "fps": 1.0, "real_time_factor": .1},
+                    "camera_fps": 1.0, "real_time_factor": .1},
     }
 
 
@@ -35,7 +35,7 @@ def test_rates_are_computed_from_interval_not_lifetime_averages():
     result = benchmark.measured_interval(sample(1000, 25), sample(1010, 35))
     assert result["wall_seconds"] == 10
     assert result["real_time_factor"] == 1
-    assert result["fps"] == 15
+    assert result["camera_fps"] == 15
     assert result["policy_hz"] == 50
     assert result["physics_steps"] == 5000
     assert result["mean_process_cpu_cores"] == 1.5
@@ -43,7 +43,7 @@ def test_rates_are_computed_from_interval_not_lifetime_averages():
 
 def test_counter_reset_cannot_look_like_successful_throughput():
     first, last = sample(1000, 25), sample(1010, 35)
-    last["metrics"]["frames"] = 1
+    last["metrics"]["camera_frames"] = 1
     with pytest.raises(ValueError, match="counter reset"):
         benchmark.measured_interval(first, last)
 
@@ -114,5 +114,6 @@ def test_control_is_stopped_and_released_on_completion_or_failure(failure):
     assert report["outcome"] == ("completed" if failure is None else "failed")
     if failure is None:
         assert report["command_http_round_trip_ms"]["count"] >= 2
-        assert report["measured_interval"]["fps"] == pytest.approx(15)
+        assert report["measured_interval"]["camera_fps"] == pytest.approx(15)
+        assert "render_fps_at_least_14" not in report["performance_targets"]
         assert not report["performance_targets"]["window_at_least_600_seconds"]

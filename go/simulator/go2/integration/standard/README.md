@@ -87,7 +87,12 @@ The sustained report retains all original movement, joint/torque, contact,
 command-watchdog, ownership, and 600-second checks. It additionally requires
 received LowState ≥475 Hz, Image/CameraInfo ≥14 Hz, and PointCloud2 ≥9.5 Hz,
 alongside IMU ≥190 Hz, odometry/joints ≥47.5 Hz, lidar ≥9.5 Hz, policy ≥47.5 Hz,
-observer ≥14 FPS, real-time factor ≥0.95, and command latency p95 <100 ms. Motion
+real-time factor ≥0.95, and command latency p95 <100 ms. Motion
 continues through `/cmd_vel` throughout; all streams have real DDS readers in
 the separately deployed app. A shorter `--soak-seconds` run provides diagnostics
 but cannot pass the 600-second acceptance gate.
+
+The report derives `camera_fps` from the runtime's `camera_frames` counter.
+Sandbox rendering runs in the browser and has no observer-frame production gate;
+the sensor image receipt gate above still applies. Verify the browser separately
+with `tests/viewer.browser.mjs`, as described in the [simulator README](../../README.md).

@@ -41,7 +41,8 @@ COPY --from=assets /opt/wendy-go2/ros_ws/install ./ros_ws/install
 COPY --from=assets /opt/wendy-go2/ros_ws/generated_unitree/wendy-compatibility.json ./wendy-compatibility.json
 COPY licenses ./licenses
 COPY assets.lock.json unitree.lock.json visuals.lock.json UPSTREAM.md compatibility.json ./
-COPY go2_sim ./go2_sim
+COPY go2_sim/*.py go2_sim/index.html go2_sim/viewer.js go2_sim/lidar-view.js ./go2_sim/
+COPY go2_sim/vendor/three.module.js go2_sim/vendor/three.core.js go2_sim/vendor/OrbitControls.js ./go2_sim/vendor/
 COPY entrypoint.sh cyclonedds.xml ./
 ENV GO2_VISUAL_DETAIL=balanced LP_NUM_THREADS=2 GO2_NATIVE=1
 EXPOSE 8890

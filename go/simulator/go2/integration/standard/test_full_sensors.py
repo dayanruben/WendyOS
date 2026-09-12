@@ -78,7 +78,7 @@ class FullSensorTests(unittest.TestCase):
         def record(at):
             return {"received_at": at, "time": at,
                     "metrics": {"wall_seconds": at, "policy_updates": at*50,
-                                "frames": at*15, "physics_steps": at*500},
+                                "camera_frames": at*15, "scene_states": 0, "physics_steps": at*500},
                     "probe": {"received": {"imu": at*200, "truth": at*50, "image": at*15,
                                             "camera_info": at*15, "cloud": at*10, "lowstate": at*500},
                               "command_count": at*20, "command_gaps": 0},
@@ -88,6 +88,7 @@ class FullSensorTests(unittest.TestCase):
         self.assertEqual(measured["received_hz"], measured["published_hz"])
         self.assertEqual(measured["received_hz"]["lowstate"], 500)
         self.assertEqual(measured["received_hz"]["image"], 15)
+        self.assertEqual(measured["camera_fps"], 15)
         self.assertEqual(measured["command_hz"], 20)
 
 

@@ -22,7 +22,8 @@ RUN python3 tools/prepare_unitree.py \
 COPY assets ./assets
 COPY licenses ./licenses
 COPY assets.lock.json UPSTREAM.md compatibility.json ./
-COPY go2_sim ./go2_sim
+COPY go2_sim/*.py go2_sim/index.html go2_sim/viewer.js go2_sim/lidar-view.js ./go2_sim/
+COPY go2_sim/vendor/three.module.js go2_sim/vendor/three.core.js go2_sim/vendor/OrbitControls.js ./go2_sim/vendor/
 COPY entrypoint.sh cyclonedds.xml ./
 ENV GO2_VISUAL_DETAIL=balanced LP_NUM_THREADS=2
 EXPOSE 8890
