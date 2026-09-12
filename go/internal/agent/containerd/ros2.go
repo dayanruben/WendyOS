@@ -18,6 +18,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
+	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"go.uber.org/zap"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
@@ -127,9 +128,12 @@ func (c *Client) FindROS2Containers(ctx context.Context) ([]services.ROS2Target,
 		// sidecar per RMW (WDY-1593, WDY-1594). Drop an unrecognized value to ""
 		// (the image default) so it can never reach a sidecar environment and so
 		// naming/grouping stays consistent.
-		if spec, serr := ctr.Spec(ctx); serr == nil && spec.Process != nil {
-			if rmw := rmwFromEnv(spec.Process.Env); rmw == "" || appconfig.IsValidRMWImplementation(rmw) {
-				target.RMW = rmw
+		if spec, serr := ctr.Spec(ctx); serr == nil {
+			target.HostNetwork = ros2UsesHostNetwork(spec)
+			if spec != nil && spec.Process != nil {
+				if rmw := rmwFromEnv(spec.Process.Env); rmw == "" || appconfig.IsValidRMWImplementation(rmw) {
+					target.RMW = rmw
+				}
 			}
 		}
 		if task, terr := ctr.Task(ctx, nil); terr == nil {
@@ -141,6 +145,21 @@ func (c *Client) FindROS2Containers(ctx context.Context) ([]services.ROS2Target,
 		targets = append(targets, target)
 	}
 	return targets, nil
+}
+
+// ros2UsesHostNetwork recognizes the OCI representation of host networking.
+// Missing specs and explicit namespace paths remain app-scoped: neither proves
+// that discovery can safely reuse the host's camera participants.
+func ros2UsesHostNetwork(spec *runtimespec.Spec) bool {
+	if spec == nil || spec.Linux == nil {
+		return false
+	}
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == runtimespec.NetworkNamespace {
+			return false
+		}
+	}
+	return true
 }
 
 // rmwFromEnv returns the value of RMW_IMPLEMENTATION in a container's OCI spec

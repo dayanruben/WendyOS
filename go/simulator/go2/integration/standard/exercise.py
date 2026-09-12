@@ -452,10 +452,11 @@ def soak(api, probe, duration):
     started = time.monotonic()
     deadline = started + duration
     next_sample = started
+    next_timing_report = started
     no_contact_since = None
 
     def sample(phase):
-        nonlocal no_contact_since
+        nonlocal no_contact_since, next_timing_report
         status = api.status()
         received_at = time.monotonic()
         counters = probe.counters()
@@ -512,6 +513,19 @@ def soak(api, probe, duration):
         physical["contact_support_returns"] = no_contact_since is None or received_at - no_contact_since <= 1.0
         record["physical"] = physical
         interval = soak_interval(samples[-2], record) if len(samples) > 1 else None
+        timing_diagnostics = {}
+        if not all(physical.values()) or received_at >= next_timing_report:
+            # Use this exact HTTP observation, not a later query after the
+            # subscriber has stopped. Keep summaries small and infrequent.
+            def compact(summary):
+                return {key: round(value, 3) if isinstance(value, float) else value
+                        for key, value in summary.items() if key in {"samples", "mean", "p95", "max"}}
+            timing_diagnostics = {
+                "render_stage_ms": {stage: compact(summary) for stage, summary in
+                                    status["metrics"].get("render_stage_ms", {}).items()},
+                "image_publish_ms": compact(status["ros"].get("image_publish_ms", {})),
+            }
+            next_timing_report = received_at + 10.0
         print(json.dumps({"event": "soak_sample", "elapsed_seconds": received_at - started,
                           "phase": phase, "position": position, "anchor_radius_m": radius,
                           "contacts": record["ncontact"], "mode": status["mode"],
@@ -519,8 +533,12 @@ def soak(api, probe, duration):
                           "runtime_trailing_command_p95_ms": status["metrics"].get("command_p95_ms"),
                           "runtime_process_peak_rss_bytes": status["metrics"]["rss_bytes"],
                           "full_sensors": counters["full_sensors"],
+                          # Negative means the received native tick is newer
+                          # than the separately captured HTTP physics sample.
+                          "native_tick_age_seconds": record.get("native_tick_age_seconds"),
                           "source_age_ms": {name: (time.time_ns() - stamp) / 1e6
                                             for name, stamp in counters["source_stamps"].items()},
+                          **timing_diagnostics,
                           "error": status["error"]}, allow_nan=False), flush=True)
         require(all(physical.values()), f"soak physical constraints failed: {physical}")
         return record

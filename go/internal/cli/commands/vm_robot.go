@@ -610,7 +610,10 @@ func runVMRobot(cmd *cobra.Command, action, name string) error {
 	switch action {
 	case "status":
 		if jsonOutput {
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(state)
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
+				robotRuntimeStatus
+				SandboxURL string `json:"sandbox_url"`
+			}{robotRuntimeStatus: state, SandboxURL: robotURL(port)})
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%s: Unitree Go2, %s, healthy=%t, ready=%t, epoch=%d\nSandbox: %s\n", name, state.Mode, state.Healthy, state.Ready, state.Epoch, robotURL(port))
 	case "open":
