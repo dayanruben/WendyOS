@@ -13,9 +13,11 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ros2inspection"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -38,7 +40,8 @@ func (s *mcpServer) registerROS2Tools(srv *server.MCPServer) {
 		}
 		opts := []mcpgo.ToolOption{
 			mcpgo.WithDescription(tool.description),
-			mcpgo.WithNumber("domain_id", mcpgo.Description("Optional integer ROS_DOMAIN_ID override (0..232); otherwise use the app configuration")),
+			mcpgo.WithString("scope", mcpgo.Enum("app", "host"), mcpgo.Description("Inspection network: app (default) preserves app isolation; host explicitly observes the device/subnet DDS graph without a running ROS 2 app. Host requires domain_id and uses stock ROS Humble/FastRTPS; first use may download its inspector image.")),
+			mcpgo.WithNumber("domain_id", mcpgo.Description("Integer ROS_DOMAIN_ID (0..232), required for host scope; app scope otherwise uses the app configuration")),
 			mcpgo.WithNumber("duration_seconds", mcpgo.Description(fmt.Sprintf("Maximum total RPC duration including discovery, integer 1..60 (default %d)", defaultDuration))),
 			mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum serialized result bytes, integer 2048..100000 (default 32000); oversized samples are omitted whole")),
 		}
@@ -55,6 +58,7 @@ func (s *mcpServer) registerROS2Tools(srv *server.MCPServer) {
 }
 
 type ros2Options struct {
+	scope    string
 	domain   *int32
 	topic    string
 	duration time.Duration
@@ -97,6 +101,14 @@ func ros2Int(req mcpgo.CallToolRequest, key string, fallback, min, max int) (int
 
 func parseROS2Options(req mcpgo.CallToolRequest, topic, stream bool) (ros2Options, error) {
 	var opts ros2Options
+	opts.scope = ros2inspection.AppScope
+	if value, exists := req.GetArguments()["scope"]; exists {
+		scope, ok := value.(string)
+		if !ok || (scope != ros2inspection.AppScope && scope != ros2inspection.HostScope) {
+			return opts, fmt.Errorf("scope must be app or host")
+		}
+		opts.scope = scope
+	}
 	if topic {
 		opts.topic = stringParam(req, "topic")
 		if len(opts.topic) > 255 || !ros2TopicName.MatchString(opts.topic) {
@@ -110,6 +122,9 @@ func parseROS2Options(req mcpgo.CallToolRequest, topic, stream bool) (ros2Option
 		}
 		domain32 := int32(domain)
 		opts.domain = &domain32
+	}
+	if opts.scope == ros2inspection.HostScope && opts.domain == nil {
+		return opts, fmt.Errorf("host inspection requires an explicit domain_id (0..232)")
 	}
 	defaultDuration := 45
 	if stream {
@@ -128,6 +143,35 @@ func parseROS2Options(req mcpgo.CallToolRequest, topic, stream bool) (ros2Option
 		opts.count, err = ros2Int(req, "count", 3, 1, 20)
 	}
 	return opts, err
+}
+
+func (opts ros2Options) rpcContext(ctx context.Context) context.Context {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	md = md.Copy()
+	md.Set(ros2inspection.ScopeMetadata, opts.scope)
+	return metadata.NewOutgoingContext(ctx, md)
+}
+
+func (opts ros2Options) verifyScope(headers metadata.MD) error {
+	if opts.scope != ros2inspection.HostScope {
+		return nil
+	}
+	scopes := headers.Get(ros2inspection.ScopeMetadata)
+	if len(scopes) != 1 || scopes[0] != ros2inspection.HostScope {
+		return status.Error(codes.FailedPrecondition, "The device did not acknowledge host ROS 2 inspection; update its agent before retrying. App-scoped results were not accepted.")
+	}
+	return nil
+}
+
+func (opts ros2Options) addScope(env map[string]any) {
+	env["inspection_scope"] = opts.scope
+	if opts.domain != nil {
+		env["inspection_domain_id"] = *opts.domain
+	}
+	if opts.scope == ros2inspection.HostScope {
+		env["inspection_rmw"] = ros2inspection.FastRTPSRMW
+		env["inspection_distro"] = ros2inspection.HostDistro
+	}
 }
 
 func ros2Error(err error) *mcpgo.CallToolResult {
@@ -182,8 +226,13 @@ func (s *mcpServer) handleROS2Topics(ctx context.Context, req mcpgo.CallToolRequ
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.duration)
 	defer cancel()
-	resp, err := agentpbv2.NewROS2ServiceClient(conn.Conn).ListTopics(ctx, &agentpbv2.ListROS2TopicsRequest{DomainId: opts.domain}, grpc.MaxCallRecvMsgSize(ros2MaxReceiveBytes))
+	ctx = opts.rpcContext(ctx)
+	var headers metadata.MD
+	resp, err := agentpbv2.NewROS2ServiceClient(conn.Conn).ListTopics(ctx, &agentpbv2.ListROS2TopicsRequest{DomainId: opts.domain}, grpc.MaxCallRecvMsgSize(ros2MaxReceiveBytes), grpc.Header(&headers))
 	if err != nil {
+		return ros2Error(err), nil
+	}
+	if err := opts.verifyScope(headers); err != nil {
 		return ros2Error(err), nil
 	}
 	// IncludeCounts can silently leave zeroes after failed per-topic probes.
@@ -203,6 +252,7 @@ func (s *mcpServer) handleROS2Topics(ctx context.Context, req mcpgo.CallToolRequ
 		topics = candidate
 	}
 	env["topics"] = topics
+	opts.addScope(env)
 	return ros2Result(env, opts.maxBytes), nil
 }
 
@@ -217,8 +267,13 @@ func (s *mcpServer) handleROS2TopicInfo(ctx context.Context, req mcpgo.CallToolR
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.duration)
 	defer cancel()
-	resp, err := agentpbv2.NewROS2ServiceClient(conn.Conn).GetTopicInfo(ctx, &agentpbv2.GetROS2TopicInfoRequest{DomainId: opts.domain, Topic: opts.topic}, grpc.MaxCallRecvMsgSize(ros2MaxReceiveBytes))
+	ctx = opts.rpcContext(ctx)
+	var headers metadata.MD
+	resp, err := agentpbv2.NewROS2ServiceClient(conn.Conn).GetTopicInfo(ctx, &agentpbv2.GetROS2TopicInfoRequest{DomainId: opts.domain, Topic: opts.topic}, grpc.MaxCallRecvMsgSize(ros2MaxReceiveBytes), grpc.Header(&headers))
 	if err != nil {
+		return ros2Error(err), nil
+	}
+	if err := opts.verifyScope(headers); err != nil {
 		return ros2Error(err), nil
 	}
 	topic := resp.GetTopic()
@@ -230,6 +285,7 @@ func (s *mcpServer) handleROS2TopicInfo(ctx context.Context, req mcpgo.CallToolR
 		"topic_info": map[string]any{"types": listOrEmpty(topic.GetTypes()), "rmw": topic.GetRmw(), "publisher_count": topic.GetPublisherCount(), "subscriber_count": topic.GetSubscriberCount()},
 		"verbose":    resp.GetVerbose(),
 	}
+	opts.addScope(env)
 	return ros2Result(env, opts.maxBytes), nil
 }
 
@@ -252,12 +308,22 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 	}
 	ctx, cancel := context.WithTimeout(parent, opts.duration)
 	defer cancel() // Release the device subscription on every exit, including count/byte limits.
+	ctx = opts.rpcContext(ctx)
 	client := agentpbv2.NewROS2ServiceClient(conn.Conn)
 	var recv func() (map[string]any, error)
 	if hz {
 		stream, streamErr := client.MonitorHz(ctx, &agentpbv2.MonitorROS2HzRequest{DomainId: opts.domain, Topic: opts.topic}, grpc.MaxCallRecvMsgSize(ros2MaxReceiveBytes))
 		if streamErr != nil {
 			return ros2Error(streamErr), nil
+		}
+		if opts.scope == ros2inspection.HostScope {
+			headers, err := stream.Header()
+			if err != nil {
+				return ros2Error(err), nil
+			}
+			if err := opts.verifyScope(headers); err != nil {
+				return ros2Error(err), nil
+			}
 		}
 		recv = func() (map[string]any, error) {
 			msg, err := stream.Recv()
@@ -274,6 +340,15 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 		if streamErr != nil {
 			return ros2Error(streamErr), nil
 		}
+		if opts.scope == ros2inspection.HostScope {
+			headers, err := stream.Header()
+			if err != nil {
+				return ros2Error(err), nil
+			}
+			if err := opts.verifyScope(headers); err != nil {
+				return ros2Error(err), nil
+			}
+		}
 		recv = func() (map[string]any, error) {
 			msg, err := stream.Recv()
 			if err != nil || strings.TrimSpace(msg.GetYaml()) == "" {
@@ -286,6 +361,7 @@ func (s *mcpServer) handleROS2Stream(parent context.Context, req mcpgo.CallToolR
 		"topic": opts.topic, "status": "unknown", "source_freshness": "unknown",
 		"samples": []map[string]any{}, "sample_count": 0, "stop_reason": "count_limit", "truncated": false,
 	}
+	opts.addScope(env)
 	if hz {
 		env["measurement"] = "device_subscription_rate"
 	} else {

@@ -218,7 +218,7 @@ func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar
 	if len(order) == 0 {
 		// No running ROS 2 apps: tear down every leftover sidecar and fail.
 		c.teardownAllROS2SidecarsLocked(ctx)
-		return nil, fmt.Errorf("no running ROS 2 containers found; deploy an app with a frameworks.ros2 config first")
+		return nil, fmt.Errorf("no running ROS 2 containers found; use explicit host inspection with a domain ID for robot/host sensors, or deploy an app with a frameworks.ros2 config for app-scoped inspection")
 	}
 
 	// Tear down sidecars whose RMW is no longer running.
@@ -608,6 +608,14 @@ func (c *Client) StopROS2Sidecar(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.teardownAllROS2SidecarsLocked(c.withNamespace(ctx))
+	if !c.sidecarHasActiveExecsLocked(ros2HostSidecarName) {
+		if inspector, err := c.client.LoadContainer(c.withNamespace(ctx), ros2HostSidecarName); err == nil {
+			labels, lerr := inspector.Labels(c.withNamespace(ctx))
+			if lerr == nil && labels[labelKeyROS2HostSidecar] != "" {
+				return c.deleteROS2Sidecar(c.withNamespace(ctx), inspector)
+			}
+		}
+	}
 	return nil
 }
 
@@ -850,6 +858,17 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 		return -1, fmt.Errorf("reading ROS 2 sidecar labels: %w", err)
 	}
 	distro := labels[labelKeyROS2Sidecar]
+	hostInspector := labels[labelKeyROS2HostSidecar] != ""
+	if hostInspector {
+		if name != ros2HostSidecarName || labels[labelKeyROS2HostSidecar] != "humble" {
+			return -1, fmt.Errorf("invalid host inspector identity")
+		}
+		distro = labels[labelKeyROS2HostSidecar]
+		opts.Args, err = hostROS2InspectionArgs(opts.Args)
+		if err != nil {
+			return -1, err
+		}
+	}
 	if !ros2DistroPattern.MatchString(distro) {
 		return -1, fmt.Errorf("invalid distro %q on ROS 2 sidecar", distro)
 	}
@@ -882,9 +901,8 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	// sidecar has to see the same graph as the app it is anchored to.
 	pspec.Env = append(append([]string(nil), pspec.Env...),
 		"ROS_DOMAIN_ID="+strconv.Itoa(opts.DomainID),
-		"ROS_LOCALHOST_ONLY=1",
-		"ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST",
 	)
+	pspec.Env = append(pspec.Env, ros2ExecDiscoveryEnv(hostInspector)...)
 	// Match the anchor app's RMW so the CLI speaks the same DDS implementation;
 	// otherwise it falls to the image default and sees nothing on another RMW
 	// (WDY-1593). The label is written validated, but re-check before injecting

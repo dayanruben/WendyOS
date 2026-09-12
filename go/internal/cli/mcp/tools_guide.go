@@ -35,6 +35,7 @@ Cloud-enrolled devices:
 
 ## Tools available once connected
 
+- device_info — agent, OS, hardware, storage, and battery information
 - container_list / container_start / container_stop / container_delete / container_attach / container_stats
 - wifi_list / wifi_connect / wifi_disconnect / wifi_status / wifi_known_networks
 - telemetry_logs / telemetry_metrics / telemetry_traces
@@ -48,10 +49,20 @@ fast redeploy path — there is no standalone file-sync CLI command or MCP tool.
 
 ## Robot and sensor diagnostics
 
+For battery level and charge state, call device_info. Its battery object contains
+percent (0–100), state, and optional seconds_remaining until empty (discharging)
+or full (charging). A missing battery means the agent has no reading; a missing
+seconds_remaining means no estimate is available. This uses the agent's battery
+API and does not require a running ROS 2 app or container.
+
 Use ros2_topics to discover sensor and odometry topics, ros2_topic_info to
 inspect a topic's publishers and QoS, and ros2_topic_sample or ros2_topic_hz
-for a finite observation. These tools require the agent's ROS 2 sidecar and
-the message typesupport needed to decode the selected topic.
+for a finite observation. Scope defaults to app and preserves its isolation.
+If no ROS 2 app is running but the robot/host publishes sensor DDS data, explicitly
+set scope="host" and the known domain_id on each inspection tool. This uses a
+standalone ROS Humble/FastRTPS inspector; first use may download its image.
+A domain override alone never enables host scope. Custom message samples require
+compatible typesupport in an app image or a robot adapter.
 
 No samples means unknown, not an empty obstacle field. A received sample or
 rate measurement does not establish sensor acquisition freshness, localization

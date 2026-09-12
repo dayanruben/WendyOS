@@ -11,6 +11,7 @@ The local project directory is %q. The requested device is %q (empty means use t
 
 Workflow:
 - For device work, call wendy_status first. Discover with device_list (scan=true for live LAN discovery) or cloud_discover, then device_connect or cloud_connect as needed. Most device tools require an active connection. Do not guess hardware capabilities: inspect them.
+- For battery level or charge state, use device_info. It reads the agent's battery data without requiring a running ROS 2 app. A missing battery field means no reading is available; a reported 0 percent means empty. Only report a remaining-time estimate when seconds_remaining is present.
 - Before editing code, inspect the project and read its AGENTS.md and relevant README files using workspace tools. Follow applicable project instructions. Read files before changing them and preserve unrelated changes.
 - Consult wendy_docs for offline Wendy documentation and correct configuration, API, deployment, hardware, and entitlement usage.
 - Use workspace tools for local code and shell work. Shell commands run on the developer's machine, not the device. Use Wendy tools to control the connected hardware. For long-running commands, use bounded runs or detached deployment and inspect logs afterward.

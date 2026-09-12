@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net"
 	"strings"
@@ -13,10 +14,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ros2inspection"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -340,5 +343,70 @@ func TestROS2ErrorPreservesTracebackCauseAndBoundsEscapedOutput(t *testing.T) {
 	result = ros2Error(status.Error(codes.Internal, strings.Repeat("\x00", 10000)))
 	if !result.IsError || !proxiedResultFitsMaxBytes(result, 2048) || structuredMap(t, result)["status"] != "unknown" {
 		t.Fatalf("escaped error exceeds limit: %+v", result)
+	}
+}
+
+func TestROS2HostScopeRequiresDomainAndValidScope(t *testing.T) {
+	for _, args := range []map[string]any{{"scope": "host"}, {"scope": "HOST", "domain_id": 0}, {"scope": true}, {"scope": nil}} {
+		if _, err := parseROS2Options(callToolReq("", args), false, false); err == nil {
+			t.Errorf("accepted host options: %v", args)
+		}
+	}
+	opts, err := parseROS2Options(callToolReq("", map[string]any{"scope": "host", "domain_id": 0}), false, false)
+	if err != nil || opts.scope != "host" || opts.domain == nil || *opts.domain != 0 {
+		t.Fatalf("explicit host domain rejected: %+v, %v", opts, err)
+	}
+	opts, err = parseROS2Options(callToolReq("", map[string]any{"domain_id": 0}), false, false)
+	if err != nil || opts.scope != "app" {
+		t.Fatal("a domain override silently enabled host inspection")
+	}
+}
+
+func TestROS2HostScopeRequiresAcknowledgementForAllTools(t *testing.T) {
+	for _, ack := range []bool{false, true} {
+		for _, name := range []string{"ros2_topics", "ros2_topic_info", "ros2_topic_sample", "ros2_topic_hz"} {
+			t.Run(fmt.Sprintf("%s/ack=%t", name, ack), func(t *testing.T) {
+				prepare := func(ctx context.Context, domain *int32) {
+					md, _ := metadata.FromIncomingContext(ctx)
+					if scopes := md.Get(ros2inspection.ScopeMetadata); len(scopes) != 1 || scopes[0] != "host" || domain == nil || *domain != 0 {
+						t.Errorf("wrong inspection request: %v, domain=%v", md, domain)
+					}
+					if ack {
+						if err := grpc.SendHeader(ctx, metadata.Pairs(ros2inspection.ScopeMetadata, "host")); err != nil {
+							t.Error(err)
+						}
+					}
+				}
+				s := ros2TestServer(t, &fakeROS2Server{
+					topics: func(ctx context.Context, req *agentpbv2.ListROS2TopicsRequest) (*agentpbv2.ListROS2TopicsResponse, error) {
+						prepare(ctx, req.DomainId)
+						return &agentpbv2.ListROS2TopicsResponse{Topics: []*agentpbv2.ROS2Topic{{Name: "/odom", Types: []string{"nav_msgs/msg/Odometry"}}}}, nil
+					},
+					info: func(ctx context.Context, req *agentpbv2.GetROS2TopicInfoRequest) (*agentpbv2.GetROS2TopicInfoResponse, error) {
+						prepare(ctx, req.DomainId)
+						return &agentpbv2.GetROS2TopicInfoResponse{Topic: &agentpbv2.ROS2Topic{Name: "/odom"}, Verbose: "Publisher count: 1"}, nil
+					},
+					echo: func(req *agentpbv2.EchoROS2TopicRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2Message]) error {
+						prepare(stream.Context(), req.DomainId)
+						return stream.Send(&agentpbv2.ROS2Message{Yaml: "position: 1"})
+					},
+					hz: func(req *agentpbv2.MonitorROS2HzRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2HzSample]) error {
+						prepare(stream.Context(), req.DomainId)
+						return stream.Send(&agentpbv2.ROS2HzSample{Hz: 10, MinDelta: 0.1, MaxDelta: 0.1, Window: 3})
+					},
+				})
+				result := ros2Call(t, s, context.Background(), name, map[string]any{"scope": "host", "domain_id": 0, "topic": "/odom", "count": 1})
+				env := structuredMap(t, result)
+				if !ack {
+					if !result.IsError || !strings.Contains(env["message"].(string), "did not acknowledge") {
+						t.Fatalf("accepted unacknowledged host result: %+v", env)
+					}
+					return
+				}
+				if result.IsError || env["inspection_scope"] != "host" || env["inspection_rmw"] != "rmw_fastrtps_cpp" || env["inspection_distro"] != "humble" {
+					t.Fatalf("host scope missing from result: %+v", env)
+				}
+			})
+		}
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ros2inspection"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -88,6 +89,13 @@ type ros2SC struct {
 // sidecar's own default. Discovery commands run in all and merge; targeted
 // commands route to one.
 func (s *ROS2Service) resolveSidecars(ctx context.Context, override *int32) ([]ros2SC, error) {
+	scope, scopeErr := requestedROS2Scope(ctx)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
+	if scope == ros2inspection.HostScope {
+		return nil, status.Error(codes.InvalidArgument, "host scope is restricted to topic listing, endpoint information, samples and rates")
+	}
 	sidecars, err := s.runtime.EnsureROS2Sidecars(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -246,7 +254,7 @@ func (s *ROS2Service) ListNodes(ctx context.Context, req *agentpbv2.ListROS2Node
 }
 
 func (s *ROS2Service) ListTopics(ctx context.Context, req *agentpbv2.ListROS2TopicsRequest) (*agentpbv2.ListROS2TopicsResponse, error) {
-	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	scs, err := s.resolveInspectionSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +322,7 @@ LOOP:
 }
 
 func (s *ROS2Service) GetTopicInfo(ctx context.Context, req *agentpbv2.GetROS2TopicInfoRequest) (*agentpbv2.GetROS2TopicInfoResponse, error) {
-	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	scs, err := s.resolveInspectionSidecars(ctx, req.DomainId)
 	if err != nil {
 		return nil, err
 	}
@@ -600,7 +608,7 @@ func (s *ROS2Service) Doctor(ctx context.Context, req *agentpbv2.ROS2DoctorReque
 
 func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2Message]) error {
 	ctx := stream.Context()
-	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	scs, err := s.resolveInspectionSidecars(ctx, req.DomainId)
 	if err != nil {
 		return err
 	}
@@ -692,7 +700,7 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 
 func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2HzSample]) error {
 	ctx := stream.Context()
-	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	scs, err := s.resolveInspectionSidecars(ctx, req.DomainId)
 	if err != nil {
 		return err
 	}
