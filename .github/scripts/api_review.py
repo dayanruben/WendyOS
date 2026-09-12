@@ -11,7 +11,7 @@ import re
 import sys
 from typing import Any
 
-MAX_DIFF_BYTES = 200_000
+MAX_DIFF_BYTES = 512_000
 CATEGORIES = {"network", "protobuf", "storage", "config", "cli", "other"}
 IMPACTS = {"additive", "breaking", "behavioral"}
 RISKS = {"low", "mid", "high"}
