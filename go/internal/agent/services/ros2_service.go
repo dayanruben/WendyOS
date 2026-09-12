@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -86,8 +87,9 @@ type ros2SC struct {
 
 // resolveSidecars ensures one sidecar per running RMW (WDY-1594) and returns
 // them with the effective domain: the --domain override when set, else each
-// sidecar's own default. Discovery commands run in all and merge; targeted
-// commands route to one.
+// sidecar's own default. Unscoped requests fall back to the system graph when no
+// ROS 2 app is running. Discovery commands run in all and merge; targeted commands
+// route to one.
 func (s *ROS2Service) resolveSidecars(ctx context.Context, override *int32) ([]ros2SC, error) {
 	scope, scopeErr := requestedROS2Scope(ctx)
 	if scopeErr != nil {
@@ -96,10 +98,6 @@ func (s *ROS2Service) resolveSidecars(ctx context.Context, override *int32) ([]r
 	if scope == ros2inspection.HostScope {
 		return nil, status.Error(codes.InvalidArgument, "host scope is restricted to topic listing, endpoint information, samples and rates")
 	}
-	sidecars, err := s.runtime.EnsureROS2Sidecars(ctx)
-	if err != nil {
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
-	}
 	ovr := -1
 	if override != nil {
 		id := int(*override)
@@ -107,6 +105,21 @@ func (s *ROS2Service) resolveSidecars(ctx context.Context, override *int32) ([]r
 			return nil, status.Errorf(codes.InvalidArgument, "domain ID %d out of range [%d,%d]", id, appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
 		}
 		ovr = id
+	}
+	sidecars, err := s.runtime.EnsureROS2Sidecars(ctx)
+	if errors.Is(err, ErrNoRunningROS2Containers) {
+		md, _ := metadata.FromIncomingContext(ctx)
+		_, explicitScope := md[ros2inspection.ScopeMetadata]
+		if runtime, ok := s.runtime.(ROS2SystemRuntime); ok && !explicitScope {
+			var sidecar ROS2Sidecar
+			sidecar, err = runtime.EnsureSystemROS2Sidecar(ctx)
+			if err == nil {
+				sidecars = []ROS2Sidecar{sidecar}
+			}
+		}
+	}
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	out := make([]ros2SC, 0, len(sidecars))
 	for _, sc := range sidecars {
@@ -878,7 +891,7 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 			_ = stream.Send(&agentpbv2.RecordROS2BagResponse{
 				State:   agentpbv2.RecordROS2BagResponse_STATE_ERROR,
 				BagName: bagName,
-				Message: s.diagnoseRecorderExit(ctx, recorder.code, recorder.err, output.String()),
+				Message: s.diagnoseRecorderExit(ctx, sc.name, recorder.code, recorder.err, output.String()),
 			})
 			return nil
 		}
@@ -906,13 +919,18 @@ func (s *ROS2Service) RecordBag(stream grpc.BidiStreamingServer[agentpbv2.Record
 // the sidecar (and recorder) joined, killing the DDS session. Raw recorder
 // logs alone are misleading there, so check the anchor first and lead with
 // the actual cause.
-func (s *ROS2Service) diagnoseRecorderExit(ctx context.Context, exitCode int, execErr error, output string) string {
+func (s *ROS2Service) diagnoseRecorderExit(ctx context.Context, sidecarName string, exitCode int, execErr error, output string) string {
+	var verifyErr error
+	if runtime, ok := s.runtime.(ROS2NamedSidecarVerifier); ok {
+		verifyErr = runtime.VerifyROS2SidecarNamed(ctx, sidecarName)
+	} else {
+		verifyErr = s.runtime.VerifyROS2Sidecar(ctx)
+	}
 	var b strings.Builder
-	if verr := s.runtime.VerifyROS2Sidecar(ctx); verr != nil {
-		b.WriteString("the ROS 2 app containers were stopped or redeployed while recording; ")
-		b.WriteString("the recording session was attached to the previous app instance. ")
-		b.WriteString("Restart the recording once the app is running (")
-		b.WriteString(verr.Error())
+	if verifyErr != nil {
+		b.WriteString("the ROS 2 sidecar or its app was stopped or redeployed while recording; ")
+		b.WriteString("restart the recording once the ROS 2 graph is available (")
+		b.WriteString(verifyErr.Error())
 		b.WriteString(")")
 	} else {
 		fmt.Fprintf(&b, "recorder exited unexpectedly (exit code %d)", exitCode)

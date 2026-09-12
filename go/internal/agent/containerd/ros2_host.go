@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/cio"
@@ -42,24 +43,31 @@ func (c *Client) EnsureHostROS2Sidecar(ctx context.Context, opts ros2inspection.
 	if err := opts.Validate(); err != nil {
 		return services.ROS2Sidecar{}, err
 	}
+	return c.ensureStandaloneROS2Sidecar(ctx, ros2HostSidecarName, labelKeyROS2HostSidecar, opts.DomainID, ros2HostSidecarSpec(ros2HostProfilePath))
+}
+
+// ensureStandaloneROS2Sidecar shares image preparation and lifecycle management
+// between the restricted host inspector and the full system CLI. Their distinct
+// labels keep command permissions and app-sidecar reconciliation separate.
+func (c *Client) ensureStandaloneROS2Sidecar(ctx context.Context, name, label string, domain int, spec *localoci.Spec) (services.ROS2Sidecar, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ctx = c.withNamespace(ctx)
-	sidecar := services.ROS2Sidecar{Name: ros2HostSidecarName, Distro: ros2inspection.HostDistro, RMW: ros2inspection.FastRTPSRMW, DomainID: opts.DomainID}
-	if existing, err := c.client.LoadContainer(ctx, ros2HostSidecarName); err == nil {
+	sidecar := services.ROS2Sidecar{Name: name, Distro: ros2inspection.HostDistro, RMW: ros2inspection.FastRTPSRMW, DomainID: domain}
+	if existing, err := c.client.LoadContainer(ctx, name); err == nil {
 		labels, lerr := existing.Labels(ctx)
 		if lerr != nil {
 			return services.ROS2Sidecar{}, fmt.Errorf("reading host inspector labels: %w", lerr)
 		}
-		if labels[labelKeyROS2HostSidecar] != ros2inspection.HostDistro {
-			return services.ROS2Sidecar{}, fmt.Errorf("container name %q is already in use by a different workload", ros2HostSidecarName)
+		if labels[label] != ros2inspection.HostDistro {
+			return services.ROS2Sidecar{}, fmt.Errorf("container name %q is already in use by a different workload", name)
 		}
 		if task, terr := existing.Task(ctx, nil); terr == nil {
 			if st, serr := task.Status(ctx); serr == nil && st.Status == containerd.Running {
 				return sidecar, nil
 			}
 		}
-		if c.sidecarHasActiveExecsLocked(ros2HostSidecarName) {
+		if c.sidecarHasActiveExecsLocked(name) {
 			return services.ROS2Sidecar{}, fmt.Errorf("host inspector is restarting with an inspection in flight; retry")
 		}
 		if err := c.deleteROS2Sidecar(ctx, existing); err != nil {
@@ -92,13 +100,13 @@ func (c *Client) EnsureHostROS2Sidecar(ctx context.Context, opts ros2inspection.
 	if err := os.WriteFile(ros2HostProfilePath, []byte(ros2HostFastDDSProfile), 0o444); err != nil {
 		return services.ROS2Sidecar{}, err
 	}
-	specJSON, err := json.Marshal(ros2HostSidecarSpec(ros2HostProfilePath))
+	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		return services.ROS2Sidecar{}, err
 	}
-	ctr, err := c.client.NewContainer(ctx, ros2HostSidecarName,
-		containerd.WithImage(image), containerd.WithNewSnapshot(ros2HostSidecarName, image),
-		containerd.WithContainerLabels(map[string]string{labelKeyROS2HostSidecar: ros2inspection.HostDistro, labelKeyROS2RMW: ros2inspection.FastRTPSRMW}),
+	ctr, err := c.client.NewContainer(ctx, name,
+		containerd.WithImage(image), containerd.WithNewSnapshot(name, image),
+		containerd.WithContainerLabels(map[string]string{label: ros2inspection.HostDistro, labelKeyROS2RMW: ros2inspection.FastRTPSRMW}),
 		containerd.WithNewSpec(oci.WithSpecFromBytes(specJSON)),
 	)
 	if err != nil {
@@ -106,12 +114,16 @@ func (c *Client) EnsureHostROS2Sidecar(ctx context.Context, opts ros2inspection.
 	}
 	task, err := ctr.NewTask(ctx, cio.NullIO)
 	if err != nil {
-		_ = ctr.Delete(context.WithoutCancel(ctx), containerd.WithSnapshotCleanup)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = ctr.Delete(cleanupCtx, containerd.WithSnapshotCleanup)
 		return services.ROS2Sidecar{}, fmt.Errorf("creating host inspector task: %w", err)
 	}
 	if err := task.Start(ctx); err != nil {
-		_, _ = task.Delete(context.WithoutCancel(ctx), containerd.WithProcessKill)
-		_ = ctr.Delete(context.WithoutCancel(ctx), containerd.WithSnapshotCleanup)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, _ = task.Delete(cleanupCtx, containerd.WithProcessKill)
+		_ = ctr.Delete(cleanupCtx, containerd.WithSnapshotCleanup)
 		return services.ROS2Sidecar{}, fmt.Errorf("starting host inspector: %w", err)
 	}
 	return sidecar, nil

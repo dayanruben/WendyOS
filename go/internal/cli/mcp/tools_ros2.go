@@ -239,6 +239,7 @@ func (s *mcpServer) handleROS2Topics(ctx context.Context, req mcpgo.CallToolRequ
 	// Omit counts entirely here and use the targeted GetTopicInfo RPC instead.
 	topics := make([]map[string]any, 0)
 	env := map[string]any{"topics": topics, "status": "unknown", "total_topics": len(resp.GetTopics()), "truncated": false}
+	opts.addScope(env)
 	if len(resp.GetTopics()) > 0 {
 		env["status"] = "discovered"
 	}
@@ -252,7 +253,6 @@ func (s *mcpServer) handleROS2Topics(ctx context.Context, req mcpgo.CallToolRequ
 		topics = candidate
 	}
 	env["topics"] = topics
-	opts.addScope(env)
 	return ros2Result(env, opts.maxBytes), nil
 }
 

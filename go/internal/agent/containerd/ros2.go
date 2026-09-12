@@ -218,7 +218,7 @@ func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar
 	if len(order) == 0 {
 		// No running ROS 2 apps: tear down every leftover sidecar and fail.
 		c.teardownAllROS2SidecarsLocked(ctx)
-		return nil, fmt.Errorf("no running ROS 2 containers found; use explicit host inspection with a domain ID for robot/host sensors, or deploy an app with a frameworks.ros2 config for app-scoped inspection")
+		return nil, fmt.Errorf("%w; use explicit host inspection with a domain ID for robot/host sensors, or deploy an app with a frameworks.ros2 config for app-scoped inspection", services.ErrNoRunningROS2Containers)
 	}
 
 	// Tear down sidecars whose RMW is no longer running.
@@ -589,18 +589,58 @@ func (c *Client) VerifyROS2Sidecar(ctx context.Context) error {
 		if lerr != nil {
 			return fmt.Errorf("reading sidecar labels: %w", lerr)
 		}
-		anchorPID, perr := strconv.ParseUint(labels[labelKeyROS2AnchorPID], 10, 32)
-		if perr != nil {
-			return fmt.Errorf("sidecar %s has no valid anchor PID label", sc.ID())
-		}
-		if verr := c.verifyROS2Anchor(ctx, &services.ROS2Target{
-			ContainerID: labels[labelKeyROS2AnchorID],
-			TaskPID:     uint32(anchorPID),
-		}); verr != nil {
+		if verr := c.verifyAppROS2SidecarAnchor(ctx, sc.ID(), labels); verr != nil {
 			return verr
 		}
 	}
 	return nil
+}
+
+// VerifyROS2SidecarNamed checks the sidecar used by one recording. A standalone
+// system CLI has no app anchor; unrelated app sidecars must not affect its
+// diagnosis, and an idle system CLI must not mask a lost app anchor.
+func (c *Client) VerifyROS2SidecarNamed(ctx context.Context, name string) error {
+	ctx = c.withNamespace(ctx)
+	sc, err := c.client.LoadContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("loading ROS 2 sidecar %q: %w", name, err)
+	}
+	labels, err := sc.Labels(ctx)
+	if err != nil {
+		return fmt.Errorf("reading sidecar labels: %w", err)
+	}
+	if name == ros2SystemSidecarName || labels[labelKeyROS2SystemSidecar] != "" {
+		if name != ros2SystemSidecarName || labels[labelKeyROS2SystemSidecar] != "humble" || labels[labelKeyROS2HostSidecar] != "" || labels[labelKeyROS2Sidecar] != "" {
+			return fmt.Errorf("invalid system ROS 2 CLI identity")
+		}
+		task, err := sc.Task(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("system ROS 2 CLI task unavailable: %w", err)
+		}
+		st, err := task.Status(ctx)
+		if err != nil {
+			return fmt.Errorf("checking system ROS 2 CLI task: %w", err)
+		}
+		if st.Status != containerd.Running {
+			return fmt.Errorf("system ROS 2 CLI task no longer running")
+		}
+		return nil
+	}
+	if !ros2DistroPattern.MatchString(labels[labelKeyROS2Sidecar]) || labels[labelKeyROS2HostSidecar] != "" {
+		return fmt.Errorf("invalid app ROS 2 sidecar identity")
+	}
+	return c.verifyAppROS2SidecarAnchor(ctx, name, labels)
+}
+
+func (c *Client) verifyAppROS2SidecarAnchor(ctx context.Context, name string, labels map[string]string) error {
+	anchorPID, err := strconv.ParseUint(labels[labelKeyROS2AnchorPID], 10, 32)
+	if err != nil {
+		return fmt.Errorf("sidecar %s has no valid anchor PID label", name)
+	}
+	return c.verifyROS2Anchor(ctx, &services.ROS2Target{
+		ContainerID: labels[labelKeyROS2AnchorID],
+		TaskPID:     uint32(anchorPID),
+	})
 }
 
 // StopROS2Sidecar stops and removes all ROS 2 CLI sidecars if present.
@@ -608,11 +648,16 @@ func (c *Client) StopROS2Sidecar(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.teardownAllROS2SidecarsLocked(c.withNamespace(ctx))
-	if !c.sidecarHasActiveExecsLocked(ros2HostSidecarName) {
-		if inspector, err := c.client.LoadContainer(c.withNamespace(ctx), ros2HostSidecarName); err == nil {
+	for name, label := range map[string]string{ros2HostSidecarName: labelKeyROS2HostSidecar, ros2SystemSidecarName: labelKeyROS2SystemSidecar} {
+		if c.sidecarHasActiveExecsLocked(name) {
+			continue
+		}
+		if inspector, err := c.client.LoadContainer(c.withNamespace(ctx), name); err == nil {
 			labels, lerr := inspector.Labels(c.withNamespace(ctx))
-			if lerr == nil && labels[labelKeyROS2HostSidecar] != "" {
-				return c.deleteROS2Sidecar(c.withNamespace(ctx), inspector)
+			if lerr == nil && labels[label] != "" {
+				if err := c.deleteROS2Sidecar(c.withNamespace(ctx), inspector); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -859,6 +904,13 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	}
 	distro := labels[labelKeyROS2Sidecar]
 	hostInspector := labels[labelKeyROS2HostSidecar] != ""
+	systemCLI := labels[labelKeyROS2SystemSidecar] != ""
+	if systemCLI {
+		if name != ros2SystemSidecarName || labels[labelKeyROS2SystemSidecar] != "humble" || hostInspector {
+			return -1, fmt.Errorf("invalid system ROS 2 CLI identity")
+		}
+		distro = labels[labelKeyROS2SystemSidecar]
+	}
 	if hostInspector {
 		if name != ros2HostSidecarName || labels[labelKeyROS2HostSidecar] != "humble" {
 			return -1, fmt.Errorf("invalid host inspector identity")
@@ -902,7 +954,7 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	pspec.Env = append(append([]string(nil), pspec.Env...),
 		"ROS_DOMAIN_ID="+strconv.Itoa(opts.DomainID),
 	)
-	pspec.Env = append(pspec.Env, ros2ExecDiscoveryEnv(hostInspector)...)
+	pspec.Env = append(pspec.Env, ros2ExecDiscoveryEnv(hostInspector || systemCLI)...)
 	// Match the anchor app's RMW so the CLI speaks the same DDS implementation;
 	// otherwise it falls to the image default and sees nothing on another RMW
 	// (WDY-1593). The label is written validated, but re-check before injecting

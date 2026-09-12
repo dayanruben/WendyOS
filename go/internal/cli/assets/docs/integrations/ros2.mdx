@@ -1,6 +1,6 @@
 ---
 title: Wendy for ROS 2
-description: Inspect and debug live ROS 2 systems on a WendyOS device from the CLI, with no SSH. Nodes, topics, services, parameters, actions, lifecycle nodes, components, and rosbags.
+description: Inspect and debug live ROS 2 systems on devices running Wendy Agent, including Unitree robots, with no SSH or ROS 2 app deployment required.
 ---
 
 `wendy device ros2` brings the full `ros2` command-line experience to a remote
@@ -19,11 +19,19 @@ CycloneDDS (default), Fast DDS, RTI Connext, or GurumDDS.
 
 ## How it works
 
-The agent discovers ROS 2 app containers (those deployed with a `frameworks.ros2`
-config in `wendy.json`) and starts a CLI sidecar in the same DDS domain. Your
-`ros2` commands run inside that sidecar over gRPC.
+The agent discovers running ROS 2 app containers (those deployed with a
+`frameworks.ros2` config in `wendy.json`) and starts CLI sidecars in their DDS
+domains. When no ROS 2 app is running, it automatically starts a standalone CLI
+sidecar on the host network to reach the device's system DDS graph. This works
+with Unitree robots without deploying an app or installing the `ros2` CLI on
+the host. Your commands run inside the sidecar over gRPC.
 
-ROS 2 discovery is app-local by default: Wendy injects `ROS_LOCALHOST_ONLY=1`
+The system sidecar uses the stock `ros:humble-ros-base` image with Fast DDS and
+UDP discovery. The device downloads the image on first use and caches it for
+later commands. It uses domain 0 by default; pass `--domain` to select another
+domain.
+
+ROS 2 app discovery is app-local by default: Wendy injects `ROS_LOCALHOST_ONLY=1`
 so unrelated apps and robots do not discover each other. A bridge or inspection
 tool that intentionally needs the device's wider ROS 2 graph can opt in with
 `"discoveryScope": "host"` in `frameworks.ros2`; pair it with a host-network
@@ -63,14 +71,18 @@ Existing projects need no scaffolding — add the `frameworks.ros2` key to
 
 ## Prerequisites
 
-- A ROS 2 app running on the device. See
-  [Multi-app deployments](/docs/guides/multi-app-deployments) for a complete
-  talker/listener stack and the host-networking entitlement DDS discovery needs.
+- A device running Wendy Agent, with a system DDS graph or ROS 2 apps to inspect.
+  A running app with `frameworks.ros2` is optional. See
+  [Multi-app deployments](/docs/guides/multi-app-deployments) for an app-based
+  talker/listener stack.
 - A device selected as your default (or pass `--device`). See
   [Discovering devices](/docs/device/discovering-devices).
 
+Use `wendy device ros2 topics` to inspect a Unitree robot's system graph directly.
+The system sidecar's first use requires internet access to download its image.
+
 Every subcommand accepts `--domain` to override the `ROS_DOMAIN_ID`. By default it
-is read from the app's ROS 2 config, so you rarely need to set it. That includes
+is 0 for the system graph or read from the running app's ROS 2 config. That includes
 auto-derived domains: an app whose `frameworks.ros2` omits `domainId` gets a
 stable domain hashed from its `appId` (in the 0 to 232 range), and the CLI
 follows it automatically. Every subcommand also honors the global `--json` flag
@@ -121,6 +133,12 @@ Monitor a topic's publish rate:
 ```bash
 wendy device ros2 hz /chatter
 ```
+
+`echo` and `hz` need the topic's generated message packages inside the CLI
+sidecar. The stock system image includes standard ROS 2 messages, but custom
+types such as `unitree_go/msg/LowState` require additional packages. A topic can
+appear in `topics` and `topic info` even when its message package is unavailable
+for decoding.
 
 ## Parameters
 

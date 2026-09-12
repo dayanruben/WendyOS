@@ -69,6 +69,14 @@ rate measurement does not establish sensor acquisition freshness, localization
 quality, coverage, or readiness to move. Reception times are not sensor times.
 Use the robot app's readiness and navigation tools when it provides them.
 
+Examples/RobotNavigation is a deployable app providing robot_status, supervised
+navigation_goal/status/renew/cancel, robot_stop, robot_observe, robot_targets,
+and approach_person. Its default configuration disables motor output. It needs
+standard scan/odometry/IMU inputs, calibrated RGB-D for person targets, and a
+commissioned local driver/watchdog before motion. Read-only status calls do not
+renew navigation leases; cancellation is confirmed only after the action ends
+and fresh odometry establishes rest. Use fresh app target IDs for person goals.
+
 Apps with an mcp entitlement expose tools under an app-name prefix. Their tools
 are refreshed as the active device and running apps change. Check wendy_status
 or wendy://diagnostics when an expected app tool is unavailable.

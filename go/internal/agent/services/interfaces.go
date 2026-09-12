@@ -3,6 +3,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -272,8 +273,26 @@ type ROS2Target struct {
 type ROS2Sidecar struct {
 	Name     string // sidecar container ID (per-RMW)
 	Distro   string
-	DomainID int    // default DDS domain, taken from the anchor app container
+	DomainID int    // default DDS domain, taken from the anchor app container or 0 for system ROS 2
 	RMW      string // the RMW this sidecar speaks (e.g. "rmw_cyclonedds_cpp"); "" = image default
+}
+
+// ErrNoRunningROS2Containers identifies the absence of a running ROS 2 app,
+// allowing an unscoped request to inspect system ROS 2 without masking runtime
+// failures such as container discovery or sidecar provisioning errors.
+var ErrNoRunningROS2Containers = errors.New("no running ROS 2 containers found")
+
+// ROS2SystemRuntime optionally supports the device's system ROS 2 graph without
+// an app container. Unscoped requests use it only when no ROS 2 app is running;
+// explicitly scoped app and host inspection keep their own routing contracts.
+type ROS2SystemRuntime interface {
+	EnsureSystemROS2Sidecar(context.Context) (ROS2Sidecar, error)
+}
+
+// ROS2NamedSidecarVerifier optionally checks the exact sidecar used by a
+// recording, so unrelated app or system sidecars cannot affect its diagnosis.
+type ROS2NamedSidecarVerifier interface {
+	VerifyROS2SidecarNamed(context.Context, string) error
 }
 
 // ROS2ExecOptions configures a single `ros2` invocation inside the sidecar.
@@ -291,7 +310,7 @@ type ROS2Runtime interface {
 	// EnsureROS2Sidecars starts or reuses one CLI sidecar per distinct RMW in
 	// use by the running ROS 2 apps, and tears down sidecars whose RMW is no
 	// longer present. Returns one entry per live RMW graph (WDY-1594). Returns
-	// an error when no ROS 2 app is running.
+	// an error wrapping ErrNoRunningROS2Containers when no ROS 2 app is running.
 	EnsureROS2Sidecars(ctx context.Context) ([]ROS2Sidecar, error)
 	// StopROS2Sidecar stops and removes the sidecar if present.
 	StopROS2Sidecar(ctx context.Context) error

@@ -118,13 +118,30 @@ readiness and maintain it throughout motion. That runtime needs sensor freshness
 and coverage, pose and measured velocity, valid coordinate transforms, a robot
 footprint, and tested stopping behavior.
 
-A navigation app can expose readiness, goal submission, status, cancellation,
-and stop tools through the same MCP integration. It should enforce speed and
-clearance limits locally, maintain goal IDs across tool calls, and distinguish
-cancel acknowledgement from confirmed stopping. Motion command expiry and the
-watchdog belong on the robot, where they can respond without a cloud round trip.
+The repository's `Examples/RobotNavigation` app implements this layer with Nav2,
+a separate velocity guard, a motor watchdog, and persistent goal supervision.
+It exposes `robot_status`, `navigation_goal`, `navigation_status`,
+`navigation_renew`, `navigation_cancel`, and `robot_stop` through its app MCP
+entitlement. Tools appear under the app-name prefix after deployment. Defaults
+disable motor output and report the inputs and commissioning checks still needed.
 
-Approaching a person additionally needs calibrated perception to ground the
-selected target in the navigation frame and select a reachable stopping point.
-The generic diagnostic tools do not implement navigation, person tracking,
-collision avoidance, or a hardware emergency stop.
+Use `robot_status` before submitting a goal. Goal acceptance does not establish
+arrival. `navigation_status` does not renew the finite supervision lease; renewal
+must be explicit. Cancellation inhibits velocity immediately, and remains
+stopping until Nav2's action has ended and fresh odometry confirms rest. Restarted
+goals are abandoned, never automatically resumed. Device speed, footprint,
+clearance, braking and watchdog configuration cannot be raised through MCP.
+
+For person approach, the app's `robot_observe` returns a matching annotated RGB
+frame and expiring target IDs. `approach_person` uses synchronized calibrated
+depth and capture-time TF to choose a standoff endpoint for the local planner.
+Missing depth/calibration or a stale/ambiguous target blocks submission. Target
+loss or excess motion cancels the goal without switching identity. The baseline
+HOG detector can miss seated people and cannot exclude mirrors; deployments need
+an appropriate detector and a commissioned environment.
+
+The app requires standard scan/odometry/IMU and calibrated RGB-D inputs. A host
+diagnostic topic or ordinary camera snapshot is not a substitute for those
+interfaces. The generic diagnostic tools do not perform navigation or provide a
+hardware emergency stop. See `Examples/RobotNavigation/README.md` for the isolated
+ROS simulation test, input contracts and device commissioning requirements.
