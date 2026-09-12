@@ -1,0 +1,95 @@
+---
+title: Robot diagnostics with MCP
+description: Discover robot app tools and inspect ROS 2 sensor data through bounded MCP observations.
+---
+
+Wendy exposes ROS 2 diagnostics to AI assistants over the active direct or cloud
+device connection. These tools help distinguish missing capabilities, failed
+subscriptions, and topics that produced no readings during an observation.
+
+## Inspect a sensor
+
+1. Call `wendy_status`, then connect using `device_connect` or `cloud_connect`.
+2. Call `ros2_topics` to discover topic names, message types, and middleware.
+3. Call `ros2_topic_info` with the selected `topic` to inspect publisher counts
+   and verbose endpoint information, including QoS.
+4. Call `ros2_topic_sample` for a finite set of decoded messages, or
+   `ros2_topic_hz` for rate measurements from a subscription on the device.
+
+For example, after discovering an odometry topic named `/odom`, request:
+
+```json
+{
+  "topic": "/odom",
+  "count": 3,
+  "duration_seconds": 10,
+  "max_bytes": 32000
+}
+```
+
+Use these arguments with `ros2_topic_sample`. The same bounded observation
+parameters are available on `ros2_topic_hz`. The optional `domain_id` selects a
+DDS domain; otherwise the agent uses its ROS 2 app configuration. Inspect the
+tool schema for defaults and limits.
+
+These tools use Wendy's existing ROS 2 sidecar. See
+[Wendy for ROS 2](/docs/integrations/ros2) for app configuration, discovery scope,
+and middleware setup. Custom messages need compatible typesupport in the
+sidecar. A topic can appear in discovery even when its message cannot be decoded.
+
+## Interpret the result
+
+- **Discovered** means a topic was found in the ROS graph. It does not prove
+  that samples are arriving. Topic lists omit publisher counts; use the targeted
+  info tool to inspect them.
+- **Observed** means the subscription returned messages or rate measurements
+  within the bounded request. Inspect the stop reason and any error as well.
+- **Unknown** means the request did not establish usable observations. It must
+  not be interpreted as clear space or a working sensor.
+- **Source freshness remains unknown.** A tool reception timestamp is measured
+  at the MCP client. Sensor timestamps need a known clock and coordinate frame
+  before they can establish acquisition age.
+
+Observation stops at its count, duration, or output limit. Partial observations
+can therefore contain fewer samples than requested. Large images and point
+clouds can exceed the output budget; use a smaller diagnostic topic or a robot
+app that summarizes the data locally. Topic info reports endpoint QoS; sampling
+and rate tools use the sidecar defaults and do not accept QoS overrides.
+
+With an updated Wendy agent, unsuccessful `echo` and `hz` processes return
+their exit failure and a bounded stderr tail, including decoding errors. Older
+agents may still turn these failures into empty streams; an empty observation
+continues to mean unknown.
+
+## Discover robot app capabilities
+
+A deployed app can expose its own MCP server with an entitlement:
+
+```json
+{ "type": "mcp", "port": 3000 }
+```
+
+Wendy prefixes each tool with the app name and refreshes app tools after device
+connection changes and as running apps change. An app deployed after the MCP
+session starts can therefore become available without restarting the session.
+Discovery is asynchronous; clients receive tool-list change notifications and
+can list tools again. `wendy_status` and `wendy://diagnostics` report proxy
+discovery failures.
+
+## From diagnostics to navigation
+
+ROS 2 observations support diagnosis. A robot's local runtime must establish
+readiness and maintain it throughout motion. That runtime needs sensor freshness
+and coverage, pose and measured velocity, valid coordinate transforms, a robot
+footprint, and tested stopping behavior.
+
+A navigation app can expose readiness, goal submission, status, cancellation,
+and stop tools through the same MCP integration. It should enforce speed and
+clearance limits locally, maintain goal IDs across tool calls, and distinguish
+cancel acknowledgement from confirmed stopping. Motion command expiry and the
+watchdog belong on the robot, where they can respond without a cloud round trip.
+
+Approaching a person additionally needs calibrated perception to ground the
+selected target in the navigation frame and select a reachable stopping point.
+The generic diagnostic tools do not implement navigation, person tracking,
+collision avoidance, or a hardware emergency stop.

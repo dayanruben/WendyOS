@@ -39,11 +39,31 @@ Cloud-enrolled devices:
 - wifi_list / wifi_connect / wifi_disconnect / wifi_status / wifi_known_networks
 - telemetry_logs / telemetry_metrics / telemetry_traces
 - hardware_capabilities
+- ros2_topics / ros2_topic_info / ros2_topic_sample / ros2_topic_hz
 - os_update
 - provisioning_start / provisioning_status
 
 Host↔device file sync happens automatically as part of ` + "`wendy run`" + `'s
 fast redeploy path — there is no standalone file-sync CLI command or MCP tool.
+
+## Robot and sensor diagnostics
+
+Use ros2_topics to discover sensor and odometry topics, ros2_topic_info to
+inspect a topic's publishers and QoS, and ros2_topic_sample or ros2_topic_hz
+for a finite observation. These tools require the agent's ROS 2 sidecar and
+the message typesupport needed to decode the selected topic.
+
+No samples means unknown, not an empty obstacle field. A received sample or
+rate measurement does not establish sensor acquisition freshness, localization
+quality, coverage, or readiness to move. Reception times are not sensor times.
+Use the robot app's readiness and navigation tools when it provides them.
+
+Apps with an mcp entitlement expose tools under an app-name prefix. Their tools
+are refreshed as the active device and running apps change. Check wendy_status
+or wendy://diagnostics when an expected app tool is unavailable.
+
+Read wendy://docs/integrations/robot-diagnostics.mdx for the diagnostic workflow
+and the boundary between remote observation and local robot control.
 
 ## Deploying a workload
 

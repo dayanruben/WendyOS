@@ -615,11 +615,13 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 	pr, pw := io.Pipe()
 	execDone := make(chan error, 1)
 	go func() {
-		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
+		stderr := &ros2StderrTail{}
+		code, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
 			DomainID:    sc.domainID,
 			SidecarName: sc.name,
 			Args:        []string{"topic", "echo", req.GetTopic()},
-		}, pw, io.Discard)
+		}, pw, stderr)
+		execErr = ros2StreamExitError(code, execErr, stderr)
 		pw.CloseWithError(execErr)
 		execDone <- execErr
 	}()
@@ -645,6 +647,12 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) != "---" {
+			// Scanner bounds each line, but an array may span many lines.
+			// Bound the complete document before retaining another line.
+			if len(line)+1 > ros2EchoMaxMessageBytes-doc.Len() {
+				_ = drainAndWait()
+				return ros2ScanError("topic echo", req.GetTopic(), bufio.ErrTooLong, ros2EchoMaxMessageBytes)
+			}
 			doc.WriteString(line)
 			doc.WriteString("\n")
 			continue
@@ -699,11 +707,13 @@ func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc
 	pr, pw := io.Pipe()
 	execDone := make(chan error, 1)
 	go func() {
-		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
+		stderr := &ros2StderrTail{}
+		code, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
 			DomainID:    sc.domainID,
 			SidecarName: sc.name,
 			Args:        []string{"topic", "hz", req.GetTopic()},
-		}, pw, io.Discard)
+		}, pw, stderr)
+		execErr = ros2StreamExitError(code, execErr, stderr)
 		pw.CloseWithError(execErr)
 		execDone <- execErr
 	}()

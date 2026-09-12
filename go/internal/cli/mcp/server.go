@@ -3,13 +3,10 @@ package mcp
 import (
 	"context"
 	"fmt"
-	"io"
 	"math"
-	"os"
 	"sync"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -17,7 +14,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/status"
 )
 
@@ -35,6 +31,7 @@ type mcpServer struct {
 	discoverLANFn    func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
 	mu               sync.RWMutex
 	proxyDiag        []proxyDiagEntry
+	containerMCP     *containerMCPManager
 }
 
 // SetStartupConnect configures the optional device connection attempted after
@@ -66,11 +63,14 @@ func (s *mcpServer) GetConn() *grpcclient.AgentConnection {
 func (s *mcpServer) SetConn(conn *grpcclient.AgentConnection) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil {
+	if s.conn != nil && s.conn != conn {
 		_ = s.conn.Close()
 	}
 	s.conn = conn
 	s.connRevision++
+	if s.containerMCP != nil {
+		s.containerMCP.invalidateLocked()
+	}
 	if conn == nil {
 		s.connType = ""
 	}
@@ -148,6 +148,9 @@ func (s *mcpServer) ConnectToOnStartup(ctx context.Context, address string) erro
 	}
 	s.conn = conn
 	s.connRevision++
+	if s.containerMCP != nil {
+		s.containerMCP.invalidateLocked()
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -167,6 +170,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerDeviceTools(srv)
 	s.registerContainerTools(srv)
 	s.registerTelemetryTools(srv)
+	s.registerROS2Tools(srv)
 	s.registerWiFiTools(srv)
 	s.registerBluetoothTools(srv)
 	s.registerHardwareTools(srv)
@@ -177,7 +181,9 @@ func (s *mcpServer) Start(ctx context.Context) error {
 
 	startupCtx, cancelStartup := context.WithCancel(ctx)
 	defer cancelStartup()
-	go s.runStartupConnect(startupCtx, srv)
+	stopContainerMCP := s.startContainerMCP(startupCtx, srv)
+	defer stopContainerMCP()
+	go s.runStartupConnect(startupCtx)
 
 	return serveStdio(srv)
 }
@@ -188,7 +194,7 @@ var serveStdio = func(srv *server.MCPServer) error {
 	return server.ServeStdio(srv)
 }
 
-func (s *mcpServer) runStartupConnect(ctx context.Context, srv *server.MCPServer) {
+func (s *mcpServer) runStartupConnect(ctx context.Context) {
 	s.mu.RLock()
 	connect := s.startupConnectFn
 	s.mu.RUnlock()
@@ -197,20 +203,6 @@ func (s *mcpServer) runStartupConnect(ctx context.Context, srv *server.MCPServer
 	}
 
 	connect(ctx)
-	if ctx.Err() != nil {
-		return
-	}
-
-	// MCPServer.AddTool is concurrency-safe and sends tools/list_changed to
-	// initialized clients, so container tools may be discovered after the host
-	// has completed its handshake with Wendy.
-	cleanups := s.registerContainerMCPTools(ctx, srv)
-	defer func() {
-		for _, cleanup := range cleanups {
-			cleanup()
-		}
-	}()
-	<-ctx.Done()
 }
 
 func errNotConnected() *mcpgo.CallToolResult {
@@ -244,116 +236,6 @@ func intParamAlias(req mcpgo.CallToolRequest, primary, alias string, defaultVal 
 		return v
 	}
 	return req.GetInt(alias, defaultVal)
-}
-
-// registerContainerMCPTools scans running containers for mcp_port > 0 and
-// registers each container's tools on srv, prefixed with the app name.
-// Errors per-container are warnings; they do not prevent the session from starting.
-func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.MCPServer) []func() {
-	conn := s.GetConn()
-	if conn == nil {
-		return nil
-	}
-
-	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
-	if err != nil {
-		s.recordProxyDiag("", "list-containers", err)
-		fmt.Fprintf(os.Stderr, "Warning: listing containers for MCP tools: %v\n", err)
-		return nil
-	}
-
-	var cleanups []func()
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			s.recordProxyDiag("", "read-container-list", err)
-			fmt.Fprintf(os.Stderr, "Warning: reading container list: %v\n", err)
-			return cleanups
-		}
-		c := resp.GetContainer()
-		if c == nil || c.GetMcpPort() == 0 || c.GetRunningState() != agentpb.AppRunningState_RUNNING {
-			continue
-		}
-		if cleanup := s.connectContainerMCPTools(ctx, srv, conn, c.GetAppName()); cleanup != nil {
-			cleanups = append(cleanups, cleanup)
-		}
-	}
-	return cleanups
-}
-
-// connectContainerMCPTools proxies a single container's MCP server into srv.
-// It retries Initialize up to 4 times with exponential backoff (2s, 4s, 8s).
-// On success it returns a cleanup function that closes the proxy; on failure it
-// returns nil (after cleaning up internally).
-func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MCPServer, conn *grpcclient.AgentConnection, appName string) func() {
-	addr, closeProxy, err := startMCPProxy(ctx, conn, appName)
-	if err != nil {
-		s.recordProxyDiag(appName, "proxy", err)
-		fmt.Fprintf(os.Stderr, "Warning: MCP proxy for %s: %v\n", appName, err)
-		return nil
-	}
-
-	mcpCli, err := mcpclient.NewStreamableHttpClient("http://" + addr)
-	if err != nil {
-		closeProxy()
-		s.recordProxyDiag(appName, "client", err)
-		fmt.Fprintf(os.Stderr, "Warning: MCP client for %s: %v\n", appName, err)
-		return nil
-	}
-
-	var initErr error
-	for attempt := 0; attempt < 4; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				closeProxy()
-				return nil
-			case <-time.After(time.Duration(1<<attempt) * time.Second):
-			}
-		}
-		_, initErr = mcpCli.Initialize(ctx, mcpgo.InitializeRequest{})
-		if initErr == nil {
-			break
-		}
-	}
-	if initErr != nil {
-		closeProxy()
-		s.recordProxyDiag(appName, "initialize", initErr)
-		fmt.Fprintf(os.Stderr, "Warning: MCP init for %s: %v\n", appName, initErr)
-		return nil
-	}
-
-	result, err := mcpCli.ListTools(ctx, mcpgo.ListToolsRequest{})
-	if err != nil {
-		closeProxy()
-		s.recordProxyDiag(appName, "list-tools", err)
-		fmt.Fprintf(os.Stderr, "Warning: listing MCP tools for %s: %v\n", appName, err)
-		return nil
-	}
-
-	prefix := sanitizeMCPPrefix(appName)
-	for _, tool := range result.Tools {
-		proxied := tool
-		proxied.Name = prefix + "__" + tool.Name
-		originalName := tool.Name
-		srv.AddTool(proxied, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-			inner := mcpgo.CallToolRequest{}
-			inner.Params.Name = originalName
-			inner.Params.Arguments = req.Params.Arguments
-			result, err := mcpCli.CallTool(ctx, inner)
-			if err != nil {
-				return result, err
-			}
-			// Container-supplied tools are not held to the same output
-			// discipline as wendy's own tools; cap the result the same way
-			// okResultBounded/okTextBounded cap native ones (see results.go).
-			return capProxiedResult(result, defaultProxyMaxBytes), nil
-		})
-	}
-	return closeProxy
 }
 
 // sanitizeMCPPrefix converts an app name to a valid MCP tool name prefix

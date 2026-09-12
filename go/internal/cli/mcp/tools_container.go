@@ -151,6 +151,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
+	defer s.refreshContainerMCPTools()
 	maxChunks := intParam(req, "max_chunks", 200)
 	var sb strings.Builder
 	chunks := 0
@@ -194,6 +195,7 @@ func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
+	s.refreshContainerMCPTools()
 	return okText(fmt.Sprintf("container %s stopped", appName)), nil
 }
 
@@ -214,6 +216,7 @@ func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
+	s.refreshContainerMCPTools()
 	return okText(fmt.Sprintf("container %s deleted", appName)), nil
 }
 
