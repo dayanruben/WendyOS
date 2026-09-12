@@ -86,7 +86,7 @@ func TestROS2ToolsReadOnlyAndDisconnected(t *testing.T) {
 	s := New(&config.Config{}, nil)
 	srv := server.NewMCPServer("test", "test")
 	s.registerROS2Tools(srv)
-	if len(srv.ListTools()) != 4 {
+	if len(srv.ListTools()) != 5 {
 		t.Fatalf("got %d ROS2 tools", len(srv.ListTools()))
 	}
 	for name, tool := range srv.ListTools() {

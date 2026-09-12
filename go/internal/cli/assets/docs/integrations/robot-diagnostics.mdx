@@ -13,8 +13,10 @@ subscriptions, and topics that produced no readings during an observation.
 2. Call `ros2_topics` to discover topic names, message types, and middleware.
 3. Call `ros2_topic_info` with the selected `topic` to inspect publisher counts
    and verbose endpoint information, including QoS.
-4. Call `ros2_topic_sample` for a finite set of decoded messages, or
-   `ros2_topic_hz` for rate measurements from a subscription on the device.
+4. For `PointCloud2` or `LaserScan`, call `ros2_lidar_summary` for device-side
+   decoding, directional distances, and bounded XYZ samples. For other types,
+   call `ros2_topic_sample` for decoded messages, or `ros2_topic_hz` for rate
+   measurements from a subscription on the device.
 
 For example, after discovering an odometry topic named `/odom`, request:
 
@@ -49,8 +51,9 @@ ROS 2 app is running. Explicitly choose `scope: "host"` and the robot's known
 ```
 
 Pass these arguments to `ros2_topics`, then keep the same scope and domain on
-`ros2_topic_info`, `ros2_topic_sample`, and `ros2_topic_hz`. A domain override by
-itself continues to inspect the app graph; it never enables host inspection.
+`ros2_topic_info`, `ros2_topic_sample`, `ros2_topic_hz`, and
+`ros2_lidar_summary`. A domain override by itself continues to inspect the app
+graph; it never enables host inspection.
 
 Host inspection uses a separate stock ROS Humble/FastRTPS inspector on the device's
 host network. First use may download `ros:humble-ros-base`; retry if image preparation
@@ -63,8 +66,9 @@ persistent ROS daemon and subscriptions end with their request.
 Results include `inspection_scope`, `inspection_domain_id`, `inspection_rmw`,
 and `inspection_distro`. The client requires the agent to acknowledge host scope;
 an older agent cannot silently return app-scoped observations. Host inspection is
-limited to topic discovery, endpoint information, samples, and rates. Service
-calls, actions, parameter changes, and raw ROS execution cannot select this scope.
+limited to topic discovery, endpoint information, samples, rates, and LiDAR
+summaries. Service calls, actions, parameter changes, and raw ROS execution
+cannot select this scope.
 
 Standard ROS sensor/navigation types can be inspected when the publisher is
 reachable and its DDS/QoS settings interoperate. Custom Unitree message types are
@@ -81,15 +85,26 @@ check the domain, network interface/routing, middleware and publisher QoS.
   within the bounded request. Inspect the stop reason and any error as well.
 - **Unknown** means the request did not establish usable observations. It must
   not be interpreted as clear space or a working sensor.
-- **Source freshness remains unknown.** A tool reception timestamp is measured
-  at the MCP client. Sensor timestamps need a known clock and coordinate frame
-  before they can establish acquisition age.
+- **Source freshness needs a known clock.** A generic topic tool reception
+  timestamp is measured at the MCP client and cannot establish acquisition age.
+  LiDAR summaries include source timestamps and device-side clock diagnostics;
+  `source_age_seconds` is a signed offset against `clock_basis` and does not
+  prove synchronization. Freshness remains unverified without a known clock
+  relationship. Do not compare sensor timestamps to the chat session clock.
 
 Observation stops at its count, duration, or output limit. Partial observations
-can therefore contain fewer samples than requested. Large images and point
-clouds can exceed the output budget; use a smaller diagnostic topic or a robot
-app that summarizes the data locally. Topic info reports endpoint QoS; sampling
-and rate tools use the sidecar defaults and do not accept QoS overrides.
+can therefore contain fewer samples than requested. Large images and raw point
+clouds can exceed the output budget. Use `ros2_lidar_summary` for standard LiDAR
+messages; it decodes and summarizes them on the device using sensor-compatible
+QoS. Its directions are in the reported output frame. Request a verified robot
+body frame with `target_frame` before interpreting sectors as robot-relative;
+the tool resolves TF at the source timestamp. Filtering, bounded point counts,
+and missing returns can leave coverage incomplete. See
+[Inspect LiDAR in Wendy Chat](/docs/integrations/ros2#inspect-lidar-in-wendy-chat)
+for examples and clock handling. Other large messages need a smaller diagnostic
+topic or an app that summarizes them locally. Topic info reports endpoint QoS;
+generic sampling and rate tools use the sidecar defaults and do not accept QoS
+overrides.
 
 With an updated Wendy agent, unsuccessful `echo` and `hz` processes return
 their exit failure and a bounded stderr tail, including decoding errors. Older

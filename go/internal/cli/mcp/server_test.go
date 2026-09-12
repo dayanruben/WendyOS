@@ -41,7 +41,7 @@ func TestStart_ServesWhileStartupConnectIsBlocked(t *testing.T) {
 		if _, ok := tools["wendy_status"]; !ok {
 			t.Fatal("stdio server started without built-in Wendy tools")
 		}
-		for _, name := range []string{"ros2_topics", "ros2_topic_info", "ros2_topic_sample", "ros2_topic_hz"} {
+		for _, name := range []string{"ros2_topics", "ros2_topic_info", "ros2_topic_sample", "ros2_topic_hz", "ros2_lidar_summary"} {
 			if _, ok := tools[name]; !ok {
 				t.Errorf("stdio server started without %s", name)
 			}

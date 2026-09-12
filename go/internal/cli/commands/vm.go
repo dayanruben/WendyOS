@@ -34,12 +34,12 @@ func newVMCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVarP(&vmAssumeYes, "yes", "y", false,
 		"Accept prompts, including installing QEMU when it is missing")
 	cmd.AddCommand(newVMCreateCmd(), newVMStartCmd(), newVMStopCmd(),
-		newVMLogsCmd(), newVMListCmd(), newVMRemoveCmd())
+		newVMLogsCmd(), newVMListCmd(), newVMRemoveCmd(), newVMRobotCmd())
 	return cmd
 }
 
 func newVMCreateCmd() *cobra.Command {
-	var image, version string
+	var image, version, profile string
 	var diskGiB, prNumber int
 	var nightly bool
 
@@ -48,7 +48,13 @@ func newVMCreateCmd() *cobra.Command {
 		Short: "Create a VM, downloading the WendyOS image if needed",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVMCreate(cmd, args[0], image, version, diskGiB, nightly, prNumber)
+			if err := validateSimulatorProfile(profile); err != nil {
+				return err
+			}
+			if err := runVMCreate(cmd, args[0], image, version, diskGiB, nightly, prNumber); err != nil {
+				return err
+			}
+			return attachSimulatorProfile(args[0], profile)
 		},
 	}
 	cmd.Flags().StringVar(&image, "image", "", "Path to a local .wic disk image (default: download the published one)")
@@ -56,6 +62,7 @@ func newVMCreateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "Create from a pull request's build, so a change can be tried before it merges")
 	cmd.Flags().IntVar(&diskGiB, "disk", 16, "Disk size in GiB (the image is grown to this size)")
+	cmd.Flags().StringVar(&profile, "profile", "generic", "Simulator profile: generic or go2 (provisioned on first connection)")
 	return cmd
 }
 

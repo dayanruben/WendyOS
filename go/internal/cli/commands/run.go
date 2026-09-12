@@ -493,9 +493,12 @@ func resolveStagefileGPUTarget(ctx context.Context, cwd string, target *Selected
 }
 
 type runOptions struct {
-	buildType  string
-	dockerfile string
-	builder    string
+	// Managed robot provisioning owns its QMP mapping and HTTP identity check.
+	// The public run command never sets this option.
+	managedRobot bool
+	buildType    string
+	dockerfile   string
+	builder      string
 	// buildHost names a WendyOS device that builds the image instead of this
 	// machine. Empty means build locally, and every existing local path must be
 	// unaffected when it is empty.
@@ -1926,6 +1929,13 @@ func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device 
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	mark := phaseTimer()
+	if !opts.managedRobot {
+		var err error
+		appCfg, err = prepareRobotAppConfig(conn, appCfg, opts.env)
+		if err != nil {
+			return err
+		}
+	}
 	if opts.isWatch() && !opts.detach {
 		if err := opts.watchState.ensureLogStream(conn, appCfg.AppID); err != nil {
 			return err
@@ -1940,8 +1950,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		return runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts)
 	}
 
-	if err := prepareVMAppPorts(ctx, conn, appCfg); err != nil {
-		return err
+	if !opts.managedRobot {
+		if err := prepareVMAppPorts(ctx, conn, appCfg); err != nil {
+			return err
+		}
 	}
 	// Detect project type and ensure a build file exists when needed.
 	projectType, err := resolveRunProjectType(cwd, opts.buildType)

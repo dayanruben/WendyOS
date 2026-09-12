@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,16 @@ import (
 // ConnectFunc connects to a wendy agent at the given address (host:port).
 type ConnectFunc func(ctx context.Context, address string) (*grpcclient.AgentConnection, error)
 
+// commandTarget is the public, credential-free connection information a local
+// CLI child needs to reconnect to the same device independently of this session.
+// A zero value means this transport cannot be recreated from CLI arguments.
+type commandTarget struct {
+	Device    string `json:"device"`
+	Transport string `json:"transport"`
+	CloudGRPC string `json:"cloud_grpc,omitempty"`
+	BrokerURL string `json:"broker_url,omitempty"`
+}
+
 type mcpServer struct {
 	cfg              *config.Config
 	connectFn        ConnectFunc
@@ -27,6 +38,7 @@ type mcpServer struct {
 	conn             *grpcclient.AgentConnection
 	connRevision     uint64
 	connType         string
+	commandTarget    commandTarget
 	cloudTunnels     map[string]*mcpCloudTunnel
 	discoverLANFn    func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
 	mu               sync.RWMutex
@@ -61,19 +73,56 @@ func (s *mcpServer) GetConn() *grpcclient.AgentConnection {
 
 // SetConn replaces the active connection, closing the previous one.
 func (s *mcpServer) SetConn(conn *grpcclient.AgentConnection) {
+	s.setConnection(conn, "direct", directCommandTarget(conn, ""))
+}
+
+// setConnection publishes the connection and all of its routing metadata in
+// one update so callers never combine an old target with a new connection.
+func (s *mcpServer) setConnection(conn *grpcclient.AgentConnection, connType string, target commandTarget) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.setConnectionLocked(conn, connType, target)
+}
+
+func (s *mcpServer) setConnectionLocked(conn *grpcclient.AgentConnection, connType string, target commandTarget) {
 	if s.conn != nil && s.conn != conn {
 		_ = s.conn.Close()
 	}
 	s.conn = conn
+	s.connType = connType
+	s.commandTarget = target
 	s.connRevision++
 	if s.containerMCP != nil {
 		s.containerMCP.invalidateLocked()
 	}
 	if conn == nil {
 		s.connType = ""
+		s.commandTarget = commandTarget{}
 	}
+}
+
+func directCommandTarget(conn *grpcclient.AgentConnection, address string) commandTarget {
+	if conn == nil || strings.HasPrefix(conn.Host, "unix:") {
+		return commandTarget{}
+	}
+	if conn.SimulatorName != "" {
+		// The named alias retains the VM's identity when its forwarded port changes.
+		address = "vm:" + conn.SimulatorName
+	} else if address == "" {
+		// Host alone loses custom ports; a prebuilt connection with no Addr
+		// cannot safely be replayed by guessing a default endpoint.
+		address = conn.Addr
+	}
+	if address == "" {
+		return commandTarget{}
+	}
+	return commandTarget{Device: address, Transport: "direct"}
+}
+
+func (s *mcpServer) connectionSnapshot() (*grpcclient.AgentConnection, string, commandTarget) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.conn, s.connType, s.commandTarget
 }
 
 // SetLANDiscoverer replaces the function device_list (and any other LAN
@@ -92,7 +141,15 @@ func (s *mcpServer) SetLANDiscoverer(fn func(ctx context.Context, timeout time.D
 func (s *mcpServer) SetConnType(t string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.conn == nil {
+		return
+	}
 	s.connType = t
+	if s.commandTarget.Transport != t {
+		// Legacy callers that only know the transport cannot reconstruct a
+		// cloud target from its local tunnel address.
+		s.commandTarget = commandTarget{}
+	}
 }
 
 func (s *mcpServer) GetConnType() string {
@@ -110,7 +167,7 @@ func (s *mcpServer) ConnectTo(ctx context.Context, address string) error {
 	if err != nil {
 		return err
 	}
-	s.SetConn(conn)
+	s.setConnection(conn, "direct", directCommandTarget(conn, address))
 	return nil
 }
 
@@ -146,11 +203,7 @@ func (s *mcpServer) ConnectToOnStartup(ctx context.Context, address string) erro
 		_ = conn.Close()
 		return nil
 	}
-	s.conn = conn
-	s.connRevision++
-	if s.containerMCP != nil {
-		s.containerMCP.invalidateLocked()
-	}
+	s.setConnectionLocked(conn, "direct", directCommandTarget(conn, address))
 	s.mu.Unlock()
 	return nil
 }

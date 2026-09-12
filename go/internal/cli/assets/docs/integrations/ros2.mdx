@@ -140,6 +140,66 @@ types such as `unitree_go/msg/LowState` require additional packages. A topic can
 appear in `topics` and `topic info` even when its message package is unavailable
 for decoding.
 
+## Inspect LiDAR in Wendy Chat
+
+Wendy Chat and MCP clients can use the read-only `ros2_lidar_summary` tool for
+`sensor_msgs/msg/PointCloud2` and `sensor_msgs/msg/LaserScan`. It subscribes with
+sensor-compatible QoS and decodes data on the device, returning nearest returns
+by angular sector, bounded XYZ samples, and frame, timestamp, freshness, and
+coverage information. Update both the local CLI and device agent to use it.
+
+First use `ros2_topics` to discover the actual topic and message type. Use
+`ros2_topic_info` to inspect publishers and endpoint QoS if data is missing.
+For example, after discovering `/utlidar/cloud_deskewed` on the robot's host
+graph in domain 0, pass these arguments to `ros2_lidar_summary`:
+
+```json
+{
+  "scope": "host",
+  "domain_id": 0,
+  "topic": "/utlidar/cloud_deskewed",
+  "message_type": "sensor_msgs/msg/PointCloud2",
+  "count": 1,
+  "duration_seconds": 10,
+  "min_z": -1,
+  "max_z": 2,
+  "min_range": 0.05,
+  "max_range": 20,
+  "sample_points": 32
+}
+```
+
+Keep the scope and domain consistent with discovery. The default `scope: "app"`
+preserves the app's ROS 2 environment; host inspection requires an explicit
+`domain_id`. Topic names are examples: a robot may publish a different cloud or
+a laser scan. For a discovered scan topic, set `message_type` to
+`sensor_msgs/msg/LaserScan`.
+
+Directions refer to the **output frame's axes**, not automatically to the robot.
+If the discovered cloud is in `odom` or `map`, verify the robot's body frame and
+set `target_frame` to that frame to obtain robot-relative sectors. For example,
+add `"target_frame": "base_link"` only when that is the robot's verified body
+frame. The tool requests TF at the source measurement timestamp; a missing
+transform is reported rather than treating untransformed points as body-relative.
+Height filters use meters in the output frame. Choose them for the sensor and
+the obstacle heights of interest.
+
+The tool limits observation duration, message count, decoded points, sample
+points, and output bytes. Inspect its coverage and filtering diagnostics before
+interpreting distances: an empty sector, dropped points, or no messages do not
+establish clear space. Raw samples are a small selection, not a complete cloud.
+Custom fields such as `/utlidar/range_info` need their documented meaning before
+they can be described as directional distances.
+
+The returned `source_age_seconds` is a signed timestamp offset against
+`clock_basis`, not proof that the publisher and device clocks are synchronized.
+Source freshness remains unverified without that clock relationship; do not
+compare ROS stamps to the chat session clock. Set `use_sim_time: true` when the
+sensor uses a verified ROS simulation clock. A LiDAR summary is a bounded
+observation, not a continuously running collision-avoidance system.
+See [Robot diagnostics with MCP](/docs/integrations/robot-diagnostics) for the
+broader observation and navigation workflow.
+
 ## Parameters
 
 Read parameters across the whole system or a single node, and change them live,

@@ -621,6 +621,11 @@ func (s *ROS2Service) Doctor(ctx context.Context, req *agentpbv2.ROS2DoctorReque
 
 func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2Message]) error {
 	ctx := stream.Context()
+	if opts, err := requestedLidarOptions(ctx, req); err != nil {
+		return err
+	} else if opts != nil {
+		return s.echoLidar(req, stream, opts)
+	}
 	scs, err := s.resolveInspectionSidecars(ctx, req.DomainId)
 	if err != nil {
 		return err

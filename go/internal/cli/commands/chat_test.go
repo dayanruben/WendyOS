@@ -20,7 +20,7 @@ func TestChatVisibleWithLocalModelHelp(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Just run wendy chat", "--setup", "--help-all", "--directory", "--device", "--voice", "/voice"} {
+	for _, want := range []string{"Just run wendy chat", "--setup", "--help-all", "--directory", "--device", "--voice", "/voice", "--no-memory"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("chat help missing %q", want)
 		}

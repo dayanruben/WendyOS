@@ -24,6 +24,7 @@ import (
 const ros2MaxReceiveBytes = 1024 * 1024
 
 func (s *mcpServer) registerROS2Tools(srv *server.MCPServer) {
+	s.registerLidarTool(srv)
 	for _, tool := range []struct {
 		name, description string
 		topic, stream     bool

@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ros2inspection"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -295,11 +296,15 @@ type ROS2NamedSidecarVerifier interface {
 	VerifyROS2SidecarNamed(context.Context, string) error
 }
 
-// ROS2ExecOptions configures a single `ros2` invocation inside the sidecar.
+// ROS2ExecOptions configures a ROS 2 CLI invocation or a fixed sensor probe
+// inside the sidecar.
 type ROS2ExecOptions struct {
 	DomainID    int      // ROS_DOMAIN_ID for this invocation
 	Args        []string // arguments after `ros2`, passed without shell interpretation
 	SidecarName string   // which per-RMW sidecar to exec in; empty = the default/first
+	// Lidar selects the trusted point-cloud probe instead of the CLI. Args must
+	// be empty; callers cannot supply Python code or alter the probe executable.
+	Lidar *ros2inspection.LidarOptions
 }
 
 // ROS2Runtime abstracts the containerd-side ROS 2 sidecar plumbing used by
@@ -319,7 +324,7 @@ type ROS2Runtime interface {
 	// when the anchor container stopped or was replaced (e.g. the app was
 	// redeployed), which invalidates the sidecar's network namespace.
 	VerifyROS2Sidecar(ctx context.Context) error
-	// ExecROS2 runs `ros2 <args>` in the sidecar, streaming output to the
+	// ExecROS2 runs `ros2 <args>` or the fixed LiDAR probe in the sidecar, streaming output to the
 	// writers, and returns the exit code. Cancelling ctx sends SIGINT first
 	// so commands like `ros2 bag record` can finalize.
 	ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error)

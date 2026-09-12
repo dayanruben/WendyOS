@@ -16,7 +16,7 @@ import (
 func newChatCmd() *cobra.Command {
 	var cfg chat.Config
 	var directory string
-	var autoApprove, setup, helpAll, voice bool
+	var autoApprove, setup, helpAll, voice, noMemory bool
 	var preferredDevice string
 	cmd := &cobra.Command{
 		Use:   "chat [prompt...]",
@@ -76,6 +76,11 @@ Use --setup whenever you want to change your AI or model.`,
 				return err
 			}
 			defer toolset.Close()
+			memory, err := chat.NewMemoryStore("", workspace, preferredDevice)
+			if err != nil {
+				return err
+			}
+			memoryTools := chat.NewMemoryTools(toolset, memory)
 			initialPrompt := strings.Join(args, " ")
 			var engine *chat.Engine
 			state := new(chat.UIState)
@@ -85,7 +90,8 @@ Use --setup whenever you want to change your AI or model.`,
 					if err != nil {
 						return err
 					}
-					engine = chat.NewEngine(provider, toolset, chat.SystemPrompt(workspace, preferredDevice))
+					engine = chat.NewEngine(provider, memoryTools, chat.SystemPrompt(workspace, preferredDevice))
+					engine.SetMemoryEnabled(!noMemory)
 				}
 				var voiceFactory func(context.Context) (chat.VoiceSession, error)
 				if voiceSupportError != nil {
@@ -128,6 +134,7 @@ Use --setup whenever you want to change your AI or model.`,
 					return err
 				}
 				resolved = nextConfig
+				noMemory = !engine.MemoryEnabled()
 				engine = nil
 				state = new(chat.UIState)
 				initialPrompt = ""
@@ -136,6 +143,7 @@ Use --setup whenever you want to change your AI or model.`,
 	}
 	cmd.Flags().BoolVar(&setup, "setup", false, "Choose or change your AI and model")
 	cmd.Flags().BoolVar(&voice, "voice", false, "Listen and speak with GPT Live (or use /voice in chat)")
+	cmd.Flags().BoolVar(&noMemory, "no-memory", false, "Disable recall and learning of local chat memories")
 	cmd.Flags().BoolVar(&helpAll, "help-all", false, "Show advanced connection options")
 	cmd.Flags().StringVarP(&preferredDevice, "device", "d", "", "Preferred Wendy device (you can also choose while chatting)")
 	cmd.Flags().StringVar(&cfg.Provider, "provider", "", "Model API: openai, anthropic, ollama, or local (WENDY_CHAT_PROVIDER)")

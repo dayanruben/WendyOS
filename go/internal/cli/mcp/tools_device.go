@@ -149,16 +149,16 @@ func (s *mcpServer) handleDeviceConnect(ctx context.Context, req mcpgo.CallToolR
 	if err := s.ConnectTo(ctx, address); err != nil {
 		return errResultf(errCodeDeviceUnreachable, "connecting to %s: %s", address, err.Error()), nil
 	}
-	s.SetConnType("direct")
 	return okText(fmt.Sprintf("connected to %s", address)), nil
 }
 
 func (s *mcpServer) handleDeviceDisconnect(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn := s.GetConn()
+	// Even when disconnected, invalidate any automatic connection still in flight.
+	s.SetConn(nil)
 	if conn == nil {
 		return okText("not connected"), nil
 	}
-	s.SetConn(nil)
 	return okText("disconnected"), nil
 }
 
