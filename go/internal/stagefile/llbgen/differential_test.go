@@ -86,10 +86,14 @@ func llbCommands(ops []*pb.Op) []string {
 	return out
 }
 
-// Independent linked stages are a DAG, so BuildKit may serialize their ops in
-// a different topological order than Dockerfile source order. Compare the
-// command multiset here; IR edge tests separately pin ordering within each
-// dependency chain.
+// Independent linked stages are a DAG, so BuildKit may serialize their ops in a
+// different topological order than Dockerfile source order — and codegen may
+// re-emit an idempotent bootstrap (e.g. `command -v pip || install pip`) before
+// each group where the LLB DAG collapses it to one shared node. Both are benign
+// and produce the same filesystem, so the command comparison is a set: it
+// catches a step that is present in one backend and absent in the other, which
+// is the divergence that would change the result. Ordering *within* a dependency
+// chain is pinned separately by the IR edge tests.
 func sameCommands(a, b []string) bool {
 	set := func(in []string) []string {
 		seen := map[string]bool{}
@@ -215,8 +219,15 @@ func dockerfileCacheMounts(dockerfile string) []string {
 				}
 			}
 			if id == "" {
-				id = "/" + strings.TrimPrefix(target, "/")
+				// Unnamed: the frontend defaults CacheID to the cleaned target.
+				id = strings.TrimPrefix(target, "/")
 			}
+			// The frontend prefixes the (empty) cache-ID namespace and "/" to
+			// EVERY cache ID, named or not (convert_runmount.go). Deriving the
+			// expected id from that rule — rather than restating the backend's
+			// own logic — is what makes this test able to catch a named mount the
+			// backend forgot to prefix.
+			id = "/" + id
 			out = append(out, id+"@"+target)
 		}
 	}

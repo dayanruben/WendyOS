@@ -85,6 +85,7 @@ func runFleetRun(ctx context.Context, opts runOptions, group, cloudGRPC, brokerU
 	if _, err := stagefileBackendLLB(opts.stagefileBackend, normalizedBuilder); err != nil {
 		return err
 	}
+	ctx = withStagefileBackend(ctx, opts.stagefileBackend)
 	if err := validateChunkingMode(opts.chunking); err != nil {
 		return err
 	}

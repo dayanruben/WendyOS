@@ -9,8 +9,10 @@
 package stagefile
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -343,14 +345,37 @@ func compileToLLB(dir, source, platform, gpuArch, buildProfile, ros2Distro, ros2
 		return nil, err
 	}
 
-	configs, err := lock.ResolveConfigs(imageRefs(rs.file), rs.images, platform, configResolver)
+	// Base-image configs, resolved at the platform each stage actually builds
+	// for. Target stages resolve at the target; a `platform: build` stage's base
+	// runs on the build platform, so its config is resolved there too — otherwise
+	// Emit's checkConfigPlatform rejects a target-arch config against the
+	// build-arch stage (F2). pin: false bases live only in the local daemon and
+	// have no registry config, so they are read from `docker image inspect` (F3).
+	targetRefs, buildRefs := configRefsByPlatform(g)
+	configs, err := lock.ResolveConfigs(targetRefs, rs.images, platform, configResolver)
 	if err != nil {
 		return nil, err
+	}
+	if len(buildRefs) > 0 {
+		buildConfigs, err := lock.ResolveConfigs(buildRefs, rs.images, buildPlatform(), configResolver)
+		if err != nil {
+			return nil, err
+		}
+		for ref, cfg := range buildConfigs {
+			configs[ref] = cfg
+		}
+	}
+	for _, ref := range pinFalseRefs(g) {
+		cfg, err := localImageConfig(ref)
+		if err != nil {
+			return nil, err
+		}
+		configs[ref] = cfg
 	}
 
 	def, cfg, err := llbgen.Emit(g, llbgen.Options{
 		Images: rs.images, Configs: configs, Platform: platform,
-		BuildPlatform: hostPlatform(),
+		BuildPlatform: buildPlatform(), ContextDir: absDir,
 	})
 	if err != nil {
 		return nil, err
@@ -362,8 +387,123 @@ func compileToLLB(dir, source, platform, gpuArch, buildProfile, ros2Distro, ros2
 	return &LLBBuild{Definition: def, Config: cfg, BaseConfig: baseConfig}, nil
 }
 
-func hostPlatform() string {
-	return runtime.GOOS + "/" + runtime.GOARCH
+// buildPlatform is the platform a `platform: build` stage compiles under. It is
+// deliberately not runtime.GOOS/GOARCH: buildkitd runs Linux — inside a
+// container under Docker Desktop on macOS, natively on Linux — so a darwin build
+// platform names an OS no daemon can satisfy (F2). linux plus the host
+// architecture is the daemon's own native platform in every supported setup: the
+// Docker Desktop VM matches the host arch, and Linux CI is linux/<hostarch>
+// already.
+func buildPlatform() string {
+	return "linux/" + runtime.GOARCH
+}
+
+// configRefsByPlatform splits the graph's pinned external base-image refs into
+// those a target stage uses (resolved at the target platform) and those used
+// exclusively by `platform: build` stages (resolved at the build platform). A
+// ref used by any target stage stays in the target set; only build-exclusive
+// refs move. Stage-derived and pin: false bases are handled elsewhere and are
+// skipped here. Both slices are in stage order for stable error reporting.
+func configRefsByPlatform(g *ir.Graph) (target, build []string) {
+	usedByTarget := map[string]bool{}
+	start := 0
+	for _, st := range g.Stages {
+		im := g.Nodes[start].Image
+		start = st.Final + 1
+		if im == nil || im.FromStage || im.Unpinned {
+			continue
+		}
+		if im.Platform != llbgen.BuildPlatformSentinel {
+			usedByTarget[im.Ref] = true
+		}
+	}
+	seenT := map[string]bool{}
+	seenB := map[string]bool{}
+	start = 0
+	for _, st := range g.Stages {
+		im := g.Nodes[start].Image
+		start = st.Final + 1
+		if im == nil || im.FromStage || im.Unpinned {
+			continue
+		}
+		if im.Platform == llbgen.BuildPlatformSentinel && !usedByTarget[im.Ref] {
+			if !seenB[im.Ref] {
+				seenB[im.Ref] = true
+				build = append(build, im.Ref)
+			}
+			continue
+		}
+		if !seenT[im.Ref] {
+			seenT[im.Ref] = true
+			target = append(target, im.Ref)
+		}
+	}
+	return target, build
+}
+
+// pinFalseRefs returns the graph's pin: false external base-image refs, in stage
+// order without duplicates. They carry no registry digest, so their configs come
+// from the local daemon rather than lock.ResolveConfigs.
+func pinFalseRefs(g *ir.Graph) []string {
+	seen := map[string]bool{}
+	var refs []string
+	start := 0
+	for _, st := range g.Stages {
+		im := g.Nodes[start].Image
+		start = st.Final + 1
+		if im == nil || im.FromStage || !im.Unpinned {
+			continue
+		}
+		if !seen[im.Ref] {
+			seen[im.Ref] = true
+			refs = append(refs, im.Ref)
+		}
+	}
+	return refs
+}
+
+// localImageConfig reads a pin: false base image's OCI image config from the
+// local Docker daemon. A pin: false image lives only in the daemon store and has
+// no registry digest, so no registry-backed resolver can serve it. Docker's
+// inspect JSON already carries the OCI config object under "Config" (Env,
+// WorkingDir, Entrypoint, Cmd, User, Healthcheck, Shell), so only the top-level
+// platform keys need translating to their OCI spelling; Emit's checkConfigPlatform
+// then validates the local image's architecture against the stage's.
+func localImageConfig(ref string) ([]byte, error) {
+	out, err := exec.Command("docker", "image", "inspect", ref).Output()
+	if err != nil {
+		return nil, fmt.Errorf("resolving local image config for %q (pin: false): docker image inspect failed — build the image locally, or set pin: true to resolve it from a registry: %w", ref, err)
+	}
+	var inspected []struct {
+		Architecture string          `json:"Architecture"`
+		Os           string          `json:"Os"`
+		Variant      string          `json:"Variant"`
+		Config       json.RawMessage `json:"Config"`
+	}
+	if err := json.Unmarshal(out, &inspected); err != nil {
+		return nil, fmt.Errorf("parsing docker inspect output for %q: %w", ref, err)
+	}
+	if len(inspected) == 0 {
+		return nil, fmt.Errorf("docker inspect returned no image for %q", ref)
+	}
+	img := inspected[0]
+	oci := map[string]json.RawMessage{
+		"architecture": mustJSON(img.Architecture),
+		"os":           mustJSON(img.Os),
+	}
+	if img.Variant != "" {
+		oci["variant"] = mustJSON(img.Variant)
+	}
+	if len(img.Config) > 0 && string(img.Config) != "null" {
+		oci["config"] = img.Config
+	}
+	return json.Marshal(oci)
+}
+
+// mustJSON marshals a plain string, which cannot fail.
+func mustJSON(s string) json.RawMessage {
+	dt, _ := json.Marshal(s)
+	return dt
 }
 
 // resolvedSpec is the parse+lock+resolve result shared by both backends.

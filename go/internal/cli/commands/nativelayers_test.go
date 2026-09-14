@@ -214,7 +214,7 @@ func TestNativeDepsHash(t *testing.T) {
 
 	hash := func(args map[string]string, platform string) string {
 		t.Helper()
-		h, err := nativeDepsHash(dir, "Dockerfile.generated", platform, args, sf)
+		h, err := nativeDepsHash(dir, "Dockerfile.generated", platform, "", args, sf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -313,7 +313,7 @@ func TestNativeDepsHashCoversUvManifests(t *testing.T) {
 
 	hash := func() string {
 		t.Helper()
-		h, err := nativeDepsHash(dir, "Dockerfile.generated", "linux/arm64", nil, sf)
+		h, err := nativeDepsHash(dir, "Dockerfile.generated", "linux/arm64", "", nil, sf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -347,7 +347,7 @@ func TestNativeDepsHashIncludesNonFinalCopies(t *testing.T) {
 
 	hash := func() string {
 		t.Helper()
-		h, err := nativeDepsHash(dir, "Dockerfile.generated", "linux/arm64", nil, sf)
+		h, err := nativeDepsHash(dir, "Dockerfile.generated", "linux/arm64", "", nil, sf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -751,7 +751,7 @@ stages:
 		return nil
 	}
 
-	native, err := buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	native, err := buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", "", nil, layout, buildx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,7 +763,7 @@ stages:
 	}
 
 	writeFile(t, proj, "main.py", "print('v2')\n")
-	native, err = buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	native, err = buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", "", nil, layout, buildx)
 	if err != nil {
 		t.Fatal(err)
 	}

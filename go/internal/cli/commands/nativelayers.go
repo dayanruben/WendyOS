@@ -37,10 +37,16 @@ import (
 // install-referenced file (pip requirements, package.json + lockfile), local
 // copies feeding NON-final stages, the platform, and the sorted build args.
 // Any change here means the deps layers may differ → the buildx path must run.
-func nativeDepsHash(cwd, dockerfile, platform string, buildArgs map[string]string, sf *spec.File) (string, error) {
+func nativeDepsHash(cwd, dockerfile, platform, backend string, buildArgs map[string]string, sf *spec.File) (string, error) {
 	h := sha256.New()
-	io.WriteString(h, "wendy-native-deps-v1\n")
+	// Salt for the native-deps key. Changing this string invalidates every
+	// recorded key — do that whenever the hash inputs below change (as they did
+	// when the effective Stagefile backend was added, so switching backends with
+	// no source change forces the buildx path instead of reusing the other
+	// backend's deps layers).
+	io.WriteString(h, "wendy-native-deps\n")
 	io.WriteString(h, "platform="+platform+"\n")
+	io.WriteString(h, "backend="+backend+"\n")
 
 	keys := make([]string, 0, len(buildArgs))
 	for k := range buildArgs {
@@ -360,11 +366,11 @@ func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
 // The caller must hold the layout directory lock for the whole call. buildx is
 // responsible only for updating the layout; pushing or chunking it remains the
 // caller's concern.
-func buildOrUpdateOCILayout(cwd, dockerfile, platform string, buildArgs map[string]string, layoutDir string, buildx func() error) (native bool, err error) {
+func buildOrUpdateOCILayout(cwd, dockerfile, platform, backend string, buildArgs map[string]string, layoutDir string, buildx func() error) (native bool, err error) {
 	sf, eligible := nativeBuildEligibility(cwd, dockerfile)
 	depsHash := ""
 	if eligible {
-		if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+		if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, backend, buildArgs, sf); hashErr == nil {
 			depsHash = h
 		} else {
 			eligible = false

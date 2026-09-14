@@ -722,8 +722,12 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 	if err != nil {
 		return err
 	}
-	if handled, err := maybeBuildStagefileLLBToDocker(ctx, dir, dockerfile, imageName, platform, normalized); handled {
+	handled, err := maybeBuildStagefileLLBToDocker(ctx, dir, dockerfile, imageName, platform, normalized)
+	if err != nil {
 		return err
+	}
+	if handled {
+		return nil
 	}
 	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
 		// The auto-attempt path must not prompt or start services as a side effect:

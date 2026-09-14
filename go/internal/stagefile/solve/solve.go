@@ -517,15 +517,26 @@ func mergeEnv(baseRaw json.RawMessage, declared map[string]string) ([]string, er
 
 	for _, k := range keys {
 		entry := k + "=" + declared[k]
+		// Replace the FIRST occurrence in place and drop every later one. An
+		// image config's Env may legally repeat a key, and a runtime honours the
+		// LAST occurrence, so replacing only the first and leaving a later
+		// duplicate behind would let the base's value shadow the declared one.
+		// Rebuilding the slice keeps the surviving entry at the base's original
+		// position while guaranteeing the key appears exactly once.
 		replaced := false
-		for i, e := range env {
+		out := env[:0]
+		for _, e := range env {
 			name, _, _ := strings.Cut(e, "=")
-			if name == k {
-				env[i] = entry
+			if name != k {
+				out = append(out, e)
+				continue
+			}
+			if !replaced {
+				out = append(out, entry)
 				replaced = true
-				break
 			}
 		}
+		env = out
 		if !replaced {
 			env = append(env, entry)
 		}

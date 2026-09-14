@@ -33,6 +33,8 @@ package llbgen
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -56,21 +58,41 @@ import (
 // whose local source nothing satisfies.
 const LocalContextName = "context"
 
-// localUniqueID pins the "local.unique" attribute BuildKit stamps onto every
-// local source. Left alone, llb.NewConstraints seeds it with identity.NewID()
-// — a fresh random string per marshal — which alone would make two Emit calls
-// on one graph produce different bytes. Fixing it is not merely a way to pass
-// a determinism test: an identical Stagefile and context must compile to an
-// identical definition for the content-addressed cache built on top of this to
-// hit at all. The attribute exists to keep one client's local content from
-// colliding with another's in the cache; BuildKit already scopes local sources
-// by session, which is what actually separates concurrent clients.
+// localUniqueID is the fallback "local.unique" attribute BuildKit stamps onto a
+// local source when Options.ContextDir is empty. Left to llb.NewConstraints the
+// attribute is seeded with identity.NewID() — a fresh random string per marshal
+// — which alone would make two Emit calls on one graph produce different bytes.
+// Pinning it is not merely a way to pass a determinism test: an identical
+// Stagefile and context must compile to an identical definition for the
+// content-addressed cache built on top of this to hit at all.
+//
+// A constant, though, is too coarse. The attribute exists to keep one client's
+// local content from colliding with another's; two builds sharing it can be
+// merged by the solver, which keys concurrent jobs by the local source op's
+// digest and — finding no session on the op — serves whichever job's context
+// arrives first. Two services built concurrently in one `wendy run` with
+// matching copy paths would then read each other's directories. localUniqueIDFor
+// derives a per-context ID so distinct projects never collide while one project
+// stays byte-stable.
 const localUniqueID = "wendy-stagefile-context"
 
-// buildPlatformSentinel is the value ir.Lower puts on a `platform: build`
+// localUniqueIDFor returns the per-context local unique ID: a hash of the
+// absolute context directory, so two projects get distinct IDs and one project
+// compiles to identical bytes every time. An empty dir keeps the constant.
+func localUniqueIDFor(contextDir string) string {
+	if contextDir == "" {
+		return localUniqueID
+	}
+	sum := sha256.Sum256([]byte(contextDir))
+	return localUniqueID + "-" + hex.EncodeToString(sum[:])
+}
+
+// BuildPlatformSentinel is the value ir.Lower puts on a `platform: build`
 // stage. It is a Dockerfile variable, and LLB has no variables — see
-// Options.BuildPlatform.
-const buildPlatformSentinel = "$BUILDPLATFORM"
+// Options.BuildPlatform. It is exported so a caller resolving image configs can
+// tell which stages must be resolved at the build platform rather than the
+// target.
+const BuildPlatformSentinel = "$BUILDPLATFORM"
 
 // ImageConfig is the part of a built image that is metadata rather than
 // filesystem. It comes from the final stage, the same place codegen reads it,
@@ -110,9 +132,20 @@ func FinalBaseConfig(g *ir.Graph, configs map[string][]byte) ([]byte, error) {
 		if n.Image == nil {
 			return nil, fmt.Errorf("stage %q: node %d has kind %q but nil Image payload", final.Name, i, n.Kind)
 		}
-		cfg, ok := configs[n.Image.Ref]
+		// A final stage built `from: <prior stage>` inherits the ROOT external
+		// image's config, not one keyed by the stage name — nothing resolves a
+		// config for a stage-derived base. Walk the FromStage chain back to that
+		// root. The intermediate stages' ENV and WORKDIR are not lost: Emit
+		// accumulates them into the ImageConfig it returns, which the solver
+		// merges onto this base config.
+		chain, err := stageChain(g, i)
+		if err != nil {
+			return nil, fmt.Errorf("stage %q: %w", final.Name, err)
+		}
+		root := chain[len(chain)-1]
+		cfg, ok := configs[root.Ref]
 		if !ok {
-			return nil, fmt.Errorf("no resolved image config for %q; resolve it alongside the digest", n.Image.Ref)
+			return nil, fmt.Errorf("no resolved image config for %q; resolve it alongside the digest", root.Ref)
 		}
 		return cfg, nil
 	}
@@ -137,6 +170,13 @@ type Options struct {
 	// $BUILDPLATFORM variable, and LLB has no variables to expand, so the
 	// value has to be supplied rather than deferred.
 	BuildPlatform string
+	// ContextDir is the absolute build-context directory. It seeds the
+	// definition's local-source unique ID (see localUniqueID): different
+	// projects get different IDs so the solver never shares one project's build
+	// context with another's, while one project stays byte-stable across
+	// compiles. Empty falls back to the constant, which is safe for the
+	// single-context tests that compare two definitions.
+	ContextDir string
 }
 
 // Emit compiles a lowered graph into an LLB definition plus the final stage's
@@ -178,7 +218,7 @@ func Emit(g *ir.Graph, opts Options) (*llb.Definition, *ImageConfig, error) {
 		states: make([]llb.State, len(g.Nodes)),
 		local: llb.Local(
 			LocalContextName,
-			llb.LocalUniqueID(localUniqueID),
+			llb.LocalUniqueID(localUniqueIDFor(opts.ContextDir)),
 			// BuildKit matches these with the same matcher that reads a
 			// .dockerignore file, "!" negations included, so passing the
 			// patterns here is the same filter codegen writes to disk.
@@ -206,7 +246,7 @@ func Emit(g *ir.Graph, opts Options) (*llb.Definition, *ImageConfig, error) {
 		// Every node in a stage is constrained to that stage's platform, which
 		// is the target unless the stage pinned itself to the build platform.
 		stagePlatform := target
-		if p := g.Nodes[start].Image; p != nil && p.Platform == buildPlatformSentinel {
+		if p := g.Nodes[start].Image; p != nil && p.Platform == BuildPlatformSentinel {
 			if opts.BuildPlatform == "" {
 				return nil, nil, fmt.Errorf("stage %q declares platform: build, but no build platform was supplied: LLB has no $BUILDPLATFORM to expand", st.Name)
 			}
@@ -222,6 +262,14 @@ func Emit(g *ir.Graph, opts Options) (*llb.Definition, *ImageConfig, error) {
 			e.platformKey = p.Platform
 		}
 		e.constraints = []llb.ConstraintsOpt{llb.Platform(stagePlatform)}
+		// The base image's SHELL, inherited through any from-stage chain, so a
+		// RUN under a base that sets SHELL runs the same interpreter the
+		// Dockerfile frontend would use.
+		sh, err := stageShell(g, start, opts.Configs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("stage %q: %w", st.Name, err)
+		}
+		e.shell = sh
 
 		for i := start; i <= st.Final; i++ {
 			s, err := e.node(g.Nodes[i], i)
@@ -252,13 +300,31 @@ func Emit(g *ir.Graph, opts Options) (*llb.Definition, *ImageConfig, error) {
 	if cfg.User == "" {
 		cfg.User = ir.DefaultUser
 	}
-	// Env and Workdir come off the final stage's image node, where ir.Lower
-	// put them, so the exported image carries what the Dockerfile's ENV and
-	// WORKDIR would have baked in.
-	if im := g.Nodes[finalImageIndex(g, len(g.Stages)-1)].Image; im != nil {
-		cfg.Env = im.Env
-		cfg.Workdir = im.Workdir
+	// Env and Workdir come off the final stage, accumulated across the FromStage
+	// chain so a `from: <prior stage>` final inherits the whole chain's ENV and
+	// WORKDIR. They are applied root-first, so a later stage overrides an earlier
+	// one, and the root's own contribution is included because a stage's ENV
+	// declarations are separate from its base image's config. For an ordinary
+	// external base the chain is one node, so this is exactly that node's
+	// env/workdir. The solver merges these onto FinalBaseConfig's root config.
+	chain, err := stageChain(g, finalImageIndex(g, len(g.Stages)-1))
+	if err != nil {
+		return nil, nil, err
 	}
+	env := map[string]string{}
+	workdir := ""
+	for i := len(chain) - 1; i >= 0; i-- {
+		for k, v := range chain[i].Env {
+			env[k] = v
+		}
+		if chain[i].Workdir != "" {
+			workdir = chain[i].Workdir
+		}
+	}
+	if len(env) > 0 {
+		cfg.Env = env
+	}
+	cfg.Workdir = workdir
 	return def, cfg, nil
 }
 
@@ -269,6 +335,84 @@ func finalImageIndex(g *ir.Graph, si int) int {
 		return 0
 	}
 	return g.Stages[si-1].Final + 1
+}
+
+// stageChain returns the image nodes a stage inherits from, final-first: the
+// first element is the image node at nodeIdx, each following element is the
+// source stage a `from: <stage>` node derives from, and the last element is the
+// root external image (FromStage false). For an ordinary external base the
+// chain is a single element. Graph edges point at earlier nodes, so the walk
+// strictly descends and always terminates.
+func stageChain(g *ir.Graph, nodeIdx int) ([]*ir.ImageOp, error) {
+	var chain []*ir.ImageOp
+	idx := nodeIdx
+	for {
+		if idx < 0 || idx >= len(g.Nodes) {
+			return nil, fmt.Errorf("image node index %d is outside the graph's %d nodes", idx, len(g.Nodes))
+		}
+		n := g.Nodes[idx]
+		if n.Kind != ir.OpImage || n.Image == nil {
+			return nil, fmt.Errorf("node %d in a stage-derived chain is not an image node", idx)
+		}
+		chain = append(chain, n.Image)
+		if !n.Image.FromStage {
+			return chain, nil
+		}
+		if len(n.Inputs) == 0 {
+			return nil, fmt.Errorf("stage-derived image node %d has no source input", idx)
+		}
+		src := n.Inputs[0]
+		srcStage := -1
+		for si, st := range g.Stages {
+			if st.Final == src {
+				srcStage = si
+				break
+			}
+		}
+		if srcStage < 0 {
+			return nil, fmt.Errorf("stage-derived image node %d's source %d is not the final node of any stage", idx, src)
+		}
+		idx = finalImageIndex(g, srcStage)
+	}
+}
+
+// stageShell returns the SHELL a stage's RUN steps execute under: the base
+// image config's Shell, resolved from the root external image so a from-stage
+// derivative inherits it. A nil result means the default /bin/sh -c. A Stagefile
+// has no SHELL directive, so the base image config is the only source; a missing
+// or unparseable config falls back to the default rather than duplicating the
+// error baseImage already reports.
+func stageShell(g *ir.Graph, nodeIdx int, configs map[string][]byte) ([]string, error) {
+	chain, err := stageChain(g, nodeIdx)
+	if err != nil {
+		return nil, err
+	}
+	cfg, ok := configs[chain[len(chain)-1].Ref]
+	if !ok {
+		return nil, nil
+	}
+	// Shell is a Docker extension the OCI ImageConfig struct does not model, so
+	// it is read from the raw config rather than through ocispecs.Image.
+	var parsed struct {
+		Config struct {
+			Shell []string `json:"Shell"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(cfg, &parsed); err != nil {
+		return nil, nil
+	}
+	return parsed.Config.Shell, nil
+}
+
+// baseConfigUser reads the base image config's default user. An unparseable
+// config yields "", leaving the state as root; checkConfigPlatform already
+// reports a config that is not valid JSON.
+func baseConfigUser(cfg []byte) string {
+	var img ocispecs.Image
+	if err := json.Unmarshal(cfg, &img); err != nil {
+		return ""
+	}
+	return img.Config.User
 }
 
 // emitter carries the state one Emit call threads through the graph walk.
@@ -288,6 +432,10 @@ type emitter struct {
 	// whose stored value is a Dockerfile variable rather than a platform.
 	platformKey string
 	constraints []llb.ConstraintsOpt
+	// shell is the SHELL the current stage's RUN steps execute under, inherited
+	// from the base image config; nil means the default /bin/sh -c. It is set per
+	// stage because each stage's base may declare a different one.
+	shell []string
 	// states is parallel to graph.Nodes: states[i] is the filesystem node i
 	// produces. Edges in the graph are indices, so this is the whole mapping.
 	states []llb.State
@@ -404,6 +552,19 @@ func (e *emitter) baseImage(im *ir.ImageOp) (llb.State, error) {
 	st, err := llb.Image(ref, opts...).WithImageConfig(cfg)
 	if err != nil {
 		return llb.State{}, fmt.Errorf("applying image config for %q: %w", im.Ref, err)
+	}
+
+	// WithImageConfig applies Env, WorkingDir and Platform but never the base
+	// image's USER (buildkit's llb/state.go), while the Dockerfile frontend sets
+	// it at stage init. Without this, every RUN executes as root even on a base
+	// whose config ends on a non-root user (e.g. grafana's uid 472): an install
+	// the Dockerfile build runs as that user — and may fail on — would silently
+	// succeed as root here, two different filesystems under one cache key. This
+	// is the execution user for the stage's build steps; the stage's own declared
+	// USER goes onto the exported image config in the solver, and a from-stage
+	// derivative inherits this through its base state.
+	if u := baseConfigUser(cfg); u != "" {
+		st = st.User(u)
 	}
 
 	// Sorted, matching the order codegen emits ENV lines in, so that a value
@@ -543,8 +704,15 @@ func (e *emitter) runState(r *recipe.RunSpec, base llb.State, recipeName string)
 
 	// recipe hands back clauses rather than one string so codegen can render
 	// "\" continuations. LLB has no line breaks to render, so the clauses join
-	// with " && " — the same single command the shell sees either way.
-	opts := []llb.RunOption{llb.Args([]string{"/bin/sh", "-c", strings.Join(r.Command, " && ")})}
+	// with " && " — the same single command the shell sees either way. The shell
+	// prefix is the base image's SHELL when it set one, matching the Dockerfile
+	// frontend, and /bin/sh -c otherwise.
+	shell := e.shell
+	if len(shell) == 0 {
+		shell = []string{"/bin/sh", "-c"}
+	}
+	args := append(append([]string{}, shell...), strings.Join(r.Command, " && "))
+	opts := []llb.RunOption{llb.Args(args)}
 	for _, cm := range r.CacheMounts {
 		sharing := llb.CacheMountShared
 		if cm.Locked {
@@ -562,16 +730,18 @@ func (e *emitter) runState(r *recipe.RunSpec, base llb.State, recipeName string)
 }
 
 // cacheID reproduces the ID BuildKit's own Dockerfile frontend gives a
-// `--mount=type=cache,target=`: an explicit id: is used verbatim, and an
-// unnamed mount takes its cache-ID namespace, then "/", then the cleaned
-// target. The leading "/" is not a typo — the namespace is empty unless a
-// build sets BUILDKIT_CACHE_MOUNT_NS, and the frontend concatenates it
-// unconditionally. Reproducing the quirk is the point: it means an LLB build
-// and a `docker build` of the generated Dockerfile share one warmed package
-// cache instead of each maintaining a parallel copy.
+// `--mount=type=cache,target=`: the cache-ID namespace, then "/", then either
+// an explicit id: verbatim or the cleaned target when none was given. The
+// leading "/" is not a typo — the namespace is empty unless a build sets
+// BUILDKIT_CACHE_MOUNT_NS, and the frontend concatenates it unconditionally
+// for BOTH named and unnamed mounts (convert_runmount.go: cacheIDNamespace +
+// "/" + CacheID). Reproducing the quirk is the point: it means an LLB build and
+// a `docker build` of the generated Dockerfile share one warmed package cache
+// instead of each maintaining a parallel copy — which is exactly what every
+// named mount the recipe emits (apt, pip, cmake, uv, swift) depends on.
 func cacheID(m recipe.CacheMount) string {
 	if m.ID != "" {
-		return m.ID
+		return "/" + m.ID
 	}
 	return "/" + path.Clean(m.Dir)
 }

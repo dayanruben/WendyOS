@@ -979,8 +979,12 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	if err != nil {
 		return err
 	}
-	if handled, err := maybeBuildStagefileLLBToOCI(ctx, cwd, dockerfile, platform, normalized, dest, "", stdout); handled {
+	handled, err := maybeBuildStagefileLLBToOCI(ctx, cwd, dockerfile, platform, normalized, dest, "", stdout)
+	if err != nil {
 		return err
+	}
+	if handled {
+		return nil
 	}
 	if normalized == imageBuilderAppleContainer {
 		return buildImageToOCILayoutWithAppleContainer(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)

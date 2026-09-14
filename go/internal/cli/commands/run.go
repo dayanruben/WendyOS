@@ -2103,7 +2103,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, deployEnv)
 	if hashErr == nil {
 		var basesPinned bool
 		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
@@ -3222,7 +3222,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		sf, nativeEligible := nativeBuildEligibility(cwd, dockerfile)
 		var depsHash string
 		if nativeEligible {
-			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, sf); hashErr == nil {
 				depsHash = h
 			} else {
 				nativeEligible = false

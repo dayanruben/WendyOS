@@ -35,6 +35,19 @@ func stagefileBackendFromContext(ctx context.Context) string {
 	return value
 }
 
+// resolvedStagefileBackend returns the raw selected backend string — the
+// command-line value carried in ctx, else WENDY_STAGEFILE_BACKEND, else "" —
+// mirroring the flag-then-env order stagefileBackendLLB resolves. Build
+// fingerprints hash this so switching backends with no source change still
+// forces a rebuild instead of reusing the other backend's layout.
+func resolvedStagefileBackend(ctx context.Context) string {
+	value := strings.TrimSpace(stagefileBackendFromContext(ctx))
+	if value == "" {
+		value = strings.TrimSpace(os.Getenv(stagefileBackendEnvVar))
+	}
+	return value
+}
+
 // stagefileBackendLLB decides whether a detected Stagefile should compile
 // through the LLB backend (stagefile.CompileToLLB, solved directly against a
 // buildkitd) rather than the default Dockerfile backend

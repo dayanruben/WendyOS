@@ -55,10 +55,22 @@ func directStagefileLLBPlan(ctx context.Context, dir, dockerfile, builder string
 	if value, ok := stagefileLLBPlans.Load(stagefileLLBPlanKey(dir, dockerfile)); ok {
 		return value.(stagefileLLBPlan), true, nil
 	}
-	// Normal CLI preparation records a plan on every invocation. The fallback
-	// keeps direct internal callers and generated files from older runs useful;
-	// they compile the identified variant with its declared defaults.
-	return stagefileLLBPlan{source: source, options: []stagefile.Option{stagefile.WithSource(source)}}, true, nil
+	// No plan was recorded for this generated file. A remembered plan is the
+	// only reliable signal that a Stagefile was compiled in this process:
+	// stagefileSourceForGenerated maps any Dockerfile.generated name to a
+	// Stagefile name, but a hand-written Dockerfile that received a safe optimize
+	// fix is also written to Dockerfile.generated and has no such source. If the
+	// mapped source is absent, this is not a Stagefile build — fall through to
+	// the Dockerfile path rather than compiling a file that does not exist (F11).
+	if _, statErr := os.Stat(filepath.Join(dir, source)); statErr != nil {
+		return stagefileLLBPlan{}, false, nil
+	}
+	// The source exists but no plan was recorded, so the invocation's variant,
+	// GPU target, --debug and ROS 2 options are unrecoverable. Refuse rather
+	// than silently rebuild from the source with its declared defaults (F14).
+	return stagefileLLBPlan{}, false, fmt.Errorf(
+		"cannot build %s with the direct LLB backend: no compiler plan was recorded for %s, so options such as --gpu and --debug would be silently dropped; build without pointing --dockerfile at the generated file, or use --stagefile-backend=dockerfile",
+		dockerfile, source)
 }
 
 func directStagefileLLBAddress(ctx context.Context, builder string, progress io.Writer) (string, error) {
@@ -66,11 +78,22 @@ func directStagefileLLBAddress(ctx context.Context, builder string, progress io.
 	if err != nil {
 		return "", err
 	}
-	if normalized == imageBuilderBuildkit || strings.TrimSpace(os.Getenv("BUILDKIT_HOST")) != "" {
+	// An explicit BUILDKIT_HOST points at a daemon the caller manages; use it
+	// verbatim for either builder.
+	if strings.TrimSpace(os.Getenv("BUILDKIT_HOST")) != "" {
 		return stagefilesolve.Address(ctx)
 	}
-	if normalized != imageBuilderDocker {
+	if normalized != imageBuilderDocker && normalized != imageBuilderBuildkit {
 		return "", fmt.Errorf("direct Stagefile LLB builds require docker or buildkit, got %q", normalized)
+	}
+	// Off-device, buildx's BuildKit daemon lives in a docker-managed container
+	// the CLI must create before dialing it. This is true for --builder=buildkit
+	// too: without the bootstrap its first use dialed a builder nobody created
+	// and failed with the wrapped "may not have been created yet" error (F16).
+	// On-device there is no docker to reach the container through, so Address
+	// resolves the buildkitd socket directly with nothing to bootstrap.
+	if _, dockerErr := exec.LookPath("docker"); dockerErr != nil {
+		return stagefilesolve.Address(ctx)
 	}
 	// Match the Dockerfile OCI path's cross-process setup serialization. The
 	// lock is released before solving, so independent builds still overlap once

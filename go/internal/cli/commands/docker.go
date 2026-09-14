@@ -2214,7 +2214,7 @@ func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo,
 	defer releaseLayout()
 	defer func() { _ = gcOCILayoutDir(layoutDir) }()
 
-	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, layoutDir, func() error {
 		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
 	})
 	if err != nil {
@@ -2271,7 +2271,7 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 	defer releaseLayout()
 	defer func() { _ = gcOCILayoutDir(layoutDir) }()
 
-	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, layoutDir, func() error {
 		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
 	})
 	if err != nil {
