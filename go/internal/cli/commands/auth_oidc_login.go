@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/ecdsa"
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/pem"
@@ -688,29 +687,4 @@ func printClaims(claims map[string]any, token *oidcTokenResponse) {
 		fmt.Printf("  %-12s (present)\n", "refresh")
 	}
 	fmt.Println()
-}
-
-// parseECPrivateKeyPEM parses the PEM produced by certs.GenerateKeyPair.
-//
-// The certs package keeps its own parser unexported and exposes only a TLS
-// config, but DPoP signing needs the *ecdsa.PrivateKey itself. Both SEC1
-// ("EC PRIVATE KEY", what GenerateKeyPair emits today) and PKCS#8 are accepted
-// so this keeps working if that ever changes.
-func parseECPrivateKeyPEM(privateKeyPEM string) (*ecdsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(privateKeyPEM))
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found in private key")
-	}
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return key, nil
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parsing EC private key: %w", err)
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("private key is %T, want *ecdsa.PrivateKey", parsed)
-	}
-	return key, nil
 }

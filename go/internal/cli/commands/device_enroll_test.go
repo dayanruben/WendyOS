@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -105,10 +106,17 @@ func TestRunEnrollDeviceUsesSessionOrganization(t *testing.T) {
 			auth.CloudGRPC = lis.Addr().String()
 			auth.Certificates[0].OrganizationID = tc.org
 			if tc.operator {
-				key, err := parseECPrivateKeyPEM(auth.Certificates[0].PemPrivateKey)
+				// An operator session is ML-DSA-65 since WDY-3032; fakeAuth
+				// still mints the EC device key, so swap it here.
+				keyPEM, err := certs.GenerateMLDSAKeyPair()
 				if err != nil {
 					t.Fatal(err)
 				}
+				key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+				if err != nil {
+					t.Fatal(err)
+				}
+				auth.Certificates[0].PemPrivateKey = keyPEM
 				auth.Certificates[0].PemCertificate = testLeafPEM(t, key)
 				auth.Certificates[0].PemCertificateChain = ""
 				auth.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject
