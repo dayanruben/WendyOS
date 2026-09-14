@@ -2099,9 +2099,15 @@ func isCommandAvailable(name string) bool {
 	return err == nil
 }
 
-// defaultEntitlements returns sensible default entitlements based on language and template.
+// defaultEntitlements returns sensible default entitlements based on project type and template.
 // Used by helpers.go when auto-generating a wendy.json during build.
-func defaultEntitlements(language, template string) []appconfig.Entitlement {
+func defaultEntitlements(projectType, template string) []appconfig.Entitlement {
+	// ESP-IDF targets run on bare-metal microcontrollers, which don't support
+	// the entitlement-gated capabilities (network, audio, GPU, Bluetooth).
+	if projectType == "esp-idf" {
+		return nil
+	}
+
 	entitlements := []appconfig.Entitlement{
 		{Type: appconfig.EntitlementNetwork},
 	}
@@ -2119,7 +2125,7 @@ func defaultEntitlements(language, template string) []appconfig.Entitlement {
 			appconfig.Entitlement{Type: appconfig.EntitlementGPU},
 		)
 	default:
-		if language == "python" {
+		if projectType == "python" {
 			entitlements = append(entitlements,
 				appconfig.Entitlement{Type: appconfig.EntitlementGPU},
 			)
