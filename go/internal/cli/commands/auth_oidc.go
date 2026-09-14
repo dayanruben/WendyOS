@@ -7,7 +7,9 @@ package commands
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -260,32 +262,111 @@ func signES256(key *ecdsa.PrivateKey, signingInput string) (string, error) {
 	return base64URL(sig), nil
 }
 
+// mldsaAlg is the JWS "alg" for the operator key. It must match pki-core's
+// reqsig.AlgMLDSA65 exactly — the value is carried in the DPoP header AND in
+// the JWK whose RFC 7638 thumbprint has to equal the token's cnf.jkt, so a
+// different spelling fails the binding rather than merely looking odd.
+const mldsaAlg = "ML-DSA-65"
+
+// mldsaPublicJWK builds the RFC 9964 AKP JWK for an ML-DSA public key.
+// "pub" is the raw FIPS-204 public key; unlike EC there is no crv, and "alg"
+// is a required member of the thumbprint input for this key type.
+func mldsaPublicJWK(pub *mldsa.PublicKey) (map[string]string, error) {
+	if pub == nil {
+		return nil, fmt.Errorf("nil public key")
+	}
+	return map[string]string{
+		"alg": mldsaAlg,
+		"kty": "AKP",
+		"pub": base64URL(pub.Bytes()),
+	}, nil
+}
+
+// operatorPublicJWK returns the JWK and JWS alg for whichever key generation
+// the session holds: ML-DSA-65 for a current login, ECDSA P-256 for one
+// established before WDY-3032.
+func operatorPublicJWK(signer crypto.Signer) (map[string]string, string, error) {
+	switch pub := signer.Public().(type) {
+	case *mldsa.PublicKey:
+		jwk, err := mldsaPublicJWK(pub)
+		return jwk, mldsaAlg, err
+	case *ecdsa.PublicKey:
+		jwk, err := ecPublicJWK(pub)
+		return jwk, "ES256", err
+	default:
+		return nil, "", fmt.Errorf("unsupported operator key type %T", pub)
+	}
+}
+
+// operatorJWKThumbprint computes the RFC 7638 thumbprint used for cnf.jkt.
+//
+// The canonical JSON is the required members in lexicographic order with no
+// whitespace — {alg,kty,pub} for AKP (RFC 9964 §5 includes alg, unlike EC),
+// {crv,kty,x,y} for EC. Member order is part of the hash input, so it is
+// written out literally here rather than left to a map's iteration order.
+func operatorJWKThumbprint(signer crypto.Signer) (string, error) {
+	jwk, _, err := operatorPublicJWK(signer)
+	if err != nil {
+		return "", err
+	}
+	var canonical string
+	switch jwk["kty"] {
+	case "AKP":
+		canonical = fmt.Sprintf(`{"alg":"%s","kty":"%s","pub":"%s"}`, jwk["alg"], jwk["kty"], jwk["pub"])
+	default:
+		canonical = fmt.Sprintf(`{"crv":"%s","kty":"%s","x":"%s","y":"%s"}`, jwk["crv"], jwk["kty"], jwk["x"], jwk["y"])
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return base64URL(sum[:]), nil
+}
+
+// signOperatorJWS signs the JWS signing input with the operator key.
+//
+// ML-DSA signs the input bytes directly with empty Options, matching how
+// pki-core verifies (reqsig/alg.go: cryptomldsa.Verify(pk, signingInput, sig,
+// nil)); the signature is the raw FIPS-204 value. ECDSA keeps the JOSE R||S
+// form that signES256 already produces.
+func signOperatorJWS(signer crypto.Signer, signingInput string) (string, error) {
+	switch key := signer.(type) {
+	case *mldsa.PrivateKey:
+		sig, err := key.Sign(rand.Reader, []byte(signingInput), &mldsa.Options{})
+		if err != nil {
+			return "", fmt.Errorf("signing: %w", err)
+		}
+		return base64URL(sig), nil
+	case *ecdsa.PrivateKey:
+		return signES256(key, signingInput)
+	default:
+		return "", fmt.Errorf("unsupported operator key type %T", signer)
+	}
+}
+
 // newDPoPProof builds an RFC 9449 proof JWT for a single request.
 //
 // htu must be the request URI with query and fragment removed; htm the method.
 // nonce is included only when the server has demanded one (see dpopNonceRetry).
-func newDPoPProof(key *ecdsa.PrivateKey, htm, htu, nonce string) (string, error) {
+func newDPoPProof(key crypto.Signer, htm, htu, nonce string) (string, error) {
 	return newDPoPProofWithAccessToken(key, htm, htu, nonce, "")
 }
 
 // newDPoPAccessProof builds the proof used at a protected resource. In
 // addition to the request URI and method it binds the proof to the exact
 // access-token bytes through RFC 9449's ath claim.
-func newDPoPAccessProof(key *ecdsa.PrivateKey, htm, htu, accessToken string) (string, error) {
+func newDPoPAccessProof(key crypto.Signer, htm, htu, accessToken string) (string, error) {
 	if accessToken == "" {
 		return "", fmt.Errorf("access token is empty")
 	}
 	return newDPoPProofWithAccessToken(key, htm, htu, "", accessToken)
 }
 
-func newDPoPProofWithAccessToken(key *ecdsa.PrivateKey, htm, htu, nonce, accessToken string) (string, error) {
-	jwk, err := ecPublicJWK(&key.PublicKey)
+func newDPoPProofWithAccessToken(key crypto.Signer, htm, htu, nonce, accessToken string) (string, error) {
+	jwk, alg, err := operatorPublicJWK(key)
 	if err != nil {
 		return "", err
 	}
 	header := map[string]any{
 		"typ": "dpop+jwt",
-		"alg": "ES256",
+		"alg": alg,
 		"jwk": jwk,
 	}
 	jti, err := randomURLSafe(16)
@@ -316,7 +397,7 @@ func newDPoPProofWithAccessToken(key *ecdsa.PrivateKey, htm, htu, nonce, accessT
 	}
 
 	signingInput := base64URL(headerJSON) + "." + base64URL(payloadJSON)
-	sig, err := signES256(key, signingInput)
+	sig, err := signOperatorJWS(key, signingInput)
 	if err != nil {
 		return "", err
 	}
@@ -402,7 +483,7 @@ func startLoopbackListener() (net.Listener, string, error) {
 // (WENDY_AUTH_DPOP_REQUIRE_NONCE).
 func exchangeCodeForToken(
 	ctx context.Context,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	meta *oidcProviderMetadata,
 	clientID, code, verifier, redirectURI, resource string,
 ) (*oidcTokenResponse, error) {
@@ -420,7 +501,7 @@ func exchangeCodeForToken(
 
 func refreshOIDCToken(
 	ctx context.Context,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	meta *oidcProviderMetadata,
 	clientID, refreshToken, resource string,
 ) (*oidcTokenResponse, error) {
@@ -436,7 +517,7 @@ func refreshOIDCToken(
 
 func exchangeDPoPToken(
 	ctx context.Context,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	tokenEndpoint string,
 	form url.Values,
 ) (*oidcTokenResponse, error) {

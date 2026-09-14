@@ -22,7 +22,13 @@ func TestIsPortBusy(t *testing.T) {
 		want bool
 	}{
 		{"port busy error", &serial.PortError{}, true}, // zero value: Code() == PortBusy (first iota)
-		{"wrapped port busy error", fmt.Errorf("open: %w", &serial.PortError{}), true},
+		// Wrapped through an `error` variable rather than wrapping the pointer
+		// literal directly: go1.27 vet flags `%w` on a *serial.PortError
+		// because PortError.Error() has a value receiver. The pointer is the
+		// right target here — go.bug.st/serial only ever returns &PortError{}
+		// — so isPortBusy keeps its *serial.PortError errors.As target and
+		// only the test's spelling changes.
+		{"wrapped port busy error", fmt.Errorf("open: %w", portBusyErr()), true},
 		{"non-port error", errors.New("some other failure"), false},
 		{"nil error", nil, false},
 	}
@@ -369,3 +375,7 @@ func TestConnectAttemptPassesThroughLockFailure(t *testing.T) {
 		t.Errorf("connectAttempt() error = %q, want it passed through unchanged as %q", err.Error(), wantErr.Error())
 	}
 }
+
+// portBusyErr returns the zero-value PortError (Code() == PortBusy) as an
+// `error`, which is how the serial library hands it back in practice.
+func portBusyErr() error { return &serial.PortError{} }
