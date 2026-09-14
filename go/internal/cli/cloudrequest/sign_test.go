@@ -2,10 +2,8 @@ package cloudrequest
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -25,9 +23,11 @@ import (
 
 const testTenant = "2558fd76-afc7-466e-9613-6b715296a526"
 
-func testAuth(t *testing.T) (*config.AuthConfig, *ecdsa.PrivateKey, []byte) {
+func testAuth(t *testing.T) (*config.AuthConfig, *mldsa.PrivateKey, []byte) {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	// WDY-3032: the operator credential is ML-DSA-65, so the fixture must be
+	// too — newSigner refuses anything else.
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func testAuth(t *testing.T) (*config.AuthConfig, *ecdsa.PrivateKey, []byte) {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		URIs:         []*url.URL{u},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestSignerProducesCloudContractJWS(t *testing.T) {
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		t.Fatalf("unmarshal header: %v", err)
 	}
-	if header.Alg != "ES256" || len(header.X5C) != 1 {
+	if header.Alg != "ML-DSA-65" || len(header.X5C) != 1 {
 		t.Fatalf("header = %#v", header)
 	}
 	if header.X5C[0] != base64.StdEncoding.EncodeToString(leafDER) {
@@ -166,14 +166,13 @@ func TestSignerProducesCloudContractJWS(t *testing.T) {
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(segments[2])
-	if err != nil || len(sig) != 64 {
-		t.Fatalf("signature length = %d, err %v", len(sig), err)
+	if err != nil {
+		t.Fatalf("signature decode: %v", err)
 	}
-	digest := sha256.Sum256([]byte(segments[0] + "." + segments[1]))
-	r := new(big.Int).SetBytes(sig[:32])
-	s := new(big.Int).SetBytes(sig[32:])
-	if !ecdsa.Verify(&key.PublicKey, digest[:], r, s) {
-		t.Fatal("JWS signature does not verify")
+	// Verified exactly the way pki-core does it: over the signing input, no
+	// pre-hash, nil options.
+	if err := mldsa.Verify(key.Public().(*mldsa.PublicKey), []byte(segments[0]+"."+segments[1]), sig, nil); err != nil {
+		t.Fatalf("JWS signature does not verify: %v", err)
 	}
 }
 
@@ -317,8 +316,21 @@ func TestCloudSignatureOmitsLargeIssuerChain(t *testing.T) {
 	if len(certs) != 1 || certs[0] != base64.StdEncoding.EncodeToString(leafDER) {
 		t.Fatal("Cloud metadata must carry only the operator leaf")
 	}
-	if len(descriptor) > 4000 {
-		t.Fatal("issuer chain bloated request metadata")
+	// The envelope travels as gRPC metadata, and the broker's HTTP/2
+	// SETTINGS_MAX_HEADER_LIST_SIZE is 16 KiB — hardcoded by grpc-swift's NIO
+	// transport, not configurable. Cloud's console reserves 6 KiB for the rest
+	// of the headers (the dev OAuth bearer alone measured 5065 B) and derives
+	// a 10183-byte ceiling for this one; HPACK counts the value uncompressed,
+	// so compression buys nothing.
+	//
+	// An ML-DSA-65 envelope is ~14.8 KB (leaf ~5.5 KB DER, signature 3309 B),
+	// which is OVER that ceiling. Exceeding it fails HPACK decoding at the
+	// connection level: a transport reset with no status, no message and
+	// nothing in any log tying it to the header — the WDY-2994 hunt. Moving
+	// the envelope out of the header is WDY-3003.
+	const brokerEnvelopeBudget = 16*1024 - 6*1024 - (len(metadataKey) + 32)
+	if len(descriptor) > brokerEnvelopeBudget {
+		t.Fatalf("signed envelope is %d bytes, over the broker's %d-byte header budget (WDY-3003 must land before ML-DSA request signing can reach Cloud)", len(descriptor), brokerEnvelopeBudget)
 	}
 	artifact, err := EnrollmentRequest(auth, "sim")
 	if err != nil {

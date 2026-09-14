@@ -2,7 +2,7 @@ package commands
 
 import (
 	"context"
-	"crypto/ecdsa"
+	"crypto"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -37,7 +37,7 @@ func TestOIDCLoginUsesDevPKIIdentityEndpointByDefault(t *testing.T) {
 	}
 }
 
-func testLeafPEM(t *testing.T, key *ecdsa.PrivateKey) string {
+func testLeafPEM(t *testing.T, key crypto.Signer) string {
 	t.Helper()
 	now := time.Now()
 	principal, err := url.Parse("spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject)
@@ -53,7 +53,7 @@ func testLeafPEM(t *testing.T, key *ecdsa.PrivateKey) string {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		URIs:         []*url.URL{principal},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
 	if err != nil {
 		t.Fatalf("creating test certificate: %v", err)
 	}
@@ -81,11 +81,11 @@ func base64URLHash(value string) string {
 }
 
 func TestRequestPKIIdentityCertificateUsesBoundCSRFlow(t *testing.T) {
-	privateKeyPEM, err := certs.GenerateKeyPair()
+	privateKeyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestRequestPKIIdentityCertificateUsesBoundCSRFlow(t *testing.T) {
 			t.Errorf("CSR CN = %q", csr.Subject.CommonName)
 		}
 		csrPublic, _ := x509.MarshalPKIXPublicKey(csr.PublicKey)
-		keyPublic, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
+		keyPublic, _ := x509.MarshalPKIXPublicKey(key.Public())
 		if string(csrPublic) != string(keyPublic) {
 			t.Error("CSR does not use the DPoP key")
 		}
@@ -136,11 +136,13 @@ func TestRequestPKIIdentityCertificateUsesBoundCSRFlow(t *testing.T) {
 			JWK map[string]string `json:"jwk"`
 		}
 		decodeProofPart(t, proof, 0, &header)
-		thumbprint, thumbErr := jwkThumbprint(&key.PublicKey)
+		thumbprint, thumbErr := operatorJWKThumbprint(key)
 		if thumbErr != nil {
 			t.Fatal(thumbErr)
 		}
-		canonical := `{"crv":"` + header.JWK["crv"] + `","kty":"` + header.JWK["kty"] + `","x":"` + header.JWK["x"] + `","y":"` + header.JWK["y"] + `"}`
+		// RFC 9964 AKP members, lexicographic — the same input pki-core
+		// thumbprints for cnf.jkt.
+		canonical := `{"alg":"` + header.JWK["alg"] + `","kty":"` + header.JWK["kty"] + `","pub":"` + header.JWK["pub"] + `"}`
 		if base64URLHash(canonical) != thumbprint {
 			t.Error("DPoP proof does not embed the CSR key")
 		}
@@ -174,11 +176,11 @@ func TestRequestPKIIdentityCertificateRejectsUnauthorized(t *testing.T) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
 	defer server.Close()
-	privateKeyPEM, err := certs.GenerateKeyPair()
+	privateKeyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,11 +201,11 @@ func TestSplitCertificateChainPEMRejectsNonCertificate(t *testing.T) {
 }
 
 func TestSplitCertificateChainPEMKeepsUnsupportedChainOpaque(t *testing.T) {
-	privateKeyPEM, err := certs.GenerateKeyPair()
+	privateKeyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		t.Fatal(err)
 	}

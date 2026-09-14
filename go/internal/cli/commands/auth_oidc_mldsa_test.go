@@ -104,9 +104,10 @@ func TestOperatorJWKThumbprintCanonicalForm(t *testing.T) {
 	}
 }
 
-// An EC session written before the cutover must keep signing until it is
-// renewed; only generation moved to ML-DSA.
-func TestDPoPStillSignsLegacyECSessions(t *testing.T) {
+// WDY-3032 is a hard cutover: an ECDSA session predating it is refused rather
+// than signed with, and the message has to name the fix, because the operator
+// cannot tell a stale credential from a broken one otherwise.
+func TestDPoPRefusesLegacyECSessions(t *testing.T) {
 	keyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)
@@ -115,22 +116,11 @@ func TestDPoPStillSignsLegacyECSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := newDPoPAccessProof(signer, "POST", "https://identity.example/v1/identity/certificate", "token-abc")
-	if err != nil {
-		t.Fatal(err)
+	_, err = newDPoPAccessProof(signer, "POST", "https://identity.example/v1/identity/certificate", "token-abc")
+	if err == nil {
+		t.Fatal("an ECDSA operator key was accepted; the cutover is not enforced")
 	}
-	headerJSON, err := base64.RawURLEncoding.DecodeString(strings.Split(proof, ".")[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var header struct {
-		Alg string            `json:"alg"`
-		JWK map[string]string `json:"jwk"`
-	}
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		t.Fatal(err)
-	}
-	if header.Alg != "ES256" || header.JWK["kty"] != "EC" {
-		t.Errorf("legacy EC session produced alg=%q kty=%q, want ES256/EC", header.Alg, header.JWK["kty"])
+	if !strings.Contains(err.Error(), "wendy auth login") {
+		t.Errorf("refusal should tell the operator how to recover, got: %v", err)
 	}
 }

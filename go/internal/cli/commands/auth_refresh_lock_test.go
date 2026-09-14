@@ -24,15 +24,15 @@ import (
 func rotatingOAuthSession(t *testing.T) (*config.AuthConfig, *atomic.Int32) {
 	t.Helper()
 	t.Setenv("WENDY_SECRET_STORE", "file")
-	keyPEM, err := certs.GenerateKeyPair()
+	keyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := parseECPrivateKeyPEM(keyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
 	if err != nil {
 		t.Fatal(err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		t.Fatal(err)
 	}

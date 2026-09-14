@@ -201,9 +201,18 @@ func TestCloudDiscoveryV2DoesNotUseRetiredRelay(t *testing.T) {
 	defer cancel()
 	id := "00000000-0000-4000-8000-000000000042"
 	d := cloudDiscoveryDevice{v2: &cloudpbv2.Asset{Id: id}, key: id}
+	// Before WDY-3032 a PKI login carried an EC leaf, so this call died at
+	// cloudrelay's "ML-DSA operator request-signing certificate" refusal and
+	// that refusal was what this test asserted. The operator credential is
+	// ML-DSA now, so signing succeeds and the call gets as far as dialing the
+	// relay — which is the point being guarded here anyway: whatever it dials,
+	// it must not be the retired UUID relay RPC.
 	_, err = d.openTunnel(ctx, conn, auth, 50052)
-	if err == nil || !strings.Contains(err.Error(), "ML-DSA operator request-signing certificate") {
-		t.Fatalf("unexpected signing capability result: %v", err)
+	if err == nil {
+		t.Fatal("expected the tunnel dial to fail against the stub broker")
+	}
+	if strings.Contains(err.Error(), "ML-DSA operator request-signing certificate") {
+		t.Fatalf("operator session still lacks an ML-DSA signing credential: %v", err)
 	}
 	select {
 	case <-broker.opened:

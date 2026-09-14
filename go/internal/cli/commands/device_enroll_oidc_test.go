@@ -2,12 +2,10 @@ package commands
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/sha256"
+	"crypto/mldsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"math/big"
 	"net"
 	"strings"
 	"testing"
@@ -16,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
@@ -29,10 +28,17 @@ import (
 func oidcEnrollmentAuth(t *testing.T) *config.AuthConfig {
 	t.Helper()
 	auth := fakeAuth(t)
-	key, err := parseECPrivateKeyPEM(auth.Certificates[0].PemPrivateKey)
+	// The operator credential is ML-DSA-65 (WDY-3032); fakeAuth still mints the
+	// EC device-style key, so replace it here rather than weaken the fixture.
+	keyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Certificates[0].PemPrivateKey = keyPEM
 	auth.Certificates[0].PemCertificate = testLeafPEM(t, key)
 	auth.Certificates[0].PemCertificateChain = ""
 	auth.Certificates[0].PrincipalURI = "spiffe://wendy.sh/tenant/" + testOperatorTenant + "/operator/" + testOperatorSubject
@@ -126,7 +132,7 @@ func verifyEnrollmentJWS(t *testing.T, compact string) map[string]any {
 	if err := json.Unmarshal(decode(parts[0]), &header); err != nil {
 		t.Fatal(err)
 	}
-	if header.Alg != "ES256" || len(header.X5C) != 1 {
+	if header.Alg != "ML-DSA-65" || len(header.X5C) != 1 {
 		t.Fatal("invalid signing header")
 	}
 	der, err := base64.StdEncoding.DecodeString(header.X5C[0])
@@ -137,14 +143,14 @@ func verifyEnrollmentJWS(t *testing.T, compact string) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, ok := leaf.PublicKey.(*ecdsa.PublicKey)
+	key, ok := leaf.PublicKey.(*mldsa.PublicKey)
 	if !ok {
-		t.Fatal("expected EC key")
+		t.Fatalf("enrollment leaf carries %T, want an ML-DSA-65 operator key", leaf.PublicKey)
 	}
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	sig := decode(parts[2])
-	if len(sig) != 64 || !ecdsa.Verify(key, digest[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
-		t.Fatal("invalid enrollment signature")
+	// Verified the way pki-core does: over the signing input, no pre-hash,
+	// nil options.
+	if err := mldsa.Verify(key, []byte(parts[0]+"."+parts[1]), decode(parts[2]), nil); err != nil {
+		t.Fatalf("invalid enrollment signature: %v", err)
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(decode(parts[1]), &claims); err != nil {
