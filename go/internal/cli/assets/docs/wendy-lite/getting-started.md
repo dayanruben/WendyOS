@@ -48,13 +48,14 @@ for now.
 ## Step 3 — Build and deploy an application
 
 Rather than writing an application from scratch, start from an existing one.
-`blink-rgb` is the simplest example: it blinks the onboard RGB LED.
+`blink-rgb-led` is the simplest example: it blinks the onboard RGB LED.
 
-Get the examples and enter the project directory:
+Scaffold the project and enter its directory:
 
 ```sh
-git clone https://github.com/wendylabsinc/wendy-lite-native-apps.git
-cd wendy-lite-native-apps/blink-rgb
+mkdir blink-rgb-led
+cd blink-rgb-led
+wendy init --template blink-rgb-led
 ```
 
 Then build, deploy and run it:
@@ -67,17 +68,21 @@ That is the whole cycle. `wendy run` compiles the project in the current
 directory, pushes the application to the device, and starts it. The onboard LED
 should start blinking.
 
-`blink-rgb` runs on these development kits:
+`blink-rgb-led` runs on these development kits:
 
 - ESP32-C5-DevKitC-1
 - ESP32-C6-DevKitC-1
 - ESP32-C6-DevKitM-1
 - ESP32-C61-DevKitC-1
 
+More native examples are in the
+[wendy-lite-native-apps](https://github.com/wendylabsinc/wendy-lite-native-apps)
+repository.
+
 ## Next steps
 
 You now have a working setup and a project you can edit. Change something in
-`blink-rgb/main/main.c`, run `wendy run` again, and watch it land on the device.
+`blink-rgb-led/main/main.c`, run `wendy run` again, and watch it land on the device.
 
 When you want to write your own application, see
 [Native Apps for Wendy Lite](native-apps.md) — it covers how a Wendy

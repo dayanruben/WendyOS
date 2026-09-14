@@ -151,6 +151,7 @@ adds a simple blink loop:
 
 ```c
 #include <stdio.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
