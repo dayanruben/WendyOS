@@ -549,6 +549,16 @@ An app with `admin` can start, stop, and delete apps and read all device data lo
 
 ---
 
+### `build`
+
+Runs a container image builder (BuildKit) inside the app container.
+
+```json
+{ "type": "build" }
+```
+
+Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` syscalls a nested builder needs (the kernel-module and `kexec` denials are kept). **Privileged-equivalent: a container→host escape surface.** Used so a device can build apps for itself. Grant only to fully-trusted, first-party apps. At most one per app; takes no parameters.
+
 ## Compose-based projects
 
 If your project uses a `docker-compose.yml` instead of a single container, you don't need a `wendy.json`. `wendy run` detects the compose file automatically and each service gets a generated app config derived from its `ports`, `network_mode`, and `volumes` declarations.
