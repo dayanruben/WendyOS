@@ -595,7 +595,29 @@ func cloudDiscoverJSON(ctx context.Context, auth *config.AuthConfig, all bool) e
 // until we've collected every asset the server reports via total. Without this,
 // callers silently see only the first page — e.g. fleet group operations could
 // not target devices that fell outside it.
+//
+// This is the LEGACY (wendycloud.v1) asset listing. It filters on the int32
+// cert.OrganizationID, which only a legacy login ever populates: a cloud (OIDC)
+// login stores a SPIFFE PrincipalURI and leaves OrganizationID at its zero
+// value, so calling this with such a session queries organization 0 and gets an
+// empty page back with no error — the silent-empty of WDY-3059.
+//
+// The guard below is deliberately here rather than at each call site, because
+// every other path into this function is already the legacy arm of a
+// generation dispatch (pickCloudDiscoveryDevice and fetchCloudDiscoveryDevices
+// both send a principal-bearing session to the v2 service instead), so it can
+// never fire for them. That leaves the fleet commands, which have no dispatch
+// at all, plus any caller added later — which is exactly who this needs to
+// catch.
 func fetchCloudAssetsFiltered(ctx context.Context, auth *config.AuthConfig, onlineOnly bool) ([]*cloudpb.Asset, error) {
+	if len(auth.Certificates) == 0 {
+		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
+	}
+	if auth.Certificates[0].PrincipalURI != "" {
+		return nil, fmt.Errorf(
+			"this command is not yet available for cloud (OIDC) sessions: it looks devices up through the legacy organization API, which a cloud session has no organization ID for. " +
+				"'wendy cloud discover', 'wendy cloud tunnel', 'wendy cloud forward' and 'wendy cloud ping' already work on this session; the 'wendy fleet' commands are being ported in WDY-3063")
+	}
 	cert := auth.Certificates[0]
 	cloudConn, err := dialCloudGRPC(auth)
 	if err != nil {
