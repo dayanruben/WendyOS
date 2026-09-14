@@ -52,6 +52,7 @@ class ROSWorker:
                 self.process.stdin.write('{"op":"close"}\n')
                 self.process.stdin.flush()
             except BrokenPipeError:
+                # Child already exited and closed stdin during shutdown.
                 pass
             try:
                 self.process.wait(timeout=3)

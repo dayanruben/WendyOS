@@ -42,6 +42,7 @@ def main():
             try:
                 os.killpg(child.pid, signal.SIGTERM)
             except ProcessLookupError:
+                # Process group already gone during shutdown race.
                 pass
         deadline = time.monotonic() + 3
         for child in children:
@@ -51,6 +52,7 @@ def main():
                 try:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
+                    # Process group already gone during shutdown race.
                     pass
         for child in children:
             child.wait()

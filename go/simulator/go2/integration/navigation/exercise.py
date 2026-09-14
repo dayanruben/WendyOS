@@ -451,7 +451,7 @@ def main():
         acceptance.goal_arrival(not args.without_perception)
         acceptance.obstacle()
         acceptance.stale_scan()
-    except BaseException as error:
+    except Exception as error:
         failure = error
     finally:
         try:

@@ -283,21 +283,18 @@ func lockRobotProvision(ctx context.Context, store *vm.Store, name string) (func
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			f.Close()
-			return nil, err
+			return nil, errors.Join(err, f.Close())
 		}
 		ok, err := flock.TryLock(f)
 		if err != nil {
-			f.Close()
-			return nil, err
+			return nil, errors.Join(err, f.Close())
 		}
 		if ok {
 			return func() { _ = flock.Unlock(f); _ = f.Close() }, nil
 		}
 		select {
 		case <-ctx.Done():
-			f.Close()
-			return nil, ctx.Err()
+			return nil, errors.Join(ctx.Err(), f.Close())
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

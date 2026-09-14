@@ -258,7 +258,7 @@ class Runtime:
                     epoch = self.sim.epoch
                     generation = self.observation_generation
                     wall_timestamp_ns = time.time_ns()
-                    emit_camera = (robot_camera >= 0 and self.sensor_settings["camera_enabled"]
+                    emit_camera = (self.sensor_settings["camera_enabled"]
                                    and self.sim.mode not in {"paused", "fault"})
                 stages["capture_lock"] = (time.perf_counter() - started) * 1000
                 if not emit_camera:

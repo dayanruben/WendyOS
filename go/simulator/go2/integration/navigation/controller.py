@@ -210,6 +210,7 @@ def main():
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
+        # Expected during normal shutdown; cleanup happens in finally below.
         pass
     except Exception:
         # Humble can surface an invalid-context RCLError during SIGTERM

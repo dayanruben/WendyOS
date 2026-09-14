@@ -303,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send(404, {"error": "not found"})
         except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected mid-response; nothing left to write.
             pass
 
     def do_POST(self):
@@ -323,6 +324,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, RuntimeError) as error:
             self.send(409, {"error": str(error)})
         except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected mid-response; nothing left to write.
             pass
 
 
