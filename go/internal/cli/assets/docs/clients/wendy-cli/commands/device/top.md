@@ -80,6 +80,11 @@ Plain snapshots include a `STATE` column. JSON snapshots have this shape:
       { "name": "tj-thermal", "tempC": 55.0 }
     ],
     "maximumTemperature": { "name": "go2/imu", "tempC": 79.0 },
+    "battery": {
+      "percent": 82.0,
+      "state": "discharging",
+      "secondsRemaining": 5400
+    },
     "gpus": [
       {
         "index": 0,
@@ -99,6 +104,12 @@ Plain snapshots include a `STATE` column. JSON snapshots have this shape:
 ```
 
 - `host.containerStorage` reports `mountpoint`, `usedBytes`, and `totalBytes` for the container filesystem, and is omitted when unavailable. Plain snapshots also show this disk usage.
+
+`host.battery` is omitted entirely on a device with no battery, and
+`secondsRemaining` is omitted when the device reports no usable
+charge/discharge rate.
+
+
 - `host.gpus` is omitted on devices that report no GPU.
 - `host.thermalZones` is omitted when the agent has no readable temperature source.
 - `host.maximumTemperature` is the hottest valid thermal-zone or GPU reading and is omitted when no temperature is available.

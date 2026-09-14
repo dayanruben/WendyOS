@@ -1,6 +1,6 @@
 Installs an app from the [Wendy AppStore](https://appstore.wendy.dev) onto the target device.
 
-This is the device-scoped alias for [`wendy app install`](../../app/install.md). Both commands accept identical flags and behave identically.
+This is the canonical spelling. (There is no top-level `wendy app install`; `wendy install` is the OS-image installer.)
 
 ## Flags
 

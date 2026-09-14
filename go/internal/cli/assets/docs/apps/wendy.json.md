@@ -266,7 +266,7 @@ Optional URI pointing to the JSON Schema for editor autocompletion and validatio
 
 ## Entitlements
 
-Entitlements grant the app access to hardware and system capabilities. Any capability not listed is unavailable to the app. They are [code signed](../wendy-agent/oci/codesigning.md), preventing privilege escalation.
+Entitlements grant the app access to hardware and system capabilities. Any capability not listed is unavailable to the app. They are code signed, preventing privilege escalation.
 
 Use `wendy project entitlements add` / `remove` to manage them, or edit `wendy.json` directly.
 

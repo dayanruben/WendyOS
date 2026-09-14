@@ -104,9 +104,11 @@ CreateNotification(CreateNotificationRequest) → Notification
 ```
 
 Creates a Notification for one user. This RPC and `CreateNotificationRequest`
-are deprecated in their protobuf descriptors and remain intact in
-`wendycloud.v1` only for existing Dashboard and legacy clients. The migration
-marker removes them from a future side-by-side `wendycloud.v2`, not from v1.
+are deprecated in their protobuf descriptors and remain intact for existing
+Dashboard and legacy clients. `wendycloud.v2` is no longer hypothetical — it is
+vendored at `Proto/wendycloud/v2/` and generated into `go/proto/gen/cloudpb/v2/`
+— and this RPC is still carried there, still marked `deprecated`. The migration
+marker records that it is to be removed from v2, not that it already has been.
 
 ---
 
