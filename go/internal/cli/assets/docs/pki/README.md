@@ -90,7 +90,7 @@ The CLI verifies device server certificates on all mTLS connections (BLE, LAN gR
 
 3. **Exact device identity (`ServerVerifyOpts.ExpectedIdentity`)** — When the caller has pinned a specific asset (see "Device identity pinning" below), the verifier additionally requires the peer's leaf certificate to carry an `asset` Wendy identity whose org and entity id match exactly. Unlike organization matching there is no grace mode here: a certificate with no Wendy identity at all is a mismatch, not a legacy device to tolerate, because the caller asked for a *specific* device and got something that cannot prove it is that device. This check runs inside `tls.Config.VerifyConnection`, not `VerifyPeerCertificate` — a resumed TLS 1.3 handshake skips `VerifyPeerCertificate` but not `VerifyConnection`, so pinning implemented in the wrong hook would silently stop firing on session resumption.
 
-4. **SPKI pinning** — On first mTLS connection to a device — over BLE, LAN gRPC, or the cloud tunnel — its SPKI (Subject Public Key Info) fingerprint is pinned in `~/.config/wendy/known_devices.json`, keyed by the certificate's Wendy asset identity. A later connection presenting a different key while the *previously pinned* certificate is still within its validity window is hard-refused (a `PinMismatchError` aborts the handshake): a renewal replaces an expiring certificate, it does not race one that is still live, so an unexplained key change during that window is treated as a MITM signal, not a warning. Once the pinned certificate has expired, a new key is ordinary rotation — accepted silently, and the pin is updated to the new fingerprint.
+4. **SPKI pinning** — On first mTLS connection to a device — over BLE, LAN gRPC, or the cloud tunnel — its SPKI (Subject Public Key Info) fingerprint is pinned in `~/.wendy/known_devices.json`, keyed by the certificate's Wendy asset identity. A later connection presenting a different key while the *previously pinned* certificate is still within its validity window is hard-refused (a `PinMismatchError` aborts the handshake): a renewal replaces an expiring certificate, it does not race one that is still live, so an unexplained key change during that window is treated as a MITM signal, not a warning. Once the pinned certificate has expired, a new key is ordinary rotation — accepted silently, and the pin is updated to the new fingerprint.
 
 ## Device identity pinning (default device)
 
@@ -166,7 +166,18 @@ To handle this, `wendy-agent` reads the `NotBefore` timestamp from the device's 
 
 ```
 effectiveNow = max(time.Now(), provisioningCert.NotBefore)
+
+# and, only when the real clock is still behind that floor, advanced far
+# enough to admit a cert issued moments after provisioning — but never
+# further than 24h past the floor:
+if time.Now() < provisioningCert.NotBefore:
+    effectiveNow = max(effectiveNow,
+                       min(peerCert.NotBefore, provisioningCert.NotBefore + 24h))
 ```
+
+The 24h cap is what keeps the floor from becoming a blank cheque: on a device
+whose clock never synced, a peer certificate dated further ahead than that is
+still rejected.
 
 `effectiveNow` is used **only for the leaf certificate's `NotBefore` check** — on both the standard (RSA/ECDSA) path, via `x509.VerifyOptions.CurrentTime`, and the ML-DSA path. Certificate expiry (`NotAfter`) and CA-certificate validity are always checked against the real system clock, so the floor cannot mask a genuinely expired certificate or make an immature CA appear valid. Pass a zero `time.Time` to disable the floor.
 

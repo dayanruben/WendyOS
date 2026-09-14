@@ -43,7 +43,7 @@ command from inside `go/`.**
 
 ### Go toolchain
 
-The pinned version lives in [`go.mod`](go.mod) (`go 1.26.5` at the time of
+The pinned version lives in [`go.mod`](go.mod) (`go 1.26.6` at the time of
 writing). CI selects it with `actions/setup-go` and `go-version-file: go.mod` —
 do the same rather than hardcoding a version, and it will always match.
 

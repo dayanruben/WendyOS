@@ -282,7 +282,7 @@ Variables from both files are merged into a single map before rendering. If the 
 
 ## JSON Schema
 
-A formal JSON Schema for this file format is available at [`template.schema-def.json`](./template.schema-def.json).
+A formal JSON Schema for this file format is not currently published alongside these docs.
 
 Add it to your `template.schema.json` to get editor validation:
 

@@ -1,4 +1,4 @@
-Wendy devices produce their structured logs, metrics and tracing through [OpenTelemetry](../wendy-agent/otel.md).
+Wendy devices produce their structured logs, metrics and tracing through [OpenTelemetry](https://opentelemetry.io/).
 
 These logs are received by a local on-device collector, which forwards the stream to other targets. One of those targets is the Wendy Cloud.
 
@@ -12,6 +12,7 @@ on top of the image's own env. Two are always present (all network modes):
 | Variable | Value |
 |---|---|
 | `WENDY_HOSTNAME` | For single-container apps: the device's mDNS hostname (omitted when unresolvable). For multi-service apps (`serviceName` set): `{serviceName}.local`, giving each service a distinct hostname identity. |
+| `WENDY_DEVICE_HOSTNAME` | The device's own mDNS hostname, injected unconditionally. Unlike `WENDY_HOSTNAME` it is always the host's name, never a per-service `{serviceName}.local`, so a multi-service app can still identify the device it runs on. |
 | `WENDY_APP_ID` | The `appId` from `wendy.json` (omitted when empty). |
 | `WENDY_APP_GROUP` | The `appId` of the owning app. **Multi-service only** — injected when `serviceName` is non-empty so a service can discover its siblings. Absent for single-container apps. |
 
