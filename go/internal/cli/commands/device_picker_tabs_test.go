@@ -20,7 +20,7 @@ func pickerAuth(orgID int) *config.AuthConfig {
 }
 
 func TestDevicePickerShowsLocalAndCloudTabs(t *testing.T) {
-	m := newDevicePickerModel(context.Background(), tui.NewPicker(), nil, 0)
+	m := newDevicePickerModel(context.Background(), tui.NewPicker(), nil, 0, false)
 	updated, _ := m.Update(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{{Name: "local-pi"}}}})
 	m = updated.(devicePickerModel)
 
@@ -53,7 +53,7 @@ func tabTo(t *testing.T, m devicePickerModel, want devicePickerTab) (devicePicke
 }
 
 func TestDevicePickerLoggedOutCloudTabOffersLoginRow(t *testing.T) {
-	m := newDevicePickerModel(context.Background(), tui.NewPicker(), nil, 0)
+	m := newDevicePickerModel(context.Background(), tui.NewPicker(), nil, 0, false)
 	m, _ = tabTo(t, m, devicePickerCloudTab)
 
 	view := m.View()
@@ -74,7 +74,7 @@ func TestDevicePickerLoggedOutCloudTabOffersLoginRow(t *testing.T) {
 }
 
 func TestDevicePickerStartsCloudDiscoveryOnFirstCloudTabVisit(t *testing.T) {
-	m := newDevicePickerModel(context.Background(), tui.NewPicker(), pickerAuth(7), 7)
+	m := newDevicePickerModel(context.Background(), tui.NewPicker(), pickerAuth(7), 7, false)
 	if m.cloudStarted {
 		t.Fatal("cloud discovery started before the Cloud tab was visited")
 	}
@@ -99,7 +99,7 @@ func TestDevicePickerStartsCloudDiscoveryOnFirstCloudTabVisit(t *testing.T) {
 
 func TestDevicePickerCloudTabShowsDefaultOrgAndSwitchHotkey(t *testing.T) {
 	auth := pickerAuth(7)
-	m := newDevicePickerModel(context.Background(), tui.NewPicker(), auth, 7)
+	m := newDevicePickerModel(context.Background(), tui.NewPicker(), auth, 7, false)
 	m.active = devicePickerCloudTab
 	updated, _ := m.Update(devicePickerOrgMsg{name: "Robotics"})
 	m = updated.(devicePickerModel)
@@ -123,7 +123,7 @@ func TestDevicePickerCloudTabShowsDefaultOrgAndSwitchHotkey(t *testing.T) {
 
 func TestDevicePickerSelectsCloudAsset(t *testing.T) {
 	auth := pickerAuth(7)
-	m := newDevicePickerModel(context.Background(), tui.NewPicker(), auth, 7)
+	m := newDevicePickerModel(context.Background(), tui.NewPicker(), auth, 7, false)
 	m.active = devicePickerCloudTab
 	asset := &cloudpb.Asset{Id: 42, Name: "cloud-pi"}
 
@@ -183,7 +183,7 @@ func TestDevicePickerEnrollsHighlightedLocalDevice(t *testing.T) {
 	ctx := context.Background()
 	first := lanPickerItem(models.LANDevice{DisplayName: "alpha", Hostname: "alpha.local", Port: defaultAgentPort}, true, tui.ProbeOK)
 	second := lanPickerItem(models.LANDevice{DisplayName: "beta", Hostname: "beta.local", Port: defaultAgentPort}, true, tui.ProbeOK)
-	m := newDevicePickerModel(ctx, tui.NewPicker(), pickerAuth(7), 7)
+	m := newDevicePickerModel(ctx, tui.NewPicker(), pickerAuth(7), 7, false)
 	updated, _ := m.Update(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{first, second}}})
 	m = updated.(devicePickerModel)
 	if !strings.Contains(m.View(), "e enroll") {
@@ -210,6 +210,26 @@ func TestDevicePickerEnrollsHighlightedLocalDevice(t *testing.T) {
 	}
 }
 
+// The enroll command opens the picker only to select a device; it enrolls that
+// device itself afterward. If the picker also offered 'e enroll', pressing it
+// would enroll once here and again in the command — the double enrollment
+// Copilot flagged. disableEnroll must suppress both the hint and the shortcut.
+func TestDevicePickerEnrollSuppressed(t *testing.T) {
+	ctx := context.Background()
+	lan := lanPickerItem(models.LANDevice{DisplayName: "alpha", Hostname: "alpha.local", Port: defaultAgentPort}, true, tui.ProbeOK)
+	m := newDevicePickerModel(ctx, tui.NewPicker(), pickerAuth(7), 7, true)
+	updated, _ := m.Update(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{lan}}})
+	m = updated.(devicePickerModel)
+	if strings.Contains(m.View(), "e enroll") {
+		t.Fatalf("suppressed picker still shows enrollment hint: %q", m.View())
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(devicePickerModel)
+	if cmd != nil || m.action != devicePickerNoAction || (m.enroll != nil && m.enroll.item != nil) {
+		t.Fatalf("suppressed 'e' requested enrollment: cmd=%v action=%v enroll=%+v", cmd != nil, m.action, m.enroll)
+	}
+}
+
 func TestDevicePickerEnrollmentUnavailable(t *testing.T) {
 	lan := lanPickerItem(models.LANDevice{DisplayName: "pi", Hostname: "pi.local", Port: defaultAgentPort}, true, tui.ProbeOK)
 	for _, tt := range []struct {
@@ -232,7 +252,7 @@ func TestDevicePickerEnrollmentUnavailable(t *testing.T) {
 		}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newDevicePickerModel(context.Background(), tui.NewPicker(), tt.auth, 0)
+			m := newDevicePickerModel(context.Background(), tui.NewPicker(), tt.auth, 0, false)
 			updated, _ := m.Update(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: tt.items}})
 			m = updated.(devicePickerModel)
 			m.active = tt.tab

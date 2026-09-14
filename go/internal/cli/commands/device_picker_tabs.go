@@ -49,7 +49,7 @@ type devicePickerModel struct {
 	windowWidth  int
 }
 
-func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32) devicePickerModel {
+func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32, disableEnroll bool) devicePickerModel {
 	m := devicePickerModel{
 		local:      local,
 		sim:        newSimulatorPickerModel(ctx),
@@ -58,6 +58,11 @@ func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *conf
 	}
 	if auth != nil {
 		m.cloud = newCloudDiscoverModel(ctx, auth, os.Getenv("WENDY_BROKER_URL"), false, true, nil)
+	}
+	// The enroll shortcut is suppressed for commands that enroll the picked
+	// device themselves (device enroll / cloud enroll-device); otherwise it
+	// would enroll once here and again when the command runs.
+	if auth != nil && !disableEnroll {
 		// The request is shared across model copies. Enrollment needs the
 		// terminal for its prompts, so only capture the row here; the caller
 		// runs it after the picker and its discovery streams have stopped.
