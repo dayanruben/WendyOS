@@ -1,79 +1,37 @@
 # Wendy Lite
 
-Wendy Lite is the WebAssembly runtime layer for ESP32 microcontrollers. It runs WASM guest applications on device and exposes the hardware via host-imported functions from the `"wendy"` module.
+Wendy Lite is Wendy's runtime and deployment layer for ESP32 microcontrollers. It supports native ESP-IDF applications as the recommended project model and can also run portable WASM guest applications.
 
 ## Role in the Wendy Platform
 
-The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetson, Mac) via WendyOS and wendy-agent. Wendy Lite covers the other end: bare-metal MCUs where containers and a full OS are not viable. The same hardware APIs (BLE, WiFi, sockets, TLS, OTel) are available from WASM guests as are exposed by wendy-agent to containerised apps, making the programming model portable across device classes.
+The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetson, Mac) via WendyOS and wendy-agent. Wendy Lite covers bare-metal MCUs where containers and a full OS are not viable. Native apps use the complete ESP-IDF API and normal ESP-IDF project layout; `wendy run` detects, builds, and deploys them. WASM remains available when a smaller portable application boundary is preferable.
 
-> **Scope note:** wendy-lite host imports cover GPIO, I2C, SPI, UART, RMT, NeoPixel, Timer, Storage, System, OTel, BLE, WiFi, Sockets, TLS, and USB. **Camera and display/framebuffer peripherals are not exposed to WASM guests.** Boards with cameras or RGB LCD panels (e.g. ESP32-S31-Korvo-1, ESP32-P4-Function-EV) must drive those peripherals with native ESP-IDF drivers; the wendy-lite runtime can run alongside a native display loop but does not control the panel.
+> **Recommendation:** Start new applications as regular native ESP-IDF projects. Use the optional WASM runtime when portability or sandboxing matters more than full ESP-IDF access. Camera and display/framebuffer peripherals are not exposed to WASM guests and should be driven by native ESP-IDF drivers.
 
-## Supported Targets
+## Supported Targets and Boards
 
-| Target | Status |
-|--------|--------|
-| ESP32-C6 | CI-built, nightly releases |
-| ESP32-C5 | CI-built, nightly releases |
+Wendy Lite supports the following ESP32 targets:
 
-All other ESP32 variants (including ESP32-S3, ESP32-P4, and the preview ESP32-S31) are **not currently supported** by wendy-lite. The firmware build image is pinned to `espressif/idf:v5.5.1`; chips that require IDF 6.x / `master` (such as ESP32-S31) cannot be built with this image. There is no camera or display/framebuffer host API — imaging peripherals cannot be driven through a WASM guest today.
+- ESP32-C5
+- ESP32-C6
+- ESP32-C61
+- ESP32-P4
+- ESP32-S3
 
-Firmware is built with [ESP-IDF v5.5.1](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c6/index.html) via the official Espressif Docker image.
+For each target, `wendy install` lists the specific boards Wendy Lite supports. Choosing a board selects a Wendy Lite firmware variant pre-configured with that board's flash size, RAM, and peripherals. However, most targets also have a **generic** board, representing any board that exposes the SoC over USB with no further customization. If your specific board isn't listed, you can probably use the generic one instead.
 
-## Repository Layout
+Native app capability is firmware-specific; where the installer offers multiple choices, select a board variant labeled **native app support**. Native applications are built with ESP-IDF 5.5.4 through the ESP-IDF Installation Manager (`eim`).
 
-```
-wendy-lite/
-  Sources/
-    CWendyLite/
-      include/wendy.h        Host-function declarations (WASM import attributes)
-      shim.c                 Thin C shim for Swift interop
-    WendyLite/               Swift SDK (SwiftPM library target)
-      WendyLite.swift        Re-exports CWendyLite
-      WendyLiteApp.swift     @main protocol + async runtime bootstrap
-      WendyClock.swift       Embedded-Swift async clock + TimerHub
-      CallbackDispatch.swift Handler registry + wendy_handle_callback export
-      GPIO.swift             GPIO types and wrapper enum
-      I2C.swift              I2C wrapper
-      SPI.swift              SPI wrapper
-      UART.swift             UART wrapper
-      RMT.swift              RMT (remote control) wrapper
-      NeoPixel.swift         NeoPixel/WS2812 wrapper
-      Timer.swift            Low-level timer wrapper
-      Network.swift          WiFi, Net (sockets), DNS, TLS wrappers
-      BLE.swift              BLE, GATTS, GATTC wrappers
-      OTel.swift             OpenTelemetry log/metrics/tracing wrapper
-      Storage.swift          NVS key-value wrapper
-      System.swift           System + Console wrappers
-      USB.swift              USB CDC + HID wrapper
-  src/lib.rs                 Rust crate (no_std FFI + safe wrappers)
-  CMakeLists.txt             ESP-IDF component CMake (firmware build)
-  Package.swift              SwiftPM package (Swift SDK)
-  Cargo.toml                 Cargo package (Rust crate)
-  .github/workflows/
-    build.yml                Matrix firmware build + nightly/release publishing
-```
+## Documentation
 
-## CI and Releases
+### User Guides
+- [Getting Started](getting-started.md)
+- [Native Apps](native-apps.md)
+- [WASM Apps](wasm-apps.md)
+  - [Host API Reference](host-api.md)
 
-Every push to `main` and every pull request against `main` runs a matrix build for `esp32c5` and `esp32c6` using `espressif/idf:v5.5.1`. On merge to `main`, a `nightly` pre-release is created (or replaced) on GitHub containing both merged firmware `.bin` files. On a `v*` tag push, the firmware is attached to the corresponding GitHub release.
-
-> **IDF version constraint:** the pinned `v5.5.1` image does not support chips that require IDF 6.x or later (such as ESP32-S31). Adding a new chip target requires either upgrading the pinned IDF version or introducing a parallel `master`/nightly IDF build lane.
-
-## Guest Languages
-
-| Language | Entry point | Library |
-|----------|-------------|---------|
-| Swift | `@main` on `WendyLiteApp` | SwiftPM: `WendyLite` (this repo) |
-| Rust | `#[no_mangle] pub extern "C" fn _start()` | Cargo: `wendy-lite` (this repo) |
-| C / C++ | `void _start(void)` | Include `Sources/CWendyLite/include/wendy.h` |
-| AssemblyScript | `export function _start()` | `@external("wendy", ...)` declarations |
-| WAT | `(export "_start" ...)` | Direct import from `"wendy"` module |
-
-See [`host-api.md`](host-api.md) for the full function reference, [`swift-sdk.md`](swift-sdk.md) for Swift-specific internals, [`deploying.md`](deploying.md) for the full build-to-device flow including OTA updates, and [`wendy-com.md`](wendy-com.md) for the WendyCom protocol reference.
-
-## Deploying a WASM App to Device
-
-1. Build your app to `.wasm` (see the README in the repository root for per-language build commands).
-2. Convert the binary to a C header array: `./wasm_apps/wasm2header.sh my_app.wasm main/demo_wasm.h`
-3. Rebuild the firmware: `idf.py build`
-4. Flash: `idf.py flash`
+### Implementation Details
+- [Source Code](repository.md)
+- [Swift SDK Internals](swift-sdk.md)
+- [StdIO](stdio.md)
+- [WendyCom Protocol](wendy-com.md)

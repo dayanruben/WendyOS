@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -79,6 +80,25 @@ func (b *TelemetryBroadcaster) SubscribeLogs() (string, <-chan *collogspb.Export
 	}
 
 	return id, ch
+}
+
+// SubscribeLogsWithHistory registers a log subscriber and returns cached
+// batches separately from batches published after registration. Registration
+// and the cache snapshot happen under the same lock, so no batch can fall
+// between the two results.
+func (b *TelemetryBroadcaster) SubscribeLogsWithHistory() (string, []*collogspb.ExportLogsServiceRequest, <-chan *collogspb.ExportLogsServiceRequest) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id := b.nextSubID()
+	ch := make(chan *collogspb.ExportLogsServiceRequest, 64)
+	b.logSubs[id] = ch
+
+	recent := make([]*collogspb.ExportLogsServiceRequest, 0, b.logCount)
+	start := (b.logHead - b.logCount + defaultMaxCachedLogs) % defaultMaxCachedLogs
+	for i := 0; i < b.logCount; i++ {
+		recent = append(recent, b.recentLogs[(start+i)%defaultMaxCachedLogs])
+	}
+	return id, recent, ch
 }
 
 // SubscribeLogsNoPrefill adds a log subscriber without pre-filling cached logs.
@@ -334,11 +354,12 @@ func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grp
 	// and to avoid sending the same recent batches twice (once from disk and
 	// once from the broadcaster's in-memory ring buffer).
 	var id string
+	var recent []*collogspb.ExportLogsServiceRequest
 	var ch <-chan *collogspb.ExportLogsServiceRequest
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		id, ch = s.broadcaster.SubscribeLogsNoPrefill()
 	} else {
-		id, ch = s.broadcaster.SubscribeLogs()
+		id, recent, ch = s.broadcaster.SubscribeLogsWithHistory()
 	}
 	defer s.broadcaster.UnsubscribeLogs(id)
 
@@ -370,10 +391,34 @@ func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grp
 		}
 	}
 
+	// Cached batches predate the subscription, so send them before the live
+	// channel with IsHistory set. Apply the request filters to both paths.
+	for _, logs := range recent {
+		if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
+			logs = filterLogs(logs, req)
+			if logs == nil {
+				continue
+			}
+		}
+		if err := stream.Send(&agentpb.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
+			return err
+		}
+	}
+
 	s.logger.Info("StreamLogs client connected", zap.String("sub_id", id))
+
+	// A single sender owns both logs and empty application heartbeats. Reset
+	// after each successful write so busy streams don't emit extra messages.
+	heartbeat := time.NewTimer(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
+		case <-heartbeat.C:
+			if err := stream.Send(&agentpb.StreamLogsResponse{}); err != nil {
+				return err
+			}
+			heartbeat.Reset(15 * time.Second)
 		case <-ctx.Done():
 			return ctx.Err()
 		case logReq, ok := <-ch:
@@ -394,6 +439,7 @@ func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grp
 			}); err != nil {
 				return err
 			}
+			heartbeat.Reset(15 * time.Second)
 		}
 	}
 }

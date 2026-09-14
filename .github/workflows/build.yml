@@ -16,6 +16,10 @@ on:
         description: "Publish artifacts and create a stable release"
         type: boolean
         default: false
+      skip_integration_tests:
+        description: "Skip macOS hardware integration tests"
+        type: boolean
+        default: false
 
 concurrency:
   group: build-${{ github.ref }}
@@ -26,7 +30,7 @@ permissions:
   contents: write
 
 env:
-  XCODE_VERSION: '26.3'
+  XCODE_VERSION: '26.5'
 
 jobs:
   determine-version:
@@ -263,7 +267,9 @@ jobs:
 
   build-go-macos:
     name: ${{ matrix.artifact-name }}
-    runs-on: macos-15
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     needs: [determine-version]
     # Attest SLSA build provenance in the job that produces the archive, so the
     # provenance reflects the actual build environment (not a downstream job).
@@ -286,10 +292,15 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Install libusb
-        run: brew list libusb >/dev/null 2>&1 || brew install libusb
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          brew list libusb >/dev/null 2>&1 || brew install libusb
 
       # build-wendy.sh links libusb statically and fails the build if a dynamic
       # libusb dependency sneaks in — a plain `go build` would produce a binary
@@ -332,7 +343,9 @@ jobs:
 
   build-agent-macos-app:
     name: wendy-agent-macos-app
-    runs-on: macos-26
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64, wendy-macos-26]
     timeout-minutes: 45
     needs: [determine-version]
     steps:
@@ -404,7 +417,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e11c554f704a0b820cbf8c51673f6945e0731532 # v0.20.0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           syft-version: v1.18.1
       - name: Generate source + swift SBOMs
@@ -461,7 +474,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e11c554f704a0b820cbf8c51673f6945e0731532 # v0.20.0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           syft-version: v1.18.1
 
@@ -568,6 +581,8 @@ jobs:
           # USB access for Jetson recovery flashing (`wendy os install`).
           install -m644 packaging/linux/udev/70-wendy-jetson.rules \
             pkgroot/wendy/usr/lib/udev/rules.d/70-wendy-jetson.rules
+          install -m644 packaging/linux/udev/70-wendy-qualcomm.rules \
+            pkgroot/wendy/usr/lib/udev/rules.d/70-wendy-qualcomm.rules
           # libusb is statically linked into wendy (LGPL-2.1): ship its notice.
           install -m644 NOTICE pkgroot/wendy/usr/share/doc/wendy/NOTICE
           install -m755 ./wendy-agent-linux-${{ matrix.goarch }}/wendy-agent \
@@ -701,6 +716,7 @@ jobs:
           dpkg-deb -I "$WENDY_DEB" | grep -E "Depends:.*usbutils"
           dpkg-deb -I "$WENDY_DEB" | grep -E "Depends:.*ca-certificates"
           dpkg-deb -c "$WENDY_DEB" | grep "usr/lib/udev/rules.d/70-wendy-jetson.rules" > /dev/null
+          dpkg-deb -c "$WENDY_DEB" | grep "usr/lib/udev/rules.d/70-wendy-qualcomm.rules" > /dev/null
           dpkg-deb -c "$WENDY_DEB" | grep "usr/share/doc/wendy/NOTICE" > /dev/null
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*containerd"
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*dbus"
@@ -719,6 +735,7 @@ jobs:
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^ca-certificates" > /dev/null
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^avahi" > /dev/null
           rpm -qpl "$WENDY_RPM" | grep "/usr/lib/udev/rules.d/70-wendy-jetson.rules" > /dev/null
+          rpm -qpl "$WENDY_RPM" | grep "/usr/lib/udev/rules.d/70-wendy-qualcomm.rules" > /dev/null
           rpm -qpl "$WENDY_RPM" | grep "/usr/share/doc/wendy/NOTICE" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendy-agent.service" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/default/wendy-agent" > /dev/null
@@ -773,7 +790,7 @@ jobs:
           Expand-Archive "wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip" -DestinationPath .
 
       - name: Azure login (OIDC)
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -1006,6 +1023,7 @@ jobs:
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_integration_tests
     uses: ./.github/workflows/integration-tests.yml
     with:
       platform: macos
@@ -1044,7 +1062,7 @@ jobs:
           } >> $GITHUB_ENV
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: ${{ needs.determine-version.outputs.version }}
           tag_name: ${{ needs.determine-version.outputs.tag_name }}

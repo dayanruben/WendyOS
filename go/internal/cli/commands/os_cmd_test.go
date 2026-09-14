@@ -105,6 +105,7 @@ func TestOSUpdateShouldSkipAlreadyCurrent(t *testing.T) {
 func TestDecideOSUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
+		prNumber    int
 		current     string
 		latest      string
 		nightly     bool
@@ -112,18 +113,21 @@ func TestDecideOSUpdate(t *testing.T) {
 		interactive bool
 		want        osUpdateAction
 	}{
-		{"already current", "WendyOS-0.10.4", "0.10.4", false, false, false, osActionAlreadyCurrent},
-		{"newer with yes", "WendyOS-0.10.4", "0.12.0", false, true, false, osActionApply},
-		{"newer with yes overrides tty", "WendyOS-0.10.4", "0.12.0", false, true, true, osActionApply},
-		{"newer interactive prompts", "WendyOS-0.10.4", "0.12.0", false, false, true, osActionPrompt},
-		{"newer noninteractive reports", "WendyOS-0.10.4", "0.12.0", false, false, false, osActionReportOnly},
+		{"already current", 0, "WendyOS-0.10.4", "0.10.4", false, false, false, osActionAlreadyCurrent},
+		{"newer with yes", 0, "WendyOS-0.10.4", "0.12.0", false, true, false, osActionApply},
+		{"newer with yes overrides tty", 0, "WendyOS-0.10.4", "0.12.0", false, true, true, osActionApply},
+		{"newer interactive prompts", 0, "WendyOS-0.10.4", "0.12.0", false, false, true, osActionPrompt},
+		{"newer noninteractive reports", 0, "WendyOS-0.10.4", "0.12.0", false, false, false, osActionReportOnly},
+		{"pr identical tag interactive prompts", 123, "WendyOS-pr-123", "pr-123", false, false, true, osActionPrompt},
+		{"pr identical tag with yes applies", 123, "WendyOS-pr-123", "pr-123", false, true, false, osActionApply},
+		{"pr noninteractive reports", 123, "WendyOS-0.17.0", "pr-123", false, false, false, osActionReportOnly},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decideOSUpdate(tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive)
+			got := decideOSUpdate(tc.prNumber, tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive)
 			if got != tc.want {
-				t.Fatalf("decideOSUpdate(%q,%q,nightly=%v,yes=%v,tty=%v) = %v, want %v",
-					tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive, got, tc.want)
+				t.Fatalf("decideOSUpdate(pr=%d,%q,%q,nightly=%v,yes=%v,tty=%v) = %v, want %v",
+					tc.prNumber, tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive, got, tc.want)
 			}
 		})
 	}
@@ -886,5 +890,30 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsLoopbackHostIdentifiesAPortForwardedDevice(t *testing.T) {
+	// A VM answers on the host's loopback through a port forward. It reports no
+	// WiFi but is not offline, and the local artifact server could only ever
+	// advertise a loopback address, which inside the guest is the guest.
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1:50051", true},
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"[::1]:50051", true},
+		{"localhost:50051", true},
+		{"192.168.2.253:50051", false},
+		{"169.254.198.132", false},
+		{"rpi5.local:50051", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackHost(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
 	}
 }

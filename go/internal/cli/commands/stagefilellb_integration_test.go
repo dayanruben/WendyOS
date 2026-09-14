@@ -60,21 +60,21 @@ stages:
 	llbCtx := withStagefileBackend(context.Background(), stagefileBackendLLBValue)
 	dockerCtx := withStagefileBackend(context.Background(), stagefileBackendDockerfileValue)
 
-	build := func(ctx context.Context, dir, file, layout, cacheKey string) time.Duration {
+	build := func(ctx context.Context, dir, file, layout string) time.Duration {
 		t.Helper()
 		start := time.Now()
 		progress := io.Writer(io.Discard)
 		if testing.Verbose() {
 			progress = os.Stderr
 		}
-		if err := buildImageToOCILayoutDirWithDocker(ctx, dir, file, "linux/arm64", nil, layout, cacheKey, progress, progress); err != nil {
+		if err := buildImageToOCILayoutDirWithDocker(ctx, dir, file, "linux/arm64", nil, layout, progress, progress); err != nil {
 			t.Fatal(err)
 		}
 		return time.Since(start)
 	}
 
-	llbCold := build(llbCtx, llbDir, llbDockerfile, llbLayout, "llb-integration")
-	dockerCold := build(dockerCtx, dockerDir, dockerfile, dockerLayout, "dockerfile-integration")
+	llbCold := build(llbCtx, llbDir, llbDockerfile, llbLayout)
+	dockerCold := build(dockerCtx, dockerDir, dockerfile, dockerLayout)
 
 	var llbWarm, dockerWarm []time.Duration
 	for i := 0; i < 6; i++ {
@@ -86,11 +86,11 @@ stages:
 			t.Fatal(err)
 		}
 		if i%2 == 0 {
-			llbWarm = append(llbWarm, build(llbCtx, llbDir, llbDockerfile, llbLayout, "llb-integration"))
-			dockerWarm = append(dockerWarm, build(dockerCtx, dockerDir, dockerfile, dockerLayout, "dockerfile-integration"))
+			llbWarm = append(llbWarm, build(llbCtx, llbDir, llbDockerfile, llbLayout))
+			dockerWarm = append(dockerWarm, build(dockerCtx, dockerDir, dockerfile, dockerLayout))
 		} else {
-			dockerWarm = append(dockerWarm, build(dockerCtx, dockerDir, dockerfile, dockerLayout, "dockerfile-integration"))
-			llbWarm = append(llbWarm, build(llbCtx, llbDir, llbDockerfile, llbLayout, "llb-integration"))
+			dockerWarm = append(dockerWarm, build(dockerCtx, dockerDir, dockerfile, dockerLayout))
+			llbWarm = append(llbWarm, build(llbCtx, llbDir, llbDockerfile, llbLayout))
 		}
 	}
 

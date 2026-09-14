@@ -160,9 +160,6 @@ func TestGetAgentVersion(t *testing.T) {
 }
 
 func TestGetAgentVersionReportsHostname(t *testing.T) {
-	// Goes through startAgentServer rather than a bare &AgentService{}: the
-	// handler now resolves and hashes its own executable (binarySHA256), which
-	// calls the execPathResolver a zero-value struct leaves nil.
 	client, cleanup := startAgentServer(t,
 		&mockNetworkManager{},
 		&mockHardwareDiscoverer{},
@@ -655,6 +652,12 @@ func TestParseDeviceTypePrefersBoard(t *testing.T) {
 			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\n",
 			wantType:    "jetson-orin-nano",
 			wantStorage: "nvme",
+		},
+		{
+			name:        "disk storage",
+			content:     "BOARD=vm-arm64\nMACHINE=vm-arm64-wendyos\nSTORAGE=disk\n",
+			wantType:    "vm-arm64",
+			wantStorage: "disk",
 		},
 		{
 			name:        "board wins when listed after machine",

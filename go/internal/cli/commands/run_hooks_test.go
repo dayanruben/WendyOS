@@ -37,6 +37,58 @@ func (f *fakeAgentVersionClient) GetAgentVersion(_ context.Context, _ *agentpb.G
 	return f.resp, f.err
 }
 
+func TestAgentVersionForRunReusesConnectionProbe(t *testing.T) {
+	client := &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{Version: "unexpected-rpc"}}
+	conn := &grpcclient.AgentConnection{AgentService: client}
+	want := &agentpb.GetAgentVersionResponse{Version: "connect-probe", Os: "linux"}
+	conn.CacheAgentVersion(want)
+
+	got, err := agentVersionForRun(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("agentVersionForRun returned %p, want cached response %p", got, want)
+	}
+	if client.calls != 0 {
+		t.Fatalf("GetAgentVersion calls = %d, want 0", client.calls)
+	}
+}
+
+func TestAgentVersionForRunCachesFirstRPC(t *testing.T) {
+	want := &agentpb.GetAgentVersionResponse{Version: "queried", Os: "linux"}
+	client := &fakeAgentVersionClient{resp: want}
+	conn := &grpcclient.AgentConnection{AgentService: client}
+
+	for range 2 {
+		got, err := agentVersionForRun(context.Background(), conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("agentVersionForRun returned %p, want %p", got, want)
+		}
+	}
+	if client.calls != 1 {
+		t.Fatalf("GetAgentVersion calls = %d, want 1", client.calls)
+	}
+}
+
+func TestAgentVersionForRunHonorsCanceledContextBeforeCache(t *testing.T) {
+	client := &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{Version: "unexpected-rpc"}}
+	conn := &grpcclient.AgentConnection{AgentService: client}
+	conn.CacheAgentVersion(&agentpb.GetAgentVersionResponse{Version: "cached"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := agentVersionForRun(ctx, conn); !errors.Is(err, context.Canceled) {
+		t.Fatalf("agentVersionForRun error = %v, want context.Canceled", err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("GetAgentVersion calls = %d, want 0", client.calls)
+	}
+}
+
 // neverReconnect is a non-nil Reconnect stub used to mark an AgentConnection
 // as a cloud connection (conn.Reconnect != nil is the cloud detection
 // signal — see resolveHookHost). It is never actually invoked by these
@@ -240,7 +292,7 @@ func TestRunPostStartIfReady_SkipsHookWhenProbeFails(t *testing.T) {
 		ContainerService: &fastPathContainerClient{appName: appCfg.AppID, state: agentpb.AppRunningState_STOPPED},
 	}
 
-	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	if cmd != nil {
 		t.Errorf("runPostStartIfReady returned a hook cmd despite a failed probe")
 	}
@@ -287,7 +339,7 @@ func TestRunPostStartIfReady_IPv6HostSwappedForReportedIP(t *testing.T) {
 		}},
 	}
 
-	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
 		t.Errorf("expected nil cmd for openURL-only hook, got %v", cmd)
 	}
 	if opened != "http://127.0.0.1:3001" {
@@ -327,7 +379,7 @@ func TestRunPostStartIfReady_IPv6FallbackIsBracketed(t *testing.T) {
 		AgentService: &fakeAgentVersionClient{err: errors.New("agent unreachable")},
 	}
 
-	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	if opened != "http://[::1]:3001" {
 		t.Errorf("openURL = %q, want bracketed IPv6 fallback URL", opened)
 	}
@@ -439,7 +491,7 @@ func TestRunPostStartIfReady_CloudAssetNameSwappedForReportedIP(t *testing.T) {
 		}},
 	}
 
-	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
 		t.Errorf("expected nil cmd for openURL-only hook, got %v", cmd)
 	}
 	if opened != "http://10.20.30.40:9999" {
@@ -473,7 +525,7 @@ func TestRunPostStartIfReady_CloudNoReportedIPSkipsHook(t *testing.T) {
 	}
 
 	out := captureStderr(t, func() {
-		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
 			t.Errorf("expected nil cmd when no host is reported, got %v", cmd)
 		}
 	})
@@ -524,7 +576,7 @@ func TestRunPostStartIfReady_CloudReadinessDialsReportedIP(t *testing.T) {
 	}
 
 	start := time.Now()
-	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	elapsed := time.Since(start)
 
 	if cmd != nil {
@@ -574,7 +626,7 @@ func TestRunPostStartIfReady_CloudHooklessAppPrintsNothing(t *testing.T) {
 	}
 
 	out := captureStderr(t, func() {
-		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{}); cmd != nil {
 			t.Errorf("expected nil cmd for a hook-less, readiness-less app, got %v", cmd)
 		}
 	})
@@ -749,7 +801,7 @@ func TestRunPostStartIfReady_AutoOpensFromHTTPEntitlement(t *testing.T) {
 		}},
 	}
 
-	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	want := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if opened != want {
 		t.Errorf("opened = %q, want %q", opened, want)
@@ -796,7 +848,7 @@ func TestRunPostStartIfReady_ProbesReadinessPortButPresentsHTTPPort(t *testing.T
 
 	start := time.Now()
 	out := captureStderr(t, func() {
-		runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+		runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	})
 	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Errorf("run took %v; explicit readiness port should pass immediately instead of probing the closed HTTP port", elapsed)
@@ -845,7 +897,7 @@ func TestRunPostStartIfReady_ExplicitHookNotOverriddenByHTTPEntitlement(t *testi
 		AgentService: &fakeAgentVersionClient{err: errors.New("agent unreachable")},
 	}
 
-	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg, runOptions{})
 	if opened != "http://127.0.0.1:9999/custom" {
 		t.Errorf("opened = %q, want the explicit hook URL unchanged", opened)
 	}

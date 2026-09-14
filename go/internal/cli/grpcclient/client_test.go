@@ -4,7 +4,34 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestAgentConnectionCachesSuccessfulVersionProbe(t *testing.T) {
+	conn := &AgentConnection{}
+	if _, ok := conn.CachedAgentVersion(); ok {
+		t.Fatal("new connection unexpectedly has a cached version")
+	}
+	want := &agentpb.GetAgentVersionResponse{Version: "test-version", Os: "linux"}
+	conn.CacheAgentVersion(want)
+	got, ok := conn.CachedAgentVersion()
+	if !ok || got != want {
+		t.Fatalf("CachedAgentVersion() = (%p, %v), want (%p, true)", got, ok, want)
+	}
+}
+
+func TestAgentConnectionDoesNotReuseStaleVersionProbe(t *testing.T) {
+	conn := &AgentConnection{}
+	conn.cachedAgentVersion.Store(&agentVersionCacheEntry{
+		response: &agentpb.GetAgentVersionResponse{Version: "stale"},
+		cachedAt: time.Now().Add(-agentVersionCacheTTL - time.Second),
+	})
+	if _, ok := conn.CachedAgentVersion(); ok {
+		t.Fatal("stale probe unexpectedly remained reusable")
+	}
+}
 
 // ── grpcTarget ──────────────────────────────────────────────────────
 
@@ -165,5 +192,15 @@ func assertValidPassthroughURL(t *testing.T, target, wantPath string) {
 	endpoint := strings.TrimPrefix(parsed.Path, "/")
 	if endpoint == "" {
 		t.Fatal("endpoint is empty — passthrough resolver would reject this target")
+	}
+}
+
+func TestCloseOnANilConnectionDoesNotPanic(t *testing.T) {
+	// `wendy os update` defers Close on a variable that ensureAgentUpToDate
+	// sets to nil when a post-restart reconnect fails; without a nil-receiver
+	// guard the deferred cleanup panics and hides the real error.
+	var conn *AgentConnection
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close() on a nil connection = %v, want nil", err)
 	}
 }

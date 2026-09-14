@@ -211,9 +211,14 @@ const (
 
 // decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
 // available. It is pure so it can be unit-tested; the caller is responsible for
-// running the interactive prompt when the result is osActionPrompt.
-func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
-	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+// running the interactive prompt when the result is osActionPrompt. A --pr
+// request (prNumber > 0) never resolves to osActionAlreadyCurrent: a PR's
+// version tag ("pr-N") is constant across rebuilds, so treating a matching tag
+// as current would silently no-op a re-test after a new push to the same PR
+// (same rationale as osUpdateShouldSkipAlreadyCurrent, which implements the
+// suppression).
+func decideOSUpdate(prNumber int, currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osUpdateShouldSkipAlreadyCurrent(prNumber, currentOSVersion, latestVersion, nightly) {
 		return osActionAlreadyCurrent
 	}
 	switch {
@@ -230,6 +235,8 @@ func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
 	var prNumber int
+	var noDrivers bool
+	var driversDir string
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
@@ -248,6 +255,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
 				return fmt.Errorf("provide either a local artifact path or --artifact-url, not both")
+			}
+
+			if noDrivers && driversDir != "" {
+				return fmt.Errorf("--no-drivers cannot be combined with --drivers-dir")
 			}
 
 			if prNumber > 0 {
@@ -282,6 +293,13 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			if err := requireReflashableOSVersion(versionResp.GetOsVersion()); err != nil {
 				return err
 			}
+			// Same rule for a local artifact path: a device reached over loopback
+			// sits behind a port forward, and the only address this side could
+			// advertise is one that inside the guest is the guest.
+			if len(args) > 0 && isLoopbackHost(conn.Host) {
+				return fmt.Errorf("%s reaches this machine over loopback, so it cannot fetch a locally served artifact; "+
+					"pass --pr or --artifact-url and let the device download it directly", conn.Host)
+			}
 
 			// Step 2: Ensure the agent is at the latest release before updating the OS.
 			conn, err = ensureAgentUpToDate(ctx, conn, versionResp, nightly)
@@ -304,6 +322,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			if preUpdateOSVersion != "" {
 				fmt.Printf("Current OS version: %s\n", preUpdateOSVersion)
 			}
+
+			// Only set when the manifest resolved the target; a local artifact or
+			// --artifact-url leaves it empty and limits the pre-flight to a warning.
+			var targetVersion string
 
 			// No artifact provided — auto-detect from the reported device type.
 			if len(args) == 0 && artifactURL == "" {
@@ -352,6 +374,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 						fmt.Printf("Latest OS version: %s\n", latestVer)
 					}
 					artifactURL = otaURL
+					targetVersion = latestVer
 				}
 			}
 
@@ -375,7 +398,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				defer cleanup()
 				artifactURL = servedURL
 				fmt.Printf("Serving artifact at: %s\n", artifactURL)
-			} else if artifactURL != "" && !deviceHasWiFi(ctx, conn) {
+				// A device on loopback has a port forward between us and it, so it
+				// has no WiFi to report yet is not offline: it reaches the internet
+				// through the host's NAT and can fetch the artifact itself.
+			} else if artifactURL != "" && !isLoopbackHost(conn.Host) && !deviceHasWiFi(ctx, conn) {
 				// Device has no WiFi connection — it cannot reach GCP directly.
 				// Download the artifact on the Mac and serve it over a local HTTP
 				// server so the device can fetch it from the Mac instead.
@@ -410,6 +436,22 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				return err
 			}
 
+			if driversDir != "" {
+				if err := checkDriversDir(conn, driversDir); err != nil {
+					return err
+				}
+			}
+
+			// Last point before anything transfers. Staging a rebuild that fails is
+			// the case where the device loses a driver it has today, so the operator
+			// decides rather than finding out after the reboot.
+			pf := warnDriverAddonsBeforeUpdate(ctx, conn, versionResp.GetDeviceType(), targetVersion, driversDir, prNumber, !noDrivers)
+			if !noDrivers && pf.blocking() {
+				if err := confirmDriverPreflight(pf); err != nil {
+					return err
+				}
+			}
+
 			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
 			}
@@ -426,6 +468,10 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().StringVar(&driversDir, "drivers-dir", "",
+		"Stage driver add-ons for the target kernel from local .raw files in this directory, instead of the registry (for networks with no internet access)")
+	cmd.Flags().BoolVar(&noDrivers, "no-drivers", false,
+		"Update even though driver add-ons will not be staged for the target kernel; skips staging and the confirmation")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update to the image built by wendyos-builder PR #N (debug build; mutually exclusive with a positional artifact path and --artifact-url)")
 
 	return cmd
@@ -702,6 +748,7 @@ func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string)
 
 	msg, outcomeErr := evaluateOSUpdateOutcome(resp, rpcErr, preUpdateOSVersion, postUpdateOSVersion, time.Now())
 	fmt.Println(msg)
+	reportDriverAddonsAfterUpdate(ctx, host)
 	return outcomeErr
 }
 
@@ -1275,14 +1322,13 @@ func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 
 	fmt.Printf("Updating agent: %s → %s\n", agentVer, latestVer)
-	addr := hostPort(conn.Host, defaultAgentPort)
 	if err := performAgentUpdate(ctx, conn, osName, arch, nightly); err != nil {
 		return nil, fmt.Errorf("agent update failed: %w", err)
 	}
 	conn.Close()
 
 	fmt.Print("Waiting for agent to restart...")
-	newConn, err := waitForAgentRestart(ctx, addr)
+	newConn, err := reconnectAgentAfterRestart(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("agent did not come back after update: %w", err)
 	}

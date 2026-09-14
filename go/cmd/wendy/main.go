@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,19 +32,32 @@ func main() {
 	memguard.Start()
 	cmd := commands.NewRootCmd()
 
+	// A Bubble Tea program (device picker, spinners, progress bars) calls
+	// signal.Notify then signal.Stop for SIGINT/SIGTERM on every run
+	// (bubbletea's handleSignals). Stop only detaches its own channel — Go's
+	// os/signal never restores the pre-Notify default (process-terminating)
+	// disposition once Notify has been called, so after the first TUI exits,
+	// a bare SIGINT is silently swallowed for the rest of the process and any
+	// unbounded call made afterward (e.g. an RPC to a selected device) can
+	// never be interrupted. Keeping our own listener registered for the whole
+	// process lifetime, and threading its cancellation through every command's
+	// context, keeps Ctrl+C effective no matter how many TUIs have already run.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Reject an unknown subcommand before cobra can quietly answer it with the
 	// parent group's help page and a zero exit code. See UnknownSubcommandError.
 	var executed *cobra.Command
 	err := commands.UnknownSubcommandError(os.Args[1:])
 	if err == nil {
-		executed, err = cmd.ExecuteC()
+		executed, err = cmd.ExecuteContextC(ctx)
 	}
 	trackCommand(executed, err, time.Since(start))
 	analytics.Close()
 
 	exitCode := 0
 	if err != nil && !errors.Is(err, commands.ErrUserCancelled) && !errors.Is(err, commands.ErrDefaultCleared) {
-		fmt.Fprintln(os.Stderr, tui.ErrorMessage(formatError(err).Error()))
+		fmt.Fprintln(os.Stderr, renderError(err))
 		exitCode = 1
 	}
 	// Windows: when this process owns its console window (UAC-relaunched or
@@ -69,6 +85,9 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		return
 	}
 	path := executed.CommandPath()
+	if path == "wendy __session-broker" {
+		return
+	}
 	// Homebrew exports HOMEBREW_PREFIX/HOMEBREW_CELLAR/HOMEBREW_REPOSITORY into
 	// every interactive shell once `eval "$(brew shellenv)"` is set up (the
 	// standard ~/.zprofile line), so env presence alone cannot distinguish the
@@ -219,6 +238,20 @@ func errorClass(err error) string {
 	return "other"
 }
 
+// renderError lets actionable errors style their heading separately from the
+// recovery steps. Use errors.As because commands may add context with %w.
+func renderError(err error) string {
+	var diagnostic interface {
+		error
+		CLIMessage() string
+	}
+	if errors.As(err, &diagnostic) && strings.Contains(err.Error(), diagnostic.Error()) {
+		// Preserve surrounding action context and any joined sibling errors.
+		return strings.Replace(err.Error(), diagnostic.Error(), diagnostic.CLIMessage(), 1)
+	}
+	return tui.ErrorMessage(formatError(err).Error())
+}
+
 func formatError(err error) error {
 	msg := err.Error()
 	if !strings.Contains(msg, "rpc error: code = ") {
@@ -229,6 +262,14 @@ func formatError(err error) error {
 	prefix := ""
 	if idx := strings.Index(msg, "rpc error: code = "); idx > 0 {
 		prefix = msg[:idx]
+	}
+
+	// A cloud tunnel the broker closed carries the broker's verdict inside the
+	// handshake failure (clouddefaults.BrokerTunnelConn). That verdict is the
+	// actionable part: it is neither a cert problem nor a dead device, so show
+	// it before the handshake heuristics below can misread it as either.
+	if verdict, ok := clouddefaults.ExplainTunnelClose(msg); ok {
+		return fmt.Errorf("%sWendy Cloud closed the tunnel to the device: %s\n  For full tunnel details rerun with WENDY_TLS_DEBUG=1", prefix, verdict)
 	}
 
 	isPKICoreCall := strings.Contains(prefix, "pki-core")

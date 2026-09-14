@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -16,10 +17,11 @@ import (
 type LANEventKind int
 
 const (
-	LANCached  LANEventKind = iota // cache entry, not yet verified this run
-	LANFound                       // live-confirmed (mDNS resolve or probe)
-	LANUpdated                     // an already-emitted device changed
-	LANOffline                     // cached entry failed verification
+	LANCached    LANEventKind = iota // cache entry, not yet verified this run
+	LANFound                         // live-confirmed (mDNS resolve or probe)
+	LANUpdated                       // an already-emitted device changed
+	LANOffline                       // cached entry failed verification
+	LANRetracted                     // a listed device is excluded after all; drop its row
 )
 
 // LANEvent is a single update emitted while streaming LAN discovery results.
@@ -54,6 +56,27 @@ type LANProber func(ctx context.Context, dev models.LANDevice) (models.LANDevice
 type StreamOptions struct {
 	UseCache bool      // emit cached entries and persist discoveries
 	Prober   LANProber // nil = no probing (mDNS-only confirmation)
+	Exclude  LANFilter // nil = nothing is excluded
+}
+
+// LANFilter keeps sightings a consumer never wants as device rows out of a
+// session altogether. The CLI uses it for the VMs it runs itself: they belong
+// in a Simulator list, not among LAN devices, yet a user-mode VM's mDNS
+// announcement still escapes onto the host's LAN interface (SLIRP forwards
+// guest multicast one way), so the engine has to know to drop it. An excluded
+// identity is never emitted, probed or persisted, and one that was listed
+// before the filter could tell is taken back with a LANRetracted event and
+// deleted from the cache.
+type LANFilter interface {
+	// Exclude reports whether dev must not be listed. It runs on the engine
+	// goroutine for every cached entry, live sighting and probe result, so it
+	// has to be cheap.
+	Exclude(dev models.LANDevice) bool
+	// Changed delivers a value whenever Exclude's answer may have changed
+	// for a device the session already listed (the CLI learns a VM's
+	// hostname a moment after the session starts); the session then
+	// re-checks everything it holds. May return nil, meaning never.
+	Changed() <-chan struct{}
 }
 
 // Package seams. These are vars, not consts, so tests can swap the backend and
@@ -191,8 +214,19 @@ func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) 
 			if ev.Supersedes != "" {
 				delete(devices, ev.Supersedes)
 			}
-			if ev.Kind == LANFound || ev.Kind == LANUpdated {
-				devices[discoverycache.Key(ev.Device.ID, ev.Device.DisplayName)] = ev.Device
+			key := discoverycache.Key(ev.Device.ID, ev.Device.DisplayName)
+			switch ev.Kind {
+			case LANRetracted:
+				delete(devices, key)
+				// A rejected sighting cannot justify ending an empty scan.
+				// Wait for a real result (or the overall timeout) as we would
+				// on a cold cache that had never confirmed anything.
+				if len(devices) == 0 && settleTimer != nil {
+					settleTimer.Stop()
+					settleC = nil
+				}
+			case LANFound, LANUpdated:
+				devices[key] = ev.Device
 				if probesDoneClosed {
 					armSettle()
 				}
@@ -331,6 +365,12 @@ func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, 
 		defer flush.Stop()
 		flushC = flush.C
 	}
+	// Nil with no filter, or a filter that never changes its mind; a nil
+	// channel simply never fires.
+	var changedC <-chan struct{}
+	if opts.Exclude != nil {
+		changedC = opts.Exclude.Changed()
+	}
 
 	for {
 		select {
@@ -346,6 +386,46 @@ func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, 
 			s.handleRetry(key)
 		case <-flushC:
 			s.flush()
+		case <-changedC:
+			s.retractExcluded()
+		}
+	}
+}
+
+// excluded asks the consumer's filter, when there is one, whether dev must
+// stay out of the session.
+func (s *lanStream) excluded(dev models.LANDevice) bool {
+	return s.opts.Exclude != nil && s.opts.Exclude.Exclude(dev)
+}
+
+// retract takes back a listed identity the filter now rejects: its row, its
+// cache entry and its place in the settle gate all go. Every identity in
+// states has been emitted at least once, so the consumer always has a row to
+// drop.
+func (s *lanStream) retract(key string) {
+	st, known := s.states[key]
+	if !known {
+		return
+	}
+	delete(s.states, key)
+	if s.cache != nil {
+		s.cache.Delete(key)
+		s.dirty = true
+	}
+	// A probe still in flight lost its target: its result arrives under a key
+	// nobody holds and handleProbeResult discards it. Retired from the settle
+	// gate here as well, so a retraction between scheduling and result cannot
+	// leave a batch scan waiting on it.
+	s.probeConcluded(key)
+	s.emit(LANEvent{Kind: LANRetracted, Device: st.dev})
+}
+
+// retractExcluded re-checks every listed identity after the filter reported a
+// change of mind. Deleting from a map mid-range is safe in Go.
+func (s *lanStream) retractExcluded() {
+	for key, st := range s.states {
+		if s.excluded(st.dev) {
+			s.retract(key)
 		}
 	}
 }
@@ -383,6 +463,14 @@ func (s *lanStream) emitCached() {
 			continue
 		}
 		if _, dup := s.states[key]; dup {
+			continue
+		}
+		if s.excluded(entry.Device()) {
+			// A leftover from before the consumer knew to exclude it (a VM
+			// cached by an older build). Forgotten now, or it would re-seed
+			// every session for the rest of its TTL.
+			s.cache.Delete(key)
+			s.dirty = true
 			continue
 		}
 		st := &lanDeviceState{dev: entry.Device(), fromCache: true, persisted: entry.LastSeen}
@@ -434,6 +522,24 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 		// row. Drop it rather than emit or persist it.
 		return
 	}
+	if s.excluded(dev) {
+		// Never a row: not listed, not probed, not persisted. Checked before
+		// the annotator, whose first use may shell out. If this identity was
+		// listed earlier (the filter has learned something since), that row
+		// goes too.
+		s.retract(key)
+		// A prior connect or no-ID advertisement may have listed this same
+		// host under a hostname-derived key. Retire that row too, without
+		// migrating it onto the excluded identity or probing it again.
+		if host := dev.HostKey(); host != "" && !hostDerivedIdentity(dev) {
+			for oldKey, st := range s.states {
+				if hostDerivedIdentity(st.dev) && st.dev.HostKey() == host {
+					s.retract(oldKey)
+				}
+			}
+		}
+		return
+	}
 	s.annotate(&dev)
 	now := time.Now()
 
@@ -449,6 +555,7 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 		return
 	}
 
+	prevAddrs := st.dev.Addresses
 	updated := applySighting(st.dev, dev)
 	if !st.probeFailed {
 		// Multi-homed churn guard: while the address the session already holds
@@ -460,6 +567,15 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 	targetMoved := probeTargetChanged(st.dev, updated)
 	changed := mdnsFieldsChanged(st.dev, updated)
 	returning := !st.confirmed
+	// preferStableTarget picks ONE primary IPAddress, but a multi-homed device
+	// answers on several interfaces (WiFi, USB link-local, IPv6) and the CLI may
+	// only be able to reach it on one of them. Union every sighted address so the
+	// dial ladder can try them all instead of collapsing to the primary alone.
+	// Address-only updates must reach CollectLAN and picker subscribers too:
+	// otherwise they retain the earlier event without the reachable sibling.
+	updated.Addresses = unionAddresses([]string{updated.IPAddress}, prevAddrs...)
+	updated.Addresses = unionAddresses(updated.Addresses, dev.IPAddress)
+	changed = changed || !slices.Equal(prevAddrs, updated.Addresses)
 	st.dev = updated
 	if targetMoved {
 		// Nothing has verified this address yet, so the row must stop claiming
@@ -603,6 +719,13 @@ func (s *lanStream) handleProbeResult(res lanProbeResult) {
 	st.probeConfirmed = true
 	st.offline = false
 	st.dev = applyProbe(st.dev, res.dev)
+	if s.excluded(st.dev) {
+		// The probe is what revealed it -- an agent that reports a VM board
+		// but advertises no devicetype record -- so the row shown on the
+		// sighting is taken back here.
+		s.retract(res.key)
+		return
+	}
 	s.persist(st, time.Now())
 
 	kind := LANUpdated
@@ -755,7 +878,12 @@ func (s *lanStream) flush() {
 func applySighting(stored, sighted models.LANDevice) models.LANDevice {
 	dev := sighted
 	dev.AgentVersion = stored.AgentVersion
-	dev.DeviceType = stored.DeviceType
+	// The advertisement's device type fills in only what nothing better has
+	// supplied: a probe-verified (or earlier-cached) type is never downgraded
+	// by a later announcement.
+	if stored.DeviceType != "" {
+		dev.DeviceType = stored.DeviceType
+	}
 	dev.OS = stored.OS
 	dev.OSVersion = stored.OSVersion
 	dev.CPUArchitecture = stored.CPUArchitecture
@@ -854,6 +982,29 @@ func stripZone(addr string) string {
 	return addr
 }
 
+// unionAddresses returns existing with each addr appended if not already
+// present, dropping blanks and preserving first-seen order. It accumulates every
+// interface a device answers on across sightings so the dial ladder can try them
+// all; callers put the primary address first.
+func unionAddresses(existing []string, addrs ...string) []string {
+	out := make([]string, 0, len(existing)+len(addrs))
+	seen := make(map[string]bool, len(existing)+len(addrs))
+	add := func(a string) {
+		if a == "" || seen[a] {
+			return
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	for _, a := range existing {
+		add(a)
+	}
+	for _, a := range addrs {
+		add(a)
+	}
+	return out
+}
+
 // mdnsFieldsChanged reports whether anything a live sighting carries (address
 // or TXT-derived metadata) differs between two views of the same device.
 func mdnsFieldsChanged(old, updated models.LANDevice) bool {
@@ -863,6 +1014,7 @@ func mdnsFieldsChanged(old, updated models.LANDevice) bool {
 		old.AssetID != updated.AssetID ||
 		old.OrgID != updated.OrgID ||
 		old.MeshName != updated.MeshName ||
+		old.DeviceType != updated.DeviceType ||
 		old.NetworkInterface != updated.NetworkInterface
 }
 

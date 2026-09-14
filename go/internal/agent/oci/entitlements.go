@@ -1,12 +1,14 @@
 package oci
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/user"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
+	"github.com/wendylabsinc/wendy/go/internal/agent/gpudiscovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
@@ -54,6 +57,10 @@ type ApplyOptions struct {
 	// SystemAPISocketDir is the app-specific host directory prepared by
 	// AppSystemAPISocketManager. It contains only the narrow System API socket.
 	SystemAPISocketDir string
+	// HostResolvConfPath is a wendy-managed resolv.conf that points at a live
+	// resolver in the host network namespace. When empty, host networking keeps
+	// the compatibility fallback of bind-mounting the host resolver file.
+	HostResolvConfPath string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -72,8 +79,10 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 		switch ent.Type {
 		case appconfig.EntitlementGPU:
 			applyGPU(spec)
+		case appconfig.EntitlementNPU:
+			applyNPU(spec)
 		case appconfig.EntitlementNetwork:
-			applyNetwork(spec, ent)
+			applyNetwork(spec, ent, opts.HostResolvConfPath)
 		case appconfig.EntitlementAudio:
 			applyAudio(spec)
 			if !didSetDeviceCapabilities {
@@ -185,6 +194,14 @@ func applyGPU(spec *Spec) {
 	// this is a clean either/or.
 	if _, err := os.Stat(kfdDevicePath); err == nil {
 		applyAMDGPU(spec)
+		return
+	}
+	// A Qualcomm SoC (Dragonwing) has neither /dev/kfd nor /dev/nvidia*, so it
+	// would otherwise fall into the NVIDIA static fallback below and receive
+	// bogus major-195 nodes while the render node its GPU userspace needs is
+	// never granted. Branch on the live DRM driver instead.
+	if qualcommGPUPresent() {
+		applyQualcommGPU(spec)
 		return
 	}
 
@@ -303,6 +320,33 @@ func applyAMDGPU(spec *Spec) {
 
 	// The GPU is the DRM render node. Grant renderD* exactly (mknod'd into the
 	// container from the live major:minor), the same mechanism as the Jetson iGPU.
+	addExactDeviceNodes(spec, discoverRenderDeviceNodes())
+}
+
+// qualcommGPUPresent reports whether the host GPU is a Qualcomm Adreno behind
+// the msm DRM driver (the Dragonwing IQ-8275 and its kin), using the same
+// discovery device metadata reports from. Behind a var so tests can pin the
+// answer without a Qualcomm sysfs tree.
+var qualcommGPUPresent = func() bool {
+	return slices.ContainsFunc(gpudiscovery.Host(), func(d gpudiscovery.Device) bool {
+		return d.Vendor == "qualcomm"
+	})
+}
+
+// applyQualcommGPU wires up Adreno GPU access on a Qualcomm SoC. The GPU
+// userspace (mesa freedreno/turnip, OpenCL, Vulkan) opens the DRM render node;
+// there is no vendor control node like /dev/nvidiactl or /dev/kfd. card* stays
+// behind the display entitlement, matching the AMD and Jetson paths. The
+// Hexagon NPU is a separate accelerator reached over FastRPC and belongs to
+// the npu entitlement, not this one.
+func applyQualcommGPU(spec *Spec) {
+	// renderD* is group-owned by "render" (and "video" on some images). Add
+	// both; the exact device node and cgroup rule below remain the real access
+	// boundary, so group membership alone reaches nothing.
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, videoGroupGID)
+	if gid, ok := lookupRenderGID(); ok {
+		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+	}
 	addExactDeviceNodes(spec, discoverRenderDeviceNodes())
 }
 
@@ -480,6 +524,75 @@ func applyVCIO(spec *Spec) {
 	allowMajorsFromGlob(spec, vcioDevicePath)
 }
 
+// Which FastRPC domains exist varies by board, so the nodes are discovered rather
+// than listed. Behind vars so tests can repoint them.
+var (
+	fastrpcDeviceGlob = "/dev/fastrpc-*"
+	dmaHeapDevicePath = "/dev/dma_heap/system"
+	dtModelPath       = "/proc/device-tree/model"
+)
+
+const (
+	// The -secure nodes are the signed-PD path and are root-only; never granted.
+	fastrpcSecureSuffix = "-secure"
+)
+
+// applyNPU grants the FastRPC transport to the on-SoC DSPs.
+//
+// Bind-mounted rather than mknod'd: access is authorised by the nodes' group ownership
+// and, for the dma-buf heap, a POSIX ACL, neither of which a node re-created inside the
+// container would carry. A host with no FastRPC nodes is left untouched.
+func applyNPU(spec *Spec) {
+	matches, err := filepath.Glob(fastrpcDeviceGlob)
+	if err != nil {
+		return
+	}
+
+	// Scoped to each node's own major:minor, never the whole major: FastRPC shares
+	// the misc major with every other misc device on the host, including the
+	// signed-PD nodes skipped here.
+	var granted bool
+	for _, node := range matches {
+		if strings.HasSuffix(node, fastrpcSecureSuffix) {
+			continue
+		}
+		if _, _, err := addScopedCharDevice(spec, node); err != nil {
+			continue
+		}
+		granted = true
+	}
+	if !granted {
+		return
+	}
+
+	if _, _, err := addScopedCharDevice(spec, dmaHeapDevicePath); err == nil {
+		if gid, ok := lookupDmaheapGID(); ok {
+			spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+		}
+	}
+
+	if gid, ok := lookupFastrpcGID(); ok {
+		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+	}
+
+	// FastRPC identifies the board from the device-tree model. Passing it in lets the
+	// container stay behind the default /sys/firmware mask, which also covers the DMI
+	// and ACPI trees.
+	if model := hostDeviceTreeModel(); model != "" {
+		spec.Process.Env = append(spec.Process.Env, "MACHINE_NAME="+model)
+	}
+}
+
+// hostDeviceTreeModel reads the board name the FastRPC userspace matches against its
+// SoC config. Empty when the host has no device tree.
+func hostDeviceTreeModel() string {
+	data, err := os.ReadFile(dtModelPath)
+	if err != nil {
+		return ""
+	}
+	return string(bytes.TrimRight(data, "\x00\n"))
+}
+
 // applyDisplay grants an app the ability to present to the local display as a
 // Wayland client: GPU render-node access via /dev/dri plus, when present, the
 // compositor's Wayland socket. It is the ONLY entitlement that exposes
@@ -590,7 +703,7 @@ func applyAdmin(spec *Spec) {
 // intentionally unchanged here — only a WARN log at container create (in the
 // containerd package, see hasImplicitHostNetworkMode) flags it. This function
 // only gains the new "bridge" mode itself.
-func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
+func applyNetwork(spec *Spec, ent appconfig.Entitlement, hostResolvConfPath string) {
 	mode := ent.Mode
 	if mode == "" {
 		mode = "host"
@@ -634,13 +747,16 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
 		}
 
-		// Mount a resolv.conf from the host so DNS works inside the container.
-		// The container has its own mount namespace, so its rootfs resolv.conf
-		// may be empty. Prefer systemd-resolved's upstream file, since on
-		// systemd hosts /etc/resolv.conf often points to the 127.0.0.53 stub
-		// listener; using the upstream file avoids depending on that stub in
-		// environments where the container has its own network namespace. When
-		// systemd-resolved is not in use, fall back to the host's /etc/resolv.conf.
+		// Host-network containers share the host's loopback interface. When a
+		// live systemd-resolved stub was detected, HostResolvConfPath points them
+		// at 127.0.0.53:53 so DHCP/VPN/upstream changes are followed by the daemon
+		// instead of being frozen into a bind-mounted resolver-file inode.
+		//
+		// systemd-resolved is optional on adopted Linux hosts (and on older
+		// WendyOS images), so retain the existing host-file fallback when the
+		// caller could not prepare that managed file. The fallback is only a
+		// compatibility path: atomic replacement of its source is not visible to
+		// a running container, which is why the containerd layer warns when used.
 		const resolvedConf = "/run/systemd/resolve/resolv.conf"
 		alreadyMounted := false
 		for _, m := range spec.Mounts {
@@ -650,11 +766,13 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			}
 		}
 		if !alreadyMounted {
-			source := ""
-			if _, err := os.Stat(resolvedConf); err == nil {
-				source = resolvedConf
-			} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
-				source = "/etc/resolv.conf"
+			source := hostResolvConfPath
+			if source == "" {
+				if _, err := os.Stat(resolvedConf); err == nil {
+					source = resolvedConf
+				} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+					source = "/etc/resolv.conf"
+				}
 			}
 			if source != "" {
 				spec.Mounts = append(spec.Mounts, Mount{
@@ -834,6 +952,33 @@ var pipewireUserUID = func() (uint32, bool) {
 // the host has no render group (then only the video GID is added).
 var lookupRenderGID = func() (uint32, bool) {
 	g, err := user.LookupGroup("render")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
+// lookupFastrpcGID and lookupDmaheapGID resolve the host groups that own the FastRPC
+// nodes and the dma-buf heap. Both GIDs are image-specific, so they are resolved at
+// apply time. Behind vars so tests do not depend on the developer machine's groups.
+var lookupFastrpcGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("fastrpc")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
+var lookupDmaheapGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("dmaheap")
 	if err != nil {
 		return 0, false
 	}

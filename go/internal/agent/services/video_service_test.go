@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -16,6 +17,16 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestV4L2FormatMatches64BitUAPI(t *testing.T) {
+	var format v4l2Format
+	if got := unsafe.Sizeof(format); got != 208 {
+		t.Fatalf("sizeof(v4l2Format) = %d, want 208", got)
+	}
+	if got := unsafe.Offsetof(format.Width); got != 8 {
+		t.Fatalf("offsetof(v4l2Format.Width) = %d, want 8", got)
+	}
+}
 
 // mustBuildGStreamerArgs calls buildGStreamerArgs for the USB/v4l2src path and
 // fails the test if it returns an error. CSI-specific behaviour is covered by
@@ -47,6 +58,9 @@ func newTestVideoService(glob func() ([]string, error), readName func(string) (s
 	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
 	svc.isJetson = func() bool { return false }
 	svc.findCameraSource = func(context.Context, string) (uint64, bool) { return 0, false }
+	// Keep enumeration off the host's real /dev/v4l; tests that care about
+	// stable identity override this.
+	svc.readStableNames = func() map[string]stableNames { return nil }
 	return svc
 }
 
@@ -356,6 +370,19 @@ func TestBuildGStreamerArgs_V4L2PinsH264Level(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "level=(string)4") {
 		t.Errorf("v4l2h264enc output caps must pin an H.264 level: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_V4L2LetsTheDriverPickItsInputFormat(t *testing.T) {
+	// v4l2h264enc wraps whatever M2M driver the board has, and the accepted input
+	// format is the driver's: bcm2835-codec takes I420, qcom-iris NV12 only.
+	// Pinning one fails to link on boards wanting the other.
+	req := &agentpb.StreamVideoRequest{}
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	const want = "videoconvert ! video/x-raw,format={I420,NV12} ! v4l2h264enc"
+	if !strings.Contains(joined, want) {
+		t.Errorf("v4l2h264enc input caps must offer both formats (%q): %v", want, args)
 	}
 }
 
@@ -676,7 +703,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(context.Background(), zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{})
+	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{}, noRawSink{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -693,7 +720,7 @@ func newTestHub(t *testing.T) (*deviceHub, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &deviceHub{
-		subs:   make(map[int]chan *videoFrame),
+		subs:   make(map[int]*hubSubscriber),
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -787,7 +814,7 @@ func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
 	h.mu.Lock()
 	h.err = wantErr
 	for _, c := range h.subs {
-		close(c)
+		close(c.ch)
 	}
 	h.mu.Unlock()
 

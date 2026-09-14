@@ -142,6 +142,12 @@ type PickerItem struct {
 	// Items with the same DedupKey (case-insensitive) are merged via MergeItem.
 	DedupKey string
 
+	// Supersedes, when set, is the DedupKey of a row this item replaces. The
+	// existing row is dropped before this one is added, so a provisional
+	// identity can be retired by the real one without the two colliding on a
+	// shared key.
+	Supersedes string
+
 	// DefaultKeys are optional alternate identities compared against
 	// PickerModel.DefaultKey when rendering the default marker.
 	DefaultKeys []string
@@ -179,6 +185,14 @@ type PickerSetMsg struct {
 	Items []PickerItem
 }
 
+// PickerRemoveMsg drops the item whose DedupKey (or Name, when it has none)
+// matches Key, case-insensitively like every other key comparison here. It is
+// how a discovery source takes a row back -- a LAN sighting that turned out to
+// be a local VM. An unknown key is a no-op.
+type PickerRemoveMsg struct {
+	Key string
+}
+
 // PickerModel is a Bubble Tea model that presents a live-updating list of
 // items and lets the user select one with arrow keys + Enter.
 type PickerModel struct {
@@ -206,6 +220,23 @@ type PickerModel struct {
 	// If replacement is nil and isError is true, the row is kept unchanged.
 	// If nil, 'r' is ignored.
 	OnRemoveItem func(item PickerItem) (string, bool, *PickerItem)
+
+	// OnCreateItem is called when the user presses 'c'. Returning quit=true
+	// closes the picker, which an action needing the terminal to itself must
+	// do: creating a VM downloads an image behind its own progress program,
+	// and two Bubble Tea programs cannot share a terminal.
+	// If nil, 'c' is ignored.
+	OnCreateItem func() (flash string, quit bool)
+
+	// OnStopItem runs asynchronously when the user presses 's'. It must not
+	// mutate the model, and should honor its owner's cancellation context.
+	// Returns (flash message, isError). If nil, 's' is ignored.
+	OnStopItem   func(item PickerItem) (string, bool)
+	stoppingName string
+
+	// RemoveHint is the wording for 'r' in the header, for a picker whose rows
+	// are not cloud credentials. Empty keeps the default.
+	RemoveHint string
 
 	// OnCopyItem is called when the user presses Enter. The callback should
 	// perform the copy operation (e.g. write to clipboard) and return a flash
@@ -314,8 +345,18 @@ func (m PickerModel) anyProbePending() bool {
 	return false
 }
 
+type pickerStopResultMsg struct {
+	flash   string
+	isError bool
+}
+
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case pickerStopResultMsg:
+		m.stoppingName = ""
+		m.flashMessage, m.flashIsError = msg.flash, msg.isError
+		m.refreshTable()
+		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -369,6 +410,30 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashMessage = m.OnUnsetDefault()
 				m.flashIsError = false
 				m.refreshTable()
+			}
+			return m, nil
+		case key == "c" && !m.Filterable:
+			if m.OnCreateItem != nil {
+				flash, quit := m.OnCreateItem()
+				m.flashMessage = flash
+				m.flashIsError = false
+				if quit {
+					return m, tea.Quit
+				}
+			}
+			return m, nil
+		case key == "s" && !m.Filterable:
+			if m.OnStopItem != nil && m.stoppingName == "" {
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					item, stop := visible[idx], m.OnStopItem
+					m.stoppingName = item.Name
+					m.flashMessage = ""
+					return m, func() tea.Msg {
+						flash, isError := stop(item)
+						return pickerStopResultMsg{flash: flash, isError: isError}
+					}
+				}
 			}
 			return m, nil
 		case key == "r" && !m.Filterable:
@@ -477,8 +542,21 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PickerAddMsg:
 		changed := false
+		// Captured before any supersede removes a row, since currentCursorKey
+		// reads the pre-rebuild table against the mutated item slice.
+		cursorKey := m.currentCursorKey()
 		for _, item := range msg.Items {
 			key := strings.ToLower(pickerItemKey(item))
+			if superseded := strings.ToLower(item.Supersedes); superseded != "" && superseded != key {
+				if m.removeItemByKey(superseded) {
+					changed = true
+					if cursorKey == superseded {
+						// Keep the highlight on the replacement rather than
+						// letting it slide onto a neighbour mid-selection.
+						cursorKey = key
+					}
+				}
+			}
 			if idx, ok := m.seenIdx[key]; ok {
 				if m.MergeItem != nil {
 					m.MergeItem(&m.items[idx], item)
@@ -491,11 +569,17 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			changed = true
 		}
 		if changed {
-			m.refreshTable()
+			m.refreshTableWithCursorKey(cursorKey)
 		}
 
 	case PickerDoneMsg:
 		m.scanning = false
+
+	case PickerRemoveMsg:
+		cursorKey := m.currentCursorKey()
+		if m.removeItemByKey(strings.ToLower(msg.Key)) {
+			m.refreshTableWithCursorKey(cursorKey)
+		}
 
 	case PickerSetMsg:
 		cursorKey := m.currentCursorKey()
@@ -544,7 +628,8 @@ func (m PickerModel) View() string {
 	if m.Filterable {
 		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", " + enterAction + ", esc quit)"
 	}
-	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil {
+	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil ||
+		m.OnCreateItem != nil || m.OnStopItem != nil {
 		extras := ""
 		if m.OnSetDefault != nil {
 			extras += ", d set default"
@@ -552,8 +637,18 @@ func (m PickerModel) View() string {
 		if m.OnUnsetDefault != nil {
 			extras += ", x clear default"
 		}
+		if m.OnCreateItem != nil {
+			extras += ", c create"
+		}
+		if m.OnStopItem != nil {
+			extras += ", s stop"
+		}
 		if m.OnRemoveItem != nil {
-			extras += ", r remove creds"
+			label := m.RemoveHint
+			if label == "" {
+				label = "remove creds"
+			}
+			extras += ", r " + label
 		}
 		hint = " (↑/↓ navigate" + scrollHint + ", " + enterAction + extras + ", q quit)"
 	}
@@ -582,6 +677,9 @@ func (m PickerModel) View() string {
 
 	sb.WriteString(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()) + "\n")
 
+	if m.stoppingName != "" {
+		sb.WriteString(m.viewLine("  Stopping "+m.stoppingName+"… (waiting for guest shutdown)") + "\n")
+	}
 	if m.flashMessage != "" {
 		style := lipgloss.NewStyle().Foreground(ColorPrimary)
 		if m.flashIsError {
@@ -932,14 +1030,7 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 		return ki < kj
 	})
 
-	// Rebuild seenIdx to reflect the new positions after sorting.
-	// Keys are always stored lowercase to match the lookup in Update.
-	for k := range m.seenIdx {
-		delete(m.seenIdx, k)
-	}
-	for i, item := range m.items {
-		m.seenIdx[strings.ToLower(pickerItemKey(item))] = i
-	}
+	m.rebuildSeenIdx()
 
 	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
@@ -989,6 +1080,30 @@ func pickerItemKey(item PickerItem) string {
 		return item.DedupKey
 	}
 	return item.Name
+}
+
+// rebuildSeenIdx re-derives the key index from the current item positions.
+// Keys are always stored lowercase to match the lookup in Update.
+func (m *PickerModel) rebuildSeenIdx() {
+	for k := range m.seenIdx {
+		delete(m.seenIdx, k)
+	}
+	for i, item := range m.items {
+		m.seenIdx[strings.ToLower(pickerItemKey(item))] = i
+	}
+}
+
+// removeItemByKey drops the row with the given lowercase dedup key, reporting
+// whether one was found.
+func (m *PickerModel) removeItemByKey(key string) bool {
+	for i, item := range m.items {
+		if strings.ToLower(pickerItemKey(item)) == key {
+			m.items = append(m.items[:i], m.items[i+1:]...)
+			m.rebuildSeenIdx()
+			return true
+		}
+	}
+	return false
 }
 
 // withSectionHeaders interleaves non-selectable section-header rows ahead of

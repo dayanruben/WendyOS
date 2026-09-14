@@ -27,6 +27,18 @@ The printed URL uses a routable IP address reported by the device instead of the
 
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
+## ESP32 — native ESP-IDF projects
+
+Regular ESP-IDF projects are the recommended app model for ESP32 targets. Wendy recognizes a project by its standard top-level `CMakeLists.txt`/`project.cmake` include or an `sdkconfig` file. Add a `wendy.json` with `"platform": "wendy-lite"`, then run:
+
+```bash
+wendy run --device <name>
+```
+
+The connected device must run a firmware variant with native app support. Wendy reads its chip target, ensures ESP-IDF 5.5.4 is available through `eim`, runs `idf.py set-target` when needed, builds the project, uploads the native application firmware, reboots, reconnects, and streams its console output. ESP-IDF projects are detected automatically; `--build-type` does not need to be set.
+
+See [ESP32 installation](/docs/installation/wendy-lite-esp32) for setup and a minimal project layout.
+
 ## Headless Mac — supported project types
 
 Headless Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
@@ -78,7 +90,8 @@ devices first. Select one explicitly with `--device` (as above), or set
 | `WENDY_PLATFORM` | `nvidia-jetson` \| `generic` | Platform tier derived from the device type |
 | `WENDY_DEBUG` | `true` \| `false` | Set when `--debug` is passed |
 | `WENDY_DEVICE_TYPE` | e.g. `jetson-agx-orin` | Raw device type; absent when unknown |
-| `WENDY_HAS_GPU` | `true` \| `false` | Absent on older agents |
+| `WENDY_HAS_GPU` | `true` \| `false` (hardware presence) | Absent on older agents |
+| `WENDY_HAS_CUDA` | `true` \| `false` (host CUDA support) | Falls back only to an explicit NVIDIA vendor on older agents |
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
 | `WENDY_JETPACK_MAJOR` | e.g. `6`, `7` | Jetson only; JetPack major for per-generation base-image selection |
@@ -162,7 +175,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--env <KEY=VALUE>` | Set an environment variable in the container. Repeatable. Overrides a `wendy.json` `env` entry of the same key. See [Environment variables](#environment-variables). |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
-| `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
+| `--watch` | Watch the project directory and redeploy on every change, streaming the app's logs between deploys. Runs non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
 
@@ -174,100 +187,55 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 wendy run --build-host spark-office
 ```
 
-The build runs on that device, and it pushes the finished image straight into
-the target device's registry over the mesh — LAN-direct when possible, via the
-cloud broker otherwise. The image never travels through your machine.
+The build runs on that device, and it delivers the finished image to the target
+device over the mesh — LAN-direct when possible, via the cloud broker otherwise.
+It addresses the provisioned target by asset ID without resolving a hostname, so
+delivery does not depend on the build host resolving `device-<id>.cloud.wendy.dev`.
+The image never travels through your machine.
 
-This is worth reaching for when your laptop is the wrong machine for the job:
-CUDA-heavy builds that want a real GPU, or an arm64 target that would otherwise
-be built under QEMU emulation on an x86 host.
+Delivery works the way `wendy run` deploys from your laptop: the build host asks
+the device which layers and chunks it already holds and sends only the missing
+bytes into its content store, so a rebuild that changed one layer transfers a
+few chunks rather than the image. A link that drops mid-transfer is resumed —
+chunks the device already staged are never re-sent — and a deploy you cancel
+and re-run picks up where it stopped. A device whose agent predates chunked
+delivery receives a registry push instead, and the build log says so.
+`--chunking` governs this leg too; see [Deploy path: `--chunking`](#deploy-path---chunking).
 
-**Your machine needs no container builder at all.** On the `--build-host` path
-the CLI never starts Docker, Apple Container, or a local BuildKit daemon — a Mac
-with no Docker Desktop installed can still `wendy run`. Because of that,
-`--builder` (which selects a *local* builder) cannot be combined with
-`--build-host`.
+Use a remote host for builds that need its GPU or CPU architecture, such as an
+arm64 build that would otherwise use QEMU emulation on an x86 development machine.
+
+Your machine does not need a container builder. With `--build-host`, the CLI
+does not start Docker, Apple Container, or a local BuildKit daemon. The
+`--builder` flag selects a local builder and cannot be combined with `--build-host`.
 
 To set a default so you do not pass the flag every time, set `defaultBuildHost`
 in the CLI config. The flag always wins over the default. This is a
 per-developer setting rather than a project one, because the right build host
 depends on which network you are on.
 
+For a complete example, follow [Build Once, Deploy to Several Devices](/docs/guides/fleet-deployment).
+
 ### Requirements
 
-- **The build host must opt in:**
+- A Linux build host with the builder role enabled, BuildKit available, and
+  support for the target platform.
+- A user certificate in the build host's organisation.
+- A provisioned target device reachable from the build host over the mesh.
 
-  ```bash
-  wendy device build-host enable --device spark-office
-  wendy device build-host status --device spark-office
-  ```
+See [`wendy device build-host`](device/build-host.md) for setup, access rules,
+cache-space requirements, and how shared builds use the host.
 
-  A device does not become a build farm merely by being reachable. Enabling takes
-  effect immediately, with no agent restart. The RPC requires a *user*
-  certificate, so one device cannot opt another in on your behalf. See
-  [`wendy device build-host`](device/build-host.md).
-
-- **The build host must run BuildKit**, listening on
-  `/run/buildkit/buildkitd.sock`. WendyOS devices have it. An adopted Linux host —
-  a DGX Spark running Ubuntu, say — does not, and Ubuntu ships no `buildkit`
-  package, so install the release tarball and symlink `buildctl` into `/usr/bin`
-  (the agent runs it by name, and systemd units get a minimal PATH).
-  `build-host status` reports the version it finds.
-
-  A Mac cannot be a build host: the Mac agent runs Linux containers through Apple
-  Container, which has no BuildKit underneath. A Mac remains a perfectly good
-  *target*, and a perfectly good machine to run `wendy run` from.
-
-- **The target device must be provisioned**, so the build host can address it by
-  asset id. Delivery goes through the mesh dialer — LAN first, cloud broker
-  otherwise — and never resolves a hostname, so a build host that cannot resolve
-  `device-<id>.cloud.wendy.dev` still delivers.
-
-If any of these does not hold, `wendy run` fails immediately and names the host.
-It never quietly falls back to building locally — a twenty-minute local build
-you believed was running on the Spark is worse than an error.
-
-### What enabling a build host means
-
-Worth being deliberate about, because a build host is a shared machine running
-other people's instructions:
-
-- **Anyone in your organisation can build on it.** A remote build executes the
-  Dockerfile it was handed, which is the feature — but it means the builder role
-  grants code execution on that device to every *person* in your organisation.
-  Enable it on machines you would already trust that way, not on a robot in the
-  field.
-
-  Three things sit outside that grant. Cross-organisation callers are rejected by
-  the agent's mTLS organisation check. **Devices** are rejected too — submitting a
-  build requires a user certificate, so one compromised device cannot conscript
-  its peers into building for it. And the unauthenticated port the agent serves
-  before provisioning does not accept builds at all.
-- **Build contexts land on its disk.** Sources are reassembled under
-  `/var/lib/wendy/buildctx/<app>` (mode `0700`, root-owned) and are kept between
-  builds so BuildKit's local-source cache stays warm. They are cleared and
-  rewritten at the start of each build of that app, but they are not deleted
-  afterwards.
-- **Builds of the same app are serialised** on a given host; different apps build
-  concurrently. Two people building one app id would otherwise share a context
-  directory, and the second build's extraction would replace sources the first
-  was still compiling.
-- **Delivery is scoped to one build.** While a build runs, the agent exposes a
-  loopback endpoint that BuildKit pushes through, and that endpoint holds the
-  credentials for reaching the target device. It requires a password minted for
-  that build alone, so other processes on the build host cannot use it to push
-  something of their own to your device. The password is passed to BuildKit in a
-  `0600` file rather than on a command line, where any local user could read it
-  out of `/proc`.
+If a requirement is missing, `wendy run` fails and names the host. It does not
+fall back to building locally.
 
 ### Errors
 
 A failed remote build reports which half failed, because the fixes differ:
 
-- *build on `<host>` failed* — the problem is your Dockerfile or Stagefile.
-- *image built on `<host>` but could not be delivered* — the build was fine; look
-  at mesh reachability between the two devices, or registry credentials on the
-  build host.
+- *build on `<host>` failed*: check your Dockerfile or Stagefile.
+- *image built on `<host>` but could not be delivered*: check mesh reachability
+  between the two devices and registry credentials on the build host.
 
 ## Watch mode
 
@@ -279,26 +247,57 @@ wendy run --watch
 wendy run --watch --debounce 800 --verbose
 ```
 
-In watch mode the deployment is always **detached** and **non-interactive**
-(equivalent to `--detach --yes`), so the watch loop never blocks on a prompt. A
-rapid sequence of saves is coalesced by the debounce window (default 400 ms) so a
-single redeploy runs after edits settle. Build output is hidden unless a build
-fails; pass `--verbose` to always show it, or `--debounce <ms>` to tune the quiet
-period.
+Watch mode runs **attached** and **non-interactive** (equivalent to `--yes`), so
+the watch loop never blocks on a prompt. A rapid sequence of saves is coalesced
+by the debounce window (default 400 ms) so a single redeploy runs after edits
+settle. Build output is hidden unless a build fails; pass `--verbose` to always
+show it, or `--debounce <ms>` to tune the quiet period.
+
+Logs remain visible for the whole watch session and continue across redeploys.
+For multi-service apps, this includes output from unchanged services that remain
+running. A new session starts with new output rather than replaying recent lines
+from before watch began. With an older agent, a small number of recent lines may
+appear once at startup. Each cycle reports itself after the changed containers
+have started, readiness has completed, and any first-run actions have launched:
+
+```text
+↻ change detected — redeploying...
+✓ redeployed in 1.98s
+listening on :3000
+```
+
+If you save again during a redeploy, Wendy cancels that redeploy and moves on to
+the latest change once cancellation finishes. Deploys do not overlap.
+
+**`openURL` and `cli` postStart actions run once per watch session for each
+container, after its first successful readiness check.** Later saves do not
+reopen the browser or rerun the local command. If readiness is canceled or
+fails, a later successful redeploy can still run the action. Restart watch to
+run it again. In a multi-service project, each service and the top-level action
+run once independently. `postStart.agent` runs on the device after every
+corresponding container start.
+
+Ctrl-C stops watching and leaves the app running on the device; use
+`wendy device apps stop` to stop it. Add `--detach` to keep watching and
+redeploying without streaming logs or running `openURL` and `cli` actions.
+
+Attached watch requires a Wendy agent target. For provider targets, use
+`--watch --detach`.
 
 For multi-service `wendy.json` and Compose projects deployed to WendyOS, watch
-mode fingerprints each service's build inputs and effective runtime configuration
-independently. After the initial deploy, services that are unchanged and still
-running are left untouched: they are not rebuilt, recreated, or restarted.
-Changed services are redeployed in dependency order. A missing, stopped, or
-otherwise non-running service is not preserved and goes through the normal
-deploy path.
+redeploys only services whose build inputs or runtime configuration changed.
+Unchanged services that are still running are not rebuilt, recreated, or
+restarted. Changed services are redeployed in dependency order. Missing or
+stopped services are deployed again even when their files have not changed.
 When the primary of a `shared-network` or `shared-ipc` group changes, the group
 is restarted together because its other containers share that primary's Linux
 namespaces.
 
-> **Note:** `wendy watch` is kept as a hidden alias for `wendy run --watch` for
-> backward compatibility, but `wendy run --watch` is the supported entry point.
+Watch mode does not forward stdin to a container. Use a plain `wendy run` for
+an app that reads stdin.
+
+> **Note:** `wendy watch` is a hidden alias for `wendy run --watch`. Prefer
+> `wendy run --watch`; both forms accept `--detach`.
 
 ## Deploy path: `--chunking`
 
@@ -309,6 +308,14 @@ namespaces.
 | `auto` (default) | Try chunk-diff; fall back to a registry push on failure. |
 | `force` | Use chunk-diff only. If chunk-diff fails the error is returned and no registry-push fallback is attempted. Cancellation still exits cleanly. |
 | `off` | Skip chunk-diff entirely; go straight to the registry push. |
+
+> **Note:** With `--build-host`, the same modes govern the build host's delivery
+> to the device. `auto` delivers by chunks and falls back to a registry push only
+> for a device whose agent predates chunked delivery, saying so in the build
+> log. `force` turns that fallback into a delivery failure, and is refused up
+> front against a build host too old to honour it. `off` takes the registry
+> route for every device, as build hosts delivered before chunked delivery
+> existed.
 
 > **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
 
@@ -358,14 +365,22 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 - The first deploy after upgrading always does a full build and push.
 - A legacy record (or any record without verifiable layer IDs) is treated as unverifiable rather than skipped, so you see a full rebuild with unchanged inputs instead of a silent skip onto possibly-stale content.
 
-> **Note:** Push-skip is currently inactive for multi-service deployments. Registry-push content cannot be verified via layer diff IDs, so every multi-service run rebuilds and re-pushes each service; a registry-digest pre-check to restore the optimisation is planned. Setting `WENDY_PUSH_SKIP=0` disables the multi-service push-skip planner (it does not affect the single-service fast path above). Because that planner is inactive today, the override has no observable effect and is reserved for when multi-service push-skip returns.
+> **Note:** Push-skip is currently inactive for multi-service deployments. Registry-push content cannot be verified via layer diff IDs, so every multi-service run rebuilds and re-pushes each service; a registry-digest pre-check to restore the optimisation is planned.
 
 ## postStart hooks
 
-When a `postStart` hook is configured in `wendy.json`, the host-side actions
-(`openURL` and `cli`) fire after the app reports readiness, on either deploy
-path (registry push **or** the default chunk-diff / CBC path). If the readiness
-probe fails, both are skipped and a warning is printed instead.
+In an attached run, `wendy run` runs `openURL` and `cli` postStart actions after
+the app reports readiness. This applies to both registry-push and chunk-diff
+deploys. If readiness fails, Wendy skips these actions and prints a warning.
+
+`--detach` returns after the selected containers start and does not run
+readiness checks, `openURL`, or `cli`; `postStart.agent` still runs on the
+device. See [Readiness and lifecycle hooks](../../../apps/wendy-services.md#readiness-and-lifecycle-hooks)
+for multi-service details.
+`--deploy` creates the app without starting it, so no postStart action runs.
+
+Under attached `--watch` the host-side actions run after the first successful
+readiness check only. `--watch --detach` skips them; see [Watch mode](#watch-mode).
 
 > **Note:** When the CLI connects to the device at an IPv6 address (for example, one discovered via mDNS), the hook targets the device's best self-reported IP address instead — the same address shown in the `App reachable at` line — for both `openURL` and `cli`. This avoids pointing at a rotating RFC 4941 temporary privacy address that may not be reachable later. If the device cannot be queried, the dialed address is used (and bracketed for URL safety in `openURL`).
 
@@ -397,20 +412,20 @@ If the browser cannot be opened, a warning is printed and `wendy run` continues 
 
 ### Hook process lifetime
 
-On **Windows**, the entire process tree spawned by a `cli` hook — including grandchildren started via `start /B` — is terminated when `wendy run` exits or is interrupted. This is implemented using a Windows Job Object with `KILL_ON_JOB_CLOSE`; closing the job handle causes the kernel to terminate every process assigned to it. If Job Object creation is unavailable, `wendy run` falls back to `taskkill /T /F`, which terminates the direct child and its descendants as long as the parent process is still alive.
+On **Windows**, the entire process tree spawned by a `cli` hook — including grandchildren started via `start /B` — is terminated when `wendy run` exits or is interrupted. If the primary mechanism is unavailable, `wendy run` falls back to `taskkill /T /F`, which terminates the direct child and its descendants as long as the parent process is still alive.
 
 On **Unix**, the default shell process-group cleanup is sufficient; no additional termination logic is applied.
 
 ### Attached-mode hook lifetime
 
-In the default attached mode (no `--detach`), the `cli` hook process is tied to
-the lifetime of the log stream. When the container stream closes — either
-because the container exits or because the user presses **Ctrl-C** — the hook's
-context is cancelled and the CLI waits for the child process to exit before
-returning. This prevents orphaned hook processes from outliving `wendy run`.
+In a normal attached run, the `cli` hook process is tied to the run. When the
+container exits or you press **Ctrl-C**, Wendy cancels the hook and waits for it
+to exit before returning. In watch mode, the hook is tied to the watch session
+and is canceled when you stop watching.
 
-Detached mode (`--detach`), deploy-only mode (`--deploy`), and `--watch` do not
-fire the host-side hook at all, so there is no child process to reap.
+Detached mode (`--detach`), deploy-only mode (`--deploy`), and
+`--watch --detach` do not fire the host-side hook at all, so there is no child
+process to reap. Attached watch hooks are owned and reaped by the watch session.
 
 ## Container image signature
 
@@ -418,4 +433,67 @@ fire the host-side hook at all, so there is no child process to reap.
 
 Set `WENDY_IMAGE_SIGNATURE_PATH` to the path of the detached signature file; when the variable is unset or points to an empty file, no signature is sent. Verification is currently dormant on the agent side (the per-org publisher key is not yet wired in), so omitting the signature does not block container creation today. Once the publisher key is provisioned, sending an unsigned or tampered image causes the agent to refuse the run.
 
-> **Note:** `CreateContainer` and `CreateContainerWithProgress` do not yet pass through the image-signature gate — only the `RunContainer` path (used by `wendy run`) verifies it.
+CUDA-selecting Dockerfiles must use `WENDY_HAS_CUDA`. `WENDY_HAS_GPU`
+reports hardware presence, including Broadcom and other GPUs without CUDA.
+Device info exposes `gpuCapabilities`, one entry per detected GPU with its
+`vendor`, `path`, and `computeBackends` (`cuda`, `rocm`, `metal`, `qnn`). A GPU
+whose backend list is empty has no supported backend; no entries at all on a
+device that reports a GPU means an older agent. `containerStorage` identifies the filesystem used by
+containerd; the existing disk scalar fields continue to describe the root filesystem.
+
+Attached runs keep observing slow startup after the initial readiness budget.
+If the relevant service is still running, the CLI reports “still starting” and
+checks every five seconds while streaming logs. Browser opening and host
+`postStart` commands run once readiness succeeds. Stopping the service,
+canceling the session, or replacing a watch deployment cancels its probes.
+Detached and create-only runs continue to skip host readiness and hooks.
+
+
+## Native commands on Mac
+
+A single native Darwin app can name a target executable directly:
+
+```json
+{
+  "appId": "sh.example.chat",
+  "platform": "darwin",
+  "files": [{"path": "launcher.py"}, {"path": "data"}],
+  "run": {"command": "/usr/bin/python3", "args": ["../launcher.py"], "cwd": "data"},
+  "env": {"MAX_MODEL": "HuggingFaceTB/SmolLM2-135M-Instruct"}
+}
+```
+
+`run.command` is an absolute executable on the target or an executable relative
+ to the synced app directory. Relative scripts must have executable permission.
+`run.cwd` defaults to the app directory and must stay inside it, including after
+symlink resolution. Arguments are passed directly; shell expressions are literal
+unless you explicitly choose a shell executable. The CLI selects this mode before
+project detection and rejects conflicting build flags and non-Darwin targets.
+
+The target must advertise `native-process`; update Wendy Agent for Mac if the
+CLI requests it. Declared files, `wendy.json`, an optional `sandbox.sb`, and the
+configured Brewfile (or auto-detected `Brewfile.wendy`) use native file sync.
+Homebrew installation completes before the agent validates the executable.
+Request environment values apply to native command, SwiftPM, and Xcode launches;
+agent identity and telemetry settings take precedence. `WENDY_APP_ID` identifies
+the app. Keep runtime data outside the synced source directory, for example under
+`~/Library/Application Support/<appId>/runtime/`, to retain it across file sync.
+
+Attached watch compares the command, working directory, arguments, effective
+environment, files, configuration, and restart policy. Unchanged running commands
+remain running. Host hooks and browser opening wait for readiness.
+
+
+## Diagnosing an interrupted log stream
+
+Quiet log subscriptions receive an empty transport heartbeat every 15 seconds.
+The CLI and MCP omit these messages from logs, history transitions, and batch
+counts. Go agent gRPC keepalive acknowledgements allow 20 seconds. A stream that
+ends with a connection error still reports that error.
+
+For a recurrence, record the CLI, agent, and OS versions, timestamps, device
+address, direct WiFi or cloud route, and the exact gRPC error. Capture agent and
+cloud tunnel logs for the same interval; compare an idle subscription with one
+that emits a new log after ten minutes. Check WiFi roaming, link loss, NAT/proxy
+idle limits, and HTTP/2 GOAWAY/keepalive diagnostics before assigning a cause.
+The original direct-WiFi failure has no confirmed transport root cause.

@@ -12,6 +12,8 @@ The build command is mainly used to verify your app can build/compile.
 | `--stagefile-backend` | `dockerfile` | Stagefile compiler backend: `dockerfile` or experimental direct `llb`. |
 | `--gpu-arch` | from the device | GPU architecture a Stagefile `cuda:` stage targets; taken from the device when one is selected. |
 | `--debug` | `false` | Build compiled languages unoptimized instead of the release default — see below. |
+| `--service <name>` | all services | Build only the named service and its dependencies (multi-service projects) — see [Multi-service manifests](#multi-service-manifests). |
+| `--max-concurrency <n>` | `0` | Multi-service: max service images to build at once (0 = default limit of 4). |
 
 ### `--debug`
 
@@ -29,14 +31,15 @@ The same flag on [`wendy run`](run.md) and `wendy fleet run` additionally enable
 
 `wendy build` scans the project directory for a build manifest in the following priority order:
 
-1. `docker-compose.yml` / `compose.yml` — multi-service Compose project
-2. `build.stagefile.yaml` / `<name>.stagefile.yaml` — Stagefile, compiled to a digest-pinned Dockerfile at build time. Checked ahead of plain Dockerfiles: a Stagefile is the more explicit build signal, and a project that has one usually keeps a generated Dockerfile beside it.
-3. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
-4. `Package.swift` — Swift Package Manager project
-5. `*.xcodeproj` — Xcode project (macOS targets only)
-6. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
+1. `wendy.json` with a non-empty `services` map — multi-service build. Takes precedence unconditionally, even over a root-level Compose file, Dockerfile, or other marker below; each service resolves its own build file independently inside its `context` directory, using the same per-directory Stagefile-before-Dockerfile rule as the Stagefile entry below. See [Multi-service manifests](#multi-service-manifests).
+2. `docker-compose.yml` / `compose.yml` — multi-service Compose project
+3. `build.stagefile.yaml` / `<name>.stagefile.yaml` — Stagefile, compiled to a digest-pinned Dockerfile at build time. Checked ahead of plain Dockerfiles: a Stagefile is the more explicit build signal, and a project that has one usually keeps a generated Dockerfile beside it.
+4. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
+5. `Package.swift` — Swift Package Manager project
+6. `*.xcodeproj` — Xcode project (macOS targets only)
+7. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
 
-If multiple manifests are present you can override detection with `--build-type`.
+If multiple manifests are present you can override detection with `--build-type`; a `services` map is the exception — it always wins, and `--build-type`/`--dockerfile` are rejected outright rather than used to pick something else (see [Multi-service manifests](#multi-service-manifests)).
 
 A Stagefile is a YAML build descriptor that compiles to a real Dockerfile with guarantees a hand-written one does not get by default: base images are digest-pinned through a committed lockfile, each install step is emitted with the correct flags and a scoped cache mount, the `.dockerignore` is derived from the declared copy paths, and there is no raw-shell escape hatch. The compiled Dockerfile and its paired `.dockerignore` are written next to the source as build output — see [Stagefile naming](#stagefile-naming) for the artifact names. Most projects under [`Examples/`](https://github.com/wendylabsinc/wendyos/tree/main/Examples) use this format and are worth reading as reference.
 
@@ -49,6 +52,35 @@ chunk-diff, and registry/mTLS push paths. It requires Docker or a BuildKit
 daemon and is incompatible with Apple Container. `wendy build` supports it for
 a single Stagefile image, but not for Compose; remote `--build-host` builds
 also remain Dockerfile-only.
+
+## Multi-service manifests
+
+A `wendy.json` with a non-empty `services` map builds one **local** image per service instead of a single image — the same manifest [`wendy run`](run.md) detects and orchestrates, but building only. Nothing is pushed to a registry and nothing is created or started; no device is required.
+
+Each image is tagged `<lowercase-appId>-<lowercase-service>:latest`. For example, an app with `appId: "sh.wendy.examples.isolatedservices"` and services `api` and `worker` produces:
+
+```
+sh.wendy.examples.isolatedservices-api:latest
+sh.wendy.examples.isolatedservices-worker:latest
+```
+
+Each service resolves its own build file independently inside its own `context` directory — Stagefile preferred over Dockerfile/Containerfile, the same rule [Manifest detection](#manifest-detection) uses per directory. Because there is no single build file or type to pick across services, `--dockerfile` and `--build-type` are not supported here and return an error.
+
+Build only one service and its dependencies with `--service`:
+
+```sh
+wendy build --service api
+```
+
+`--service <name>` resolves `<name>` plus every service reachable through its `dependsOn` graph; services outside that subset are not built. An unknown service name returns an error immediately.
+
+Up to 4 service images build in parallel by default. Override with `--max-concurrency <n>`; `0` restores the default limit of 4.
+
+`--builder`, `--gpu-arch`, and `--debug` behave exactly as in a single-image build, applied per service — with one exception: `--builder buildkit` is not supported for multi-service builds, only `docker` and `apple-container`. As with single-image builds, `wendy build` passes no build-args, so a hand-written Dockerfile's `ARG WENDY_PLATFORM` / `ARG WENDY_DEBUG` take their declared defaults here.
+
+With no device selected, the target platform defaults to `linux/arm64`; selecting a device uses that device's own platform instead, same as single-image builds.
+
+A `services` map takes precedence over any root-level build marker present in the same project — see [Manifest detection](#manifest-detection).
 
 ## Selecting a build file
 
@@ -81,7 +113,8 @@ Everything in the `Dockerfile.generated*` namespace is a build artifact: it is e
 
 | Manifest | Required host | Notes |
 |---|---|---|
-| `<name>.stagefile.yaml` | Same as `Dockerfile` | Uses the generated Dockerfile by default; `--stagefile-backend=llb` solves the same graph directly with Docker/BuildKit. |
+| `wendy.json` `services` map | Docker Desktop or Apple `container` on Apple silicon macOS | Local build only — no push, no device required; each service resolves and builds independently with `--builder docker` or `--builder apple-container` (`buildkit` is not supported here). See [Multi-service manifests](#multi-service-manifests) |
+| `<name>.stagefile.yaml` | Same as `Dockerfile` | Compiled to `Dockerfile.generated[.<variant>]` and built through the Dockerfile path by default, so every builder below applies unchanged; `--stagefile-backend=llb` solves the same graph directly with Docker/BuildKit. |
 | `Dockerfile` / `Containerfile` | Docker Desktop, Apple `container` on Apple silicon macOS, or WendyOS | Local Docker builds use `docker buildx`; `--device apple-container` uses `container build`; WendyOS device builds can select `--builder docker` or `--builder apple-container` |
 | `Package.swift` | macOS or Linux | Requires a host Swift toolchain |
 | `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile.wendy` is the auto-detected target-agent Brewfile for native Mac runs |
@@ -118,7 +151,8 @@ Docker for local provider runs.
 | `WENDY_PLATFORM` | `nvidia-jetson` \| `generic` | Platform tier derived from the device type |
 | `WENDY_DEBUG` | `true` \| `false` | Set when `--debug` is passed. [`wendy project optimize`](project/optimize.md) flags it when it's declared (`ARG`/`ENV`) but no `RUN` step branches on it — gate your optimization level on it so debug builds aren't shipped to release. |
 | `WENDY_DEVICE_TYPE` | e.g. `jetson-agx-orin` | Raw device type; absent when unknown |
-| `WENDY_HAS_GPU` | `true` \| `false` | Absent on older agents |
+| `WENDY_HAS_GPU` | `true` \| `false` (hardware presence) | Absent on older agents |
+| `WENDY_HAS_CUDA` | `true` \| `false` (host CUDA support) | Falls back only to an explicit NVIDIA vendor on older agents |
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
 | `WENDY_JETPACK_MAJOR` | e.g. `6`, `7` | Jetson only; JetPack major for per-generation base-image selection |
@@ -178,3 +212,11 @@ Delegating a build to another device is a [`wendy run`](run.md#remote-build-host
 The reason is that the two commands mean different things by "build". `wendy run --build-host` has a target device: the build host builds the image and pushes it straight into *that* device's registry over the mesh. `wendy build` has no target — it leaves an image behind on the machine that built it — so a remote build would deposit the image on the build host and nowhere useful, which is worse than not offering the flag.
 
 Use `wendy run --build-host <device>` instead. To make a device willing to accept builds in the first place, see [`wendy device build-host`](device/build-host.md).
+
+CUDA-selecting Dockerfiles must use `WENDY_HAS_CUDA`. `WENDY_HAS_GPU`
+reports hardware presence, including Broadcom and other GPUs without CUDA.
+Device info exposes `gpuCapabilities`, one entry per detected GPU with its
+`vendor`, `path`, and `computeBackends` (`cuda`, `rocm`, `metal`, `qnn`). A GPU
+whose backend list is empty has no supported backend; no entries at all on a
+device that reports a GPU means an older agent. `containerStorage` identifies the filesystem used by
+containerd; the existing disk scalar fields continue to describe the root filesystem.

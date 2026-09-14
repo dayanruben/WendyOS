@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -97,6 +96,9 @@ func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL s
 }
 
 func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return nil, err
@@ -112,22 +114,17 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	// Provisioned agents serve mTLS on agentPort+1 (50052) for remote clients; the
 	// plaintext port (50051) is shut down after provisioning. (On-device containers
 	// with the admin entitlement can reach the agent via the local unix socket.)
-	tunnelConn, err := openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
-	if err != nil {
-		return nil, fmt.Errorf("opening cloud tunnel to %s: %w", asset.GetName(), err)
-	}
-
-	dialOpt, closeTunnel := tunnelDialer(tunnelConn)
+	dialOpt := clouddefaults.TunnelDialer(func(tunnelCtx context.Context) (net.Conn, error) {
+		return openBrokerTunnel(tunnelCtx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
+	})
 
 	cert := auth.Certificates[0]
 	keyPEM, err := cert.PrivateKeyPEM()
 	if err != nil {
-		closeTunnel()
 		return nil, fmt.Errorf("loading client key: %w", err)
 	}
 	x509Cert, err := tls.X509KeyPair([]byte(cert.PemCertificate), []byte(keyPEM))
 	if err != nil {
-		closeTunnel()
 		return nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
@@ -135,7 +132,6 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		ExpectedOrgID: int32(cert.OrganizationID),
 	})
 	if err != nil {
-		closeTunnel()
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
 	}
 	tlsCfg := &tls.Config{
@@ -160,7 +156,6 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		}),
 	)
 	if err != nil {
-		closeTunnel()
 		return nil, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
 	}
 
@@ -178,7 +173,7 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn.Reconnect = func(rctx context.Context) (*grpcclient.AgentConnection, error) {
 		return waitForCloudAgentRestart(rctx, auth, asset, brokerURL)
 	}
-	agentConn.ExtraClosers = append(agentConn.ExtraClosers, closeFunc(closeTunnel), brokerConn)
+	agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
 	cleanupBroker = false
 	return agentConn, nil
 }
@@ -213,10 +208,11 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 			continue
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
-		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
+		resp, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		probeCancel()
 		attemptCancel()
 		if probeErr == nil {
+			conn.CacheAgentVersion(resp)
 			return conn, nil
 		}
 		conn.Close()
@@ -253,12 +249,18 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 	}
 
 	local, remote := net.Pipe()
+	// A non-EOF end of the broker stream is the broker's verdict on this
+	// tunnel (unauthorized caller, asset offline, ...). Record it on the local
+	// end so whatever rides on the pipe reports that verdict instead of a bare
+	// EOF from the closed pipe.
+	tunnel := clouddefaults.NewBrokerTunnelConn(local)
 
 	go func() {
 		defer remote.Close()
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
+				tunnel.Fail(err)
 				if tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""; tlsDebug {
 					fmt.Fprintf(os.Stderr, "[tunnel-debug] broker stream closed: %v\n", err)
 				}
@@ -283,7 +285,7 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		})
 	}, stream.CloseSend)
 
-	return local, nil
+	return tunnel, nil
 }
 
 // tunnelUplinkQueueSlots bounds the uplink queue: reads are ≤256KiB, so 128
@@ -539,9 +541,9 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 			})
 		}
 		if asset != nil {
-			// With no --device, resolveCloudAsset picks the org's only enrolled
-			// device without asking. Say so, rather than leaving the target
-			// implicit. Note this is not the configured default device: the
+			// With no --device, resolveCloudAsset picks the org's only online
+			// device without asking (the roster above is online-only). Say so,
+			// rather than leaving the target implicit. Note this is not the configured default device: the
 			// cloud path does not consult that setting.
 			if deviceName == "" {
 				noteImplicitDevice(asset.GetName(), implicitSoleCloudDevice)
@@ -610,11 +612,4 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}
 	return conn, nil
-}
-
-func tunnelDialer(tunnelConn net.Conn) (grpc.DialOption, func()) {
-	var once sync.Once
-	return grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {
-		return tunnelConn, nil
-	}), func() { once.Do(func() { tunnelConn.Close() }) }
 }

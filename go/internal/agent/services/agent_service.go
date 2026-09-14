@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/gpudiscovery"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
@@ -29,13 +31,15 @@ import (
 
 type AgentService struct {
 	agentpb.UnimplementedWendyAgentServiceServer
-	logger             *zap.Logger
-	networkManager     NetworkManager
-	hardwareDiscoverer HardwareDiscoverer
-	bluetoothManager   BluetoothManager
-	installer          *AgentInstaller
-	isWendyOSHost      func() bool
-	osUpdateStateDir   string
+	logger                   *zap.Logger
+	networkManager           NetworkManager
+	hardwareDiscoverer       HardwareDiscoverer
+	discoverGPUs             func() []gpudiscovery.Device
+	discoverContainerStorage func() (partitionUsage, bool)
+	bluetoothManager         BluetoothManager
+	installer                *AgentInstaller
+	isWendyOSHost            func() bool
+	osUpdateStateDir         string
 
 	// verifier checks the update binary's signature before install. Defaults
 	// to sigverify.DefaultVerifier (disabled until a real pinned key is
@@ -44,11 +48,7 @@ type AgentService struct {
 	// AgentUpdateService (the v2 sibling handler) for the same pattern.
 	verifier *sigverify.Verifier
 
-	// execPathResolver resolves the agent's own executable path and mode.
-	// Defaults to resolveExecPath (which resolves os.Executable()); settable
-	// within-package so tests can redirect commitBinaryUpdate's rename target
-	// away from the running test binary.
-	execPathResolver func() (string, os.FileMode, error)
+	execPathCache
 
 	// restartFn is invoked once the binary is committed to schedule the
 	// process exit that lets systemd restart into the new binary. Defaults
@@ -79,7 +79,6 @@ func NewAgentService(
 		isWendyOSHost:      defaultIsWendyOSHost,
 		osUpdateStateDir:   oshealth.DefaultStateDir,
 		verifier:           sigverify.DefaultVerifier,
-		execPathResolver:   resolveExecPath,
 		restartFn:          scheduleAgentRestartExit,
 	}
 }
@@ -113,7 +112,12 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		}
 	}
 
-	gpuInfo := detectGPUInfo()
+	gpuProbe := s.discoverGPUs
+	if gpuProbe == nil {
+		gpuProbe = gpudiscovery.Host
+	}
+	gpuInfo := detectGPUInfoFrom(gpuProbe())
+	resp.GpuCapabilities = gpuCapabilitiesV1(gpuInfo.devices)
 	resp.HasGpu = &gpuInfo.hasGPU
 	if gpuInfo.vendor != "" {
 		resp.GpuVendor = &gpuInfo.vendor
@@ -128,9 +132,23 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.GpuArch = &gpuInfo.gpuArch
 	}
 
+	npuInfo := detectNPUInfo()
+	resp.HasNpu = &npuInfo.hasNPU
+	if npuInfo.vendor != "" {
+		resp.NpuVendor = &npuInfo.vendor
+	}
+
 	if usage, ok := rootDiskUsage(); ok {
 		resp.DiskUsedBytes = &usage.usedBytes
 		resp.DiskTotalBytes = &usage.totalBytes
+	}
+
+	storageProbe := s.discoverContainerStorage
+	if storageProbe == nil {
+		storageProbe = containerStorageUsage
+	}
+	if p, ok := storageProbe(); ok {
+		resp.ContainerStorage = &agentpb.DiskPartition{Mountpoint: p.mountpoint, Filesystem: p.filesystem, Device: p.device, UsedBytes: p.usedBytes, TotalBytes: p.totalBytes}
 	}
 
 	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
@@ -173,7 +191,7 @@ func (s *AgentService) WarmBinaryHash() {
 // Empty when the executable cannot be resolved or read.
 func (s *AgentService) binarySHA256() string {
 	s.binaryHashOnce.Do(func() {
-		path, _, err := s.execPathResolver()
+		path, _, err := s.resolvedExecPath()
 		if err != nil {
 			s.logger.Warn("could not resolve own executable for hashing", zap.Error(err))
 			return
@@ -222,39 +240,118 @@ type gpuInfo struct {
 	jetpackVersion string
 	cudaVersion    string
 	gpuArch        string
+	devices        []gpudiscovery.Device
 }
 
-func detectGPUInfo() gpuInfo {
-	info := gpuInfo{}
+// detectGPUInfo probes on every call rather than caching. /dev/dri and the DRM
+// sysfs tree are live state: the first RPC can land before udev has settled,
+// and installing a driver add-on makes a GPU appear without restarting the
+// agent — so a cached "no GPU" would never heal, and would contradict
+// detectFeatureset, which re-probes.
+func detectGPUInfo() gpuInfo { return detectGPUInfoFrom(gpudiscovery.Host()) }
 
-	// /etc/nv_tegra_release is the definitive indicator of an NVIDIA Tegra/Jetson
-	// device. Check it first because /dev/nvidia0 is absent on many Jetson configs
-	// where the GPU is an integrated Tegra (e.g. JetPack 5/6 on Orin).
-	if _, err := os.Stat("/etc/nv_tegra_release"); err == nil {
-		info.hasGPU = true
-		info.vendor = "nvidia"
-	} else if _, err := os.Stat("/dev/nvidia0"); err == nil {
-		// Discrete NVIDIA GPU (no Tegra release file).
-		info.hasGPU = true
-		info.vendor = "nvidia"
-	} else if _, err := os.Stat("/dev/kfd"); err == nil {
-		// AMD ROCm: /dev/kfd (the compute device) is the definitive signal, and
-		// unlike a bare /dev/dri it names the vendor. Checked before the generic
-		// DRM branch so an AMD box reports "amd" rather than an unknown vendor.
-		info.hasGPU = true
-		info.vendor = "amd"
-	} else if entries, _ := os.ReadDir("/dev/dri"); len(entries) > 0 {
-		// Generic GPU via DRM — vendor unknown.
-		info.hasGPU = true
-	}
+func detectGPUInfoFrom(devices []gpudiscovery.Device) gpuInfo {
+	vendor, _ := gpudiscovery.Summary(devices)
+	info := gpuInfo{hasGPU: len(devices) > 0, vendor: vendor, devices: devices}
 
-	if info.vendor == "nvidia" {
+	switch info.vendor {
+	case "nvidia":
 		info.jetpackVersion = detectJetPackVersion()
 		info.cudaVersion = detectCUDAVersion()
 		info.gpuArch = detectNvidiaGPUArch()
+	case "qualcomm":
+		info.gpuArch = detectAdrenoArch()
 	}
 
 	return info
+}
+
+// FastRPC transport nodes; the "-secure" ones are the root-only signed-PD path.
+// Kept in step with the npu entitlement in agent/oci, which grants the same set.
+// Behind vars so tests can point them at a fixture tree.
+var (
+	fastrpcDeviceGlob   = "/dev/fastrpc-*"
+	fastrpcSecureSuffix = "-secure"
+)
+
+// adrenoCompatibleRe pulls the model out of "qcom,adreno-623.0" -> "623".
+var adrenoCompatibleRe = regexp.MustCompile(`qcom,adreno-(\d+)\.\d+`)
+
+type npuInfo struct {
+	hasNPU bool
+	vendor string
+}
+
+// detectNPUInfo probes on every call, for the same reason detectGPUInfo does: the
+// FastRPC nodes are live state and can appear after the agent starts.
+//
+// Only the non-secure nodes count. The signed-PD nodes are root:root 0600, so their
+// presence says nothing about whether an app can reach the DSP.
+func detectNPUInfo() npuInfo {
+	nodes, err := filepath.Glob(fastrpcDeviceGlob)
+	if err != nil {
+		return npuInfo{}
+	}
+	for _, node := range nodes {
+		if strings.HasSuffix(node, fastrpcSecureSuffix) {
+			continue
+		}
+		return npuInfo{hasNPU: true, vendor: dspVendor()}
+	}
+	return npuInfo{}
+}
+
+// dspVendor names the vendor from the DSP remoteproc's device-tree compatible. An
+// on-SoC accelerator has no PCI vendor id, so that is the only signal available;
+// an unrecognised one reports "" rather than a guess.
+func dspVendor() string {
+	entries, err := os.ReadDir(platformDevicesRoot)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".remoteproc") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(platformDevicesRoot, e.Name(), "of_node", "compatible"))
+		if err != nil {
+			continue
+		}
+		// The property is a NUL-separated list of "vendor,model" entries, and the
+		// qcom entry is not always first, so check each one's prefix.
+		for _, entry := range bytes.Split(data, []byte{0}) {
+			if bytes.HasPrefix(entry, []byte("qcom,")) {
+				return "qualcomm"
+			}
+		}
+	}
+	return ""
+}
+
+// platformDevicesRoot is behind a var so tests can use a fixture tree.
+var platformDevicesRoot = "/sys/bus/platform/devices"
+
+// detectAdrenoArch reports the Adreno model, e.g. "a623". The DRM device on
+// this SoC family is the display controller, so its compatible string names the
+// DPU; the GPU is a separate platform device bound to the adreno driver.
+func detectAdrenoArch() string {
+	entries, err := os.ReadDir(platformDevicesRoot)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".gpu") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(platformDevicesRoot, e.Name(), "of_node", "compatible"))
+		if err != nil {
+			continue
+		}
+		if m := adrenoCompatibleRe.FindSubmatch(data); len(m) > 1 {
+			return "a" + string(m[1])
+		}
+	}
+	return ""
 }
 
 var tegraReleaseRe = regexp.MustCompile(`R(\d+)\s+\([^)]+\),\s+REVISION:\s+([\d.]+)`)
@@ -527,7 +624,7 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 	s.logger.Info("UpdateAgent stream started")
 
-	execPath, originalPerm, err := s.execPathResolver()
+	execPath, originalPerm, err := s.resolvedExecPath()
 	if err != nil {
 		return err
 	}
@@ -910,7 +1007,11 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 		return err
 	}
 
-	if err := rebootSystem(); err != nil {
+	// The running OS decides how to reboot: an image whose wendyos-update leaves
+	// the staged capsule non-durable needs the flush-and-unmount path, or the
+	// update just installed is lost on restart (WDY-2200).
+	osVersion, _ := wendyOSVersion()
+	if err := rebootAfterOSUpdate(newRebooter(s.logger), osVersion); err != nil {
 		s.logger.Error("Failed to reboot after OS update", zap.Error(err))
 	}
 
@@ -966,4 +1067,19 @@ func CleanupOldBackups(logger *zap.Logger) {
 		}
 		logger.Info("Removed old backup", zap.String("path", backupPath))
 	}
+}
+
+// gpuCapabilitiesV1 lists one entry per detected GPU. A GPU without a supported
+// backend is still listed with an empty backend list, so a client can tell "no
+// compute on this GPU" from "older agent that never sent the list".
+func gpuCapabilitiesV1(devices []gpudiscovery.Device) []*agentpb.GpuCapabilities {
+	out := make([]*agentpb.GpuCapabilities, 0, len(devices))
+	for _, d := range devices {
+		out = append(out, &agentpb.GpuCapabilities{
+			Vendor:          d.Vendor,
+			Path:            d.Path,
+			ComputeBackends: append([]string{}, d.ComputeBackends...),
+		})
+	}
+	return out
 }

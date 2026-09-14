@@ -11,13 +11,18 @@ import (
 
 // serviceHookRunner runs the per-service "wait for readiness → announce URL →
 // fire postStart" sequence for multi-service runs (compose + services map).
-// A readiness failure warns and still fires explicitly configured hooks, but
-// suppresses the success announcement and HTTP-entitlement-synthesized browser
-// open. Only context cancellation suppresses every side effect.
+// Readiness gates all explicit and synthesized host actions. A slow running
+// service remains under observation until ready, stopped, or canceled. Context cancellation suppresses every side effect, as does a watch
+// session that has already completed the sequence for this container.
 //
-// Zero-value-ready except conn: construct with &serviceHookRunner{conn: conn}.
+// Zero-value-ready except conn: construct with
+// &serviceHookRunner{conn: conn, opts: opts}.
 type serviceHookRunner struct {
 	conn *grpcclient.AgentConnection
+	// opts carries the watch session state, if any. Under `wendy run --watch`
+	// each service completes this sequence after its first successful readiness
+	// check only.
+	opts runOptions
 	wg   sync.WaitGroup
 	mu   sync.Mutex
 	cmds []*exec.Cmd // cli-hook children to reap in attached mode
@@ -66,6 +71,16 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 	if readiness == nil && hooks == nil {
 		return
 	}
+	containerName := cfg.ContainerName()
+	if !r.opts.beginHostLifecycle(containerName) {
+		return
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			r.opts.abandonHostLifecycle(containerName)
+		}
+	}()
 
 	hookHost, hostOK := resolveHookHost(ctx, r.conn, cfg)
 	if !hostOK {
@@ -76,37 +91,33 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 		return
 	}
 
-	readinessSucceeded := true
-	if err := waitForReadiness(ctx, readiness, hookHost); err != nil {
-		if ctx.Err() != nil {
-			// Canceled (e.g. Ctrl+C, or the run ending) — stay silent and skip
-			// the hook entirely; this is not a readiness failure to report.
-			return
+	if err := waitForAttachedReadiness(ctx, r.conn, cfg, hookHost); err != nil {
+		if ctx.Err() == nil {
+			warnReadiness(ctx, r.conn, cfg.AppID, err)
 		}
-		// containerExitDetail (invoked by warnReadiness) matches on the GROUP
-		// appID: the agent's ListContainers groups per-service containers under
-		// the group app-ID label, reports AppContainer.AppName as the bare
-		// group appID, and aggregates exit code/reason onto that group entry —
-		// so pass cfg.AppID, never cfg.ContainerName().
-		warnReadiness(ctx, r.conn, cfg.AppID, err)
-		readinessSucceeded = false
+		return
 	}
 	if ctx.Err() != nil {
 		return
 	}
-
 	effectiveCfg := cfg
-	// A failed probe must not synthesize an automatic browser open from an HTTP
-	// entitlement. Explicit hooks retain the established multi-service behavior
-	// and still run after a non-cancellation timeout.
-	if readinessSucceeded && hooks != cfg.Hooks {
+	if hooks != cfg.Hooks {
 		clone := *cfg
 		clone.Hooks = hooks
 		effectiveCfg = &clone
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	r.opts.completeHostLifecycle(containerName)
+	completed = true
 
 	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, cfg.ServiceName)
 	if cmd != nil {
+		if r.opts.isWatch() {
+			r.opts.watchState.reapCommand(cmd)
+			return
+		}
 		r.mu.Lock()
 		r.cmds = append(r.cmds, cmd)
 		r.mu.Unlock()
@@ -121,10 +132,14 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 // follow up with reap() the same way run.go cancels runCtx before waiting on
 // postStartCmd.
 func (r *serviceHookRunner) startAsync(runCtx context.Context, cfg *appconfig.AppConfig) {
+	hookCtx := runCtx
+	if r.opts.isWatch() {
+		hookCtx = r.opts.watchState.hookContext(runCtx)
+	}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		r.runOne(runCtx, runCtx, cfg)
+		r.runOne(runCtx, hookCtx, cfg)
 	}()
 }
 

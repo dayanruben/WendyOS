@@ -48,6 +48,47 @@ func TestPickerModel_SelectsFromTable(t *testing.T) {
 	}
 }
 
+func TestPickerStopRunsOutsideUpdateAndRemainsResponsive(t *testing.T) {
+	m := NewPickerWithTitle("Simulators")
+	called := false
+	m.OnStopItem = func(item PickerItem) (string, bool) {
+		called = true
+		if item.Name != "alpha" {
+			t.Fatalf("stopped wrong row: %s", item.Name)
+		}
+		return "Stopped alpha.", false
+	}
+	u, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha"}, {Name: "beta"}}})
+	m = u.(PickerModel)
+	u, stop := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = u.(PickerModel)
+	if called || stop == nil {
+		t.Fatal("stop ran synchronously or was not scheduled")
+	}
+	if !strings.Contains(m.View(), "Stopping alpha") {
+		t.Fatal("no shutdown progress")
+	}
+	u, duplicate := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if duplicate != nil {
+		t.Fatal("scheduled duplicate shutdown")
+	}
+	m = u.(PickerModel)
+	u, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = u.(PickerModel)
+	if m.table.Cursor() != 1 || !strings.Contains(m.View(), "Stopping alpha") {
+		t.Fatal("navigation lost progress")
+	}
+	u, quit := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if quit == nil || !u.(PickerModel).Cancelled() {
+		t.Fatal("cannot quit during shutdown")
+	}
+	u, _ = m.Update(stop())
+	m = u.(PickerModel)
+	if !called || m.stoppingName != "" || !strings.Contains(m.View(), "Stopped alpha.") {
+		t.Fatal("stop result not applied")
+	}
+}
+
 func TestPickerModel_DedupesItems(t *testing.T) {
 	m := NewPicker()
 
@@ -63,6 +104,76 @@ func TestPickerModel_DedupesItems(t *testing.T) {
 
 	if got := len(pm.items); got != 1 {
 		t.Fatalf("expected 1 deduped item, got %d", got)
+	}
+}
+
+func TestPickerModel_SupersedesReplacesRow(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "ESP32 (unflashed)", DedupKey: "unflashed:/dev/tty1", Value: "ghost"},
+	}})
+	pm := updated.(PickerModel)
+
+	updated, _ = pm.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "wendy-alpha", DedupKey: "wendy-alpha", Supersedes: "unflashed:/dev/tty1", Value: "real"},
+	}})
+	pm = updated.(PickerModel)
+
+	if got := len(pm.items); got != 1 {
+		t.Fatalf("expected the superseded row to be replaced, got %d items: %+v", got, pm.items)
+	}
+	if pm.items[0].Value != "real" {
+		t.Errorf("remaining item = %v, want the superseding one", pm.items[0].Value)
+	}
+	if _, ok := pm.seenIdx["unflashed:/dev/tty1"]; ok {
+		t.Error("superseded key still present in seenIdx")
+	}
+}
+
+func TestPickerModel_SupersedesUnknownKeyKeepsRows(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "wendy-alpha", DedupKey: "wendy-alpha", Value: "a"},
+	}})
+	pm := updated.(PickerModel)
+
+	updated, _ = pm.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "wendy-beta", DedupKey: "wendy-beta", Supersedes: "never-added", Value: "b"},
+	}})
+	pm = updated.(PickerModel)
+
+	if got := len(pm.items); got != 2 {
+		t.Fatalf("expected both rows to survive a no-op supersede, got %d", got)
+	}
+}
+
+func TestPickerModel_SupersedesKeepsCursorOnReplacement(t *testing.T) {
+	m := NewPicker()
+
+	// Two rows sorting either side of the replacement, so a cursor that fails
+	// to follow lands on a neighbour instead.
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "aaa", DedupKey: "aaa", Value: "aaa"},
+		{Name: "ESP32 (unflashed)", DedupKey: "mmm-unflashed", Value: "ghost"},
+		{Name: "zzz", DedupKey: "zzz", Value: "zzz"},
+	}})
+	pm := updated.(PickerModel)
+
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	pm = updated.(PickerModel)
+	if got := pm.currentCursorKey(); got != "mmm-unflashed" {
+		t.Fatalf("cursor = %q, want it on the row about to be superseded", got)
+	}
+
+	updated, _ = pm.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "wendy-alpha", DedupKey: "mmm-real", Supersedes: "mmm-unflashed", Value: "real"},
+	}})
+	pm = updated.(PickerModel)
+
+	if got := pm.currentCursorKey(); got != "mmm-real" {
+		t.Errorf("cursor = %q, want it to follow onto the replacement", got)
 	}
 }
 
