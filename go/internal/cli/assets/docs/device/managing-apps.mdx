@@ -96,17 +96,19 @@ An example output is:
 wendy device apps list
 ✔︎ Searching for WendyOS devices [5.1s]
 ✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
-╭───────────────┬─────────┬─────────┬──────────╮
-│ App           │ Version │ State   │ Failures │
-├───────────────┼─────────┼─────────┼──────────┤
-│ hello-world   │ 0.0.1   │ Stopped │ 0        │
-│ simple-server │ 0.0.0   │ Running │ 0        │
-╰───────────────┴─────────┴─────────┴──────────╯
+╭───┬───────────────┬─────────┬───────┬──────────┬────────╮
+│   │ Name          │ Version │ Port  │ Failures │ Reason │
+├───┼───────────────┼─────────┼───────┼──────────┼────────┤
+│ ● │ hello-world   │ 0.0.1   │       │ 0        │        │
+│ ● │ simple-server │ 0.0.0   │ 8080  │ 0        │        │
+╰───┴───────────────┴─────────┴───────┴──────────┴────────╯
 ```
 
-* `Stopped` means that the app is on the WendyOS device, but not running. This is common where the app runs once and exits. This doesn't necessarily mean that the state of the app is bad, especially if the `Failures` column is 0. Commonly long running applications like web servers will not be in this state.
-* `Running` means that the app is running on the WendyOS device.
-* `Crash-looping` means the app is not running right now, but the agent's restart policy is actively restarting it. The app has been automatically restarted at least once (the `Failures` column shows how many times) and will be started again. In `wendy device apps list` and the apps dashboard this state is shown with a red `↻` icon to distinguish it from an ordinary `Stopped` app. View the crash output with `wendy device logs --app <name>`.
+The leftmost column is a state icon, not a text column: a green `●` is running, a dim `●` is stopped, and a red `↻` is crash-looping. The `Reason` column carries the explanation when one is available.
+
+* Stopped (dim `●`) means that the app is on the WendyOS device, but not running. This is common where the app runs once and exits. This doesn't necessarily mean that the state of the app is bad, especially if the `Failures` column is 0. Commonly long running applications like web servers will not be in this state.
+* Running (green `●`) means that the app is running on the WendyOS device.
+* Crash-looping (red `↻`) means the app is not running right now, but the agent's restart policy is actively restarting it. The app has been automatically restarted at least once (the `Failures` column shows how many times) and will be started again. In `wendy device apps list` and the apps dashboard this state is shown with a red `↻` icon to distinguish it from an ordinary `Stopped` app. View the crash output with `wendy device logs --app <name>`.
 * `Failures` means that the app has failed to start. This is common if the app is not properly configured.
 
 ## Stopping an App
@@ -132,12 +134,12 @@ And then you can verify the app is stopped by listing the apps again:
 wendy device apps list
 ✔︎ Searching for WendyOS devices [5.1s]
 ✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
-╭───────────────┬─────────┬─────────┬──────────╮
-│ App           │ Version │ State   │ Failures │
-├───────────────┼─────────┼─────────┼──────────┤
-│ hello-world   │ 0.0.1   │ Stopped │ 0        │
-│ simple-server │ 0.0.0   │ Stopped │ 0        │
-╰───────────────┴─────────┴─────────┴──────────╯
+╭───┬───────────────┬─────────┬───────┬──────────┬────────╮
+│   │ Name          │ Version │ Port  │ Failures │ Reason │
+├───┼───────────────┼─────────┼───────┼──────────┼────────┤
+│ ● │ hello-world   │ 0.0.1   │       │ 0        │        │
+│ ● │ simple-server │ 0.0.0   │       │ 0        │        │
+╰───┴───────────────┴─────────┴───────┴──────────┴────────╯
 ```
 
 ## Starting an App
@@ -164,12 +166,12 @@ And then you can verify the app is started by listing the apps again:
 wendy device apps list
 ✔︎ Searching for WendyOS devices [5.0s]
 ✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
-╭───────────────┬─────────┬─────────┬──────────╮
-│ App           │ Version │ State   │ Failures │
-├───────────────┼─────────┼─────────┼──────────┤
-│ hello-world   │ 0.0.1   │ Stopped │ 0        │
-│ simple-server │ 0.0.0   │ Running │ 0        │
-╰───────────────┴─────────┴─────────┴──────────╯
+╭───┬───────────────┬─────────┬───────┬──────────┬────────╮
+│   │ Name          │ Version │ Port  │ Failures │ Reason │
+├───┼───────────────┼─────────┼───────┼──────────┼────────┤
+│ ● │ hello-world   │ 0.0.1   │       │ 0        │        │
+│ ● │ simple-server │ 0.0.0   │ 8080  │ 0        │        │
+╰───┴───────────────┴─────────┴───────┴──────────┴────────╯
 ```
 
 ## Removing an App

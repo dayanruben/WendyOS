@@ -4,10 +4,10 @@
 
 ### Go
 
-The module requires **Go 1.26.4** or later. The exact version is pinned in `go.mod` at the repo root. The CI workflows use `actions/setup-go` with `go-version-file: go.mod`, so the version is always read from that file — follow the same practice locally.
+The module requires **Go 1.26.6** or later. The exact version is pinned in `go.mod` at the repo root, which is the authority — read it from there rather than trusting this page. The CI workflows use `actions/setup-go` with `go-version-file: go.mod`, so the version is always read from that file — follow the same practice locally.
 
 ```sh
-go version   # should report go1.26.4 or later
+go version   # should match or exceed the `go` line in go.mod
 ```
 
 ### System Dependencies
@@ -231,7 +231,7 @@ Then run the agent with:
 sudo ./bin/wendy-agent
 ```
 
-The agent listens on port `50051` (plaintext, pre-provisioning) and port `50052` (mTLS, post-provisioning). It also serves a local unix socket at `/run/wendy/agent.sock` for on-device containers with the admin entitlement. The OTEL collector listens on `4317` (gRPC) and `4318` (HTTP). All ports can be overridden via environment variables — see [debugging.md](debugging.md).
+The agent listens on port `50051` (plaintext, pre-provisioning) and port `50052` (mTLS, post-provisioning). It also serves a local unix socket at `/var/lib/wendy/agent-control/agent.sock` for on-device containers with the admin entitlement; inside an entitled container that socket appears at `/run/wendy/agent/agent.sock` (also exported as `WENDY_AGENT_SOCKET`). The OTEL collector listens on `4317` (gRPC) and `4318` (HTTP). All ports can be overridden via environment variables — see [debugging.md](debugging.md).
 
 ## Dependency License Checks
 

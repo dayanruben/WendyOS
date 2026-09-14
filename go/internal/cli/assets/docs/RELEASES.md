@@ -17,7 +17,7 @@ This project uses a dual-track release system:
 ### Finding Pre-release Tags
 
 **Via GitHub UI:**
-- Go to [Releases](../../releases)
+- Go to [Releases](https://github.com/wendylabsinc/wendyos/releases)
 - Look for pre-release entries with timestamp tags
 
 **Via CLI:**

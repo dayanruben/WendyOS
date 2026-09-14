@@ -19,8 +19,8 @@ wendy auth use [selector]
 With a **selector** argument, `wendy auth use` matches exactly one stored session and persists it as the default in `~/.wendy/config.json`. With no argument in an interactive terminal, an interactive picker is shown instead.
 
 The selector is interpreted as:
-- A plain integer — matched against the organization ID in the session's certificate.
-- Any other string — a case-insensitive substring match against the gRPC endpoint or dashboard URL.
+- A plain integer — matched against the organization ID in the session's certificate, and only for **legacy sessions**. A session whose certificate carries a tenant UUID (any OIDC login) is never matched by integer; select it by name or tenant UUID instead.
+- Any other string — a case-insensitive substring match against the gRPC endpoint or dashboard URL, or an exact (case-insensitive) match against a session's tenant UUID.
 
 An ambiguous selector (multiple matches) lists the candidates and errors. A selector that matches nothing also errors.
 

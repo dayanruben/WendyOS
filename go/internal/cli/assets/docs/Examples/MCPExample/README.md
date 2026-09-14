@@ -128,4 +128,4 @@ The wendy agent's `StreamMCP` RPC proxies raw bytes between the gRPC stream and 
 - The container has an `mcp` entitlement (non-zero `sh.wendy/mcp.port` label).
 - The container is in the `RUNNING` state before attempting the TCP connection.
 
-See [wendy-agent/mcp.md](../../wendy-agent/mcp.md) for full API documentation.
+See the wendy-agent MCP documentation for the full API.

@@ -63,6 +63,7 @@ If Cloud refuses the name — because it breaks the rule above, or because anoth
 |------|---------|-------------|
 | `--name` | hostname (`.local` stripped) | Human-readable device name. Defaults to the device hostname when omitted; required when the device is reachable only by a bare IP address in a non-interactive environment. |
 | `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Overrides session selection; when omitted, the persisted default (set with `wendy auth use`) is used if available, otherwise an interactive picker appears. |
+| `--org` | `0` | Organization ID override for **legacy** enrollment. OIDC enrollment ignores it and uses the session's tenant. |
 | `--acme-directory-url` | derived | ACME directory URL for a custom pki-core deployment. OIDC sessions only; when omitted it is derived from the session's own pki-core identity endpoint. |
 
 ## Examples

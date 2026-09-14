@@ -4,7 +4,12 @@ The `AssetService` gRPC service manages the inventory of assets (devices, periph
 
 ## Proto package
 
-`wendycloud.v1` — defined in `Proto/cloud/assets.proto`.
+`wendycloud.v1` — defined in `Proto/cloud/assets.proto`. **This page documents
+the v1 service only.** A parallel `wendycloud.v2.AssetService`
+(`Proto/wendycloud/v2/assets.proto`) exists, identifies assets and organizations
+by **string UUID** rather than `int32`, and adds `ListAssetsByApp` and
+`FilterAssets`. The CLI's OIDC path already calls v2 exclusively; legacy
+sessions still use the v1 service described here.
 
 ## Methods
 
