@@ -1015,12 +1015,12 @@ func isInteractiveTerminal() bool {
 // connection failure. Shows a warning and immediately opens the device picker
 // where the user can select a new device and optionally set/unset default
 // via 'd'/'x' shortcuts.
-func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, disableEnroll bool) (*SelectedDevice, error) {
 	warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	fmt.Println(warnStyle.Render(fmt.Sprintf("⚠ Default device %q is unreachable after %s.", hostname, formatElapsedSeconds(elapsed))))
 	fmt.Println()
 
-	return pickDevice(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, false)
+	return pickDevice(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, disableEnroll)
 }
 
 func defaultDeviceSearchLabel(hostname string) string {
@@ -1306,7 +1306,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 			// Default device is unreachable — offer interactive recovery.
 			hostname, _, _ := net.SplitHostPort(addr)
-			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 			if recErr != nil {
 				return nil, true, recErr
 			}
@@ -3313,7 +3313,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 					conn = refreshedConn
 				} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 					// Default device is unreachable — offer interactive recovery.
-					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 					if recErr != nil {
 						return nil, recErr
 					}
