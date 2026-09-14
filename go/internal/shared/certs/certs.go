@@ -2,8 +2,10 @@
 package certs
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -32,6 +34,29 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 	}
 
 	return string(pem.EncodeToMemory(block)), nil
+}
+
+// GenerateMLDSAKeyPair generates a new ML-DSA-65 private key and returns it as
+// a PKCS#8 PEM string.
+//
+// ML-DSA-65 is the operator credential (WDY-3032): the same key signs the DPoP
+// proof, the CSR, and — once pki-core has minted the leaf — every request the
+// operator signs. GenerateKeyPair's P-256 output remains for the device and
+// legacy paths that have not moved.
+//
+// The encoding is PKCS#8 carrying the 32-byte seed (RFC 9881), which is why the
+// PEM is ~128 bytes rather than the multi-kilobyte expanded key. That matters
+// because it is stored inline in config.json.
+func GenerateMLDSAKeyPair() (privateKeyPEM string, err error) {
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		return "", fmt.Errorf("generating ML-DSA-65 key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", fmt.Errorf("marshaling ML-DSA private key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
 }
 
 // GenerateCSR creates a PKCS#10 certificate signing request using the provided
@@ -65,7 +90,7 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 // endpoints. The Wendy cloud backends set key usages server-side and ignore
 // these, so this only matters for CAs that derive extensions from the CSR.
 func GenerateCSR(privateKeyPEM []byte, commonName string, identityURIs []string, extKeyUsages ...x509.ExtKeyUsage) (csrPEM string, err error) {
-	key, err := parseECPrivateKey(privateKeyPEM)
+	key, err := ParseSigningPrivateKeyPEM(privateKeyPEM)
 	if err != nil {
 		return "", err
 	}
@@ -236,6 +261,33 @@ func LeafCertificatePEM(certPEM string) (string, error) {
 }
 
 // parseECPrivateKey decodes a PEM-encoded EC private key from a byte slice.
+// ParseSigningPrivateKeyPEM decodes a private key PEM into a crypto.Signer,
+// accepting both key generations: SEC1 "EC PRIVATE KEY" from GenerateKeyPair
+// and PKCS#8 "PRIVATE KEY" (which is how an ML-DSA-65 operator key is stored,
+// and how some EC keys arrive too).
+//
+// It exists so GenerateCSR does not have to care which algorithm the caller
+// holds: x509.CreateCertificateRequest picks the signature algorithm from the
+// key itself, so one parse covers EC device CSRs and ML-DSA operator CSRs alike.
+func ParseSigningPrivateKeyPEM(pemData []byte) (crypto.Signer, error) {
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parsing private key: %w", err)
+	}
+	signer, ok := parsed.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("private key of type %T cannot sign", parsed)
+	}
+	return signer, nil
+}
+
 func parseECPrivateKey(pemData []byte) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {

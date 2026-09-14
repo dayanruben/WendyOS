@@ -7,6 +7,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/subtle"
 	"crypto/x509"
@@ -61,15 +62,15 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	identityResource := opts.IdentityResource
 
 	// Step 1: the key, before anything else.
-	privateKeyPEM, err := certs.GenerateKeyPair()
+	privateKeyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating operator key: %w", err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		return fmt.Errorf("parsing generated key: %w", err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		return fmt.Errorf("computing key thumbprint: %w", err)
 	}
@@ -294,7 +295,7 @@ func requestPKIIdentityCertificate(
 	ctx context.Context,
 	client oidcHTTPDoer,
 	endpoint, privateKeyPEM string,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	accessToken, tenantUUID, subject string,
 ) (config.CertificateInfo, error) {
 	if accessToken == "" {
@@ -356,7 +357,7 @@ func requestPKIIdentityCertificate(
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("parsing pki-core certificate chain: %w", err)
 	}
-	wantPublicKey, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	wantPublicKey, err := x509.MarshalPKIXPublicKey(key.Public())
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("encoding generated operator public key: %w", err)
 	}
@@ -427,11 +428,11 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error 
 	if err != nil {
 		return fmt.Errorf("loading OAuth DPoP key: %w", err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		return fmt.Errorf("parsing OAuth DPoP key: %w", err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		return fmt.Errorf("computing OAuth DPoP thumbprint: %w", err)
 	}
@@ -555,7 +556,7 @@ func ensureOAuthAccessToken(ctx context.Context, auth *config.AuthConfig) error 
 	if err != nil {
 		return fmt.Errorf("loading OAuth DPoP key: %w", err)
 	}
-	key, err := parseECPrivateKeyPEM(keyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
 	if err != nil {
 		return fmt.Errorf("parsing OAuth DPoP key: %w", err)
 	}
@@ -571,7 +572,7 @@ func ensureOAuthAccessToken(ctx context.Context, auth *config.AuthConfig) error 
 	if err != nil {
 		return fmt.Errorf("inspecting refreshed access token: %w", err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		return fmt.Errorf("computing OAuth DPoP thumbprint: %w", err)
 	}
