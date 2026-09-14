@@ -36,8 +36,8 @@ nerdctl run -d \
 ## Device Identity
 
 Every WendyOS device has:
-- UUID: `/etc/edgeos/device-uuid`
-- Name: `/etc/edgeos/device-name` (e.g., "brave-falcon", "wise-phoenix")
+- UUID: `/etc/wendyos/device-uuid`
+- Name: `/etc/wendyos/device-name` (e.g., "brave-falcon", "wise-phoenix")
 
 The hostname is set to the device name.
 
@@ -59,7 +59,7 @@ Avahi service file: `/etc/avahi/services/wendyos.service`
 
 | Path | Purpose |
 |------|---------|
-| `/etc/edgeos/` | Device config (UUID, name) |
+| `/etc/wendyos/` | Device config (UUID, name, device-type, version.txt) |
 | `/opt/wendyos/bin/wendy-agent` | Agent binary |
 | `/usr/share/edgeos/offline-images/` | Pre-loaded container images |
 | `/var/lib/edgeos/` | Runtime state |

@@ -298,8 +298,8 @@ See `security/VERIFICATION.md` for verification steps.
 - **Severity:** LOW
 - **Status:** 📋 Planned
 - **Component:** Tunnel broker client
-- **Description:** The tunnel broker client retries with exponential backoff (max 5 minutes). If the broker is unreachable (e.g., intentional disruption), repeated connection attempts could produce unnecessary traffic and battery drain on constrained devices.
-- **Existing mitigations:** Exponential backoff is implemented with a maximum interval of 5 minutes.
+- **Description:** The tunnel broker client retries with exponential backoff (max 90 seconds). If the broker is unreachable (e.g., intentional disruption), repeated connection attempts could produce unnecessary traffic and battery drain on constrained devices.
+- **Existing mitigations:** Exponential backoff is implemented with a maximum interval of 90 seconds (`brokerMaxBackoff`).
 - **Recommended controls:**
   - Cap total retry attempts over a configurable window before alerting or entering a degraded-mode sleep.
 
