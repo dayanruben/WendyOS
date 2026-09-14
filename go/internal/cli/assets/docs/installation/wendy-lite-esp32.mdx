@@ -115,6 +115,14 @@ dependencies:
     path: "components/wendy_core"
 ```
 
+Then require it from your component in `main/CMakeLists.txt`:
+
+```cmake
+idf_component_register(SRCS "main.c"
+                    INCLUDE_DIRS "."
+                    REQUIRES wendy_core)
+```
+
 Then call `wendy_core_init()` as the very first thing in `app_main()`:
 
 ```c
