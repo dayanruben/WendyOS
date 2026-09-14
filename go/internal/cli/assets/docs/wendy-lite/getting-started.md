@@ -39,7 +39,7 @@ wendy install
 
 This flashes Wendy Lite onto the device. When prompted, select the board variant
 labeled **native app support**; variants without that label cannot run the native
-`blink-rgb` example. You only do this once per device.
+`blink-rgb-led` example. You only do this once per device.
 
 During installation, `wendy install` also prompts you to configure the Wi-Fi
 connection and enroll the device in Wendy Cloud — feel free to skip these
