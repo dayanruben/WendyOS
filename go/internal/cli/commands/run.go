@@ -495,10 +495,11 @@ func resolveStagefileGPUTarget(ctx context.Context, cwd string, target *Selected
 type runOptions struct {
 	// Managed robot provisioning owns its QMP mapping and HTTP identity check.
 	// The public run command never sets this option.
-	managedRobot bool
-	buildType    string
-	dockerfile   string
-	builder      string
+	managedRobot     bool
+	buildType        string
+	dockerfile       string
+	builder          string
+	stagefileBackend string
 	// buildHost names a WendyOS device that builds the image instead of this
 	// machine. Empty means build locally, and every existing local path must be
 	// unaffected when it is empty.
@@ -614,6 +615,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
+	cmd.Flags().StringVar(&opts.stagefileBackend, "stagefile-backend", "", "Stagefile compiler backend: dockerfile (default) or llb")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
@@ -832,9 +834,15 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolving working directory: %w", err)
 	}
-	if _, err := normalizeImageBuilder(opts.builder); err != nil {
+	normalizedBuilder, err := normalizeImageBuilder(opts.builder)
+	if err != nil {
 		return err
 	}
+	useLLB, err := stagefileBackendLLB(opts.stagefileBackend, normalizedBuilder)
+	if err != nil {
+		return err
+	}
+	ctx = withStagefileBackend(ctx, opts.stagefileBackend)
 	if opts.maxConcurrency < 0 {
 		return fmt.Errorf("--max-concurrency must be >= 0 (0 = default limit of 4)")
 	}
@@ -846,6 +854,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	opts.buildHost = buildHost
+	if useLLB && opts.buildHost != "" {
+		return fmt.Errorf("--stagefile-backend=llb cannot yet be combined with --build-host: remote build agents currently accept Dockerfile definitions")
+	}
 
 	// A comma-separated --device names a fleet. Split it HERE, before anything
 	// resolves a device: deviceFlag is what target resolution and the cloud
@@ -2104,7 +2115,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, deployEnv)
 	if hashErr == nil {
 		var basesPinned bool
 		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
@@ -2230,7 +2241,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// unsupported builder combination, ...) falls straight through to the
 	// normal rebuild below exactly as if this block were absent.
 	pushed := false
-	if ociHint != nil && registryPushWouldUseDocker(opts.builder) {
+	_, directLLBFallback, directLLBErr := directStagefileLLBPlan(ctx, cwd, opts.dockerfile, imageBuilderDocker)
+	if directLLBErr != nil {
+		return directLLBErr
+	}
+	if ociHint != nil && (directLLBFallback || registryPushWouldUseDocker(opts.builder)) {
 		if err := tryPushExistingOCILayout(ctx, conn, regPort, ociHint, repo); err == nil {
 			cliSuccess("Reused already-built image for the registry push (skipped a redundant rebuild)")
 			pushed = true
@@ -3219,7 +3234,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		sf, nativeEligible := nativeBuildEligibility(cwd, dockerfile)
 		var depsHash string
 		if nativeEligible {
-			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, sf); hashErr == nil {
 				depsHash = h
 			} else {
 				nativeEligible = false

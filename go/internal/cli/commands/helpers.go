@@ -3411,6 +3411,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 
 	// Detect language from the project files on disk.
 	language := ""
+	platform := ""
 	projectType, _ := detectProjectType(dir) // ignore multiple-xcodeproj error for config init
 	switch projectType {
 	case "python":
@@ -3419,13 +3420,16 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 		language = "swift"
 	case "xcode":
 		language = "swift"
+	case "esp-idf":
+		platform = appconfig.PlatformWendyLite
 	}
 
-	entitlements := defaultEntitlements(language, "")
+	entitlements := defaultEntitlements(projectType, "")
 
 	newCfg := &appconfig.AppConfig{
 		AppID:        dirName,
 		Version:      "0.1.0",
+		Platform:     platform,
 		Language:     language,
 		Entitlements: entitlements,
 	}
