@@ -3806,7 +3806,12 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 
 	for {
 		selected, err := pickDeviceWithCloudAuth(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, cloudAuth)
+		var enroll *errDevicePickerEnroll
 		switch {
+		case errors.As(err, &enroll):
+			if err := enrollLocalPickerDevice(ctx, enroll.item, cloudAuth, suppressUpdateCheck); err != nil && !errors.Is(err, ErrUserCancelled) {
+				return nil, err
+			}
 		case errors.Is(err, errDevicePickerLogin):
 			if err := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); err != nil {
 				return nil, err
@@ -3839,6 +3844,15 @@ var (
 	errDevicePickerLogin     = errors.New("device picker requested cloud login")
 	errDevicePickerSwitchOrg = errors.New("device picker requested organization switch")
 )
+
+// errDevicePickerEnroll hands the highlighted row back without selecting it
+// for the command that opened the picker. After enrollment, Enter is still
+// required to choose a device for that command.
+type errDevicePickerEnroll struct {
+	item *tui.PickerItem
+}
+
+func (e *errDevicePickerEnroll) Error() string { return "device picker requested enrollment" }
 
 func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, cloudAuth *config.AuthConfig) (*SelectedDevice, error) {
 	excludeProviders = hideLocalProviders(excludeProviders)
@@ -3991,6 +4005,8 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		return nil, errDevicePickerLogin
 	case devicePickerSwitchOrg:
 		return nil, errDevicePickerSwitchOrg
+	case devicePickerEnroll:
+		return nil, dm.enroll
 	}
 	if dm.cancelled {
 		return nil, ErrUserCancelled
