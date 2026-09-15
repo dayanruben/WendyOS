@@ -426,10 +426,10 @@ var refreshAllCertsFn = refreshAllCerts
 // only when the user accepted, the refresh succeeded, and the retry
 // connected; in every other case the caller should surface the original
 // error (whose message already carries the refresh-certs hint).
-func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
+func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
 	certRejected := isCertRefreshableError(cause)
 	enrolledTimeout := isReachabilityTimeoutError(cause)
-	if jsonOutput || !isInteractiveTerminal() || !(certRejected || enrolledTimeout) {
+	if nonInteractive || jsonOutput || !isInteractiveTerminal() || !(certRejected || enrolledTimeout) {
 		return nil, false
 	}
 	var accepted bool
@@ -1145,6 +1145,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	for _, o := range opts {
 		o(&cfg)
 	}
+	ctx = robotRuntimePromptContext(ctx, cfg.nonInteractive)
 	// connectToAgent only ever returns a gRPC connection, so a BLE device is
 	// never a usable answer here — never scan for or offer one, whatever the
 	// caller passed. BLE-capable commands use resolveTarget + IncludeBluetooth.
@@ -1245,7 +1246,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	}
 
 	// No device configured — fall back to interactive picker.
-	if jsonOutput {
+	if cfg.nonInteractive || jsonOutput {
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
@@ -1292,7 +1293,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		}); ok {
 			conn = syncedConn
 		} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
-			refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			refreshedConn, ok := offerCertRefreshAndRetry(ctx, cfg.nonInteractive, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			})
 			if !ok {
@@ -2628,13 +2629,18 @@ func isCertRejectionError(addr string, err error) bool {
 		return false
 	}
 	msg := err.Error()
-	// A handshake ending in EOF got no TLS alert back, so nothing rejected
-	// anything: something accepted the connection and closed it. A port forward
-	// does exactly that when the far side is not listening -- QEMU's user-mode
-	// networking accepts on the host and only then finds the guest port closed.
-	// Only over loopback: elsewhere an EOF may be an on-path reset, and reading
-	// that as "not a TLS endpoint" would re-offer the plaintext rung.
-	if isLoopbackHost(addr) && strings.Contains(msg, "handshake failed: EOF") {
+	// Explicit TLS rejection signals take precedence over transport details.
+	if strings.Contains(msg, "remote error: tls:") || strings.Contains(msg, "certificate required") {
+		return true
+	}
+	// QEMU's user-mode networking accepts on the host before discovering that
+	// the guest port is closed. That ends the TLS probe in either EOF or a TCP
+	// read reset, without a TLS alert rejecting the certificate. Only exclude
+	// these over loopback: elsewhere the same failure may be an on-path reset,
+	// and reading that as "not a TLS endpoint" would re-offer plaintext.
+	loopbackReadReset := strings.Contains(msg, "handshake failed: read tcp ") &&
+		strings.Contains(msg, ": connection reset by peer")
+	if isLoopbackHost(addr) && (strings.Contains(msg, "handshake failed: EOF") || loopbackReadReset) {
 		return false
 	}
 	// A plaintext (unprovisioned) agent probed with TLS reports "first record
@@ -2646,9 +2652,7 @@ func isCertRejectionError(addr string, err error) bool {
 	if strings.Contains(msg, "first record does not look like a TLS handshake") {
 		return false
 	}
-	return strings.Contains(msg, "remote error: tls:") ||
-		strings.Contains(msg, "authentication handshake failed") ||
-		strings.Contains(msg, "certificate required")
+	return strings.Contains(msg, "authentication handshake failed")
 }
 
 // provisionedAgentAdvertisedMTLS takes a short pre-connection LAN discovery
@@ -3109,9 +3113,9 @@ func SuppressProvisioningHint() resolveOption {
 	}
 }
 
-// NonInteractive prevents resolveTarget from opening an interactive device
-// picker. When no device is specified in non-interactive mode, a clear error
-// is returned instead of attempting to open a TTY.
+// NonInteractive prevents resolveTarget and connectToAgent from opening a
+// device picker or certificate-refresh confirmation. When no device is
+// specified, a clear error is returned instead of attempting to open a TTY.
 func NonInteractive() resolveOption {
 	return func(c *resolveConfig) {
 		c.nonInteractive = true
@@ -3183,6 +3187,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	for _, o := range opts {
 		o(&cfg)
 	}
+	ctx = robotRuntimePromptContext(ctx, cfg.nonInteractive)
 
 	// An admin-entitled on-device container reaches the agent over its local
 	// unix socket; skip all discovery/selection when WENDY_AGENT_SOCKET is set.
@@ -3293,7 +3298,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				}); ok {
 					conn = syncedConn
 				} else if errors.Is(err, errProvisionedAgentUnauthorized) {
-					refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+					refreshedConn, ok := offerCertRefreshAndRetry(ctx, cfg.nonInteractive, err, func() (*grpcclient.AgentConnection, error) {
 						return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
 					})
 					if !ok {
@@ -3406,6 +3411,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 
 	// Detect language from the project files on disk.
 	language := ""
+	platform := ""
 	projectType, _ := detectProjectType(dir) // ignore multiple-xcodeproj error for config init
 	switch projectType {
 	case "python":
@@ -3414,13 +3420,16 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 		language = "swift"
 	case "xcode":
 		language = "swift"
+	case "esp-idf":
+		platform = appconfig.PlatformWendyLite
 	}
 
-	entitlements := defaultEntitlements(language, "")
+	entitlements := defaultEntitlements(projectType, "")
 
 	newCfg := &appconfig.AppConfig{
 		AppID:        dirName,
 		Version:      "0.1.0",
+		Platform:     platform,
 		Language:     language,
 		Entitlements: entitlements,
 	}

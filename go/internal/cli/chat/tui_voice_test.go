@@ -226,6 +226,49 @@ func TestUIVoiceCorrectionCancelsOldTurnBeforeStartingNewAndDropsLateResult(t *t
 	}
 }
 
+func TestUIVoiceCorrectionRunsBeforeQueuedTextWithoutLosingItsReply(t *testing.T) {
+	started := make(chan string, 3)
+	provider := uiProviderFunc(func(ctx context.Context, messages []Message, tools []Tool, emit func(string)) (Message, error) {
+		prompt := messages[len(messages)-1].Content
+		started <- prompt
+		if strings.Contains(prompt, "first task") {
+			<-ctx.Done()
+			return Message{}, ctx.Err()
+		}
+		return Message{Content: "Task finished."}, nil
+	})
+	m := uiModel(t, provider, &uiExecutor{}, false)
+	session := uiConnectVoice(t, m)
+	uiSendVoice(t, m, session, VoiceEvent{Type: "delegation", DelegationID: "old", Text: "first task"})
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("voice task did not start")
+	}
+	m.composer.SetValue("typed followup")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiSendVoice(t, m, session, VoiceEvent{Type: "delegation", DelegationID: "new", Text: "corrected task"})
+	uiDrainTurn(t, m)
+	for _, want := range []string{"corrected task", "typed followup"} {
+		select {
+		case got := <-started:
+			if !strings.Contains(got, want) {
+				t.Fatalf("started %q, want %q", got, want)
+			}
+		default:
+			t.Fatalf("request %q never started", want)
+		}
+	}
+	reply := uiNextVoiceReply(t, session)
+	if reply.id != "new" || reply.text != "Task finished." {
+		t.Fatalf("queued text lost or replaced the completed voice result: %+v", reply)
+	}
+	uiVoiceStopAndWait(t, m, session)
+	if len(session.replies) != 0 || len(m.queuedPrompts) != 0 {
+		t.Fatal("queued typed messages should provide voice context without speaking another reply")
+	}
+}
+
 func TestUIVoiceTypedMessagesRemainUsableAndContextOnly(t *testing.T) {
 	provider := uiProviderFunc(func(context.Context, []Message, []Tool, func(string)) (Message, error) {
 		return Message{Content: "Typed answer."}, nil
@@ -257,6 +300,41 @@ func TestUIVoiceTypedMessagesRemainUsableAndContextOnly(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.View()), "mic muted") {
 		t.Fatal("voice-off state needs a visible muted indicator")
 	}
+}
+
+func TestUIVoiceUnknownCommandPreservesActiveTurn(t *testing.T) {
+	started, canceled := make(chan struct{}), make(chan struct{})
+	provider := uiProviderFunc(func(ctx context.Context, messages []Message, tools []Tool, emit func(string)) (Message, error) {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		return Message{}, ctx.Err()
+	})
+	m := uiModel(t, provider, &uiExecutor{}, false)
+	session := uiConnectVoice(t, m)
+	m.submit("Inspect my device")
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("backend turn did not start")
+	}
+	events, turnID := m.events, m.turnID
+	m.composer.SetValue("/voice status")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.active || m.canceling || m.events != events || m.turnID != turnID {
+		t.Fatal("an unknown voice command replaced the running task")
+	}
+	if m.composer.Value() != "/voice status" {
+		t.Fatal("the unsubmitted command should remain editable")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	uiDrainTurn(t, m)
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("Escape lost access to the original task's cancellation")
+	}
+	uiVoiceStopAndWait(t, m, session)
 }
 
 func TestUIVoiceFailureFallsBackToTextAndClosesSession(t *testing.T) {
@@ -413,6 +491,46 @@ func TestUIVoiceQueuedResultIsDiscardedWhenAnotherDelegationArrives(t *testing.T
 	if len(session.replies) != 0 {
 		t.Fatal("old queued result was spoken after the corrected task")
 	}
+}
+
+func TestUIVoiceIdleEscapeDiscardsQueuedResult(t *testing.T) {
+	provider := uiProviderFunc(func(context.Context, []Message, []Tool, func(string)) (Message, error) {
+		return Message{Content: "A result waiting to be spoken."}, nil
+	})
+	m := uiModel(t, provider, &uiExecutor{}, false)
+	session := newUIVoiceSession()
+	gate := make(chan struct{})
+	session.contextGate = gate
+	m.opts.VoiceFactory = func(context.Context) (VoiceSession, error) { return session, nil }
+	m.startVoice()
+	m.Update(uiNextVoiceEvent(t, m))
+	uiSendVoice(t, m, session, VoiceEvent{Type: "ready"})
+	uiSendVoice(t, m, session, VoiceEvent{Type: "delegation", DelegationID: "task", Text: "check my device"})
+	uiDrainTurn(t, m)
+	if m.active {
+		t.Fatal("the backend should have finished before Escape")
+	}
+	queuedReply := m.voiceActionTail
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	interrupt := m.voiceActionTail
+	close(gate)
+	for _, done := range []<-chan struct{}{queuedReply, interrupt} {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("queued speech or interruption failed to finish")
+		}
+	}
+	if session.interrupts.Load() != 1 || !m.voiceEnabled || m.quitting {
+		t.Fatal("idle Escape should interrupt playback and keep voice available")
+	}
+	if len(session.replies) != 0 {
+		t.Fatal("a completed task's queued result was spoken after idle Escape")
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "A result waiting to be spoken.") {
+		t.Fatal("interrupting queued speech should preserve the visible result")
+	}
+	uiVoiceStopAndWait(t, m, session)
 }
 
 func TestUIVoiceBackendContextIsNotDisplayedAsUserSpeech(t *testing.T) {
