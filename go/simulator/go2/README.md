@@ -72,7 +72,7 @@ Declare ROS in the application's `wendy.json`:
       "distro": "humble",
       "rmw": "rmw_cyclonedds_cpp",
       "domainId": 0,
-      "discoveryScope": "app"
+      "discoveryScope": "host"
     }
   }
 }
@@ -80,7 +80,7 @@ Declare ROS in the application's `wendy.json`:
 
 Run `wendy --device vm:go2-sim run` from the application project. Wendy resolves
 declared ROS applications onto the profile's guest host network and loopback
-ROS bus, checking conflicting domain, middleware and discovery settings before
+ROS bus, normalizing host discovery to app discovery and checking domain and middleware settings before
 deployment. Source manifests are not rewritten. The managed runtime installs
 guest firewall rules that confine UDP RTPS to loopback, then drops its network
 administration capability. Application downloads and ordinary networking work.
@@ -92,28 +92,49 @@ domain and port; it can also block unrelated UDP carrying those bytes. The
 agent loads fixed filter modules only for a validated managed Go2 runtime on a
 WendyOS VM. Both address families must be protected before DDS starts.
 
-Standard applications publish `geometry_msgs/msg/Twist` on `/cmd_vel`.
-Start the publisher with a zero command, open the sandbox, select its ROS
-command source, and choose **Give app control**. Exactly one browser or DDS
-publisher owns actuation. A grant is required for native sport and LowCmd
-control too. The runtime discovers the actual middleware publisher identity;
+The examples publish native `unitree_api/msg/Request` Move messages on
+`/api/sport/request`, matching physical Go2 robots. `/cmd_vel` remains available
+for standard ROS integrations.
+On a managed Go2 VM, `wendy run` starts a new driving app with control
+automatically. Its first fresh command grants control to its DDS publisher,
+replacing the previous walking or browser controller. Start a publisher with
+zero velocity so handoff stops the previous command before the app moves.
+Each publisher gets one automatic grant. Older publishers cannot take control
+back by continuing to send commands. Exactly one browser or DDS publisher owns
+actuation. Native sport publishers also receive a managed grant when their first request is
+a valid bounded Move. Queries, posture requests and LowCmd still require an explicit
+grant in the sandbox. The runtime uses the actual middleware publisher identity;
 it does not guess ownership from a node name.
+Automatic handoff requires the robot to be standing or walking in sport mode.
+It does not switch out of native joint control or a posture transition.
+
+Automatic handoff follows publisher startup, including apps started outside
+`wendy run`. Restarting the runtime discovers still-running publishers again,
+and the last newly discovered eligible publisher takes control. Standalone
+runtimes use manual grants by default; set `GO2_AUTO_APP_CONTROL=1` to enable
+the same automatic handoff. The sandbox's source selector and **Give app
+control** remain available to grant an eligible publisher control when the
+robot has no owner.
 
 The source selector shows ROS node names, including **Patrol**, **Roam**, and
 **Teleop** for the samples. If a name is unavailable, it uses a stable numbered
 label such as **Velocity app 1**. The full publisher identity is available in
 the option's tooltip. Status updates preserve your selection and leave an open
 selector alone. An app marked **restart app** needs a new publisher after a
-pause or reset before it can receive control.
+pause, reset or release before it can receive control.
 
 | Observations | Nominal rate |
 | --- | --- |
 | `/lowstate`, `/lf/lowstate` | 500 / 50 Hz |
 | `/sportmodestate`, `/lf/sportmodestate` | 50 Hz in sport mode |
 | `/imu/data`, `/utlidar/imu` | 200 Hz |
-| `/joint_states`, `/odom`, `/simulation/ground_truth` | 50 Hz |
-| `/scan`, `/utlidar/cloud` | 10 Hz |
+| `/joint_states`, `/odom`, `/utlidar/robot_odom`, `/simulation/ground_truth` | 50 Hz |
+| `/scan`, `/utlidar/cloud`, `/utlidar/cloud_base` | 10 Hz |
 | `/camera/color/image_raw`, `/camera/color/camera_info` | 15 Hz, 640×360 RGB |
+
+`/utlidar/cloud` uses frame `utlidar_lidar`; `/utlidar/cloud_base` contains the
+same measured points transformed to `base_link`. `/utlidar/imu` uses `utlidar_imu`.
+The native odometry topic and `/odom` share their capture, pose and covariance.
 
 `/tf` supplies `odom → base_link`; `/tf_static` supplies the IMU, lidar,
 camera and optical mounting transforms. A localization node can own
@@ -158,9 +179,11 @@ the same seeded mask to scan and cloud. Fault settings persist across world rese
 Velocity commands expire after 200 ms and are acceleration-limited to
 0.8 m/s forward, 0.5 m/s lateral and 1 rad/s yaw. External LowCmd expires after
 40 ms and enters damping. It never falls back into autonomous walking.
-Pause and reset revoke all grants and reject publishers from the previous
-world. Restart the command publisher and explicitly grant it again. Resume
-does not rearm controls. Fallen robots require reset.
+Pause, reset and **Release app control** revoke grants and block existing
+publishers. Resume the world before restarting a driving app to get a new
+automatic grant. A publisher first seen while the world is paused or otherwise
+unable to accept control does not receive an automatic grant later. Resume
+alone does not rearm controls. Fallen robots require reset.
 
 HTTP endpoints are `/api/health`, `/api/status`, `/api/profile`, `/api/scene`,
 `/api/scene/state`, `/api/scene/lidar` and `/camera.jpg`. The scene endpoint
