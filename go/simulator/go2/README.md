@@ -52,9 +52,16 @@ ownership. Stopping a user application leaves the managed robot running.
 
 ## Deploy a ROS application
 
-Try the [Go2 roaming sample](examples/roam/README.md) for autonomous obstacle
-avoidance with Start/Stop controls. It runs beside a local browser preview or
-as a ROS application deployed to a Go2 VM.
+Explore the [sample apps](examples/README.md):
+
+- [Roam](examples/roam/README.md): autonomous obstacle avoidance with Start/Stop controls.
+- [Patrol](examples/patrol/README.md): a finite square or configurable waypoint route.
+- [Teleop](examples/teleop/README.md): browser driving with hold-to-drive keys and touch controls.
+- [Sensors](examples/sensors/README.md): camera, lidar, odometry trail, IMU and joint dashboard.
+
+Each is a standalone ROS application deployable to a Go2 VM. Roam also has a
+local runner for the standalone browser preview. The read-only sensor dashboard
+can run alongside any driving app.
 
 Declare ROS in the application's `wendy.json`:
 
@@ -91,6 +98,13 @@ command source, and choose **Give app control**. Exactly one browser or DDS
 publisher owns actuation. A grant is required for native sport and LowCmd
 control too. The runtime discovers the actual middleware publisher identity;
 it does not guess ownership from a node name.
+
+The source selector shows ROS node names, including **Patrol**, **Roam**, and
+**Teleop** for the samples. If a name is unavailable, it uses a stable numbered
+label such as **Velocity app 1**. The full publisher identity is available in
+the option's tooltip. Status updates preserve your selection and leave an open
+selector alone. An app marked **restart app** needs a new publisher after a
+pause or reset before it can receive control.
 
 | Observations | Nominal rate |
 | --- | --- |
@@ -209,6 +223,13 @@ In a separate terminal, also from this directory:
 
 ```sh
 node tests/viewer.browser.mjs http://127.0.0.1:8899
+```
+
+The control-page regression runs without a simulator and uses mocked status
+responses to check selection, publisher names, and field editing:
+
+```sh
+node tests/controls.browser.mjs
 ```
 
 The test requires Playwright and its Chromium browser. If Playwright is installed

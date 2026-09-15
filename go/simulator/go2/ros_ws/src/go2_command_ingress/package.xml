@@ -11,6 +11,7 @@
   <depend>rmw</depend>
   <depend>unitree_api</depend>
   <depend>unitree_go</depend>
+  <depend>cyclonedds</depend>
   <test_depend>rclpy</test_depend>
   <export>
     <build_type>ament_cmake</build_type>

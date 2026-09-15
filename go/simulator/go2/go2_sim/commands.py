@@ -15,6 +15,18 @@ import time
 from .simulation import COMMAND_TIMEOUT
 
 
+def publisher_label(envelope):
+    """Accept bounded ROS names for display, independently of command ownership."""
+    name = envelope.get("node_name")
+    namespace = envelope.get("node_namespace")
+    token = r"[A-Za-z_][A-Za-z0-9_]*"
+    if (not isinstance(name, str) or len(name) > 128 or not re.fullmatch(token, name)
+            or not isinstance(namespace, str) or len(namespace) > 128
+            or not re.fullmatch(r"/|(?:/" + token + r")+", namespace)):
+        return {}
+    return {"node_name": name, "node_namespace": namespace}
+
+
 class ROSCommands:
     def __init__(self, runtime, path, *, monotonic_ns=time.monotonic_ns, wall_ns=time.time_ns):
         self.runtime = runtime
@@ -83,6 +95,7 @@ class ROSCommands:
             "accepted": self.accepted, "rejected": self.rejected,
             "last_error": self.last_error,
             "sources": [{"publisher_gid": gid, "kind": source["kind"],
+                         **publisher_label(source),
                          "age_ms": (now - source["last_received_ns"]) / 1e6,
                          "requires_restart": gid in self.blocked}
                         for gid, source in self.sources.items()],
@@ -120,8 +133,13 @@ class ROSCommands:
                          source_time <= previous["source_timestamp_ns"]):
             self.rejected += 1
             return False
+        label = publisher_label(envelope)
+        if "node_name" not in envelope and "node_namespace" not in envelope:
+            # Large native payloads may leave no room for optional metadata.
+            # A previously resolved name belongs to this exact endpoint GID.
+            label = publisher_label(previous or {})
         self.sources[gid] = {"kind": kind, "last_received_ns": received,
-                             "source_timestamp_ns": source_time}
+                             "source_timestamp_ns": source_time, **label}
         owned = (gid == self.owner and gid not in self.blocked and self.token is not None and
                  self.token == self.runtime.sim.owner and received > self.granted_ns and
                  source_time > self.granted_wall_ns)

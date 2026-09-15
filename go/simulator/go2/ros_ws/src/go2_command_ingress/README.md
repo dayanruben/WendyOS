@@ -34,6 +34,8 @@ Each datagram is UTF-8 JSON:
 {
   "kind": "twist",
   "publisher_gid": "<hex of all RMW_GID_STORAGE_SIZE bytes>",
+  "node_name": "wendy_go2_patrol",
+  "node_namespace": "/",
   "source_timestamp_ns": 123456789,
   "received_ns": 987654321,
   "velocity": [0.35, 0.0, 0.4]
@@ -55,6 +57,12 @@ motor targets, or CRC. A decodable message is not authorization to execute it:
 native finite values, limits, CRC, API support, and mode/owner requirements
 belong to the runtime's admission layer.
 
+`node_name` and `node_namespace` are optional display metadata. They come from
+an exact DDS endpoint identity match in the ROS graph. Names never identify a
+control owner or grant. Each name is limited to 128 ASCII characters and must
+follow ROS name rules. If adding names would exceed the datagram limit, the
+ingress omits them and preserves the full native payload.
+
 The velocity contains body-frame forward, lateral, and yaw rates. Nonzero
 vertical, roll, or pitch components are rejected. Numeric speed/acceleration
 limits belong to runtime admission. `source_timestamp_ns` is the actual RMW
@@ -64,16 +72,23 @@ comparable to a Python receiver's `time.monotonic_ns()` on the same kernel. It
 does not establish how long the sample waited in DDS. The publisher GID comes
 from `rclcpp::MessageInfo`, not ROS graph-name heuristics.
 
-**Humble CycloneDDS identity caveat:** the tested `rmw_cyclonedds_cpp` 1.3.4
+The tested `rmw_cyclonedds_cpp` 1.3.4
 returns an opaque publication handle in message-info GID bytes, while ROS graph
 endpoint GIDs contain DDS GUIDs. They do not compare equal; this is
 [upstream issue 377](https://github.com/ros2/rmw_cyclonedds/issues/377). The ingress
-preserves the actual metadata, without inventing a mapping. Runtime grants must
-use IDs observed on ingress, and treat an ingress restart as an ownership
-boundary. Do not select an endpoint by graph GID and expect it to match this
-field on that middleware. The integration test verifies stable IDs for repeated
-samples and different IDs for two publishers; graph-GID equality is additionally
-verified with FastDDS.
+keeps the received GID unchanged for runtime grants. To obtain a display name,
+it traverses at most 128 DDS entities in its own process and ROS domain, then
+calls `dds_get_matched_publication_data` with the received publication handle.
+The returned writer GUID must exactly match a ROS graph endpoint. This uses
+public CycloneDDS APIs and no private RMW structures or node-name guesses.
+[CycloneDDS matched endpoint implementation](https://github.com/eclipse-cyclonedds/cyclonedds/blob/0.10.5/src/core/ddsc/src/dds_matched.c)
+resolves handles through the reader's shared domain entity index.
+
+Metadata refresh runs once per second in a separate callback group and executor
+thread. Command callbacks only read the cache. The cache is limited to 4096
+sources, and unresolved or conflicting names are omitted. FastDDS uses the
+direct exact GID match. Runtime grants always use the IDs received with
+commands, and an ingress restart remains an ownership boundary.
 
 ## Admission, reset, and stale data
 
@@ -118,7 +133,8 @@ colcon test-result --verbose
 
 The CTest integration test creates a temporary Unix socket and actual Python
 ROS publishers, verifies stable and distinct source IDs (plus graph equality on
-FastDDS), checks timestamps and finite planar values, and exercises receiver
+FastDDS), and checks exact names with simultaneous nodes and multiple publishers
+on one node. It checks timestamps and finite planar values and exercises receiver
 backpressure and disappearance/recreation. Native tests deserialize actual CDR
 using generated Python types, compare all fields and fixed arrays, check source
 identity stability, and verify oversize rejection followed by recovery. It

@@ -87,3 +87,81 @@ def test_browser_and_ros_cannot_own_controller_together(bus):
     commands.runtime.sim.arm()
     with pytest.raises(PermissionError, match="another"):
         commands.grant("a" * 48)
+
+
+def test_node_labels_are_display_metadata_and_do_not_grant_control(bus):
+    commands, clock = bus
+    packet = envelope(clock) | {"node_name": "wendy_go2_patrol", "node_namespace": "/apps/robot"}
+    assert not commands.admit(packet)
+    source = commands.status()["sources"][0]
+    assert source["node_name"] == "wendy_go2_patrol"
+    assert source["node_namespace"] == "/apps/robot"
+    assert commands.owner is None
+    with pytest.raises(ValueError, match="discovered"):
+        commands.grant("wendy_go2_patrol")
+    commands.grant(packet["publisher_gid"])
+    clock.tick()
+    assert commands.admit(envelope(clock) | {"node_name": "another_name", "node_namespace": "/"})
+    assert commands.owner == packet["publisher_gid"]
+
+
+@pytest.mark.parametrize("metadata", [
+    {"node_name": "not/a/node", "node_namespace": "/"},
+    {"node_name": "<script>", "node_namespace": "/"},
+    {"node_name": "bad\nname", "node_namespace": "/"},
+    {"node_name": "a" * 129, "node_namespace": "/"},
+    {"node_name": "app", "node_namespace": "/" + "a" * 128},
+    {"node_name": "app", "node_namespace": "relative"},
+    {"node_name": "app", "node_namespace": "/trailing/"},
+    {"node_name": "app", "node_namespace": "/double//slash"},
+    {"node_name": "app", "node_namespace": "/9invalid"},
+    {"node_name": "app"}, {"node_namespace": "/"},
+    {"node_name": 7, "node_namespace": "/"},
+])
+def test_invalid_optional_labels_never_change_command_admission(bus, metadata):
+    commands, clock = bus
+    commands.admit(envelope(clock))
+    commands.grant("a" * 48)
+    clock.tick()
+    assert commands.admit(envelope(clock) | metadata)
+    source = commands.status()["sources"][0]
+    assert "node_name" not in source
+    assert "node_namespace" not in source
+
+
+def test_same_named_nodes_keep_distinct_publisher_grants_and_reset_fences(bus):
+    commands, clock = bus
+    metadata = {"node_name": "same_node", "node_namespace": "/"}
+    commands.admit(envelope(clock, "a" * 48) | metadata)
+    commands.admit(envelope(clock, "b" * 48) | metadata)
+    assert len(commands.status()["sources"]) == 2
+    commands.grant("a" * 48)
+    clock.tick()
+    assert not commands.admit(envelope(clock, "b" * 48) | metadata)
+    assert commands.admit(envelope(clock, "a" * 48) | metadata)
+    commands.revoke()
+    commands.runtime.sim.reset()
+    with pytest.raises(PermissionError, match="restart"):
+        commands.grant("a" * 48)
+
+
+def test_reordered_packets_cannot_replace_a_publisher_label(bus):
+    commands, clock = bus
+    packet = envelope(clock) | {"node_name": "new_name", "node_namespace": "/"}
+    commands.admit(packet)
+    assert not commands.admit(packet | {"node_name": "old_name"})
+    assert commands.status()["sources"][0]["node_name"] == "new_name"
+
+
+def test_optional_metadata_omission_preserves_only_the_same_endpoint_label(bus):
+    commands, clock = bus
+    commands.admit(envelope(clock) | {"node_name": "app", "node_namespace": "/examples"})
+    clock.tick()
+    commands.admit(envelope(clock))
+    assert commands.status()["sources"][0]["node_name"] == "app"
+    assert commands.status()["sources"][0]["node_namespace"] == "/examples"
+    commands.admit(envelope(clock, "b" * 48))
+    assert "node_name" not in commands.status()["sources"][1]
+    clock.tick()
+    commands.admit(envelope(clock) | {"node_name": "invalid/name", "node_namespace": "/"})
+    assert "node_name" not in commands.status()["sources"][0]

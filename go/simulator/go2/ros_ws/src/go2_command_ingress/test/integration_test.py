@@ -17,7 +17,7 @@ import time
 
 import rclpy
 from rclpy.utilities import get_rmw_implementation_identifier
-from rclpy.serialization import deserialize_message
+from rclpy.serialization import deserialize_message, serialize_message
 from geometry_msgs.msg import Twist
 from unitree_api.msg import Request
 from unitree_go.msg import LowCmd
@@ -35,6 +35,17 @@ def receive(receiver, publisher, message, process, *, timeout=5.0):
         except socket.timeout:
             continue
     raise AssertionError("no attributed command datagram arrived")
+
+
+def receive_named(receiver, publisher, message, process, name, namespace, *, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        packet = receive(receiver, publisher, message, process, timeout=deadline - time.monotonic())
+        if packet.get("node_name") is not None:
+            assert packet["node_name"] == name, packet
+            assert packet["node_namespace"] == namespace, packet
+            return packet
+    raise AssertionError(f"no exact publisher name resolved for {namespace}/{name}")
 
 
 def drain(receiver):
@@ -58,16 +69,19 @@ def main():
         process = subprocess.Popen([executable], env={**os.environ, "GO2_COMMAND_SOCKET": path},
                                    stdout=logs, stderr=logs)
         rclpy.init()
-        node = rclpy.create_node("go2_ingress_test_publisher")
+        node = rclpy.create_node("go2_ingress_test_publisher", namespace="/tests/first")
+        other_node = rclpy.create_node("second_go2_publisher", namespace="/tests/second")
         first = node.create_publisher(Twist, "/cmd_vel", 1)
         second = node.create_publisher(Twist, "/cmd_vel", 1)
+        other = other_node.create_publisher(Twist, "/cmd_vel", 1)
         sport = node.create_publisher(Request, "/api/sport/request", 1)
         motion = node.create_publisher(Request, "/api/motion_switcher/request", 1)
         lowcmd = node.create_publisher(LowCmd, "/lowcmd", 1)
         try:
             message = Twist()
             message.linear.x, message.linear.y, message.angular.z = 0.35, -0.2, 0.4
-            packet = receive(receiver, first, message, process)
+            packet = receive_named(receiver, first, message, process,
+                                   "go2_ingress_test_publisher", "/tests/first")
             assert packet["kind"] == "twist"
             assert packet["velocity"] == [0.35, -0.2, 0.4]
             assert 0 <= time.monotonic_ns() - packet["received_ns"] < 5_000_000_000
@@ -83,12 +97,18 @@ def main():
             repeated_packet = receive(receiver, first, message, process)
             assert repeated_packet["publisher_gid"] == first_gid
             drain(receiver)
-            second_packet = receive(receiver, second, message, process)
+            second_packet = receive_named(receiver, second, message, process,
+                                          "go2_ingress_test_publisher", "/tests/first")
             assert second_packet["publisher_gid"] != first_gid
             if middleware == "rmw_fastrtps_cpp":
                 assert second_packet["publisher_gid"] in gids
             elif middleware == "rmw_cyclonedds_cpp":
-                print("Cyclone per-message IDs are kept opaque; graph GUID parity is not assumed (rmw_cyclonedds#377)", flush=True)
+                print("Cyclone handles resolve through matched DDS writer GUIDs; graph GID parity is not assumed", flush=True)
+            drain(receiver)
+            other_packet = receive_named(receiver, other, message, process,
+                                         "second_go2_publisher", "/tests/second")
+            assert other_packet["publisher_gid"] not in {first_gid, second_packet["publisher_gid"]}
+            print("exact publisher node names distinguish simultaneous nodes and preserve separate endpoint IDs: PASS", flush=True)
             print("actual publisher GIDs, clocks, and planar velocity envelope: PASS", flush=True)
 
             # Invalid commands cannot leak non-JSON numbers or discarded axes.
@@ -122,7 +142,8 @@ def main():
             native_gids = set()
             for kind, publisher in (("sport", sport), ("motion_switcher", motion)):
                 drain(receiver)
-                native = receive(receiver, publisher, request, process)
+                native = receive_named(receiver, publisher, request, process,
+                                       "go2_ingress_test_publisher", "/tests/first")
                 assert native["kind"] == kind
                 assert "velocity" not in native
                 assert len(native["publisher_gid"]) == 48
@@ -136,6 +157,15 @@ def main():
                 assert repeat["publisher_gid"] == native["publisher_gid"]
             assert len(native_gids) == 2
             assert first_gid not in native_gids
+
+            # Optional names must not shrink the existing 1920-byte CDR limit.
+            large_request = Request()
+            large_request.binary = [37] * (1920 - len(serialize_message(large_request)))
+            assert len(serialize_message(large_request)) == 1920
+            drain(receiver)
+            near_limit = receive(receiver, sport, large_request, process)
+            assert deserialize_message(bytes.fromhex(near_limit["payload_hex"]), Request) == large_request
+            print("optional labels preserve the native CDR size limit: PASS", flush=True)
 
             motors = LowCmd()
             motors.head = [0xFE, 0xEF]
@@ -157,7 +187,8 @@ def main():
             motors.reserve = 123456789
             motors.crc = 0x12345678
             drain(receiver)
-            native = receive(receiver, lowcmd, motors, process)
+            native = receive_named(receiver, lowcmd, motors, process,
+                                   "go2_ingress_test_publisher", "/tests/first")
             assert native["kind"] == "lowcmd"
             decoded = deserialize_message(bytes.fromhex(native["payload_hex"]), LowCmd)
             assert len(decoded.motor_cmd) == 20
@@ -217,6 +248,7 @@ def main():
             assert recovered["publisher_gid"] == first_gid
             print("receiver disappearance and recreation: PASS", flush=True)
         finally:
+            other_node.destroy_node()
             node.destroy_node()
             rclpy.shutdown()
             process.send_signal(signal.SIGINT)

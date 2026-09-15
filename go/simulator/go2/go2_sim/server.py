@@ -19,6 +19,15 @@ STATIC_ASSETS = {"/viewer.js": "viewer.js", "/lidar-view.js": "lidar-view.js",
                  "/vendor/OrbitControls.js": "vendor/OrbitControls.js"}
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # A page load opens ~8 parallel connections (page, three.js modules, the
+    # scene/state/lidar/status polls). The default backlog of 5 overflows while
+    # physics/render briefly hold the GIL, so the kernel resets the extras
+    # (ERR_CONNECTION_RESET on viewer.js). A deeper queue holds them instead.
+    request_queue_size = 128
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -160,8 +169,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     runtime = Runtime(render=os.environ.get("GO2_RENDER", "1") != "0",
                       ros=os.environ.get("GO2_ROS", "0") == "1")
-    server = ThreadingHTTPServer((os.environ.get("GO2_HOST", "127.0.0.1"),
-                                  int(os.environ.get("GO2_PORT", "8890"))), Handler)
+    server = Server((os.environ.get("GO2_HOST", "127.0.0.1"),
+                     int(os.environ.get("GO2_PORT", "8890"))), Handler)
     server.runtime = runtime
     runtime.start()
     def shutdown(*_):

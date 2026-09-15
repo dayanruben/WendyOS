@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+import time
 
 import numpy as np
 
@@ -14,6 +15,7 @@ CAMERA_FRAME = "camera_optical_frame"
 def preview_jpeg(runtime):
     """Return the retained sensor exposure or describe why none is available."""
     with runtime.lock:
+        runtime.camera_demand = time.monotonic()
         if not runtime.render:
             raise RuntimeError("Camera rendering is disabled for this runtime (GO2_RENDER=0).")
         if runtime.errors.get("render"):

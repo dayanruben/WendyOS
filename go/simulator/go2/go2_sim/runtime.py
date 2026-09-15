@@ -69,6 +69,7 @@ class Runtime:
         self.camera_frame = None
         self.camera_jpeg = None
         self.camera_frames = 0
+        self.camera_demand = 0.0
         self.stop_event = threading.Event()
         self.render = render
         # Software OpenGL is needed only for actual camera sensor exposures.
@@ -257,6 +258,7 @@ class Runtime:
                 started = time.perf_counter()
                 thread_started = time.thread_time()
                 stages = {}
+                wanted = self.camera_wanted()
                 with self.lock:
                     stages["capture_lock_wait"] = (time.perf_counter() - started) * 1000
                     data.qpos[:] = self.sim.data.qpos
@@ -267,7 +269,7 @@ class Runtime:
                     epoch = self.sim.epoch
                     generation = self.observation_generation
                     wall_timestamp_ns = time.time_ns()
-                    emit_camera = (self.sensor_settings["camera_enabled"]
+                    emit_camera = (wanted and self.sensor_settings["camera_enabled"]
                                    and self.sim.mode not in {"paused", "fault"})
                 stages["capture_lock"] = (time.perf_counter() - started) * 1000
                 if not emit_camera:
@@ -320,6 +322,19 @@ class Runtime:
         finally:
             if renderer is not None:
                 renderer.close()
+
+    def camera_wanted(self):
+        """Render the sensor camera only while something consumes it: a recent
+        browser /camera.jpg request or a live ROS image subscriber. Software
+        OpenGL is orders slower than a device GPU, so an always-on exposure loop
+        would run flat-out and starve wall-paced physics."""
+        if time.monotonic() - self.camera_demand < 2.0:
+            return True
+        node = getattr(self.ros_bridge, "slow_node", None)
+        try:
+            return bool(node and node.image_pub.get_subscription_count())
+        except Exception:  # ponytail: any rmw hiccup keeps the camera live
+            return True
 
     def command(self, values, token):
         with self.lock:

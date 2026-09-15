@@ -98,6 +98,9 @@ def test_runtime_renders_only_sensor_camera_and_fences_old_exposures(monkeypatch
         raise AssertionError("timed out waiting for camera renderer")
 
     monkeypatch.setattr(mujoco, "Renderer", Renderer)
+    # This test exercises the exposure/fencing path; hold the camera in demand
+    # so the on-demand gate stays open. See test_camera_wanted_gates_render.
+    monkeypatch.setattr(Runtime, "camera_wanted", lambda self: True)
     runtime = Runtime(render=True)
     runtime.start()
     try:
@@ -151,6 +154,7 @@ def test_live_camera_preview_encodes_the_same_mujoco_exposure_retained_for_ros()
         deadline = time.monotonic() + 5
         while runtime.camera_frame is None and time.monotonic() < deadline:
             assert runtime.error is None, runtime.error
+            runtime.camera_demand = time.monotonic()  # keep the on-demand gate open
             time.sleep(0.01)
         with runtime.lock:
             frame = runtime.camera_frame
