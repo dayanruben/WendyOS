@@ -7,13 +7,10 @@ package commands
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
+	"crypto/mldsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,9 +18,12 @@ import (
 	"testing"
 )
 
-func testKey(t *testing.T) *ecdsa.PrivateKey {
+// testKey mints an operator credential. ML-DSA-65 since WDY-3032 — the DPoP
+// and token paths refuse anything else, so an EC key here would only test a
+// rejection path.
+func testKey(t *testing.T) *mldsa.PrivateKey {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
 	if err != nil {
 		t.Fatalf("generating test key: %v", err)
 	}
@@ -34,19 +34,20 @@ func testKey(t *testing.T) *ecdsa.PrivateKey {
 // against the server silently stops matching.
 func TestJWKThumbprintMatchesRFC7638Construction(t *testing.T) {
 	key := testKey(t)
-	got, err := jwkThumbprint(&key.PublicKey)
+	got, err := operatorJWKThumbprint(key)
 	if err != nil {
-		t.Fatalf("jwkThumbprint: %v", err)
+		t.Fatalf("operatorJWKThumbprint: %v", err)
 	}
 
 	// Recompute independently: canonical JSON with members in lexical order,
-	// SHA-256, base64url without padding.
-	jwk, err := ecPublicJWK(&key.PublicKey)
+	// SHA-256, base64url without padding. RFC 9964 puts "alg" in the AKP
+	// thumbprint input, unlike EC.
+	jwk, _, err := operatorPublicJWK(key)
 	if err != nil {
-		t.Fatalf("ecPublicJWK: %v", err)
+		t.Fatalf("operatorPublicJWK: %v", err)
 	}
 	canonical, err := json.Marshal(map[string]string{
-		"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"],
+		"alg": jwk["alg"], "kty": jwk["kty"], "pub": jwk["pub"],
 	})
 	if err != nil {
 		t.Fatalf("marshaling canonical JWK: %v", err)
@@ -56,47 +57,6 @@ func TestJWKThumbprintMatchesRFC7638Construction(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("thumbprint mismatch:\n got %s\nwant %s", got, want)
-	}
-}
-
-// Go's big.Int.Bytes() drops leading zero bytes, so a coordinate that happens
-// to start with 0x00 would produce a 31-byte value and a different thumbprint.
-// Roughly 1 key in 256 per coordinate — the kind of bug that passes CI and
-// fails in the field.
-func TestLeftPadPadsCoordinates(t *testing.T) {
-	raw := leftPad([]byte{1}, 32)
-	if len(raw) != 32 {
-		t.Fatalf("x coordinate is %d bytes, want 32 (left-padded)", len(raw))
-	}
-	if raw[31] != 1 {
-		t.Fatalf("x coordinate value not right-aligned: %v", raw[24:])
-	}
-}
-
-// JOSE requires raw R||S, not the ASN.1 DER that ecdsa.SignASN1 returns.
-func TestSignES256ProducesRawRS(t *testing.T) {
-	key := testKey(t)
-	sig, err := signES256(key, "header.payload")
-	if err != nil {
-		t.Fatalf("signES256: %v", err)
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(sig)
-	if err != nil {
-		t.Fatalf("decoding signature: %v", err)
-	}
-	if len(raw) != 64 {
-		t.Fatalf("signature is %d bytes, want 64 (r||s, 32 each)", len(raw))
-	}
-	// DER would begin with SEQUENCE (0x30); raw R||S must not.
-	if raw[0] == 0x30 {
-		t.Fatalf("signature looks like ASN.1 DER, want raw r||s")
-	}
-
-	digest := sha256.Sum256([]byte("header.payload"))
-	r := new(big.Int).SetBytes(raw[:32])
-	s := new(big.Int).SetBytes(raw[32:])
-	if !ecdsa.Verify(&key.PublicKey, digest[:], r, s) {
-		t.Fatal("signature does not verify against the signing key")
 	}
 }
 
@@ -126,13 +86,13 @@ func TestNewDPoPProofStructure(t *testing.T) {
 	if header.Typ != "dpop+jwt" {
 		t.Errorf("typ = %q, want dpop+jwt", header.Typ)
 	}
-	if header.Alg != "ES256" {
-		t.Errorf("alg = %q, want ES256", header.Alg)
+	if header.Alg != "ML-DSA-65" {
+		t.Errorf("alg = %q, want ML-DSA-65", header.Alg)
 	}
 	// The public key must travel in the header — that is what lets the server
 	// compute cnf.jkt.
-	if header.JWK["kty"] != "EC" || header.JWK["crv"] != "P-256" {
-		t.Errorf("jwk = %v, want an EC P-256 key", header.JWK)
+	if header.JWK["kty"] != "AKP" || header.JWK["alg"] != "ML-DSA-65" {
+		t.Errorf("jwk = %v, want an RFC 9964 AKP ML-DSA-65 key", header.JWK)
 	}
 
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])

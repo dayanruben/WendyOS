@@ -7,7 +7,7 @@ package commands
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
+	"crypto"
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/pem"
@@ -61,15 +61,15 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	identityResource := opts.IdentityResource
 
 	// Step 1: the key, before anything else.
-	privateKeyPEM, err := certs.GenerateKeyPair()
+	privateKeyPEM, err := certs.GenerateMLDSAKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating operator key: %w", err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		return fmt.Errorf("parsing generated key: %w", err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		return fmt.Errorf("computing key thumbprint: %w", err)
 	}
@@ -294,7 +294,7 @@ func requestPKIIdentityCertificate(
 	ctx context.Context,
 	client oidcHTTPDoer,
 	endpoint, privateKeyPEM string,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	accessToken, tenantUUID, subject string,
 ) (config.CertificateInfo, error) {
 	if accessToken == "" {
@@ -356,7 +356,7 @@ func requestPKIIdentityCertificate(
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("parsing pki-core certificate chain: %w", err)
 	}
-	wantPublicKey, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	wantPublicKey, err := x509.MarshalPKIXPublicKey(key.Public())
 	if err != nil {
 		return config.CertificateInfo{}, fmt.Errorf("encoding generated operator public key: %w", err)
 	}
@@ -427,11 +427,11 @@ func refreshOIDCCertificate(ctx context.Context, auth *config.AuthConfig) error 
 	if err != nil {
 		return fmt.Errorf("loading OAuth DPoP key: %w", err)
 	}
-	key, err := parseECPrivateKeyPEM(privateKeyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(privateKeyPEM))
 	if err != nil {
 		return fmt.Errorf("parsing OAuth DPoP key: %w", err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		return fmt.Errorf("computing OAuth DPoP thumbprint: %w", err)
 	}
@@ -555,7 +555,7 @@ func ensureOAuthAccessToken(ctx context.Context, auth *config.AuthConfig) error 
 	if err != nil {
 		return fmt.Errorf("loading OAuth DPoP key: %w", err)
 	}
-	key, err := parseECPrivateKeyPEM(keyPEM)
+	key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
 	if err != nil {
 		return fmt.Errorf("parsing OAuth DPoP key: %w", err)
 	}
@@ -571,7 +571,7 @@ func ensureOAuthAccessToken(ctx context.Context, auth *config.AuthConfig) error 
 	if err != nil {
 		return fmt.Errorf("inspecting refreshed access token: %w", err)
 	}
-	thumbprint, err := jwkThumbprint(&key.PublicKey)
+	thumbprint, err := operatorJWKThumbprint(key)
 	if err != nil {
 		return fmt.Errorf("computing OAuth DPoP thumbprint: %w", err)
 	}
@@ -687,29 +687,4 @@ func printClaims(claims map[string]any, token *oidcTokenResponse) {
 		fmt.Printf("  %-12s (present)\n", "refresh")
 	}
 	fmt.Println()
-}
-
-// parseECPrivateKeyPEM parses the PEM produced by certs.GenerateKeyPair.
-//
-// The certs package keeps its own parser unexported and exposes only a TLS
-// config, but DPoP signing needs the *ecdsa.PrivateKey itself. Both SEC1
-// ("EC PRIVATE KEY", what GenerateKeyPair emits today) and PKCS#8 are accepted
-// so this keeps working if that ever changes.
-func parseECPrivateKeyPEM(privateKeyPEM string) (*ecdsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(privateKeyPEM))
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found in private key")
-	}
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return key, nil
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parsing EC private key: %w", err)
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("private key is %T, want *ecdsa.PrivateKey", parsed)
-	}
-	return key, nil
 }

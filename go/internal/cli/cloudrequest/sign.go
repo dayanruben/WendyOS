@@ -4,9 +4,9 @@ package cloudrequest
 
 import (
 	"context"
-	"crypto/ecdsa"
+	"crypto"
+	"crypto/mldsa"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -35,7 +35,7 @@ const (
 // operator-privileged mutations. A Signer is safe for concurrent RPCs: it
 // holds immutable key material and obtains fresh randomness for each request.
 type Signer struct {
-	privateKey *ecdsa.PrivateKey
+	privateKey crypto.Signer
 	tenantUUID string
 	x5c        []string
 	audience   string
@@ -83,9 +83,16 @@ func newSigner(auth *config.AuthConfig) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading Cloud request-signing certificate: %w", err)
 	}
-	privateKey, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
-	if !ok || privateKey.Curve.Params().Name != "P-256" {
-		return nil, fmt.Errorf("Cloud request signing requires an ECDSA P-256 operator key")
+	// WDY-3032 is a hard cutover: the operator credential is ML-DSA-65, with
+	// no ECDSA fallback. A session predating it is refused here rather than
+	// signed with, so the failure names the fix instead of surfacing later as
+	// a rejected signature from Cloud.
+	privateKey, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("Cloud request signing key of type %T cannot sign", pair.PrivateKey)
+	}
+	if _, ok := privateKey.Public().(*mldsa.PublicKey); !ok {
+		return nil, fmt.Errorf("Cloud request signing requires an ML-DSA-65 operator key, but this session holds %T; re-run 'wendy auth login'", privateKey.Public())
 	}
 	x5c := make([]string, 0, len(pair.Certificate))
 	for _, der := range pair.Certificate {
@@ -244,21 +251,25 @@ func EnrollmentRequest(auth *config.AuthConfig, deviceID string) ([]byte, error)
 }
 
 func (s *Signer) signPayload(payload []byte, chain []string) (string, error) {
-	header, err := canonicalJSON(map[string]any{"alg": "ES256", "x5c": chain})
+	header, err := canonicalJSON(map[string]any{"alg": "ML-DSA-65", "x5c": chain})
 	if err != nil {
 		return "", fmt.Errorf("encoding JWS header: %w", err)
 	}
 	protected := base64.RawURLEncoding.EncodeToString(header)
 	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
 	signingInput := protected + "." + encodedPayload
-	digest := sha256.Sum256([]byte(signingInput))
-	r, ss, err := ecdsa.Sign(s.random, s.privateKey, digest[:])
+
+	// ML-DSA signs the input bytes directly with empty Options — the same shape
+	// pki-core verifies with (reqsig: Verify(pk, signingInput, sig, nil)). No
+	// pre-hash, and the JWS signature is the raw FIPS-204 value.
+	key, ok := s.privateKey.(*mldsa.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("request-signing key is %T, want *mldsa.PrivateKey", s.privateKey)
+	}
+	signature, err := key.Sign(s.random, []byte(signingInput), &mldsa.Options{})
 	if err != nil {
 		return "", fmt.Errorf("signing descriptor: %w", err)
 	}
-	signature := make([]byte, 64)
-	r.FillBytes(signature[:32])
-	ss.FillBytes(signature[32:])
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 

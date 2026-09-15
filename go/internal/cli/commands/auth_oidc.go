@@ -7,7 +7,8 @@ package commands
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
+	"crypto"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -195,68 +196,76 @@ func randomURLSafe(n int) (string, error) {
 	return base64URL(raw), nil
 }
 
-// ecPublicJWK renders a P-256 public key as a JWK with its members in the exact
-// lexical order RFC 7638 requires for thumbprinting: crv, kty, x, y.
-//
-// PublicKey.Bytes returns the fixed-width SEC 1 uncompressed form, preserving
-// leading zeroes that are significant to the RFC 7638 thumbprint.
-func ecPublicJWK(pub *ecdsa.PublicKey) (map[string]string, error) {
-	if pub == nil || pub.Curve == nil {
+// mldsaAlg is the JWS "alg" for the operator key. It must match pki-core's
+// reqsig.AlgMLDSA65 exactly — the value is carried in the DPoP header AND in
+// the JWK whose RFC 7638 thumbprint has to equal the token's cnf.jkt, so a
+// different spelling fails the binding rather than merely looking odd.
+const mldsaAlg = "ML-DSA-65"
+
+// mldsaPublicJWK builds the RFC 9964 AKP JWK for an ML-DSA public key.
+// "pub" is the raw FIPS-204 public key; unlike EC there is no crv, and "alg"
+// is a required member of the thumbprint input for this key type.
+func mldsaPublicJWK(pub *mldsa.PublicKey) (map[string]string, error) {
+	if pub == nil {
 		return nil, fmt.Errorf("nil public key")
 	}
-	byteLen := (pub.Curve.Params().BitSize + 7) / 8
-	encoded, err := pub.Bytes()
-	if err != nil {
-		return nil, fmt.Errorf("encoding P-256 public key: %w", err)
-	}
-	if len(encoded) != 1+2*byteLen || encoded[0] != 4 {
-		return nil, fmt.Errorf("unexpected P-256 public key encoding")
-	}
 	return map[string]string{
-		"crv": "P-256",
-		"kty": "EC",
-		"x":   base64URL(encoded[1 : 1+byteLen]),
-		"y":   base64URL(encoded[1+byteLen:]),
+		"alg": mldsaAlg,
+		"kty": "AKP",
+		"pub": base64URL(pub.Bytes()),
 	}, nil
 }
 
-func leftPad(b []byte, size int) []byte {
-	if len(b) >= size {
-		return b
+// operatorPublicJWK returns the RFC 9964 AKP JWK and JWS alg for the operator
+// key. ML-DSA-65 only: WDY-3032 is a hard cutover, so a session holding the
+// old ECDSA key is refused here rather than signed with.
+func operatorPublicJWK(signer crypto.Signer) (map[string]string, string, error) {
+	pub, ok := signer.Public().(*mldsa.PublicKey)
+	if !ok {
+		return nil, "", errOperatorKeyNotMLDSA(signer.Public())
 	}
-	out := make([]byte, size)
-	copy(out[size-len(b):], b)
-	return out
+	jwk, err := mldsaPublicJWK(pub)
+	return jwk, mldsaAlg, err
 }
 
-// jwkThumbprint computes the RFC 7638 SHA-256 thumbprint of a P-256 public key.
+// errOperatorKeyNotMLDSA is the one message every operator-credential path
+// gives for a pre-WDY-3032 session. The operator credential is ML-DSA-65 with
+// no negotiation and no fallback, so an ECDSA key on disk is not something to
+// sign with more carefully — it is a session that has to be established again.
+func errOperatorKeyNotMLDSA(pub any) error {
+	return fmt.Errorf("this session's operator key is %T, but Wendy now requires an ML-DSA-65 operator credential; re-run 'wendy auth login'", pub)
+}
+
+// operatorJWKThumbprint computes the RFC 7638 thumbprint used for cnf.jkt.
 //
-// This value is what wendy-auth places in the token's `cnf.jkt`. Encoding it
-// by hand keeps the canonical member order explicit and independent of
-// struct-tag ordering.
-func jwkThumbprint(pub *ecdsa.PublicKey) (string, error) {
-	jwk, err := ecPublicJWK(pub)
+// The canonical JSON is the required members in lexicographic order with no
+// whitespace — {alg,kty,pub} for AKP (RFC 9964 §5 includes alg, unlike EC),
+// {crv,kty,x,y} for EC. Member order is part of the hash input, so it is
+// written out literally here rather than left to a map's iteration order.
+func operatorJWKThumbprint(signer crypto.Signer) (string, error) {
+	jwk, _, err := operatorPublicJWK(signer)
 	if err != nil {
 		return "", err
 	}
-	canonical := fmt.Sprintf(`{"crv":"%s","kty":"%s","x":"%s","y":"%s"}`, jwk["crv"], jwk["kty"], jwk["x"], jwk["y"])
+	canonical := fmt.Sprintf(`{"alg":"%s","kty":"%s","pub":"%s"}`, jwk["alg"], jwk["kty"], jwk["pub"])
 	sum := sha256.Sum256([]byte(canonical))
 	return base64URL(sum[:]), nil
 }
 
-// signES256 produces a JWS compact signature over signingInput.
+// signOperatorJWS signs the JWS signing input with the operator key.
 //
-// JOSE requires the raw R||S form with each value left-padded to the curve
-// size — NOT the ASN.1 DER encoding that ecdsa.SignASN1 returns. Getting this
-// wrong yields a signature the server rejects as malformed.
-func signES256(key *ecdsa.PrivateKey, signingInput string) (string, error) {
-	digest := sha256.Sum256([]byte(signingInput))
-	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+// ML-DSA signs the input bytes directly with empty Options, matching how
+// pki-core verifies (reqsig/alg.go: cryptomldsa.Verify(pk, signingInput, sig,
+// nil)); the signature is the raw FIPS-204 value.
+func signOperatorJWS(signer crypto.Signer, signingInput string) (string, error) {
+	key, ok := signer.(*mldsa.PrivateKey)
+	if !ok {
+		return "", errOperatorKeyNotMLDSA(signer.Public())
+	}
+	sig, err := key.Sign(rand.Reader, []byte(signingInput), &mldsa.Options{})
 	if err != nil {
 		return "", fmt.Errorf("signing: %w", err)
 	}
-	byteLen := (key.Curve.Params().BitSize + 7) / 8
-	sig := append(leftPad(r.Bytes(), byteLen), leftPad(s.Bytes(), byteLen)...)
 	return base64URL(sig), nil
 }
 
@@ -264,28 +273,28 @@ func signES256(key *ecdsa.PrivateKey, signingInput string) (string, error) {
 //
 // htu must be the request URI with query and fragment removed; htm the method.
 // nonce is included only when the server has demanded one (see dpopNonceRetry).
-func newDPoPProof(key *ecdsa.PrivateKey, htm, htu, nonce string) (string, error) {
+func newDPoPProof(key crypto.Signer, htm, htu, nonce string) (string, error) {
 	return newDPoPProofWithAccessToken(key, htm, htu, nonce, "")
 }
 
 // newDPoPAccessProof builds the proof used at a protected resource. In
 // addition to the request URI and method it binds the proof to the exact
 // access-token bytes through RFC 9449's ath claim.
-func newDPoPAccessProof(key *ecdsa.PrivateKey, htm, htu, accessToken string) (string, error) {
+func newDPoPAccessProof(key crypto.Signer, htm, htu, accessToken string) (string, error) {
 	if accessToken == "" {
 		return "", fmt.Errorf("access token is empty")
 	}
 	return newDPoPProofWithAccessToken(key, htm, htu, "", accessToken)
 }
 
-func newDPoPProofWithAccessToken(key *ecdsa.PrivateKey, htm, htu, nonce, accessToken string) (string, error) {
-	jwk, err := ecPublicJWK(&key.PublicKey)
+func newDPoPProofWithAccessToken(key crypto.Signer, htm, htu, nonce, accessToken string) (string, error) {
+	jwk, alg, err := operatorPublicJWK(key)
 	if err != nil {
 		return "", err
 	}
 	header := map[string]any{
 		"typ": "dpop+jwt",
-		"alg": "ES256",
+		"alg": alg,
 		"jwk": jwk,
 	}
 	jti, err := randomURLSafe(16)
@@ -316,7 +325,7 @@ func newDPoPProofWithAccessToken(key *ecdsa.PrivateKey, htm, htu, nonce, accessT
 	}
 
 	signingInput := base64URL(headerJSON) + "." + base64URL(payloadJSON)
-	sig, err := signES256(key, signingInput)
+	sig, err := signOperatorJWS(key, signingInput)
 	if err != nil {
 		return "", err
 	}
@@ -402,7 +411,7 @@ func startLoopbackListener() (net.Listener, string, error) {
 // (WENDY_AUTH_DPOP_REQUIRE_NONCE).
 func exchangeCodeForToken(
 	ctx context.Context,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	meta *oidcProviderMetadata,
 	clientID, code, verifier, redirectURI, resource string,
 ) (*oidcTokenResponse, error) {
@@ -420,7 +429,7 @@ func exchangeCodeForToken(
 
 func refreshOIDCToken(
 	ctx context.Context,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	meta *oidcProviderMetadata,
 	clientID, refreshToken, resource string,
 ) (*oidcTokenResponse, error) {
@@ -436,7 +445,7 @@ func refreshOIDCToken(
 
 func exchangeDPoPToken(
 	ctx context.Context,
-	key *ecdsa.PrivateKey,
+	key crypto.Signer,
 	tokenEndpoint string,
 	form url.Values,
 ) (*oidcTokenResponse, error) {
