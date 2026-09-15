@@ -22,6 +22,47 @@ profile with native/ROS interfaces. This training example uses recorded
 requires those references; it cannot be loaded directly as the virtual robot's
 locomotion policy. The example has no robot command publisher.
 
+## Upload the observation app to a simulator
+
+This directory is also a runnable Wendy app. Its container receives live ROS 2
+RGB, camera calibration, joint states, IMU, odometry, lidar scans and simulation
+epoch. A browser view at port 8891 shows the received camera image, message
+counts, rates, freshness and joint positions. It reports the grasp policy's
+missing inputs explicitly; it does not run the GPU trainer or grasp inference.
+The Docker context includes only this small observation runtime.
+
+Use a CLI and VM agent built from PR #1984, following the
+[G1 virtual robot setup](../../go/simulator/g1/README.md). With `g1-sim` running,
+run the matching CLI from this directory (`wendy-beta` on the development Mac):
+
+```sh
+wendy-beta run --device vm:g1-sim
+```
+
+The explicit device selects the simulator directly. In the interactive picker,
+switch to the Simulators tab and select the same VM. Wendy forwards the HTTP
+port to [localhost:8891](http://127.0.0.1:8891) on the Mac. The simulator's own
+control panel remains at [localhost:8890](http://127.0.0.1:8890).
+
+```sh
+curl --fail http://127.0.0.1:8891/healthz
+curl --fail http://127.0.0.1:8891/api/status
+python3 tests/verify_simulator_app.py --vm g1-sim --seconds 5
+```
+
+`/healthz` returns 200 only when the local G1 simulator reports healthy and the
+app has fresh RGB, CameraInfo, JointState, Imu and Odometry messages. Both receipt
+age and message-header age are checked. Its TCP readiness probe only establishes
+that the HTTP server is reachable. Lidar is optional, and the epoch is latched.
+`/camera.jpg` returns 503 when the camera data is stale. All observations come
+from ROS subscriptions; the simulator HTTP endpoint supplies identity and mode.
+
+The app uses host networking with `discoveryScope: app`. Wendy configures
+CycloneDDS on the VM's loopback interface and domain 0, matching this simulator's
+DDS isolation. It has no command
+publishers. The training commands below run separately on a GPU workstation with
+the matching dataset and checkpoint.
+
 ## Install
 
 Use Python 3.10 on Linux with an NVIDIA GPU and an EGL-capable NVIDIA driver.
