@@ -58,7 +58,7 @@ type ProviderDeviceInfo struct {
 	OS               string
 	OSVersion        string
 	CPUArchitecture  string // e.g. "riscv" for wendy-lite ESP32 boards
-	DeviceType       string // e.g. the board name for wendy-lite
+	DeviceType       string // e.g. the SoC/IDF target name for wendy-lite
 	WasmAppSupport   bool
 	NativeAppSupport bool
 }

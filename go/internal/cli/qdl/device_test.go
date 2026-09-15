@@ -1,11 +1,25 @@
-//go:build darwin || linux
-
 package qdl
 
 import (
 	"strings"
 	"testing"
 )
+
+func TestWindowsDeviceIdentity(t *testing.T) {
+	a := DeviceInfo{Instance: `USB\VID_05C6&PID_9008\A`, Location: "port-a"}
+	b := DeviceInfo{Instance: `USB\VID_05C6&PID_9008\B`, Location: "port-b"}
+	if a.Key() == b.Key() || a.String() == b.String() {
+		t.Fatal("serial-less devices collapsed")
+	}
+	if a.matches(b) {
+		t.Fatal("different instance matched")
+	}
+	want := a
+	want.Serial = "stale"
+	if !a.matches(want) {
+		t.Fatal("exact instance must win over descriptor serial")
+	}
+}
 
 func TestEDLSerialFromProductString(t *testing.T) {
 	// Boards in EDL leave the USB serial-number descriptor empty and put the
