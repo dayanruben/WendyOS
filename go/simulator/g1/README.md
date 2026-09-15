@@ -11,13 +11,16 @@ ROS 2 applications running in the same VM.
 
 ## Start from the CLI
 
-From this repository, with Docker running:
+Use a CLI and agent built from this branch. From the repository root, with
+Docker running:
 
 ```sh
-make build-cli
-./bin/wendy vm create my-g1 --profile g1 --nightly
-./bin/wendy vm robot start my-g1
-./bin/wendy vm robot open my-g1
+make -C go build-cli build-agent-linux-arm64
+./go/bin/wendy vm create my-g1 --profile g1 --nightly
+./go/bin/wendy vm start my-g1 --detach
+./go/bin/wendy --device vm:my-g1 device update --binary go/bin/wendy-agent-linux-arm64
+./go/bin/wendy vm robot start my-g1
+./go/bin/wendy vm robot open my-g1
 ```
 
 The first start builds the runtime and downloads hash-verified model, policy,
@@ -25,22 +28,30 @@ and Unitree ROS interface sources. The profile requests four CPUs and 4 GiB of m
 `vm robot status my-g1 --json` reports the verified `sandbox_url`; its host port
 can differ between VMs.
 
-If the VM's agent predates G1 support, install the agent from this checkout:
+The agent update above installs this branch's virtual-robot support into the
+nightly VM. To repeat it after rebuilding the agent:
 
 ```sh
-make build-agent-linux-arm64
-./bin/wendy --device vm:my-g1 device update --binary bin/wendy-agent-linux-arm64
-./bin/wendy vm robot start my-g1
+make -C go build-agent-linux-arm64
+./go/bin/wendy --device vm:my-g1 device update --binary go/bin/wendy-agent-linux-arm64
+./go/bin/wendy vm robot start my-g1
 ```
 
 For an existing ordinary VM, use
-`./bin/wendy vm robot configure my-vm --profile g1`. An existing robot profile
+`./go/bin/wendy vm robot configure my-vm --profile g1`. An existing robot profile
 cannot be replaced by this command. Use `vm robot update my-g1` to apply a newer
 G1 runtime from a rebuilt CLI. Go2 and G1 retain separate source pins and app IDs.
 
 ## ROS applications
 
-Deploy a ROS 2 Humble application with `./bin/wendy run --device vm:my-g1`.
+Creating and opening the simulator works from any directory. `wendy run`
+deploys an application and must be run from that application's project
+directory, containing its build inputs (for example, a Dockerfile) and
+`wendy.json`. The repository root and the training-source example are not
+ready-to-deploy ROS applications.
+
+Deploy a ROS 2 Humble application with `wendy run --device vm:my-g1`, using the
+branch-built CLI.
 The managed profile uses CycloneDDS, domain zero, and guest loopback networking.
 Start its command publisher, then select that source in the sandbox and click
 **Give app control**. Browser controls and ROS publishers have one exclusive owner.
@@ -89,7 +100,7 @@ independent SDK acceptance, and measured ROS motion and sensor rates in a VM.
 ## Local development
 
 ```sh
-cd simulator/g1
+cd go/simulator/g1
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python tools/fetch_assets.py
