@@ -21,7 +21,8 @@ func newSPDPLoopbackPeer(t *testing.T, id byte) *Participant {
 	return &Participant{
 		ucast: sock, local: net.IPv4(127, 0, 0, 1), prefix: GUIDPrefix{id},
 		peers: map[GUIDPrefix][]Locator{}, seqByWriter: map[uint32]SequenceNumber{},
-		seenData: map[uint32]int{},
+		seenData:   map[uint32]int{},
+		peerExpiry: map[GUIDPrefix]time.Time{}, peerLease: map[GUIDPrefix]time.Duration{}, lastReply: map[GUIDPrefix]time.Time{},
 	}
 }
 
@@ -101,6 +102,9 @@ func TestParticipant_SPDPRepliesWhenPeerLocatorChanges(t *testing.T) {
 	readReply(first, true)
 	announce(first)
 	readReply(first, false)
+	// Main limits replies even when a peer changes locators. Allow a new reply
+	// after the cooldown, preserving protection against locator churn.
+	p.lastReply[first.prefix] = time.Now().Add(-announceInterval)
 	wantLocators := announce(moved)
 	readReply(moved, true)
 	announce(moved)

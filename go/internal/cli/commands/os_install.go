@@ -337,11 +337,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 
 	// The Dragonwing flashes over EDL from a qcomflash bundle, not to a drive.
 	if flagDeviceType == dragonwingDeviceType {
-		if err := checkDragonwingFlags(rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride,
-			wifi, deviceName, preOpts); err != nil {
+		if err := checkDragonwingFlags(rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
 			return err
 		}
-		return installDragonwing(ctx, flagVersion, nightly, force, prNumber)
+		return installDragonwing(ctx, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
 	}
 	fmt.Println("Fetching available devices...")
 
@@ -517,11 +516,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// Same for the Dragonwing: the picker reaches here with the flag empty, so
 	// route it away from the disk-image flow that would dd the bundle onto a drive.
 	if selected == dragonwingDeviceType {
-		if err := checkDragonwingFlags(rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride,
-			wifi, deviceName, preOpts); err != nil {
+		if err := checkDragonwingFlags(rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
 			return err
 		}
-		return installDragonwing(ctx, flagVersion, nightly, force, prNumber)
+		return installDragonwing(ctx, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
 	}
 
 	if selected == linuxDesktopValue {

@@ -2,11 +2,11 @@ package ros2camera
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -39,7 +39,6 @@ type fakeWriter struct {
 	width  int
 	height int
 	codec  Codec
-	closed int
 }
 
 func (w *fakeWriter) WriteFrame(frame Frame) error {
@@ -47,15 +46,12 @@ func (w *fakeWriter) WriteFrame(frame Frame) error {
 	w.width, w.height, w.codec = frame.Width, frame.Height, frame.Codec
 	return nil
 }
-func (w *fakeWriter) Close() error {
-	w.closed++
-	return nil
-}
+func (*fakeWriter) Close() error { return nil }
 
 func TestManagerRegistersROS2AndGo2CamerasWithStableIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ros2-cameras.json")
 	loop := &fakeLoopback{}
-	m := NewManager(context.Background(), zap.NewNop(), loop, path, nil)
+	m := NewManager(context.Background(), zap.NewNop(), loop, path, nil, nil)
 	t.Cleanup(m.Shutdown)
 	p := &participantState{iface: "eth0", domainID: 0}
 	m.registerEndpoint(p, rtps.Endpoint{Topic: "rt/frontvideostream", Type: TypeGo2FrontVideo, GUID: rtps.GUID{EntityID: 1}})
@@ -70,7 +66,7 @@ func TestManagerRegistersROS2AndGo2CamerasWithStableIDs(t *testing.T) {
 	}
 
 	// A fresh manager reading the registry must retain the topic's device ID.
-	m2 := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, path, nil)
+	m2 := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, path, nil, nil)
 	t.Cleanup(m2.Shutdown)
 	m2.registerEndpoint(p, rtps.Endpoint{Topic: "rt/frontvideostream", Type: TypeGo2FrontVideo, GUID: rtps.GUID{EntityID: 3}})
 	got := m2.List()
@@ -81,22 +77,21 @@ func TestManagerRegistersROS2AndGo2CamerasWithStableIDs(t *testing.T) {
 
 func TestManagerPumpsCompressedImageToLoopback(t *testing.T) {
 	loop := &fakeLoopback{}
-	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil)
+	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
 	writer := &fakeWriter{}
 	m.newWriter = func(string) cameraWriter { return writer }
 	m.containerUse = true
 	guid := rtps.GUID{EntityID: 7}
-	p := &participantState{iface: "eth0", domainID: 0}
-	m.registerEndpoint(p, rtps.Endpoint{Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: guid})
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0}, rtps.Endpoint{Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: guid})
 
 	jpegFrame := testJPEG(t, 5, 4)
 	c := newCDRBuilder()
 	c.header()
 	c.str("jpeg")
 	c.bytes(jpegFrame)
-	m.handleSample(p, rtps.Sample{Writer: guid, Payload: c.b})
-	m.handleSample(p, rtps.Sample{Writer: guid, Payload: c.b})
+	m.handleSample(nil, rtps.Sample{Writer: guid, Payload: c.b})
+	m.handleSample(nil, rtps.Sample{Writer: guid, Payload: c.b})
 
 	if writer.frames != 1 || writer.width != 5 || writer.height != 4 || writer.codec != CodecMJPEG {
 		t.Fatalf("writer = %+v", writer)
@@ -105,20 +100,19 @@ func TestManagerPumpsCompressedImageToLoopback(t *testing.T) {
 
 func TestManagerPreservesGo2H264ForLoopback(t *testing.T) {
 	loop := &fakeLoopback{}
-	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil)
+	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
 	writer := &fakeWriter{}
 	m.newWriter = func(string) cameraWriter { return writer }
 	m.containerUse = true
 	guid := rtps.GUID{EntityID: 8}
-	p := &participantState{iface: "eth0", domainID: 0}
-	m.registerEndpoint(p, rtps.Endpoint{Topic: "rt/frontvideostream", Type: TypeGo2FrontVideo, GUID: guid})
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0}, rtps.Endpoint{Topic: "rt/frontvideostream", Type: TypeGo2FrontVideo, GUID: guid})
 
 	c := newCDRBuilder()
 	c.u64(42)
 	c.u32(360)
 	c.bytes([]byte{0, 0, 1, 0x41, 1, 2, 3})
-	m.handleSample(p, rtps.Sample{Writer: guid, Payload: c.b})
+	m.handleSample(nil, rtps.Sample{Writer: guid, Payload: c.b})
 
 	if writer.frames != 1 || writer.width != 640 || writer.height != 360 || writer.codec != CodecH264 {
 		t.Fatalf("writer = %+v", writer)
@@ -127,19 +121,18 @@ func TestManagerPreservesGo2H264ForLoopback(t *testing.T) {
 
 func TestManagerSkipsDecodeWhenLoopbackNodeIsMissing(t *testing.T) {
 	loop := &fakeLoopback{}
-	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil)
+	m := NewManager(context.Background(), zap.NewNop(), loop, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
 	m.containerUse = true
 	guid := rtps.GUID{EntityID: 7}
-	p := &participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}
-	m.registerEndpoint(p, rtps.Endpoint{
+	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}, rtps.Endpoint{
 		Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: guid,
 	})
 	loop.mu.Lock()
 	delete(loop.paths, IDBandStart)
 	loop.mu.Unlock()
 
-	m.handleSample(p, rtps.Sample{Writer: guid, Payload: []byte("not CDR")})
+	m.handleSample(nil, rtps.Sample{Writer: guid, Payload: []byte("not CDR")})
 	if m.cameras[IDBandStart].loggedError {
 		t.Fatal("missing loopback node should skip decoding without logging a decode error")
 	}
@@ -158,7 +151,7 @@ func TestFrameIntervalBudgetsLargeRawFrames(t *testing.T) {
 }
 
 func TestManagerKeepsHostInterfacesDistinct(t *testing.T) {
-	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
+	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
 	topic := "rt/camera/compressed"
 	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}, rtps.Endpoint{
@@ -173,7 +166,7 @@ func TestManagerKeepsHostInterfacesDistinct(t *testing.T) {
 }
 
 func TestManagerRejectsUnsafeTopicNames(t *testing.T) {
-	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
+	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
 	m.registerEndpoint(&participantState{iface: "eth0", domainID: 0, graphKey: "host:eth0"}, rtps.Endpoint{
 		Topic: "rt/camera\nforged", Type: TypeCompressedImage, GUID: rtps.GUID{EntityID: 1},
@@ -184,7 +177,7 @@ func TestManagerRejectsUnsafeTopicNames(t *testing.T) {
 }
 
 func TestManagerRediscoveryDoesNotResetSubscription(t *testing.T) {
-	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
+	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
 	p := &participantState{iface: "eth0", domainID: 0}
 	first := rtps.GUID{EntityID: 7}
@@ -199,128 +192,224 @@ func TestManagerRediscoveryDoesNotResetSubscription(t *testing.T) {
 
 	second := rtps.GUID{EntityID: 8}
 	m.registerEndpoint(p, rtps.Endpoint{Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: second})
-	firstKey := cameraWriterKey{source: p, guid: first}
-	secondKey := cameraWriterKey{source: p, guid: second}
-	if m.byWriter[firstKey] != nil || m.byWriter[secondKey] != cam {
-		t.Fatalf("writer index was not replaced: old=%p new=%p camera=%p", m.byWriter[firstKey], m.byWriter[secondKey], cam)
+	if m.byWriter[writerKey{nil, first}] != nil || m.byWriter[writerKey{nil, second}] != cam {
+		t.Fatalf("writer index was not replaced: old=%p new=%p camera=%p", m.byWriter[writerKey{nil, first}], m.byWriter[writerKey{nil, second}], cam)
 	}
 }
 
-func TestManagerRoutesMatchingGUIDsWithinTheirSource(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		graph  string
-		domain int
-	}{
-		{name: "isolated apps in one domain", graph: "app-b", domain: 0},
-		{name: "different domains", graph: "app-a", domain: 7},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
-			t.Cleanup(m.Shutdown)
-			writers := map[string]*fakeWriter{}
-			m.newWriter = func(path string) cameraWriter {
-				w := &fakeWriter{}
-				writers[path] = w
-				return w
-			}
-			first := &participantState{iface: "lo", graphKey: "app-a", netnsPID: 100}
-			second := &participantState{iface: "lo", graphKey: tc.graph, domainID: tc.domain, netnsPID: 200}
-			guid := rtps.GUID{EntityID: 7}
-			endpoint := rtps.Endpoint{Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: guid}
-			m.registerEndpoint(first, endpoint)
-			m.registerEndpoint(second, endpoint)
-			cameras := m.List()
-			if len(cameras) != 2 {
-				t.Fatalf("cameras = %+v; want two isolated sources", cameras)
-			}
-			m.cameras[cameras[0].ID].viewRefs = 1
-			m.handleSample(first, compressedCameraSample(t, guid, 5, 4))
-			m.handleSample(second, compressedCameraSample(t, guid, 9, 8))
-			firstWriter := writers[cameras[0].Path]
-			if firstWriter == nil || firstWriter.frames != 1 || firstWriter.width != 5 || firstWriter.height != 4 {
-				t.Fatalf("first camera writer = %+v; its source must reach its viewer", firstWriter)
-			}
-			if w := writers[cameras[1].Path]; w != nil {
-				t.Fatalf("camera without a viewer received frames: %+v", w)
-			}
-
-			m.cameras[cameras[1].ID].viewRefs = 1
-			m.handleSample(second, compressedCameraSample(t, guid, 9, 8))
-			secondWriter := writers[cameras[1].Path]
-			if secondWriter == nil || secondWriter.frames != 1 || secondWriter.width != 9 || secondWriter.height != 8 {
-				t.Fatalf("second camera writer = %+v; its source must reach its viewer", secondWriter)
-			}
-			if firstWriter.frames != 1 {
-				t.Fatalf("second source wrote to the first camera: %+v", firstWriter)
-			}
-		})
-	}
+type fakeDiscoveryLease struct {
+	mu        sync.Mutex
+	iface     string
+	endpoints []rtps.Endpoint
+	changed   chan struct{}
+	samples   chan rtps.Sample
+	done      chan struct{}
+	subs      map[rtps.GUID]bool
+	once      sync.Once
 }
 
-func TestManagerRetiredSourceCannotReviveCameraOrStealReplacementFrames(t *testing.T) {
-	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil)
+func newFakeLease(iface string) *fakeDiscoveryLease {
+	return &fakeDiscoveryLease{iface: iface, changed: make(chan struct{}, 1), samples: make(chan rtps.Sample, 4), done: make(chan struct{}), subs: map[rtps.GUID]bool{}}
+}
+func (l *fakeDiscoveryLease) Interface() string { return l.iface }
+func (l *fakeDiscoveryLease) Endpoints() []rtps.Endpoint {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]rtps.Endpoint(nil), l.endpoints...)
+}
+func (l *fakeDiscoveryLease) Changed() <-chan struct{}    { return l.changed }
+func (l *fakeDiscoveryLease) Samples() <-chan rtps.Sample { return l.samples }
+func (l *fakeDiscoveryLease) Done() <-chan struct{}       { return l.done }
+func (l *fakeDiscoveryLease) Subscribe(ep rtps.Endpoint) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.subs[ep.GUID] = true
+	return nil
+}
+func (l *fakeDiscoveryLease) Unsubscribe(g rtps.GUID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.subs, g)
+}
+func (l *fakeDiscoveryLease) Close() error { l.once.Do(func() { close(l.done) }); return nil }
+
+func TestManagerRoutesSharedWriterToEachLogicalCamera(t *testing.T) {
+	m := NewManager(context.Background(), zap.NewNop(), &fakeLoopback{}, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
 	t.Cleanup(m.Shutdown)
-	var writers []*fakeWriter
-	m.newWriter = func(string) cameraWriter {
-		w := &fakeWriter{}
-		writers = append(writers, w)
-		return w
-	}
-	canceled := false
-	old := &participantState{iface: "lo", graphKey: "app-a", netnsPID: 100, cancel: func() { canceled = true }}
-	m.participants["old"] = old
+	writers := map[string]*fakeWriter{}
+	m.newWriter = func(path string) cameraWriter { w := &fakeWriter{}; writers[path] = w; return w }
+	m.containerUse = true
 	guid := rtps.GUID{EntityID: 7}
-	endpoint := rtps.Endpoint{Topic: "rt/camera/compressed", Type: TypeCompressedImage, GUID: guid}
-	m.registerEndpoint(old, endpoint)
-	cam := m.cameras[IDBandStart]
-	cam.viewRefs = 1
-	m.handleSample(old, compressedCameraSample(t, guid, 5, 4))
-	if len(writers) != 1 || writers[0].frames != 1 {
-		t.Fatalf("original source did not stream: %+v", writers)
+	ep := rtps.Endpoint{GUID: guid, Topic: "rt/camera/compressed", Type: TypeCompressedImage}
+	leases := []*fakeDiscoveryLease{newFakeLease("lo"), newFakeLease("lo"), newFakeLease("eth0")}
+	for i, l := range leases {
+		m.registerEndpoint(&participantState{participant: l, iface: l.iface, graphKey: fmt.Sprintf("app%d", i)}, ep)
 	}
-	// Keep the rate limiter from hiding an incorrectly accepted queued frame.
-	cam.lastFrame = time.Time{}
-	m.stopStaleParticipants(map[string]bool{})
-	if !canceled || writers[0].closed != 1 {
-		t.Fatalf("retired source canceled=%v writer=%+v", canceled, writers[0])
-	}
-	if _, ok := m.Get(IDBandStart); ok {
-		t.Fatal("retired camera is still available")
-	}
-	m.registerEndpoint(old, endpoint)
-	m.handleSample(old, compressedCameraSample(t, guid, 9, 8))
-	if cameras := m.List(); len(cameras) != 0 {
-		t.Fatalf("queued discovery revived a retired camera: %+v", cameras)
-	}
-	if len(writers) != 1 || writers[0].frames != 1 {
-		t.Fatalf("queued frame reopened or wrote to retired camera: %+v", writers)
-	}
-
-	fresh := &participantState{iface: "lo", graphKey: "app-a", netnsPID: 200}
-	m.registerEndpoint(fresh, endpoint)
-	if cameras := m.List(); len(cameras) != 1 || cameras[0].ID != IDBandStart {
-		t.Fatalf("replacement source changed camera ID: %+v", cameras)
-	}
-	m.registerEndpoint(old, endpoint)
-	m.handleSample(old, compressedCameraSample(t, guid, 9, 8))
-	if len(writers) != 1 {
-		t.Fatal("retired source reopened the replacement camera")
-	}
-	m.handleSample(fresh, compressedCameraSample(t, guid, 6, 3))
-	if len(writers) != 2 || writers[1].frames != 1 || writers[1].width != 6 || writers[1].height != 3 {
-		t.Fatalf("replacement source failed to resume streaming: %+v", writers)
-	}
-	if writers[0].frames != 1 {
-		t.Fatalf("retired writer received replacement frames: %+v", writers[0])
-	}
-}
-
-func compressedCameraSample(t *testing.T, guid rtps.GUID, width, height int) rtps.Sample {
-	t.Helper()
 	c := newCDRBuilder()
 	c.header()
 	c.str("jpeg")
-	c.bytes(testJPEG(t, width, height))
-	return rtps.Sample{Writer: guid, Payload: c.b}
+	c.bytes(testJPEG(t, 5, 4))
+	for _, l := range leases {
+		m.handleSample(l, rtps.Sample{Writer: guid, Payload: c.b})
+	}
+	if len(writers) != 3 || len(m.List()) != 3 {
+		t.Fatalf("writers=%d cameras=%d", len(writers), len(m.List()))
+	}
+	for _, w := range writers {
+		if w.frames != 1 {
+			t.Fatalf("writer=%+v", w)
+		}
+	}
+	// Disposal in one logical scope must leave other mappings and subscriptions.
+	m.syncEndpoints(&participantState{participant: leases[0]})
+	if len(m.List()) != 2 {
+		t.Fatal("disposal affected unrelated camera")
+	}
+	if len(leases[0].subs) != 0 || len(leases[1].subs) != 1 {
+		t.Fatal("disposal affected another lease's subscription")
+	}
+}
+
+func TestManagerReconcilesHostAndAppCoverageAndRetainsLeasesOnErrors(t *testing.T) {
+	graphs := []Graph{
+		{Key: "app0", InstanceKey: "container0", NetworkNamespacePID: 10},
+		{Key: "app1", InstanceKey: "container1", NetworkNamespacePID: 11},
+		{Key: "app2", InstanceKey: "container2", NetworkNamespacePID: 12},
+		{Key: "app3", InstanceKey: "container3", NetworkNamespacePID: 13, DomainID: 7},
+		{Key: "isolated", InstanceKey: "container4", NetworkNamespacePID: 14},
+	}
+	var enumerateErr error
+	m := NewManager(context.Background(), zap.NewNop(), nil, filepath.Join(t.TempDir(), "registry.json"), func(context.Context) ([]Graph, error) { return graphs, enumerateErr }, nil)
+	t.Cleanup(m.Shutdown)
+	m.hostInterfaces = func() ([]string, error) { return []string{"eth0", "eth1"}, nil }
+	m.graphInterfaces = func(cfg rtps.Config) ([]string, error) {
+		if cfg.NetworkNamespacePID == 14 {
+			return []string{"lo", "veth0"}, nil
+		}
+		return []string{"lo", "eth0", "eth1"}, nil
+	}
+	var leases []*fakeDiscoveryLease
+	m.acquire = func(ctx context.Context, cfg rtps.Config) (discoveryLease, error) {
+		l := newFakeLease(cfg.Interface)
+		leases = append(leases, l)
+		return l, nil
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() { m.Refresh(context.Background()) })
+	}
+	wg.Wait()
+	if len(leases) != 16 || len(m.participants) != 16 {
+		t.Fatalf("leases=%d participants=%d; want 2 host + 12 shared-host app + 2 isolated", len(leases), len(m.participants))
+	}
+	if m.participants[participantKey("lo", 7, 13, "container3")] == nil {
+		t.Fatal("nonzero domain loopback coverage missing")
+	}
+	if m.participants[participantKey("veth0", 0, 14, "container4")] == nil {
+		t.Fatal("isolated interface missing")
+	}
+	enumerateErr = errors.New("containerd unavailable")
+	graphs = nil
+	m.Refresh(context.Background())
+	if len(m.participants) != 16 {
+		t.Fatal("enumeration failure removed active leases")
+	}
+	enumerateErr = nil
+	m.Refresh(context.Background())
+	if len(m.participants) != 2 {
+		t.Fatal("successful reconciliation did not release app leases")
+	}
+	for _, l := range leases[2:] {
+		select {
+		case <-l.Done():
+		default:
+			t.Fatal("obsolete lease not closed")
+		}
+	}
+}
+
+func TestManagerRestartPreservesCameraIDAndRejectsStaleEvents(t *testing.T) {
+	m := NewManager(context.Background(), zap.NewNop(), nil, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
+	t.Cleanup(m.Shutdown)
+	oldLease, newLease := newFakeLease("lo"), newFakeLease("lo")
+	old := &participantState{participant: oldLease, iface: "lo", graphKey: "app", cancel: func() {}}
+	m.participants["old"] = old
+	ep := rtps.Endpoint{GUID: rtps.GUID{EntityID: 7}, Topic: "rt/camera", Type: TypeImage}
+	m.registerEndpoint(old, ep)
+	id := m.List()[0].ID
+	m.stopStaleParticipants(nil)
+	m.registerEndpoint(old, ep)
+	if len(m.List()) != 0 {
+		t.Fatal("late event revived stopped participant")
+	}
+	newState := &participantState{participant: newLease, iface: "lo", graphKey: "app"}
+	ep.GUID.EntityID++
+	m.registerEndpoint(newState, ep)
+	if cameras := m.List(); len(cameras) != 1 || cameras[0].ID != id {
+		t.Fatalf("restart changed camera ID: %+v", cameras)
+	}
+}
+
+func TestManagerSharedGraphSurvivesSelectedContainerDisappearance(t *testing.T) {
+	m := NewManager(context.Background(), zap.NewNop(), nil, filepath.Join(t.TempDir(), "registry.json"), nil, nil)
+	t.Cleanup(m.Shutdown)
+	a, b := newFakeLease("lo"), newFakeLease("lo")
+	ep := rtps.Endpoint{GUID: rtps.GUID{EntityID: 7}, Topic: "rt/camera", Type: TypeImage}
+	a.endpoints = []rtps.Endpoint{ep}
+	b.endpoints = []rtps.Endpoint{ep}
+	first := &participantState{participant: a, iface: "lo", graphKey: "app", cancel: func() {}}
+	second := &participantState{participant: b, iface: "lo", graphKey: "app", cancel: func() {}}
+	m.participants["first"], m.participants["second"] = first, second
+	m.syncEndpoints(first)
+	m.syncEndpoints(second)
+	id := m.List()[0].ID
+	m.stopStaleParticipants(map[string]bool{"second": true})
+	if cams := m.List(); len(cams) != 1 || cams[0].ID != id || m.cameras[id].participant != b {
+		t.Fatal("retiring selected container lost shared camera")
+	}
+}
+
+func TestManagerOneGraphEnumerationFailureDoesNotPinOtherStaleLeases(t *testing.T) {
+	// A container whose namespace cannot be enumerated keeps the coverage it
+	// already has, but must not stop every other stale participant from being
+	// released until the agent restarts.
+	graphs := []Graph{
+		{Key: "app0", InstanceKey: "container0", NetworkNamespacePID: 10},
+		{Key: "app1", InstanceKey: "container1", NetworkNamespacePID: 11},
+	}
+	m := NewManager(context.Background(), zap.NewNop(), nil, filepath.Join(t.TempDir(), "registry.json"), func(context.Context) ([]Graph, error) { return graphs, nil }, nil)
+	t.Cleanup(m.Shutdown)
+	m.hostInterfaces = func() ([]string, error) { return []string{"eth0"}, nil }
+	var brokenPID uint32
+	m.graphInterfaces = func(cfg rtps.Config) ([]string, error) {
+		if cfg.NetworkNamespacePID == brokenPID {
+			return nil, errors.New("setns: operation not permitted")
+		}
+		return []string{"lo"}, nil
+	}
+	leases := map[uint32]*fakeDiscoveryLease{}
+	m.acquire = func(ctx context.Context, cfg rtps.Config) (discoveryLease, error) {
+		l := newFakeLease(cfg.Interface)
+		leases[cfg.NetworkNamespacePID] = l
+		return l, nil
+	}
+	m.Refresh(context.Background())
+	if len(m.participants) != 3 {
+		t.Fatalf("participants=%d; want host + two app loopbacks", len(m.participants))
+	}
+	// container0 stops; container1 still runs but its namespace can no longer be entered.
+	graphs = graphs[1:]
+	brokenPID = 11
+	m.Refresh(context.Background())
+	if m.participants[participantKey("lo", 0, 10, "container0")] != nil {
+		t.Fatal("a stale lease survived because another graph failed to enumerate")
+	}
+	select {
+	case <-leases[10].Done():
+	default:
+		t.Fatal("stale lease not closed")
+	}
+	if m.participants[participantKey("lo", 0, 11, "container1")] == nil {
+		t.Fatal("the failing graph lost the coverage it already had")
+	}
 }

@@ -47,6 +47,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/agent/usbgadget"
+	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -168,6 +169,7 @@ func main() {
 
 	services.CleanupOldBackups(logger)
 	cdi.EnsureNVIDIACDISpec(logger)
+	cdi.EnsureQualcommNPURuntime(logger)
 
 	var networkMgr services.NetworkManager
 	if nm := agentnet.NewNMCLINetworkManager(logger); nm != nil {
@@ -324,13 +326,15 @@ func main() {
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 
-	startROS2BatteryMonitor(ctx, logger, configPath)
+	discoveryPool := rtps.NewPool()
+	defer discoveryPool.Close()
+	startROS2BatteryMonitor(ctx, logger, configPath, discoveryPool)
 
 	var videoROSRuntime []services.ROS2Runtime
 	if ctrdClient != nil {
 		videoROSRuntime = append(videoROSRuntime, ctrdClient)
 	}
-	videoSvc := services.NewVideoService(ctx, logger, videoROSRuntime...)
+	videoSvc := services.NewVideoService(ctx, logger, discoveryPool, videoROSRuntime...)
 	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
@@ -722,6 +726,11 @@ func main() {
 		// plaintext pre-provisioning server (handing anyone on the LAN a host
 		// root shell) and on the local admin socket.
 		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
+
+		// WendyTunnelService can reach arbitrary valid UDP ports on agent
+		// loopback. Register it only on the authenticated, org-checked server,
+		// never on the plaintext provisioning listener or local admin socket.
+		agentpbv2.RegisterWendyTunnelServiceServer(srv, services.NewTunnelService(logger))
 
 		// WendyDriverService installs kernel driver add-ons — loading a module is
 		// ring-0 code execution, as privileged as the root shell above. So it is

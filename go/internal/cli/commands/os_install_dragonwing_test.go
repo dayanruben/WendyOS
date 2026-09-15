@@ -141,39 +141,21 @@ func TestCheckDragonwingFlagsRejectsInapplicable(t *testing.T) {
 	}{
 		"rootfs-only": {
 			run: func() error {
-				return checkDragonwingFlags(true, "", false, false, "", wifiCLIOptions{}, "", preEnrollOptions{})
+				return checkDragonwingFlags(true, "", false, false, "")
 			},
 			want: "--rootfs-only",
 		},
 		"drive": {
 			run: func() error {
-				return checkDragonwingFlags(false, "/dev/sda", false, false, "", wifiCLIOptions{}, "", preEnrollOptions{})
+				return checkDragonwingFlags(false, "/dev/sda", false, false, "")
 			},
 			want: "--drive",
 		},
 		"storage": {
 			run: func() error {
-				return checkDragonwingFlags(false, "", false, false, "emmc", wifiCLIOptions{}, "", preEnrollOptions{})
+				return checkDragonwingFlags(false, "", false, false, "emmc")
 			},
 			want: "--storage",
-		},
-		"wifi": {
-			run: func() error {
-				return checkDragonwingFlags(false, "", false, false, "", wifiCLIOptions{SSID: "net"}, "", preEnrollOptions{})
-			},
-			want: "--wifi",
-		},
-		"device-name": {
-			run: func() error {
-				return checkDragonwingFlags(false, "", false, false, "", wifiCLIOptions{}, "board", preEnrollOptions{})
-			},
-			want: "--device-name",
-		},
-		"pre-enroll": {
-			run: func() error {
-				return checkDragonwingFlags(false, "", false, false, "", wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollForced})
-			},
-			want: "--pre-enroll",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -188,14 +170,9 @@ func TestCheckDragonwingFlagsRejectsInapplicable(t *testing.T) {
 	}
 }
 
-func TestCheckDragonwingFlagsAcceptsDefaults(t *testing.T) {
-	// The bare command, and the explicit opt-outs, must both be fine.
-	if err := checkDragonwingFlags(false, "", false, false, "", wifiCLIOptions{}, "", preEnrollOptions{}); err != nil {
+func TestCheckDragonwingFlagsAcceptsABareInstall(t *testing.T) {
+	if err := checkDragonwingFlags(false, "", false, false, ""); err != nil {
 		t.Errorf("bare install rejected: %v", err)
-	}
-	opts := wifiCLIOptions{NoWifi: true}
-	if err := checkDragonwingFlags(false, "", false, false, "", opts, "", preEnrollOptions{mode: preEnrollSkip}); err != nil {
-		t.Errorf("explicit opt-outs rejected: %v", err)
 	}
 }
 
@@ -215,11 +192,11 @@ func TestPercent(t *testing.T) {
 }
 
 func TestCheckDragonwingFlagsAgreesWithFlagCount(t *testing.T) {
-	one := checkDragonwingFlags(false, "/dev/sda", false, false, "", wifiCLIOptions{}, "", preEnrollOptions{})
+	one := checkDragonwingFlags(false, "/dev/sda", false, false, "")
 	if one == nil || !strings.Contains(one.Error(), "--drive does not apply") {
 		t.Errorf("single flag: %v", one)
 	}
-	many := checkDragonwingFlags(false, "/dev/sda", true, false, "", wifiCLIOptions{}, "", preEnrollOptions{})
+	many := checkDragonwingFlags(false, "/dev/sda", true, false, "")
 	if many == nil || !strings.Contains(many.Error(), "--drive, --no-bmap do not apply") {
 		t.Errorf("two flags: %v", many)
 	}
@@ -248,36 +225,38 @@ func TestDragonwingTargetLabelIdentifiesTheDeviceNotTheBoard(t *testing.T) {
 func TestFlashDragonwingTagsPreWriteFailures(t *testing.T) {
 	// A failure before the first program command must be distinguishable, or
 	// the caller warns that the board may not boot when nothing was touched.
-	t.Run("missing descriptors", func(t *testing.T) {
-		err := flashDragonwing(context.Background(), t.TempDir(), qdl.DeviceInfo{}, io.Discard, func(string) {})
-		if err == nil {
-			t.Fatal("want an error for an empty bundle dir")
-		}
-		if !errors.Is(err, errDragonwingNothingWritten) {
-			t.Errorf("error %q should be tagged as nothing-written", err)
-		}
-	})
+	dir := t.TempDir()
+	writeBundleFile(t, dir, "rawprogram0.xml", `<data><program label="efi" filename="efi.bin"
+		SECTOR_SIZE_IN_BYTES="4096" start_sector="6" num_partition_sectors="1"/></data>`)
+	writeBundleFile(t, dir, "patch0.xml", `<patches><patch filename="DISK"
+		SECTOR_SIZE_IN_BYTES="4096" start_sector="1" byte_offset="16" size_in_bytes="4"
+		value="0" what="stretch"/></patches>`)
+	writeBundleFile(t, dir, "efi.bin", "payload")
 
-	t.Run("missing programmer", func(t *testing.T) {
-		// A bundle whose descriptors parse but whose programmer is absent.
-		dir := t.TempDir()
-		writeBundleFile(t, dir, "rawprogram0.xml", `<data><program label="efi" filename="efi.bin"
-			SECTOR_SIZE_IN_BYTES="4096" start_sector="6" num_partition_sectors="1"/></data>`)
-		writeBundleFile(t, dir, "patch0.xml", `<patches><patch filename="DISK"
-			SECTOR_SIZE_IN_BYTES="4096" start_sector="1" byte_offset="16" size_in_bytes="4"
-			value="0" what="stretch"/></patches>`)
-		writeBundleFile(t, dir, "efi.bin", "payload")
-		err := flashDragonwing(context.Background(), dir, qdl.DeviceInfo{}, io.Discard, func(string) {})
-		if err == nil {
-			t.Fatal("want an error for a bundle with no programmer")
-		}
-		if !errors.Is(err, errDragonwingNothingWritten) {
-			t.Errorf("error %q should be tagged as nothing-written", err)
-		}
-		if !strings.Contains(err.Error(), dragonwingProgrammer) {
-			t.Errorf("error %q should name the missing programmer", err)
-		}
-	})
+	plan, err := qdl.LoadFlashPlan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = flashDragonwing(context.Background(), plan, qdl.DeviceInfo{}, io.Discard, func(string) {})
+	if err == nil {
+		t.Fatal("want an error for a bundle with no programmer")
+	}
+	if !errors.Is(err, errDragonwingNothingWritten) {
+		t.Errorf("error %q should be tagged as nothing-written", err)
+	}
+	if !strings.Contains(err.Error(), dragonwingProgrammer) {
+		t.Errorf("error %q should name the missing programmer", err)
+	}
+}
+
+func TestPlanDragonwingFlashResolvesBeforeAnyWrite(t *testing.T) {
+	// Every write is resolved up front, so a bundle the flash cannot take
+	// fails while the board is still untouched rather than after 12 GiB.
+	_, _, err := planDragonwingFlash(t.TempDir(), t.TempDir(), "", nil, "", nil,
+		io.Discard, func(string) {})
+	if err == nil {
+		t.Fatal("want an error for an empty bundle dir")
+	}
 }
 
 func writeBundleFile(t *testing.T, dir, name, body string) {
