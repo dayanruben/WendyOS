@@ -1,14 +1,19 @@
 # Go2 browser teleoperation
 
-Drive the virtual Go2 from a small browser control panel. Hold **W / S** to move
+This app uses the [shared native Go2 interfaces](../README.md) on hardware and
+in the simulator. The source manifest uses host discovery; managed VM deployment
+normalizes it to guest loopback. Use a CLI built from this checkout.
+
+
+Drive a Go2 robot or its simulator from a small browser control panel. Hold **W / S** to move
 forward or backward, **A / D** to strafe left or right, and **Q / E** to turn.
 The six buttons also support mouse and touch. Release a direction to stop that
 motion; **Space**, **Escape**, or **Stop / disable** ends the control session.
 
 The Python application uses ROS 2 and the standard-library HTTP server, with no
-pip or frontend dependencies. It publishes `geometry_msgs/msg/Twist` on
-`/cmd_vel` at 20 Hz, starting with zero velocity so its publisher can be selected
-in the simulator. This is manual driving; it has no obstacle avoidance.
+pip or frontend dependencies. It publishes `unitree_api/msg/Request` on
+`/api/sport/request` at 20 Hz, starting with zero velocity while the simulator gives its
+new publisher control. This is manual driving; it has no obstacle avoidance.
 
 ## Deploy to a Go2 VM
 
@@ -24,20 +29,22 @@ wendy run --device vm:<simulator-name> --build-type docker --no-restart
    can reach it. With a shared-network VM, use `http://<guest-ip>:8903` instead.
 2. Find the sandbox URL with `wendy vm robot status <simulator-name>` and open it
    alongside the control panel.
-3. In the sandbox, select this app under **ROS command source**, then choose
-   **Give app control**. The node name is `wendy_go2_teleop`.
-4. Return to the control panel and choose **Enable controls**. Hold a direction
+3. Choose **Enable controls** in the control panel. Hold a direction
    to drive. Keep the control panel focused; use two visible windows if you want
    to watch the sandbox while driving.
 
-The app only sends ROS velocity requests. It never grants itself simulator
-control. The manifest selects the VM's ROS 2 Humble, CycloneDDS, domain 0 and
-loopback ROS bus, matching the other Go2 examples.
+The managed Go2 simulator automatically gives the new Teleop publisher control,
+replacing the previous driving app or browser controller. Its initial command
+is zero; it waits for you to enable controls and hold a direction before moving.
+The manifest selects ROS 2 Humble, CycloneDDS and domain 0. Managed VM
+deployment normalizes its hardware discovery setting to the loopback bus.
 
-After a simulator pause or world reset, restart this application and explicitly
-grant the newly discovered publisher. Resume alone does not restore the grant.
+After a simulator pause, world reset or **Release app control**, resume the
+world and then restart this application. Its new publisher receives control
+automatically. Starting it while paused does not defer its grant until resume.
 **Release app control** in the sandbox removes the simulator grant independently
-of this page's enable button.
+of this page's enable button. Existing publishers cannot automatically take
+control back from a newer app; restart Teleop to return control to it.
 
 ## Run in an existing ROS environment
 
