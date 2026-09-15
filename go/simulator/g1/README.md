@@ -1,5 +1,9 @@
 # Unitree G1 virtual robot
 
+For reference-conditioned can pick-and-place policy training, see the
+[G1 training example](../../../Examples/G1Training/README.md). It uses its own
+recorded models, Dex3 hands and CUDA learner.
+
 The `g1` simulator profile runs a free-floating, 29-joint Unitree G1 in MuJoCo
 inside a WendyOS VM. Joint torques, contacts, and the pinned Unitree RL Lab
 velocity policy produce locomotion. The sandbox supports browser control and
