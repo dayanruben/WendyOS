@@ -316,21 +316,28 @@ func TestCloudSignatureOmitsLargeIssuerChain(t *testing.T) {
 	if len(certs) != 1 || certs[0] != base64.StdEncoding.EncodeToString(leafDER) {
 		t.Fatal("Cloud metadata must carry only the operator leaf")
 	}
-	// The envelope travels as gRPC metadata, and the broker's HTTP/2
-	// SETTINGS_MAX_HEADER_LIST_SIZE is 16 KiB — hardcoded by grpc-swift's NIO
-	// transport, not configurable. Cloud's console reserves 6 KiB for the rest
-	// of the headers (the dev OAuth bearer alone measured 5065 B) and derives
-	// a 10183-byte ceiling for this one; HPACK counts the value uncompressed,
-	// so compression buys nothing.
+	// The envelope travels as gRPC metadata, so it has to fit the broker's
+	// HTTP/2 SETTINGS_MAX_HEADER_LIST_SIZE. That was 16 KiB — grpc-swift's NIO
+	// default, with no override — which an ML-DSA-65 envelope could not fit;
+	// WDY-3003 raised the broker's receive budget to 32 KiB (cloud #556), and
+	// dev proved it on the same call: a 20 KiB header list went from
+	// terminating the connection to returning a clean Unauthenticated, while
+	// 40 KiB is still refused.
 	//
-	// An ML-DSA-65 envelope is ~14.8 KB (leaf ~5.5 KB DER, signature 3309 B),
-	// which is OVER that ceiling. Exceeding it fails HPACK decoding at the
-	// connection level: a transport reset with no status, no message and
-	// nothing in any log tying it to the header — the WDY-2994 hunt. Moving
-	// the envelope out of the header is WDY-3003.
-	const brokerEnvelopeBudget = 16*1024 - 6*1024 - (len(metadataKey) + 32)
+	// Cloud reserves 6 KiB for the rest of the headers (the dev OAuth bearer
+	// alone measured 5065 B) and derives the ceiling for this one from what is
+	// left. HPACK counts the value uncompressed — name + value + 32 per field —
+	// so compression buys nothing here and the arithmetic is the real limit.
+	//
+	// Keeping the assertion rather than deleting it: the margin is what makes
+	// an ML-DSA credential viable on this transport at all, and a future
+	// addition to the envelope (a longer chain, another claim) would eat it
+	// silently. Over the limit, HPACK fails at the connection level — a reset
+	// with no status, no message and nothing in any log naming the header,
+	// which is what made WDY-2994 a hunt.
+	const brokerEnvelopeBudget = 32*1024 - 6*1024 - (len(metadataKey) + 32)
 	if len(descriptor) > brokerEnvelopeBudget {
-		t.Fatalf("signed envelope is %d bytes, over the broker's %d-byte header budget (WDY-3003 must land before ML-DSA request signing can reach Cloud)", len(descriptor), brokerEnvelopeBudget)
+		t.Fatalf("signed envelope is %d bytes, over the broker's %d-byte header budget", len(descriptor), brokerEnvelopeBudget)
 	}
 	artifact, err := EnrollmentRequest(auth, "sim")
 	if err != nil {
