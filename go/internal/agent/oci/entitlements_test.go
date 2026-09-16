@@ -2857,6 +2857,42 @@ func TestApplyNPU_AddsUnsignedBitToAppProcessAttrs(t *testing.T) {
 	}
 }
 
+func TestApplyNPU_InvalidProcessAttrsDefaultsToUnsigned(t *testing.T) {
+	for _, value := range []string{"", "garbage", "0x8", "4garbage", "999999999999999999999999999999"} {
+		t.Run(value, func(t *testing.T) {
+			installFakeFastrpcDevTree(t, map[string][2]int64{
+				"fastrpc-cdsp": {10, 262},
+			}, &[2]int64{251, 0})
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			spec.Process.Env = append(spec.Process.Env,
+				"FASTRPC_PROCESS_ATTRS=4",
+				"FASTRPC_PROCESS_ATTRS="+value,
+				"APP_SETTING=preserved",
+			)
+			cfg := &appconfig.AppConfig{
+				AppID:        "test-app",
+				Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNPU}},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatal(err)
+			}
+
+			var attrs []string
+			for _, e := range spec.Process.Env {
+				if strings.HasPrefix(e, "FASTRPC_PROCESS_ATTRS=") {
+					attrs = append(attrs, e)
+				}
+			}
+			if !slices.Equal(attrs, []string{"FASTRPC_PROCESS_ATTRS=8"}) {
+				t.Errorf("process attributes = %v; want a single unsigned-PD default", attrs)
+			}
+			if !slices.Contains(spec.Process.Env, "APP_SETTING=preserved") {
+				t.Error("unrelated environment setting was lost")
+			}
+		})
+	}
+}
+
 // TestApplyNPU_EnvWinsOverLaterDuplicate pins OCI last-wins semantics: the codebase
 // appends duplicates deliberately, so rewriting an earlier entry would be overridden.
 func TestApplyNPU_EnvWinsOverLaterDuplicate(t *testing.T) {

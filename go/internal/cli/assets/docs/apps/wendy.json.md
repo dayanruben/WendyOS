@@ -338,7 +338,7 @@ Nothing is mounted into `/usr/lib` or `/usr/bin`. The transport prefix is prepen
 
 Everything else is the app's to bundle and pin: `libQnn*`, `libQairt*`, `libGenie*`, the Hexagon skel matching the board's DSP arch, and any `genie-*`/`qnn-*` tools it runs. These are a free public SDK download. An app's skels are **not** shadowed; keep them outside `/usr/share/qcom` and point `ADSP_LIBRARY_PATH` at them, which resolves ahead of the board's tree.
 
-The entitlement also sets `FASTRPC_PROCESS_ATTRS`, because the granted nodes only ever create an unsigned process domain. It is a bitmask: an app's own value is kept and the unsigned bit is OR'd into it, so set other flags freely. The value is read with `atoi()`, so decimal only.
+The entitlement also sets `FASTRPC_PROCESS_ATTRS`, because the granted nodes only ever create an unsigned process domain. It is a bitmask: an app's valid decimal value is kept and the unsigned bit is OR'd into it, so set other flags freely. An absent, empty, or invalid value defaults to `8` (the unsigned bit).
 
 Base image requirements: **glibc 2.38 or newer** (bookworm's 2.36 is too old), plus `libyaml-0.so.2` and `libbsd.so.0`, which the injected transport links against and which `debian:trixie-slim` does not ship — on Debian install `libyaml-0-2` and `libbsd0`.
 

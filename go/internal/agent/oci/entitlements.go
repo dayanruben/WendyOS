@@ -1620,9 +1620,9 @@ func withUnsignedPD(env []string) []string {
 	}
 	v, err := strconv.Atoi(current)
 	if err != nil {
-		// Unparseable: leave the image's value rather than guess at its intent. The
-		// vendor runtime reads it with atoi(), so it will read the same thing.
-		return env
+		// Invalid input must not disable the unsigned domain required by the
+		// granted nodes. Discard malformed flags and apply the required default.
+		return setEnvValue(env, fastrpcProcessAttrsEnv, strconv.Itoa(fastrpcUnsignedPDBit))
 	}
 	return setEnvValue(env, fastrpcProcessAttrsEnv, strconv.Itoa(v|fastrpcUnsignedPDBit))
 }
