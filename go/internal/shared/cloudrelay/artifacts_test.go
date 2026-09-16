@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -206,7 +207,7 @@ func TestProofConformance(t *testing.T) {
 			if !ecdsa.Verify(&key.PublicKey, digest(preimage), new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
 				t.Fatal("proof differs from frozen domain/framing contract")
 			}
-			ch.ExpiresAt = timestamppb.New(time.Now().Add(-time.Second))
+			ch.ExpiresAt = timestamppb.New(time.Now().Add(-2 * brokerChallengeSkew))
 			if _, e = proof(key, domain, p.Audience, p.Opaque, p.JTI, artifact, p.Role, ch); e == nil {
 				t.Fatal("signed expired challenge")
 			}
@@ -235,5 +236,68 @@ func TestCloudMLDSAGrant(t *testing.T) {
 	verifier.keys["ml"] = jwk{Kty: "EC", Alg: "ES256", Crv: "P-256", Kid: "ml"}
 	if _, e = verifier.verify(context.Background(), input+"."+b64.EncodeToString(signature), leaseType, c.Aud, time.Unix(c.Iat+1, 0)); e == nil {
 		t.Fatal("accepted algorithm/key substitution")
+	}
+}
+
+// TestProofBrokerChallengeClockSkew pins the bounded ±skew tolerance added for
+// WDY-3117: a fresh challenge is accepted despite a few seconds of clock skew on
+// either side, while genuinely stale or absurd-TTL challenges are still rejected.
+func TestProofBrokerChallengeClockSkew(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accept := func(exp time.Time) error {
+		ch := &pb.BrokerChallenge{ChallengeId: make([]byte, 16), Nonce: make([]byte, 32), ExpiresAt: timestamppb.New(exp)}
+		_, e := proof(key, "join", "broker-aud", "id", "jti", "artifact", "agent", ch)
+		return e
+	}
+	now := time.Now()
+	for _, c := range []struct {
+		name string
+		exp  time.Time
+		ok   bool
+	}{
+		{"fresh", now.Add(20 * time.Second), true},
+		{"expired within skew", now.Add(-brokerChallengeSkew + time.Second), true},
+		{"excessive within skew", now.Add(30*time.Second + brokerChallengeSkew - time.Second), true},
+		{"stale beyond skew", now.Add(-2 * brokerChallengeSkew), false},
+		{"absurd TTL beyond skew", now.Add(30*time.Second + 2*brokerChallengeSkew), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := accept(c.exp)
+			if c.ok && e != nil {
+				t.Fatalf("want accept, got %v", e)
+			}
+			if !c.ok && e == nil {
+				t.Fatal("want reject, got accept")
+			}
+		})
+	}
+}
+
+// TestProofBrokerChallengeZoneIndependent proves the expiry comparison is
+// time-zone independent (WDY-3117: "A device and an engineer can be in different
+// time zones"). The challenge expiry crosses the wire as an absolute
+// google.protobuf.Timestamp and both sides compare time.Time instants, so a fresh
+// broker-minted challenge must validate regardless of the dialer's local zone.
+func TestProofBrokerChallengeZoneIndependent(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := time.Local
+	t.Cleanup(func() { time.Local = orig })
+	for _, zone := range []string{"Pacific/Kiritimati" /* UTC+14 */, "Etc/GMT+12" /* UTC-12 */} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Skipf("zone %s unavailable (no tzdata): %v", zone, err)
+		}
+		time.Local = loc // the dialer is far from UTC
+		// Broker mints an absolute expiry 20s in the real future.
+		ch := &pb.BrokerChallenge{ChallengeId: make([]byte, 16), Nonce: make([]byte, 32), ExpiresAt: timestamppb.New(time.Now().Add(20 * time.Second))}
+		if _, e := proof(key, "join", "broker-aud", "id", "jti", "artifact", "agent", ch); e != nil {
+			t.Fatalf("dialer in zone %s rejected a fresh challenge: %v", zone, e)
+		}
 	}
 }
