@@ -92,7 +92,7 @@ func TestApplyQualcommNPURuntime_TouchesNoImageOwnedPath(t *testing.T) {
 	stageTransport(t, dir, "libcdsprpc.so.1.0.0")
 
 	spec := newSpec()
-	if _, hasDSP := ApplyQualcommNPURuntime(spec); !hasDSP {
+	if result := ApplyQualcommNPURuntime(spec); !result.HasDSP {
 		t.Fatal("hasDSP = false with a grantable fastrpc node staged")
 	}
 
@@ -111,8 +111,8 @@ func TestApplyQualcommNPURuntime_InjectsTransportAtOwnPrefix(t *testing.T) {
 	stageTransport(t, dir, "libcdsprpc.so.1.0.0")
 
 	spec := newQualcommSpec()
-	if _, hasDSP := ApplyQualcommNPURuntime(spec); !hasDSP {
-		t.Fatal("hasDSP = false with a grantable fastrpc node staged")
+	if result := ApplyQualcommNPURuntime(spec); !result.HasDSP || !result.TransportApplied || result.Mounts != 1 {
+		t.Fatalf("result = %+v; want transport applied on a board with a DSP", result)
 	}
 
 	m, ok := mountForDest(spec, qualcommNPUPrefix)
@@ -171,7 +171,7 @@ func TestApplyQualcommNPURuntime_BindsUnobtainableArtefactsOnly(t *testing.T) {
 	stageFastrpcNode(t, dir, "fastrpc-cdsp")
 
 	spec := newSpec()
-	if _, hasDSP := ApplyQualcommNPURuntime(spec); !hasDSP {
+	if result := ApplyQualcommNPURuntime(spec); !result.HasDSP {
 		t.Fatal("hasDSP = false with a grantable fastrpc node staged")
 	}
 
@@ -206,15 +206,54 @@ func TestApplyQualcommNPURuntime_NoTransportBindWhenStageEmpty(t *testing.T) {
 	}
 
 	spec := newQualcommSpec()
-	applied, hasDSP := ApplyQualcommNPURuntime(spec)
-	if !hasDSP {
+	result := ApplyQualcommNPURuntime(spec)
+	if !result.HasDSP {
 		t.Fatal("hasDSP = false with a grantable fastrpc node staged")
 	}
-	if applied != 0 {
-		t.Fatalf("applied = %d, want 0 so the caller can warn", applied)
+	if result.Mounts != 0 {
+		t.Fatalf("mounts = %d, want 0", result.Mounts)
+	}
+	if result.TransportApplied {
+		t.Error("empty stage reported as applied transport")
 	}
 	if _, ok := mountForDest(spec, qualcommNPUPrefix); ok {
 		t.Error("an empty stage dir must not be bound")
+	}
+}
+
+// Board configuration and shells can exist even when transport staging failed.
+// Their mounts must not suppress the caller's missing-transport warning.
+func TestApplyQualcommNPURuntime_BoardFilesWithoutTransport(t *testing.T) {
+	for _, emptyStage := range []bool{false, true} {
+		name := "missing stage"
+		if emptyStage {
+			name = "empty stage"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := useQualcommRuntimeDir(t,
+				"share/conf.d/board.yaml",
+				"share/qcs8300/Qualcomm/EVK/dsp/cdsp/fastrpc_shell_unsigned_3",
+			)
+			stageFastrpcNode(t, dir, "fastrpc-cdsp")
+			if emptyStage {
+				if err := os.MkdirAll(qualcommNPUStageDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			spec := newQualcommSpec()
+			spec.Process.Env = []string{"LD_LIBRARY_PATH=/app/lib"}
+			result := ApplyQualcommNPURuntime(spec)
+			if !result.HasDSP || result.Mounts != 2 || result.TransportApplied {
+				t.Fatalf("result = %+v; want board-file mounts but no transport", result)
+			}
+			if _, ok := mountForDest(spec, qualcommNPUPrefix); ok {
+				t.Error("missing transport must not be mounted")
+			}
+			if len(spec.Process.Env) != 1 || spec.Process.Env[0] != "LD_LIBRARY_PATH=/app/lib" {
+				t.Errorf("missing transport changed the library path: %v", spec.Process.Env)
+			}
+		})
 	}
 }
 
@@ -224,16 +263,16 @@ func TestApplyQualcommNPURuntime_InertWithoutGrantableDevice(t *testing.T) {
 	stageTransport(t, dir, "libcdsprpc.so.1.0.0")
 
 	spec := newSpec()
-	applied, hasDSP := ApplyQualcommNPURuntime(spec)
-	if hasDSP || applied != 0 || len(spec.Mounts) != 0 {
-		t.Fatalf("applied = %d, hasDSP = %v; want nothing without a device", applied, hasDSP)
+	result := ApplyQualcommNPURuntime(spec)
+	if result.HasDSP || result.Mounts != 0 || result.TransportApplied || len(spec.Mounts) != 0 {
+		t.Fatalf("result = %+v; want nothing without a device", result)
 	}
 
 	// A -secure-only board is the same case: those nodes are never granted.
 	stageFastrpcNode(t, dir, "fastrpc-cdsp-secure")
 	spec = newSpec()
-	if applied, hasDSP = ApplyQualcommNPURuntime(spec); hasDSP || applied != 0 {
-		t.Fatalf("applied = %d, hasDSP = %v; a -secure-only board grants nothing", applied, hasDSP)
+	if result = ApplyQualcommNPURuntime(spec); result.HasDSP || result.Mounts != 0 || result.TransportApplied {
+		t.Fatalf("result = %+v; a -secure-only board grants nothing", result)
 	}
 }
 
@@ -242,12 +281,12 @@ func TestApplyQualcommNPURuntime_NoRuntimeOnHost(t *testing.T) {
 	stageFastrpcNode(t, dir, "fastrpc-cdsp")
 
 	spec := newSpec()
-	applied, hasDSP := ApplyQualcommNPURuntime(spec)
-	if !hasDSP {
+	result := ApplyQualcommNPURuntime(spec)
+	if !result.HasDSP {
 		t.Fatal("hasDSP = false with a grantable fastrpc node staged")
 	}
-	if applied != 0 || len(spec.Mounts) != 0 {
-		t.Fatalf("applied = %d, mounts = %d; want none with no runtime staged", applied, len(spec.Mounts))
+	if result.Mounts != 0 || result.TransportApplied || len(spec.Mounts) != 0 {
+		t.Fatalf("result = %+v, mounts = %d; want none with no runtime staged", result, len(spec.Mounts))
 	}
 }
 
@@ -263,9 +302,9 @@ func TestApplyQualcommNPURuntime_SkipsDuplicateOfExistingSpecEntry(t *testing.T)
 		Type:        "bind",
 	})
 
-	applied, _ := ApplyQualcommNPURuntime(spec)
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1 (the duplicate must be skipped)", applied)
+	result := ApplyQualcommNPURuntime(spec)
+	if result.Mounts != 1 || result.TransportApplied {
+		t.Fatalf("result = %+v; want one board-file mount and no transport applied over the existing mount", result)
 	}
 	m, _ := mountForDest(spec, qualcommNPUPrefix)
 	if m.Source != "/somewhere/else" {

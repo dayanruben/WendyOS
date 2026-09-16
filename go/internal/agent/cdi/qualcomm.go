@@ -141,25 +141,33 @@ func pruneStagedRuntime(keep map[string]bool, logger *zap.Logger) {
 	}
 }
 
+// QualcommNPURuntimeResult distinguishes transport provisioning from board-file mounts.
+type QualcommNPURuntimeResult struct {
+	Mounts           int
+	HasDSP           bool
+	TransportApplied bool
+}
+
 // ApplyQualcommNPURuntime gives an npu-entitled container the driver-locked layer: the
 // staged FastRPC transport and the board's DSP firmware tree. The inference framework
-// is the app's to bundle. Reports the mounts applied and whether the board has a DSP.
-func ApplyQualcommNPURuntime(spec *oci.Spec) (applied int, hasDSP bool) {
+// is the app's to bundle.
+func ApplyQualcommNPURuntime(spec *oci.Spec) (result QualcommNPURuntimeResult) {
 	if !hasNonSecureFastrpcDevice() {
-		return 0, false
+		return result
 	}
+	result.HasDSP = true
 
 	existing := make(map[string]bool, len(spec.Mounts))
 	for _, m := range spec.Mounts {
 		existing[m.Destination] = true
 	}
 
-	// An empty stage dir means the host has no transport: bind nothing, so the caller
-	// can tell "no runtime" from "runtime applied" instead of handing the app an empty
-	// directory on its library path.
+	// An empty stage dir means the host has no transport. Report its application
+	// separately: board files alone cannot supply the missing transport.
 	if dirHasEntries(qualcommNPUStageDir) &&
 		addRuntimeBind(spec, existing, qualcommNPUStageDir, qualcommNPUPrefix) {
-		applied++
+		result.Mounts++
+		result.TransportApplied = true
 		if spec.Process != nil {
 			spec.Process.Env = prependLibraryPath(spec.Process.Env, qualcommNPUPrefix)
 		}
@@ -172,12 +180,12 @@ func ApplyQualcommNPURuntime(spec *oci.Spec) (applied int, hasDSP bool) {
 		}
 		for _, p := range matches {
 			if addRuntimeBind(spec, existing, p, p) {
-				applied++
+				result.Mounts++
 			}
 		}
 	}
 
-	return applied, true
+	return result
 }
 
 func addRuntimeBind(spec *oci.Spec, existing map[string]bool, source, destination string) bool {

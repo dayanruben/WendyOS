@@ -2721,16 +2721,17 @@ var boardDetect = board.Detect
 // applyQualcommNPURuntime bind-mounts the host's Qualcomm AI runtime into an
 // npu-entitled container; a board with no DSP is left untouched.
 func (c *Client) applyQualcommNPURuntime(spec *localoci.Spec) {
-	applied, hasDSP := cdi.ApplyQualcommNPURuntime(spec)
-	if !hasDSP {
+	result := cdi.ApplyQualcommNPURuntime(spec)
+	if !result.HasDSP {
 		// No grantable FastRPC node, so the entitlement is inert on this board.
 		return
 	}
-	if applied == 0 {
-		c.logger.Warn("npu entitlement granted but no Qualcomm runtime found on host")
+	if !result.TransportApplied {
+		c.logger.Warn("npu entitlement granted but Qualcomm FastRPC transport was not applied",
+			zap.Int("mounts", result.Mounts))
 		return
 	}
-	c.logger.Info("Applied Qualcomm NPU runtime", zap.Int("mounts", applied))
+	c.logger.Info("Applied Qualcomm NPU runtime", zap.Int("mounts", result.Mounts))
 }
 
 // needsNvidiaCDI reports whether CreateContainer should apply the host's
