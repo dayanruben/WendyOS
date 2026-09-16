@@ -29,6 +29,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ros2camera"
+	"github.com/wendylabsinc/wendy/go/internal/rtps"
 	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -671,7 +672,7 @@ type VideoService struct {
 
 // NewVideoService creates a VideoService whose producer goroutines are tied to ctx.
 // Call Shutdown to cancel all active producers and wait for them to exit.
-func NewVideoService(ctx context.Context, logger *zap.Logger, rosRuntime ...ROS2Runtime) *VideoService {
+func NewVideoService(ctx context.Context, logger *zap.Logger, pool *rtps.Pool, rosRuntime ...ROS2Runtime) *VideoService {
 	svcCtx, cancel := context.WithCancel(ctx)
 	svc := &VideoService{
 		logger: logger,
@@ -778,7 +779,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger, rosRuntime ...ROS2
 			return out, nil
 		}
 	}
-	svc.ros2Cameras = ros2camera.NewManager(svcCtx, logger, svc.loopback, ros2CameraRegistryPath, graphs)
+	svc.ros2Cameras = ros2camera.NewManager(svcCtx, logger, svc.loopback, ros2CameraRegistryPath, graphs, pool)
 	return svc
 }
 
