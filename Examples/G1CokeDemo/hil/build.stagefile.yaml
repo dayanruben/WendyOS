@@ -1,0 +1,25 @@
+version: 1
+stages:
+  - name: app
+    from: ubuntu:22.04
+    workdir: /app
+    # Wendy selects the sm_87 wheel index and compatible CUDA runtime from
+    # the target device, including Orin boards running JetPack 7.
+    cuda: true
+    env:
+      PYTHONUNBUFFERED: "1"
+      COKE_HIL_HOST: "0.0.0.0"
+      COKE_HIL_PORT: "8098"
+      COKE_HIL_DEVICE: cuda
+      COKE_HIL_CONTROL_DEVICE: cpu
+    install:
+      apt:
+        packages: [python3-pip, python3-dev, libopenblas-dev, libgomp1]
+      pip:
+        - packages: ["torch==2.8.0"]
+          cuda: true
+        - packages: ["numpy==1.26.4"]
+    copy:
+      - from: local
+        paths: [coke_demo, runtime, bundle]
+    cmd: [python3, -m, coke_demo, hil-serve]
