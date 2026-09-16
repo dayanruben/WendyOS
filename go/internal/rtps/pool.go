@@ -77,11 +77,27 @@ func (p *Pool) Acquire(ctx context.Context, target Config) (*Lease, error) {
 			continue
 		}
 		if entry != nil {
+			// Verify outside the lock: ownership checks call into containerd
+			// with no timeout, and every other consumer's subscribe, release
+			// and listing waits on this lock.
+			p.mu.Unlock()
 			err := resolved.ns.verify()
 			resolved.ns.close()
 			if err != nil {
-				p.mu.Unlock()
 				return nil, err
+			}
+			p.mu.Lock()
+			if p.closed || ctx.Err() != nil {
+				p.mu.Unlock()
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				return nil, errors.New("rtps: pool closed")
+			}
+			if p.entries[resolved.key] != entry {
+				// Released or replaced while verifying: look it up again.
+				p.mu.Unlock()
+				continue
 			}
 			lease := p.leaseLocked(ctx, resolved.key, entry)
 			p.mu.Unlock()
