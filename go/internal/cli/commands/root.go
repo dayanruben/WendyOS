@@ -254,6 +254,7 @@ func NewRootCmd() *cobra.Command {
 		initCmd,
 		runCmd,
 		chatCmd,
+		newAgentCmd(),
 		// Manage
 		projectCmd,
 		deviceCmd,

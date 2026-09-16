@@ -85,6 +85,7 @@ func (e *Engine) Turn(ctx context.Context, prompt string, emit func(Event), appr
 	if emit == nil {
 		emit = func(Event) {}
 	}
+	ctx = context.WithValue(ctx, turnRuntimeKey{}, &turnRuntime{approve: approve, emit: emit, memoryEnabled: e.MemoryEnabled})
 	if e.memory != nil {
 		e.memory.beginTurn()
 		defer e.learnMemory(ctx, prompt, emit)

@@ -208,9 +208,11 @@ Local model inference also works with cloud-connected Wendy devices.
 
 ## Working in the terminal
 
-The transcript shows streamed answers and compact tool activity. Press Ctrl+T
-or type `/tools` to show or hide complete tool arguments and results. The agent
-receives the full results in either view. Read-only operations
+The transcript groups consecutive tool calls and subagent activity into a single
+summary line that updates as work progresses. Subagent prompts and reports stay
+collapsed; errors and denied actions remain visible. Press Ctrl+T or type `/tools`
+to expand the full activity history, including tool arguments, results, and
+subagent details. The agent receives the full results in either view. Read-only operations
 run automatically. File writes, shell commands, and device changes show their
 arguments for approval before running. Approve with `y` or deny with `n`; use the
 scroll keys to review longer calls.
@@ -234,7 +236,7 @@ for passive log inspection. `container_attach` starts or restarts the app.
 | Esc / Ctrl+C during a turn | Cancel active work and discard queued messages |
 | Ctrl+C while idle | Exit |
 | `/help` | Show chat controls |
-| `/tools` or Ctrl+T | Show or hide full tool details |
+| `/tools` or Ctrl+T | Expand or collapse tool and agent activity |
 | `/setup` | Change your AI or enter an API key privately |
 | `/voice` | Turn GPT Live voice on or off |
 | `/voice setup` | Enter or replace the OpenAI voice key privately |
@@ -310,7 +312,7 @@ wendy chat --prompt "Redeploy the relay to Unitree G1 Nx" --json --yes
 ```
 
 `--prompt` cannot be combined with `--setup` or `--voice`. Each run is a fresh
-conversation; there is no memory between prompts.
+conversation. Profile memory is recalled and learned in both interactive and headless runs; use `--no-memory` to disable it.
 
 ## Remember working methods and mistakes
 
@@ -395,3 +397,88 @@ settings. The `openai` provider also
 accepts `OPENAI_BASE_URL`. Available providers are `openai`, `anthropic`,
 `ollama`, and `local`. The `ollama` preset uses `http://localhost:11434/v1`;
 the `local` preset defaults to `http://localhost:8080/v1`.
+
+
+## Profiles and parallel agents
+
+`general` is the default. Select a specialization when starting a conversation:
+
+```sh
+wendy chat --list-profiles
+wendy chat --profile developer
+wendy chat --profile simulation -C ./sim
+wendy chat --profile debugger --device my-robot
+wendy chat --profile fleet
+wendy chat --profile device-reasoning
+wendy chat --profile device-sensors
+wendy chat --profile device-control
+```
+
+Profiles select instructions, tools, bundled skills, and durable memory. Every
+session automatically loads its role's bundled `SKILL.md`, including delegated
+children and service tasks. These files live in `go/internal/cli/chat/skills/` and
+ship inside the CLI. They cover task routing, tool availability, role-specific
+workflows, and concise result reporting. No separate skill installation is needed.
+
+Use `profile_skill` through chat to reread the startup skill at
+`profiles/<profile>/SKILL.md` or read additional bundled skills and references on
+demand. The general profile can inspect all role skills; specialists can inspect
+their own. `wendy chat --list-profiles --json` includes each startup skill path.
+
+Choose the specialist by the tools the task needs. Camera inventory belongs to
+`device-sensors`, even when checking many devices. `fleet` has connectivity and
+fleet-management tools but no camera, audio, or ROS 2 tools. Children inherit the
+intersection of their own and their parent's tool restrictions, so delegating
+from `fleet` cannot restore sensor access. Skill instructions do not grant tools
+or change approvals.
+
+`general` retains existing notes in `~/.wendy/memory`; other profiles store notes
+under `~/.wendy/memory/profiles/<profile>`. Workspace, device, and global scopes
+apply within each profile. Switching a model does not change its profile memory.
+A profile's tool selection is not a shell sandbox. An approved shell or container
+command retains its normal OS and network access.
+
+Wendy can call `agent_delegate` with up to four independent tasks in one batch.
+They run concurrently and return individual results in submission order. Each
+child gets a fresh conversation, its own MCP connection and model client, its
+profile memory, and only the tools allowed by both profiles. Children receive the
+explicit task text, not the parent's transcript. Children cannot delegate again.
+The runtime permits at most twelve children per parent turn and limits each
+batch to ten minutes. Mutating tool calls serialize within a batch; assign
+disjoint file edits and let local controllers arbitrate continuous motion.
+
+Approvals identify the child and its profile. The parent's approval policy
+applies, including headless denials and `--yes`. Cancellation waits for local
+children to stop and closes their MCP and media processes. Child progress carries
+`agent_id` and `profile` in JSON events. The parent's final text excludes child
+streaming text. `/memory off` also pauses active children's recall and saves.
+
+Children inherit the parent's model connection by default. Supply a trusted JSON
+file to choose another connection for each child profile:
+
+```json
+{
+  "developer": {
+    "provider": "openai",
+    "model": "YOUR_CLOUD_MODEL",
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "debugger": {
+    "provider": "local",
+    "model": "YOUR_LOCAL_MODEL",
+    "base_url": "http://localhost:8080/v1"
+  }
+}
+```
+
+```sh
+wendy chat --agent-models ./agent-models.json
+```
+
+These overrides apply to delegated children. Use `--provider` and `--model` or
+`--setup` for the main conversation. Model connections do not inherit another
+endpoint's key. Model processes can be shared by multiple agent conversations;
+creating a child does not load another model into GPU memory.
+
+For persistent services, sensor event triggers, and remote A2A peers, read the
+[agent service guide](./agent-service).

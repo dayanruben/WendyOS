@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +18,8 @@ func newChatCmd() *cobra.Command {
 	var cfg chat.Config
 	var directory string
 	var autoApprove, setup, helpAll, voice, noMemory bool
-	var preferredDevice, headlessPrompt string
+	var preferredDevice, headlessPrompt, profileName, agentModelsFile, peersFile string
+	var listProfiles bool
 	cmd := &cobra.Command{
 		Use:   "chat [prompt...]",
 		Short: "Build apps and work with your devices through a conversation",
@@ -42,13 +44,34 @@ would otherwise ask a person.`,
 			if helpAll {
 				return cmd.Help()
 			}
+			profile, err := chat.ResolveProfile(profileName)
+			if err != nil {
+				return err
+			}
+			if listProfiles {
+				if jsonOutput {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(chat.Profiles())
+				}
+				for _, p := range chat.Profiles() {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", p.Name, p.Description)
+				}
+				return nil
+			}
+			models, err := chat.LoadAgentModels(agentModelsFile)
+			if err != nil {
+				return err
+			}
+			peers, err := chat.LoadPeers(peersFile)
+			if err != nil {
+				return err
+			}
 			workspace, err := chatWorkspace(directory)
 			if err != nil {
 				return err
 			}
 			if headlessPrompt != "" {
 				return runChatHeadless(cmd, chatHeadlessOptions{
-					Config: cfg, Prompt: headlessPrompt, Workspace: workspace, Device: preferredDevice,
+					Config: cfg, Profile: profile, AgentModels: models, Peers: peers, NoMemory: noMemory, Prompt: headlessPrompt, Workspace: workspace, Device: preferredDevice,
 					AutoApprove: autoApprove, JSON: jsonOutput, Voice: voice, Setup: setup,
 				})
 			}
@@ -83,27 +106,26 @@ would otherwise ask a person.`,
 			}
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			toolset, err := chat.NewTools(ctx, executable, workspace, preferredDevice)
-			if err != nil {
-				return err
-			}
-			defer toolset.Close()
-			memory, err := chat.NewMemoryStore("", workspace, preferredDevice)
-			if err != nil {
-				return err
-			}
-			memoryTools := chat.NewMemoryTools(toolset, memory)
+			var session *chat.Session
+			defer func() {
+				if session != nil {
+					_ = session.Close()
+				}
+			}()
 			initialPrompt := strings.Join(args, " ")
 			var engine *chat.Engine
 			state := new(chat.UIState)
 			for {
 				if engine == nil {
-					provider, err := chat.NewProvider(resolved)
+					if session != nil {
+						_ = session.Close()
+					}
+					session, err = chat.NewSession(ctx, chat.SessionOptions{Config: resolved, Profile: profile,
+						Executable: executable, Workspace: workspace, Device: preferredDevice, NoMemory: noMemory, AgentModels: models, Peers: peers})
 					if err != nil {
 						return err
 					}
-					engine = chat.NewEngine(provider, memoryTools, chat.SystemPrompt(workspace, preferredDevice))
-					engine.SetMemoryEnabled(!noMemory)
+					engine = session.Engine
 				}
 				var voiceFactory func(context.Context) (chat.VoiceSession, error)
 				if voiceSupportError != nil {
@@ -113,7 +135,7 @@ would otherwise ask a person.`,
 					voiceFactory = func(ctx context.Context) (chat.VoiceSession, error) { return chat.StartVoice(ctx, key) }
 				}
 				err = chat.Run(ctx, chat.UIOptions{
-					Engine: engine, Provider: resolved.Provider, Model: resolved.Model,
+					Engine: engine, Provider: resolved.Provider, Model: resolved.Model, Profile: profile.Name,
 					State:     state,
 					Workspace: workspace, Device: preferredDevice,
 					InitialPrompt: initialPrompt, AutoApprove: autoApprove,
@@ -153,6 +175,17 @@ would otherwise ask a person.`,
 			}
 		},
 	}
+	cmd.Flags().StringVar(&profileName, "profile", "general", "Agent specialization; see --list-profiles")
+	cmd.Flags().BoolVar(&listProfiles, "list-profiles", false, "List available agent profiles and exit")
+	cmd.Flags().StringVar(&peersFile, "agent-peers", "", "JSON file of named A2A peer endpoints")
+	cmd.Flags().StringVar(&agentModelsFile, "agent-models", "", "JSON file of per-profile subagent model connections")
+	_ = cmd.RegisterFlagCompletionFunc("profile", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		var names []string
+		for _, p := range chat.Profiles() {
+			names = append(names, p.Name+"\t"+p.Description)
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	})
 	cmd.Flags().BoolVar(&setup, "setup", false, "Choose or change your AI and model")
 	cmd.Flags().BoolVar(&voice, "voice", false, "Listen and speak with GPT Live (or use /voice in chat)")
 	cmd.Flags().StringVarP(&headlessPrompt, "prompt", "p", "", "Run one turn without the chat screen and exit; combine with --json and --yes")
@@ -165,7 +198,7 @@ would otherwise ask a person.`,
 	cmd.Flags().IntVar(&cfg.MaxTokens, "max-tokens", 0, "Maximum generated tokens per response (WENDY_CHAT_MAX_TOKENS)")
 	cmd.Flags().StringVarP(&directory, "directory", "C", ".", "Project directory for local file and command tools")
 	cmd.Flags().BoolVarP(&autoApprove, "yes", "y", false, "Approve all tool calls, including shell commands and device changes")
-	advanced := []string{"provider", "model", "base-url", "max-tokens", "yes"}
+	advanced := []string{"provider", "model", "base-url", "max-tokens", "yes", "agent-models", "agent-peers"}
 	for _, name := range advanced {
 		_ = cmd.Flags().MarkHidden(name)
 	}
@@ -195,6 +228,10 @@ Options:
 
 type chatHeadlessOptions struct {
 	Config      chat.Config
+	Profile     chat.Profile
+	AgentModels map[string]chat.Config
+	Peers       map[string]chat.PeerSpec
+	NoMemory    bool
 	Prompt      string
 	Workspace   string
 	Device      string
@@ -229,16 +266,13 @@ func runChatHeadless(cmd *cobra.Command, opts chatHeadlessOptions) error {
 	}
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
-	toolset, err := chat.NewTools(ctx, executable, opts.Workspace, opts.Device)
+	session, err := chat.NewSession(ctx, chat.SessionOptions{Config: resolved, Profile: opts.Profile,
+		Executable: executable, Workspace: opts.Workspace, Device: opts.Device, NoMemory: opts.NoMemory, AgentModels: opts.AgentModels, Peers: opts.Peers})
 	if err != nil {
 		return err
 	}
-	defer toolset.Close()
-	provider, err := chat.NewProvider(resolved)
-	if err != nil {
-		return err
-	}
-	engine := chat.NewEngine(provider, toolset, chat.SystemPrompt(opts.Workspace, opts.Device))
+	defer session.Close()
+	engine := session.Engine
 	err = chat.RunHeadless(ctx, chat.HeadlessOptions{
 		Engine: engine, Prompt: opts.Prompt, JSON: opts.JSON,
 		Output: cmd.OutOrStdout(), AutoApprove: opts.AutoApprove,

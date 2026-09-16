@@ -39,12 +39,17 @@ type MemoryTools struct {
 	base           Executor
 	store          *MemoryStore
 	enabled        atomic.Bool
+	parentEnabled  func() bool
 	mu             sync.Mutex
 	observed       []memoryObservation
 	saved          bool
 	forgotten      map[string]bool
 	revision       uint64
 	learningCancel context.CancelFunc
+}
+
+func (m *MemoryTools) isEnabled() bool {
+	return m.enabled.Load() && (m.parentEnabled == nil || m.parentEnabled())
 }
 
 func NewMemoryTools(base Executor, store *MemoryStore) *MemoryTools {
@@ -55,7 +60,7 @@ func NewMemoryTools(base Executor, store *MemoryStore) *MemoryTools {
 
 func (m *MemoryTools) ListTools(ctx context.Context) ([]Tool, error) {
 	list, err := m.base.ListTools(ctx)
-	if err != nil || !m.enabled.Load() {
+	if err != nil || !m.isEnabled() {
 		return list, err
 	}
 	return append(append([]Tool(nil), list...), memoryTools...), nil
@@ -74,7 +79,7 @@ func (m *MemoryTools) ExecuteResult(ctx context.Context, call ToolCall) (ToolRes
 		if call.Name != tool.Name {
 			continue
 		}
-		if !m.enabled.Load() {
+		if !m.isEnabled() {
 			return ToolResult{}, errors.New("memory is off; use /memory on to enable it")
 		}
 		if err := validateArguments(tool, call.Arguments); err != nil {
@@ -99,7 +104,7 @@ func (m *MemoryTools) observe(call ToolCall, result ToolResult, err error) {
 	if strings.HasPrefix(call.Name, "memory_") {
 		return
 	}
-	if m.enabled.Load() {
+	if m.isEnabled() {
 		output := result.Text
 		if err != nil {
 			output = err.Error() + "\n" + output
@@ -158,7 +163,7 @@ func (m *MemoryTools) executeMemory(ctx context.Context, call ToolCall) (string,
 		if memoryContainsSecret(args.Title + "\n" + args.Content + "\n" + args.Evidence) {
 			return "", errors.New("memory appears to contain a credential; omit secrets and use a placeholder")
 		}
-		if !m.enabled.Load() {
+		if !m.isEnabled() {
 			return "", errors.New("memory is off")
 		}
 		identity := MemoryEntry{Scope: args.Scope, Device: args.Device, Title: args.Title}
@@ -251,14 +256,14 @@ func memoryContainsSecret(value string) bool {
 }
 
 func (e *Engine) MemoryEnabled() bool {
-	return e.memory != nil && e.memory.enabled.Load()
+	return e.memory != nil && e.memory.isEnabled()
 }
 
 func (e *Engine) SetMemoryEnabled(enabled bool) {
 	if e.memory != nil && e.memory.store != nil {
 		e.memory.mu.Lock()
 		defer e.memory.mu.Unlock()
-		if e.memory.enabled.Load() == enabled {
+		if e.memory.isEnabled() == enabled {
 			return
 		}
 		e.memory.enabled.Store(enabled)

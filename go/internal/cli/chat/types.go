@@ -37,6 +37,8 @@ type MediaExecutor interface {
 }
 
 type ToolCall struct {
+	AgentID   string
+	Profile   string
 	ID        string
 	Name      string
 	Arguments json.RawMessage
@@ -64,7 +66,9 @@ type ApproveFunc func(context.Context, ToolCall) (bool, error)
 
 // Event types are text, tool_start, tool_result, status, and memory.
 type Event struct {
-	Type string
-	Text string
-	Call *ToolCall
+	AgentID string
+	Profile string
+	Type    string
+	Text    string
+	Call    *ToolCall
 }

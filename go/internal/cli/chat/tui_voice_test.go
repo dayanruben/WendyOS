@@ -328,6 +328,7 @@ func TestUIVoiceUnknownCommandPreservesActiveTurn(t *testing.T) {
 		t.Fatal("the unsubmitted command should remain editable")
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(chatMouseTimeout(m.mouseInput.version))
 	uiDrainTurn(t, m)
 	select {
 	case <-canceled:
@@ -373,6 +374,7 @@ func TestUIVoiceEscapeInterruptsPlaybackAndCancelsEngine(t *testing.T) {
 	session := uiConnectVoice(t, m)
 	uiSendVoice(t, m, session, VoiceEvent{Type: "delegation", DelegationID: "task", Text: "wait"})
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(chatMouseTimeout(m.mouseInput.version))
 	uiDrainTurn(t, m)
 	deadline := time.After(3 * time.Second)
 	for session.interrupts.Load() == 0 {
@@ -512,6 +514,7 @@ func TestUIVoiceIdleEscapeDiscardsQueuedResult(t *testing.T) {
 	}
 	queuedReply := m.voiceActionTail
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(chatMouseTimeout(m.mouseInput.version))
 	interrupt := m.voiceActionTail
 	close(gate)
 	for _, done := range []<-chan struct{}{queuedReply, interrupt} {

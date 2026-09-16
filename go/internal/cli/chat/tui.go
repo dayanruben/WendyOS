@@ -27,6 +27,7 @@ type UIOptions struct {
 	State         *UIState
 	Model         string
 	Provider      string
+	Profile       string
 	Workspace     string
 	Device        string
 	InitialPrompt string
@@ -133,6 +134,7 @@ type chatModel struct {
 	transcript      []chatEntry
 	viewport        viewport.Model
 	composer        textarea.Model
+	mouseInput      chatMouseInput
 	spinner         spinner.Model
 	status          string
 	queuedPrompts   []string
@@ -236,6 +238,28 @@ func (m *chatModel) Init() tea.Cmd {
 }
 
 func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var messages []tea.Msg
+	var cmd tea.Cmd
+	switch input := msg.(type) {
+	case tea.KeyMsg:
+		messages, cmd = m.mouseInput.feed(input)
+	case chatMouseTimeout:
+		if uint64(input) != m.mouseInput.version {
+			return m, nil
+		}
+		messages = m.mouseInput.flush()
+	default:
+		return m.update(msg)
+	}
+	cmds := []tea.Cmd{cmd}
+	for _, message := range messages {
+		_, next := m.update(message)
+		cmds = append(cmds, next)
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m *chatModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
@@ -453,7 +477,7 @@ func (m *chatModel) submit(prompt string) tea.Cmd {
 		}
 		return nil
 	case "/help":
-		m.appendEntry("notice", "Chat commands", "/help   Show this help\n/tools  Show or hide full tool details (Ctrl+T)\n/setup  Change your AI or enter an API key privately\n/voice  Toggle voice; /voice setup changes voice credentials privately\n/memory Browse recent notes\n/memory <id>  Read a note and its evidence\n/memory search <words>  Find notes\n/memory on|off  Enable or pause remembering and recall\n/forget <id>  Delete a note using its short ID\n/clear  Clear the conversation and queued messages; keep remembered notes\n/quit   Exit chat\n\nEnter sends a message, or queues it while Wendy is working. Queued messages run in order after the current turn.\nAlt+Enter or Ctrl+J adds a new line.\nPgUp/PgDn scroll the transcript; Ctrl+Home/End jump to its start/end.\nEsc or Ctrl+C cancels active work, discards queued messages, and stops voice playback. Ctrl+C exits when idle.\nVoice corrections interrupt current work and run before queued typed messages.\nFor tool approvals, review the arguments and press y to allow once or n to deny. Spoken approval is never accepted.\nScroll the approval with ↑/↓, PgUp/PgDn, or the mouse wheel.")
+		m.appendEntry("notice", "Chat commands", "/help   Show this help\n/tools  Expand or collapse tool and agent activity (Ctrl+T)\n/setup  Change your AI or enter an API key privately\n/voice  Toggle voice; /voice setup changes voice credentials privately\n/memory Browse recent notes\n/memory <id>  Read a note and its evidence\n/memory search <words>  Find notes\n/memory on|off  Enable or pause remembering and recall\n/forget <id>  Delete a note using its short ID\n/clear  Clear the conversation and queued messages; keep remembered notes\n/quit   Exit chat\n\nEnter sends a message, or queues it while Wendy is working. Queued messages run in order after the current turn.\nAlt+Enter or Ctrl+J adds a new line.\nPgUp/PgDn scroll the transcript; Ctrl+Home/End jump to its start/end.\nEsc or Ctrl+C cancels active work, discards queued messages, and stops voice playback. Ctrl+C exits when idle.\nVoice corrections interrupt current work and run before queued typed messages.\nFor tool approvals, review the arguments and press y to allow once or n to deny. Spoken approval is never accepted.\nScroll the approval with ↑/↓, PgUp/PgDn, or the mouse wheel.")
 		return nil
 	case "/memory":
 		m.showMemoryNotes("")
@@ -953,6 +977,23 @@ func (m *chatModel) appendVoiceCaption(speaker, text string) {
 }
 
 func (m *chatModel) handleEvent(event Event) {
+	if event.AgentID != "" {
+		title := event.AgentID + " · " + event.Profile
+		switch event.Type {
+		case "agent_start":
+			m.appendEntry("agent_start", title, "Started: "+event.Text)
+		case "agent_done":
+			m.appendEntry("agent_done", title, event.Text)
+		case "tool_start":
+			m.appendEntry("tool", title+" · "+event.Call.Name, prettyArguments(event.Call.Arguments))
+		case "tool_result":
+			m.appendEntry("result", title+" · "+event.Call.Name, event.Text)
+		case "memory":
+			m.appendEntry("agent_memory", title+" · Memory", event.Text)
+		}
+		return
+	}
+
 	switch event.Type {
 	case "text":
 		if event.Text == "" {
@@ -1021,16 +1062,22 @@ func (m *chatModel) transcriptContent(width int) (string, []int) {
 		}
 	}
 	plain := lipgloss.NewStyle()
-	for i, entry := range m.transcript {
-		compactTool := !m.showToolDetails && (entry.kind == "tool" || entry.kind == "result")
+	for i := 0; i < len(m.transcript); i++ {
+		entry := m.transcript[i]
 		if i > 0 {
-			previous := m.transcript[i-1].kind
-			if !compactTool || (previous != "tool" && previous != "result") {
-				appendBlock("", plain, false)
-			}
+			appendBlock("", plain, false)
 		}
-		if compactTool {
-			appendBlock(chatSingleLine(compactToolEntry(entry)), chatDim, true)
+		if !m.showToolDetails && isActivityEntry(entry) {
+			end := i + 1
+			for end < len(m.transcript) && isActivityEntry(m.transcript[end]) {
+				end++
+			}
+			summary, warnings := compactActivity(m.transcript[i:end], m.active && end == len(m.transcript))
+			appendBlock(chatSingleLine(summary), chatDim, true)
+			for _, warning := range warnings {
+				appendBlock(chatSingleLine(warning), chatWarn, true)
+			}
+			i = end - 1
 			continue
 		}
 		style := chatTitle
@@ -1039,7 +1086,7 @@ func (m *chatModel) transcriptContent(width int) (string, []int) {
 			style = chatUser
 		case "tool", "result":
 			style = chatTool
-		case "notice":
+		case "notice", "agent_start", "agent_done", "agent_memory":
 			style = chatWarn
 		case "error":
 			style = chatError
@@ -1155,6 +1202,9 @@ func (m *chatModel) approvalContent() string {
 	}
 	call := m.approval.call
 	body := prettyArguments(call.Arguments)
+	if call.AgentID != "" {
+		body = "Agent: " + call.AgentID + " · " + call.Profile + "\n\n" + body
+	}
 	// Also show multiline string arguments as text, so scripts and full file
 	// contents can be reviewed line by line instead of as JSON-escaped strings.
 	var args map[string]json.RawMessage
@@ -1212,7 +1262,7 @@ func (m *chatModel) View() string {
 	width := max(1, m.width-2)
 	line := func(s string) string { return ansi.Truncate(s, width, "…") }
 	title := chatTitle.Render("◆ WENDY CHAT")
-	identity := chatSingleLine(m.opts.Provider + " · " + m.opts.Model)
+	identity := chatSingleLine(firstValue(m.opts.Profile, "general") + " · " + m.opts.Provider + " · " + m.opts.Model)
 	workspace, device := chatSingleLine(m.opts.Workspace), chatSingleLine(m.opts.Device)
 	if device == "" {
 		device = "configured default or discovery"
@@ -1255,9 +1305,9 @@ func (m *chatModel) View() string {
 		if m.opts.AutoApprove {
 			status += " · auto-approve"
 		}
-		hints := "Enter send · Alt+Enter newline · Ctrl+T tools · /help · Ctrl+C exit"
+		hints := "Enter send · Alt+Enter newline · Ctrl+T details · /help · Ctrl+C exit"
 		if m.active {
-			hints = "Enter queue · Esc/Ctrl+C cancel · Ctrl+T tools · PgUp/PgDn scroll"
+			hints = "Enter queue · Esc/Ctrl+C cancel · Ctrl+T details · PgUp/PgDn scroll"
 		}
 		var parts []string
 		if m.compact {

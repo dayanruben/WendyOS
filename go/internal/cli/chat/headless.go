@@ -27,6 +27,8 @@ type HeadlessOptions struct {
 // headlessEvent is the wire form of Event. It carries the fields a consumer
 // needs to reconstruct the turn and nothing that names a terminal.
 type headlessEvent struct {
+	AgentID   string          `json:"agent_id,omitempty"`
+	Profile   string          `json:"profile,omitempty"`
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
 	ID        string          `json:"id,omitempty"`
@@ -67,14 +69,14 @@ func RunHeadless(ctx context.Context, opts HeadlessOptions) error {
 		_, _ = opts.Output.Write(append(line, '\n'))
 	}
 	emit := func(event Event) {
-		ev := headlessEvent{Type: event.Type, Text: event.Text}
+		ev := headlessEvent{Type: event.Type, Text: event.Text, AgentID: event.AgentID, Profile: event.Profile}
 		if event.Call != nil {
 			ev.ID, ev.Tool = event.Call.ID, event.Call.Name
 			if event.Type == "tool_start" {
 				ev.Arguments = compactArguments(event.Call.Arguments)
 			}
 		}
-		if event.Type == "text" {
+		if event.Type == "text" && event.AgentID == "" {
 			mu.Lock()
 			full.WriteString(event.Text)
 			mu.Unlock()
@@ -86,7 +88,7 @@ func RunHeadless(ctx context.Context, opts HeadlessOptions) error {
 			return false, err
 		}
 		allowed := opts.AutoApprove
-		write(headlessEvent{Type: "approval", ID: call.ID, Tool: call.Name, Approved: &allowed,
+		write(headlessEvent{Type: "approval", AgentID: call.AgentID, Profile: call.Profile, ID: call.ID, Tool: call.Name, Approved: &allowed,
 			Text: approvalText(allowed)})
 		return allowed, nil
 	}

@@ -233,6 +233,7 @@ func TestUICancelClearAndQuitDiscardQueuedWork(t *testing.T) {
 			switch action {
 			case "esc":
 				m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				m.Update(chatMouseTimeout(m.mouseInput.version))
 			case "ctrl+c":
 				m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 			default:
@@ -370,6 +371,7 @@ func TestUICancelPendingApprovalUnblocksWorker(t *testing.T) {
 	m.startTurn("run command")
 	uiWaitForApproval(t, m)
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(chatMouseTimeout(m.mouseInput.version))
 	uiDrainTurn(t, m)
 	if m.approval != nil || executor.executed.Load() != 0 {
 		t.Fatal("canceled approval must disappear without executing its tool")
