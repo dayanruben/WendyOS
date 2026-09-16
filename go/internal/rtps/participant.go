@@ -112,6 +112,9 @@ type Participant struct {
 	peers      map[GUIDPrefix][]Locator
 	lastReply  map[GUIDPrefix]time.Time
 	peerExpiry map[GUIDPrefix]time.Time
+	// peerLease is the duration a peer advertised (0 = never expires), so any
+	// message from it can push peerExpiry out again without waiting for SPDP.
+	peerLease  map[GUIDPrefix]time.Duration
 	endpointSN map[GUID]SequenceNumber
 	leases     map[*Lease]struct{}
 	closed     chan struct{}
@@ -243,6 +246,7 @@ func newParticipant(cfg Config) *Participant {
 		peers:       map[GUIDPrefix][]Locator{},
 		lastReply:   map[GUIDPrefix]time.Time{},
 		peerExpiry:  map[GUIDPrefix]time.Time{},
+		peerLease:   map[GUIDPrefix]time.Duration{},
 		endpointSN:  map[GUID]SequenceNumber{},
 		leases:      map[*Lease]struct{}{},
 		closed:      make(chan struct{}),
@@ -467,6 +471,7 @@ func (p *Participant) expirePeersLocked(now time.Time) {
 func (p *Participant) removePeerLocked(prefix GUIDPrefix) {
 	delete(p.peers, prefix)
 	delete(p.peerExpiry, prefix)
+	delete(p.peerLease, prefix)
 	for key := range p.sedpHighest {
 		if key.prefix == prefix {
 			delete(p.sedpHighest, key)
@@ -597,6 +602,7 @@ func (p *Participant) handle(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 	p.statRTPS.Add(1)
+	p.renewPeer(msg.Prefix)
 	for _, s := range msg.Submessages {
 		switch s.Kind {
 		case subHEARTBEAT:
@@ -644,6 +650,17 @@ func (p *Participant) handle(pkt []byte, src *net.UDPAddr) {
 			p.handleUserDataFrag(msg.Prefix, f)
 		}
 	}
+}
+
+// renewPeer extends a known peer's lease on any message from it. CycloneDDS
+// renews a proxy participant the same way, so a lost SPDP datagram from a
+// short-lease peer does not tear down a stream that is still delivering.
+func (p *Participant) renewPeer(prefix GUIDPrefix) {
+	p.mu.Lock()
+	if lease, ok := p.peerLease[prefix]; ok && lease > 0 {
+		p.peerExpiry[prefix] = time.Now().Add(lease)
+	}
+	p.mu.Unlock()
 }
 
 // handleHeartbeat answers a SEDP publications writer so it replays its history.
@@ -727,7 +744,7 @@ func (p *Participant) handleSPDP(prefix GUIDPrefix, d *DataSubmessage) {
 	var metaUnicast []Locator
 	seenLocators := map[string]bool{}
 	now := time.Now()
-	expiry := now.Add(leaseSeconds * time.Second)
+	lease := time.Duration(leaseSeconds) * time.Second
 	for _, prm := range params {
 		switch prm.id {
 		case pidParticipantGUID:
@@ -739,9 +756,9 @@ func (p *Participant) handleSPDP(prefix GUIDPrefix, d *DataSubmessage) {
 			if len(prm.value) >= 8 {
 				sec, frac := order.Uint32(prm.value[:4]), order.Uint32(prm.value[4:8])
 				if sec == 0x7fffffff && frac == 0xffffffff {
-					expiry = time.Time{}
+					lease = 0
 				} else if sec <= 0x7fffffff {
-					expiry = now.Add(time.Duration(sec)*time.Second + time.Duration((uint64(frac)*uint64(time.Second))>>32))
+					lease = time.Duration(sec)*time.Second + time.Duration((uint64(frac)*uint64(time.Second))>>32)
 				}
 			}
 		case pidMetatrafficUnicastLocator:
@@ -756,10 +773,15 @@ func (p *Participant) handleSPDP(prefix GUIDPrefix, d *DataSubmessage) {
 	if len(metaUnicast) == 0 {
 		return
 	}
+	expiry := time.Time{}
+	if lease > 0 {
+		expiry = now.Add(lease)
+	}
 	p.mu.Lock()
 	_, seen := p.peers[prefix]
 	p.peers[prefix] = metaUnicast
 	p.peerExpiry[prefix] = expiry
+	p.peerLease[prefix] = lease
 	last := p.lastReply[prefix]
 	reply := last.IsZero() || now.Sub(last) >= announceInterval
 	// Reserve while locked: multicast and unicast receive loops race here.
@@ -835,7 +857,8 @@ func (p *Participant) handleSEDPPublication(d *DataSubmessage) {
 	_, seen := p.endpoints[ep.GUID]
 	p.endpoints[ep.GUID] = ep
 	if _, ok := p.peerExpiry[ep.GUID.Prefix]; !ok {
-		p.peerExpiry[ep.GUID.Prefix] = time.Now().Add(leaseSeconds * time.Second)
+		p.peerLease[ep.GUID.Prefix] = time.Duration(leaseSeconds) * time.Second
+		p.peerExpiry[ep.GUID.Prefix] = time.Now().Add(p.peerLease[ep.GUID.Prefix])
 	}
 	p.discoveryChangedLocked()
 	p.mu.Unlock()
