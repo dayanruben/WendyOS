@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	diskfs "github.com/diskfs/go-diskfs"
@@ -17,8 +18,24 @@ const (
 	// holds a seed; any other label and it reformats on first boot.
 	dragonwingConfigLabel = "config"
 
+	// The partition an EDL flash factory-resets. The device's first-boot
+	// initialiser recreates the filesystem once it finds none, so only the
+	// head has to be cleared.
+	dragonwingDataLabel = "data"
+
 	dragonwingConfigImageName = "wendy-config.img"
+	dragonwingZerosName       = "wendy-zeros.bin"
 )
+
+// writeDragonwingZeros writes the payload that blanks a filesystem, sized to
+// the bound the flash plan enforces so the two cannot drift apart.
+func writeDragonwingZeros(dir string) (string, error) {
+	path := filepath.Join(dir, dragonwingZerosName)
+	if err := os.WriteFile(path, make([]byte, qdl.MaxBlankBytes), 0o600); err != nil {
+		return "", fmt.Errorf("creating the blanking payload: %w", err)
+	}
+	return path, nil
+}
 
 // resolveSeedAgent fetches the agent to seed: best-effort, and the latest stable
 // one whatever image is being flashed, as every other board does. It is the only

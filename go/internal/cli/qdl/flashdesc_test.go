@@ -515,3 +515,76 @@ func TestDeclaredGeometryComesFromTheDescriptor(t *testing.T) {
 		t.Errorf("unknown label = %v, want ErrNoSuchPartition", err)
 	}
 }
+
+func TestBlankTargetsDataExactly(t *testing.T) {
+	dir := realBundle(t)
+	zeros := filepath.Join(t.TempDir(), "wendy-zeros.bin")
+	sparse(t, zeros, 1<<20)
+
+	plan, err := LoadFlashPlan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Blank("data", zeros); err != nil {
+		t.Fatalf("Blank(data): %v", err)
+	}
+	var e ProgramEntry
+	for _, p := range plan.Programs {
+		if p.Label == "data" {
+			e = p
+		}
+	}
+	// Geometry must come from the descriptor, never from the caller: writing
+	// at the wrong LBA would land in a neighbouring partition.
+	if e.StartSector != "6488070" || e.SectorSize != 4096 {
+		t.Errorf("start=%s sector=%d, want the descriptor's 6488070/4096", e.StartSector, e.SectorSize)
+	}
+	// The descriptor leaves data unsized, so both payload guards are off until
+	// BlankEntry sets them from the file. Without that a wrong-sized payload
+	// would stream unbounded across the disk.
+	if e.NumSectors != 256 || e.SizeKB != 1024 {
+		t.Errorf("NumSectors=%d SizeKB=%v, want 256/1024 derived from the payload", e.NumSectors, e.SizeKB)
+	}
+	if n, err := SectorsFor(e, 1<<20); err != nil || n != 256 {
+		t.Errorf("SectorsFor = %d, %v; want 256", n, err)
+	}
+	// It must land in descriptor order, so the GPT entries still go last.
+	want := []string{"efi", "rootfsA", "rootfsB", "data", "PrimaryGPT", "BackupGPT"}
+	if got := labels(plan); !slices.Equal(got, want) {
+		t.Errorf("programs = %v, want %v", got, want)
+	}
+}
+
+func TestBlankRefusesUnsafeTargets(t *testing.T) {
+	dir := realBundle(t)
+	good := filepath.Join(t.TempDir(), "z.bin")
+	sparse(t, good, 1<<20)
+
+	plan, err := LoadFlashPlan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ label, payload, want string }{
+		// Blanking a partition the bundle supplies would corrupt the build.
+		"bundle supplies it": {"rootfsA", good, "already supplies"},
+		"not declared":       {"nonesuch", good, "declares no such partition"},
+	} {
+		if err := plan.Blank(tc.label, tc.payload); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want an error containing %q, got %v", name, tc.want, err)
+		}
+	}
+
+	// An oversized or mis-aligned payload is the failure that would overrun the
+	// partition, so it must be refused rather than truncated.
+	for name, size := range map[string]int64{
+		"too large":       (1 << 20) + 4096,
+		"not sector-wide": 4095,
+		"empty":           0,
+	} {
+		p := filepath.Join(t.TempDir(), name)
+		sparse(t, p, size)
+		if err := plan.Blank("data", p); err == nil {
+			t.Errorf("%s (%d bytes): want an error, got nil", name, size)
+		}
+	}
+}

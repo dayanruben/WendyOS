@@ -116,6 +116,11 @@ func ParseRawProgram(r io.Reader) ([]ProgramEntry, error) {
 // caller can skip rather than fail a flash the bundle simply cannot take.
 var ErrNoSuchPartition = errors.New("the flash descriptor declares no such partition")
 
+// MaxBlankBytes bounds a blanking write. It only has to reach past whatever
+// superblock the device's first-boot initialiser probes for, and a small fixed
+// cap is what keeps the write inside a partition the descriptor never sizes.
+const MaxBlankBytes = 1 << 20
+
 // Declared returns the descriptor's entry for a partition, so a host-generated
 // payload is built to the bundle's own geometry rather than a copy of it.
 func (fp *FlashPlan) Declared(label string) (ProgramEntry, error) {
@@ -142,6 +147,33 @@ func (fp *FlashPlan) Seed(label, path string) error {
 	if e.SizeKB <= 0 || e.NumSectors == 0 {
 		return fmt.Errorf("cannot seed partition %q: the descriptor declares no size for it", label)
 	}
+	return fp.attach(e)
+}
+
+// Blank programs zeros over the head of a partition, so the device finds no
+// filesystem there and recreates one on first boot.
+//
+// Separate from Seed because a partition the descriptor leaves unsized (on
+// WendyOS the device-grown `data`) disables both payload guards; sizing the
+// entry from the zeros file switches them back on and bounds the write.
+func (fp *FlashPlan) Blank(label, zerosPath string) error {
+	e, err := fp.hostEntry(label, zerosPath)
+	if err != nil {
+		return err
+	}
+	size, err := payloadSize(zerosPath)
+	if err != nil {
+		return err
+	}
+	if size <= 0 || size > MaxBlankBytes {
+		return fmt.Errorf("blanking payload is %d bytes, want 1..%d", size, MaxBlankBytes)
+	}
+	if size%int64(e.SectorSize) != 0 {
+		return fmt.Errorf("blanking payload of %d bytes is not a whole number of %d-byte sectors",
+			size, e.SectorSize)
+	}
+	e.NumSectors = uint32(size / int64(e.SectorSize))
+	e.SizeKB = float64(size) / 1024
 	return fp.attach(e)
 }
 
@@ -195,6 +227,14 @@ func (fp *FlashPlan) rebuild() {
 		out = append(out, d)
 	}
 	fp.Programs = out
+}
+
+func payloadSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("sizing payload: %w", err)
+	}
+	return info.Size(), nil
 }
 
 // validateEntry rejects an entry the flasher cannot safely act on. Every entry

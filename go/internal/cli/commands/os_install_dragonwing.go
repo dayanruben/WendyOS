@@ -5,7 +5,8 @@ package commands
 // Mirrors the Thor flow (plan → brief → confirm → pick device → step list), with
 // two differences that come from the hardware: EDL is entered with a DIP switch
 // rather than a button, and the bundle ships no config image, so the host builds
-// one to seed (os_install_dragonwing_config.go).
+// one to seed (os_install_dragonwing_config.go). A flash is a factory reset: the
+// data filesystem is blanked so first boot recreates it.
 
 import (
 	"context"
@@ -307,7 +308,7 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 	if !force {
 		fmt.Println()
 		fmt.Println(tui.WarningMessage(
-			"This rewrites both OS slots and the config partition on the board's UFS. /data and the device identity are preserved."))
+			"This rewrites the board's UFS: both OS slots, the config partition, and /data. Device identity, enrollment, saved Wi-Fi and app data are discarded — the board comes back as a new device."))
 		ok, err := tui.ConfirmNoDefaultDanger(
 			fmt.Sprintf("Write the Dragonwing IQ-8275 bundle to %s?", dragonwingTargetLabel(dev)))
 		if errors.Is(err, tui.ErrCancelled) || (err == nil && !ok) {
@@ -346,6 +347,11 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 	}
 	defer os.RemoveAll(seedDir) //nolint:errcheck
 
+	zerosPath, err := writeDragonwingZeros(seedDir)
+	if err != nil {
+		return err
+	}
+
 	var bundleDir string
 	var warnings []string
 	var flash *qdl.FlashPlan
@@ -360,7 +366,7 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 			// Everything the flash will write is resolved here, before the
 			// first write command: a failure discovered mid-flash leaves the
 			// board half-written with the GPT still unpatched.
-			if flash, warnings, err = planDragonwingFlash(seedDir, bundleDir,
+			if flash, warnings, err = planDragonwingFlash(seedDir, bundleDir, zerosPath,
 				creds, name, provJSON, out, detail); err != nil {
 				return false, errors.Join(err, errDragonwingNothingWritten)
 			}
@@ -409,9 +415,9 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 }
 
 // planDragonwingFlash resolves every write the flash will make: the seeded
-// config image. Returns the non-fatal problems
+// config image, and the zeros that blank /data. Returns the non-fatal problems
 // the caller must surface once the steps UI has released the terminal.
-func planDragonwingFlash(seedDir, bundleDir string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte,
+func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte,
 	out io.Writer, detail func(string)) (*qdl.FlashPlan, []string, error) {
 	plan, err := qdl.LoadFlashPlan(bundleDir)
 	if err != nil {
@@ -427,11 +433,21 @@ func planDragonwingFlash(seedDir, bundleDir string, creds []wendyconf.WifiCreden
 	if err == nil {
 		err = plan.Seed(dragonwingConfigLabel, img)
 	}
+	// Whatever config cannot be seeded with, it is blanked with: a flash is a
+	// factory reset, and a surviving provisioning.json would re-enrol the fresh
+	// install as the previous device.
 	if err != nil {
 		if provisioningRequired(creds, deviceName, provJSON) {
 			return nil, nil, err
 		}
 		warnings = append(warnings, fmt.Sprintf("Flashed without provisioning: could not write the config partition (%v).", err))
+		if err := plan.Blank(dragonwingConfigLabel, zerosPath); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if err := plan.Blank(dragonwingDataLabel, zerosPath); err != nil {
+		return nil, nil, err
 	}
 	return plan, warnings, nil
 }
