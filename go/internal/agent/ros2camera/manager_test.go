@@ -368,3 +368,48 @@ func TestManagerSharedGraphSurvivesSelectedContainerDisappearance(t *testing.T) 
 		t.Fatal("retiring selected container lost shared camera")
 	}
 }
+
+func TestManagerOneGraphEnumerationFailureDoesNotPinOtherStaleLeases(t *testing.T) {
+	// A container whose namespace cannot be enumerated keeps the coverage it
+	// already has, but must not stop every other stale participant from being
+	// released until the agent restarts.
+	graphs := []Graph{
+		{Key: "app0", InstanceKey: "container0", NetworkNamespacePID: 10},
+		{Key: "app1", InstanceKey: "container1", NetworkNamespacePID: 11},
+	}
+	m := NewManager(context.Background(), zap.NewNop(), nil, filepath.Join(t.TempDir(), "registry.json"), func(context.Context) ([]Graph, error) { return graphs, nil }, nil)
+	t.Cleanup(m.Shutdown)
+	m.hostInterfaces = func() ([]string, error) { return []string{"eth0"}, nil }
+	var brokenPID uint32
+	m.graphInterfaces = func(cfg rtps.Config) ([]string, error) {
+		if cfg.NetworkNamespacePID == brokenPID {
+			return nil, errors.New("setns: operation not permitted")
+		}
+		return []string{"lo"}, nil
+	}
+	leases := map[uint32]*fakeDiscoveryLease{}
+	m.acquire = func(ctx context.Context, cfg rtps.Config) (discoveryLease, error) {
+		l := newFakeLease(cfg.Interface)
+		leases[cfg.NetworkNamespacePID] = l
+		return l, nil
+	}
+	m.Refresh(context.Background())
+	if len(m.participants) != 3 {
+		t.Fatalf("participants=%d; want host + two app loopbacks", len(m.participants))
+	}
+	// container0 stops; container1 still runs but its namespace can no longer be entered.
+	graphs = graphs[1:]
+	brokenPID = 11
+	m.Refresh(context.Background())
+	if m.participants[participantKey("lo", 0, 10, "container0")] != nil {
+		t.Fatal("a stale lease survived because another graph failed to enumerate")
+	}
+	select {
+	case <-leases[10].Done():
+	default:
+		t.Fatal("stale lease not closed")
+	}
+	if m.participants[participantKey("lo", 0, 11, "container1")] == nil {
+		t.Fatal("the failing graph lost the coverage it already had")
+	}
+}

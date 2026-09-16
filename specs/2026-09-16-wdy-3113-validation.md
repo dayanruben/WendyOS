@@ -33,6 +33,12 @@ was excluded from automatic discovery.
   metatraffic port (indices 0–99, bounded by the UDP port range). Wired discovery
   retains ephemeral ports. No additional unicast probe burst is generated.
   See [CycloneDDS port-number documentation](https://cyclonedds.io/docs/cyclonedds/latest/config/port_numbers.html).
+- Review follow-ups: any message from a known peer renews its lease (as
+  CycloneDDS does), so lost SPDP datagrams from a short-lease peer no longer
+  drop its endpoints mid-stream; the pool verifies namespace ownership outside
+  its lock, so a stalled containerd cannot block other consumers; a container
+  whose namespace cannot be enumerated retains only its own participants
+  instead of suppressing all stale-participant cleanup.
 
 ## Automated checks
 

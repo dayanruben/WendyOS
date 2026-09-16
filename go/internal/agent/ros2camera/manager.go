@@ -208,7 +208,11 @@ func (m *Manager) reconcile(ctx context.Context) {
 					}
 					ifaces, err := m.graphInterfaces(rtps.Config{NetworkNamespacePID: graph.NetworkNamespacePID, VerifyNetworkNamespace: verify})
 					if err != nil {
-						complete = false
+						// Keep what this graph already has, but let every other
+						// stale participant go: one container whose namespace
+						// cannot be entered must not pin the rest until restart.
+						m.retainGraph(desired, graph)
+						m.logger.Debug("enumerating ROS 2 camera interfaces failed", zap.String("instance", graph.InstanceKey), zap.Uint32("network_namespace_pid", graph.NetworkNamespacePID), zap.Error(err))
 						continue
 					}
 					for _, iface := range ifaces {
@@ -224,6 +228,17 @@ func (m *Manager) reconcile(ctx context.Context) {
 	}
 	if complete {
 		m.stopStaleParticipants(desired)
+	}
+}
+
+// retainGraph marks the participants already serving graph as desired.
+func (m *Manager) retainGraph(desired map[string]bool, graph Graph) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, state := range m.participants {
+		if state.graphKey == graph.Key && state.netnsPID == graph.NetworkNamespacePID {
+			desired[key] = true
+		}
 	}
 }
 

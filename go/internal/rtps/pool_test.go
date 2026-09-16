@@ -285,3 +285,44 @@ func TestPoolCancelledCreatorReleasesSocketsAndAllowsRetry(t *testing.T) {
 		t.Fatal("cancelled creation prevented retry")
 	}
 }
+
+func TestPoolSharedAcquireVerifiesNamespaceOutsideTheLock(t *testing.T) {
+	// Namespace ownership checks call back into containerd with no timeout.
+	// A consumer holding the pool lock across one would stall every other
+	// consumer's subscribe, release and listing for as long as containerd does.
+	pool, cfg := testPool(t)
+	acquire(t, pool, cfg)
+	entered, release := make(chan struct{}), make(chan struct{})
+	shared := cfg
+	shared.VerifyNetworkNamespace = func() bool {
+		entered <- struct{}{}
+		<-release
+		return true
+	}
+	done := make(chan error, 1)
+	go func() {
+		l, err := pool.Acquire(context.Background(), shared)
+		if err == nil {
+			_ = l.Close()
+		}
+		done <- err
+	}()
+	for {
+		select {
+		case <-entered:
+			unlocked := make(chan struct{})
+			go func() { pool.Participants(); close(unlocked) }()
+			select {
+			case <-unlocked:
+			case <-time.After(time.Second):
+				t.Error("namespace verification ran while holding the pool lock")
+			}
+			release <- struct{}{}
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+}

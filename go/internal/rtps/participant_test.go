@@ -261,3 +261,29 @@ func TestSPDPShortLeaseCannotBypassCooldown(t *testing.T) {
 		t.Fatal("malformed announcement got a reply")
 	}
 }
+
+func TestPeerLeaseIsRenewedByTrafficFromThePeer(t *testing.T) {
+	// CycloneDDS advertises a 10 s lease and re-announces every few seconds.
+	// Two lost SPDP datagrams must not tear down a stream whose frames are
+	// still arriving: like Cyclone, any message from the peer renews it.
+	p := wireParticipant(t)
+	_, loc := listener(t)
+	prefix := GUIDPrefix{9}
+	ep := Endpoint{GUID: GUID{Prefix: prefix, EntityID: 0x102}, Topic: "rt/camera", Type: "Image"}
+	p.handleSPDP(prefix, spdpData(prefix, 10, loc))
+	p.handleSEDPPublication(publicationData(ep, 1))
+	// The last announcement has lapsed.
+	p.mu.Lock()
+	p.peerExpiry[prefix] = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	p.handle(buildMessage(prefix, buildData(entityUnknown, ep.GUID.EntityID, 1, []byte{0, 1, 0, 0, 42})), nil)
+	if len(p.Endpoints()) != 1 {
+		t.Fatal("user data from a live peer did not renew its lease")
+	}
+	p.mu.Lock()
+	expiry := p.peerExpiry[prefix]
+	p.mu.Unlock()
+	if remaining := time.Until(expiry); remaining < 9*time.Second || remaining > 10*time.Second {
+		t.Fatalf("renewal must use the advertised 10 s lease, got %v", remaining)
+	}
+}
