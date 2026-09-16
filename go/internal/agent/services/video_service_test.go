@@ -46,7 +46,7 @@ func mustBuildGStreamerArgs(t *testing.T, gstPath, devicePath string, req *agent
 // The CSI seams default to "Unknown transport / no libcamera / not Jetson" so existing
 // V4L2 tests behave exactly as before unless they override them.
 func newTestVideoService(glob func() ([]string, error), readName func(string) (string, error)) *VideoService {
-	svc := NewVideoService(context.Background(), zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop(), nil)
 	if glob != nil {
 		svc.globDevices = glob
 	}
@@ -702,7 +702,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	prev := gstFallbackDirs
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
-	svc := NewVideoService(context.Background(), zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop(), nil)
 	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "", pipeWireSource{}, noRawSink{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
