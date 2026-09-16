@@ -292,13 +292,25 @@ func (v *Verifier) verify(ctx context.Context, compact, typ, audience string, no
 	}
 	return c, nil
 }
+
+// brokerChallengeSkew is the clock-skew allowance applied to both ends of the
+// challenge-expiry window. The broker mints expires_at at most 30s after issue
+// (tunnel/v2 BrokerChallenge), so with a zero-tolerance window any positive
+// broker-ahead skew trips the upper bound and any dialer-ahead skew near expiry
+// trips the lower one -- a legitimate dialer whose clock differs by seconds then
+// sees "expired or excessive broker challenge" (WDY-3117). 5s keeps the check's
+// purpose -- reject genuinely stale or absurd-TTL challenges -- while surviving
+// ordinary skew. Comparison is on absolute instants (google.protobuf.Timestamp
+// -> AsTime()), so it is time-zone independent by construction.
+const brokerChallengeSkew = 5 * time.Second
+
 func proof(key *ecdsa.PrivateKey, domain, audience, id, jti, artifact, role string, ch *pb.BrokerChallenge) ([]byte, error) {
 	if ch == nil || len(ch.ChallengeId) != 16 || len(ch.Nonce) != 32 || ch.ExpiresAt == nil || ch.ExpiresAt.CheckValid() != nil {
 		return nil, fmt.Errorf("invalid broker challenge")
 	}
 	now := time.Now()
 	expiry := ch.ExpiresAt.AsTime()
-	if !expiry.After(now) || expiry.After(now.Add(30*time.Second)) {
+	if !expiry.After(now.Add(-brokerChallengeSkew)) || expiry.After(now.Add(30*time.Second+brokerChallengeSkew)) {
 		return nil, fmt.Errorf("expired or excessive broker challenge")
 	}
 	input := canonical([]byte("wendycloud.tunnel.v1/"+domain+"-proof/1"), []byte(audience), []byte(id), []byte(jti), digest([]byte(artifact)), []byte(role), ch.ChallengeId, ch.Nonce)
