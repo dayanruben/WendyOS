@@ -332,9 +332,10 @@ It grants the device nodes plus the **driver-locked layer only** — what an app
 | Injected | Why |
 | --- | --- |
 | FastRPC transport, at `/opt/wendyos/npu/lib` | locked to the host kernel's driver |
-| `/usr/share/qcom/conf.d/*.yaml` and the board's `fastrpc_shell*` | locked to the board and its DSP firmware |
+| `/usr/share/qcom/conf.d/*.yaml` / `*.yml` and the board's `fastrpc_shell*` | locked to the board and its DSP firmware |
+| The board's `libc++.so*` and `libc++abi.so*` under `/usr/share/qcom/<soc>/<vendor>/<board>/dsp/<domain>/` | Hexagon C++ runtime supplied with the board's DSP firmware |
 
-Nothing is mounted into `/usr/lib` or `/usr/bin`. The transport prefix is prepended to `LD_LIBRARY_PATH`, so it wins over a bundled copy that may not match this kernel — that is deliberate. The board-locked files above are bound at their canonical paths and **do** take precedence over an image's own copies of those same files; an app should not ship them.
+Nothing is mounted into `/usr/lib` or `/usr/bin`. The transport prefix is prepended to `LD_LIBRARY_PATH`, so it wins over a bundled copy that may not match this kernel — that is deliberate. The board-locked files above, including the Hexagon C++ libraries, are bound at their canonical paths and **do** take precedence over an image's own copies of those same files; an app should not ship them. These DSP libraries are separate from any CPU-side C++ runtime the app needs in its base image.
 
 Everything else is the app's to bundle and pin: `libQnn*`, `libQairt*`, `libGenie*`, the Hexagon skel matching the board's DSP arch, and any `genie-*`/`qnn-*` tools it runs. These are a free public SDK download. An app's skels are **not** shadowed; keep them outside `/usr/share/qcom` and point `ADSP_LIBRARY_PATH` at them, which resolves ahead of the board's tree.
 
