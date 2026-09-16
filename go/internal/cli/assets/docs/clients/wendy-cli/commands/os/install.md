@@ -166,7 +166,9 @@ wendy install --device-type dragonwing-iq-8275
 
 Connect the USB0 (USB-C) port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the bundle, and programs the board. Set DIP switch 3 OFF and power-cycle after success.
 
-Both OS slots and the partition table are rewritten. Existing configuration and data are preserved when flashing a compatible WendyOS layout.
+Both OS slots, the config partition and the partition table are rewritten. `/data` is not, so device identity and saved Wi-Fi networks survive a reflash — this is not a factory reset.
+
+Provisioning works as it does on Thor: the bundle ships no config image, so wendy builds one on the host and programs it into the config partition. `--wifi`, `--device-name` and `--pre-enroll` all apply, and a freshly downloaded `wendy-agent` is seeded on every flash.
 
 ## Linux Desktop / Headless Mac path
 

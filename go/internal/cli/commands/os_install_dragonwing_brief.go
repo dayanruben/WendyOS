@@ -24,8 +24,9 @@ func dragonwingEDLBriefingBox() string {
 	lines := []string{
 		section("Storage"),
 		"  WendyOS installs to the board's internal UFS — no external drive is used.",
-		"  Both A/B slots are rewritten. " + briefKey.Render("/data is left untouched") + ", so device",
-		"  identity and saved Wi-Fi survive; this is not a factory reset.",
+		"  Both A/B slots and the config partition are rewritten.",
+		"  " + briefKey.Render("/data is left untouched") + ", so device identity and saved Wi-Fi",
+		"  survive; this is not a factory reset.",
 		"",
 		section("USB cabling"),
 		"  Connect this computer to the board's " + briefPort.Render("USB0 (USB-C) port") + ".",
