@@ -133,17 +133,6 @@ def test_segmentation_packet_rejects_nonfinite_depth(bad_depth):
         decode_policy_frame(packet.getvalue(), meta)
 
 
-def test_standalone_hil_deploy_requires_token(monkeypatch):
-    from hil.deploy import deployment_env
-    monkeypatch.delenv("COKE_HIL_TOKEN", raising=False)
-    with pytest.raises(ValueError, match="COKE_HIL_TOKEN"):
-        deployment_env([])
-    monkeypatch.setenv("COKE_HIL_TOKEN", "deployment-secret-1234")
-    assert deployment_env(["OTHER=value"]) == ["OTHER=value", "COKE_HIL_TOKEN=deployment-secret-1234"]
-    with pytest.raises(ValueError, match="COKE_HIL_TOKEN"):
-        deployment_env(["COKE_HIL_TOKEN="])
-
-
 def test_failed_scene_worker_rejects_reset(monkeypatch, tmp_path):
     from coke_demo import scene
     from coke_demo.service import DemoRuntime

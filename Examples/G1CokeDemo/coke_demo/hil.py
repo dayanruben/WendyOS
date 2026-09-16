@@ -16,6 +16,7 @@ import socket
 import struct
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -260,6 +261,14 @@ def make_inference_server(runtime, host="127.0.0.1", port=8098, token=""):
                 body = self.rfile.read(length)
                 if len(body) != length:
                     raise ValueError("Truncated HIL request")
+                encoding = self.headers.get("Content-Encoding", "identity")
+                if encoding == "deflate":
+                    decoder = zlib.decompressobj()
+                    body = decoder.decompress(body, maximum + 1)
+                    if len(body) > maximum or not decoder.eof or decoder.unused_data:
+                        raise ValueError("Invalid or oversized compressed HIL request")
+                elif encoding != "identity":
+                    raise ValueError("Unsupported HIL content encoding")
                 if self.path == "/reset":
                     value = json.loads(body)
                     if not isinstance(value, dict):
@@ -300,6 +309,14 @@ class RemoteSimulationPolicy:
             self.connection = None
 
     def request(self, path, body=None):
+        headers = {"Content-Type": "application/octet-stream"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        if path == "/step" and body is not None and len(body) > MAX_HEADER:
+            compressed = zlib.compress(body, level=1)
+            if len(compressed) < len(body):
+                body = compressed
+                headers["Content-Encoding"] = "deflate"
         for attempt in range(2):
             try:
                 if self.connection is None:
@@ -307,9 +324,6 @@ class RemoteSimulationPolicy:
                     self.connection = cls(self.address.hostname, self.address.port, timeout=self.timeout)
                     self.connection.connect()
                     self.connection.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                headers = {"Content-Type": "application/octet-stream"}
-                if self.token:
-                    headers["Authorization"] = "Bearer " + self.token
                 self.connection.request("GET" if body is None else "POST", path, body, headers)
                 response = self.connection.getresponse()
                 raw = response.read(MAX_HEADER + 1)

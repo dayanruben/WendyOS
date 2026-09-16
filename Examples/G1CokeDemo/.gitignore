@@ -7,3 +7,4 @@ bundle/
 output/
 validation-*.json
 MUJOCO_LOG.TXT
+.wendy-hil-*/

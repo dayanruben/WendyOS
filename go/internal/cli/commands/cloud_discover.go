@@ -72,6 +72,7 @@ type cloudAssetVersionMsg struct {
 }
 
 type cloudDiscoverModel struct {
+	purpose        devicePickerPurpose
 	ctx            context.Context
 	auth           *config.AuthConfig
 	brokerURL      string
@@ -156,6 +157,7 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.windowWidth = msg.Width
+		msg.Height = max(1, msg.Height-strings.Count(m.purpose.header(msg.Width), "\n"))
 		m.windowHeight = msg.Height
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
@@ -303,6 +305,7 @@ func (m cloudDiscoverModel) View() string {
 	var sb strings.Builder
 
 	if m.pickerMode {
+		sb.WriteString(m.purpose.header(m.windowWidth))
 		sb.WriteString(m.viewLine(scanStyle.Render("⟳ Fetching cloud devices...")) + "\n")
 		hint := "  ↑/↓ navigate, enter select, d default, x clear default, u update, q quit"
 		if m.table.CanScroll() {

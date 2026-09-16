@@ -32,6 +32,7 @@ type devicePickerChoice struct {
 }
 
 type devicePickerModel struct {
+	purpose      devicePickerPurpose
 	local        tui.PickerModel
 	sim          simulatorPickerModel
 	simStarted   bool
@@ -51,7 +52,7 @@ type devicePickerModel struct {
 
 func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32, disableEnroll bool) devicePickerModel {
 	m := devicePickerModel{
-		local:      local,
+		purpose: devicePickerPurposeFromContext(ctx), local: local,
 		sim:        newSimulatorPickerModel(ctx),
 		cloudAuth:  auth,
 		defaultOrg: defaultOrg,
@@ -205,6 +206,7 @@ func (m devicePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.windowWidth = msg.Width
+		msg.Height = max(1, msg.Height-strings.Count(m.purpose.header(msg.Width), "\n"))
 		var cmds []tea.Cmd
 		local, localCmd := m.updateLocal(msg)
 		m = local
@@ -288,7 +290,7 @@ func (m devicePickerModel) View() string {
 		return ""
 	}
 
-	header := deviceTabsHeader(m.active, deviceTabOrder(), m.windowWidth)
+	header := m.purpose.header(m.windowWidth) + deviceTabsHeader(m.active, deviceTabOrder(), m.windowWidth)
 
 	switch m.active {
 	case devicePickerLocalTab:

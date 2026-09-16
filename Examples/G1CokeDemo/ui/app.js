@@ -5,7 +5,7 @@ let viewer = { resetView() {}, setActive() {} };
 try { viewer = mountViewer(byId('viewer')); }
 catch (error) { showError(error.message); }
 byId('reset-view').addEventListener('click', () => viewer.resetView());
-let latest, busy = false, imageKey;
+let latest, busy = false, imageKey, controllerChosen = false;
 async function command(action, body = {}) {
   if (busy) return;
   busy = true;
@@ -35,6 +35,10 @@ async function refresh() {
     const response = await fetch('/api/status', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
     if (!response.ok) throw Error(`Status HTTP ${response.status}`);
     latest = await response.json();
+    if (!controllerChosen && latest.phase !== 'loading') {
+      if (latest.hil_enabled) byId('mode').value = 'hil';
+      controllerChosen = true;
+    }
     const running = ['running', 'starting', 'resetting'].includes(latest.phase);
     const loaded = !['loading', 'error'].includes(latest.phase);
     pill('connection', latest.phase === 'loading' ? 'Loading scene' : 'VM scene connected', loaded);

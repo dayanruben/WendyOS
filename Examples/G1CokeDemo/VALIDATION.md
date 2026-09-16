@@ -17,6 +17,35 @@ The integration test passed in the WendyOS `g1-sim` VM using ROS 2 Humble and Cy
 
 The test uses temporary files and ROS domain 77 to keep its synthetic clock separate from the application on domain 0.
 
+## Hardware-in-the-loop support
+
+- The updated Python suite passes 52 tests; one ROS test skips outside the ROS
+  environment. Four JavaScript tests cover command recovery and initial HIL
+  controller selection without overwriting later choices.
+- Local HTTP tests cover exact image transport, camera reuse, lost-reply
+  retries, reset idempotency, old sessions, skipped/changed steps, checkpoint
+  and joint-order checks, invalid targets, service restarts and partial
+  inference failures.
+- Lossless compressed requests pass the same CPU parity check. A decompressed
+  size limit rejects oversized input, and delayed replies do not skip steps.
+- Remote CPU targets match the existing scene-policy inference sequence over
+  four steps, repeated after an episode reset, at `atol=1e-7`, `rtol=1e-6`.
+- A separate CPU inference process and the real rendered MuJoCo scene
+  completed a 40-step HIL run, representing one simulation second, with zero
+  physical commands. This check ran directly on macOS without ROS.
+- Jetson CUDA execution, the Jetson Stagefile build, and a live Wendy Cloud
+  tunnel have not been validated. The discovered LAN device timed out and an
+  Orin could not be identified among online cloud devices.
+- Native CLI tests cover HIL project staging, invalid paths and configuration,
+  tunnel transport and cancellation, health checks and incompatible run modes.
+  `wendy run --hil` uses the existing Go build/deploy functions for both
+  apps. No project launcher script is involved.
+- Picker tests verify that `--hil` requires interactive selection, shows a
+  single available device, preserves cancellation, and lets an explicit
+  `--hil=DEVICE` bypass the picker.
+- The browser controller changes have automated JavaScript checks. Visual
+  inspection was unavailable because no browser was connected.
+
 ## Scope
 
 The scene is the supplied fixed-pelvis, 43-joint attempt-000001 model. It retains the original waist constraints, desk layout and Dex3 hands. The checkpoint's golden trace belongs to attempt-000159. Golden parity verifies inference against that trace; it does not establish success in the new scene.

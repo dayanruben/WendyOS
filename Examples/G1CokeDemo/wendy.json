@@ -3,6 +3,19 @@
   "appId": "g1-coke-demo",
   "version": "1.0.0",
   "platform": "linux",
+  "hil": {
+    "project": "hil",
+    "inputs": ["coke_demo", "runtime", "bundle"],
+    "buildFile": "build.stagefile.yaml",
+    "buildFilesByGPUArch": {"sm_121": "spark.stagefile.yaml"},
+    "simulatorBuildFile": "Dockerfile",
+    "port": 8098,
+    "urlEnv": "COKE_POLICY_URL",
+    "healthPath": "/health",
+    "env": {
+      "COKE_POLICY_TIMEOUT": "15"
+    }
+  },
   "entitlements": [
     {
       "type": "network",

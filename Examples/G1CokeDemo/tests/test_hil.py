@@ -2,6 +2,8 @@ from contextlib import contextmanager
 from http.client import HTTPConnection
 from pathlib import Path
 import threading
+import time
+import zlib
 
 import numpy as np
 import pytest
@@ -196,6 +198,40 @@ def test_restart_rejects_inflight_episode():
             assert client.next_step == 1
             client.reset()
             client.propose(observation(), np.zeros(43), np.zeros(15))
+        finally:
+            client.close()
+
+
+def test_network_latency_does_not_skip_policy_steps():
+    predictor = Predictor()
+    original = predictor.propose
+
+    def delayed(header, image):
+        time.sleep(.04)  # Longer than one 25 ms control interval.
+        return original(header, image)
+
+    predictor.propose = delayed
+    with running_server(InferenceSession(predictor)) as (runtime, url):
+        client = RemoteSimulationPolicy(url, NAMES, BOUNDS, timeout=1.)
+        try:
+            for step in range(4):
+                client.propose(observation(step), np.zeros(43), np.zeros(15))
+            assert runtime.next_step == predictor.calls == 4
+        finally:
+            client.close()
+
+
+def test_compressed_request_has_a_decompressed_size_limit():
+    with running_server() as (runtime, url):
+        client = RemoteSimulationPolicy(url, NAMES, BOUNDS)
+        try:
+            client.request("/health")
+            client.connection.request("POST", "/step", zlib.compress(b"x" * (MAX_BODY + 1)),
+                                      {"Content-Encoding": "deflate"})
+            response = client.connection.getresponse()
+            assert response.status == 409
+            assert b"oversized" in response.read()
+            assert runtime.predictor.calls == 0
         finally:
             client.close()
 

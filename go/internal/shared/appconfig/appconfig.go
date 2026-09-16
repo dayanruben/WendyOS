@@ -247,7 +247,8 @@ var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
-	AppID string `json:"appId"`
+	AppID string     `json:"appId"`
+	HIL   *HILConfig `json:"hil,omitempty"`
 	// ServiceName is set when this AppConfig describes a single service within
 	// a multi-service app.  When non-empty the agent uses the
 	// {appId}_{serviceName} container naming convention (WDY-878).
@@ -314,6 +315,21 @@ type TCPSocketProbe struct {
 }
 
 // HooksConfig holds optional lifecycle hook commands.
+// HILConfig describes the inference project used by run --hil.
+// Paths are relative to the simulator project. The inference project supplies
+// its own wendy.json and build file; inputs are copied from the simulator root.
+type HILConfig struct {
+	Project             string            `json:"project"`
+	Inputs              []string          `json:"inputs"`
+	BuildFile           string            `json:"buildFile"`
+	BuildFilesByGPUArch map[string]string `json:"buildFilesByGPUArch,omitempty"`
+	SimulatorBuildFile  string            `json:"simulatorBuildFile"`
+	Port                int               `json:"port"`
+	URLEnv              string            `json:"urlEnv"`
+	HealthPath          string            `json:"healthPath"`
+	Env                 map[string]string `json:"env,omitempty"`
+}
+
 type HooksConfig struct {
 	PostStart *HookCommand `json:"postStart,omitempty"`
 }

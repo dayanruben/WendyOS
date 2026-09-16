@@ -21,10 +21,24 @@ function page(fetch) {
     document: { getElementById: node, addEventListener() {} },
   });
   vm.runInContext(source, context);
-  return { command: () => vm.runInContext("command('run', { steps: 40 })", context), node };
+  return {
+    command: () => vm.runInContext("command('run', { steps: 40 })", context),
+    refresh: () => vm.runInContext('refresh()', context), node,
+  };
 }
 
 const status = () => Response.json({ phase: 'idle', simulation_seconds: 0, total_steps: 40, metrics: {} });
+
+test('configured HIL is selected initially without overwriting later controller choices', async () => {
+  const app = page(async () => Response.json({
+    phase: 'idle', hil_enabled: true, simulation_seconds: 0, total_steps: 40, metrics: {},
+  }));
+  await app.refresh();
+  assert.equal(app.node('mode').value, 'hil');
+  app.node('mode').value = 'expert';
+  await app.refresh();
+  assert.equal(app.node('mode').value, 'expert');
+});
 
 test('controls recover after a failed session request', async () => {
   let sessions = 0, commands = 0;

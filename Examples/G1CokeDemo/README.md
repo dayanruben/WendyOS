@@ -58,6 +58,123 @@ docker build -t g1-coke-demo:dev .
 docker run --rm --network host g1-coke-demo:dev
 ```
 
+## Hardware in the loop
+
+The **Jetson policy** controller keeps MuJoCo physics, camera rendering and
+the browser in the Mac VM. A separate Jetson or Spark service runs the learned policy
+and returns all 43 joint targets. The VM still applies those targets through
+its ROS bridge. The Jetson service has no physical robot command interface.
+
+Prepare the assets as above, then run from this directory with a CLI built
+from this checkout:
+
+```sh
+../../go/bin/wendy run --device vm:g1-sim --hil
+```
+
+`--hil` opens a cloud inference device picker, even when only one device is
+online. Omit `--device` to choose the main simulator interactively as well. To skip the picker, supply the device directly:
+
+```sh
+../../go/bin/wendy run --device vm:g1-sim --hil="YOUR_JETSON"
+```
+
+`YOUR_JETSON` is an online Wendy Cloud device name, numeric asset ID, or full
+`cloud://HOST/org/ORG_ID/asset/ASSET_ID` selector. You must already be logged
+in to that cloud organization. `wendy cloud discover` lists available devices.
+Non-interactive runs and `--yes` require `--device vm:NAME` and `--hil=DEVICE`.
+
+Use `--build-host` to pick a device for remote builds, or
+`--build-host=DEVICE` to select one directly. Without this flag, Wendy uses
+the configured build host default, or builds locally if none is configured.
+
+This is native CLI support. Wendy reads the `hil` section in `wendy.json`,
+stages the inference sources with their own configuration, and deploys
+`g1-coke-hil` to the selected inference device. It then creates a local cloud tunnel on
+an available port, waits for the inference health endpoint, starts the
+existing `g1-sim` VM if needed, and deploys the simulation with its policy URL
+set automatically. There is no separate script or tunnel command to run.
+
+Keep the command running while using the demo. Ctrl+C closes the managed
+tunnel and ends the attached simulator run. The inference app remains on the
+remote device. `--detach`, `--deploy`, `--watch`, and multi-service selection are not
+supported with `--hil` because the CLI owns the live connection.
+The VM must use QEMU user networking. An existing VM running with shared
+networking is rejected without restarting it.
+
+Open the URL printed by Wendy, normally <http://localhost:8892>. **Jetson
+policy · hardware in the loop** is selected automatically. Choose the
+one-second run and click **Run demo**. The page reports Jetson compute time,
+the full request/reply duration, and the selected inference devices.
+
+Wendy selects the inference build from the remote GPU architecture. Spark
+`sm_121` uses `hil/spark.stagefile.yaml`, Python 3.12 and PyTorch 2.9.1 with
+CUDA 13.0 wheels. The `hil.buildFilesByGPUArch` map in `wendy.json` configures
+this override; other GPUs use `hil.buildFile`.
+
+The default Stagefile uses Wendy's device-aware CUDA support for Orin `sm_87`, including
+Orin on WendyOS with JetPack 7.2. The current CLI selects a CUDA 12.6 runtime and
+Orin-compatible PyTorch 2.8 wheel. The service defaults to CUDA vision and CPU
+recurrent control, and fails at startup if CUDA is unavailable. On-device
+CUDA and cloud execution still need validation; local parity tests use
+PyTorch 2.7.1 on CPU.
+
+### Connecting to an existing inference service
+
+You can also connect the VM to an inference service that is already running:
+
+```sh
+../../go/bin/wendy run --device vm:g1-sim --dockerfile Dockerfile \
+  --env COKE_POLICY_URL=http://JETSON_IP:8098
+```
+
+For a manually managed Wendy Cloud tunnel on the Mac:
+
+```sh
+../../go/bin/wendy cloud tunnel 18098:8098 --device "YOUR_JETSON"
+```
+
+The VM's URL is then `http://10.0.2.2:18098` under QEMU user networking. A
+simulation running directly on the Mac uses `http://127.0.0.1:18098` instead.
+The native `--hil` command manages this addressing automatically.
+
+### Timing, resets and failures
+
+Each request binds the joint observation, camera exposure and original
+attempt-000001 reference step together. New camera tensors are sent at 20 Hz
+of simulation time, losslessly compressed; the intervening control step reuses
+the Jetson's cached embedding. The uncompressed tensor is 1.54 MB per exposure,
+so bandwidth can also limit cloud runs. Actual compression depends on the image.
+
+The VM advances one 25 ms simulation step only after receiving its matching
+target. Network latency slows wall-clock execution. This mode tests policy
+behavior on the real inference hardware; it does not establish that the
+complete robot control loop meets a real-time deadline.
+
+Pause/resume preserves recurrent state. Reset and a new run create a new
+episode, clearing the GRU, residual controller, acceleration history and
+camera cache before the next inference step. The service caches the last
+reply, so a transport retry does not run inference twice. Stale steps,
+changed retries, mismatched checkpoints and invalid targets stop the run.
+The client retries a failed connection once; `COKE_POLICY_TIMEOUT` controls
+each attempt. After a service restart or persistent connection failure,
+reset the scene and start a new run. Use one simulation per inference service.
+
+### Local transport check
+
+You can test the same connection without a Jetson. In separate terminals:
+
+```sh
+./run.sh hil-serve --device cpu --port 18098
+./run.sh serve --local --policy-url http://127.0.0.1:18098
+```
+
+Then exercise a short HIL run:
+
+```sh
+uv run python tests/smoke_live.py --mode hil --steps 40
+```
+
 ## Controllers and source provenance
 
 - The learned controller uses the supplied update-2,525 CNN/GRU/actor and
@@ -66,6 +183,8 @@ docker run --rm --network host g1-coke-demo:dev
 - Expert replay applies the supplied recorded targets with the original PD
   gains and native contact physics.
 - External ROS mode accepts named joint targets from another application.
+- Jetson policy runs the same scene policy through the simulation inference
+  service, over a LAN connection or cloud tunnel.
 
 The learned controller keeps the original 7,518-step reference timing, or
 187.95 simulation seconds. Expert replay uses the supplied smooth 60-second
@@ -166,13 +285,8 @@ Camera producers must issue a new stream ID after a restart that resets frame
 IDs. The vision buffer invalidates cached and in-flight encodes when it sees a
 new stream ID.
 
-For the standalone inference deployment, export a token first and pass the same
-value to the simulator. The deploy helper validates it before staging or building:
-
-```sh
-export COKE_HIL_TOKEN="$(openssl rand -hex 32)"
-python3 hil/deploy.py --device <inference-device> --detach
-```
+Use `wendy run --hil` to deploy the inference companion. Wendy generates a fresh
+per-run token and supplies it to both the inference server and simulator.
 
 The HIL base image is digest-pinned and the Orin runtime uses the validated
 PyTorch 2.7.1 version. A different GPU/runtime still needs the documented policy

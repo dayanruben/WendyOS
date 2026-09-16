@@ -486,7 +486,14 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 // selection actually needs one. Watch sessions pass their already-selected
 // target so every cycle stays pinned to the same device and connection.
 func resolveStagefileGPUTarget(ctx context.Context, cwd string, target *SelectedDevice, opts runOptions) (*SelectedDevice, error) {
-	if target != nil || opts.gpuArch != "" || !stagefile.NeedsGPUTarget(cwd) {
+	if target != nil || opts.gpuArch != "" {
+		return target, nil
+	}
+	needsGPU := stagefile.NeedsGPUTarget(cwd)
+	if opts.dockerfile != "" {
+		needsGPU = stagefile.NeedsGPUTargetFile(cwd, opts.dockerfile)
+	}
+	if !needsGPU {
 		return target, nil
 	}
 	return resolveRunTarget(ctx, runResolveOptions(opts)...)
@@ -588,6 +595,7 @@ func validateChunkingMode(mode string) error {
 
 func newRunCmd() *cobra.Command {
 	var opts runOptions
+	var hilDevice string
 	var watch bool
 	var debounceMS int
 	var verbose bool
@@ -596,10 +604,27 @@ func newRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "Build and run application on a WendyOS device",
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
+		Args:  optionalRunDeviceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWithInterruptContext(cmd.Context(), func(runCtx context.Context) error {
 				if err := validateEnvFlag(opts.env); err != nil {
 					return err
+				}
+				if cmd.Flags().Changed("hil") && watch {
+					return fmt.Errorf("HIL cannot be combined with --watch")
+				}
+				if cmd.Flags().Changed("build-host") && strings.TrimSpace(opts.buildHost) == "" {
+					if strings.TrimSpace(opts.builder) != "" {
+						return errBuilderWithBuildHost
+					}
+					host, err := selectRunBuildHost(runCtx, opts.yes)
+					if err != nil {
+						return err
+					}
+					opts.buildHost = host
+				}
+				if cmd.Flags().Changed("hil") {
+					return runHILCommand(runCtx, opts, strings.TrimSpace(hilDevice))
 				}
 				if watch {
 					// In watch mode, hide build output unless a build fails (unless
@@ -613,11 +638,14 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
+	cmd.Flags().StringVar(&hilDevice, "hil", "", "Run hardware in the loop; omit the device to open a cloud picker, or use --hil=DEVICE")
+	cmd.Flags().Lookup("hil").NoOptDefVal = optionalDevicePickerValue
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.stagefileBackend, "stagefile-backend", "", "Stagefile compiler backend: dockerfile (default) or llb")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
-	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
+	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "Build on another WendyOS device; omit the device to open a picker, or use --build-host=DEVICE")
+	cmd.Flags().Lookup("build-host").NoOptDefVal = optionalDevicePickerValue
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
@@ -636,6 +664,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change, streaming logs between deploys (same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")
+
+	cmd.SetUsageTemplate(strings.ReplaceAll(cmd.UsageTemplate(), ".LocalFlags.FlagUsages |", ".LocalFlags.FlagUsages | optionalRunDeviceUsage |"))
 
 	return cmd
 }
@@ -828,6 +858,7 @@ func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
+	ctx = withDevicePickerPurpose(ctx, mainDevicePicker)
 	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
@@ -926,7 +957,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// For docker-type projects, resolve which build file to use before
 	// connecting to the target — so the picker shows regardless of whether
 	// we end up on the agent path or a provider path (Docker, etc.).
-	if projectType == "docker" && opts.dockerfile == "" {
+	if projectType == "docker" && (opts.dockerfile == "" || stagefile.IsSourceName(opts.dockerfile)) {
 		// Exception: a Stagefile with a cuda: stage compiles against the GPU
 		// architecture of the device it is being deployed to, so for those
 		// projects the device has to come first. Only they pay for it, and
