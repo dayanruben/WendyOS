@@ -166,7 +166,8 @@ func (m *Model) refreshRows() {
 	rows := make([]bubbleTable.Row, 0, len(m.peripherals))
 	cursor := 0
 	for _, p := range m.peripherals {
-		if !m.showUnnamed && strings.TrimSpace(p.Name) == "" {
+		name := tui.StripControl(p.Name)
+		if !m.showUnnamed && strings.TrimSpace(name) == "" {
 			continue
 		}
 		if p.Address == selectedAddress {
@@ -174,8 +175,8 @@ func (m *Model) refreshRows() {
 		}
 		m.visible = append(m.visible, p)
 		rows = append(rows, bubbleTable.Row{
-			p.Name,
-			p.Address,
+			name,
+			tui.StripControl(p.Address),
 			DeviceTypeLabel(p.DeviceType),
 			yesNo(p.Paired),
 			yesNo(p.Connected),
@@ -489,7 +490,7 @@ func (m *Model) setFlash(msg string, isErr bool) tea.Cmd {
 // setFlashText sets a message without scheduling an automatic clear, for
 // in-progress status that a follow-up message replaces.
 func (m *Model) setFlashText(msg string, isErr bool) {
-	m.flashMessage = msg
+	m.flashMessage = tui.StripControl(msg)
 	m.flashIsError = isErr
 	m.flashToken++
 }
@@ -507,10 +508,10 @@ func pruneUnseen(list []Peripheral, seen map[string]bool) []Peripheral {
 }
 
 func displayName(p Peripheral) string {
-	if p.Name != "" {
-		return p.Name
+	if name := tui.StripControl(p.Name); strings.TrimSpace(name) != "" {
+		return name
 	}
-	return p.Address
+	return tui.StripControl(p.Address)
 }
 
 var (

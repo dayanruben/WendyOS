@@ -588,3 +588,24 @@ func TestOnlyUnnamedDevicesEmptyStateAndDiscoveryRename(t *testing.T) {
 		t.Fatal("newly discovered name did not make the device visible")
 	}
 }
+
+func TestRemotePeripheralControlsAreSanitizedWithoutChangingIdentity(t *testing.T) {
+	rawAddress := "AA\x1b[2J\r\u202e"
+	h := &fakeHandler{}
+	m := finishScan(NewModel([]Peripheral{{Name: "\r\n\u202e", Address: rawAddress}}).WithHandler(h))
+	if len(m.visible) != 0 {
+		t.Fatal("control-only name was not hidden")
+	}
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if h.lastAddress != rawAddress {
+		t.Fatal("display sanitization changed action identity")
+	}
+	for _, rendered := range []string{m.View(), m.flashMessage, displayName(Peripheral{Name: "Buds\x1b]52;c;secret\a\n", Address: rawAddress})} {
+		for _, control := range []string{"\x1b[2J", "\x1b]", "\r", "\a", "\u202e"} {
+			if strings.Contains(rendered, control) {
+				t.Fatalf("remote control survived: %q", rendered)
+			}
+		}
+	}
+}
