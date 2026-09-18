@@ -223,6 +223,7 @@ def make_server(runtime: FsmRuntime, host: str = "127.0.0.1", port: int = PORT):
                 try:
                     runtime.stop()
                 except Exception:
+                    # Preserve the original request error if best-effort stop fails.
                     pass
                 self.reply(409, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
 

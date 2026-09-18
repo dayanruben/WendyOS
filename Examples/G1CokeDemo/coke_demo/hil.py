@@ -232,7 +232,8 @@ def make_inference_server(runtime, host="127.0.0.1", port=8098, token=""):
             try:
                 self.wfile.write(raw)
             except (BrokenPipeError, ConnectionResetError):
-                pass
+                # The client disconnected; there is no response left to send.
+                return
 
         def authorized(self):
             if token and not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
@@ -369,6 +370,7 @@ def serve_inference(bundle, *, host="127.0.0.1", port=8098, device="cuda", contr
         try:
             server.serve_forever()
         except KeyboardInterrupt:
+            # Ctrl+C requests shutdown; the finally blocks close server and runtime.
             pass
         finally:
             server.server_close()
