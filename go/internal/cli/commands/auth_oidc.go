@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -19,7 +18,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 )
 
 // oidcScopes: `groups` is read once at session establishment and drives cloud's
@@ -196,151 +196,29 @@ func randomURLSafe(n int) (string, error) {
 	return base64URL(raw), nil
 }
 
-// mldsaAlg is the JWS "alg" for the operator key. It must match pki-core's
-// reqsig.AlgMLDSA65 exactly — the value is carried in the DPoP header AND in
-// the JWK whose RFC 7638 thumbprint has to equal the token's cnf.jkt, so a
-// different spelling fails the binding rather than merely looking odd.
-const mldsaAlg = "ML-DSA-65"
+// The DPoP proof builder and the operator JWK/JWS helpers live in the shared
+// cloudrequest package (WDY-3107) so the gRPC broker-path interceptor and the
+// MCP tools path reuse the one signer. These thin wrappers keep the established
+// OIDC login/refresh/enroll call sites and their tests unchanged.
 
-// mldsaPublicJWK builds the RFC 9964 AKP JWK for an ML-DSA public key.
-// "pub" is the raw FIPS-204 public key; unlike EC there is no crv, and "alg"
-// is a required member of the thumbprint input for this key type.
-func mldsaPublicJWK(pub *mldsa.PublicKey) (map[string]string, error) {
-	if pub == nil {
-		return nil, fmt.Errorf("nil public key")
-	}
-	return map[string]string{
-		"alg": mldsaAlg,
-		"kty": "AKP",
-		"pub": base64URL(pub.Bytes()),
-	}, nil
-}
-
-// operatorPublicJWK returns the RFC 9964 AKP JWK and JWS alg for the operator
-// key. ML-DSA-65 only: WDY-3032 is a hard cutover, so a session holding the
-// old ECDSA key is refused here rather than signed with.
 func operatorPublicJWK(signer crypto.Signer) (map[string]string, string, error) {
-	pub, ok := signer.Public().(*mldsa.PublicKey)
-	if !ok {
-		return nil, "", errOperatorKeyNotMLDSA(signer.Public())
-	}
-	jwk, err := mldsaPublicJWK(pub)
-	return jwk, mldsaAlg, err
+	return cloudrequest.OperatorPublicJWK(signer)
 }
 
-// errOperatorKeyNotMLDSA is the one message every operator-credential path
-// gives for a pre-WDY-3032 session. The operator credential is ML-DSA-65 with
-// no negotiation and no fallback, so an ECDSA key on disk is not something to
-// sign with more carefully — it is a session that has to be established again.
-func errOperatorKeyNotMLDSA(pub any) error {
-	return fmt.Errorf("this session's operator key is %T, but Wendy now requires an ML-DSA-65 operator credential; re-run 'wendy auth login'", pub)
-}
-
-// operatorJWKThumbprint computes the RFC 7638 thumbprint used for cnf.jkt.
-//
-// The canonical JSON is the required members in lexicographic order with no
-// whitespace — {alg,kty,pub} for AKP (RFC 9964 §5 includes alg, unlike EC),
-// {crv,kty,x,y} for EC. Member order is part of the hash input, so it is
-// written out literally here rather than left to a map's iteration order.
 func operatorJWKThumbprint(signer crypto.Signer) (string, error) {
-	jwk, _, err := operatorPublicJWK(signer)
-	if err != nil {
-		return "", err
-	}
-	canonical := fmt.Sprintf(`{"alg":"%s","kty":"%s","pub":"%s"}`, jwk["alg"], jwk["kty"], jwk["pub"])
-	sum := sha256.Sum256([]byte(canonical))
-	return base64URL(sum[:]), nil
+	return cloudrequest.OperatorJWKThumbprint(signer)
 }
 
-// signOperatorJWS signs the JWS signing input with the operator key.
-//
-// ML-DSA signs the input bytes directly with empty Options, matching how
-// pki-core verifies (reqsig/alg.go: cryptomldsa.Verify(pk, signingInput, sig,
-// nil)); the signature is the raw FIPS-204 value.
-func signOperatorJWS(signer crypto.Signer, signingInput string) (string, error) {
-	key, ok := signer.(*mldsa.PrivateKey)
-	if !ok {
-		return "", errOperatorKeyNotMLDSA(signer.Public())
-	}
-	sig, err := key.Sign(rand.Reader, []byte(signingInput), &mldsa.Options{})
-	if err != nil {
-		return "", fmt.Errorf("signing: %w", err)
-	}
-	return base64URL(sig), nil
-}
-
-// newDPoPProof builds an RFC 9449 proof JWT for a single request.
-//
-// htu must be the request URI with query and fragment removed; htm the method.
-// nonce is included only when the server has demanded one (see dpopNonceRetry).
 func newDPoPProof(key crypto.Signer, htm, htu, nonce string) (string, error) {
-	return newDPoPProofWithAccessToken(key, htm, htu, nonce, "")
+	return cloudrequest.NewDPoPProof(key, htm, htu, nonce)
 }
 
-// newDPoPAccessProof builds the proof used at a protected resource. In
-// addition to the request URI and method it binds the proof to the exact
-// access-token bytes through RFC 9449's ath claim.
 func newDPoPAccessProof(key crypto.Signer, htm, htu, accessToken string) (string, error) {
-	if accessToken == "" {
-		return "", fmt.Errorf("access token is empty")
-	}
-	return newDPoPProofWithAccessToken(key, htm, htu, "", accessToken)
+	return cloudrequest.NewDPoPAccessProof(key, htm, htu, accessToken)
 }
 
-func newDPoPProofWithAccessToken(key crypto.Signer, htm, htu, nonce, accessToken string) (string, error) {
-	jwk, alg, err := operatorPublicJWK(key)
-	if err != nil {
-		return "", err
-	}
-	header := map[string]any{
-		"typ": "dpop+jwt",
-		"alg": alg,
-		"jwk": jwk,
-	}
-	jti, err := randomURLSafe(16)
-	if err != nil {
-		return "", fmt.Errorf("generating DPoP jti: %w", err)
-	}
-	payload := map[string]any{
-		"jti": jti,
-		"htm": htm,
-		"htu": htu,
-		"iat": time.Now().Unix(),
-	}
-	if nonce != "" {
-		payload["nonce"] = nonce
-	}
-	if accessToken != "" {
-		sum := sha256.Sum256([]byte(accessToken))
-		payload["ath"] = base64URL(sum[:])
-	}
-
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", fmt.Errorf("marshaling DPoP header: %w", err)
-	}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshaling DPoP payload: %w", err)
-	}
-
-	signingInput := base64URL(headerJSON) + "." + base64URL(payloadJSON)
-	sig, err := signOperatorJWS(key, signingInput)
-	if err != nil {
-		return "", err
-	}
-	return signingInput + "." + sig, nil
-}
-
-// canonicalHTU strips query and fragment, which RFC 9449 excludes from `htu`.
 func canonicalHTU(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parsing endpoint URL %q: %w", raw, err)
-	}
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String(), nil
+	return cloudrequest.CanonicalHTU(raw)
 }
 
 // decodeJWTClaims returns the decoded payload of a JWS compact token.

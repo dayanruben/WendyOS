@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -760,7 +761,10 @@ func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) (context.Cont
 	}
 	certInfo := auth.Certificates[0]
 	md := metadata.MD{}
-	if auth.HasAPIKey() {
+	// A DPoP-bound token goes out as DPoP via the shared interceptor
+	// (mcpDialCloudGRPC installs it); only unbound API-key/legacy sessions carry
+	// Bearer here (WDY-3107).
+	if auth.HasAPIKey() && !cloudrequest.IsDPoPBound(auth) {
 		bearerToken, err := auth.BearerToken()
 		if err != nil {
 			return nil, fmt.Errorf("loading API token: %w", err)
@@ -808,11 +812,32 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	if signingOption != nil {
 		dialOptions = append(dialOptions, signingOption)
 	}
+	// Per-RPC DPoP proof for a cnf-bound token; nil for unbound sessions. The
+	// MCP provider uses the stored token without refreshing (WDY-3107).
+	dialOptions = append(dialOptions, cloudrequest.DPoPDialOptions(auth, mcpDPoPTokenProvider(auth))...)
 	conn, err := grpc.NewClient(auth.CloudGRPC, dialOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
 	}
 	return conn, nil
+}
+
+// mcpDPoPTokenProvider returns the stored access token and its bound ML-DSA key
+// for a DPoP proof. Unlike the CLI it does NOT auto-refresh — the MCP tools path
+// has never refreshed OAuth tokens, so this only adds the proof (no behavior
+// change); an expired token still fails the same way it does today.
+func mcpDPoPTokenProvider(auth *config.AuthConfig) cloudrequest.DPoPTokenProvider {
+	return func(context.Context) (string, crypto.Signer, error) {
+		keyPEM, err := auth.OAuthDPoPKey()
+		if err != nil {
+			return "", nil, fmt.Errorf("DPoP: loading bound key: %w", err)
+		}
+		key, err := certs.ParseSigningPrivateKeyPEM([]byte(keyPEM))
+		if err != nil {
+			return "", nil, fmt.Errorf("DPoP: parsing bound key: %w", err)
+		}
+		return auth.APIKey, key, nil
+	}
 }
 
 func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
