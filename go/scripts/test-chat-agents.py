@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix='wendy-agent-smoke-') as temp:
  for r in requests:
   if any(m.get('content') in ['child build','child debug'] for m in r['messages']):
    assert all(t['function']['name'] not in ['agent_delegate','agent_remote'] for t in r['tools'])
+ # The developer child inherits the parent's model; these are child requests, not parent tool results.
  assert any(r['model']=='parent-model' and any(m.get('content')=='child build' for m in r['messages']) for r in requests)
  sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1];sock.close()
  url=f'http://127.0.0.1:{port}'
