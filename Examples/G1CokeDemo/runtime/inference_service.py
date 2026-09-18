@@ -42,6 +42,7 @@ class InferenceRuntime:
         self.lock = threading.RLock()
         self.session_id: str | None = None
         self.active = False
+        self.session_last_seen = time.monotonic()
         self.proposals = 0
         self.last_error: str | None = None
 
@@ -50,10 +51,12 @@ class InferenceRuntime:
 
     def reset(self, session_id: str, started_at_ns: int) -> dict[str, Any]:
         with self.lock:
+            self._expire_session()
             if self.active and self.session_id != session_id:
                 raise RuntimeError("another inference session is active")
             result = self.episode.reset_episode(started_at_ns=started_at_ns)
             self.session_id = session_id
+            self.session_last_seen = time.monotonic()
             self.active = False
             self.proposals = 0
             self.last_error = None
@@ -101,12 +104,23 @@ class InferenceRuntime:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 raise
 
+    def _expire_session(self) -> None:
+        # Proposals renew the lease. Status polling cannot retain an abandoned owner.
+        # The initial lease also covers the bounded entry ramp and settling period.
+        if self.session_id is not None and time.monotonic() - self.session_last_seen > 120:
+            self.camera.deactivate()
+            self.active = False
+            self.session_id = None
+
     def _require_session(self, session_id: str) -> None:
+        self._expire_session()
         if len(session_id) < 16 or self.session_id != session_id:
             raise RuntimeError("inference session is unavailable")
+        self.session_last_seen = time.monotonic()
 
     def status(self) -> dict[str, Any]:
         with self.lock:
+            self._expire_session()
             return {
                 "schema": INFERENCE_SCHEMA,
                 "joint_names": list(self.episode.joint_names),

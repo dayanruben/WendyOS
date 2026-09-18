@@ -174,3 +174,80 @@ def test_physical_shutdown_stops_before_server_close_and_always_closes_io(monkey
     with pytest.raises(RuntimeError, match="camera cleanup"):
         service.main()
     physical.close.assert_called_once()
+
+
+def test_abandoned_inference_session_expires_without_exposing_old_id(monkeypatch):
+    from runtime import inference_service
+    runtime = inference_service.InferenceRuntime.__new__(inference_service.InferenceRuntime)
+    runtime.lock = threading.RLock()
+    runtime.camera = Mock()
+    runtime.episode = Mock()
+    runtime.session_id = "old-session-123456"
+    runtime.active = True
+    runtime.session_last_seen = 10.
+    monkeypatch.setattr(inference_service.time, "monotonic", lambda: 20.)
+    with pytest.raises(RuntimeError, match="another inference session"):
+        runtime.reset("new-session-123456", 1)
+    monkeypatch.setattr(inference_service.time, "monotonic", lambda: 131.)
+    runtime.reset("new-session-123456", 1)
+    runtime.camera.deactivate.assert_called_once()
+    assert runtime.session_id == "new-session-123456"
+    assert not runtime.active
+    assert runtime.session_last_seen == 131.
+
+
+def test_delayed_reset_keeps_publishing_owned_hold_target():
+    runner = IntegratedPhysicalPolicyRunner.__new__(IntegratedPhysicalPolicyRunner)
+    release = threading.Event()
+    reset_started = threading.Event()
+    def reset(**kwargs):
+        reset_started.set()
+        assert release.wait(2)
+        return {"reset": True}
+    runner.episode = SimpleNamespace(reset_episode=reset)
+    runner.camera = Mock()
+    runner.wall_time_ns = lambda: 100
+    runner._live_guard_with_timing_retries = Mock()
+    steps = []
+    target = np.zeros(43)
+    def publish(owner, step, held_target, weight, tick):
+        assert reset_started.wait(2)
+        assert owner == "owner" and held_target is target and weight == 1.
+        steps.append(step)
+        if len(steps) == 3:
+            release.set()
+        # Yield to the asynchronous reset without depending on wall-clock latency.
+        threading.Event().wait(.001)
+        return step + 1, tick + .025
+    runner._publish_entry_tick = publish
+    result, step, _ = runner._reset_while_holding("owner", {"remote_sequence": 7}, target, 10, 0.)
+    assert result == {"reset": True}
+    assert len(steps) >= 3 and step == 10 + len(steps)
+    runner.camera.activate.assert_called_once()
+    runner._live_guard_with_timing_retries.assert_called_with(expected_remote_sequence=7)
+
+
+def test_operator_stop_releases_ownership_before_remote_deactivation():
+    owned = {"value": True}
+    physical = SimpleNamespace(motion_enabled=True, command_results={}, command_lock=threading.Lock(),
+                               io=SimpleNamespace(status=lambda: {"publishers_armed": owned["value"]}))
+    episode = SimpleNamespace(reference=SimpleNamespace(references=range(1)))
+    camera = Mock()
+    runner = IntegratedPhysicalPolicyRunner(physical, episode, camera)
+    runner._log_timing = Mock()
+    def enter(owner):
+        runner.stop_requested.set()
+        return {"goal": np.zeros(43), "actuation_goal": np.zeros(43), "io_step": 1, "next_tick": 0.}
+    runner._enter_and_hold = enter
+    runner._reset_while_holding = Mock(return_value=({}, 1, 0.))
+    def release(*args, **kwargs):
+        owned["value"] = False
+        return {"completed": True}
+    runner._controlled_release = release
+    def deactivate():
+        assert not owned["value"], "network deactivation ran while publisher watchdog was armed"
+    camera.deactivate.side_effect = deactivate
+    with pytest.raises(PolicyStopRequested):
+        runner.run("test", maximum_policy_steps=1)
+    assert not physical.command_lock.locked()
+    camera.deactivate.assert_called_once()

@@ -911,6 +911,41 @@ class IntegratedPhysicalPolicyRunner:
             control_at_ns=control_at_ns,
         )
 
+    def _reset_while_holding(self, owner, entry, last_target, io_step, next_tick):
+        """Keep the existing owner publishing while remote reset/activation waits."""
+        done = threading.Event()
+        abandoned = threading.Event()
+        outcome = {}
+
+        def prepare():
+            try:
+                outcome["reset"] = self.episode.reset_episode(started_at_ns=self.wall_time_ns())
+                if not abandoned.is_set():
+                    self.camera.activate()
+            except BaseException as error:
+                outcome["error"] = error
+            finally:
+                if abandoned.is_set():
+                    try:
+                        self.camera.deactivate()
+                    except Exception:
+                        # The run's cleanup also retries deactivation after releasing ownership.
+                        pass
+                done.set()
+
+        threading.Thread(target=prepare, daemon=True, name="policy-reset").start()
+        try:
+            while not done.is_set():
+                self._live_guard_with_timing_retries(expected_remote_sequence=int(entry["remote_sequence"]))
+                io_step, next_tick = self._publish_entry_tick(
+                    owner, io_step, last_target, 1.0, next_tick)
+            if "error" in outcome:
+                raise outcome["error"]
+            return outcome["reset"], io_step, next_tick
+        finally:
+            if not done.is_set():
+                abandoned.set()
+
     def run(self, command_id: str, *, maximum_policy_steps: int) -> dict[str, Any]:
         if not 1 <= maximum_policy_steps <= min(
             MAXIMUM_POLICY_STEPS, len(self.episode.reference.references)
@@ -958,12 +993,11 @@ class IntegratedPhysicalPolicyRunner:
             io_step = int(entry["io_step"])
             next_tick = float(entry["next_tick"])
 
-            episode_start_ns = self.wall_time_ns()
-            reset = self.episode.reset_episode(started_at_ns=episode_start_ns)
+            reset, io_step, next_tick = self._reset_while_holding(
+                owner, entry, last_target, io_step, next_tick)
             policy_started = self.monotonic()
             with self.status_lock:
                 self.policy_started_at_monotonic = policy_started
-            self.camera.activate()
             camera_deadline = self.monotonic() + CAMERA_ADMISSION_TIMEOUT_S
             while policy_steps < maximum_policy_steps:
                 if self.stop_requested.is_set():
@@ -1102,7 +1136,6 @@ class IntegratedPhysicalPolicyRunner:
 
             with self.status_lock:
                 self.policy_finished_at_monotonic = self.monotonic()
-            self.camera.deactivate()
             release = self._controlled_release(
                 owner,
                 io_step=io_step,
@@ -1110,6 +1143,8 @@ class IntegratedPhysicalPolicyRunner:
                 reason="policy_completed",
             )
             armed = False
+            if not release.get("completed"):
+                raise InterlockError("controlled release did not complete")
             fsm_after = self.physical._rpc("read-fsm")
             if (
                 fsm_after.get("fsm_id") != RUNNING_FSM
@@ -1161,7 +1196,6 @@ class IntegratedPhysicalPolicyRunner:
                     self.policy_finished_at_monotonic = self.monotonic()
                 self.running = False
                 self.last_error = error
-            self.camera.deactivate()
             if armed or self.physical.io.status().get("publishers_armed"):
                 try:
                     if isinstance(exc, PolicyStopRequested):
@@ -1201,7 +1235,9 @@ class IntegratedPhysicalPolicyRunner:
             )
             raise
         finally:
-            self.camera.deactivate()
-            with self.status_lock:
-                self.running = False
-            self.physical.command_lock.release()
+            try:
+                self.camera.deactivate()
+            finally:
+                with self.status_lock:
+                    self.running = False
+                self.physical.command_lock.release()
