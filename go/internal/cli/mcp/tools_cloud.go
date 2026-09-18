@@ -205,13 +205,30 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	assets, err := mcpListCloudAssets(ctx, auth, stringParam(req, "filter"), req.GetBool("online_only", true))
-	if err != nil {
-		return cloudErrResult(err), nil
-	}
-	out := make([]map[string]any, 0, len(assets))
-	for _, a := range assets {
-		out = append(out, cloudAssetToMap(a))
+	filter := stringParam(req, "filter")
+	onlineOnly := req.GetBool("online_only", true)
+	// A v2 (UUID-identity) session must use the v2 AssetService — the v1 arm
+	// sends cert.OrganizationID (0 for these sessions) and silently returns an
+	// empty roster (WDY-3146). Legacy sessions keep the v1 arm.
+	var out []map[string]any
+	if len(auth.Certificates) > 0 && auth.Certificates[0].TenantUUID() != "" {
+		assets, err := mcpListCloudAssetsV2(ctx, auth, filter, onlineOnly)
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+		out = make([]map[string]any, 0, len(assets))
+		for _, a := range assets {
+			out = append(out, cloudAssetV2ToMap(a))
+		}
+	} else {
+		assets, err := mcpListCloudAssets(ctx, auth, filter, onlineOnly)
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+		out = make([]map[string]any, 0, len(assets))
+		for _, a := range assets {
+			out = append(out, cloudAssetToMap(a))
+		}
 	}
 	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
 }
