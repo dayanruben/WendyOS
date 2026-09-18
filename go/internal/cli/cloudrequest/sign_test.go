@@ -1,9 +1,11 @@
 package cloudrequest
 
 import (
+	"bytes"
 	"context"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -19,6 +21,7 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 const testTenant = "2558fd76-afc7-466e-9613-6b715296a526"
@@ -149,8 +152,16 @@ func TestSignerProducesCloudContractJWS(t *testing.T) {
 	if err := json.Unmarshal(payloadBytes, &descriptor); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if descriptor.Audience != brokerAudience || descriptor.BodyDigest != "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU" {
-		t.Fatalf("descriptor audience/body = %#v", descriptor)
+	// body_sha256 is the digest of exactly the serialized request that goes on
+	// the wire — not the old empty-body constant.
+	wantRaw, err := proto.Marshal(&cloudpb.CreateAssetEnrollmentTokenRequest{OrganizationId: 7, Name: "edge-one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSum := sha256.Sum256(wantRaw)
+	wantDigest := base64.RawURLEncoding.EncodeToString(wantSum[:])
+	if descriptor.Audience != brokerAudience || descriptor.BodyDigest != wantDigest {
+		t.Fatalf("descriptor audience=%q body=%q; want body %q", descriptor.Audience, descriptor.BodyDigest, wantDigest)
 	}
 	if descriptor.IssuedAt != fixed.Unix() || descriptor.Expiry != fixed.Add(signatureTTL).Unix() {
 		t.Fatalf("descriptor times = iat %d expiry %d", descriptor.IssuedAt, descriptor.Expiry)
@@ -173,6 +184,31 @@ func TestSignerProducesCloudContractJWS(t *testing.T) {
 	// pre-hash, nil options.
 	if err := mldsa.Verify(key.Public().(*mldsa.PublicKey), []byte(segments[0]+"."+segments[1]), sig, nil); err != nil {
 		t.Fatalf("JWS signature does not verify: %v", err)
+	}
+}
+
+func TestWireCodecForwardsSignedBytes(t *testing.T) {
+	raw, err := proto.Marshal(&cloudpb.CreateAssetEnrollmentTokenRequest{OrganizationId: 9, Name: "pi-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := wireCodec{raw: raw}
+	if c.Name() != "proto" {
+		t.Fatalf("Name = %q, want proto", c.Name())
+	}
+	// Marshal always forwards the pre-hashed bytes so the wire payload matches
+	// the signed digest, regardless of the message grpc hands it.
+	got, err := c.Marshal(&cloudpb.CreateAssetEnrollmentTokenRequest{Name: "different"})
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("Marshal = %x, %v; want the signed bytes %x", got, err, raw)
+	}
+	// Replies still decode with the standard proto codec.
+	var out cloudpb.CreateAssetEnrollmentTokenRequest
+	if err := c.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.GetOrganizationId() != 9 || out.GetName() != "pi-5" {
+		t.Fatalf("Unmarshal round-trip = %#v", &out)
 	}
 }
 
@@ -308,7 +344,9 @@ func TestCloudSignatureOmitsLargeIssuerChain(t *testing.T) {
 		}
 		return h.X5C
 	}
-	descriptor, err := signer.sign("wendycloud.v2.DeviceEnrollmentService/EnrollDevice", "org/"+testTenant+"/device/sim")
+	// A representative 43-char base64url SHA-256 digest so the size assertion
+	// reflects a real body_sha256 field.
+	descriptor, err := signer.sign("wendycloud.v2.DeviceEnrollmentService/EnrollDevice", "org/"+testTenant+"/device/sim", "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU")
 	if err != nil {
 		t.Fatal(err)
 	}
