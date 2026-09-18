@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -445,5 +446,24 @@ func TestServiceAgentModelKeysMustBeCanonical(t *testing.T) {
 		if _, err := c.SessionOptions("wendy", t.TempDir()); err == nil || !strings.Contains(err.Error(), "canonical") {
 			t.Fatalf("accepted profile %q: %v", name, err)
 		}
+	}
+}
+
+func TestExistingStateDirectoryMustBePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses ACLs instead of Unix mode bits")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	service, err := Open(testConfig(t), dir, func(context.Context, string) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("state directory is not private: %v %v", info, err)
 	}
 }

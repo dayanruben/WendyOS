@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,8 @@ func newAgentServeCmd() *cobra.Command {
 		if !loopback && !tls {
 			return errors.New("non-loopback listeners require TLS; use --tls-cert and --tls-key, or a loopback listener behind a tunnel")
 		}
-		if publicURL == "" {
+		defaultPublicURL := publicURL == ""
+		if defaultPublicURL {
 			if ip == nil || ip.IsUnspecified() {
 				return errors.New("set --public-url to the reachable agent URL")
 			}
@@ -130,15 +132,22 @@ func newAgentServeCmd() *cobra.Command {
 			return err
 		}
 		defer service.Close()
-		handler, err := service.Handler(publicURL, token)
-		if err != nil {
-			return err
-		}
 		listener, err := net.Listen("tcp", listen)
 		if err != nil {
 			return err
 		}
 		defer listener.Close()
+		if defaultPublicURL {
+			scheme := "http"
+			if tls {
+				scheme = "https"
+			}
+			publicURL = scheme + "://" + listener.Addr().String()
+		}
+		handler, err := service.Handler(publicURL, token)
+		if err != nil {
+			return err
+		}
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
 		server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
@@ -238,9 +247,7 @@ func newAgentClientCmd(action string) *cobra.Command {
 		case "cancel":
 			result, err = client.Cancel(ctx, id)
 		case "tasks":
-			var list a2a.TaskList
-			err = client.Do(ctx, "GET", "/tasks", nil, &list)
-			result = list
+			result, err = listAllAgentTasks(ctx, client)
 		case "event":
 			var input io.Reader = cmd.InOrStdin()
 			if file != "-" {
@@ -291,4 +298,28 @@ func newAgentClientCmd(action string) *cobra.Command {
 		cmd.Flags().StringVar(&file, "file", "-", "Event JSON file, or - for standard input")
 	}
 	return cmd
+}
+
+func listAllAgentTasks(ctx context.Context, client *a2a.Client) (a2a.TaskList, error) {
+	result := a2a.TaskList{Tasks: []a2a.Task{}}
+	token := ""
+	seen := map[string]bool{}
+	for pages := 0; pages < 1000; pages++ {
+		var page a2a.TaskList
+		if err := client.Do(ctx, "GET", "/tasks?pageToken="+url.QueryEscape(token), nil, &page); err != nil {
+			return a2a.TaskList{}, err
+		}
+		result.Tasks = append(result.Tasks, page.Tasks...)
+		result.TotalSize = page.TotalSize
+		result.PageSize = len(result.Tasks)
+		token = page.NextPageToken
+		if token == "" {
+			return result, nil
+		}
+		if seen[token] {
+			return a2a.TaskList{}, errors.New("agent repeated a task continuation token")
+		}
+		seen[token] = true
+	}
+	return a2a.TaskList{}, errors.New("agent task listing exceeded 1000 pages")
 }

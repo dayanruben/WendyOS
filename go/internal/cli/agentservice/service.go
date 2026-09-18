@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +77,11 @@ func Open(c Config, directory string, runner Runner) (*Service, error) {
 	}
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(directory, 0700); err != nil {
+			return nil, fmt.Errorf("making agent state directory private: %w", err)
+		}
 	}
 	lock := flock.New(filepath.Join(directory, "service.lock"))
 	ok, err := lock.TryLock()
