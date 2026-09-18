@@ -131,8 +131,12 @@ func (c Config) SessionOptions(executable, memoryDir string) (chat.SessionOption
 	}
 	models := map[string]chat.Config{}
 	for name, spec := range c.AgentModels {
-		if _, err := chat.ResolveProfile(name); err != nil {
+		profile, err := chat.ResolveProfile(name)
+		if err != nil {
 			return chat.SessionOptions{}, err
+		}
+		if name != profile.Name {
+			return chat.SessionOptions{}, fmt.Errorf("agent model key %q must use canonical profile name %q", name, profile.Name)
 		}
 		m, err := spec.Resolve()
 		if err != nil {

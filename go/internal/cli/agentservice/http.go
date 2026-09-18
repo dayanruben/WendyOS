@@ -145,6 +145,9 @@ func serviceError(w http.ResponseWriter, err error) {
 		writeError(w, 409, 9, "TASK_NOT_CANCELABLE", err.Error())
 	case errors.Is(err, ErrConflict):
 		writeError(w, 409, 6, "ALREADY_EXISTS", err.Error())
+	case errors.Is(err, ErrEventRate):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, 429, 8, "RESOURCE_EXHAUSTED", err.Error())
 	case errors.Is(err, ErrFull):
 		writeError(w, 429, 8, "RESOURCE_EXHAUSTED", err.Error())
 	default:
@@ -208,6 +211,20 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	end := start + size
 	if end > len(filtered) {
 		end = len(filtered)
+	}
+	// Leave room for the envelope and continuation token within the client cap.
+	used := 0
+	for i := start; i < end; i++ {
+		encoded, err := json.Marshal(filtered[i])
+		if err != nil || len(encoded) > a2a.MaxResponseBytes-4096 {
+			writeError(w, 500, 13, "INTERNAL", "stored task exceeds response limit")
+			return
+		}
+		if used+len(encoded)+1 > a2a.MaxResponseBytes-4096 {
+			end = i
+			break
+		}
+		used += len(encoded) + 1
 	}
 	result := a2a.TaskList{Tasks: filtered[start:end], PageSize: size, TotalSize: len(filtered)}
 	if end < len(filtered) {

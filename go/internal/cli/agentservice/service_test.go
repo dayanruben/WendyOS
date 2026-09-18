@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/a2a"
+	"github.com/wendylabsinc/wendy/go/internal/cli/chat"
 )
 
 func testConfig(t *testing.T) Config {
@@ -349,6 +352,98 @@ func TestTriggerIdentityLengthsMatchEventLimits(t *testing.T) {
 		}
 		if err := cfg.Validate(); err == nil {
 			t.Fatal("accepted an unmatchable trigger")
+		}
+	}
+}
+
+func TestTaskPagesStayWithinClientResponseLimit(t *testing.T) {
+	s := testService(t, testConfig(t), func(context.Context, string) (string, error) { return "", nil })
+	for i := 0; i < 50; i++ {
+		r := record{Task: a2a.Task{ID: fmt.Sprint(i), ContextID: "context"}}
+		// Exercise JSON escaping as well as the largest allowed result text.
+		s.finish(&r, a2a.Completed, strings.Repeat("<", 32000))
+		s.db.Records = append(s.db.Records, r)
+	}
+	handler, err := s.Handler("http://127.0.0.1", "test-access-token-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client, err := a2a.NewClient(server.URL, "test-access-token-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := ""
+	seen := map[string]bool{}
+	for {
+		var page a2a.TaskList
+		if err := client.Do(context.Background(), "GET", "/tasks?pageSize=50&pageToken="+token, nil, &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Tasks) == 0 {
+			t.Fatal("empty page before end")
+		}
+		for _, task := range page.Tasks {
+			if seen[task.ID] {
+				t.Fatal("duplicate task")
+			}
+			seen[task.ID] = true
+		}
+		token = page.NextPageToken
+		if token == "" {
+			break
+		}
+	}
+	if len(seen) != 50 {
+		t.Fatalf("listed %d tasks", len(seen))
+	}
+}
+
+func TestEventRateLimitPreventsDurableWritesAndAllowsRetry(t *testing.T) {
+	s := testService(t, testConfig(t), func(context.Context, string) (string, error) { return "", nil })
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	first := SensorEvent{ID: "first", Type: "person", Source: "camera", Timestamp: now}
+	if _, err := s.Event(first); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < 10; i++ {
+		e := first
+		e.ID = fmt.Sprint(i)
+		if _, err := s.Event(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.ReadFile(s.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := first
+	next.ID = "next"
+	if _, err := s.Event(next); !errors.Is(err, ErrEventRate) {
+		t.Fatalf("expected rate rejection, got %v", err)
+	}
+	after, err := os.ReadFile(s.file)
+	if err != nil || string(after) != string(before) {
+		t.Fatal("rate-limited event wrote state")
+	}
+	if _, err := s.Event(first); err != nil {
+		t.Fatalf("duplicate consumed ingress budget: %v", err)
+	}
+	now = now.Add(time.Second)
+	if _, err := s.Event(next); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+}
+
+func TestServiceAgentModelKeysMustBeCanonical(t *testing.T) {
+	for _, name := range []string{"", " developer "} {
+		c := testConfig(t)
+		c.Model = chat.ModelSpec{Provider: "local", Model: "test", BaseURL: "http://127.0.0.1:1234"}
+		c.AgentModels = map[string]chat.ModelSpec{name: c.Model}
+		if _, err := c.SessionOptions("wendy", t.TempDir()); err == nil || !strings.Contains(err.Error(), "canonical") {
+			t.Fatalf("accepted profile %q: %v", name, err)
 		}
 	}
 }

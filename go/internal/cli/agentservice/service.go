@@ -16,6 +16,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/a2a"
+	"golang.org/x/time/rate"
 )
 
 type Runner func(context.Context, string) (string, error)
@@ -44,23 +45,25 @@ type database struct {
 	Triggers   map[string]triggerState `json:"triggers"`
 }
 type Service struct {
-	storageErr error
-	config     Config
-	file       string
-	lock       *flock.Flock
-	mu         sync.Mutex
-	db         database
-	wake       chan struct{}
-	changed    chan struct{}
-	active     map[string]context.CancelFunc
-	runner     Runner
-	now        func() time.Time
+	eventLimiter *rate.Limiter
+	storageErr   error
+	config       Config
+	file         string
+	lock         *flock.Flock
+	mu           sync.Mutex
+	db           database
+	wake         chan struct{}
+	changed      chan struct{}
+	active       map[string]context.CancelFunc
+	runner       Runner
+	now          func() time.Time
 }
 
 var ErrStorage = errors.New("agent persistence failed; restart after repairing storage")
 
 var ErrNotFound = errors.New("task not found")
 var ErrConflict = errors.New("request ID was already used with different content or its retained task expired")
+var ErrEventRate = errors.New("sensor event rate exceeded; retry later")
 var ErrFull = errors.New("agent queue is full")
 var ErrTerminal = errors.New("task is already terminal")
 
@@ -82,7 +85,7 @@ func Open(c Config, directory string, runner Runner) (*Service, error) {
 	if !ok {
 		return nil, errors.New("another agent service owns this state directory")
 	}
-	s := &Service{config: c, file: filepath.Join(directory, "state.json"), lock: lock, wake: make(chan struct{}, 1), changed: make(chan struct{}), active: map[string]context.CancelFunc{}, runner: runner, now: time.Now}
+	s := &Service{eventLimiter: rate.NewLimiter(10, 10), config: c, file: filepath.Join(directory, "state.json"), lock: lock, wake: make(chan struct{}, 1), changed: make(chan struct{}), active: map[string]context.CancelFunc{}, runner: runner, now: time.Now}
 	data, _ := json.Marshal(c)
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
@@ -205,6 +208,9 @@ func find(db *database, id string) *record {
 	return nil
 }
 func (s *Service) finish(r *record, state, text string) {
+	if len(text) > 32000 {
+		text = strings.ToValidUTF8(text[:32000], "") + "\n[Truncated.]"
+	}
 	r.Task.Status = a2a.Status{State: state, Timestamp: s.now().UTC()}
 	if state == a2a.Completed {
 		r.Task.Artifacts = []a2a.Artifact{{ID: uuid.NewString(), Name: "result", Parts: []a2a.Part{{Text: text}}}}
@@ -441,9 +447,6 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 		text, runErr := s.runner(taskCtx, prompt)
 		cancel()
-		if len(text) > 32000 {
-			text = strings.ToValidUTF8(text[:32000], "") + "\n[Truncated.]"
-		}
 		s.mu.Lock()
 		delete(s.active, id)
 		err = s.change(func(db *database) error {
@@ -500,6 +503,10 @@ func (s *Service) Event(event SensorEvent) (EventResult, error) {
 	}
 	if prior != nil {
 		return EventResult{Accepted: prior.TaskID != "", TaskID: prior.TaskID, Reason: prior.Reason}, nil
+	}
+	// Duplicates above do not consume the durable-ingress budget.
+	if !s.eventLimiter.AllowN(s.now(), 1) {
+		return EventResult{}, ErrEventRate
 	}
 	result := EventResult{Reason: "no matching trigger"}
 	err = s.change(func(db *database) error {

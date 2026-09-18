@@ -74,6 +74,10 @@ type SendResponse struct {
 	Task    *Task    `json:"task,omitempty"`
 	Message *Message `json:"message,omitempty"`
 }
+
+// MaxResponseBytes bounds client responses and server task-list pages.
+const MaxResponseBytes = 1 << 20
+
 type TaskList struct {
 	Tasks         []Task `json:"tasks"`
 	NextPageToken string `json:"nextPageToken,omitempty"`
@@ -87,6 +91,9 @@ func ValidateURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
 		return errors.New("agent URL must be an absolute URL without credentials, query, or fragment")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return errors.New("agent URL must be an origin without a path prefix")
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -150,7 +157,7 @@ func (c *Client) Do(ctx context.Context, method, path string, input, output any)
 	if output == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(output)
+	return json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(output)
 }
 func (c *Client) Send(ctx context.Context, req SendRequest) (SendResponse, error) {
 	var result SendResponse

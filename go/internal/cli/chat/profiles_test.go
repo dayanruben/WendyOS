@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,5 +182,18 @@ func TestFleetProfileIncludesCloudTunnel(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("fleet profile hides cloud_tunnel")
+	}
+}
+
+func TestAgentModelFileRejectsNoncanonicalProfileKeys(t *testing.T) {
+	for _, name := range []string{"", " developer "} {
+		path := filepath.Join(t.TempDir(), "models.json")
+		body := fmt.Sprintf(`{%q:{"provider":"local","model":"test","base_url":"http://127.0.0.1:1234"}}`, name)
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadAgentModels(path); err == nil || !strings.Contains(err.Error(), "canonical") {
+			t.Fatalf("accepted profile %q: %v", name, err)
+		}
 	}
 }

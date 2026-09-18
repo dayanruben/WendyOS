@@ -55,8 +55,12 @@ func LoadAgentModels(file string) (map[string]Config, error) {
 		return nil, errors.New("agent models must contain one JSON object")
 	}
 	for name, spec := range specs {
-		if _, err := ResolveProfile(name); err != nil {
+		profile, err := ResolveProfile(name)
+		if err != nil {
 			return nil, err
+		}
+		if name != profile.Name {
+			return nil, fmt.Errorf("agent model key %q must use canonical profile name %q", name, profile.Name)
 		}
 		c, err := spec.Resolve()
 		if err != nil {

@@ -222,3 +222,15 @@ boundary.
 Delegation depth bounds cooperative peers. It does not authenticate peers or
 prevent a malicious peer from resetting its counter. Establish peer trust and
 credentials separately, and apply network rate limits to remote services.
+
+Agent URLs must be origins without a path prefix, such as `https://agent.example`.
+Task-list pages may contain fewer tasks than `pageSize` to stay within the 1 MiB
+response limit. Follow `nextPageToken` until it is empty.
+
+Sensor ingress admits 10 new events per second with a burst of 10, shared across
+sources. Excess events receive HTTP 429 with `Retry-After: 1` before any state
+write. Producers must sample or back off; camera-rate streams should send derived
+observations rather than every frame. Retrying an already recorded event does not
+consume this budget. The limiter resets on service restart.
+
+Agent model map keys must be exact profile names, without surrounding whitespace.
