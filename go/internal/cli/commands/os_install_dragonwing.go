@@ -4,8 +4,9 @@ package commands
 // manifest, download and extract it, then drive Sahara + Firehose in-process.
 // Mirrors the Thor flow (plan → brief → confirm → pick device → step list), with
 // two differences that come from the hardware: EDL is entered with a DIP switch
-// rather than a button, and the bundle's descriptor skips the config and data
-// partitions, so there is no config image to seed.
+// rather than a button, and the bundle ships no config image, so the host builds
+// one to seed (os_install_dragonwing_config.go). A flash is a factory reset: the
+// data filesystem is blanked so first boot recreates it.
 
 import (
 	"context"
@@ -23,6 +24,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/qdl"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // dragonwingProgrammer is the Firehose programmer inside the bundle. The bundle
@@ -248,7 +250,8 @@ func downloadAndExtractDragonwingBundle(plan dragonwingPlan, detail func(string)
 }
 
 // installDragonwing flashes an IQ-8275 over EDL.
-func installDragonwing(ctx context.Context, version string, nightly, force bool, prNumber int) error {
+func installDragonwing(ctx context.Context, version string, nightly, force bool, prNumber int,
+	wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	if !qdl.Supported() {
 		return errors.New("flashing a Dragonwing over EDL is not supported on this platform")
 	}
@@ -266,6 +269,22 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 			"Offline — using cached WendyOS %s; cannot confirm it is the latest build.", plan.version)))
 	}
 	if err := checkDragonwingDiskSpace(cacheDir, plan); err != nil {
+		return err
+	}
+
+	// Resolve provisioning up front, as Thor does: the interactive prompts and
+	// any enrollment must run before the flash UI takes over the terminal, and
+	// a bad flag should abort before the board is touched.
+	creds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+	name, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+	provJSON, err := resolveProvisioningJSON(ctx, preOpts, name)
+	if err != nil {
 		return err
 	}
 
@@ -288,7 +307,8 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 
 	if !force {
 		fmt.Println()
-		fmt.Println(tui.WarningMessage("This rewrites both OS slots on the board's UFS. /data is preserved."))
+		fmt.Println(tui.WarningMessage(
+			"This rewrites the board's UFS: both OS slots, the config partition, and /data. Device identity, enrollment, saved Wi-Fi and app data are discarded — the board comes back as a new device."))
 		ok, err := tui.ConfirmNoDefaultDanger(
 			fmt.Sprintf("Write the Dragonwing IQ-8275 bundle to %s?", dragonwingTargetLabel(dev)))
 		if errors.Is(err, tui.ErrCancelled) || (err == nil && !ok) {
@@ -319,17 +339,43 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 		}
 	}
 
+	// The image holds the Wi-Fi PSK and any enrollment key in the clear, so it
+	// lives only for the flash rather than in the bundle cache.
+	seedDir, err := os.MkdirTemp("", "wendy-dragonwing-config-")
+	if err != nil {
+		return fmt.Errorf("creating a workspace for the config image: %w", err)
+	}
+	defer os.RemoveAll(seedDir) //nolint:errcheck
+
+	zerosPath, err := writeDragonwingZeros(seedDir)
+	if err != nil {
+		return err
+	}
+
 	var bundleDir string
+	var warnings []string
+	var flash *qdl.FlashPlan
 	steps := []flashStep{
 		{id: stepDownload, label: "Download flash bundle", run: func(_ io.Writer, detail func(string)) (bool, error) {
 			dir, cached, err := downloadAndExtractDragonwingBundle(plan, detail)
 			bundleDir = dir
 			return cached, err
 		}},
+		{id: stepProvision, label: "Write config partition", run: func(out io.Writer, detail func(string)) (bool, error) {
+			var err error
+			// Everything the flash will write is resolved here, before the
+			// first write command: a failure discovered mid-flash leaves the
+			// board half-written with the GPT still unpatched.
+			if flash, warnings, err = planDragonwingFlash(seedDir, bundleDir, zerosPath,
+				creds, name, provJSON, out, detail); err != nil {
+				return false, errors.Join(err, errDragonwingNothingWritten)
+			}
+			return false, nil
+		}},
 		{id: stepFlashPartitions, label: "Flash partitions",
 			abortWarning: "Partitions are being written — aborting now can leave the board unbootable. Press ctrl+c again to abort anyway.",
 			run: func(out io.Writer, detail func(string)) (bool, error) {
-				return false, flashDragonwing(flashCtx, bundleDir, dev, out, detail)
+				return false, flashDragonwing(flashCtx, flash, dev, out, detail)
 			}},
 	}
 
@@ -357,6 +403,9 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 		return err
 	}
 
+	for _, w := range warnings {
+		fmt.Println(tui.WarningMessage(w))
+	}
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s.", plan.version)))
 	fmt.Println()
 	fmt.Println("  Now set " + briefKey.Render("DIP switch 3") + " back to " + briefKey.Render("OFF") +
@@ -365,15 +414,50 @@ func installDragonwing(ctx context.Context, version string, nightly, force bool,
 	return nil
 }
 
+// planDragonwingFlash resolves every write the flash will make: the seeded
+// config image, and the zeros that blank /data. Returns the non-fatal problems
+// the caller must surface once the steps UI has released the terminal.
+func planDragonwingFlash(seedDir, bundleDir, zerosPath string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte,
+	out io.Writer, detail func(string)) (*qdl.FlashPlan, []string, error) {
+	plan, err := qdl.LoadFlashPlan(bundleDir)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var warnings []string
+	agent, agentWarning := resolveSeedAgent(out, detail)
+	if agentWarning != "" {
+		warnings = append(warnings, agentWarning)
+	}
+	img, err := buildDragonwingConfigImage(seedDir, plan, agent, creds, deviceName, provJSON)
+	if err == nil {
+		err = plan.Seed(dragonwingConfigLabel, img)
+	}
+	// Whatever config cannot be seeded with, it is blanked with: a flash is a
+	// factory reset, and a surviving provisioning.json would re-enrol the fresh
+	// install as the previous device.
+	if err != nil {
+		if provisioningRequired(creds, deviceName, provJSON) {
+			return nil, nil, err
+		}
+		warnings = append(warnings, fmt.Sprintf("Flashed without provisioning: could not write the config partition (%v).", err))
+		if err := plan.Blank(dragonwingConfigLabel, zerosPath); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if err := plan.Blank(dragonwingDataLabel, zerosPath); err != nil {
+		return nil, nil, err
+	}
+	return plan, warnings, nil
+}
+
 // flashDragonwing hands the programmer over with Sahara, then programs every
 // partition and applies the GPT patches. No reset is sent: EDL was entered with
 // a latching DIP switch, so a reset would only land the board back in EDL.
-func flashDragonwing(ctx context.Context, bundleDir string, dev qdl.DeviceInfo, out io.Writer, detail func(string)) error {
-	flash, err := qdl.LoadFlashPlan(bundleDir)
-	if err != nil {
-		return errors.Join(err, errDragonwingNothingWritten)
-	}
-	prog, err := os.ReadFile(filepath.Join(bundleDir, dragonwingProgrammer))
+func flashDragonwing(ctx context.Context, flash *qdl.FlashPlan, dev qdl.DeviceInfo,
+	out io.Writer, detail func(string)) error {
+	prog, err := os.ReadFile(filepath.Join(flash.Dir, dragonwingProgrammer))
 	if err != nil {
 		return errors.Join(fmt.Errorf("reading the Firehose programmer from the bundle: %w", err),
 			errDragonwingNothingWritten)
@@ -488,39 +572,9 @@ func pickDragonwingEDLDevice() (qdl.DeviceInfo, error) {
 	return dev, nil
 }
 
-// rejectDragonwingSeedFlags refuses the flags that pre-seed a device through its
-// config partition. The descriptor declares config and data with an empty
-// filename so the programmer skips them — which is why a reflash keeps identity
-// and saved Wi-Fi, and why there is no config image to write into.
-func rejectDragonwingSeedFlags(wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
-	var flags []string
-	if wifi.SSID != "" || wifi.Password != "" || len(wifi.Entries) > 0 {
-		flags = append(flags, "--wifi/--wifi-ssid")
-	}
-	if deviceName != "" {
-		flags = append(flags, "--device-name")
-	}
-	// Only an explicit request is an error: the default mode means "prompt if
-	// it makes sense", and here it does not.
-	if preOpts.mode == preEnrollForced {
-		flags = append(flags, "--pre-enroll")
-	}
-	// Only meaningful alongside pre-enrollment, so on its own it would be
-	// accepted and quietly ignored.
-	if preOpts.cloudGRPC != "" {
-		flags = append(flags, "--cloud-grpc")
-	}
-	if len(flags) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"%s cannot be applied when flashing a Dragonwing: the flash preserves the existing config and data partitions, so there is nothing to seed.\nConfigure the board after it boots (wendy device wifi, wendy device rename)",
-		strings.Join(flags, ", "))
-}
-
 // checkDragonwingFlags rejects the flags that do not apply to an EDL flash.
 func checkDragonwingFlags(rootfsOnly bool, drive string, noBmap, overwriteInternal bool,
-	storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	storageOverride string) error {
 	if rootfsOnly {
 		return fmt.Errorf("--rootfs-only is not available for the Dragonwing IQ-8275")
 	}
@@ -547,7 +601,7 @@ func checkDragonwingFlags(rootfsOnly bool, drive string, noBmap, overwriteIntern
 	if storageOverride != "" {
 		return fmt.Errorf("--storage does not apply to the Dragonwing IQ-8275: it flashes its onboard UFS")
 	}
-	return rejectDragonwingSeedFlags(wifi, deviceName, preOpts)
+	return nil
 }
 
 // dragonwingTargetLabel describes the device about to be written to.
