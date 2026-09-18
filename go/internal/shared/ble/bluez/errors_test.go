@@ -1,6 +1,9 @@
 package bluez
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFriendlyError(t *testing.T) {
 	tests := []struct {
@@ -95,7 +98,7 @@ func TestFriendlyError(t *testing.T) {
 			if notFound != tc.notFound {
 				t.Errorf("notFound = %v, want %v", notFound, tc.notFound)
 			}
-			if !contains(text, tc.contains) {
+			if !strings.Contains(text, tc.contains) {
 				t.Errorf("text = %q, want it to contain %q", text, tc.contains)
 			}
 		})
@@ -146,24 +149,8 @@ func TestFriendlyBearerFailure(t *testing.T) {
 		{"Input/output error", "Input/output error"},
 	}
 	for _, tc := range tests {
-		if got := FriendlyBearerFailure(tc.message); !contains(got, tc.contains) {
+		if got := FriendlyBearerFailure(tc.message); !strings.Contains(got, tc.contains) {
 			t.Errorf("FriendlyBearerFailure(%q) = %q, want it to contain %q", tc.message, got, tc.contains)
 		}
 	}
-}
-
-func contains(haystack, needle string) bool {
-	if needle == "" {
-		return true
-	}
-	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
 }
