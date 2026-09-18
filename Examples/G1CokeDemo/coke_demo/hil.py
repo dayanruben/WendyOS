@@ -211,8 +211,9 @@ class InferenceSession:
 
 def make_inference_server(runtime, host="127.0.0.1", port=8098, token=""):
     from .access import is_loopback
-    if not is_loopback(host) and not token:
-        raise ValueError("COKE_HIL_TOKEN is required for a non-loopback HIL listener")
+    if token or not is_loopback(host):
+        if len(token) < 16 or not token.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise ValueError("COKE_HIL_TOKEN must contain at least 16 printable ASCII characters without whitespace")
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         timeout = 10

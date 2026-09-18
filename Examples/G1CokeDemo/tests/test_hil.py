@@ -163,20 +163,20 @@ def test_real_http_lost_reply_is_retried_without_second_inference(monkeypatch):
 
 
 def test_http_limits_authentication_and_checkpoint_handshake():
-    with running_server(token="test-token") as (runtime, url):
+    with running_server(token="test-token-123456") as (runtime, url):
         client = RemoteSimulationPolicy(url, NAMES, BOUNDS)
         try:
             with pytest.raises(RuntimeError, match="token"):
                 client.propose(observation(), np.zeros(43), np.zeros(15))
             assert runtime.predictor.calls == 0
-            client.token = "test-token"
+            client.token = "test-token-123456"
             client.names = NAMES[::-1]
             with pytest.raises(ValueError, match="joint order"):
                 client.propose(observation(), np.zeros(43), np.zeros(15))
             assert runtime.predictor.resets == 0
             client.request("/health")
             client.connection.request("POST", "/step", headers={
-                "Authorization": "Bearer test-token", "Content-Length": str(MAX_BODY + 1)})
+                "Authorization": "Bearer test-token-123456", "Content-Length": str(MAX_BODY + 1)})
             response = client.connection.getresponse()
             assert response.status == 409
             assert response.getheader("Connection") == "close"

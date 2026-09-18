@@ -283,3 +283,14 @@ def test_inference_error_closes_connection_and_next_proposal_reconnects(monkeypa
         server.shutdown()
         server.server_close()
         worker.join(2)
+
+
+@pytest.mark.parametrize("token", ["", "x", "short-token", "x" * 16 + "\r", "x" * 16 + "\n", "x" * 16 + "é"])
+def test_hil_network_listener_rejects_weak_or_invalid_tokens(token):
+    with pytest.raises(ValueError, match="COKE_HIL_TOKEN"):
+        make_inference_server(None, host="0.0.0.0", port=0, token=token)
+
+
+def test_hil_network_listener_accepts_strong_token():
+    server = make_inference_server(None, host="0.0.0.0", port=0, token="test-token-123456")
+    server.server_close()
