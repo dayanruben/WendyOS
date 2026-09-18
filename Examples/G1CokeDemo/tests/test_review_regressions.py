@@ -251,3 +251,35 @@ def test_operator_stop_releases_ownership_before_remote_deactivation():
         runner.run("test", maximum_policy_steps=1)
     assert not physical.command_lock.locked()
     camera.deactivate.assert_called_once()
+
+
+def test_inference_error_closes_connection_and_next_proposal_reconnects(monkeypatch):
+    from runtime import inference_service
+    monkeypatch.setattr(inference_service, "PORT", 0)
+    runtime = Mock()
+    runtime.propose.side_effect = [VisionUnavailable("waiting"), {"step": 1}]
+    server = inference_service.make_server(runtime)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    client = InferenceClient(f"http://127.0.0.1:{server.server_port}")
+    client.session_id = "retained-session"
+    try:
+        with pytest.raises(RuntimeError, match="VisionUnavailable"):
+            client.request("POST", "/propose", {})
+        assert client.connection is None
+        assert client.session_id == "retained-session"
+        assert client.request("POST", "/propose", {}) == {"step": 1}
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        try:
+            connection.request("POST", "/unknown", body="{}")
+            response = connection.getresponse()
+            assert response.status == 404
+            assert response.getheader("Connection") == "close"
+            response.read()
+        finally:
+            connection.close()
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        worker.join(2)

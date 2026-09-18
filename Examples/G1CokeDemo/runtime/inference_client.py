@@ -50,6 +50,7 @@ class InferenceClient:
                     body = response.read()
                     result = json.loads(body)
                     if response.status != 200:
+                        self.close()
                         raise RuntimeError(result.get("error") or f"inference HTTP {response.status}")
                     return result
                 except (OSError, http.client.HTTPException):

@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from .contracts import INFERENCE_SCHEMA
+from .contracts import DEFAULT_MAXIMUM_CAMERA_AGE_S, INFERENCE_SCHEMA
 from .exact_policy import CachedReferenceResidualPolicy, EXPECTED_CHECKPOINT_SHA256
 from .observation_adapter import ExactEpisodeObservationAdapter, OrderedJointState
 from .physical_policy import SegmentationCameraPump
@@ -23,7 +23,7 @@ from .physical_policy import SegmentationCameraPump
 
 BUNDLE = Path(os.environ.get("G1_POLICY_BUNDLE", "/bundle"))
 PORT = int(os.environ.get("G1_INFERENCE_PORT", "8097"))
-MAXIMUM_CAMERA_AGE_S = float(os.environ.get("G1_MAXIMUM_CAMERA_AGE_S", "1.0"))
+MAXIMUM_CAMERA_AGE_S = float(os.environ.get("G1_MAXIMUM_CAMERA_AGE_S", str(DEFAULT_MAXIMUM_CAMERA_AGE_S)))
 
 
 class InferenceRuntime:
@@ -187,6 +187,8 @@ def make_server(runtime: InferenceRuntime) -> ThreadingHTTPServer:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 

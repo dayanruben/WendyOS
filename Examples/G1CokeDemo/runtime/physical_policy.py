@@ -40,6 +40,7 @@ from physical_io.service import (
 )
 from physical_io.unitree_io import InterlockError
 from runtime.async_vision import VisionUnavailable
+from runtime.contracts import DEFAULT_MAXIMUM_CAMERA_AGE_S
 from runtime.exact_policy import CachedReferenceResidualPolicy
 from runtime.observation_adapter import (
     CONTROL_HZ,
@@ -81,7 +82,7 @@ MAXIMUM_TIMING_GAP_RETRIES = 3
 CAMERA_ADMISSION_TIMEOUT_S = 2.0
 MAXIMUM_POLICY_STEPS = 7722
 SEGMENTATION_URL = os.environ.get("G1_SEGMENTATION_URL", "http://127.0.0.1:8003").rstrip("/")
-MAXIMUM_CAMERA_AGE_S = float(os.environ.get("G1_MAXIMUM_CAMERA_AGE_S", ".125"))
+MAXIMUM_CAMERA_AGE_S = float(os.environ.get("G1_MAXIMUM_CAMERA_AGE_S", str(DEFAULT_MAXIMUM_CAMERA_AGE_S)))
 POLICY_DEVICE = os.environ.get("G1_POLICY_DEVICE", "cuda")
 POLICY_CONTROL_DEVICE = os.environ.get("G1_POLICY_CONTROL_DEVICE")
 POLICY_INFERENCE_URL = os.environ.get("G1_POLICY_INFERENCE_URL", "").rstrip("/")
@@ -923,6 +924,8 @@ class IntegratedPhysicalPolicyRunner:
                 if not abandoned.is_set():
                     self.camera.activate()
             except BaseException as error:
+                # Forward every worker termination to the owning thread below;
+                # interruption exceptions must not become a missing reset result.
                 outcome["error"] = error
             finally:
                 if abandoned.is_set():

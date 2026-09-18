@@ -16,7 +16,7 @@ import torch
 from .async_vision import AsyncVisionBuffer, VisionFrame, VisionSnapshot
 
 
-from .contracts import EXPECTED_CHECKPOINT_SHA256
+from .contracts import DEFAULT_MAXIMUM_CAMERA_AGE_S, EXPECTED_CHECKPOINT_SHA256
 EXPECTED_SOURCE_SHA256 = {
     "recurrent_bc/baseline/visual_policy.py": "109b7f0e060ffd3ecdf214a4fc938238404ecdf89394ab76b823837642c1c432",
     "recurrent_bc/recurrent_policy.py": "da0832f5456a50554eaffcec456cb1081b2678325daf6c1dc77f4717c73285d8",
@@ -104,7 +104,7 @@ class CachedReferenceResidualPolicy:
         *,
         device: str = "cuda",
         control_device: str | None = None,
-        maximum_camera_age_s: float = 0.125,
+        maximum_camera_age_s: float = DEFAULT_MAXIMUM_CAMERA_AGE_S,
     ):
         """Load the exact checkpoint with independently placed vision/control paths.
 
