@@ -37,3 +37,7 @@ which removes the camera and its stored login.
 | `--sensors` | Limit a SensorLink pairing to these sensor names |
 
 Passing `--name` or `--sensors` opens the SensorLink tab first.
+
+The camera username starts with `admin` as an editable suggestion. Enter the
+account configured on your camera and replace any factory-default password
+before pairing it.

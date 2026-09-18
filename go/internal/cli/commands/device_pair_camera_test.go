@@ -142,11 +142,13 @@ func TestCameraPairOperationFailurePreservesState(t *testing.T) {
 	}
 }
 
-func TestCameraPairFailureRedactsPassword(t *testing.T) {
-	c := &cameraPairTestClient{err: status.Error(codes.Internal, "could not store secret-value")}
-	h := &cameraPairHandler{ctx: context.Background(), client: c}
-	msg := h.pair(42, "admin", "secret-value")().(cameraPairOpMsg)
-	if msg.err == nil || strings.Contains(msg.err.Error(), "secret-value") || !strings.Contains(msg.err.Error(), "[redacted]") {
-		t.Fatalf("camera error exposed credentials: %v", msg.err)
+func TestCameraPairFailureDoesNotExposeRemoteCredentialDetails(t *testing.T) {
+	for _, detail := range []string{"could not store secret-value", "secret%2Dvalue", "c2VjcmV0LXZhbHVl", "partial secret"} {
+		c := &cameraPairTestClient{err: status.Error(codes.Internal, detail)}
+		h := &cameraPairHandler{ctx: context.Background(), client: c}
+		msg := h.pair(42, "admin", "secret-value")().(cameraPairOpMsg)
+		if msg.err == nil || msg.err.Error() != "saving camera login failed" {
+			t.Fatalf("camera error exposed remote details: %v", msg.err)
+		}
 	}
 }

@@ -62,9 +62,9 @@ func (h *cameraPairHandler) pair(id uint32, username, password string) tea.Cmd {
 		_, err := h.client.SetCameraCredentials(ctx, &agentpb.SetCameraCredentialsRequest{
 			DeviceId: id, Username: username, Password: password,
 		})
-		if err != nil && password != "" {
-			// Keep remote error details useful without echoing a submitted secret.
-			err = errors.New(strings.ReplaceAll(userFacingGRPCError(err), password, "[redacted]"))
+		if err != nil {
+			// Remote text may contain encoded or partial credentials.
+			err = errors.New("saving camera login failed")
 		}
 		return cameraPairOpMsg{id: id, err: err}
 	}
