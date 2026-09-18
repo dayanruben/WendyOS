@@ -305,6 +305,7 @@ func TestSchemaJSON_MatchesStructFields(t *testing.T) {
 		want  map[string]bool
 	}{
 		{"top level", schemaProps(t, schema), jsonFieldNames(reflect.TypeOf(AppConfig{}))},
+		{"$defs.hil", schemaProps(t, defOf(t, schema, "hil")), jsonFieldNames(reflect.TypeOf(HILConfig{}))},
 		{"$defs.service", schemaProps(t, defOf(t, schema, "service")), jsonFieldNames(reflect.TypeOf(ServiceConfig{}))},
 	}
 

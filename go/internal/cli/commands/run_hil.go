@@ -154,6 +154,8 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 	if err := runCommand(ctx, peerOpts); err != nil {
 		return fmt.Errorf("deploying HIL inference: %w", err)
 	}
+	// The simulator build must not include the inference staging tree.
+	cleanup()
 
 	broker, err := clouddefaults.DialBroker(auth, os.Getenv("WENDY_BROKER_URL"))
 	if err != nil {

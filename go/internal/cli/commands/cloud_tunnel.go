@@ -130,6 +130,9 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      cert.PemCertificateChain,
 		ExpectedOrgID: int32(cert.OrganizationID),
+		ExpectedIdentity: &certs.WendyIdentity{
+			OrgID: int32(cert.OrganizationID), EntityType: "asset", EntityID: strconv.FormatInt(int64(asset.GetId()), 10),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)

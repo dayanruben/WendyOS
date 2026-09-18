@@ -147,6 +147,15 @@
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
         },
+        "healthSchema": {
+          "type": "string",
+          "description": "Optional expected schema identifier in the health response."
+        },
+        "tokenEnv": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Optional environment variable for a per-run bearer token. Empty disables token injection."
+        },
         "healthPath": {
           "type": "string",
           "pattern": "^/(?!/)[^?#\\r\\n]*$"
