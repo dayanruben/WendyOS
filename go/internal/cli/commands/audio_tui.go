@@ -101,11 +101,11 @@ func (m *audioTUIModel) refreshRows() {
 		}
 		rows = append(rows, bubbleTable.Row{
 			fmt.Sprintf("%d", device.GetDeviceId()),
-			device.GetName(),
+			tui.StripControl(device.GetName()),
 			audioDeviceTypeLabelV2(device.GetType()),
 			isDefault,
 			volume,
-			device.GetDescription(),
+			tui.StripControl(device.GetDescription()),
 		})
 	}
 	m.table.SetRows(rows)
@@ -280,7 +280,7 @@ func (m audioTUIModel) View() string {
 		if name == "" {
 			name = m.listening.GetName()
 		}
-		view.WriteString(audioTitleStyle.Render("Listening to " + name))
+		view.WriteString(audioTitleStyle.Render("Listening to " + tui.StripControl(name)))
 		view.WriteString("\n\nAudio plays through your computer's speakers.\n\n")
 		view.WriteString(audioHintStyle.Render("esc / l stop and back · q quit"))
 		view.WriteString("\n")
@@ -295,7 +295,7 @@ func (m audioTUIModel) View() string {
 		if m.isError {
 			style = audioErrorStyle
 		}
-		view.WriteString(style.Render(m.flash))
+		view.WriteString(style.Render(tui.StripControl(m.flash)))
 		view.WriteString("\n")
 	}
 	hint := "↑/↓ select · enter set default"

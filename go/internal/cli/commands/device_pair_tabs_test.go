@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui/bttable"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -309,5 +310,22 @@ func TestSensorPairScanCancellationKeepsKnownDevices(t *testing.T) {
 	m = updated.(sensorPairModel)
 	if len(m.devices) != 1 || m.scanning || !strings.Contains(m.message, "context canceled") {
 		t.Fatal("cancelled scan discarded known devices or stayed scanning")
+	}
+}
+
+func TestPairingViewsStripRemoteControls(t *testing.T) {
+	bad := "Device\x1b[2J\r\u202e"
+	sensor := newSensorPairModel(nil)
+	sensor.pairings = []*agentpbv2.SensorPairing{{SourceAssetId: 1, Name: bad}}
+	sensor.message = "Paired " + bad
+	sensor.refreshRows()
+	camera := newCameraPairModel(nil)
+	camera.devices = []*agentpb.VideoDevice{{Id: 1, Name: bad, Address: bad}}
+	camera.message = bad
+	camera.refreshRows(1)
+	for _, view := range []string{sensor.View(), camera.View()} {
+		if strings.Contains(view, "\x1b[2J") || strings.ContainsAny(ansi.Strip(view), "\r\u202e") {
+			t.Fatalf("remote controls reached view: %q", view)
+		}
 	}
 }

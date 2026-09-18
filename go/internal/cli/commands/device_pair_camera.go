@@ -148,7 +148,7 @@ func (m *cameraPairModel) refreshRows(selectedID uint32) {
 		if strings.TrimSpace(name) == "" {
 			name = fmt.Sprintf("Camera %d", d.Id)
 		}
-		rows = append(rows, bubbleTable.Row{name, d.Address, paired, state})
+		rows = append(rows, bubbleTable.Row{tui.StripControl(name), tui.StripControl(d.Address), paired, state})
 		if d.Id == selectedID {
 			cursor = i
 		}
@@ -308,7 +308,7 @@ func (m cameraPairModel) View() string {
 		body += m.table.View() + "\n"
 	}
 	if m.message != "" {
-		body += m.message + "\n"
+		body += tui.StripControl(m.message) + "\n"
 	}
 	hint := "↑/↓ move · enter pair / edit login · f forget · r rescan · q quit"
 	if m.editing {

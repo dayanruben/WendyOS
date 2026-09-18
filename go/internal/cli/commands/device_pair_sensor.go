@@ -195,7 +195,7 @@ func (m *sensorPairModel) refreshRows() {
 				connected = "yes"
 			}
 		}
-		rows = append(rows, bubbleTable.Row{row.name, fmt.Sprint(row.assetID), address, paired, connected})
+		rows = append(rows, bubbleTable.Row{tui.StripControl(row.name), fmt.Sprint(row.assetID), tui.StripControl(address), paired, connected})
 		if row.assetID == selectedID {
 			cursor = i
 		}
@@ -317,7 +317,7 @@ func (m sensorPairModel) View() string {
 		body += m.table.View() + "\n"
 	}
 	if m.message != "" {
-		body += m.message + "\n"
+		body += tui.StripControl(m.message) + "\n"
 	}
 	hint := "↑/↓ move · enter pair · f forget · r rescan · q quit"
 	if m.table.CanScroll() {

@@ -260,3 +260,14 @@ func TestAudioTUIUnavailablePlayback(t *testing.T) {
 		t.Fatal("RPC playback capability differs from build")
 	}
 }
+
+func TestAudioViewStripsRemoteDeviceControls(t *testing.T) {
+	devices := audioTUITestDevices()
+	devices[0].Description = "Microphone\x1b[2J\r\u202e"
+	model := newAudioTUIModel(devices, &fakeAudioTUIHandler{})
+	model.listening = devices[0]
+	view := model.View()
+	if strings.Contains(view, "\x1b[2J") || strings.ContainsAny(view, "\r\u202e") {
+		t.Fatalf("remote controls reached listening title: %q", view)
+	}
+}
