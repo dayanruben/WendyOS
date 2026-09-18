@@ -263,7 +263,7 @@ func (m discoverTabsModel) View() string {
 		body.WriteString("Discover cloud devices\n")
 		body.WriteString(devicePickerOrgStyle.Render("  ☐  Wendy Cloud login   Not logged in"))
 		body.WriteString("\n")
-		body.WriteString(devicePickerOrgStyle.Render("  enter log in, tab local, q quit"))
+		body.WriteString(devicePickerOrgStyle.Render("  enter log in, tab nearby, q quit"))
 		body.WriteString("\n")
 		return body.String()
 	}

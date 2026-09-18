@@ -337,8 +337,8 @@ func TestNewDeviceCmd(t *testing.T) {
 	if versionCmd, _, err := cmd.Find([]string{"version"}); err != nil || !versionCmd.Hidden {
 		t.Errorf("device version should be hidden; cmd=%v err=%v", versionCmd, err)
 	}
-	if setDefaultCmd, _, err := cmd.Find([]string{"set-default"}); err != nil || setDefaultCmd.Hidden {
-		t.Errorf("device set-default should be visible; cmd=%v err=%v", setDefaultCmd, err)
+	if setDefaultCmd, _, err := cmd.Find([]string{"set-default"}); err != nil || !setDefaultCmd.Hidden {
+		t.Errorf("device set-default should be hidden; cmd=%v err=%v", setDefaultCmd, err)
 	}
 
 	buf := new(bytes.Buffer)

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ func newAudioCmd() *cobra.Command {
 		Short: "Manage audio devices on the target device",
 		Long: "Interactively manage audio devices on the target device. " +
 			"Use up/down to select a device, Enter to set it as the default, " +
-			"and left/right to adjust playback volume.",
+			"left/right to adjust playback volume, and l to listen to an input device.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if jsonOutput || !isInteractiveTerminal() {
@@ -99,7 +100,8 @@ func runAudioList(cmd *cobra.Command) error {
 }
 
 func runAudioTUI(cmd *cobra.Command) error {
-	ctx := cmd.Context()
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
 	conn, err := connectToAgent(ctx)
 	if err != nil {
 		return err
@@ -115,8 +117,9 @@ func runAudioTUI(cmd *cobra.Command) error {
 		return nil
 	}
 
-	model := newAudioTUIModel(resp.GetDevices(), &audioRPCHandler{ctx: ctx, client: conn.AudioServiceV2})
-	if _, err := tea.NewProgram(model).Run(); err != nil {
+	model := newAudioTUIModel(resp.GetDevices(), &audioRPCHandler{ctx: ctx, client: conn.AudioServiceV2, streamClient: conn.AudioService})
+	model.ctx = ctx
+	if _, err := tea.NewProgram(model, tea.WithContext(ctx)).Run(); err != nil {
 		return fmt.Errorf("audio TUI: %w", err)
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -34,17 +35,23 @@ type audioOpResultMsg struct {
 type audioTUIHandler interface {
 	SetDefault(*agentpbv2.AudioDevice) tea.Cmd
 	SetVolume(*agentpbv2.AudioDevice, uint32) tea.Cmd
+	Listen(context.Context, *agentpbv2.AudioDevice) tea.Cmd
 }
 
+type audioListenResultMsg struct{ err error }
+
 type audioTUIModel struct {
-	devices []*agentpbv2.AudioDevice
-	table   tui.BubbleTable
-	handler audioTUIHandler
-	busy    bool
-	done    bool
-	flash   string
-	isError bool
-	width   int
+	devices      []*agentpbv2.AudioDevice
+	table        tui.BubbleTable
+	handler      audioTUIHandler
+	busy         bool
+	done         bool
+	flash        string
+	isError      bool
+	width        int
+	ctx          context.Context
+	listening    *agentpbv2.AudioDevice
+	listenCancel context.CancelFunc
 }
 
 func newAudioTUIModel(devices []*agentpbv2.AudioDevice, handler audioTUIHandler) audioTUIModel {
@@ -52,6 +59,7 @@ func newAudioTUIModel(devices []*agentpbv2.AudioDevice, handler audioTUIHandler)
 		devices: devices,
 		table:   tui.NewBubbleTable(true, audioTUIColumns()),
 		handler: handler,
+		ctx:     context.Background(),
 	}
 	m.refreshRows()
 	return m
@@ -146,11 +154,57 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isError = false
 		m.refreshRows()
 		return m, nil
+	case audioListenResultMsg:
+		if m.listenCancel != nil {
+			m.listenCancel()
+		}
+		m.listenCancel = nil
+		m.listening = nil
+		m.busy = false
+		m.flash = "Listening stopped."
+		m.isError = msg.err != nil
+		if msg.err != nil {
+			m.flash = msg.err.Error()
+		}
+		return m, nil
 	case tea.KeyMsg:
+		if m.listening != nil {
+			switch msg.String() {
+			case "esc", "l":
+				m.listenCancel()
+				m.listening = nil
+				m.flash = "Stopping audio…"
+			case "q", "ctrl+c":
+				m.listenCancel()
+				m.done = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
+			if m.listenCancel != nil {
+				m.listenCancel()
+			}
 			m.done = true
 			return m, tea.Quit
+		case "l":
+			if m.busy || m.handler == nil {
+				return m, nil
+			}
+			device := m.selectedDevice()
+			if device == nil || device.GetType() != agentpbv2.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT {
+				m.flash = "Select an input device to listen."
+				m.isError = true
+				return m, nil
+			}
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.listenCancel = cancel
+			m.listening = device
+			m.busy = true
+			m.flash = ""
+			m.isError = false
+			return m, m.handler.Listen(ctx, device)
 		case "enter", " ":
 			if m.busy || m.handler == nil {
 				return m, nil
@@ -215,6 +269,17 @@ func (m audioTUIModel) View() string {
 		return ""
 	}
 	var view strings.Builder
+	if m.listening != nil {
+		name := m.listening.GetDescription()
+		if name == "" {
+			name = m.listening.GetName()
+		}
+		view.WriteString(audioTitleStyle.Render("Listening to " + name))
+		view.WriteString("\n\nAudio plays through your computer's speakers.\n\n")
+		view.WriteString(audioHintStyle.Render("esc / l stop and back · q quit"))
+		view.WriteString("\n")
+		return view.String()
+	}
 	view.WriteString(audioTitleStyle.Render("Audio devices"))
 	view.WriteString("\n\n")
 	view.WriteString(m.table.View())
@@ -227,14 +292,50 @@ func (m audioTUIModel) View() string {
 		view.WriteString(style.Render(m.flash))
 		view.WriteString("\n")
 	}
-	view.WriteString(audioHintStyle.Render("↑/↓ select · enter set default · ←/→ volume · q quit"))
+	hint := "↑/↓ select · enter set default"
+	if device := m.selectedDevice(); device != nil {
+		switch device.GetType() {
+		case agentpbv2.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT:
+			hint += " · l listen"
+		case agentpbv2.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT:
+			hint += " · ←/→ volume"
+		}
+	}
+	view.WriteString(audioHintStyle.Render(hint + " · q quit"))
 	view.WriteString("\n")
 	return view.String()
 }
 
 type audioRPCHandler struct {
-	ctx    context.Context
-	client agentpbv2.WendyAudioServiceClient
+	ctx          context.Context
+	client       agentpbv2.WendyAudioServiceClient
+	streamClient agentpb.WendyAudioServiceClient
+}
+
+func (h *audioRPCHandler) Listen(ctx context.Context, device *agentpbv2.AudioDevice) tea.Cmd {
+	return func() tea.Msg {
+		return audioListenResultMsg{err: listenToAudioInput(ctx, h.streamClient, device.GetDeviceId(), playRealtimeAudio)}
+	}
+}
+
+type audioPlaybackFunc func(context.Context, interface {
+	Recv() (*agentpb.AudioChunk, error)
+}, uint32, uint32, uint32) error
+
+func listenToAudioInput(ctx context.Context, client agentpb.WendyAudioServiceClient, deviceID uint32, play audioPlaybackFunc) error {
+	const sampleRate, channels, bufferMs = 16000, 1, 150
+	stream, err := client.StreamAudio(ctx, &agentpb.StreamAudioRequest{
+		DeviceId: deviceID, SampleRate: sampleRate, Channels: channels,
+	})
+	if err == nil {
+		err = play(ctx, stream, sampleRate, channels, bufferMs)
+	} else {
+		err = fmt.Errorf("starting audio stream: %w", err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 func (h *audioRPCHandler) SetDefault(device *agentpbv2.AudioDevice) tea.Cmd {

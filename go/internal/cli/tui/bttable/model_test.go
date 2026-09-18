@@ -543,3 +543,48 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	next, cmd := m.Update(msg)
 	return next.(Model), cmd
 }
+
+func TestUnnamedDevicesToggleAndActionSelection(t *testing.T) {
+	h := &fakeHandler{}
+	m := finishScan(NewModel([]Peripheral{
+		{Address: "AA", Paired: true, Connected: true},
+		{Name: "Headphones", Address: "BB"},
+		{Name: "  ", Address: "CC"},
+	}).WithHandler(h))
+	if len(m.visible) != 1 || strings.Contains(m.View(), "AA") || !strings.Contains(m.View(), "2 hidden") {
+		t.Fatalf("unnamed devices should be hidden by default: %s", m.View())
+	}
+	m, cmd := updateModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if h.lastAddress != "BB" {
+		t.Fatalf("visible row dispatched action to hidden peripheral: %q", h.lastAddress)
+	}
+	m = runCmd(m, cmd)
+	m = sendKey(m, "h")
+	if len(m.visible) != 3 || !strings.Contains(m.View(), "h hide unnamed") {
+		t.Fatalf("toggle did not reveal unnamed devices: %s", m.View())
+	}
+	for i, p := range m.visible {
+		if p.Address == "AA" {
+			m.table.SetCursor(i)
+		}
+	}
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if h.lastAddress != "AA" || h.forgetCalls != 1 {
+		t.Fatal("revealed device could not be forgotten")
+	}
+	m = sendKey(m, "h")
+	if p, ok := m.selected(); !ok || p.Address != "BB" {
+		t.Fatal("hiding the selected unnamed device did not select a visible device")
+	}
+}
+
+func TestOnlyUnnamedDevicesEmptyStateAndDiscoveryRename(t *testing.T) {
+	m := finishScan(NewModel([]Peripheral{{Address: "AA"}}))
+	if _, ok := m.selected(); ok || !strings.Contains(m.View(), "Press h") {
+		t.Fatal("hidden-only table should show a toggle hint with no selection")
+	}
+	m, _ = updateModel(m, ScanResultMsg{Peripherals: []Peripheral{{Address: "AA", Name: "Keyboard"}}})
+	if p, ok := m.selected(); !ok || p.Name != "Keyboard" {
+		t.Fatal("newly discovered name did not make the device visible")
+	}
+}

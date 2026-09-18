@@ -164,7 +164,7 @@ func TestRenderTemperatureHeaderShowsCircleOnlyForAlert(t *testing.T) {
 		Alert:          thermalReading{Name: "go2/motor/fr-thigh", TempC: 66},
 		AlertThreshold: 70,
 	})
-	for _, want := range []string{"●", "Temp max", "66°C", "near 70°C warning"} {
+	for _, want := range []string{"●", "Temp: max", "66°C", "near 70°C warning"} {
 		if !strings.Contains(near, want) {
 			t.Fatalf("near header missing %q: %q", want, near)
 		}
@@ -412,6 +412,7 @@ func TestTopViewPutsThermalWarningInHeader(t *testing.T) {
 		width:    100,
 		height:   24,
 		havePrev: true,
+		storage:  &agentpb.DiskPartition{Mountpoint: "/data", TotalBytes: 100, UsedBytes: 20},
 		cur: topSample{host: &agentpb.HostStats{
 			MemTotalBytes: 100,
 			ThermalZones: []*agentpb.ThermalZone{
@@ -421,11 +422,19 @@ func TestTopViewPutsThermalWarningInHeader(t *testing.T) {
 		}},
 	}
 	view := m.View()
-	firstLine := strings.Split(view, "\n")[0]
-	for _, want := range []string{"●", "Temp max", "79°C", "Go2 fr thigh 66°C", "near 70°C warning"} {
-		if !strings.Contains(firstLine, want) {
+	var temperatureLine string
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Temp:") {
+			temperatureLine = line
+		}
+	}
+	for _, want := range []string{"●", "Temp: max", "79°C", "Go2 fr thigh 66°C", "near 70°C warning"} {
+		if !strings.Contains(temperatureLine, want) {
 			t.Fatalf("thermal header missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Count(view, "Temp:") != 1 || strings.Index(view, "Disk /data") > strings.Index(view, "Temp:") {
+		t.Fatalf("expected one temperature line below disk usage:\n%s", view)
 	}
 }
 

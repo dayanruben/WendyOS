@@ -50,9 +50,10 @@ func newDeviceCmd() *cobra.Command {
 	}
 
 	cmd.AddGroup(
-		&cobra.Group{ID: "common", Title: "Common Commands:"},
+		&cobra.Group{ID: "monitor", Title: "Monitoring:"},
+		&cobra.Group{ID: "apps", Title: "Applications:"},
 		&cobra.Group{ID: "manage", Title: "Device Management:"},
-		&cobra.Group{ID: "hardware", Title: "Hardware:"},
+		&cobra.Group{ID: "hardware", Title: "Hardware & Connections:"},
 	)
 
 	addToGroup := func(groupID string, cmds ...*cobra.Command) {
@@ -62,20 +63,22 @@ func newDeviceCmd() *cobra.Command {
 		}
 	}
 
-	// Common Commands: the subcommands used in everyday workflows, surfaced at
-	// the top in rough order of usefulness.
-	addToGroup("common",
-		newAppsCmd(),
-		newDriversCmd(),
+	addToGroup("monitor",
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
-		newROS2Cmd(),
-		newFoxgloveCmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
 	)
+	addToGroup("apps",
+		newAppsCmd(),
+		newROS2Cmd(),
+		newFoxgloveCmd(),
+		newDeviceCacheCmd(),
+		newVolumesCmd(),
+	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
+		newDriversCmd(),
 		newDeviceAttachCmd(),
 		newDeviceShellCmd(),
 		newDeprecatedDeviceVersionCmd(),
@@ -88,14 +91,12 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceRenameCmd(),
-		newDevicePairCmd(),
-		newDeviceUnpairCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
-		newDeviceCacheCmd(),
-		newVolumesCmd(),
 	)
 	addToGroup("hardware",
+		newDevicePairCmd(),
+		newDeviceUnpairCmd(),
 		newWifiCmd(),
 		newBluetoothCmd(),
 		newAudioCmd(),
@@ -529,9 +530,10 @@ func yesNo(v bool) string {
 
 func newDeviceSetDefaultCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "set-default [device]",
-		Short: "Set a local, cloud or simulator device as the default",
-		Args:  cobra.MaximumNArgs(1),
+		Hidden: true,
+		Use:    "set-default [device]",
+		Short:  "Set a local, cloud or simulator device as the default",
+		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var device string
 			if len(args) > 0 {

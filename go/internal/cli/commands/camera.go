@@ -144,8 +144,9 @@ func transportLabel(t agentpb.VideoTransport) string {
 func newCameraLoginCmd() *cobra.Command {
 	var username string
 	cmd := &cobra.Command{
-		Use:   "login <id>",
-		Short: "Store credentials for a network camera",
+		Use:    "login <id>",
+		Short:  "Store credentials for a network camera",
+		Hidden: true,
 		Long: "Store the username and password for a network camera on the device.\n\n" +
 			"The password is prompted for without echo, or taken from\n" +
 			"WENDY_CAMERA_PASSWORD when standard input is not a terminal. It is\n" +
@@ -206,9 +207,10 @@ func readCameraPassword(cmd *cobra.Command, id uint32) (string, error) {
 // newCameraForgetCmd removes a network camera and its stored credentials.
 func newCameraForgetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "forget <id>",
-		Short: "Remove a network camera and its stored credentials",
-		Args:  cobra.ExactArgs(1),
+		Use:    "forget <id>",
+		Short:  "Remove a network camera and its stored credentials",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseCameraID(args[0])
 			if err != nil {

@@ -149,8 +149,6 @@ func NewRootCmd() *cobra.Command {
 	projectCmd.GroupID = "manage"
 	deviceCmd := newDeviceCmd()
 	deviceCmd.GroupID = "manage"
-	fleetCmd := newFleetCmd()
-	fleetCmd.GroupID = "manage"
 
 	// Cloud
 	cloudCmd := newCloudCmd()
@@ -170,6 +168,11 @@ func NewRootCmd() *cobra.Command {
 	// to keep the top-level surface focused on the common workflow. `auth`
 	// remains a working command for back-compat ('wendy cloud login' is the
 	// surfaced entry point); 'json' is already hidden in its constructor.
+	agentCmd := newAgentCmd()
+	agentCmd.Hidden = true
+	fleetCmd := newFleetCmd()
+	fleetCmd.Hidden = true
+	fleetCmd.GroupID = "manage"
 	buildCmd := newBuildCmd()
 	buildCmd.Hidden = true
 	watchCmd := newWatchCmd()
@@ -254,12 +257,10 @@ func NewRootCmd() *cobra.Command {
 		initCmd,
 		runCmd,
 		chatCmd,
-		newAgentCmd(),
 		// Manage
 		projectCmd,
 		deviceCmd,
 		newVMCmd(),
-		fleetCmd,
 		// Cloud
 		cloudCmd,
 		// Settings
@@ -268,6 +269,8 @@ func NewRootCmd() *cobra.Command {
 		docsCmd,
 		tourCmd,
 		// Hidden
+		agentCmd,
+		fleetCmd,
 		bleCheckCmd,
 		sessionBrokerCmd,
 		bmapWriteCmd,
