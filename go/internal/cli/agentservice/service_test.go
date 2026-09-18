@@ -467,3 +467,23 @@ func TestExistingStateDirectoryMustBePrivate(t *testing.T) {
 		t.Fatalf("state directory is not private: %v %v", info, err)
 	}
 }
+
+func TestEventRejectsMalformedDataBeforeRecordingReceipt(t *testing.T) {
+	s := testService(t, testConfig(t), func(context.Context, string) (string, error) { return "", nil })
+	event := SensorEvent{ID: "malformed", Type: "person", Source: "camera", Timestamp: time.Now(), Data: json.RawMessage(`{"broken":`)}
+	before, err := json.Marshal(s.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Event(event); err == nil || !strings.Contains(err.Error(), "valid JSON") {
+		t.Fatalf("malformed event accepted: %v", err)
+	}
+	after, err := json.Marshal(s.db)
+	if err != nil || string(after) != string(before) {
+		t.Fatal("malformed event mutated durable state")
+	}
+	event.Data = json.RawMessage(`{"fixed":true}`)
+	if _, err := s.Event(event); err != nil {
+		t.Fatalf("corrected event could not reuse its ID: %v", err)
+	}
+}

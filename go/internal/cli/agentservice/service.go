@@ -496,6 +496,9 @@ func (s *Service) Event(event SensorEvent) (EventResult, error) {
 	if event.ID == "" || len(event.ID) > 256 || event.Type == "" || len(event.Type) > 256 || event.Source == "" || len(event.Source) > 256 || event.Timestamp.IsZero() || len(event.Data) > 16000 {
 		return EventResult{}, errors.New("event requires bounded id, type, source, timestamp, and data")
 	}
+	if len(event.Data) > 0 && !json.Valid(event.Data) {
+		return EventResult{}, errors.New("event data must be valid JSON")
+	}
 	if event.Confidence != nil && (*event.Confidence < 0 || *event.Confidence > 1) {
 		return EventResult{}, errors.New("confidence must be between 0 and 1")
 	}
