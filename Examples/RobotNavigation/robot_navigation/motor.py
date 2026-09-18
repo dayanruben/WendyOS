@@ -290,6 +290,7 @@ def main():
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        # Ctrl+C requests shutdown; finally stops the motors and closes the node.
         pass
     finally:
         node.close()

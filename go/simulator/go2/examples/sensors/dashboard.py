@@ -265,6 +265,7 @@ def main():
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
+        # Expected shutdown signals; the finally block closes the server and node.
         pass
     except Exception:
         if rclpy.ok():

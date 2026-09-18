@@ -325,8 +325,8 @@ def main():
         run(opts)
     except ProbeError as error:
         emit(error_result(opts, error.code, error))
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    except KeyboardInterrupt:
+        return
     except Exception as error:
         emit(error_result(opts, "probe_error", error))
 
