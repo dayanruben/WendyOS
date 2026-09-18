@@ -64,7 +64,12 @@ func fetchCloudOrganizationName(ctx context.Context, auth *config.AuthConfig) st
 	}
 	return ""
 }
-func listCloudOrganizationsV2(ctx context.Context, auth *config.AuthConfig) ([]*pb.Organization, error) {
+
+// listCloudOrganizationsV2 is a var so unit tests can stub the v2 org listing
+// without a live cloud connection.
+var listCloudOrganizationsV2 = listCloudOrganizationsV2Impl
+
+func listCloudOrganizationsV2Impl(ctx context.Context, auth *config.AuthConfig) ([]*pb.Organization, error) {
 	conn, err := dialCloudGRPC(auth)
 	if err != nil {
 		return nil, err
