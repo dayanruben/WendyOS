@@ -230,6 +230,7 @@ class Nav2LifecycleMonitor:
                         client.remove_pending_request(pending[0])
                         pending[0].cancel()
                     except Exception:
+                        # A completed request can race this best-effort cancellation.
                         pass
                 if name in self.pending or now < self.next_query.get(name, 0):
                     continue

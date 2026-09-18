@@ -33,6 +33,7 @@ def main():
             if initial['ready']:
                 break
         except urllib.error.URLError:
+            # Startup may still be in progress; keep the timeout and delay below.
             pass
         if time.monotonic() >= deadline:
             raise RuntimeError('Simulator did not become ready')
