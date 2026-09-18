@@ -623,10 +623,12 @@ class PhysicalProbeRuntime:
                 try:
                     self.io.disarm("reference_entry_fault")
                 except Exception:
+                    # Keep the original command error if best-effort fault cleanup fails.
                     pass
             try:
                 self._rpc("stop-move")
             except Exception:
+                # Keep the original command error if best-effort fault cleanup fails.
                 pass
             raise
         finally:
@@ -801,10 +803,12 @@ class PhysicalProbeRuntime:
                 try:
                     self.io.disarm("canary_fault")
                 except Exception:
+                    # Keep the original command error if best-effort fault cleanup fails.
                     pass
             try:
                 self._rpc("stop-move")
             except Exception:
+                # Keep the original command error if best-effort fault cleanup fails.
                 pass
             raise
         finally:

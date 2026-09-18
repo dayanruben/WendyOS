@@ -155,6 +155,7 @@ class ROSBridge:
                 try:
                     self._commands.get_nowait()
                 except queue.Empty:
+                    # The queue is already empty; there is no stale command to discard.
                     pass
                 self._commands.put_nowait((time.monotonic(), command))
                 self._counts["accepted"] += 1

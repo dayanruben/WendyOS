@@ -484,7 +484,6 @@ class IntegratedPhysicalPolicyRunner:
                 "detail": "publisher ownership was already released",
                 "high_level_stop_called": False,
             }
-        anchor_source = "last_target"
         measured: np.ndarray | None = None
         try:
             measured = np.asarray(self.physical.io.snapshot()["q_43"], dtype=float)

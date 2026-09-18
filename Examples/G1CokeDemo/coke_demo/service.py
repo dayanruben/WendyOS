@@ -295,6 +295,7 @@ def make_server(runtime: DemoRuntime, host="127.0.0.1", port=8892):
             try:
                 self.wfile.write(raw)
             except (BrokenPipeError, ConnectionResetError):
+                # The client disconnected; there is no response left to send.
                 pass
 
         def do_GET(self):
@@ -354,6 +355,7 @@ def serve(root: Path, *, host="127.0.0.1", port=8892, ros_enabled=True,
     try:
         runtime.run()
     except KeyboardInterrupt:
+        # Ctrl+C requests shutdown; finally closes the server and worker.
         pass
     finally:
         runtime.shutdown.set()
