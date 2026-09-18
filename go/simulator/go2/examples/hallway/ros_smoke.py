@@ -23,6 +23,7 @@ def main():
             if initial["ready"]:
                 break
         except OSError:
+            # Startup may still be in progress; retain the timeout and polling delay.
             pass
         if time.monotonic() > deadline:
             raise RuntimeError("Hallway simulator did not become ready")

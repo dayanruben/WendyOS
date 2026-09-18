@@ -82,6 +82,7 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.send(503, {"error": str(exc)})
         except (BrokenPipeError, ConnectionResetError):
+            # The client disconnected; there is no response left to send.
             pass
 
     def do_POST(self):
@@ -154,6 +155,7 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.send(503, {"error": str(exc)})
         except (BrokenPipeError, ConnectionResetError):
+            # The client disconnected; there is no response left to send.
             pass
 
 

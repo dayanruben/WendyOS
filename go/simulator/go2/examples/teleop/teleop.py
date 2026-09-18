@@ -279,6 +279,7 @@ def main():
             "Enable the control panel and hold a direction to drive.")
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
+        # Expected shutdown signals; finally performs cleanup.
         pass
     finally:
         if rclpy.ok():

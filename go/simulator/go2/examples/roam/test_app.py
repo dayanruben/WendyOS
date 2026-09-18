@@ -248,6 +248,7 @@ def test_real_http_client_handles_json_and_refuses_redirects_and_oversized_respo
             try:
                 self.wfile.write(json.dumps(body).encode())
             except (BrokenPipeError, ConnectionResetError):
+                # The client disconnected; there is no response left to send.
                 pass
 
         def do_POST(self):
