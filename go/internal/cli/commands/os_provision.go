@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
@@ -147,6 +149,56 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 	return state, nil
 }
 
+// acmeEnrollmentBake is written to the config partition as acme-enrollment.json
+// at imaging time. It carries exactly what the agent's StartACMEProvisioning
+// takes, so the device can ACME-enroll from it on first boot with no CLI RPC.
+// The first four JSON tags match acmeenroll.Config so the agent decodes
+// straight into it; cloudHost is the one extra field it also needs.
+type acmeEnrollmentBake struct {
+	DirectoryURL string `json:"directoryURL"`
+	DeviceID     string `json:"deviceID"`
+	EABKeyID     string `json:"eabKeyID"`
+	EABHMACKey   string `json:"eabHMACKey"`
+	CloudHost    string `json:"cloudHost"`
+}
+
+// preEnrollDeviceACME mints a once-only EAB credential for an install image
+// with no live device. It mirrors the live OIDC enroll up to the agent step:
+// mint device_id, operator-sign the enrollment request, EnrollDevice -> EAB.
+// The tenant comes from the operator session's SPIFFE identity, so no org
+// lookup is needed. The returned material is baked for the agent to ACME-enroll
+// on first boot (device-side consumption is tracked separately under WDY-3146).
+func preEnrollDeviceACME(ctx context.Context, auth *config.AuthConfig, deviceName string) (*acmeEnrollmentBake, error) {
+	if auth.CloudGRPC == "" {
+		return nil, fmt.Errorf("session has no Cloud gRPC endpoint; re-run 'wendy auth login'")
+	}
+	deviceID := uuid.NewString()
+	cfg, err := cloudenroll.EnrollmentConfig(auth, deviceID, "")
+	if err != nil {
+		return nil, err
+	}
+	tokenCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	cloudConn, err := dialCloudGRPC(auth)
+	if err != nil {
+		return nil, err
+	}
+	defer cloudConn.Close()
+	cfg, _, err = cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, deviceName)
+	if err != nil {
+		return nil, err
+	}
+	return &acmeEnrollmentBake{
+		DirectoryURL: cfg.DirectoryURL,
+		DeviceID:     cfg.DeviceID,
+		EABKeyID:     cfg.EABKeyID,
+		EABHMACKey:   cfg.EABHMACKey,
+		CloudHost:    auth.CloudGRPC,
+	}, nil
+}
+
 // psPartition is one row from the Windows partition-listing PowerShell
 // script. Pointer fields tolerate JSON nulls for partitions without a
 // drive letter or associated volume (e.g. EFI or reserved partitions).
@@ -200,9 +252,9 @@ func parseConfigPartition(jsonBytes []byte) (int, error) {
 // failure to write the config partition has dropped user-visible state on
 // the floor and must be treated as fatal — silently printing "successfully
 // installed" hides the lost data (--wifi never reaches the device, the
-// pre-enroll key/cert is discarded, etc.).
-func provisioningRequired(creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) bool {
-	return len(creds) > 0 || deviceName != "" || len(provisioningJSON) > 0
+// pre-enroll EAB credential is discarded, etc.).
+func provisioningRequired(creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON []byte) bool {
+	return len(creds) > 0 || deviceName != "" || len(enrollmentJSON) > 0
 }
 
 // configTarget receives the config-partition files: a mounted directory (disk
@@ -218,13 +270,13 @@ func (d dirTarget) WriteFile(name string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(filepath.Join(string(d), name), data, perm)
 }
 
-func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
-	return writeConfigFilesTo(dirTarget(mountPoint), agentBinary, creds, deviceName, provisioningJSON)
+func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON []byte) error {
+	return writeConfigFilesTo(dirTarget(mountPoint), agentBinary, creds, deviceName, enrollmentJSON)
 }
 
 // writeConfigFilesTo writes the config-partition files to any target. agentBinary
 // is skipped when empty (Thor omits it only if a caller passes none).
-func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
+func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, enrollmentJSON []byte) error {
 	if len(agentBinary) > 0 {
 		if err := t.WriteFile("wendy-agent", agentBinary, 0o755); err != nil {
 			return fmt.Errorf("writing wendy-agent to config partition: %w", err)
@@ -257,9 +309,14 @@ func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.Wi
 		}
 	}
 
-	if len(provisioningJSON) > 0 {
-		if err := t.WriteFile("provisioning.json", provisioningJSON, 0o600); err != nil {
-			return fmt.Errorf("writing provisioning.json to config partition: %w", err)
+	// acme-enrollment.json (not provisioning.json): the current agent's
+	// applyPreProvisioning treats a cert-less provisioning.json as incomplete
+	// and deletes it, so the baked EAB rides a distinct file the agent's
+	// first-boot Apply does not yet touch. The device-side reader that runs
+	// ACME from it is tracked separately under WDY-3146.
+	if len(enrollmentJSON) > 0 {
+		if err := t.WriteFile("acme-enrollment.json", enrollmentJSON, 0o600); err != nil {
+			return fmt.Errorf("writing acme-enrollment.json to config partition: %w", err)
 		}
 	}
 

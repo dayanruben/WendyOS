@@ -71,8 +71,8 @@ func TestInjectConfigPartitionFAT(t *testing.T) {
 	if got := string(conf); !strings.Contains(got, "ssid = Home") || !strings.Contains(got, "name = brave-dolphin") {
 		t.Errorf("wendy.conf missing expected content:\n%s", got)
 	}
-	if b, err := readFATFile(t, img, "provisioning.json"); err != nil || string(b) != `{"enrolled":true}` {
-		t.Errorf("provisioning.json = %q, %v", b, err)
+	if b, err := readFATFile(t, img, "acme-enrollment.json"); err != nil || string(b) != `{"enrolled":true}` {
+		t.Errorf("acme-enrollment.json = %q, %v", b, err)
 	}
 	if b, err := readFATFile(t, img, "wendy-agent"); err != nil || string(b) != "BINARY" {
 		t.Errorf("wendy-agent = %q, %v", b, err)

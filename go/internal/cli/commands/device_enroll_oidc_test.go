@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -316,7 +317,7 @@ func TestOIDCEnrollmentConfig(t *testing.T) {
 			if tc.pkiEndpoint != "" {
 				auth.PKIEndpoint = tc.pkiEndpoint
 			}
-			cfg, err := oidcEnrollmentConfig(auth, tc.device, tc.directory)
+			cfg, err := cloudenroll.EnrollmentConfig(auth, tc.device, tc.directory)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatal(err)
