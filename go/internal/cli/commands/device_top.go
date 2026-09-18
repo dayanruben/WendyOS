@@ -397,7 +397,7 @@ func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSO
 
 func writeTopPlainSnapshot(w io.Writer, prev, cur topSample, containers []*agentpb.AppContainer) error {
 	if cur.storage != nil {
-		fmt.Fprintf(w, "DISK %s: %s / %s\n", cur.storage.GetMountpoint(), formatBytes(cur.storage.GetUsedBytes()), formatBytes(cur.storage.GetTotalBytes()))
+		fmt.Fprintf(w, "DISK %s: %s / %s\n", tui.StripControl(cur.storage.GetMountpoint()), formatBytes(cur.storage.GetUsedBytes()), formatBytes(cur.storage.GetTotalBytes()))
 	}
 	cpuCount := uint32(1)
 	if cur.host != nil && cur.host.GetCpuCount() > 0 {
@@ -1108,7 +1108,7 @@ func (m topModel) View() string {
 
 	if m.storage != nil && m.storage.GetTotalBytes() > 0 {
 		disk := m.storage
-		label := "Disk " + disk.GetMountpoint()
+		label := "Disk " + tui.StripControl(disk.GetMountpoint())
 		if m.storageErr != nil {
 			label += " (stale)"
 		}

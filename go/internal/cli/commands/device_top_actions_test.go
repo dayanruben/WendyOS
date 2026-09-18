@@ -239,14 +239,14 @@ func TestTopLogsSanitizeRemoteTerminalControls(t *testing.T) {
 	model, _ := m.openLogs()
 	m = model.(topModel)
 	defer m.logsCancel()
-	bad := "visible\rforged\x1b[2J\x1b]52;c;secret\a"
+	bad := "visible\rforged\x1b[2J\x1b]52;c;secret\a\u202e\u200b"
 	value := func(s string) *commonpb.AnyValue {
 		return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s}}
 	}
 	response := &agentpb.StreamLogsResponse{Logs: &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{{Body: value(bad), Attributes: []*commonpb.KeyValue{{Key: bad, Value: value(bad)}}}}}}}}}}
 	model, _ = m.Update(topLogsMsg{seq: m.logsSeq, stream: &topLogStream{}, response: response})
 	rendered := strings.Join(model.(topModel).logsLines, "\n")
-	for _, control := range []string{"\r", "\x1b[2J", "\x1b]", "\a"} {
+	for _, control := range []string{"\r", "\x1b[2J", "\x1b]", "\a", "\u202e", "\u200b"} {
 		if strings.Contains(rendered, control) {
 			t.Fatalf("remote terminal control survived: %q", rendered)
 		}

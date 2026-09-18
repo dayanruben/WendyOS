@@ -681,3 +681,22 @@ func TestTopKeyBarFitsNarrowTerminals(t *testing.T) {
 		}
 	}
 }
+
+func TestTopDiskMountpointSanitizedForTerminal(t *testing.T) {
+	storage := &agentpb.DiskPartition{Mountpoint: "/data\x1b[2J\r\u202e", TotalBytes: 100, UsedBytes: 20}
+	m := topModel{width: 100, height: 24, storage: storage}
+	var plain bytes.Buffer
+	if err := writeTopPlainSnapshot(&plain, topSample{}, topSample{storage: storage}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, view := range []string{m.View(), plain.String()} {
+		for _, control := range []string{"\x1b[2J", "\r", "\u202e"} {
+			if strings.Contains(view, control) {
+				t.Fatalf("mountpoint control survived: %q", view)
+			}
+		}
+		if !strings.Contains(view, "/data") {
+			t.Fatal("mountpoint text missing")
+		}
+	}
+}
