@@ -25,9 +25,9 @@ const (
 	labelKeyROS2HostSidecar      = "sh.wendy/ros2.host-inspector"
 	ros2HostProfilePath          = "/var/wendy/ros2-host-inspection/fastdds.xml"
 	ros2HostProfileMount         = "/etc/wendy-fastdds.xml"
-	ros2HostImage                = "ghcr.io/wendylabsinc/wendy-ros2-inspector:humble-unitree-v1"
+	ros2HostImage                = "ghcr.io/wendylabsinc/wendy-ros2-inspector@" + ros2InspectorVersion
 	labelKeyROS2InspectorVersion = "sh.wendy/ros2.inspector.version"
-	ros2InspectorVersion         = "humble-unitree-v1"
+	ros2InspectorVersion         = "sha256:eed8ef1cd1cad7e70b0481859e72fa8d21f5c0da420b77d0c21e642e54ab557c"
 	ros2InspectorSetup           = "/opt/wendy-ros2/install/setup.sh"
 )
 

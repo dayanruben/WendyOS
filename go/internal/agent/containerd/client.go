@@ -1802,6 +1802,8 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+	} else {
+		return nil, fmt.Errorf("reading container labels before start: %w", lerr)
 	}
 	// The parsed name above can be ambiguous when app IDs contain underscores;
 	// repeat the check after authoritative labels resolve the actual app ID.
