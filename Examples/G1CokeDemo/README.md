@@ -164,3 +164,15 @@ are sent to the selected inference device.
 Camera producers must issue a new stream ID after a restart that resets frame
 IDs. The vision buffer invalidates cached and in-flight encodes when it sees a
 new stream ID.
+
+For the standalone inference deployment, export a token first and pass the same
+value to the simulator. The deploy helper validates it before staging or building:
+
+```sh
+export COKE_HIL_TOKEN="$(openssl rand -hex 32)"
+python3 hil/deploy.py --device <inference-device> --detach
+```
+
+The HIL base image is digest-pinned and the Orin runtime uses the validated
+PyTorch 2.7.1 version. A different GPU/runtime still needs the documented policy
+parity checks before physical qualification.

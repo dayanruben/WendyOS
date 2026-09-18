@@ -94,3 +94,51 @@ def test_frozen_camera_is_not_ready():
                               observed_at_unix_ns=1, revision="test")
     assert not status["perception"]["stream_synchronized"]
     assert not status["perception"]["target_mask_valid"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema", "other"), ("checkpoint_sha256", "0" * 64),
+    ("joint_names", ["right", "left"]),
+])
+def test_remote_inference_rejects_wrong_identity(monkeypatch, tmp_path, field, value):
+    from runtime import inference_client
+    from runtime.contracts import INFERENCE_SCHEMA, EXPECTED_CHECKPOINT_SHA256
+    status = {"healthy": True, "motion_capability": False, "schema": INFERENCE_SCHEMA,
+              "checkpoint_sha256": EXPECTED_CHECKPOINT_SHA256, "joint_names": ["left", "right"]}
+    client = Mock()
+    client.request.return_value = status
+    monkeypatch.setattr(inference_client, "InferenceClient", lambda url: client)
+    np.savez(tmp_path / "reference-contract.npz", joint_names=["left", "right"],
+             reference_joint_targets_43=np.zeros((1, 43)))
+    episode, _ = inference_client.remote_components("http://127.0.0.1:8097", tmp_path)
+    assert episode.joint_names == ("left", "right")
+    status[field] = value
+    with pytest.raises(RuntimeError, match="identity contract"):
+        inference_client.remote_components("http://127.0.0.1:8097", tmp_path)
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("bad_depth", [float("nan"), float("inf"), -float("inf")])
+def test_segmentation_packet_rejects_nonfinite_depth(bad_depth):
+    import io
+    import json
+    from runtime.shadow_service import decode_policy_frame
+    meta = {"frame_id": 1, "stream_id": "test", "captured_at_unix_ns": 100}
+    depth = np.ones((240, 320), dtype=np.float32)
+    depth[0, 0] = bad_depth
+    packet = io.BytesIO()
+    np.savez(packet, color_bgr=np.zeros((240, 320, 3), dtype=np.uint8), depth_m=depth,
+             mask=np.zeros((240, 320), dtype=np.uint8), metadata_json=json.dumps(meta))
+    with pytest.raises(ValueError, match="finite"):
+        decode_policy_frame(packet.getvalue(), meta)
+
+
+def test_standalone_hil_deploy_requires_token(monkeypatch):
+    from hil.deploy import deployment_env
+    monkeypatch.delenv("COKE_HIL_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="COKE_HIL_TOKEN"):
+        deployment_env([])
+    monkeypatch.setenv("COKE_HIL_TOKEN", "deployment-secret-1234")
+    assert deployment_env(["OTHER=value"]) == ["OTHER=value", "COKE_HIL_TOKEN=deployment-secret-1234"]
+    with pytest.raises(ValueError, match="COKE_HIL_TOKEN"):
+        deployment_env(["COKE_HIL_TOKEN="])

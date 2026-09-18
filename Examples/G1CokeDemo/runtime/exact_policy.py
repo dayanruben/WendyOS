@@ -16,7 +16,7 @@ import torch
 from .async_vision import AsyncVisionBuffer, VisionFrame, VisionSnapshot
 
 
-EXPECTED_CHECKPOINT_SHA256 = "4ed08c51b058ab6447770b36256ed1e0d450946435520ea67edbee888730a353"
+from .contracts import EXPECTED_CHECKPOINT_SHA256
 EXPECTED_SOURCE_SHA256 = {
     "recurrent_bc/baseline/visual_policy.py": "109b7f0e060ffd3ecdf214a4fc938238404ecdf89394ab76b823837642c1c432",
     "recurrent_bc/recurrent_policy.py": "da0832f5456a50554eaffcec456cb1081b2678325daf6c1dc77f4717c73285d8",

@@ -1,9 +1,19 @@
 """Stage and deploy the inference app with its own Wendy config/build context."""
 from pathlib import Path
 import argparse
+import os
 import shutil
 import subprocess
 import tempfile
+
+
+def deployment_env(entries):
+    values = dict(entry.split("=", 1) for entry in entries)
+    token = values.get("COKE_HIL_TOKEN", os.environ.get("COKE_HIL_TOKEN", ""))
+    if len(token) < 16 or any(char in token for char in "\r\n"):
+        raise ValueError("set COKE_HIL_TOKEN to a secret of at least 16 characters before deploying")
+    values["COKE_HIL_TOKEN"] = token
+    return [f"{key}={value}" for key, value in values.items()]
 
 
 def main():
@@ -14,6 +24,10 @@ def main():
     parser.add_argument("--env", action="append", default=[])
     parser.add_argument("--build-host")
     args = parser.parse_args()
+    try:
+        args.env = deployment_env(args.env)
+    except ValueError as error:
+        parser.error(str(error))
     root = Path(__file__).resolve().parents[1]
     # Resolve relative CLI paths before Wendy changes its build directory.
     cli = str(Path(args.cli).resolve()) if "/" in args.cli else args.cli

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import numpy as np
 
 from .async_vision import VisionUnavailable
+from .contracts import EXPECTED_CHECKPOINT_SHA256, INFERENCE_SCHEMA
 
 
 class InferenceClient:
@@ -136,7 +137,16 @@ class RemoteCamera:
 
 def remote_components(url: str, bundle: Path) -> tuple[RemoteEpisode, RemoteCamera]:
     client = InferenceClient(url)
-    status = client.request("GET", "/health")
-    if status.get("healthy") is not True or status.get("motion_capability") is not False:
-        raise RuntimeError("remote inference service is not motion-zero healthy")
-    return RemoteEpisode(client, bundle), RemoteCamera(client)
+    try:
+        status = client.request("GET", "/health")
+        if status.get("healthy") is not True or status.get("motion_capability") is not False:
+            raise RuntimeError("remote inference service is not motion-zero healthy")
+        episode = RemoteEpisode(client, bundle)
+        if (status.get("schema") != INFERENCE_SCHEMA
+                or status.get("checkpoint_sha256") != EXPECTED_CHECKPOINT_SHA256
+                or status.get("joint_names") != list(episode.joint_names)):
+            raise RuntimeError("remote inference identity contract mismatch")
+        return episode, RemoteCamera(client)
+    except BaseException:
+        client.close()
+        raise

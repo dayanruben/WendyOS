@@ -40,11 +40,13 @@ class FsmRuntime:
         if not INTERFACE:
             raise RuntimeError("G1_DDS_INTERFACE is required")
         from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+        from unitree_sdk2py.core import channel as unitree_channel
+        from .unitree_io import EXPLICIT_INTERFACE_DDS_CONFIG
         from unitree_sdk2py.g1.arm.g1_arm_action_client import G1ArmActionClient
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
-        if ChannelFactoryInitialize(0, INTERFACE) is False:
+        unitree_channel.ChannelConfigHasInterface = EXPLICIT_INTERFACE_DDS_CONFIG
+        if unitree_channel.ChannelFactoryInitialize(0, INTERFACE) is False:
             raise RuntimeError(f"DDS initialization failed on {INTERFACE}")
         self.loco = LocoClient()
         self.switcher = MotionSwitcherClient()

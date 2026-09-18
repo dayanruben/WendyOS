@@ -154,6 +154,8 @@ def decode_policy_frame(raw: bytes, expected: dict) -> tuple[torch.Tensor, dict]
         or mask.shape != (240, 320)
     ):
         raise ValueError("segmentation policy-frame dimensions changed")
+    if depth.dtype.kind not in "fiu" or not np.isfinite(depth).all():
+        raise ValueError("segmentation depth must contain finite numeric values")
     rgb = bgr[:, :, ::-1]
     quantized_depth = np.clip(np.rint(depth * 1000) * .001, 0, 5)
     # Pack with NumPy and expose it to Torch without a copy. The previous

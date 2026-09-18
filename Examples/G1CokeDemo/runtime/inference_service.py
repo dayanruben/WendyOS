@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from .contracts import INFERENCE_SCHEMA
 from .exact_policy import CachedReferenceResidualPolicy, EXPECTED_CHECKPOINT_SHA256
 from .observation_adapter import ExactEpisodeObservationAdapter, OrderedJointState
 from .physical_policy import SegmentationCameraPump
@@ -107,7 +108,8 @@ class InferenceRuntime:
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {
-                "schema": "wendy.g1.reference-residual-inference.v1",
+                "schema": INFERENCE_SCHEMA,
+                "joint_names": list(self.episode.joint_names),
                 "healthy": True,
                 "motion_capability": False,
                 "physical_commands_sent": 0,
