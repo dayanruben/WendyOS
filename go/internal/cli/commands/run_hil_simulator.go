@@ -19,7 +19,7 @@ func resolveHILSimulator(ctx context.Context, device string, yes bool) (string, 
 		return name, nil
 	}
 	if yes || !isInteractiveTerminal() {
-		return "", fmt.Errorf("HIL needs a simulator; use --device vm:NAME for non-interactive runs or --yes")
+		return "", fmt.Errorf("HIL needs a simulator; use --device vm:NAME for non-interactive runs")
 	}
 	name, err := pickHILSimulatorFn(withDevicePickerPurpose(ctx, mainDevicePicker))
 	if err != nil {

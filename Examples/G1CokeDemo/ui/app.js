@@ -26,7 +26,7 @@ async function command(action, body = {}) {
 }
 function showError(message) { byId('error').textContent = message; byId('error').hidden = false; }
 byId('run').onclick = () => command('run', { mode: byId('mode').value, ...(byId('steps').value === 'full' ? {} : { steps: Number(byId('steps').value) }) });
-byId('mode').onchange = () => { byId('steps').options[0].textContent = ['policy', 'hil'].includes(byId('mode').value) ? 'Full reference · 188 seconds' : 'Full scene · 60 seconds'; };
+byId('mode').onchange = () => { controllerChosen = true; byId('steps').options[0].textContent = ['policy', 'hil'].includes(byId('mode').value) ? 'Full reference · 188 seconds' : 'Full scene · 60 seconds'; };
 byId('pause').onclick = () => command(latest?.phase === 'paused' ? 'resume' : 'pause');
 byId('reset').onclick = () => command('reset');
 function pill(id, label, connected) { const node = byId(id); node.textContent = label; node.classList.toggle('connected', connected); }

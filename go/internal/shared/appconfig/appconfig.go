@@ -314,10 +314,9 @@ type TCPSocketProbe struct {
 	Port int `json:"port"`
 }
 
-// HooksConfig holds optional lifecycle hook commands.
 // HILConfig describes the inference project used by run --hil.
-// Paths are relative to the simulator project. The inference project supplies
-// its own wendy.json and build file; inputs are copied from the simulator root.
+// Project, Inputs and SimulatorBuildFile are relative to the simulator project.
+// BuildFile and BuildFilesByGPUArch are relative to the inference project.
 type HILConfig struct {
 	Project             string            `json:"project"`
 	Inputs              []string          `json:"inputs"`
@@ -327,9 +326,12 @@ type HILConfig struct {
 	Port                int               `json:"port"`
 	URLEnv              string            `json:"urlEnv"`
 	HealthPath          string            `json:"healthPath"`
+	HealthSchema        string            `json:"healthSchema,omitempty"`
+	TokenEnv            string            `json:"tokenEnv,omitempty"`
 	Env                 map[string]string `json:"env,omitempty"`
 }
 
+// HooksConfig holds optional lifecycle hook commands.
 type HooksConfig struct {
 	PostStart *HookCommand `json:"postStart,omitempty"`
 }

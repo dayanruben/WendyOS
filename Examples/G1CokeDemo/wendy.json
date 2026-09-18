@@ -12,6 +12,8 @@
     "port": 8098,
     "urlEnv": "COKE_POLICY_URL",
     "healthPath": "/health",
+    "healthSchema": "wendy.coke.simulation-inference.v1",
+    "tokenEnv": "COKE_HIL_TOKEN",
     "env": {
       "COKE_POLICY_TIMEOUT": "15"
     }

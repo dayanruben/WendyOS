@@ -256,3 +256,45 @@ func TestHILSelectsBuildFileForInferenceGPU(t *testing.T) {
 		}
 	}
 }
+
+func TestHILHealthAuthenticatesAndChecksSchema(t *testing.T) {
+	for _, body := range []string{`{"schema":"inference.v1"}`, `{"schema":"other"}`, "not JSON"} {
+		t.Run(body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer per-run-secret" {
+					t.Error("missing bearer token")
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			err := waitHILHealthAuthenticated(context.Background(), server.URL, time.Second, "per-run-secret", "inference.v1")
+			if (err == nil) != strings.Contains(body, "inference.v1") {
+				t.Fatalf("body=%s err=%v", body, err)
+			}
+		})
+	}
+}
+
+func TestHILTokenEnvironmentCannotBeOverridden(t *testing.T) {
+	root, cfg := hilFixture(t)
+	cfg.TokenEnv = "POLICY_TOKEN"
+	cfg.Env = map[string]string{"POLICY_TOKEN": "fixed"}
+	if err := validateHILConfig(root, cfg); err == nil {
+		t.Fatal("accepted a fixed token override")
+	}
+	cfg.Env = nil
+	cfg.TokenEnv = cfg.URLEnv
+	if err := validateHILConfig(root, cfg); err == nil {
+		t.Fatal("accepted overlapping managed variables")
+	}
+}
+
+func TestBuildHostPickerSkipsSimulatorTab(t *testing.T) {
+	m := devicePickerModel{purpose: buildHostPicker, active: devicePickerLocalTab}
+	for range 5 {
+		m.active = cycleTab(m.tabOrder(), m.active, 1)
+		if m.active == devicePickerSimulatorTab {
+			t.Fatal("build host offered a simulator")
+		}
+	}
+}

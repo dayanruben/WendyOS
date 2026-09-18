@@ -89,7 +89,7 @@ func reloadAuthEntry(prev *config.AuthConfig) *config.AuthConfig {
 		return nil
 	}
 	for i := range cfg.Auth {
-		if cfg.Auth[i].CloudGRPC == prev.CloudGRPC {
+		if cfg.Auth[i].CloudGRPC == prev.CloudGRPC && cloudAuthOrgID(&cfg.Auth[i]) == cloudAuthOrgID(prev) {
 			return &cfg.Auth[i]
 		}
 	}

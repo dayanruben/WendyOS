@@ -232,7 +232,7 @@ func daemonSharesBuildkitSocket(pidDir, socketPath string) (same, known bool) {
 	// same object. Checking both also handles a daemon running in a chroot.
 	selfNS, selfErr := os.Readlink(filepath.Join(filepath.Dir(pidDir), "self", "ns", "mnt"))
 	daemonNS, daemonErr := os.Readlink(filepath.Join(pidDir, "ns", "mnt"))
-	if selfErr == nil && daemonErr == nil && selfNS == daemonNS {
+	if filepath.IsAbs(socketPath) && selfErr == nil && daemonErr == nil && selfNS == daemonNS {
 		selfRoot, selfErr := os.Stat("/")
 		daemonRoot, daemonErr := os.Stat(filepath.Join(pidDir, "root"))
 		if selfErr == nil && daemonErr == nil && os.SameFile(selfRoot, daemonRoot) {

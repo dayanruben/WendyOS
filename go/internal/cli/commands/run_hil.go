@@ -2,6 +2,9 @@ package commands
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +31,7 @@ import (
 // both apps; it neither runs a project script nor changes the default device.
 func runHILCommand(ctx context.Context, opts runOptions, peerName string) error {
 	if peerName == "" && (opts.yes || !isInteractiveTerminal()) {
-		return fmt.Errorf("--hil needs an interactive device picker; use --hil=DEVICE for non-interactive runs or --yes")
+		return fmt.Errorf("--hil needs an interactive device picker; use --hil=DEVICE for non-interactive runs")
 	}
 	if opts.detach || opts.deploy || opts.service != "" || len(opts.fleetDevices) != 0 {
 		return fmt.Errorf("HIL requires an attached, single-app run; omit --detach, --deploy and --service")
@@ -50,6 +53,9 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 	if err != nil {
 		return err
 	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid simulator configuration: %w", err)
+	}
 	if err := validateHILConfig(root, cfg.HIL); err != nil {
 		return err
 	}
@@ -63,8 +69,8 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 		return fmt.Errorf("--hil requires a Dockerfile or Stagefile simulator build")
 	}
 	for _, entry := range opts.env {
-		if strings.SplitN(entry, "=", 2)[0] == cfg.HIL.URLEnv {
-			return fmt.Errorf("--hil manages %s; remove that --env override", cfg.HIL.URLEnv)
+		if strings.SplitN(entry, "=", 2)[0] == cfg.HIL.URLEnv || (cfg.HIL.TokenEnv != "" && strings.SplitN(entry, "=", 2)[0] == cfg.HIL.TokenEnv) {
+			return fmt.Errorf("--hil manages %s; remove that --env override", strings.SplitN(entry, "=", 2)[0])
 		}
 	}
 	store, err := vm.NewStore()
@@ -105,6 +111,9 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 	if err != nil {
 		return err
 	}
+	if fresh := reloadAuthEntry(auth); fresh != nil {
+		auth = fresh
+	}
 	peer, err := connectCloudAsset(ctx, auth, asset, os.Getenv("WENDY_BROKER_URL"))
 	if err != nil {
 		return err
@@ -116,9 +125,6 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 		if err != nil {
 			return fmt.Errorf("reading HIL device GPU architecture: %w", err)
 		}
-		if version.GetGpuArch() == "" {
-			return fmt.Errorf("HIL build selection needs the device GPU architecture; update the inference device agent")
-		}
 		buildFile = hilBuildFile(cfg.HIL, version.GetGpuArch())
 		cliLogln("HIL GPU %s: using %s", version.GetGpuArch(), buildFile)
 	}
@@ -127,12 +133,23 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 		return err
 	}
 	defer cleanup()
+	token := ""
+	if cfg.HIL.TokenEnv != "" {
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return err
+		}
+		token = hex.EncodeToString(secret)
+	}
 	cliLogln("Deploying HIL inference to %s...", asset.GetName())
 	peerOpts := runOptions{
 		prefix: staged, dockerfile: buildFile, buildType: "docker",
 		builder: opts.builder, buildHost: opts.buildHost, stagefileBackend: opts.stagefileBackend,
 		chunking: opts.chunking, yes: opts.yes, detach: true,
 		watchTarget: &SelectedDevice{Agent: peer},
+	}
+	if token != "" {
+		peerOpts.env = append(peerOpts.env, cfg.HIL.TokenEnv+"="+token)
 	}
 	if err := runCommand(ctx, peerOpts); err != nil {
 		return fmt.Errorf("deploying HIL inference: %w", err)
@@ -152,7 +169,7 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 	defer forward.Close()
 	localURL := "http://" + forward.listener.Addr().String()
 	cliLogln("Waiting for HIL inference on %s...", asset.GetName())
-	if err := waitHILHealth(ctx, localURL+cfg.HIL.HealthPath, 180*time.Second); err != nil {
+	if err := waitHILHealthAuthenticated(ctx, localURL+cfg.HIL.HealthPath, 180*time.Second, token, cfg.HIL.HealthSchema); err != nil {
 		return fmt.Errorf("HIL inference did not become ready: %w", err)
 	}
 	port := forward.listener.Addr().(*net.TCPAddr).Port
@@ -169,6 +186,9 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 	// Explicit user flags override HIL defaults, but never its managed URL.
 	opts.env = append(defaults, opts.env...)
 	opts.env = append(opts.env, cfg.HIL.URLEnv+"="+peerURL)
+	if token != "" {
+		opts.env = append(opts.env, cfg.HIL.TokenEnv+"="+token)
+	}
 	cliSuccess("HIL connected: %s → %s. Keep this command running; Ctrl+C closes the tunnel.", name, asset.GetName())
 	return runCommand(ctx, opts)
 }
@@ -188,6 +208,9 @@ func validateHILConfig(root string, cfg *appconfig.HILConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("wendy.json has no hil configuration")
 	}
+	if cfg.TokenEnv != "" && (!hilEnvName.MatchString(cfg.TokenEnv) || cfg.TokenEnv == cfg.URLEnv) {
+		return fmt.Errorf("hil.tokenEnv must be a valid variable distinct from urlEnv")
+	}
 	if cfg.Port < 1 || cfg.Port > 65535 || !hilEnvName.MatchString(cfg.URLEnv) {
 		return fmt.Errorf("hil requires a valid port and urlEnv")
 	}
@@ -204,6 +227,9 @@ func validateHILConfig(root string, cfg *appconfig.HILConfig) error {
 	peer, err := appconfig.LoadFromFile(filepath.Join(project, "wendy.json"))
 	if err != nil {
 		return fmt.Errorf("loading HIL inference project: %w", err)
+	}
+	if err := peer.Validate(); err != nil {
+		return fmt.Errorf("invalid HIL inference configuration: %w", err)
 	}
 	if peer.HIL != nil || len(peer.Services) != 0 {
 		return fmt.Errorf("HIL inference must be a single app without nested hil configuration")
@@ -232,7 +258,7 @@ func validateHILConfig(root string, cfg *appconfig.HILConfig) error {
 		return err
 	}
 	for key, value := range cfg.Env {
-		if !hilEnvName.MatchString(key) || key == cfg.URLEnv || strings.ContainsRune(value, '\x00') {
+		if !hilEnvName.MatchString(key) || key == cfg.URLEnv || key == cfg.TokenEnv || strings.ContainsRune(value, '\x00') {
 			return fmt.Errorf("invalid hil.env entry %q", key)
 		}
 	}
@@ -366,6 +392,10 @@ func (f *hilForward) Close() {
 }
 
 func waitHILHealth(ctx context.Context, url string, timeout time.Duration) error {
+	return waitHILHealthAuthenticated(ctx, url, timeout, "", "")
+}
+
+func waitHILHealthAuthenticated(ctx context.Context, url string, timeout time.Duration, token, schema string) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	transport := &http.Transport{Proxy: nil}
@@ -378,11 +408,22 @@ func waitHILHealth(ctx context.Context, url string, timeout time.Duration) error
 		if err != nil {
 			return err
 		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		response, err := client.Do(req)
 		if err == nil {
-			_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 65536))
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 65537))
 			_ = response.Body.Close()
-			if response.StatusCode == http.StatusOK && readErr == nil {
+			if response.StatusCode == http.StatusOK && readErr == nil && len(body) <= 65536 {
+				if schema != "" {
+					var health struct {
+						Schema string `json:"schema"`
+					}
+					if json.Unmarshal(body, &health) != nil || health.Schema != schema {
+						return fmt.Errorf("HIL health response does not match the expected schema %q", schema)
+					}
+				}
 				return nil
 			}
 			err = fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)

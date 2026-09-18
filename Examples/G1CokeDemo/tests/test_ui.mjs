@@ -85,3 +85,17 @@ test('an uncertain POST failure is not automatically retried', async () => {
   await app.command();
   assert.equal(commands, 1);
 });
+
+test('manual controller choice during loading survives HIL discovery', async () => {
+  let phase = 'loading';
+  const app = page(async () => Response.json({
+    phase, hil_enabled: true, simulation_seconds: 0, total_steps: 40, metrics: {},
+  }));
+  await app.refresh();
+  app.node('mode').value = 'expert';
+  app.node('steps').options = [{}];
+  app.node('mode').onchange();
+  phase = 'idle';
+  await app.refresh();
+  assert.equal(app.node('mode').value, 'expert');
+});

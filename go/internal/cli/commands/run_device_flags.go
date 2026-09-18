@@ -58,7 +58,7 @@ var pickRunBuildHostDevice = func(ctx context.Context) (*SelectedDevice, error) 
 
 func selectRunBuildHost(ctx context.Context, yes bool) (string, error) {
 	if yes || !isInteractiveTerminal() {
-		return "", fmt.Errorf("--build-host needs an interactive device picker; use --build-host=DEVICE for non-interactive runs or --yes")
+		return "", fmt.Errorf("--build-host needs an interactive device picker; use --build-host=DEVICE for non-interactive runs")
 	}
 	selected, err := pickRunBuildHostDevice(withDevicePickerPurpose(ctx, buildHostPicker))
 	if err != nil {

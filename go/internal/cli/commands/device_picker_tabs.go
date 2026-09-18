@@ -234,7 +234,7 @@ func (m devicePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cloud.refreshTable()
 				}
 			}
-			m.active = cycleTab(deviceTabOrder(), m.active, tabCycleDelta(msg.String()))
+			m.active = cycleTab(m.tabOrder(), m.active, tabCycleDelta(msg.String()))
 			// Latched rather than keyed off "arrived from Local": with
 			// wrap-around, Cloud is reachable from either neighbour and
 			// discovery must still start exactly once.
@@ -290,7 +290,7 @@ func (m devicePickerModel) View() string {
 		return ""
 	}
 
-	header := m.purpose.header(m.windowWidth) + deviceTabsHeader(m.active, deviceTabOrder(), m.windowWidth)
+	header := m.purpose.header(m.windowWidth) + deviceTabsHeader(m.active, m.tabOrder(), m.windowWidth)
 
 	switch m.active {
 	case devicePickerLocalTab:
@@ -382,4 +382,11 @@ func devicePickerInitialAuth(cfg *config.Config) *config.AuthConfig {
 		}
 	}
 	return nil
+}
+
+func (m devicePickerModel) tabOrder() []devicePickerTab {
+	if m.purpose == buildHostPicker {
+		return []devicePickerTab{devicePickerLocalTab, devicePickerCloudTab}
+	}
+	return deviceTabOrder()
 }

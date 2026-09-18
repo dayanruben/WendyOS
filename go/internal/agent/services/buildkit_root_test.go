@@ -442,3 +442,19 @@ func TestBuildkitRoot_MissingContainerSocketRemainsUnknown(t *testing.T) {
 		t.Fatal("uninspectable container socket must remain unknown")
 	}
 }
+
+func TestBuildkitRoot_RelativeSocketUsesDaemonWorkingDirectory(t *testing.T) {
+	agentDir, daemonDir := t.TempDir(), t.TempDir()
+	t.Chdir(agentDir)
+	for _, dir := range []string{agentDir, daemonDir} {
+		if err := os.WriteFile(filepath.Join(dir, "buildkit.sock"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proc := newFakeProc(t)
+	proc.add(t, "10", daemonDir, "buildkitd", "--addr", "unix://buildkit.sock")
+	same, known := daemonSharesBuildkitSocket(filepath.Join(proc.dir, "10"), "buildkit.sock")
+	if same || !known {
+		t.Fatalf("same=%v known=%v; relative paths name different sockets", same, known)
+	}
+}

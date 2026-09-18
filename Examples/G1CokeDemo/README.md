@@ -291,3 +291,9 @@ per-run token and supplies it to both the inference server and simulator.
 The HIL base image is digest-pinned and the Orin runtime uses the validated
 PyTorch 2.7.1 version. A different GPU/runtime still needs the documented policy
 parity checks before physical qualification.
+
+For `wendy run --hil`, `hil.tokenEnv` names the environment variable that
+receives a fresh secret on both deployments. The CLI uses that secret for its
+health request. `hil.healthSchema` requires the JSON health response to identify
+the expected inference protocol before starting the simulator. The selected
+cloud organization and asset remain the trusted inference destination.
