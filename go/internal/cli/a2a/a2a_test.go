@@ -9,12 +9,12 @@ import (
 
 func TestEndpointValidation(t *testing.T) {
 	for _, s := range []string{"http://192.168.1.2:80", "https://user:pass@example.com", "https://example.com?token=x", "file:///tmp/task"} {
-		if _, err := NewClient(s, ""); err == nil {
+		if _, err := NewClient(s, "test-access-token-123"); err == nil {
 			t.Fatalf("accepted %s", s)
 		}
 	}
 	for _, s := range []string{"https://agent.example/a2a", "http://127.0.0.1:8787", "http://[::1]:8787"} {
-		if _, err := NewClient(s, ""); err != nil {
+		if _, err := NewClient(s, "test-access-token-123"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -27,11 +27,23 @@ func TestClientNeverFollowsCredentialRedirects(t *testing.T) {
 		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
 	}))
 	defer source.Close()
-	c, err := NewClient(source.URL, "secret")
+	c, err := NewClient(source.URL, "test-access-token-123")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Do(context.Background(), "GET", "/tasks", nil, nil); err == nil || called {
 		t.Fatal("followed redirect", err)
+	}
+}
+
+func TestClientPinsLocalhostAndRejectsWeakTokens(t *testing.T) {
+	client, err := NewClient("http://localhost:8787/a2a", "test-access-token-123")
+	if err != nil || client.URL != "http://127.0.0.1:8787/a2a" {
+		t.Fatalf("client=%+v err=%v", client, err)
+	}
+	for _, token := range []string{"", "short", "long-but-invalid\ntoken"} {
+		if _, err := NewClient("http://127.0.0.1:8787", token); err == nil {
+			t.Fatal("accepted invalid token")
+		}
 	}
 }

@@ -167,3 +167,19 @@ func TestSkillsDoNotExpandSensorToolPermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestFleetProfileIncludesCloudTunnel(t *testing.T) {
+	profile, _ := ResolveProfile("fleet")
+	tools := &ProfileTools{Profile: profile, Base: &engineTestExecutor{tools: []Tool{{Name: "cloud_tunnel"}}}}
+	list, err := tools.ListTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range list {
+		found = found || tool.Name == "cloud_tunnel"
+	}
+	if !found {
+		t.Fatal("fleet profile hides cloud_tunnel")
+	}
+}

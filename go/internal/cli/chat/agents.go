@@ -74,6 +74,7 @@ type Session struct {
 	tools  *Tools
 }
 type SessionOptions struct {
+	SystemInstructions                             string
 	DelegationDepth                                int
 	Config                                         Config
 	Profile                                        Profile
@@ -123,6 +124,9 @@ func sessionEngine(provider Provider, executor Executor, opts SessionOptions) (*
 	}
 	memory := NewMemoryTools(executor, store)
 	prompt := opts.Profile.Prompt(opts.Workspace, opts.Device)
+	if opts.SystemInstructions != "" {
+		prompt += "\n\n" + opts.SystemInstructions
+	}
 	if opts.ApprovedTools != nil {
 		prompt += "\nThis is an unattended service task. Only the configured mutation tools are authorized; unavailable tools are blocked. There is no terminal user to answer approval prompts. Report missing capabilities explicitly."
 	}

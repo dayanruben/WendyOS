@@ -175,7 +175,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tasks := s.Tasks()
-	filtered := tasks[:0]
+	filtered := make([]a2a.Task, 0, len(tasks))
 	for _, t := range tasks {
 		if q.Get("contextId") != "" && t.ContextID != q.Get("contextId") {
 			continue

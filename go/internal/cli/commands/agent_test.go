@@ -69,7 +69,7 @@ func TestAgentRefusesUnauthenticatedOrCleartextPublicListener(t *testing.T) {
 	for _, test := range []struct {
 		args []string
 		want string
-	}{{[]string{"--listen", "0.0.0.0:8787"}, "require TLS"}, {nil, "WENDY_AGENT_TOKEN"}} {
+	}{{[]string{"--listen", "0.0.0.0:8787"}, "require TLS"}, {nil, "WENDY_AGENT_TOKEN"}, {[]string{"--listen", "localhost:8787"}, "WENDY_AGENT_TOKEN"}} {
 		t.Setenv("WENDY_AGENT_TOKEN", "")
 		cmd := newAgentServeCmd()
 		cmd.SetArgs(append([]string{"--config", file}, test.args...))

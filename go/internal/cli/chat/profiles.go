@@ -102,6 +102,8 @@ func (p Profile) allows(name string) bool {
 
 func toolGroup(name string) string {
 	switch name {
+	case "cloud_tunnel":
+		return "network"
 	case "wendy_status", "device_list", "device_connect", "device_disconnect", "device_info", "cloud_discover", "cloud_connect", "cloud_ping":
 		return "connection"
 	case "run":

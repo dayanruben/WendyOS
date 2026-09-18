@@ -107,8 +107,17 @@ func NewClient(endpoint, token string) (*Client, error) {
 	if err := ValidateURL(endpoint); err != nil {
 		return nil, err
 	}
-	if strings.ContainsAny(token, "\r\n") {
-		return nil, errors.New("invalid agent token")
+	if err := ValidateToken(token); err != nil {
+		return nil, err
+	}
+	u, _ := url.Parse(endpoint)
+	if u.Scheme == "http" && strings.EqualFold(u.Hostname(), "localhost") {
+		port := u.Port()
+		u.Host = "127.0.0.1"
+		if port != "" {
+			u.Host = net.JoinHostPort("127.0.0.1", port)
+		}
+		endpoint = u.String()
 	}
 	return &Client{URL: strings.TrimRight(endpoint, "/"), Token: token, HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
@@ -191,4 +200,12 @@ func RequestDepth(metadata map[string]any) (int, error) {
 		return 0, errors.New("remote delegation depth exceeds four hops")
 	}
 	return depth, nil
+}
+
+// ValidateToken applies the same credential minimum to callers and listeners.
+func ValidateToken(token string) error {
+	if len(token) < 16 || strings.ContainsAny(token, "\r\n") {
+		return errors.New("agent token must contain at least 16 characters and no newlines")
+	}
+	return nil
 }

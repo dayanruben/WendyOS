@@ -62,9 +62,14 @@ func newAgentServeCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		host, _, err := net.SplitHostPort(listen)
+		host, port, err := net.SplitHostPort(listen)
 		if err != nil {
 			return fmt.Errorf("listen address: %w", err)
+		}
+		// Pin localhost to a literal loopback address before binding or advertising it.
+		if strings.EqualFold(host, "localhost") {
+			host = "127.0.0.1"
+			listen = net.JoinHostPort(host, port)
 		}
 		ip := net.ParseIP(host)
 		loopback := ip != nil && ip.IsLoopback()

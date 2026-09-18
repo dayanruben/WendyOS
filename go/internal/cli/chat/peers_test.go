@@ -15,7 +15,7 @@ func TestRemoteToolUsesConfiguredPeerAndBoundsDelegation(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.Path != "/message:send" || r.Header.Get("Authorization") != "Bearer peer-token" {
+		if r.URL.Path != "/message:send" || r.Header.Get("Authorization") != "Bearer peer-token-at-least-16" {
 			t.Error("wrong peer request")
 		}
 		var req a2a.SendRequest
@@ -29,7 +29,7 @@ func TestRemoteToolUsesConfiguredPeerAndBoundsDelegation(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(a2a.SendResponse{Task: &a2a.Task{ID: "remote-task"}})
 	}))
 	defer server.Close()
-	t.Setenv("WENDY_TEST_PEER_TOKEN", "peer-token")
+	t.Setenv("WENDY_TEST_PEER_TOKEN", "peer-token-at-least-16")
 	s := &agentSupervisor{options: SessionOptions{DelegationDepth: 3, Peers: map[string]PeerSpec{"robot": {URL: server.URL, TokenEnv: "WENDY_TEST_PEER_TOKEN"}}}}
 	call := ToolCall{Arguments: json.RawMessage(`{"peer":"robot","action":"send","request_id":"stable-id","prompt":"inspect"}`)}
 	out, err := s.remote(context.Background(), call)
@@ -39,5 +39,15 @@ func TestRemoteToolUsesConfiguredPeerAndBoundsDelegation(t *testing.T) {
 	s.options.DelegationDepth = 4
 	if _, err := s.remote(context.Background(), call); err == nil || calls != 1 {
 		t.Fatal("delegation cycle was not bounded")
+	}
+}
+
+func TestPeerValidationRequiresStrongConfiguredToken(t *testing.T) {
+	peers := map[string]PeerSpec{"robot": {URL: "https://robot.example", TokenEnv: "WENDY_TEST_PEER_TOKEN"}}
+	for _, token := range []string{"", "short", "long-but-invalid\ntoken"} {
+		t.Setenv("WENDY_TEST_PEER_TOKEN", token)
+		if err := ValidatePeers(peers); err == nil {
+			t.Fatal("accepted invalid peer token")
+		}
 	}
 }

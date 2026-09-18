@@ -41,7 +41,7 @@ func (f *chatMouseInput) feed(key tea.KeyMsg) ([]tea.Msg, tea.Cmd) {
 			raw = "\x1b" + raw
 		}
 	}
-	if raw == "" || (f.pending == "" && !strings.HasPrefix(raw, "\x1b") && !strings.HasPrefix(raw, "[<")) {
+	if raw == "" || (f.pending == "" && !strings.HasPrefix(raw, "\x1b")) {
 		return append(f.flush(), key), nil
 	}
 	f.pending += raw

@@ -30,8 +30,8 @@ func ValidatePeers(peers map[string]PeerSpec) error {
 		if err := a2a.ValidateURL(peer.URL); err != nil {
 			return fmt.Errorf("peer %s: %w", name, err)
 		}
-		if peer.TokenEnv != "" && os.Getenv(peer.TokenEnv) == "" {
-			return fmt.Errorf("peer %s token environment variable is unset", name)
+		if err := a2a.ValidateToken(os.Getenv(peer.TokenEnv)); err != nil {
+			return fmt.Errorf("peer %s token environment variable: %w", name, err)
 		}
 	}
 	return nil

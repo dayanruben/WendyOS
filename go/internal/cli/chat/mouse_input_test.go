@@ -77,7 +77,7 @@ func TestRecoveredMouseScrollsApprovalWithoutChangingDraft(t *testing.T) {
 	m.composer.SetValue("draft")
 	m.approval = &approvalRequest{call: ToolCall{Name: "shell"}, reply: make(chan bool, 1)}
 	m.preview.SetContent(strings.Repeat("argument\n", 100))
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[<65;42;49M")})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Alt: true, Runes: []rune("[<65;42;49M")})
 	if m.preview.YOffset == 0 || m.composer.Value() != "draft" || m.approval == nil {
 		t.Fatal("recovered wheel did not stay within approval scrolling")
 	}
@@ -115,4 +115,13 @@ func (r *mouseChunkReader) Read(p []byte) (int, error) {
 	n := copy(p, r.data[:min(len(r.data), r.size)])
 	r.data = r.data[n:]
 	return n, nil
+}
+
+func TestLiteralMouseTextWithoutEscapeReachesComposer(t *testing.T) {
+	m := uiModel(t, nil, &uiExecutor{}, false)
+	literal := "[<65;42;49M"
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(literal)})
+	if m.composer.Value() != literal {
+		t.Fatalf("literal input lost: %q", m.composer.Value())
+	}
 }
