@@ -316,31 +316,49 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	asset, err := s.pickCloudAsset(ctx, auth, stringParam(req, "device_name"))
+	device, err := s.resolveCloudDevice(ctx, auth, stringParam(req, "device_name"))
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
-	if err != nil {
-		return cloudErrResult(err), nil
+	// v2 has no datagram relay (cloudrelay is TCP-only); refuse UDP there,
+	// mirroring the CLI. v2 ping/UDP is tracked as a WDY-3148 follow-up.
+	if protocol == "udp" && device.isV2 {
+		return errResult(errCodeInvalidArgument, "Cloud's authorized service catalog does not expose UDP forwarding over v2 sessions"), nil
+	}
+	// The v1 datagram and v1 broker tunnel need a broker connection; the v2
+	// relay selects its own broker, so brokerConn stays nil there.
+	var brokerConn *grpc.ClientConn
+	if !device.isV2 {
+		brokerConn, err = clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+	} else if stringParam(req, "broker_url") != "" {
+		return errResult(errCodeInvalidArgument, "Cloud selects the authorized relay; broker_url is supported only for legacy sessions"), nil
+	}
+	closeBroker := func() {
+		if brokerConn != nil {
+			_ = brokerConn.Close()
+		}
 	}
 
-	key := fmt.Sprintf("%s:%s:%d:%d", protocol, asset.GetName(), localPort, remotePort)
+	key := fmt.Sprintf("%s:%s:%d:%d", protocol, device.GetName(), localPort, remotePort)
 	tunnelCtx, cancel := context.WithCancel(context.Background())
 
 	if protocol == "udp" {
+		// Legacy sessions only (v2 refused above).
 		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: localPort})
 		if err != nil {
 			cancel()
-			_ = brokerConn.Close()
+			closeBroker()
 			return errResultf(errCodeInternal, "listening on udp 127.0.0.1:%d: %s", localPort, err.Error()), nil
 		}
-		session, err := mcpOpenDatagramSession(tunnelCtx, brokerConn, auth, asset.GetId())
+		session, err := mcpOpenDatagramSession(tunnelCtx, brokerConn, auth, device.legacyID)
 		if err != nil {
 			cancel()
 			_ = pc.Close()
-			_ = brokerConn.Close()
-			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, asset.GetName()).Error()), nil
+			closeBroker()
+			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, device.GetName()).Error()), nil
 		}
 
 		tunnel := &mcpCloudTunnel{cancel: cancel, udpConn: pc, session: session, brokerConn: brokerConn}
@@ -361,8 +379,8 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 			"id":          key,
 			"protocol":    protocol,
 			"local_addr":  pc.LocalAddr().String(),
-			"device_name": asset.GetName(),
-			"asset_id":    asset.GetId(),
+			"device_name": device.GetName(),
+			"device_id":   device.key,
 			"remote_port": remotePort,
 		}
 		return okResult(out), nil
@@ -372,7 +390,7 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		cancel()
-		_ = brokerConn.Close()
+		closeBroker()
 		return errResultf(errCodeInternal, "listening on %s: %s", listenAddr, err.Error()), nil
 	}
 	tunnel := &mcpCloudTunnel{cancel: cancel, listener: ln, brokerConn: brokerConn}
@@ -389,7 +407,9 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 			if err != nil {
 				return
 			}
-			go mcpServeTunnelConn(tunnelCtx, tcpConn, brokerConn, auth, asset.GetId(), uint32(remotePort))
+			go mcpServeTunnelConn(tunnelCtx, tcpConn, func(c context.Context) (net.Conn, error) {
+				return device.openTunnel(c, brokerConn, auth, uint32(remotePort))
+			})
 		}
 	}()
 
@@ -397,8 +417,8 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		"id":          key,
 		"protocol":    protocol,
 		"local_addr":  ln.Addr().String(),
-		"device_name": asset.GetName(),
-		"asset_id":    asset.GetId(),
+		"device_name": device.GetName(),
+		"device_id":   device.key,
 		"remote_port": remotePort,
 	}
 	return okResult(out), nil
@@ -555,7 +575,7 @@ func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error)
 	return auth, err
 }
 
-func cloudCommandTarget(auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) commandTarget {
+func cloudCommandTarget(auth *config.AuthConfig, asset interface{ GetName() string }, brokerURL string) commandTarget {
 	if auth == nil || auth.CloudGRPC == "" || asset.GetName() == "" {
 		return commandTarget{}
 	}
@@ -567,45 +587,54 @@ func cloudCommandTarget(auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL
 	}
 }
 
-func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, *cloudpb.Asset, commandTarget, error) {
+func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, commandTarget, error) {
 	auth, err := s.cloudAuthEntry(cloudGRPC)
 	if err != nil {
-		return nil, nil, commandTarget{}, err
+		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
-	asset, err := s.pickCloudAsset(ctx, auth, deviceName)
+	device, err := s.resolveCloudDevice(ctx, auth, deviceName)
 	if err != nil {
-		return nil, nil, commandTarget{}, err
+		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
-	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
-	if err != nil {
-		return nil, nil, commandTarget{}, err
+
+	// Legacy sessions dial the v1 broker; the v2 relay picks its own broker, so
+	// there is no broker connection to hold for a v2 session.
+	var brokerConn *grpc.ClientConn
+	if !device.isV2 {
+		brokerConn, err = clouddefaults.DialBroker(auth, brokerURL)
+		if err != nil {
+			return nil, mcpCloudDevice{}, commandTarget{}, err
+		}
+	} else if brokerURL != "" {
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("Cloud selects the authorized relay; broker_url is supported only for legacy sessions")
 	}
 	cleanupBroker := true
 	defer func() {
-		if cleanupBroker {
+		if cleanupBroker && brokerConn != nil {
 			_ = brokerConn.Close()
 		}
 	}()
 
+	// Provisioned agents serve mTLS on agentPort+1 (50052) for remote clients.
 	dialOpt := clouddefaults.TunnelDialer(func(tunnelCtx context.Context) (net.Conn, error) {
-		return mcpOpenBrokerTunnel(tunnelCtx, brokerConn, auth, asset.GetId(), 50052)
+		return device.openTunnel(tunnelCtx, brokerConn, auth, 50052)
 	})
 
 	certInfo := auth.Certificates[0]
 	keyPEM, err := certInfo.PrivateKeyPEM()
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("loading client key: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("loading client key: %w", err)
 	}
 	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("loading agent mTLS cert: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
 	})
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("building TLS verifier: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("building TLS verifier: %w", err)
 	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
@@ -619,17 +648,19 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 	)
 	if err != nil {
-		return nil, nil, commandTarget{}, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
 	}
 	agentConn := grpcclient.NewFromConn(grpcConn)
-	agentConn.Host = asset.GetName()
+	agentConn.Host = device.GetName()
 	agentConn.IsMTLS = true
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
-		return mcpOpenBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
+		return device.openTunnel(ctx, brokerConn, auth, uint32(port))
 	}
-	agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
+	if brokerConn != nil {
+		agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
+	}
 	cleanupBroker = false
-	return agentConn, asset, cloudCommandTarget(auth, asset, brokerURL), nil
+	return agentConn, device, cloudCommandTarget(auth, device, brokerURL), nil
 }
 
 func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig, deviceName string) (*cloudpb.Asset, error) {
@@ -929,9 +960,9 @@ func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth 
 	return tunnel, nil
 }
 
-func mcpServeTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) {
+func mcpServeTunnelConn(ctx context.Context, tcpConn net.Conn, dial func(context.Context) (net.Conn, error)) {
 	defer tcpConn.Close()
-	tunnelConn, err := mcpOpenBrokerTunnel(ctx, brokerConn, auth, assetID, remotePort)
+	tunnelConn, err := dial(ctx)
 	if err != nil {
 		return
 	}
