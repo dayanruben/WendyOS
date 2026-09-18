@@ -115,7 +115,6 @@ class InferenceRuntime:
                 "vision_device": str(self.episode.policy.vision_device),
                 "control_device": str(self.episode.policy.device),
                 "active": self.active,
-                "session_id": self.session_id,
                 "proposals": self.proposals,
                 "last_error": self.last_error,
                 "camera": self.camera.status(),
@@ -145,6 +144,7 @@ def make_server(runtime: InferenceRuntime) -> ThreadingHTTPServer:
         def do_POST(self) -> None:
             path = self.path.split("?", 1)[0]
             if path not in {"/preflight", "/reset", "/activate", "/deactivate", "/propose"}:
+                self.close_connection = True
                 return self.reply(404, {"error": "not found"})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -163,6 +163,7 @@ def make_server(runtime: InferenceRuntime) -> ThreadingHTTPServer:
                     value = runtime.propose(body)
                 self.reply(200, value)
             except Exception as exc:
+                self.close_connection = True
                 self.reply(409, {"error": f"{type(exc).__name__}: {exc}"})
 
         def reply(self, status: int, value: dict[str, Any]) -> None:
@@ -173,7 +174,7 @@ def make_server(runtime: InferenceRuntime) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(body)
 
-    return ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    return ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
 
 
 def main() -> None:

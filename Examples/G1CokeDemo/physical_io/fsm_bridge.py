@@ -22,7 +22,7 @@ TRANSITION_TIMEOUT_S = 12.0
 LOCK_STAND_SETTLE_S = 3.0
 PORT = int(os.environ.get("G1_FSM_BRIDGE_PORT", "8100"))
 INTERFACE = os.environ.get("G1_DDS_INTERFACE", "").strip()
-ADAPTER_URL = os.environ.get("G1_ADAPTER_STATUS_URL", "http://127.0.0.1:8099").rstrip("/")
+ADAPTER_URL = os.environ.get("G1_ADAPTER_STATUS_URL", "http://127.0.0.1:8098").rstrip("/")
 
 
 def _pair(result: Any) -> tuple[int, Any]:
@@ -188,7 +188,9 @@ class FsmRuntime:
             }
 
 
-def make_server(runtime: FsmRuntime, host: str = "0.0.0.0", port: int = PORT):
+def make_server(runtime: FsmRuntime, host: str = "127.0.0.1", port: int = PORT):
+    from coke_demo.access import require_loopback
+    require_loopback(host)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             return

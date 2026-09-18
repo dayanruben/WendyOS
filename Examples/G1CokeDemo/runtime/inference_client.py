@@ -55,7 +55,7 @@ class InferenceClient:
                     if self.connection is not None:
                         self.connection.close()
                     self.connection = None
-                    if attempt:
+                    if attempt or method != "GET":
                         raise
             raise AssertionError("unreachable")
 
@@ -118,8 +118,8 @@ class RemoteCamera:
 
     def deactivate(self) -> None:
         if self.client.session_id is not None:
-            session_id, self.client.session_id = self.client.session_id, None
-            self.client.request("POST", "/deactivate", {"session_id": session_id})
+            self.client.request("POST", "/deactivate", {"session_id": self.client.session_id})
+            self.client.session_id = None
 
     def status(self) -> dict[str, Any]:
         try:

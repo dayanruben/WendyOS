@@ -34,7 +34,7 @@ def parser():
     commands.add_parser("verify-policy", help="Run learned weights against all 100 golden RGB-D frames")
     for name in ("status", "run-policy", "stop"):
         command = commands.add_parser(name, help=f"{name} on the physical G1 adapter")
-        command.add_argument("--adapter-url", required=True, help="For example http://G1_ADDRESS:8099")
+        command.add_argument("--adapter-url", required=True, help="For example http://127.0.0.1:8098 (through an authenticated Wendy tunnel)")
         if name != "status":
             command.add_argument("--operator-confirmed", action="store_true", help="Confirm the physical robot is attended and ready for this operation")
         if name == "run-policy":

@@ -22,7 +22,7 @@
     }
   },
   "env": {
-    "COKE_HOST": "0.0.0.0",
+    "COKE_HOST": "127.0.0.1",
     "COKE_PORT": "8892",
     "MUJOCO_GL": "egl",
     "PYOPENGL_PLATFORM": "egl",

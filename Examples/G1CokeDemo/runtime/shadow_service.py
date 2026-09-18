@@ -45,6 +45,8 @@ def readiness_status(state: dict, vision: dict, *, observed_at_unix_ns: int, rev
     provider_current = runtime_healthy and state.get("last_error") is None and provider.get("exact_frame_synchronized") is True
     provider_hz = provider.get("observed_hz_6s")
     capture_age_ms = vision.get("latest_capture_age_ms")
+    provider_current = (provider_current and isinstance(capture_age_ms, (int, float))
+                        and 0 <= capture_age_ms <= MAXIMUM_CAMERA_AGE_S * 1000)
     sample_count = report.get("steps") if isinstance(report.get("steps"), int) else 0
     episode_step = state.get("shadow_episode_step")
 
@@ -393,7 +395,7 @@ class ShadowRuntime:
             self._set_error(exc)
 
 
-def make_server(runtime: ShadowRuntime, host: str = "0.0.0.0", port: int = PORT):
+def make_server(runtime: ShadowRuntime, host: str = "127.0.0.1", port: int = PORT):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path = self.path.split("?", 1)[0]

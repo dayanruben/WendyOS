@@ -712,6 +712,7 @@ class IntegratedPhysicalPolicyRunner:
         weight: float,
         next_tick: float,
     ) -> tuple[int, float]:
+        self._check_entry_stop()
         self._publish_with_timing_retries(
             owner,
             step=io_step,
@@ -747,10 +748,16 @@ class IntegratedPhysicalPolicyRunner:
                 self.sleeper(TIMING_RETRY_DELAY_S)
         raise AssertionError("unreachable timing retry state")
 
+    def _check_entry_stop(self) -> None:
+        if self.stop_requested.is_set():
+            raise PolicyStopRequested("operator requested controlled stop during entry")
+
     def _enter_and_hold(self, owner: str) -> dict[str, Any]:
+        self._check_entry_stop()
         fsm = self.physical.enter_running_fsm()
         before = self.physical._wait_settled_state()
         remote_sequence = int(before["remote"]["button_sequence"])
+        self._check_entry_stop()
         arm = self.physical.io.arm(owner, self.physical.command_profile())
         # arm() waits for publisher discovery and fresh feedback. Re-sample the
         # actual pose after that unbounded setup work so the prime/entry target
@@ -777,6 +784,7 @@ class IntegratedPhysicalPolicyRunner:
         # after publisher Init has returned. Prime both writers with the fresh
         # measured pose before the control epoch: arm_sdk weight zero prevents
         # body takeover, while the right hand is commanded to its measured pose.
+        self._check_entry_stop()
         publisher_prime = self._publish_with_timing_retries(
             owner,
             step=io_step,
@@ -797,6 +805,7 @@ class IntegratedPhysicalPolicyRunner:
             )
         maximum_tracking_error = 0.0
         for sample in range(1, sample_count + 1):
+            self._check_entry_stop()
             blend = self.physical._minimum_jerk(sample / sample_count)
             target = start.copy()
             target[indices] = start[indices] + blend * (goal[indices] - start[indices])
@@ -830,6 +839,7 @@ class IntegratedPhysicalPolicyRunner:
         good_since: float | None = None
         deadline = self.monotonic() + ENTRY_SETTLE_TIMEOUT_S
         while REQUIRE_ENTRY_SETTLE and self.monotonic() < deadline:
+            self._check_entry_stop()
             live = self._live_guard_with_timing_retries(
                 expected_remote_sequence=remote_sequence
             )

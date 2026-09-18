@@ -85,6 +85,12 @@ class AsyncVisionBuffer:
             identity = (frame.stream_id, frame.frame_id)
             if self._last_submitted is not None:
                 old_stream, old_frame = self._last_submitted
+                if frame.stream_id != old_stream:
+                    # Invalidate cached and in-flight encodes from the old stream.
+                    self._episode_generation += 1
+                    self._pending = None
+                    self._slots = [None, None]
+                    self._published_slot = 0
                 if frame.stream_id == old_stream and frame.frame_id <= old_frame:
                     self._duplicate_or_old += 1
                     return False

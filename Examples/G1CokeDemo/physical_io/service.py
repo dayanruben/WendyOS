@@ -391,7 +391,6 @@ class PhysicalProbeRuntime:
         self._wait_settled_state()
         ai_mode = self.io.select_ai_mode()
         transitions: list[dict] = []
-        current = before_id
         for target, allowed in (
             (DAMP_FSM, {500}),
             (LOCK_STAND_FSM, {DAMP_FSM}),
@@ -902,7 +901,9 @@ class PhysicalProbeRuntime:
         self.io.close()
 
 
-def make_server(runtime: PhysicalProbeRuntime, host: str = "0.0.0.0", port: int = PORT):
+def make_server(runtime: PhysicalProbeRuntime, host: str = "127.0.0.1", port: int = PORT):
+    from coke_demo.access import require_loopback
+    require_loopback(host)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             return

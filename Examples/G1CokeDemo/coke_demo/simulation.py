@@ -54,7 +54,7 @@ class Simulation:
         self.kp, self.kd = kp[self.order], kd[self.order]
         self.bounds = self.model.jnt_actfrcrange[joints]
         self.can = self.model.body("bottle_body").id
-        self.reset()
+        Simulation.reset(self)
 
     def reset(self):
         mujoco.mj_resetData(self.model, self.data)

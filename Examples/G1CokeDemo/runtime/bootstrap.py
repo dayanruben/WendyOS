@@ -21,8 +21,7 @@ DLA_SHA256 = "928170c9e743257c063c235a610473cfec4be917a36f91a61a890ba2bfc47c94"
 
 def ensure_dla_compiler(root: Path) -> Path:
     library = root / "usr/lib/aarch64-linux-gnu/nvidia/libnvdla_compiler.so"
-    if library.is_file() and library.stat().st_size > 1_000_000:
-        return library
+    # Always extract from the verified package; an existing host file is untrusted.
     packaged = Path("/opt/vendor/nvidia-l4t-dla-compiler.deb")
     if not packaged.is_file():
         raise RuntimeError("pinned JetPack package missing from image")

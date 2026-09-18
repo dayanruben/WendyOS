@@ -268,6 +268,8 @@ class DemoRuntime:
 
 
 def make_server(runtime: DemoRuntime, host="127.0.0.1", port=8892):
+    from coke_demo.access import require_loopback
+    require_loopback(host)
     class Handler(BaseHTTPRequestHandler):
         # Reuse browser connections for the 30 Hz pose stream instead of
         # opening a new VM-forwarded TCP connection for every request.

@@ -147,3 +147,20 @@ sources retain their recorded hashes. The local Three.js and OrbitControls
 files include their MIT license in `ui/vendor/three.LICENSE`.
 
 See [validation results](VALIDATION.md) for measured outcomes and test scope.
+
+### Control access
+
+The operator UI and physical control services listen on literal loopback
+addresses. Access them through an authenticated Wendy tunnel. Their local HTTP
+protocol trusts processes on the device; run them only on a trusted device,
+without untrusted tenants. Operator confirmation expresses intent and does not
+authenticate a caller.
+
+A HIL inference listener on a non-loopback address requires `COKE_HIL_TOKEN`.
+Supply the same secret to the inference server and simulator. Use Wendy's
+authenticated tunnel for remote transport. Raw camera tensors and joint states
+are sent to the selected inference device.
+
+Camera producers must issue a new stream ID after a restart that resets frame
+IDs. The vision buffer invalidates cached and in-flight encodes when it sees a
+new stream ID.

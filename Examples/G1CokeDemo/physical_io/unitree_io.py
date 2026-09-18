@@ -829,10 +829,14 @@ class ExactPolicyUnitreeIO:
                 return
             self._watchdog_stop.set()
             release_error: str | None = None
+            interruption: BaseException | None = None
             try:
                 self.backend.release()
                 self._commands_sent += 2
-            except BaseException as exc:
+            except (KeyboardInterrupt, SystemExit) as exc:
+                release_error = str(exc) or type(exc).__name__
+                interruption = exc
+            except Exception as exc:
                 release_error = str(exc)
             if reason != "requested_stop" or release_error:
                 self._fault = reason if release_error is None else f"{reason}; release_failed: {release_error}"
@@ -845,6 +849,8 @@ class ExactPolicyUnitreeIO:
             self._watchdog_thread = None
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout=1.0)
+        if interruption is not None:
+            raise interruption
         if release_error:
             raise InterlockError(f"policy disarm was incomplete: {release_error}")
 

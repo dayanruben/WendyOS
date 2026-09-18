@@ -256,6 +256,7 @@ export function mountViewer(element) {
   const canvas = element instanceof HTMLCanvasElement ? element : document.createElement('canvas');
   const status = document.createElement('span');
   status.className = 'scene-viewer-status';
+  status.setAttribute('role', 'status');
   status.style.cssText = 'position:absolute;left:14px;bottom:14px;padding:5px 9px;border-radius:6px;background:rgba(255,255,255,.82);color:#555;font:12px system-ui;pointer-events:none';
   status.textContent = 'Loading 3D scene';
   if (canvas !== element) {

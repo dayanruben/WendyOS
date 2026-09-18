@@ -55,7 +55,8 @@ class CokeScene(Simulation):
     def __init__(self, expert: Path):
         self._renderer = None
         self._description = None
-        self.epoch = 0
+        self.epoch = 1
+        self._camera = None
         super().__init__(Path(expert))
         if (self.model.nq, self.model.nv, self.model.nu) != (50, 49, 43):
             raise ValueError("Expected the fixed-base 43-joint G1 with a free can")
@@ -75,7 +76,11 @@ class CokeScene(Simulation):
         self.epoch += 1
         self._camera = None
 
-    def step(self, target_q43):
+    def step(self, target_q43=None):
+        if target_q43 is None:
+            if self.frame >= len(self.references):
+                return False
+            target_q43 = self.references[self.frame]
         target = np.asarray(target_q43, dtype=np.float64)
         if target.shape != (43,) or not np.isfinite(target).all():
             raise ValueError("target_q43 must contain 43 finite joint positions")
@@ -95,6 +100,7 @@ class CokeScene(Simulation):
         if not np.isfinite(self.data.qpos).all() or not np.isfinite(self.data.qvel).all():
             raise RuntimeError("Simulation produced non-finite state")
         self.frame += 1
+        return True
 
     def observation(self):
         # Forward a private data buffer: refreshing camera/pose transforms must
@@ -148,7 +154,7 @@ class CokeScene(Simulation):
             "dq43": self.data.qvel[self.qv].copy(),
             "joint_names": self.names.copy(), "frame": self.frame,
             "sim_time": self.frame * CONTROL_DT, "epoch": self.epoch,
-            "joint_effort": self._pose_data.qfrc_actuator[self.qv].copy(),
+            "joint_effort43": self._pose_data.qfrc_actuator[self.qv].copy(),
             "base_position": self._pose_data.xpos[pelvis].copy(),
             "base_quaternion_wxyz": self._pose_data.xquat[pelvis].copy(),
             "base_linear_velocity": np.zeros(3), "base_angular_velocity": np.zeros(3),
