@@ -9,5 +9,6 @@
       "domainId": 0,
       "discoveryScope": "app"
     }
-  }
+  },
+  "entitlements": [{"type": "network", "mode": "host"}]
 }
