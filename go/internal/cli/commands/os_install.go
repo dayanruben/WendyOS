@@ -2379,8 +2379,10 @@ func resolveDeviceName(flagName string) (string, error) {
 	return strings.TrimSpace(name), nil
 }
 
-// resolveProvisioningJSON runs pre-enrollment per preOpts and returns the
-// marshaled provisioning.json, or nil when enrollment is skipped or not available.
+// resolveProvisioningJSON runs EAB pre-enrollment per preOpts and returns the
+// marshaled acme-enrollment.json, or nil when enrollment is skipped or not
+// available. Full-OS images (disk/Orin/Thor) bake this; the ESP32 path uses
+// resolvePreEnrollment directly.
 func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, deviceName string) ([]byte, error) {
 	if preOpts.mode == preEnrollSkip {
 		return nil, nil
@@ -2392,7 +2394,7 @@ func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, devi
 		}
 		cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
 	}
-	prov, err := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), deviceName)
+	prov, err := resolveACMEPreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), deviceName)
 	if err != nil || prov == nil {
 		return nil, err
 	}

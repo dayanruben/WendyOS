@@ -45,6 +45,7 @@ var (
 		return mapConfirmCancel(tui.Confirm("Continue installing without enrollment?"))
 	}
 	preEnrollDeviceFn = preEnrollDevice
+	preEnrollACMEFn   = preEnrollDeviceACME
 )
 
 // selectEnrollmentAuth resolves which auth session to use for pre-enrollment.
@@ -186,4 +187,57 @@ func ackContinueUnenrolled() error {
 	}
 	fmt.Println("Continuing without enrollment. Run 'wendy device enroll' after first boot.")
 	return nil
+}
+
+// resolveACMEPreEnrollment is the EAB pre-enroll for full-OS install images
+// (disk/Orin/Thor). It parallels resolvePreEnrollment's session-selection and
+// abort UX but mints an EAB credential via DeviceEnrollmentService.EnrollDevice
+// instead of the retired v1 token+certificate path, and drops the org lookup:
+// the tenant rides in the operator session's signed identity. The ESP32/litepb
+// install keeps resolvePreEnrollment unchanged (it is a different device class
+// that does not run the ACME agent). Returns nil to bake nothing.
+func resolveACMEPreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrollOptions, interactive bool, deviceName string) (*acmeEnrollmentBake, error) {
+	switch opts.mode {
+	case preEnrollSkip:
+		return nil, nil
+	case preEnrollAuto:
+		if !interactive || len(cfg.Auth) == 0 {
+			return nil, nil
+		}
+		ok, err := confirmPreEnroll()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+	}
+
+	auth, err := selectEnrollmentAuth(cfg, opts.cloudGRPC, interactive)
+	if err != nil {
+		if errors.Is(err, ErrUserCancelled) {
+			return nil, err
+		}
+		if !interactive {
+			return nil, fmt.Errorf("--pre-enroll: %w", err)
+		}
+		fmt.Printf("Cannot pre-enroll: %v\n", err)
+		return nil, ackContinueUnenrolled()
+	}
+	if auth == nil {
+		fmt.Println("Skipping enrollment. The device will boot unenrolled; run 'wendy device enroll' after first boot.")
+		return nil, nil
+	}
+
+	fmt.Println("Pre-enrolling device with Wendy Cloud...")
+	state, enrollErr := preEnrollACMEFn(ctx, auth, deviceName)
+	if enrollErr == nil {
+		fmt.Println("Device pre-enrolled. It will ACME-enroll from its baked credential on first boot.")
+		return state, nil
+	}
+	if !interactive {
+		return nil, fmt.Errorf("--pre-enroll: pre-enrollment failed: %w", enrollErr)
+	}
+	fmt.Printf("Pre-enrollment failed: %v\n", enrollErr)
+	return nil, ackContinueUnenrolled()
 }

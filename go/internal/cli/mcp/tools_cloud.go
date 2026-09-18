@@ -14,14 +14,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/cloudenroll"
 	"github.com/wendylabsinc/wendy/go/internal/cli/cloudrequest"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
-	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -255,23 +257,40 @@ func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallT
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	tokenResp, err := mcpCreateAssetEnrollmentToken(ctx, auth, name)
+
+	// Same EAB path as the CLI: mint device_id, operator-sign the enrollment
+	// request, EnrollDevice -> EAB, then have the connected agent ACME-enroll.
+	deviceID := uuid.NewString()
+	cfg, err := cloudenroll.EnrollmentConfig(auth, deviceID, "")
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	cloudConn, err := mcpDialCloudGRPC(auth)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	defer cloudConn.Close()
+	tokenCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	cfg, assetID, err := cloudenroll.MintEAB(tokenCtx, cloudConn, auth, cfg, name)
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	_, err = conn.ProvisioningService.StartProvisioning(ctx, &agentpb.StartProvisioningRequest{
-		OrganizationId:  tokenResp.GetOrganizationId(),
-		AssetId:         tokenResp.GetAssetId(),
-		EnrollmentToken: tokenResp.GetEnrollmentToken(),
-		CloudHost:       auth.CloudGRPC,
+
+	resp, err := agentpbv2.NewWendyProvisioningServiceClient(conn.Conn).StartACMEProvisioning(ctx, &agentpbv2.StartACMEProvisioningRequest{
+		CloudHost: auth.CloudGRPC, DirectoryUrl: cfg.DirectoryURL, DeviceId: cfg.DeviceID,
+		EabKeyId: cfg.EABKeyID, EabHmacKey: cfg.EABHMACKey,
 	})
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	out := map[string]any{
-		"organization_id": tokenResp.GetOrganizationId(),
-		"asset_id":        tokenResp.GetAssetId(),
-		"cloud_host":      auth.CloudGRPC,
+		"asset_id":      assetID,
+		"device_id":     cfg.DeviceID,
+		"principal_uri": resp.GetPrincipalUri(),
+		"cloud_host":    auth.CloudGRPC,
 	}
 	return okResult(out), nil
 }
@@ -692,27 +711,6 @@ func (s *mcpServer) offlineDeviceErr(ctx context.Context, auth *config.AuthConfi
 		return nil
 	}
 	return &cloudResolveErr{code: errCodeDeviceUnreachable, msg: fmt.Sprintf("device %q is enrolled but currently reported offline; check the device's power and network connection, or call cloud_discover with online_only=false to list enrolled devices", deviceName)}
-}
-
-func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig, name string) (*cloudpb.CreateAssetEnrollmentTokenResponse, error) {
-	conn, err := mcpDialCloudGRPC(auth)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	cloudCtx, err := mcpCloudContext(ctx, auth)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: int32(auth.Certificates[0].OrganizationID),
-		Name:           name,
-		TtlSeconds:     600,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating enrollment token: %w", err)
-	}
-	return resp, nil
 }
 
 func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter string, onlineOnly bool) ([]*cloudpb.Asset, error) {
