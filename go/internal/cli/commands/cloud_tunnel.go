@@ -76,7 +76,11 @@ func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context
 		}
 	}
 	md := metadata.MD{}
-	if auth.HasAPIKey() {
+	// A DPoP-bound token (OAuth login) must not go out as Bearer — the DPoP
+	// interceptor (dpopDialOptions, installed by withCloudRequestSigning) sets
+	// `authorization: DPoP <token>` plus a per-call proof. Only unbound
+	// API-key/legacy sessions carry a Bearer here (WDY-3107).
+	if auth.HasAPIKey() && !authIsDPoPBound(auth) {
 		bearerToken, err := auth.BearerToken()
 		if err != nil {
 			return nil, fmt.Errorf("loading API token: %w", err)
@@ -716,5 +720,8 @@ func withCloudRequestSigning(auth *config.AuthConfig, options ...grpc.DialOption
 	if signingOption != nil {
 		options = append(options, signingOption)
 	}
+	// Per-RPC DPoP proof for a sender-constrained (cnf-bound) OAuth token; nil
+	// for unbound sessions (WDY-3107).
+	options = append(options, dpopDialOptions(auth)...)
 	return options, nil
 }
