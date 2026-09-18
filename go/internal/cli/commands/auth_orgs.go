@@ -63,7 +63,9 @@ func newAuthListOrgsCmd() *cobra.Command {
 
 Press 'd' on a highlighted organization to mark it as the default for commands
 that target a specific org (such as 'wendy os install --pre-enroll' and
-'wendy device enroll'). Enter selects the highlighted org; press 'q' to quit.`,
+'wendy device enroll'). Press 'x' to clear the default. Press 'r' to remove
+the stored credentials for the highlighted org. Enter copies the highlighted
+org's ID to the clipboard; press 'q' to quit.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -86,7 +88,11 @@ that target a specific org (such as 'wendy os install --pre-enroll' and
 				return nil
 			}
 
-			id, err := pickCloudOrgV2(orgs, pickerAuth, cfg)
+			// Management view: 'd'/'x'/'r' manage the default and stored
+			// credentials, and Enter copies the highlighted org ID and keeps the
+			// picker open. Quitting with 'q' returns ErrUserCancelled, which the
+			// root silences — a clean exit for an inspect-and-manage command.
+			id, err := pickCloudOrgV2(orgs, pickerAuth, cfg, true)
 			if err != nil {
 				return err
 			}

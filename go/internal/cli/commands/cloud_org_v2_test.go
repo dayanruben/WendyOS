@@ -72,7 +72,10 @@ func TestDevicePickerCloudTabV2OrganizationAndDevices(t *testing.T) {
 	}
 	// Switching uses v2 memberships and matches the selected UUID to its session.
 	oldPicker := pickCloudOrgV2
-	pickCloudOrgV2 = func(orgs []*pb.Organization, a *config.AuthConfig, cfg *config.Config) (string, error) {
+	pickCloudOrgV2 = func(orgs []*pb.Organization, a *config.AuthConfig, cfg *config.Config, management bool) (string, error) {
+		if management {
+			t.Error("switch flow must not use the management picker")
+		}
 		if len(orgs) != 1 {
 			t.Fatal("membership list missing")
 		}

@@ -33,6 +33,58 @@ func v2Org(id, name string) *pb.Organization {
 	return &pb.Organization{Id: id, Name: name}
 }
 
+func tenantSession(grpc, tenant string) config.AuthConfig {
+	return config.AuthConfig{
+		CloudGRPC:    grpc,
+		Certificates: []config.CertificateInfo{{PrincipalURI: "spiffe://wendy.sh/tenant/" + tenant + "/operator/test"}},
+	}
+}
+
+// TestRemoveCloudSessionCreds covers the management picker's 'r' action: a
+// session is keyed by (cloud endpoint, tenant UUID), so removal must match both
+// — never the UUID alone, which would drop a same-tenant session on another
+// cloud.
+func TestRemoveCloudSessionCreds(t *testing.T) {
+	const tenantA = "8a53be77-2a69-464f-8f73-83643fe0beaa"
+	const tenantB = "11111111-2222-3333-4444-555555555555"
+
+	t.Run("removes the matching session only", func(t *testing.T) {
+		cfg := &config.Config{Auth: []config.AuthConfig{
+			tenantSession("api.dev.wendy.sh:443", tenantA),
+			tenantSession("api.dev.wendy.sh:443", tenantB),
+		}}
+		if !removeCloudSessionCreds(cfg, "api.dev.wendy.sh:443", tenantA) {
+			t.Fatal("want removed=true")
+		}
+		if len(cfg.Auth) != 1 || cfg.Auth[0].Certificates[0].TenantUUID() != tenantB {
+			t.Fatalf("wrong session removed: %+v", cfg.Auth)
+		}
+	})
+
+	t.Run("no match leaves config untouched", func(t *testing.T) {
+		cfg := &config.Config{Auth: []config.AuthConfig{tenantSession("api.dev.wendy.sh:443", tenantA)}}
+		if removeCloudSessionCreds(cfg, "api.dev.wendy.sh:443", tenantB) {
+			t.Fatal("want removed=false for an unknown tenant")
+		}
+		if len(cfg.Auth) != 1 {
+			t.Fatalf("config mutated on a no-match: %+v", cfg.Auth)
+		}
+	})
+
+	t.Run("same tenant on a different cloud is kept", func(t *testing.T) {
+		cfg := &config.Config{Auth: []config.AuthConfig{
+			tenantSession("api.dev.wendy.sh:443", tenantA),
+			tenantSession("api.prod.wendy.sh:443", tenantA),
+		}}
+		if !removeCloudSessionCreds(cfg, "api.dev.wendy.sh:443", tenantA) {
+			t.Fatal("want removed=true")
+		}
+		if len(cfg.Auth) != 1 || cfg.Auth[0].CloudGRPC != "api.prod.wendy.sh:443" {
+			t.Fatalf("wrong-cloud session removed: %+v", cfg.Auth)
+		}
+	})
+}
+
 // TestCollectOrgsV2DoesNotSwallowErrors is the regression guard for WDY-3101: a
 // failing session must surface its error verbatim and NOT count as an answered
 // session. If the old silent `continue` is reintroduced, okSessions would still
