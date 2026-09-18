@@ -20,6 +20,8 @@ func TestRunOptionalDeviceFlags(t *testing.T) {
 		hilSet, hostSet, wantErr bool
 	}{
 		{name: "omitted"},
+		{name: "stray positional", args: []string{"unexpected"}, wantErr: true},
+		{name: "app argument after dash", args: []string{"--", "app-arg"}},
 		{name: "hil picker", args: []string{"--hil"}, hilSet: true},
 		{name: "hil named", args: []string{"--hil=jetson"}, hil: "jetson", hilSet: true},
 		{name: "hil spaced", args: []string{"--hil", "jetson"}, hil: "jetson", hilSet: true},

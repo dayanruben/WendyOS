@@ -40,7 +40,10 @@ func optionalRunDeviceArgs(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !changed {
-		return nil
+		if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+			return cobra.NoArgs(cmd, args[:dash])
+		}
+		return cobra.NoArgs(cmd, args)
 	}
 	if len(args) != 1 || len(bare) != 1 || cmd.ArgsLenAtDash() >= 0 {
 		return fmt.Errorf("unexpected device arguments; use --hil=DEVICE and --build-host=DEVICE to specify devices")
