@@ -584,7 +584,7 @@ func TestDeviceNeedsInstall(t *testing.T) {
 // Stagefiles, but run skipped it whenever --dockerfile was supplied. HIL
 // supplies its inference build file through the same option.
 func TestRunCommandCompilesExplicitStagefileBeforeLoadingConfig(t *testing.T) {
-	for _, source := range []string{"build.stagefile.yaml", "inference.stagefile.yaml"} {
+	for _, source := range []string{"build.stagefile.yaml", "inference.stagefile.yaml", "./build.stagefile.yaml", "./inference.stagefile.yaml"} {
 		t.Run(source, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, source), []byte(swiftStagefileSource), 0o600); err != nil {
@@ -598,7 +598,7 @@ func TestRunCommandCompilesExplicitStagefileBeforeLoadingConfig(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "wendy.json") {
 				t.Fatalf("expected config error after compilation, got %v", err)
 			}
-			generated, _ := generatedBuildFileFor(source)
+			generated, _ := generatedBuildFileFor(filepath.Clean(source))
 			b, err := os.ReadFile(filepath.Join(dir, generated))
 			if err != nil {
 				t.Fatalf("run did not compile explicit Stagefile: %v", err)

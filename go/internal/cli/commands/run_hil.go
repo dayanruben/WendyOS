@@ -121,7 +121,7 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 		return err
 	}
 	defer peer.Close()
-	buildFile := cfg.HIL.BuildFile
+	buildFile := filepath.Clean(cfg.HIL.BuildFile)
 	if len(cfg.HIL.BuildFilesByGPUArch) > 0 {
 		version, err := agentVersionForRun(ctx, peer)
 		if err != nil {
@@ -206,9 +206,9 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 // and newer GPUs. Select by the inference device, never by the simulator.
 func hilBuildFile(cfg *appconfig.HILConfig, gpuArch string) string {
 	if file := cfg.BuildFilesByGPUArch[gpuArch]; file != "" {
-		return file
+		return filepath.Clean(file)
 	}
-	return cfg.BuildFile
+	return filepath.Clean(cfg.BuildFile)
 }
 
 var hilEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -451,7 +451,7 @@ func waitHILHealthAuthenticated(ctx context.Context, url string, timeout time.Du
 
 // Persist the selected variant's lock before its temporary build context is removed.
 func persistHILStagefileLock(staged, project, buildFile string) error {
-	name := stagefile.LockName(buildFile)
+	name := stagefile.LockName(filepath.Clean(buildFile))
 	if name == "" {
 		return nil
 	}

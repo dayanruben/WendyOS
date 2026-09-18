@@ -225,7 +225,8 @@ func TestHILPickerFlagRejectsUnattendedRuns(t *testing.T) {
 
 func TestHILSelectsBuildFileForInferenceGPU(t *testing.T) {
 	root, cfg := hilFixture(t)
-	cfg.BuildFilesByGPUArch = map[string]string{"sm_121": "spark.stagefile.yaml"}
+	cfg.BuildFilesByGPUArch = map[string]string{"sm_121": "./spark.stagefile.yaml"}
+	cfg.BuildFile = "./build.stagefile.yaml"
 	file := filepath.Join(root, "hil", "spark.stagefile.yaml")
 	if err := os.WriteFile(file, []byte("version: 1\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -300,7 +301,7 @@ func TestBuildHostPickerSkipsSimulatorTab(t *testing.T) {
 }
 
 func TestHILPersistsSelectedStagefileLock(t *testing.T) {
-	for _, source := range []string{"build.stagefile.yaml", "spark.stagefile.yaml"} {
+	for _, source := range []string{"build.stagefile.yaml", "spark.stagefile.yaml", "./build.stagefile.yaml", "./spark.stagefile.yaml"} {
 		stage, project := t.TempDir(), t.TempDir()
 		name := strings.TrimSuffix(source, ".yaml") + ".lock.yaml"
 		contents := []byte("version: 1\nimages:\n  ubuntu: sha256:pinned\n")

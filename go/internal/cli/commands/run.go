@@ -919,6 +919,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		if err := validateDockerfileName(opts.dockerfile); err != nil {
 			return fmt.Errorf("--dockerfile: %w", err)
 		}
+		opts.dockerfile = filepath.Clean(opts.dockerfile)
 		if _, err := confinedDockerfilePath(cwd, opts.dockerfile); err != nil {
 			return fmt.Errorf("--dockerfile: %w", err)
 		}
