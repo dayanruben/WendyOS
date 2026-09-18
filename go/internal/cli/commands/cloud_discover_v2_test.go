@@ -17,7 +17,6 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -152,74 +151,63 @@ func TestDevicePickerSelectsV2UUID(t *testing.T) {
 	}
 }
 
-type discoveryV2Broker struct {
-	cloudpbv2.UnimplementedTunnelBrokerServiceServer
-	opened chan *cloudpbv2.ClientTunnelOpen
-}
-
-func (s *discoveryV2Broker) ClientTunnel(stream grpc.BidiStreamingServer[cloudpbv2.ClientTunnelMessage, cloudpbv2.TunnelData]) error {
-	msg, err := stream.Recv()
-	if err != nil {
-		return err
-	}
-	s.opened <- msg.GetOpen()
-	for {
-		msg, err := stream.Recv()
-		if err != nil {
-			return err
-		}
-		data := msg.GetData()
-		if data == nil {
-			return status.Error(codes.InvalidArgument, "expected tunnel data")
-		}
-		if err := stream.Send(data); err != nil {
-			return err
-		}
-		if data.GetHalfClose() {
-			return nil
-		}
-	}
-}
-
 func TestCloudDiscoveryV2DoesNotUseRetiredRelay(t *testing.T) {
+	// The v2 relay path dials the live wendycloud.tunnel.v2 authorization
+	// service (cloudrelay.OpenTCP → RequestTunnel); it must never dial the
+	// retired wendycloud.v2.TunnelBrokerService. That retired server stub is
+	// being removed from the v2 protos (WDY-3119), so this asserts the invariant
+	// by capturing the method the client actually dials rather than by standing
+	// up the retired stub.
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := grpc.NewServer()
-	broker := &discoveryV2Broker{opened: make(chan *cloudpbv2.ClientTunnelOpen, 1)}
-	cloudpbv2.RegisterTunnelBrokerServiceServer(srv, broker)
+	dialed := make(chan string, 4)
+	srv := grpc.NewServer(grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		if method, ok := grpc.MethodFromServerStream(stream); ok {
+			select {
+			case dialed <- method:
+			default:
+			}
+		}
+		return status.Error(codes.Unimplemented, "stub cloud endpoint")
+	}))
 	go srv.Serve(lis)
 	defer srv.Stop()
-	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
+
 	auth := oidcEnrollmentAuth(t)
+	// The v2 path dials auth.CloudGRPC directly (it ignores any passed broker
+	// conn), so point it at the capturing stub.
+	auth.CloudGRPC = lis.Addr().String()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	id := "00000000-0000-4000-8000-000000000042"
 	d := cloudDiscoveryDevice{v2: &cloudpbv2.Asset{Id: id}, key: id}
-	// Before WDY-3032 a PKI login carried an EC leaf, so this call died at
-	// cloudrelay's "ML-DSA operator request-signing certificate" refusal and
-	// that refusal was what this test asserted. The operator credential is
-	// ML-DSA now, so signing succeeds and the call gets as far as dialing the
-	// relay — which is the point being guarded here anyway: whatever it dials,
-	// it must not be the retired UUID relay RPC.
-	_, err = d.openTunnel(ctx, conn, auth, 50052)
+
+	// Before WDY-3032 a PKI login carried an EC leaf and this died at
+	// cloudrelay's "ML-DSA operator request-signing certificate" refusal. The
+	// operator credential is ML-DSA now, so signing succeeds and the call
+	// reaches the dial — the point guarded here: whatever it dials, never the
+	// retired relay.
+	_, err = d.openTunnel(ctx, nil, auth, 50052)
 	if err == nil {
-		t.Fatal("expected the tunnel dial to fail against the stub broker")
+		t.Fatal("expected the tunnel dial to fail against the stub cloud endpoint")
 	}
 	if strings.Contains(err.Error(), "ML-DSA operator request-signing certificate") {
 		t.Fatalf("operator session still lacks an ML-DSA signing credential: %v", err)
 	}
 	select {
-	case <-broker.opened:
-		t.Fatal("PKI session contacted the retired UUID relay RPC")
+	case method := <-dialed:
+		if strings.Contains(method, "wendycloud.v2.TunnelBrokerService") {
+			t.Fatalf("v2 path dialed the retired relay RPC: %s", method)
+		}
+		if !strings.Contains(method, "wendycloud.tunnel.v2.") {
+			t.Fatalf("v2 path dialed an unexpected service, not the live relay: %s", method)
+		}
 	default:
+		t.Fatal("v2 path made no RPC against the cloud endpoint")
 	}
-
 }
 
 func (s *discoveryV2Server) ListAssets(req *cloudpbv2.ListAssetsRequest, stream grpc.ServerStreamingServer[cloudpbv2.ListAssetsResponse]) error {
