@@ -97,7 +97,7 @@ def _actor_main(index, worlds, source, seed, position_half_range_m, yaw_range_ra
                 return
             else:
                 raise ValueError("Unknown actor command: " + str(command))
-    except BaseException:
+    except Exception:
         try:
             connection.send(("error", traceback.format_exc()))
         finally:
@@ -284,12 +284,14 @@ class CPUProcessMeshEnvironment:
             try:
                 connection.send(("close", None))
             except (BrokenPipeError, EOFError):
+                # The peer already disconnected; cleanup can continue.
                 pass
         for i, process in enumerate(self.processes):
             try:
                 if process.is_alive():
                     self._recv(i, "closed")
             except (BrokenPipeError, EOFError):
+                # The peer already disconnected; cleanup can continue.
                 pass
             process.join(timeout=5)
             if process.is_alive():

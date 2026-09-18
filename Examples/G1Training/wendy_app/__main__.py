@@ -121,6 +121,7 @@ def handler_for(observations):
             try:
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
+                # The peer already disconnected; cleanup can continue.
                 pass
 
         def log_message(self, *args):
@@ -143,6 +144,7 @@ def main():
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        # The finally block stops the server on operator interruption.
         pass
     finally:
         stop.set()

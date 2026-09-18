@@ -214,6 +214,7 @@ def make_server(store, host, port):
             try:
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
+                # The peer already disconnected; cleanup can continue.
                 pass
 
         def log_message(self, *_):

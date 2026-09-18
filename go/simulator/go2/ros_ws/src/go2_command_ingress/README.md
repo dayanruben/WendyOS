@@ -140,24 +140,9 @@ using generated Python types, compare all fields and fixed arrays, check source
 identity stability, and verify oversize rejection followed by recovery. It
 needs no simulator VM, physical device, model, or renderer.
 
-`Dockerfile.test` installs the build/test dependencies, including
-`ros-humble-rosidl-generator-dds-idl`, which the pinned upstream CMake files
-require without declaring in their package manifests. From the repository root:
-
-```sh
-docker build -t wendy-go2-ingress-test:dev \
-  -f simulator/go2/ros_ws/src/go2_command_ingress/Dockerfile.test \
-  simulator/go2/ros_ws/src/go2_command_ingress
-docker run --rm --network none \
-  -v "$PWD/simulator/go2/ros_ws/src:/src:ro" \
-  wendy-go2-ingress-test:dev bash -c \
-  'colcon build --base-paths /src --packages-up-to go2_command_ingress &&
-   colcon test --base-paths /src --packages-select go2_command_ingress --event-handlers console_direct+ &&
-   colcon test-result --verbose'
-```
-
-The source mount is read-only; generated build/install files stay in the
-ephemeral container. Tests use domain 73 inside its isolated loopback network.
+Install `ros-humble-rosidl-generator-dds-idl` before building. The pinned
+upstream CMake files require it without declaring it in their package manifests.
+Tests use domain 73 and need an isolated loopback network.
 
 Humble's Python subscription callback does not expose publisher metadata, which
 is why command ingress uses C++. References:

@@ -31,6 +31,7 @@ func TestHostNetworkAppReusesRobotCameraAfterRestart(t *testing.T) {
 	loop := seedParticipant(m, "lo", 0, 0, "host:lo", "host")
 	oldApp := seedParticipant(m, "", 0, graph.NetworkNamespacePID, graph.Key, graph.InstanceKey)
 	endpoint := rtps.Endpoint{Topic: "rt/frontvideostream", Type: TypeGo2FrontVideo, GUID: rtps.GUID{EntityID: 7}}
+	host.participant.(*fakeDiscoveryLease).endpoints = []rtps.Endpoint{endpoint}
 	m.registerEndpoint(host, endpoint)
 	m.registerEndpoint(oldApp, endpoint)
 	if got := m.List(); len(got) != 2 {
