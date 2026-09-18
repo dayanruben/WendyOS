@@ -18,6 +18,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -79,14 +80,21 @@ func rotatingOAuthSession(t *testing.T) (*config.AuthConfig, *atomic.Int32) {
 }
 
 func checkRefreshedCloudContext(ctx context.Context, auth *config.AuthConfig) error {
-	cloudCtx, err := cloudContext(ctx, auth)
-	if err != nil {
+	// A cnf-bound token reaches an RPC through the DPoP interceptor now, not as
+	// a Bearer on cloudContext (WDY-3107). Drive the interceptor and assert the
+	// refreshed access token rode out on the proof-bound authorization header.
+	var rpcCtx context.Context
+	invoker := func(ic context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
+		rpcCtx = ic
+		return nil
+	}
+	if err := dpopUnaryInterceptor(auth)(ctx, "/wendy.cloud.v2.OrganizationService/ListOrganizations", nil, nil, nil, invoker); err != nil {
 		return err
 	}
-	md, _ := metadata.FromOutgoingContext(cloudCtx)
+	md, _ := metadata.FromOutgoingContext(rpcCtx)
 	values := md.Get("authorization")
-	if len(values) != 1 || !strings.HasPrefix(values[0], "Bearer e30.") {
-		return fmt.Errorf("RPC context did not use the refreshed access token")
+	if len(values) != 1 || !strings.HasPrefix(values[0], "DPoP e30.") {
+		return fmt.Errorf("RPC context did not use the refreshed access token via DPoP: %v", values)
 	}
 	return nil
 }
