@@ -10,7 +10,7 @@ import tempfile
 def deployment_env(entries):
     values = dict(entry.split("=", 1) for entry in entries)
     token = values.get("COKE_HIL_TOKEN", os.environ.get("COKE_HIL_TOKEN", ""))
-    if len(token) < 16 or any(char in token for char in "\r\n"):
+    if len(token) < 16 or not token.isascii() or any(ord(char) < 33 or ord(char) > 126 for char in token):
         raise ValueError("set COKE_HIL_TOKEN to a secret of at least 16 characters before deploying")
     values["COKE_HIL_TOKEN"] = token
     return [f"{key}={value}" for key, value in values.items()]
