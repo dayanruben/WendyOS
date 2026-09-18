@@ -159,7 +159,10 @@ func (m topModel) updateLogs(msg topLogsMsg) (tea.Model, tea.Cmd) {
 			service := resourceServiceName(resource.GetResource())
 			for _, scope := range resource.GetScopeLogs() {
 				for _, record := range scope.GetLogRecords() {
-					writeLogRecord(&text, service, record)
+					for _, line := range formatLogLines(sanitizeLogText(service), record) {
+						text.WriteString(line)
+						text.WriteByte('\n')
+					}
 				}
 			}
 		}

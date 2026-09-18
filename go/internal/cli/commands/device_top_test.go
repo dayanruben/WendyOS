@@ -672,3 +672,12 @@ func TestTopView_NoBatteryMeterWithoutOne(t *testing.T) {
 		t.Fatalf("top view lost its existing meters:\n%s", view)
 	}
 }
+
+func TestTopKeyBarFitsNarrowTerminals(t *testing.T) {
+	for _, width := range []int{1, 20, 40, 57, 80} {
+		bar := (topModel{}).topKeyBar(width)
+		if got := visibleWidth(bar); got != width {
+			t.Fatalf("width %d rendered %d cells", width, got)
+		}
+	}
+}

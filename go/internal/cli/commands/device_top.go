@@ -1302,7 +1302,7 @@ func (m topModel) topKeyBar(width int) string {
 	if plainLen < width {
 		b.WriteString(topKeyLabel.Render(strings.Repeat(" ", width-plainLen)))
 	}
-	return b.String()
+	return padOrCrop(b.String(), width)
 }
 
 func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) error {
