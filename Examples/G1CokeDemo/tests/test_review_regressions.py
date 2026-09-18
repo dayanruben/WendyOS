@@ -142,3 +142,35 @@ def test_standalone_hil_deploy_requires_token(monkeypatch):
     assert deployment_env(["OTHER=value"]) == ["OTHER=value", "COKE_HIL_TOKEN=deployment-secret-1234"]
     with pytest.raises(ValueError, match="COKE_HIL_TOKEN"):
         deployment_env(["COKE_HIL_TOKEN="])
+
+
+def test_failed_scene_worker_rejects_reset(monkeypatch, tmp_path):
+    from coke_demo import scene
+    from coke_demo.service import DemoRuntime
+    monkeypatch.setattr(scene, "CokeScene", Mock(side_effect=RuntimeError("bad assets")))
+    runtime = DemoRuntime(tmp_path, ros_enabled=False)
+    runtime.shutdown.set()
+    runtime.run()
+    assert runtime.status()["restart_required"]
+    with pytest.raises(ValueError, match="restart"):
+        runtime.request("reset", {})
+    assert runtime.commands.empty()
+    assert runtime.status()["phase"] == "error"
+
+
+def test_physical_shutdown_stops_before_server_close_and_always_closes_io(monkeypatch):
+    from runtime import physical_policy_service as service
+    physical = Mock()
+    runner = Mock(stop_requested=threading.Event())
+    runner.close.side_effect = RuntimeError("camera cleanup failed")
+    server = Mock()
+    server.serve_forever.side_effect = KeyboardInterrupt
+    def close_server():
+        assert runner.stop_requested.is_set()
+    server.server_close.side_effect = close_server
+    monkeypatch.setattr(service, "PhysicalProbeRuntime", lambda: physical)
+    monkeypatch.setattr(service, "make_server", lambda _: server)
+    monkeypatch.setattr(IntegratedPhysicalPolicyRunner, "load", lambda *args: runner)
+    with pytest.raises(RuntimeError, match="camera cleanup"):
+        service.main()
+    physical.close.assert_called_once()

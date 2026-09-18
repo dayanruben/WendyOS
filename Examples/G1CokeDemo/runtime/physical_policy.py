@@ -489,8 +489,8 @@ class IntegratedPhysicalPolicyRunner:
         try:
             measured = np.asarray(self.physical.io.snapshot()["q_43"], dtype=float)
             anchor_source = "measured_pose"
-        except Exception:
-            pass
+        except Exception as exc:
+            anchor_source = f"last_target: snapshot unavailable ({type(exc).__name__})"
         if last_target is None and measured is None:
             self.physical.io.disarm(disarm_reason)
             return {
@@ -585,6 +585,7 @@ class IntegratedPhysicalPolicyRunner:
             try:
                 self.physical.io.disarm("fault_hold_preflight_failed")
             except Exception:
+                # Preserve the original preflight error if best-effort disarm fails.
                 pass
             return {
                 "engaged": False,

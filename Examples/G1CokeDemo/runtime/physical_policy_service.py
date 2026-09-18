@@ -21,11 +21,17 @@ def main() -> None:
         server = make_server(physical)
         server.serve_forever()
     finally:
-        if server is not None:
-            server.server_close()
         if runner is not None:
-            runner.close()
-        physical.close()
+            runner.stop_requested.set()
+        try:
+            if server is not None:
+                server.server_close()
+        finally:
+            try:
+                if runner is not None:
+                    runner.close()
+            finally:
+                physical.close()
 
 
 if __name__ == "__main__":

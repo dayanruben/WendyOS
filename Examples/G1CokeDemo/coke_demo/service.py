@@ -46,7 +46,7 @@ class DemoRuntime:
             "checkpoint": "reference-residual-gru-u002525", "checkpoint_sha256": EXPECTED_CHECKPOINT_SHA256,
             "scene": "attempt-000001", "fixed_base": True, "joint_count": 43,
             "mask_source": "MuJoCo visible can pixels", "physical_commands_sent": 0,
-            "ros_enabled": ros_enabled, "ros": None, "last_error": None,
+            "ros_enabled": ros_enabled, "ros": None, "last_error": None, "restart_required": False,
             "hil_enabled": bool(policy_url), "hil": None,
             "metrics": {}, "inference_ms": None, "can_visible": False,
         }
@@ -59,6 +59,8 @@ class DemoRuntime:
         if not isinstance(body, dict):
             raise ValueError("Request must be an object")
         with self.lock:
+            if self.state["restart_required"]:
+                raise ValueError("Worker failed; restart the application before sending commands")
             phase = self.state["phase"]
             if phase == "loading":
                 raise ValueError("Scene is still loading")
@@ -101,10 +103,9 @@ class DemoRuntime:
     def run(self):
         # The scene and its OpenGL context stay on this thread for their entire
         # lifetime, including on macOS. HTTP and ROS callbacks only queue work.
-        from .scene import CokeScene
-
         scene = policy = bridge = remote = None
         try:
+            from .scene import CokeScene
             scene = CokeScene(self.root / "expert")
             policy = CachedReferenceResidualPolicy(self.root / "bundle", device="cpu")
             sensor_names = policy.contract["sensor_input_contract"]["joint_names"]
@@ -253,7 +254,7 @@ class DemoRuntime:
                     )
                 self.shutdown.wait(max(0, (.025 if phase == "running" else .1) - (time.monotonic() - tick)))
         except Exception as exc:
-            self._update(phase="error", last_error=f"{type(exc).__name__}: {exc}")
+            self._update(phase="error", restart_required=True, last_error=f"{type(exc).__name__}: {exc}")
             # Keep the operator page available to explain initialization faults.
             self.shutdown.wait()
         finally:

@@ -50,11 +50,12 @@ If the VM is already running, omit `vm start`.
 
 The app can also run in a generic WendyOS VM. It carries its own scene and
 does not require `wendy vm robot start`. Select that VM with `--device vm:NAME`.
-For a standalone container:
+For a standalone container on a Linux Docker host, use host networking so the
+operator API remains reachable on host loopback:
 
 ```sh
 docker build -t g1-coke-demo:dev .
-docker run --rm -p 8892:8892 g1-coke-demo:dev
+docker run --rm --network host g1-coke-demo:dev
 ```
 
 ## Controllers and source provenance
