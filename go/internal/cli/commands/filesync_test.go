@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -155,13 +156,13 @@ func TestDiffManifests_SortsOperationsDeterministically(t *testing.T) {
 	}}
 
 	result := diffManifests(local, remote)
-	if got, want := result.contentTransfers, []string{"b.bin", "c.bin"}; !equalStrings(got, want) {
+	if got, want := result.contentTransfers, []string{"b.bin", "c.bin"}; !slices.Equal(got, want) {
 		t.Fatalf("contentTransfers = %v, want %v", got, want)
 	}
 	if len(result.modeOnly) != 1 || result.modeOnly[0].path != "a.bin" {
 		t.Fatalf("modeOnly = %+v, want a.bin", result.modeOnly)
 	}
-	if got, want := result.staleRemote, []string{"stale.bin"}; !equalStrings(got, want) {
+	if got, want := result.staleRemote, []string{"stale.bin"}; !slices.Equal(got, want) {
 		t.Fatalf("staleRemote = %v, want %v", got, want)
 	}
 }
@@ -557,7 +558,7 @@ func TestSyncFiles_DeterministicOperationOrder(t *testing.T) {
 		}
 	}
 	wantOrder := []string{"commit:b.bin", "commit:c.bin", "mode:a.bin", "delete:stale.bin"}
-	if !equalStrings(gotOrder, wantOrder) {
+	if !slices.Equal(gotOrder, wantOrder) {
 		t.Fatalf("operation order = %v, want %v", gotOrder, wantOrder)
 	}
 	if !strings.Contains(output, "mode changed: a.bin 0644 -> 0755") {
@@ -685,7 +686,7 @@ func TestSyncFiles_StaleOnlySendsExplicitDelete(t *testing.T) {
 		}
 	})
 
-	if !equalStrings(srv.deletedPaths, []string{"stale.bin"}) {
+	if !slices.Equal(srv.deletedPaths, []string{"stale.bin"}) {
 		t.Fatalf("deletedPaths = %v, want [stale.bin]", srv.deletedPaths)
 	}
 	if !strings.Contains(output, "deleted: stale.bin") {
@@ -701,18 +702,6 @@ func TestSyncFiles_StaleOnlySendsExplicitDelete(t *testing.T) {
 func sha256Bytes(data []byte) []byte {
 	h := sha256.Sum256(data)
 	return h[:]
-}
-
-func equalStrings(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func captureStdout(t *testing.T, fn func()) string {
