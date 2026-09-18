@@ -2,6 +2,7 @@
 package appconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -329,6 +330,19 @@ type HILConfig struct {
 	HealthSchema        string            `json:"healthSchema,omitempty"`
 	TokenEnv            string            `json:"tokenEnv,omitempty"`
 	Env                 map[string]string `json:"env,omitempty"`
+}
+
+// UnmarshalJSON rejects HIL typos before they can silently disable protocol checks.
+func (c *HILConfig) UnmarshalJSON(data []byte) error {
+	type plain HILConfig
+	var parsed plain
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&parsed); err != nil {
+		return fmt.Errorf("hil: %w", err)
+	}
+	*c = HILConfig(parsed)
+	return nil
 }
 
 // HooksConfig holds optional lifecycle hook commands.

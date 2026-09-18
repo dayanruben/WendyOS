@@ -24,6 +24,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/vm"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
+	stagefilelock "github.com/wendylabsinc/wendy/go/internal/stagefile/lock"
 )
 
 // HIL owns a cloud inference deployment and a local forward for the lifetime
@@ -151,8 +153,13 @@ func runHILCommand(ctx context.Context, opts runOptions, peerName string) error 
 	if token != "" {
 		peerOpts.env = append(peerOpts.env, cfg.HIL.TokenEnv+"="+token)
 	}
-	if err := runCommand(ctx, peerOpts); err != nil {
-		return fmt.Errorf("deploying HIL inference: %w", err)
+	deployErr := runCommand(ctx, peerOpts)
+	lockErr := persistHILStagefileLock(staged, filepath.Join(root, cfg.HIL.Project), buildFile)
+	if deployErr != nil {
+		return errors.Join(fmt.Errorf("deploying HIL inference: %w", deployErr), lockErr)
+	}
+	if lockErr != nil {
+		return lockErr
 	}
 	// The simulator build must not include the inference staging tree.
 	cleanup()
@@ -429,7 +436,7 @@ func waitHILHealthAuthenticated(ctx context.Context, url string, timeout time.Du
 				return nil
 			}
 			err = fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)
-			if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout && response.StatusCode != http.StatusTooManyRequests {
 				return err
 			}
 		}
@@ -440,4 +447,30 @@ func waitHILHealthAuthenticated(ctx context.Context, url string, timeout time.Du
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+// Persist the selected variant's lock before its temporary build context is removed.
+func persistHILStagefileLock(staged, project, buildFile string) error {
+	name := stagefile.LockName(buildFile)
+	if name == "" {
+		return nil
+	}
+	source := filepath.Join(staged, name)
+	if _, err := os.Lstat(source); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if _, err := confinedHILPath(staged, name); err != nil {
+		return err
+	}
+	pinned, err := stagefilelock.Load(source)
+	if err != nil {
+		return fmt.Errorf("reading HIL Stagefile lock: %w", err)
+	}
+	if pinned == nil {
+		return nil
+	}
+	if err := pinned.Save(filepath.Join(project, name)); err != nil {
+		return fmt.Errorf("saving HIL Stagefile lock: %w", err)
+	}
+	return nil
 }

@@ -345,3 +345,12 @@ func defOf(t *testing.T, schema map[string]any, name string) map[string]any {
 	}
 	return def
 }
+
+func TestHILRejectsUnknownJSONKeys(t *testing.T) {
+	if _, err := LoadFromBytes([]byte(`{"hil":{"healthSchem":"expected"}}`)); err == nil {
+		t.Fatal("silently accepted HIL typo")
+	}
+	if _, err := LoadFromBytes([]byte(`{"hil":{"healthSchema":"expected","tokenEnv":"TOKEN"}}`)); err != nil {
+		t.Fatal(err)
+	}
+}

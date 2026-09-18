@@ -298,3 +298,36 @@ func TestBuildHostPickerSkipsSimulatorTab(t *testing.T) {
 		}
 	}
 }
+
+func TestHILPersistsSelectedStagefileLock(t *testing.T) {
+	for _, source := range []string{"build.stagefile.yaml", "spark.stagefile.yaml"} {
+		stage, project := t.TempDir(), t.TempDir()
+		name := strings.TrimSuffix(source, ".yaml") + ".lock.yaml"
+		contents := []byte("version: 1\nimages:\n  ubuntu: sha256:pinned\n")
+		if err := os.WriteFile(filepath.Join(stage, name), contents, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := persistHILStagefileLock(stage, project, source); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(project, name))
+		if err != nil || !strings.Contains(string(data), "sha256:pinned") {
+			t.Fatalf("lock not preserved: %s %v", data, err)
+		}
+	}
+	if err := persistHILStagefileLock(t.TempDir(), t.TempDir(), "Dockerfile"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHILHealthRejectsPermanentClientErrorsImmediately(t *testing.T) {
+	for _, code := range []int{400, 404, 405} {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(code) }))
+		err := waitHILHealthAuthenticated(context.Background(), server.URL, time.Second, "", "")
+		server.Close()
+		if err == nil || calls != 1 {
+			t.Fatalf("status %d: calls=%d err=%v", code, calls, err)
+		}
+	}
+}
