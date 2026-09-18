@@ -33,6 +33,7 @@ type audioOpResultMsg struct {
 }
 
 type audioTUIHandler interface {
+	CanListen() bool
 	SetDefault(*agentpbv2.AudioDevice) tea.Cmd
 	SetVolume(*agentpbv2.AudioDevice, uint32) tea.Cmd
 	Listen(context.Context, *agentpbv2.AudioDevice) tea.Cmd
@@ -192,6 +193,11 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.busy || m.handler == nil {
 				return m, nil
 			}
+			if !m.handler.CanListen() {
+				m.flash = "Audio playback is not available in this CLI build."
+				m.isError = true
+				return m, nil
+			}
 			device := m.selectedDevice()
 			if device == nil || device.GetType() != agentpbv2.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT {
 				m.flash = "Select an input device to listen."
@@ -296,7 +302,9 @@ func (m audioTUIModel) View() string {
 	if device := m.selectedDevice(); device != nil {
 		switch device.GetType() {
 		case agentpbv2.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT:
-			hint += " · l listen"
+			if m.handler != nil && m.handler.CanListen() {
+				hint += " · l listen"
+			}
 		case agentpbv2.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT:
 			hint += " · ←/→ volume"
 		}
@@ -311,6 +319,8 @@ type audioRPCHandler struct {
 	client       agentpbv2.WendyAudioServiceClient
 	streamClient agentpb.WendyAudioServiceClient
 }
+
+func (h *audioRPCHandler) CanListen() bool { return realtimeAudioAvailable }
 
 func (h *audioRPCHandler) Listen(ctx context.Context, device *agentpbv2.AudioDevice) tea.Cmd {
 	return func() tea.Msg {

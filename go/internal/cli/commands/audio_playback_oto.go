@@ -13,6 +13,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+const realtimeAudioAvailable = true
+
 // Oto permits one context per process. Reuse it when the audio picker starts
 // another listening session after the previous player has been closed.
 var realtimeAudioOutput struct {

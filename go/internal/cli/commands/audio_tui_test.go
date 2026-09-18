@@ -14,12 +14,15 @@ import (
 )
 
 type fakeAudioTUIHandler struct {
-	defaultDevice *agentpbv2.AudioDevice
-	volumeDevice  *agentpbv2.AudioDevice
-	volume        uint32
-	listenDevice  *agentpbv2.AudioDevice
-	listenContext context.Context
+	playbackUnavailable bool
+	defaultDevice       *agentpbv2.AudioDevice
+	volumeDevice        *agentpbv2.AudioDevice
+	volume              uint32
+	listenDevice        *agentpbv2.AudioDevice
+	listenContext       context.Context
 }
+
+func (h *fakeAudioTUIHandler) CanListen() bool { return !h.playbackUnavailable }
 
 func (h *fakeAudioTUIHandler) Listen(ctx context.Context, device *agentpbv2.AudioDevice) tea.Cmd {
 	h.listenDevice = device
@@ -238,5 +241,22 @@ func TestListenToAudioInputReportsStreamFailure(t *testing.T) {
 	err := listenToAudioInput(context.Background(), client, 513, nil)
 	if err == nil || !strings.Contains(err.Error(), "microphone unavailable") {
 		t.Fatalf("stream failure = %v", err)
+	}
+}
+
+func TestAudioTUIUnavailablePlayback(t *testing.T) {
+	handler := &fakeAudioTUIHandler{playbackUnavailable: true}
+	model := newAudioTUIModel(audioTUITestDevices(), handler)
+	if strings.Contains(model.View(), "l listen") {
+		t.Fatal("unsupported playback advertised")
+	}
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	model = updated.(audioTUIModel)
+	if cmd != nil || handler.listenDevice != nil || model.listening != nil || !model.isError {
+		t.Fatal("unsupported playback must not open an audio stream")
+	}
+	rpc := &audioRPCHandler{}
+	if rpc.CanListen() != realtimeAudioAvailable {
+		t.Fatal("RPC playback capability differs from build")
 	}
 }

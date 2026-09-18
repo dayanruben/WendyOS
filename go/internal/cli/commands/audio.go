@@ -24,7 +24,7 @@ func newAudioCmd() *cobra.Command {
 		Short: "Manage audio devices on the target device",
 		Long: "Interactively manage audio devices on the target device. " +
 			"Use up/down to select a device, Enter to set it as the default, " +
-			"left/right to adjust playback volume, and l to listen to an input device.",
+			"left/right to adjust playback volume.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if jsonOutput || !isInteractiveTerminal() {
@@ -32,6 +32,10 @@ func newAudioCmd() *cobra.Command {
 			}
 			return runAudioTUI(cmd)
 		},
+	}
+
+	if realtimeAudioAvailable {
+		cmd.Long += " Press l to listen to an input device."
 	}
 
 	cmd.AddCommand(
