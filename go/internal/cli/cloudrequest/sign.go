@@ -7,6 +7,7 @@ import (
 	"crypto"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -22,13 +23,13 @@ import (
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
-	metadataKey     = "x-wendy-request-signature"
-	brokerAudience  = "https://cloud.wendy.sh/broker"
-	emptyBodyDigest = "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
-	signatureTTL    = 30 * time.Second
+	metadataKey    = "x-wendy-request-signature"
+	brokerAudience = "https://cloud.wendy.sh/broker"
+	signatureTTL   = 30 * time.Second
 )
 
 // Signer creates the JWS request descriptors required by Wendy Cloud for
@@ -146,7 +147,21 @@ func (s *Signer) unaryClientInterceptor() grpc.UnaryClientInterceptor {
 			return err
 		}
 		if required {
-			envelope, err := s.sign(strings.TrimPrefix(method, "/"), resource)
+			// Sign exactly the bytes that go on the wire. Marshal the request
+			// once here, hash those bytes for body_sha256, then force a codec
+			// that hands the invoker the same bytes verbatim. The broker hashes
+			// the request as received (WDY-3007); letting grpc marshal a second
+			// time could put different bytes on the wire than we signed.
+			msg, ok := req.(proto.Message)
+			if !ok {
+				return requestTypeError(method, req)
+			}
+			raw, err := proto.Marshal(msg)
+			if err != nil {
+				return fmt.Errorf("marshaling Cloud request %s: %w", method, err)
+			}
+			sum := sha256.Sum256(raw)
+			envelope, err := s.sign(strings.TrimPrefix(method, "/"), resource, base64.RawURLEncoding.EncodeToString(sum[:]))
 			if err != nil {
 				return fmt.Errorf("signing Cloud request %s: %w", method, err)
 			}
@@ -158,6 +173,7 @@ func (s *Signer) unaryClientInterceptor() grpc.UnaryClientInterceptor {
 			}
 			md.Set(metadataKey, envelope)
 			ctx = metadata.NewOutgoingContext(ctx, md)
+			opts = append(opts, grpc.ForceCodec(wireCodec{raw: raw}))
 		}
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
@@ -198,7 +214,7 @@ func requestTypeError(method string, req any) error {
 	return fmt.Errorf("cannot sign Cloud request %s with message type %T", method, req)
 }
 
-func (s *Signer) sign(operation, resource string) (string, error) {
+func (s *Signer) sign(operation, resource, bodyDigest string) (string, error) {
 	nonceBytes := make([]byte, 32)
 	if _, err := io.ReadFull(s.random, nonceBytes); err != nil {
 		return "", fmt.Errorf("generating request nonce: %w", err)
@@ -206,7 +222,7 @@ func (s *Signer) sign(operation, resource string) (string, error) {
 	now := s.now().Unix()
 	descriptor := map[string]any{
 		"aud":         s.audience,
-		"body_sha256": emptyBodyDigest,
+		"body_sha256": bodyDigest,
 		"expiry":      now + int64(signatureTTL/time.Second),
 		"iat":         now,
 		"nonce":       base64.RawURLEncoding.EncodeToString(nonceBytes),
@@ -271,6 +287,24 @@ func (s *Signer) signPayload(payload []byte, chain []string) (string, error) {
 		return "", fmt.Errorf("signing descriptor: %w", err)
 	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+// wireCodec forwards the exact request bytes the signer already hashed for
+// body_sha256, so grpc puts those bytes — not a fresh, possibly different
+// marshalling — on the wire. Replies decode with the standard proto codec.
+// Name is "proto" so the content-subtype and the server's codec are unchanged.
+type wireCodec struct{ raw []byte }
+
+func (wireCodec) Name() string { return "proto" }
+
+func (c wireCodec) Marshal(any) ([]byte, error) { return c.raw, nil }
+
+func (wireCodec) Unmarshal(data []byte, v any) error {
+	msg, ok := v.(proto.Message)
+	if !ok {
+		return fmt.Errorf("cloud request codec: reply type %T is not a proto message", v)
+	}
+	return proto.Unmarshal(data, msg)
 }
 
 // canonicalJSON is sufficient for the request descriptor's deliberately
