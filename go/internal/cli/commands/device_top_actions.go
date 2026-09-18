@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 )
@@ -221,8 +222,8 @@ func (m topModel) updateLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m topModel) logsView() string {
 	width := m.logsViewport.Width
-	title := topHeaderBar.Render(padOrCrop(" Logs: "+m.logsApp, width))
-	status := topValDim.Render(padOrCrop(" "+m.logsStatus, width))
+	title := topHeaderBar.Render(padOrCrop(" Logs: "+tui.StripControl(m.logsApp), width))
+	status := topValDim.Render(padOrCrop(" "+tui.StripControl(m.logsStatus), width))
 	footer := topValDim.Render(padOrCrop(" esc back · ↑/↓ scroll · pgup/pgdown page · end follow · q quit", width))
 	return strings.Join([]string{title, status, m.logsViewport.View(), footer}, "\n")
 }

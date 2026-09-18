@@ -255,3 +255,21 @@ func TestTopLogsSanitizeRemoteTerminalControls(t *testing.T) {
 		t.Fatal("discarded printable log content")
 	}
 }
+
+func TestTopLogsSanitizeTitleAndStatus(t *testing.T) {
+	m := newTopModel(context.Background(), nil, time.Second)
+	m.rows = []topRow{{name: "robot\x1b[2J\r\n\u202eforged"}}
+	model, _ := m.openLogs()
+	m = model.(topModel)
+	defer m.logsCancel()
+	m.logsStatus = "error\x1b]52;c;secret\a\r\n\u202eforged"
+	rendered := m.logsView()
+	for _, control := range []string{"\x1b[2J", "\x1b]", "\r", "\a", "\u202e"} {
+		if strings.Contains(rendered, control) {
+			t.Fatalf("remote terminal control survived: %q", rendered)
+		}
+	}
+	if !strings.Contains(rendered, "robot") || !strings.Contains(rendered, "error") {
+		t.Fatal("discarded readable title/status")
+	}
+}
