@@ -108,7 +108,14 @@ func listCloudOrganizationsV2Impl(ctx context.Context, auth *config.AuthConfig) 
 	return nil, fmt.Errorf("Cloud returned too many organization pages")
 }
 
-var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg *config.Config) (string, error) {
+// pickCloudOrgV2 shows the v2 organization picker. 'd' sets the default for
+// every flow. When management is true ('wendy auth list-orgs'), the picker also
+// offers 'x' (clear the default), 'r' (remove stored credentials) and Enter
+// (copy the org ID) — the affordances the legacy v1 picker had, ported onto the
+// v2 identity (WDY-3101). Selection flows pass management=false so Enter selects
+// and the picker closes; wiring copy-on-Enter there would dead-end the wizard
+// (WDY-1840).
+var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg *config.Config, management bool) (string, error) {
 	picker := tui.NewPickerWithTitleAndColumns("Select an organisation", authPickerColumns)
 	if cfg.DefaultCloudGRPC == auth.CloudGRPC {
 		picker.DefaultKey = cfg.DefaultTenantUUID
@@ -118,6 +125,41 @@ var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg 
 			return fmt.Sprint(err)
 		}
 		return "Default set to " + item.Name + "."
+	}
+	if management {
+		picker.OnUnsetDefault = func() string {
+			c, err := config.Load()
+			if err != nil {
+				return fmt.Sprintf("Could not clear default: %v", err)
+			}
+			c.DefaultCloudGRPC = ""
+			c.DefaultOrgID = 0
+			c.DefaultTenantUUID = ""
+			_ = config.Save(c)
+			return "Default cleared."
+		}
+		picker.OnRemoveItem = func(item tui.PickerItem) (string, bool, *tui.PickerItem) {
+			id, _ := item.Value.(string)
+			c, err := config.Load()
+			if err != nil {
+				return fmt.Sprintf("Could not remove credentials: %v", err), true, nil
+			}
+			if !removeCloudSessionCreds(c, auth.CloudGRPC, id) {
+				return fmt.Sprintf("No credentials stored for %s.", item.Name), true, nil
+			}
+			if err := config.Save(c); err != nil {
+				return fmt.Sprintf("Could not save config: %v", err), true, nil
+			}
+			// Keep the row visible: the account still belongs to the org, it
+			// just has no local credentials now.
+			kept := item
+			return fmt.Sprintf("Credentials removed for %s.", item.Name), false, &kept
+		}
+		picker.OnCopyItem = func(item tui.PickerItem) string {
+			id, _ := item.Value.(string)
+			_ = clipboardWriter(id)
+			return fmt.Sprintf("Org ID %s (%s) copied to clipboard.", id, item.Name)
+		}
 	}
 	var items []tui.PickerItem
 	for _, org := range orgs {
@@ -138,6 +180,24 @@ var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg 
 	return result.Selected().Value.(string), nil
 }
 
+// removeCloudSessionCreds drops the stored session for (cloudGRPC, tenantUUID)
+// from cfg in place and reports whether one was removed. A v2 org is keyed by
+// its (cloud endpoint, tenant UUID) pair — matching on the UUID alone would
+// delete a same-UUID session on a different cloud.
+func removeCloudSessionCreds(cfg *config.Config, cloudGRPC, tenantUUID string) bool {
+	filtered := cfg.Auth[:0]
+	removed := false
+	for _, a := range cfg.Auth {
+		if a.CloudGRPC == cloudGRPC && len(a.Certificates) > 0 && a.Certificates[0].TenantUUID() == tenantUUID {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	cfg.Auth = filtered
+	return removed
+}
+
 func switchCloudOrganizationV2(ctx context.Context, cfg *config.Config, source *config.AuthConfig) (*config.AuthConfig, *config.Config, error) {
 	orgs, err := listCloudOrganizationsV2(ctx, source)
 	if err != nil {
@@ -146,7 +206,7 @@ func switchCloudOrganizationV2(ctx context.Context, cfg *config.Config, source *
 	if len(orgs) == 0 {
 		return nil, cfg, fmt.Errorf("your account belongs to no organizations")
 	}
-	id, err := pickCloudOrgV2(orgs, source, cfg)
+	id, err := pickCloudOrgV2(orgs, source, cfg, false)
 	if err != nil {
 		return nil, cfg, err
 	}
