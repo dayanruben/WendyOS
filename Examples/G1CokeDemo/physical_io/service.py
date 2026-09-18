@@ -7,7 +7,8 @@ import os
 import threading
 import time
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from coke_demo.http_server import DrainingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -909,6 +910,7 @@ def make_server(runtime: PhysicalProbeRuntime, host: str = "127.0.0.1", port: in
     from coke_demo.access import require_loopback
     require_loopback(host)
     class Handler(BaseHTTPRequestHandler):
+        timeout = 10
         def log_message(self, *_args):
             return
 
@@ -991,7 +993,7 @@ def make_server(runtime: PhysicalProbeRuntime, host: str = "127.0.0.1", port: in
             self.end_headers()
             self.wfile.write(body)
 
-    return ThreadingHTTPServer((host, port), Handler)
+    return DrainingHTTPServer((host, port), Handler)
 
 
 def main() -> None:

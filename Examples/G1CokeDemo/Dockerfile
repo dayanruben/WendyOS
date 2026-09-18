@@ -39,6 +39,7 @@ FROM dependencies AS runtime
 WORKDIR /app
 COPY bundle ./bundle
 COPY expert ./expert
+COPY assets.lock.json ./assets.lock.json
 COPY runtime ./runtime
 COPY physical_io ./physical_io
 COPY coke_demo ./coke_demo

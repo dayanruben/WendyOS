@@ -13,14 +13,19 @@ import numpy as np
 
 class Simulation:
     def __init__(self, expert: Path):
-        verification = json.loads((expert / "verification.json").read_text())
-        for name, key in (("model.mjb", "model_sha256"), ("rollout.npz", "rollout_sha256")):
+        # The repository lock is the trust root, including verification.json
+        # and the helper/controller inputs used after model construction.
+        lock = json.loads((Path(__file__).resolve().parents[1] / "assets.lock.json").read_text())
+        for relative, spec in lock["files"].items():
+            if not relative.startswith("expert/"):
+                continue
+            name = relative.removeprefix("expert/")
             with (expert / name).open("rb") as stream:
                 hasher = hashlib.sha256()
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     hasher.update(chunk)
                 digest = hasher.hexdigest()
-            if digest != verification[key]:
+            if digest != spec["sha256"]:
                 raise ValueError(f"Expert checksum mismatch: {name}")
         self.model = mujoco.MjModel.from_binary_path(str(expert / "model.mjb"))
         if abs(self.model.opt.timestep - .001) > 1e-12:

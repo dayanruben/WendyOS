@@ -11,7 +11,8 @@ import os
 import socket
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from coke_demo.http_server import DrainingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -141,8 +142,9 @@ class InferenceRuntime:
         self.episode.policy.close()
 
 
-def make_server(runtime: InferenceRuntime) -> ThreadingHTTPServer:
+def make_server(runtime: InferenceRuntime) -> DrainingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
+        timeout = 10
         protocol_version = "HTTP/1.1"
 
         def setup(self) -> None:
@@ -187,12 +189,14 @@ def make_server(runtime: InferenceRuntime) -> ThreadingHTTPServer:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            if self.server.closing:
+                self.close_connection = True
             if self.close_connection:
                 self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
-    return ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    return DrainingHTTPServer(("127.0.0.1", PORT), Handler)
 
 
 def main() -> None:

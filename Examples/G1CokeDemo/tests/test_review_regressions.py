@@ -294,3 +294,69 @@ def test_hil_network_listener_rejects_weak_or_invalid_tokens(token):
 def test_hil_network_listener_accepts_strong_token():
     server = make_inference_server(None, host="0.0.0.0", port=0, token="test-token-123456")
     server.server_close()
+
+
+@pytest.mark.parametrize("name", ["result.json", "qualification-60s.json", "verification.json", "replay_expert.py"])
+def test_replay_rejects_modified_expert_inputs_before_model_load(tmp_path, monkeypatch, name):
+    from pathlib import Path
+    from coke_demo import simulation
+    source = Path(__file__).resolve().parents[1] / "expert"
+    for asset in source.iterdir():
+        if asset.name == name:
+            data = asset.read_bytes()
+            (tmp_path / asset.name).write_bytes(bytes([data[0] ^ 1]) + data[1:])
+        else:
+            (tmp_path / asset.name).symlink_to(asset)
+    model_load = Mock(side_effect=AssertionError("model loaded before verification"))
+    monkeypatch.setattr(simulation.mujoco.MjModel, "from_binary_path", model_load)
+    with pytest.raises(ValueError, match=f"checksum mismatch: {name}"):
+        simulation.Simulation(tmp_path)
+    model_load.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["physical", "inference"])
+def test_service_close_waits_for_active_handlers(monkeypatch, kind):
+    from physical_io import service as physical_service
+    from runtime import inference_service
+    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    runtime = Mock()
+    def health():
+        entered.set()
+        assert release.wait(5)
+        return {"healthy": True}
+    runtime.state.side_effect = health
+    runtime.status.side_effect = health
+    if kind == "physical":
+        server = physical_service.make_server(runtime, port=0)
+    else:
+        monkeypatch.setattr(inference_service, "PORT", 0)
+        server = inference_service.make_server(runtime)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+    connection.request("GET", "/health")
+    closer = None
+    try:
+        assert entered.wait(2)
+        server.shutdown()
+        def close():
+            server.server_close()
+            closed.set()
+        closer = threading.Thread(target=close, daemon=True)
+        closer.start()
+        assert not closed.wait(.05), "resources could close while a handler is active"
+        release.set()
+        response = connection.getresponse()
+        assert response.status == 200
+        if kind == "inference":
+            assert response.getheader("Connection") == "close"
+        response.read()
+        assert closed.wait(2)
+    finally:
+        release.set()
+        connection.close()
+        server.shutdown()
+        if closer is not None:
+            closer.join(2)
+        server.server_close()
+        worker.join(2)
