@@ -6,9 +6,13 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/cloudrelay"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
 )
@@ -79,6 +83,45 @@ func (d mcpCloudDevice) openTunnel(ctx context.Context, brokerConn *grpc.ClientC
 		return nil, err
 	}
 	return cloudrelay.OpenTCP(ctx, cloudCtx, conn, &cloudrelay.Verifier{Issuer: issuer}, d.key, service, signer)
+}
+
+// mcpAgentRPCPingSession measures a real request/response over the authorized
+// wendy-agent tunnel. v2 sessions have no broker DATAGRAM/ping form
+// (cloudrelay is TCP-only), so ping RTT is one GetAgentVersion round-trip over
+// the tunnelled agent conn. Satisfies mcpPingSession. Mirrors
+// commands.agentRPCPingSession.
+type mcpAgentRPCPingSession struct {
+	ctx     context.Context
+	conn    *grpcclient.AgentConnection
+	replies chan *cloudpb.TunnelData
+}
+
+func newMCPAgentRPCPingSession(ctx context.Context, conn *grpcclient.AgentConnection) *mcpAgentRPCPingSession {
+	return &mcpAgentRPCPingSession{ctx: ctx, conn: conn, replies: make(chan *cloudpb.TunnelData, 1)}
+}
+
+func (s *mcpAgentRPCPingSession) sendEcho(req *cloudpb.IcmpEchoRequest) error {
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
+	if _, err := s.conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{}); err != nil {
+		return err
+	}
+	reply := &cloudpb.TunnelData{IcmpReply: &cloudpb.IcmpEchoReply{Identifier: req.Identifier, Sequence: req.Sequence, Payload: req.Payload, OriginateUnixNs: req.OriginateUnixNs}}
+	select {
+	case s.replies <- reply:
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func (s *mcpAgentRPCPingSession) recv() (*cloudpb.TunnelData, error) {
+	select {
+	case reply := <-s.replies:
+		return reply, nil
+	case <-s.ctx.Done():
+		return nil, s.ctx.Err()
+	}
 }
 
 // mcpTunnelService maps a device port to the symbolic service the v2 relay
