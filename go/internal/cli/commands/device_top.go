@@ -1142,7 +1142,7 @@ func (m topModel) View() string {
 		summary += fmt.Sprintf("  ↻ %d crash-looping", crashLooping)
 	}
 	top = append(top, topValDim.Render(summary))
-	statusLine := m.actionStatus
+	statusLine := tui.StripControl(m.actionStatus)
 	if statusLine == "" {
 		statusLine = m.flash
 	}

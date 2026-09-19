@@ -154,6 +154,13 @@ func TestAudioTUIListenStopsAndCanRestart(t *testing.T) {
 		if handler.listenContext.Err() != context.Canceled || model.done || model.listening != nil || stopCmd != nil {
 			t.Fatal("stopping should cancel playback and return to the audio table")
 		}
+		// Cancellation retains busy until the old command actually completes.
+		pendingContext := handler.listenContext
+		updated, restart := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+		model = updated.(audioTUIModel)
+		if restart != nil || !model.busy || handler.listenContext != pendingContext {
+			t.Fatal("a replacement listener started before cancellation completed")
+		}
 		updated, _ = model.Update(cmd())
 		model = updated.(audioTUIModel)
 		if model.busy || model.isError || !strings.Contains(model.View(), "l listen") {
