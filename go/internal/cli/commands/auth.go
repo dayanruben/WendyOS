@@ -72,71 +72,84 @@ func newAuthLoginCmd() *cobra.Command {
 	var identityResource string
 	var identityEndpoint string
 	var printClaims bool
+	var legacy bool
 
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Without --api-key: opens a browser for authentication, creates an operator CSR, obtains its certificate, and saves it to config.\n" +
+		Long: "Signs in to Wendy Cloud. By default this is the OIDC flow: pass --email to discover your realm (or --issuer to name it), sign in with authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
 			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
-			"With --email: discovers your wendy-auth organization, signs in with authorization code + PKCE, obtains the certificate directly from pki-core, and saves a refreshable Cloud API session. --issuer skips email discovery.",
+			"With --legacy: uses the old Wendy Cloud dashboard enrollment callback (cloud.wendy.sh). Kept for the previous cloud only.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if issuer != "" || email != "" {
-				if apiKey != "" {
-					return fmt.Errorf("OIDC and --api-key select different login modes; pass only one")
-				}
-				if authBase == "" {
-					authBase = defaultDevAuthBase
-				}
-				if issuer == "" {
-					var err error
-					issuer, err = discoverOIDCIssuer(cmd.Context(), authBase, email)
-					if err != nil {
-						return err
-					}
+			// Old cloud-dashboard flow, only behind the explicit marker.
+			if legacy {
+				if apiKey != "" || issuer != "" || email != "" {
+					return fmt.Errorf("--legacy selects the old cloud-dashboard login and cannot be combined with --api-key, --issuer, or --email")
 				}
 				if cloudDashboard == "" {
-					cloudDashboard = defaultDevCloudDashboard
+					cloudDashboard = defaultCloudDashboard
 				}
 				if cloudGRPC == "" {
-					cloudGRPC = defaultDevCloudGRPC
+					cloudGRPC = defaultCloudGRPC
 				}
-				if resource == "" {
-					resource = defaultDevCloudResource
+				if !strings.HasPrefix(cloudDashboard, "http://") && !strings.HasPrefix(cloudDashboard, "https://") {
+					cloudDashboard = "https://" + cloudDashboard
 				}
-				if identityResource == "" {
-					identityResource = defaultPKIIdentityResource
-				}
-				if identityEndpoint == "" {
-					identityEndpoint = defaultDevPKIIdentityEndpoint
-				}
-				return performOIDCLogin(cmd.Context(), oidcLoginOptions{
-					Issuer:           issuer,
-					ClientID:         clientID,
-					CloudResource:    resource,
-					IdentityResource: identityResource,
-					IdentityEndpoint: identityEndpoint,
-					CloudURL:         cloudDashboard,
-					CloudGRPC:        cloudGRPC,
-					PrintClaims:      printClaims,
-				})
+				return performLogin(cmd.Context(), cloudDashboard, cloudGRPC)
 			}
+
+			// Self-hosted pki-core with a bearer key.
 			if apiKey != "" {
+				if issuer != "" || email != "" {
+					return fmt.Errorf("OIDC and --api-key select different login modes; pass only one")
+				}
 				if cloudGRPC == "" {
 					return fmt.Errorf("--cloud-grpc is required for local authentication")
 				}
 				return performLocalLogin(cmd.Context(), cloudGRPC, apiKey, orgID)
 			}
 
+			// Default: new-cloud OIDC. A realm identifier is required; without
+			// one we stop here rather than silently fall back to the old prod
+			// cloud (that path is now only reachable with --legacy).
+			if authBase == "" {
+				authBase = defaultDevAuthBase
+			}
+			if issuer == "" {
+				if email == "" {
+					return fmt.Errorf("provide --email to discover your realm, or --issuer to name it; use --legacy for the old cloud-dashboard login")
+				}
+				var err error
+				issuer, err = discoverOIDCIssuer(cmd.Context(), authBase, email)
+				if err != nil {
+					return err
+				}
+			}
 			if cloudDashboard == "" {
-				cloudDashboard = defaultCloudDashboard
+				cloudDashboard = defaultDevCloudDashboard
 			}
 			if cloudGRPC == "" {
-				cloudGRPC = defaultCloudGRPC
+				cloudGRPC = defaultDevCloudGRPC
 			}
-			if !strings.HasPrefix(cloudDashboard, "http://") && !strings.HasPrefix(cloudDashboard, "https://") {
-				cloudDashboard = "https://" + cloudDashboard
+			if resource == "" {
+				resource = defaultDevCloudResource
 			}
-			return performLogin(cmd.Context(), cloudDashboard, cloudGRPC)
+			if identityResource == "" {
+				identityResource = defaultPKIIdentityResource
+			}
+			if identityEndpoint == "" {
+				identityEndpoint = defaultDevPKIIdentityEndpoint
+			}
+			return performOIDCLogin(cmd.Context(), oidcLoginOptions{
+				Issuer:           issuer,
+				ClientID:         clientID,
+				CloudResource:    resource,
+				IdentityResource: identityResource,
+				IdentityEndpoint: identityEndpoint,
+				CloudURL:         cloudDashboard,
+				CloudGRPC:        cloudGRPC,
+				PrintClaims:      printClaims,
+			})
 		},
 	}
 
@@ -152,6 +165,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
 	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint (used with OIDC login)")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
+	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh) instead of the default OIDC sign-in")
 	return cmd
 }
 
