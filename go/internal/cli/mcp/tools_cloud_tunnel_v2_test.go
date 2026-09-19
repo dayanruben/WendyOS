@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/url"
@@ -15,8 +16,11 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb/v2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const testV2Tenant = "2558fd76-afc7-466e-9613-6b715296a526"
@@ -172,6 +176,39 @@ func TestCloudTunnelV2UsesLiveRelay(t *testing.T) {
 	}
 	if strings.Contains(gotMethod, "TunnelBrokerService") {
 		t.Fatalf("v2 tunnel dialed the retired relay: %q", gotMethod)
+	}
+}
+
+// TestAgentRPCPingSessionMeasuresRTT proves a v2 ping measures RTT with one
+// GetAgentVersion round-trip per echo: every send yields a reply.
+func TestAgentRPCPingSessionMeasuresRTT(t *testing.T) {
+	conn, _ := startFakeAgentServer(t, &fakeAgentServer{versionResp: &agentpb.GetAgentVersionResponse{Version: "test"}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stats := mcpRunPingLoop(ctx, newMCPAgentRPCPingSession(ctx, conn), "edge-one", 3, 10*time.Millisecond, io.Discard)
+	if stats.Sent != 3 || stats.Received != 3 {
+		t.Fatalf("sent/received = %d/%d, want 3/3 (err=%v)", stats.Sent, stats.Received, stats.Err)
+	}
+	if got := mcpPingResult(stats, "edge-one"); got.IsError {
+		t.Fatalf("healthy ping mapped to an error result: %+v", got)
+	}
+}
+
+// TestAgentRPCPingSessionSurfacesAgentError proves an unreachable agent yields
+// zero replies and the transport error is surfaced (not the silent-device hint).
+func TestAgentRPCPingSessionSurfacesAgentError(t *testing.T) {
+	conn, _ := startFakeAgentServer(t, &fakeAgentServer{versionErr: status.Error(codes.PermissionDenied, "denied")})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stats := mcpRunPingLoop(ctx, newMCPAgentRPCPingSession(ctx, conn), "edge-one", 3, 10*time.Millisecond, io.Discard)
+	if stats.Received != 0 || stats.Err == nil {
+		t.Fatalf("received=%d err=%v, want 0 replies with a transport error", stats.Received, stats.Err)
+	}
+	res := mcpPingResult(stats, "edge-one")
+	if !res.IsError || !strings.Contains(toolResultText(t, res), "denied") {
+		t.Fatalf("agent error should surface in the result; got %+v", res)
 	}
 }
 
