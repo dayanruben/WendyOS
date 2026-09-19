@@ -1304,6 +1304,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if needsNvidiaCDI(appCfg) {
 		c.applyNvidiaCDI(spec)
 	}
+	if needsQualcommNPURuntime(appCfg) {
+		c.applyQualcommNPURuntime(spec)
+	}
 
 	var systemAPISocketDir string
 	systemAPIRefOwned := false
@@ -1799,6 +1802,8 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+	} else {
+		return nil, fmt.Errorf("reading container labels before start: %w", lerr)
 	}
 	// The parsed name above can be ambiguous when app IDs contain underscores;
 	// repeat the check after authoritative labels resolve the actual app ID.
@@ -1840,6 +1845,12 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// skips the recovery hooks (NewTask will report an invalid stored spec).
 	storedSpec, storedSpecErr := container.Spec(ctx)
 	if storedSpecErr == nil {
+		// Managed virtual robot VMs may use legacy netfilter kernels. Prepare their
+		// fixed firewall modules on the host before the confined bootstrap;
+		// this path also runs after VM reboot and never holds c.mu.
+		if err := prepareGo2KernelModulesForStart(ctx, containerLabels, storedSpec); err != nil {
+			return nil, fmt.Errorf("preparing managed robot kernel support: %w", err)
+		}
 		c.recreateHostResolvConfForStart(storedSpec.Mounts)
 		c.recreateMeshResolvConfForStart(storedSpec.Mounts)
 
@@ -2715,6 +2726,22 @@ func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 // oci package's hook of the same name.
 var boardDetect = board.Detect
 
+// applyQualcommNPURuntime bind-mounts the host's Qualcomm AI runtime into an
+// npu-entitled container; a board with no DSP is left untouched.
+func (c *Client) applyQualcommNPURuntime(spec *localoci.Spec) {
+	result := cdi.ApplyQualcommNPURuntime(spec)
+	if !result.HasDSP {
+		// No grantable FastRPC node, so the entitlement is inert on this board.
+		return
+	}
+	if !result.TransportApplied {
+		c.logger.Warn("npu entitlement granted but Qualcomm FastRPC transport was not applied",
+			zap.Int("mounts", result.Mounts))
+		return
+	}
+	c.logger.Info("Applied Qualcomm NPU runtime", zap.Int("mounts", result.Mounts))
+}
+
 // needsNvidiaCDI reports whether CreateContainer should apply the host's
 // NVIDIA CDI spec (library mounts, extra device nodes, driver env vars) to
 // this app's OCI spec. Both the explicit gpu entitlement AND — on a Jetson —
@@ -2742,6 +2769,14 @@ func needsNvidiaCDI(appCfg *appconfig.AppConfig) bool {
 	// the two in step, and keeps a Raspberry Pi display app — which has no NVIDIA
 	// anything — out of applyNvidiaCDI's "no CDI spec found" warning path.
 	return appCfg.HasEntitlement(appconfig.EntitlementDisplay) && boardDetect().IsJetson()
+}
+
+// needsQualcommNPURuntime reports whether the container should receive the host's
+// Qualcomm AI runtime. The npu entitlement grants the FastRPC transport and the
+// dma-buf heap but no userspace to drive them, so without this an entitled app holds
+// a DSP it cannot reach.
+func needsQualcommNPURuntime(appCfg *appconfig.AppConfig) bool {
+	return appCfg.HasEntitlement(appconfig.EntitlementNPU)
 }
 
 // entitlementsUseHostNetwork reports whether the entitlements put the container

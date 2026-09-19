@@ -204,14 +204,15 @@ type PickerModel struct {
 	MergeItem func(existing *PickerItem, incoming PickerItem)
 
 	// OnSetDefault is called when the user presses 'd' on the highlighted item.
-	// The return value is shown as a flash confirmation; return "" for no message.
+	// The message is shown as a flash confirmation. An error preserves the
+	// previous default marker and is displayed instead of a success message.
 	// If nil, 'd' is ignored.
-	OnSetDefault func(item PickerItem) string
+	OnSetDefault func(item PickerItem) (string, error)
 
 	// OnUnsetDefault is called when the user presses 'x'.
-	// The return value is shown as a flash confirmation; return "" for no message.
+	// An error preserves the previous default marker and is displayed to the user.
 	// If nil, 'x' is ignored.
-	OnUnsetDefault func() string
+	OnUnsetDefault func() (string, error)
 
 	// OnRemoveItem is called when the user presses 'r' on the highlighted item.
 	// Returns (flash message, isError, replacement).
@@ -227,6 +228,11 @@ type PickerModel struct {
 	// and two Bubble Tea programs cannot share a terminal.
 	// If nil, 'c' is ignored.
 	OnCreateItem func() (flash string, quit bool)
+
+	// OnEnrollItem is called when the user presses 'e' on the highlighted item.
+	// Returning quit=true closes the picker so enrollment can use the terminal.
+	// If nil, 'e' is ignored. Filterable pickers use 'e' as filter text instead.
+	OnEnrollItem func(item PickerItem) (flash string, quit bool)
 
 	// OnStopItem runs asynchronously when the user presses 's'. It must not
 	// mutate the model, and should honor its owner's cancellation context.
@@ -334,6 +340,12 @@ func NewPickerWithTitleAndColumns(title string, columns []PickerColumn) PickerMo
 
 func (m PickerModel) Init() tea.Cmd { return m.spinner.Tick }
 
+// SetDefaultKey refreshes the marker after another picker tab changes it.
+func (m *PickerModel) SetDefaultKey(key string) {
+	m.DefaultKey = key
+	m.refreshTable()
+}
+
 // anyProbePending reports whether any item still has a probe in flight, i.e.
 // whether the spinner has anything to animate.
 func (m PickerModel) anyProbePending() bool {
@@ -397,18 +409,28 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if dk == "" {
 						dk = strings.ToLower(item.Name)
 					}
-					m.DefaultKey = dk
-					m.flashMessage = m.OnSetDefault(item)
-					m.flashIsError = false
+					var err error
+					m.flashMessage, err = m.OnSetDefault(item)
+					m.flashIsError = err != nil
+					if err != nil {
+						m.flashMessage = err.Error()
+					} else {
+						m.DefaultKey = dk
+					}
 					m.refreshTable()
 				}
 			}
 			return m, nil
 		case key == "x" && !m.Filterable:
 			if m.OnUnsetDefault != nil {
-				m.DefaultKey = ""
-				m.flashMessage = m.OnUnsetDefault()
-				m.flashIsError = false
+				var err error
+				m.flashMessage, err = m.OnUnsetDefault()
+				m.flashIsError = err != nil
+				if err != nil {
+					m.flashMessage = err.Error()
+				} else {
+					m.DefaultKey = ""
+				}
 				m.refreshTable()
 			}
 			return m, nil
@@ -432,6 +454,19 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, func() tea.Msg {
 						flash, isError := stop(item)
 						return pickerStopResultMsg{flash: flash, isError: isError}
+					}
+				}
+			}
+			return m, nil
+		case key == "e" && !m.Filterable:
+			if m.OnEnrollItem != nil {
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					flash, quit := m.OnEnrollItem(visible[idx])
+					m.flashMessage = flash
+					m.flashIsError = false
+					if quit {
+						return m, tea.Quit
 					}
 				}
 			}
@@ -629,13 +664,16 @@ func (m PickerModel) View() string {
 		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", " + enterAction + ", esc quit)"
 	}
 	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil ||
-		m.OnCreateItem != nil || m.OnStopItem != nil {
+		m.OnCreateItem != nil || m.OnStopItem != nil || (m.OnEnrollItem != nil && !m.Filterable) {
 		extras := ""
 		if m.OnSetDefault != nil {
 			extras += ", d set default"
 		}
 		if m.OnUnsetDefault != nil {
 			extras += ", x clear default"
+		}
+		if m.OnEnrollItem != nil && !m.Filterable {
+			extras += ", e enroll"
 		}
 		if m.OnCreateItem != nil {
 			extras += ", c create"

@@ -378,7 +378,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 
 	var progressErr error
 	if prog != nil {
-		final, runErr := prog.Run()
+		final, runErr := runBuildProgressProgram(prog)
 		if runErr != nil {
 			cancelBuild()
 			progressErr = fmt.Errorf("compose build progress TUI: %w", runErr)
@@ -1322,7 +1322,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...); err != nil {
 				return fmt.Errorf("service %s: %w", name, err)
 			}
-			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, allBuildArgs, serviceEnvs[name])
+			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, resolvedStagefileBackend(ctx), allBuildArgs, serviceEnvs[name])
 			if err != nil {
 				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
 			}

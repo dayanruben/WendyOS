@@ -103,7 +103,7 @@ The CLI implements the ESP32 ROM bootloader protocol directly over the USB seria
 
 The device reboots automatically using the reset sequence appropriate to its native USB or UART transport. Before flashing, the CLI embeds the selected WiFi credentials, device name, and pre-enrollment state into the firmware image's `wendy_conf` partition.
 
-To provision WiFi after first boot, use `wendy device setup` or the BLE provisioning flow — see the BLE provisioning documentation.
+To provision WiFi after first boot, use `wendy device wifi connect`.
 
 ---
 
@@ -166,7 +166,11 @@ wendy install --device-type dragonwing-iq-8275
 
 Connect the USB0 (USB-C) port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the bundle, and programs the board. Set DIP switch 3 OFF and power-cycle after success.
 
-Both OS slots and the partition table are rewritten. Existing configuration and data are preserved when flashing a compatible WendyOS layout.
+**An EDL flash is a factory reset.** Both OS slots, the config partition and `/data` are rewritten, so device identity, cloud enrollment, saved Wi-Fi and application data are discarded and the board comes back as a new device.
+
+`/data` is blanked rather than overwritten: the flash clears the head of the filesystem and the device recreates it on first boot. That makes the old contents unreachable, but it is not a secure erase — blocks behind the superblock are only overwritten as they are reused. Do not rely on it before handing a board to someone else.
+
+Provisioning works as it does on Thor: the bundle ships no config image, so wendy builds one on the host and programs it into the config partition. `--wifi`, `--device-name` and `--pre-enroll` all apply, and a freshly downloaded `wendy-agent` is seeded on every flash.
 
 ## Linux Desktop / Headless Mac path
 

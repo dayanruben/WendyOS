@@ -426,10 +426,10 @@ var refreshAllCertsFn = refreshAllCerts
 // only when the user accepted, the refresh succeeded, and the retry
 // connected; in every other case the caller should surface the original
 // error (whose message already carries the refresh-certs hint).
-func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
+func offerCertRefreshAndRetry(ctx context.Context, nonInteractive bool, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
 	certRejected := isCertRefreshableError(cause)
 	enrolledTimeout := isReachabilityTimeoutError(cause)
-	if jsonOutput || !isInteractiveTerminal() || !(certRejected || enrolledTimeout) {
+	if nonInteractive || jsonOutput || !isInteractiveTerminal() || !(certRejected || enrolledTimeout) {
 		return nil, false
 	}
 	var accepted bool
@@ -873,6 +873,8 @@ type SelectedDevice struct {
 	// selections with no hostname to key on, which are left unenforced (see
 	// enforceSelectedDevicePin).
 	PinKey string
+	// DefaultSelector preserves a cloud target after its tunnel is connected.
+	DefaultSelector string
 }
 
 // Close releases any resources held by this SelectedDevice.
@@ -1015,12 +1017,12 @@ func isInteractiveTerminal() bool {
 // connection failure. Shows a warning and immediately opens the device picker
 // where the user can select a new device and optionally set/unset default
 // via 'd'/'x' shortcuts.
-func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, disableEnroll bool) (*SelectedDevice, error) {
 	warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	fmt.Println(warnStyle.Render(fmt.Sprintf("⚠ Default device %q is unreachable after %s.", hostname, formatElapsedSeconds(elapsed))))
 	fmt.Println()
 
-	return pickDevice(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck)
+	return pickDevice(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, disableEnroll)
 }
 
 func defaultDeviceSearchLabel(hostname string) string {
@@ -1145,6 +1147,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	for _, o := range opts {
 		o(&cfg)
 	}
+	ctx = robotRuntimePromptContext(ctx, cfg.nonInteractive)
 	// connectToAgent only ever returns a gRPC connection, so a BLE device is
 	// never a usable answer here — never scan for or offer one, whatever the
 	// caller passed. BLE-capable commands use resolveTarget + IncludeBluetooth.
@@ -1175,12 +1178,12 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		}
 		device = loaded.DefaultDevice
 	}
-	if name, matched, err := simulatorName(device); err != nil {
-		return nil, err
-	} else if matched {
-		picked, err := connectSimulatorChoiceFn(ctx, &simulatorChoice{Name: name}, cfg.suppressUpdateCheck)
+	if picked, matched, err := connectNamedDeviceSelector(ctx, device, cfg.suppressUpdateCheck); matched {
 		if err != nil {
 			return nil, err
+		}
+		if deviceFlag == "" {
+			noteImplicitDevice(device, implicitDefaultDevice)
 		}
 		return picked.Agent, nil
 	}
@@ -1245,11 +1248,11 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	}
 
 	// No device configured — fall back to interactive picker.
-	if jsonOutput {
+	if cfg.nonInteractive || jsonOutput {
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 	if pickErr != nil {
 		return nil, pickErr
 	}
@@ -1292,7 +1295,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		}); ok {
 			conn = syncedConn
 		} else if errors.Is(connErr, errProvisionedAgentUnauthorized) {
-			refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			refreshedConn, ok := offerCertRefreshAndRetry(ctx, cfg.nonInteractive, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			})
 			if !ok {
@@ -1306,7 +1309,7 @@ func connectToAgentDirect(ctx context.Context, cfg resolveConfig, hostname, addr
 		} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 			// Default device is unreachable — offer interactive recovery.
 			hostname, _, _ := net.SplitHostPort(addr)
-			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+			target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 			if recErr != nil {
 				return nil, true, recErr
 			}
@@ -2628,14 +2631,18 @@ func isCertRejectionError(addr string, err error) bool {
 		return false
 	}
 	msg := err.Error()
-	// A handshake ending in EOF or a connection reset got no TLS alert back:
-	// something accepted the connection and closed it. A port forward
-	// does exactly that when the far side is not listening -- QEMU's user-mode
-	// networking accepts on the host and only then finds the guest port closed.
-	// Only over loopback: elsewhere a close may be an on-path reset, and reading
-	// that as "not a TLS endpoint" would re-offer the plaintext rung.
-	if isLoopbackHost(addr) && (strings.Contains(msg, "handshake failed: EOF") ||
-		strings.Contains(msg, "handshake failed: read tcp ") && strings.Contains(msg, "read: connection reset by peer")) {
+	// Explicit TLS rejection signals take precedence over transport details.
+	if strings.Contains(msg, "remote error: tls:") || strings.Contains(msg, "certificate required") {
+		return true
+	}
+	// QEMU's user-mode networking accepts on the host before discovering that
+	// the guest port is closed. That ends the TLS probe in either EOF or a TCP
+	// read reset, without a TLS alert rejecting the certificate. Only exclude
+	// these over loopback: elsewhere the same failure may be an on-path reset,
+	// and reading that as "not a TLS endpoint" would re-offer plaintext.
+	loopbackReadReset := strings.Contains(msg, "handshake failed: read tcp ") &&
+		strings.Contains(msg, ": connection reset by peer")
+	if isLoopbackHost(addr) && (strings.Contains(msg, "handshake failed: EOF") || loopbackReadReset) {
 		return false
 	}
 	// A plaintext (unprovisioned) agent probed with TLS reports "first record
@@ -2647,9 +2654,7 @@ func isCertRejectionError(addr string, err error) bool {
 	if strings.Contains(msg, "first record does not look like a TLS handshake") {
 		return false
 	}
-	return strings.Contains(msg, "remote error: tls:") ||
-		strings.Contains(msg, "authentication handshake failed") ||
-		strings.Contains(msg, "certificate required")
+	return strings.Contains(msg, "authentication handshake failed")
 }
 
 // provisionedAgentAdvertisedMTLS takes a short pre-connection LAN discovery
@@ -3037,6 +3042,7 @@ type resolveConfig struct {
 	nonInteractive           bool
 	device                   string
 	disableSessionBroker     bool
+	disablePickerEnroll      bool
 }
 
 var (
@@ -3110,9 +3116,13 @@ func SuppressProvisioningHint() resolveOption {
 	}
 }
 
-// NonInteractive prevents resolveTarget from opening an interactive device
-// picker. When no device is specified in non-interactive mode, a clear error
-// is returned instead of attempting to open a TTY.
+// SuppressPickerEnroll hides enrollment when the command enrolls the device itself.
+func SuppressPickerEnroll() resolveOption {
+	return func(c *resolveConfig) { c.disablePickerEnroll = true }
+}
+
+// NonInteractive prevents device pickers and certificate-refresh confirmations.
+// Without an explicit device, it returns an error instead of opening a TTY.
 func NonInteractive() resolveOption {
 	return func(c *resolveConfig) {
 		c.nonInteractive = true
@@ -3184,6 +3194,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	for _, o := range opts {
 		o(&cfg)
 	}
+	ctx = robotRuntimePromptContext(ctx, cfg.nonInteractive)
 
 	// An admin-entitled on-device container reaches the agent over its local
 	// unix socket; skip all discovery/selection when WENDY_AGENT_SOCKET is set.
@@ -3222,10 +3233,11 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 
 	rt := phaseTimer()
 
-	if name, matched, err := simulatorName(device); err != nil {
-		return nil, err
-	} else if matched {
-		return connectSimulatorChoiceFn(ctx, &simulatorChoice{Name: name}, cfg.suppressUpdateCheck)
+	if picked, matched, err := connectNamedDeviceSelector(ctx, device, cfg.suppressUpdateCheck); matched {
+		if err == nil && isDefault {
+			noteImplicitDevice(device, implicitDefaultDevice)
+		}
+		return picked, err
 	}
 
 	// Check if the device flag matches a known provider key.
@@ -3294,7 +3306,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				}); ok {
 					conn = syncedConn
 				} else if errors.Is(err, errProvisionedAgentUnauthorized) {
-					refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+					refreshedConn, ok := offerCertRefreshAndRetry(ctx, cfg.nonInteractive, err, func() (*grpcclient.AgentConnection, error) {
 						return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
 					})
 					if !ok {
@@ -3303,7 +3315,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 					conn = refreshedConn
 				} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 					// Default device is unreachable — offer interactive recovery.
-					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+					recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 					if recErr != nil {
 						return nil, recErr
 					}
@@ -3344,7 +3356,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	picked, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+	picked, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck, cfg.disablePickerEnroll)
 	if pickErr != nil {
 		return nil, pickErr
 	}
@@ -3407,6 +3419,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 
 	// Detect language from the project files on disk.
 	language := ""
+	platform := ""
 	projectType, _ := detectProjectType(dir) // ignore multiple-xcodeproj error for config init
 	switch projectType {
 	case "python":
@@ -3415,13 +3428,16 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 		language = "swift"
 	case "xcode":
 		language = "swift"
+	case "esp-idf":
+		platform = appconfig.PlatformWendyLite
 	}
 
-	entitlements := defaultEntitlements(language, "")
+	entitlements := defaultEntitlements(projectType, "")
 
 	newCfg := &appconfig.AppConfig{
 		AppID:        dirName,
 		Version:      "0.1.0",
+		Platform:     platform,
 		Language:     language,
 		Entitlements: entitlements,
 	}
@@ -3794,7 +3810,7 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 // includeBluetooth enables the BLE scan; it is off by default so commands that
 // cannot talk over BLE never show a device they can't use (see
 // IncludeBluetooth).
-func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, disableEnroll bool) (*SelectedDevice, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = nil
@@ -3802,8 +3818,13 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 	cloudAuth := devicePickerInitialAuth(cfg)
 
 	for {
-		selected, err := pickDeviceWithCloudAuth(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, cloudAuth)
+		selected, err := pickDeviceWithCloudAuth(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck, cloudAuth, disableEnroll)
+		var enroll *errDevicePickerEnroll
 		switch {
+		case errors.As(err, &enroll):
+			if err := enrollLocalPickerDevice(ctx, enroll.item, cloudAuth, suppressUpdateCheck); err != nil && !errors.Is(err, ErrUserCancelled) {
+				return nil, err
+			}
 		case errors.Is(err, errDevicePickerLogin):
 			if err := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); err != nil {
 				return nil, err
@@ -3837,7 +3858,16 @@ var (
 	errDevicePickerSwitchOrg = errors.New("device picker requested organization switch")
 )
 
-func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, cloudAuth *config.AuthConfig) (*SelectedDevice, error) {
+// errDevicePickerEnroll hands the highlighted row back without selecting it
+// for the command that opened the picker. After enrollment, Enter is still
+// required to choose a device for that command.
+type errDevicePickerEnroll struct {
+	item *tui.PickerItem
+}
+
+func (e *errDevicePickerEnroll) Error() string { return "device picker requested enrollment" }
+
+func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool, cloudAuth *config.AuthConfig, disableEnroll bool) (*SelectedDevice, error) {
 	excludeProviders = hideLocalProviders(excludeProviders)
 
 	picker := tui.NewPicker()
@@ -3853,28 +3883,12 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	}
 
 	// Allow 'd' to set default and 'x' to unset default from the picker.
-	picker.OnSetDefault = func(item tui.PickerItem) string {
-		deviceID := pickerItemDeviceID(item)
-		if deviceID == "" {
-			return ""
-		}
-		if cfg, err := config.Load(); err == nil {
-			cfg.DefaultDevice = deviceID
-			_ = config.Save(cfg)
-		}
-		return fmt.Sprintf("Default device set to %s.", item.Name)
-	}
-	picker.OnUnsetDefault = func() string {
-		if cfg, err := config.Load(); err == nil {
-			cfg.DefaultDevice = ""
-			_ = config.Save(cfg)
-		}
-		return "Default device cleared."
-	}
+	picker.OnSetDefault = setPickerDefault
+	picker.OnUnsetDefault = unsetPickerDefault
 
 	// Cancel continuous discovery when the picker exits.
 	discoverCtx, discoverCancel := context.WithCancel(ctx)
-	p := tea.NewProgram(newDevicePickerModel(discoverCtx, picker, cloudAuth, defaultOrgID))
+	p := tea.NewProgram(newDevicePickerModel(discoverCtx, picker, cloudAuth, defaultOrgID, disableEnroll))
 
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		p.Send(devicePickerLocalMsg{msg: tui.PickerAddMsg{Items: []tui.PickerItem{lanPickerItem(dev, insecure, probe)}}})
@@ -3988,6 +4002,8 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 		return nil, errDevicePickerLogin
 	case devicePickerSwitchOrg:
 		return nil, errDevicePickerSwitchOrg
+	case devicePickerEnroll:
+		return nil, dm.enroll
 	}
 	if dm.cancelled {
 		return nil, ErrUserCancelled
@@ -3999,19 +4015,27 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	switch choice.Tab {
 	case devicePickerCloudTab:
 		if choice.CloudV2 != nil {
+			selector, err := cloudDiscoveryDeviceDefault(cloudAuth, cloudDiscoveryDevice{v2: choice.CloudV2})
+			if err != nil {
+				return nil, err
+			}
 			cliLogln("Connecting to %s via cloud tunnel...", choice.CloudV2.GetName())
 			conn, err := connectCloudAssetV2(ctx, cloudAuth, choice.CloudV2, dm.cloud.brokerURL)
 			if err != nil {
 				return nil, err
 			}
-			return &SelectedDevice{Agent: conn}, nil
+			return &SelectedDevice{Agent: conn, DefaultSelector: selector}, nil
+		}
+		selector, err := cloudDeviceDefault(cloudAuth, choice.Cloud)
+		if err != nil {
+			return nil, err
 		}
 		cliLogln("Connecting to %s via cloud tunnel...", choice.Cloud.GetName())
 		conn, err := connectCloudAsset(ctx, cloudAuth, choice.Cloud, dm.cloud.brokerURL)
 		if err != nil {
 			return nil, err
 		}
-		return &SelectedDevice{Agent: conn}, nil
+		return &SelectedDevice{Agent: conn, DefaultSelector: selector}, nil
 	case devicePickerSimulatorTab:
 		return connectSimulatorChoiceFn(ctx, choice.Simulator, suppressUpdateCheck)
 	default:

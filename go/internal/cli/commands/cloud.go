@@ -165,7 +165,7 @@ func newCloudEnrollDeviceCmd() *cobra.Command {
 				return err
 			}
 
-			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
+			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressPickerEnroll())
 			if err != nil {
 				return err
 			}

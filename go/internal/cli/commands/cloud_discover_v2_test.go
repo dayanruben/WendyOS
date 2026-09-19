@@ -137,7 +137,7 @@ func TestDevicePickerSelectsV2UUID(t *testing.T) {
 	auth := discoveryV2Auth(t, 2, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	m := newDevicePickerModel(ctx, tui.NewPicker(), auth, 0)
+	m := newDevicePickerModel(ctx, tui.NewPicker(), auth, 0, false)
 	m.active = devicePickerCloudTab
 	updated, _ := m.Update(devicePickerCloudMsg{msg: m.cloud.scanCmd()()})
 	m = updated.(devicePickerModel)

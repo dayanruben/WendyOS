@@ -20,6 +20,7 @@ const (
 	devicePickerNoAction devicePickerAction = iota
 	devicePickerLogin
 	devicePickerSwitchOrg
+	devicePickerEnroll
 
 	// devicePickerCreateVM quits the view so the image download can own the
 	// terminal; the caller creates the VM and re-enters.
@@ -40,7 +41,7 @@ func deviceTabLabel(t devicePickerTab) string {
 	case devicePickerCloudTab:
 		return "Cloud"
 	default:
-		return "Local"
+		return "Nearby"
 	}
 }
 

@@ -236,12 +236,11 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn, device, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
+	conn, device, target, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	s.SetConn(conn)
-	s.SetConnType("cloud")
+	s.setConnection(conn, "cloud", target)
 	return okText(fmt.Sprintf("connected to %s via cloud", device.GetName())), nil
 }
 
@@ -444,7 +443,7 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	// so ping RTT is measured with an agent-RPC round-trip over the authorized
 	// tunnel, mirroring the CLI. Legacy sessions keep the v1 datagram echo.
 	if isV2Session(auth) {
-		conn, device, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), deviceName, stringParam(req, "broker_url"))
+		conn, device, _, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), deviceName, stringParam(req, "broker_url"))
 		if err != nil {
 			return cloudErrResult(err), nil
 		}
@@ -540,6 +539,7 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 	cmd := exec.CommandContext(runCtx, bin, args...)
 	reportProgress(ctx, tok, 0, 0, "running wendy…")
 	out, err := cmd.CombinedOutput()
+	s.refreshContainerMCPTools()
 	reportProgress(ctx, tok, 1, 1, "done")
 	text := strings.TrimSpace(string(out))
 	if runCtx.Err() != nil {
@@ -592,14 +592,26 @@ func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error)
 	return auth, err
 }
 
-func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, error) {
+func cloudCommandTarget(auth *config.AuthConfig, asset interface{ GetName() string }, brokerURL string) commandTarget {
+	if auth == nil || auth.CloudGRPC == "" || asset.GetName() == "" {
+		return commandTarget{}
+	}
+	return commandTarget{
+		Device:    asset.GetName(),
+		Transport: "cloud",
+		CloudGRPC: auth.CloudGRPC,
+		BrokerURL: brokerURL,
+	}
+}
+
+func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, mcpCloudDevice, commandTarget, error) {
 	auth, err := s.cloudAuthEntry(cloudGRPC)
 	if err != nil {
-		return nil, mcpCloudDevice{}, err
+		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
 	device, err := s.resolveCloudDevice(ctx, auth, deviceName)
 	if err != nil {
-		return nil, mcpCloudDevice{}, err
+		return nil, mcpCloudDevice{}, commandTarget{}, err
 	}
 
 	// Legacy sessions dial the v1 broker; the v2 relay picks its own broker, so
@@ -608,10 +620,10 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	if !device.isV2 {
 		brokerConn, err = clouddefaults.DialBroker(auth, brokerURL)
 		if err != nil {
-			return nil, mcpCloudDevice{}, err
+			return nil, mcpCloudDevice{}, commandTarget{}, err
 		}
 	} else if brokerURL != "" {
-		return nil, mcpCloudDevice{}, fmt.Errorf("Cloud selects the authorized relay; broker_url is supported only for legacy sessions")
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("Cloud selects the authorized relay; broker_url is supported only for legacy sessions")
 	}
 	cleanupBroker := true
 	defer func() {
@@ -628,18 +640,18 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	certInfo := auth.Certificates[0]
 	keyPEM, err := certInfo.PrivateKeyPEM()
 	if err != nil {
-		return nil, mcpCloudDevice{}, fmt.Errorf("loading client key: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("loading client key: %w", err)
 	}
 	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 	if err != nil {
-		return nil, mcpCloudDevice{}, fmt.Errorf("loading agent mTLS cert: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
 	})
 	if err != nil {
-		return nil, mcpCloudDevice{}, fmt.Errorf("building TLS verifier: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("building TLS verifier: %w", err)
 	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
@@ -653,7 +665,7 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 	)
 	if err != nil {
-		return nil, mcpCloudDevice{}, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
+		return nil, mcpCloudDevice{}, commandTarget{}, fmt.Errorf("creating tunnelled gRPC connection: %w", err)
 	}
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = device.GetName()
@@ -665,7 +677,7 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		agentConn.ExtraClosers = append(agentConn.ExtraClosers, brokerConn)
 	}
 	cleanupBroker = false
-	return agentConn, device, nil
+	return agentConn, device, cloudCommandTarget(auth, device, brokerURL), nil
 }
 
 func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig, deviceName string) (*cloudpb.Asset, error) {

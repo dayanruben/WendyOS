@@ -2482,29 +2482,44 @@ func TestIsCertRejectionErrorClassifiesHandshakeFailures(t *testing.T) {
 	}
 }
 
-func TestLoopbackClosedForwardIsNotTreatedAsACertRejection(t *testing.T) {
+func TestLoopbackClosedPortIsNotTreatedAsACertRejection(t *testing.T) {
 	// QEMU's user-mode networking accepts on the host and only then finds the
-	// guest port closed, so an unprovisioned VM's mTLS probe ends in EOF or a reset. That
-	// must not suppress the plaintext rung -- but only for loopback, because
-	// off it the same EOF may be an on-path reset.
-	for _, msg := range []string{
-		`rpc error: desc = "transport: authentication handshake failed: EOF"`,
-		`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: read tcp 127.0.0.1:54221->127.0.0.1:50052: read: connection reset by peer"`,
-	} {
-		for _, addr := range []string{"127.0.0.1:50052", "localhost:50052", "[::1]:50052", "192.168.2.253:50052"} {
-			want := addr == "192.168.2.253:50052"
-			if got := isCertRejectionError(addr, errors.New(msg)); got != want {
-				t.Errorf("isCertRejectionError(%q, %q) = %v, want %v", addr, msg, got, want)
-			}
-		}
+	// guest port closed, so an unprovisioned VM's mTLS probe ends in EOF or a
+	// TCP reset. Neither should suppress plaintext for an unpinned loopback VM.
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{"EOF", `rpc error: desc = "transport: authentication handshake failed: EOF"`},
+		{"TCP reset", `rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: read tcp 127.0.0.1:62970->127.0.0.1:50054: read: connection reset by peer"`},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := errors.New(tc.msg)
+			for _, addr := range []string{"127.0.0.1:50054", "localhost:50054", "[::1]:50054"} {
+				if isCertRejectionError(addr, err) {
+					t.Errorf("%s: a loopback closed port still counts as a cert rejection", addr)
+				}
+			}
+			for _, addr := range []string{"192.168.2.253:50052", "robot.local:50052", "[2001:db8::1]:50052"} {
+				if !isCertRejectionError(addr, err) {
+					t.Errorf("%s: a handshake failure off loopback stopped counting as a cert rejection", addr)
+				}
+			}
+		})
+	}
+}
+
+func TestLoopbackStillRejectsTLSAlertsAndOtherHandshakeFailures(t *testing.T) {
 	for _, msg := range []string{
-		"transport: authentication handshake failed: remote error: tls: bad certificate",
-		"transport: authentication handshake failed: remote error: tls: certificate required",
-		"transport: authentication handshake failed: x509: certificate has expired or is not yet valid",
+		`transport: authentication handshake failed: remote error: tls: bad certificate`,
+		`transport: authentication handshake failed: certificate required`,
+		`transport: authentication handshake failed: context deadline exceeded`,
+		// A transport detail must not hide an explicit TLS rejection signal.
+		`transport: authentication handshake failed: read tcp 127.0.0.1:62970->127.0.0.1:50054: read: connection reset by peer; remote error: tls: bad certificate`,
 	} {
-		if !isCertRejectionError("127.0.0.1:50052", errors.New(msg)) {
-			t.Errorf("a loopback certificate failure stopped counting as a rejection: %s", msg)
+		if !isCertRejectionError("127.0.0.1:50054", errors.New(msg)) {
+			t.Errorf("loopback handshake failure stopped counting as a cert rejection: %s", msg)
 		}
 	}
 }

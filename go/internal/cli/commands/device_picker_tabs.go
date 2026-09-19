@@ -34,6 +34,7 @@ type devicePickerChoice struct {
 }
 
 type devicePickerModel struct {
+	purpose      devicePickerPurpose
 	local        tui.PickerModel
 	sim          simulatorPickerModel
 	simStarted   bool
@@ -46,13 +47,14 @@ type devicePickerModel struct {
 	defaultOrg   int32
 	active       devicePickerTab
 	action       devicePickerAction
+	enroll       *errDevicePickerEnroll
 	cancelled    bool
 	windowWidth  int
 }
 
-func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32) devicePickerModel {
+func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *config.AuthConfig, defaultOrg int32, disableEnroll bool) devicePickerModel {
 	m := devicePickerModel{
-		local:      local,
+		purpose: devicePickerPurposeFromContext(ctx), local: local,
 		sim:        newSimulatorPickerModel(ctx),
 		cloudAuth:  auth,
 		cloudOrg:   cachedCloudOrganizationName(auth),
@@ -60,6 +62,24 @@ func newDevicePickerModel(ctx context.Context, local tui.PickerModel, auth *conf
 	}
 	if auth != nil {
 		m.cloud = newCloudDiscoverModel(ctx, auth, os.Getenv("WENDY_BROKER_URL"), false, true, nil)
+	}
+	// The enroll shortcut is suppressed for commands that enroll the picked
+	// device themselves (device enroll / cloud enroll-device); otherwise it
+	// would enroll once here and again when the command runs.
+	if auth != nil && !disableEnroll {
+		// The request is shared across model copies. Enrollment needs the
+		// terminal for its prompts, so only capture the row here; the caller
+		// runs it after the picker and its discovery streams have stopped.
+		m.enroll = &errDevicePickerEnroll{}
+		enroll := m.enroll
+		m.local.OnEnrollItem = func(item tui.PickerItem) (string, bool) {
+			entry, ok := item.Value.(*pickerEntry)
+			if !ok || entry == nil || entry.mergedDevice == nil || entry.mergedDevice.LAN == nil {
+				return "Enrollment requires a WendyOS LAN or USB network connection.", false
+			}
+			enroll.item = &item
+			return "", true
+		}
 	}
 	return m
 }
@@ -125,6 +145,10 @@ func (m devicePickerModel) loadOrgNameCmd() tea.Cmd {
 func (m devicePickerModel) updateLocal(msg tea.Msg) (devicePickerModel, tea.Cmd) {
 	updated, cmd := m.local.Update(msg)
 	m.local = updated.(tui.PickerModel)
+	if m.enroll != nil && m.enroll.item != nil {
+		m.action = devicePickerEnroll
+		return m, tea.Quit
+	}
 	if m.local.Selected() != nil {
 		m.chosen, m.hasChosen = devicePickerLocalTab, true
 		return m, tea.Quit
@@ -182,6 +206,7 @@ func (m devicePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.windowWidth = msg.Width
+		msg.Height = max(1, msg.Height-strings.Count(m.purpose.header(msg.Width), "\n"))
 		var cmds []tea.Cmd
 		local, localCmd := m.updateLocal(msg)
 		m = local
@@ -201,7 +226,15 @@ func (m devicePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "shift+tab":
-			m.active = cycleTab(deviceTabOrder(), m.active, tabCycleDelta(msg.String()))
+			if cfg, err := config.Load(); err == nil {
+				m.local.SetDefaultKey(cfg.DefaultDevice)
+				m.sim.picker.SetDefaultKey(cfg.DefaultDevice)
+				m.cloud.defaultDevice = cfg.DefaultDevice
+				if m.cloudAuth != nil {
+					m.cloud.refreshTable()
+				}
+			}
+			m.active = cycleTab(m.tabOrder(), m.active, tabCycleDelta(msg.String()))
 			// Latched rather than keyed off "arrived from Local": with
 			// wrap-around, Cloud is reachable from either neighbour and
 			// discovery must still start exactly once.
@@ -257,7 +290,7 @@ func (m devicePickerModel) View() string {
 		return ""
 	}
 
-	header := deviceTabsHeader(m.active, deviceTabOrder(), m.windowWidth)
+	header := m.purpose.header(m.windowWidth) + deviceTabsHeader(m.active, m.tabOrder(), m.windowWidth)
 
 	switch m.active {
 	case devicePickerLocalTab:
@@ -273,7 +306,7 @@ func (m devicePickerModel) View() string {
 		body.WriteString("Select a cloud device\n")
 		body.WriteString(devicePickerOrgStyle.Render("  ☐  Wendy Cloud login   Not logged in"))
 		body.WriteString("\n")
-		body.WriteString(devicePickerOrgStyle.Render("  enter log in, tab local, q quit"))
+		body.WriteString(devicePickerOrgStyle.Render("  enter log in, tab nearby, q quit"))
 		body.WriteString("\n")
 		return body.String()
 	}
@@ -358,4 +391,11 @@ func devicePickerInitialAuth(cfg *config.Config) *config.AuthConfig {
 		}
 	}
 	return nil
+}
+
+func (m devicePickerModel) tabOrder() []devicePickerTab {
+	if m.purpose == buildHostPicker {
+		return []devicePickerTab{devicePickerLocalTab, devicePickerCloudTab}
+	}
+	return deviceTabOrder()
 }

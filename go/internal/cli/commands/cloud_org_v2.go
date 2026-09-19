@@ -120,23 +120,25 @@ var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg 
 	if cfg.DefaultCloudGRPC == auth.CloudGRPC {
 		picker.DefaultKey = cfg.DefaultTenantUUID
 	}
-	picker.OnSetDefault = func(item tui.PickerItem) string {
+	picker.OnSetDefault = func(item tui.PickerItem) (string, error) {
 		if err := persistSessionDefault(auth.CloudGRPC + "::" + item.Value.(string)); err != nil {
-			return fmt.Sprint(err)
+			return "", err
 		}
-		return "Default set to " + item.Name + "."
+		return "Default set to " + item.Name + ".", nil
 	}
 	if management {
-		picker.OnUnsetDefault = func() string {
+		picker.OnUnsetDefault = func() (string, error) {
 			c, err := config.Load()
 			if err != nil {
-				return fmt.Sprintf("Could not clear default: %v", err)
+				return "", fmt.Errorf("could not clear default: %w", err)
 			}
 			c.DefaultCloudGRPC = ""
 			c.DefaultOrgID = 0
 			c.DefaultTenantUUID = ""
-			_ = config.Save(c)
-			return "Default cleared."
+			if err := config.Save(c); err != nil {
+				return "", err
+			}
+			return "Default cleared.", nil
 		}
 		picker.OnRemoveItem = func(item tui.PickerItem) (string, bool, *tui.PickerItem) {
 			id, _ := item.Value.(string)
