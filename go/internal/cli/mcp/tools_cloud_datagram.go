@@ -316,6 +316,9 @@ func mcpRunPingLoop(ctx context.Context, session mcpPingSession, target string, 
 		return true
 	}
 	if !sendOne() {
+		lifeErrMu.Lock()
+		stats.Err = lifeErr
+		lifeErrMu.Unlock()
 		return stats
 	}
 

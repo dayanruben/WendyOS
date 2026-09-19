@@ -439,6 +439,20 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
+
+	// v2 sessions have no broker DATAGRAM/ping form (the v2 relay is TCP-only),
+	// so ping RTT is measured with an agent-RPC round-trip over the authorized
+	// tunnel, mirroring the CLI. Legacy sessions keep the v1 datagram echo.
+	if isV2Session(auth) {
+		conn, device, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), deviceName, stringParam(req, "broker_url"))
+		if err != nil {
+			return cloudErrResult(err), nil
+		}
+		defer conn.Close()
+		stats := mcpRunPingLoop(ctx, newMCPAgentRPCPingSession(ctx, conn), device.GetName(), count, time.Second, io.Discard)
+		return mcpPingResult(stats, device.GetName()), nil
+	}
+
 	asset, err := s.pickCloudAsset(ctx, auth, deviceName)
 	if err != nil {
 		return cloudErrResult(err), nil
@@ -456,17 +470,20 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	defer session.close()
 
 	stats := mcpRunPingLoop(ctx, session, asset.GetName(), count, time.Second, io.Discard)
+	return mcpPingResult(stats, asset.GetName()), nil
+}
+
+// mcpPingResult renders ping stats into a tool result, shared by the v1
+// datagram and v2 agent-RPC arms. On zero replies it surfaces the transport
+// error (mcpDatagramOpenError folds DeadlineExceeded/Unavailable into the
+// offline/old-agent hint) or, for a silent device, the generic hint.
+func mcpPingResult(stats mcpPingStats, name string) *mcpgo.CallToolResult {
 	if stats.Received == 0 {
 		if stats.Err != nil {
-			// A genuine transport error (PermissionDenied, Unauthenticated,
-			// mesh-disabled, ...) ended the recv loop — surface it instead of
-			// the generic hint. mcpDatagramOpenError still folds
-			// DeadlineExceeded/Unavailable into that same hint.
-			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, asset.GetName()).Error()), nil
+			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, name).Error())
 		}
-		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName()), nil
+		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", name)
 	}
-
 	out := map[string]any{
 		"sent":       stats.Sent,
 		"received":   stats.Received,
@@ -474,7 +491,7 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 		"avg_rtt_ms": stats.Avg.Seconds() * 1000,
 		"max_rtt_ms": stats.Max.Seconds() * 1000,
 	}
-	return okResult(out), nil
+	return okResult(out)
 }
 
 func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
