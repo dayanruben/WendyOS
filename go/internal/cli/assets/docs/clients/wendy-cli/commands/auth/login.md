@@ -2,7 +2,7 @@
 > point for authenticating with Wendy Cloud. This page documents
 > `wendy auth login`, which behaves identically and is kept for backward
 > compatibility but is no longer listed in the top-level help. The advanced
-> session commands (`use`, `default`, `refresh-certs`) remain under
+> context commands (`use`, `rename`, `default`, `refresh-certs`) remain under
 > `wendy auth`.
 
 Signing in to Wendy Cloud uses the OIDC flow by default. Provide your email address:
@@ -25,14 +25,28 @@ Pass `--legacy` to use the old Wendy Cloud dashboard enrollment callback (`cloud
 
 The legacy dashboard callback also prints a QR code. You can scan it with the **Wendy iOS app** to authenticate on your phone instead of the local browser.
 
-## Multiple auth sessions
+## Auth contexts
 
-When more than one Wendy Cloud session is stored in `~/.wendy/config.json`, every cloud command resolves which session to use in the following order:
+Every login is stored as a named **context**. The first login is always named
+`default` — you are never prompted — so single-org users never deal with names.
+Additional logins get a derived name (the realm, or `org-<id>`), renamable with
+[`wendy auth rename`](./rename.md). Each context owns its own operator
+certificate. Switch the active context with [`wendy auth use <context>`](./use.md);
+see all contexts (and which is current) with `wendy auth status`.
 
-1. **`--cloud-grpc` flag** — always wins when supplied.
-2. **Single stored session** — used automatically when only one session exists.
-3. **Persisted default** — the session set with [`wendy auth use`](./use.md) is used when present and valid.
-4. **Interactive picker** — shown in an interactive terminal when no default is set.
-5. **Error** — in non-interactive environments (pipes, CI, MCP) with no default set, the command exits with an error directing you to pass `--cloud-grpc` or run `wendy auth use`.
+When more than one context is stored in `~/.wendy/config.json`, every cloud
+command resolves which one to use in the following order:
 
-A stale default (the named session was removed) is never silently used: the picker warns, `wendy auth default` self-clears, and non-interactive callers receive an error.
+1. **`--cloud-grpc` flag** — selects by endpoint; the current context wins when it lives on that endpoint.
+2. **Single stored context** — used automatically when only one exists.
+3. **Current context** — the context set with [`wendy auth use`](./use.md), when present and valid.
+4. **Interactive picker** — shown in an interactive terminal when no current context is set.
+5. **Error** — in non-interactive environments (pipes, CI, MCP) with no current context, the command exits with an error directing you to pass `--cloud-grpc` or run `wendy auth use`.
+
+A stale current context (its session was removed) is never silently replaced:
+the picker warns, `wendy auth default` self-clears, and non-interactive callers
+receive an error.
+
+Configs from an earlier CLI are migrated automatically on first use — existing
+sessions become named contexts (the previous default becomes the current
+context) with no re-login.
