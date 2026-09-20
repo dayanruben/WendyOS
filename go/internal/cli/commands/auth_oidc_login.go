@@ -31,7 +31,12 @@ import (
 type oidcCallbackResult struct {
 	Code  string
 	State string
-	Err   error
+	// Iss is the RFC 9207 issuer identifier the authorization response carried,
+	// naming the realm that actually issued the code. It differs from the
+	// requested realm when the browser org picker (wendy-auth) switched realms.
+	// Empty when the server did not send it.
+	Iss string
+	Err error
 }
 
 // performOIDCLogin creates and saves a refreshable Cloud API session.
@@ -124,7 +129,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><title>Wendy CLI</title>` +
 			`<p style="font-family:system-ui;padding:2rem">Signed in. You can close this tab and return to the terminal.</p>`))
-		resultCh <- oidcCallbackResult{Code: code, State: gotState}
+		resultCh <- oidcCallbackResult{Code: code, State: gotState, Iss: q.Get("iss")}
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -163,6 +168,23 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		return result.Err
 	}
 
+	// Step 5b: honour the RFC 9207 issuer. When the browser org picker switches
+	// realms, the callback names the realm that issued the code; the code must be
+	// exchanged at THAT realm's token endpoint, and the resulting context's org
+	// is derived from the token it returns — never from the realm we requested.
+	effectiveIssuer, err := effectiveLoginIssuer(opts.Issuer, result.Iss)
+	if err != nil {
+		return err
+	}
+	if effectiveIssuer != strings.TrimSuffix(opts.Issuer, "/") {
+		// A different realm was picked in the browser: re-discover so the token
+		// exchange and refresh hit the picked realm's endpoints.
+		meta, err = discoverOIDC(ctx, effectiveIssuer)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Step 6: exchange the code, DPoP-bound to the key from step 1.
 	identityToken, err := exchangeCodeForToken(ctx, key, meta, opts.ClientID, result.Code, verifier, redirectURI, identityResource)
 	if err != nil {
@@ -190,8 +212,8 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	if !audienceContains(claims["aud"], identityResource) {
 		return fmt.Errorf("access token audience does not include pki-core identity resource %s", identityResource)
 	}
-	if issuer, _ := claims["iss"].(string); issuer != strings.TrimSuffix(opts.Issuer, "/") {
-		return fmt.Errorf("access token issuer %q does not match %q", issuer, strings.TrimSuffix(opts.Issuer, "/"))
+	if issuer, _ := claims["iss"].(string); issuer != effectiveIssuer {
+		return fmt.Errorf("access token issuer %q does not match %q", issuer, effectiveIssuer)
 	}
 
 	if opts.PrintClaims {
@@ -204,7 +226,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	}
 	tenantUUID, _ := claims["tenant_uuid"].(string)
 	if tenantUUID == "" {
-		return fmt.Errorf("pki-core identity token carries no tenant_uuid: realm %q is not linked to a pki-core tenant", issuerRealm(opts.Issuer))
+		return fmt.Errorf("pki-core identity token carries no tenant_uuid: realm %q is not linked to a pki-core tenant", issuerRealm(effectiveIssuer))
 	}
 	tenantID, err := uuid.Parse(tenantUUID)
 	if err != nil {
@@ -246,8 +268,8 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	if !audienceContains(cloudClaims["aud"], cloudResource) {
 		return fmt.Errorf("Cloud API access token audience does not include %s", cloudResource)
 	}
-	if issuer, _ := cloudClaims["iss"].(string); issuer != strings.TrimSuffix(opts.Issuer, "/") {
-		return fmt.Errorf("Cloud API access token issuer %q does not match %q", issuer, strings.TrimSuffix(opts.Issuer, "/"))
+	if issuer, _ := cloudClaims["iss"].(string); issuer != effectiveIssuer {
+		return fmt.Errorf("Cloud API access token issuer %q does not match %q", issuer, effectiveIssuer)
 	}
 	refreshToken := cloudToken.RefreshToken
 	if refreshToken == "" {
@@ -262,7 +284,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		CloudDashboard: opts.CloudURL,
 		CloudGRPC:      opts.CloudGRPC,
 		APIKey:         cloudToken.AccessToken,
-		OAuthIssuer:    strings.TrimSuffix(opts.Issuer, "/"),
+		OAuthIssuer:    effectiveIssuer,
 		OAuthClientID:  opts.ClientID,
 		OAuthResource:  cloudResource,
 		PKIResource:    identityResource,
@@ -279,7 +301,7 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving OAuth session and certificates: %w", err)
 	}
-	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Signed in to %s. API session and certificates saved.", issuerRealm(opts.Issuer))))
+	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Signed in to %s. API session and certificates saved.", issuerRealm(effectiveIssuer))))
 	clitimesync.CacheProof(ctx)
 	return nil
 }

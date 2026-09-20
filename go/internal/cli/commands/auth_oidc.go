@@ -127,6 +127,38 @@ func issuerRealm(issuer string) string {
 	return issuer
 }
 
+// effectiveLoginIssuer picks the realm to exchange the authorization code at,
+// honouring the RFC 9207 issuer (callbackIss) from the authorization response.
+// callbackIss is "" when the server sent none, in which case the requested realm
+// stands. A present issuer on a different origin than requested is refused: an
+// unrelated host must never receive this code (the RFC 9207 mix-up defence). The
+// returned issuer is trailing-slash-trimmed for direct comparison with token
+// `iss` claims.
+func effectiveLoginIssuer(requested, callbackIss string) (string, error) {
+	requested = strings.TrimSuffix(requested, "/")
+	if callbackIss == "" {
+		return requested, nil
+	}
+	if !sameIssuerOrigin(callbackIss, requested) {
+		return "", fmt.Errorf("authorization response issuer %q is not on the same host as the requested realm %q; refusing to exchange the code", callbackIss, requested)
+	}
+	return strings.TrimSuffix(callbackIss, "/"), nil
+}
+
+// sameIssuerOrigin reports whether two issuer URLs share scheme and host, i.e.
+// name realms on the same wendy-auth deployment. The RFC 9207 issuer on an
+// authorization response may switch realms (path) but must never move the code
+// exchange to a different host — that would hand the authorization code to an
+// unrelated issuer (the mix-up attack the check defends against).
+func sameIssuerOrigin(a, b string) bool {
+	ua, erra := url.Parse(a)
+	ub, errb := url.Parse(b)
+	if erra != nil || errb != nil || ua.Scheme == "" || ua.Host == "" {
+		return false
+	}
+	return ua.Scheme == ub.Scheme && ua.Host == ub.Host
+}
+
 // discoverOIDC fetches the realm's OIDC metadata.
 //
 // It deliberately checks that the advertised issuer matches the one requested:
