@@ -400,7 +400,7 @@ func TestAuthorizedRelayEndToEnd(t *testing.T) {
 	dial := func(endpoint string) (*grpc.ClientConn, error) {
 		return grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
-	verifier.relayDial = dial
+	verifier.RelayDial = dial
 	echo, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
