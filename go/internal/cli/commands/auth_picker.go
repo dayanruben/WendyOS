@@ -182,16 +182,20 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 			return "", fmt.Errorf("no auth session selected")
 		}
 		if err := persistSessionDefault(key); err != nil {
-			return fmt.Sprintf("Could not switch context: %v", err)
+			return "", fmt.Errorf("could not switch context: %w", err)
 		}
-		return fmt.Sprintf("Switched to %s.", item.Name)
+		return fmt.Sprintf("Switched to %s.", item.Name), nil
 	}
-	picker.OnUnsetDefault = func() string {
-		if c, err := config.Load(); err == nil {
-			c.CurrentContext = ""
-			_ = config.Save(c)
+	picker.OnUnsetDefault = func() (string, error) {
+		c, err := config.Load()
+		if err != nil {
+			return "", fmt.Errorf("could not clear context: %w", err)
 		}
-		return "Current context cleared."
+		c.CurrentContext = ""
+		if err := config.Save(c); err != nil {
+			return "", fmt.Errorf("could not clear context: %w", err)
+		}
+		return "Current context cleared.", nil
 	}
 
 	// Snapshot the rows before background lookups; the caller can use its
