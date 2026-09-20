@@ -34,6 +34,12 @@ Additional logins get a derived name (the realm, or `org-<id>`), renamable with
 certificate. Switch the active context with [`wendy auth use <context>`](./use.md);
 see all contexts (and which is current) with `wendy auth status`.
 
+When your account belongs to more than one organization, the browser sign-in
+prompts you to pick one; the CLI stores whichever organization issued the login
+as the context (its identity comes from the issued token, not from a flag). Sign
+in again and pick a different organization to add a second context — your current
+context is left unchanged.
+
 When more than one context is stored in `~/.wendy/config.json`, every cloud
 command resolves which one to use in the following order:
 
