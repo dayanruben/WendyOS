@@ -301,7 +301,7 @@ func defaultOrgForCloudAuth(cfg *config.Config, auth *config.AuthConfig) int32 {
 	if cfg.DefaultOrgID != 0 {
 		return cfg.DefaultOrgID
 	}
-	if auth != nil && cfg.DefaultCloudGRPC == auth.CloudGRPC {
+	if auth != nil && auth.Name != "" && cfg.CurrentContext == auth.Name {
 		return cloudAuthOrgID(auth)
 	}
 	return 0

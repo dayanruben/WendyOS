@@ -63,29 +63,25 @@ func preferAuth(current, candidate *AuthConfig) *AuthConfig {
 }
 
 // ResolveAuth chooses the auth session to use. Precedence:
-//  1. cloudGRPC flag set      -> endpoint match; when several orgs share that
-//     endpoint, prefer the DefaultOrgID session, then the first (error if none)
-//  2. exactly one session     -> use it
-//  3. DefaultOrgID set        -> session whose cert org matches (if unique)
-//  4. valid persisted default -> use it (DefaultCloudGRPC)
-//  5. pick != nil             -> interactive picker
-//  6. otherwise               -> ErrMultipleSessions
+//  1. cloudGRPC flag set  -> endpoint match; prefer the current context on that
+//     endpoint, else the operator-preferred session for its first org
+//  2. exactly one session -> use it
+//  3. CurrentContext set  -> the session with that name
+//  4. pick != nil         -> interactive picker
+//  5. otherwise           -> ErrMultipleSessions
 //
 // The returned session is guaranteed to hold certificate material or an API token.
 func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig, error) {
 	if cfg == nil || len(cfg.Auth) == 0 {
 		return nil, ErrNotLoggedIn
 	}
-	if cfg.DefaultTenantUUID != "" && (cloudGRPC == "" || cloudGRPC == cfg.DefaultCloudGRPC) {
-		if auth, ok := cfg.DefaultAuth(); ok && len(auth.Certificates) > 0 && auth.Certificates[0].TenantUUID() == cfg.DefaultTenantUUID {
-			return authWithCerts(auth)
-		}
-	}
+	// Names + one-time migration of the legacy default fields into CurrentContext.
+	// Idempotent; a no-op for a config already loaded via Load. This lets callers
+	// that build a Config literal (tests, in-process fixtures) resolve by context
+	// without a Load round-trip.
+	ensureContexts(cfg)
+
 	if cloudGRPC != "" {
-		// Several orgs can share one endpoint (multiple orgs on the production
-		// cloud). The flag alone cannot name an org, so among the endpoint's
-		// sessions honor the persisted default org before falling back to the
-		// first — otherwise the flag silently pins the oldest login's org.
 		var matches []*AuthConfig
 		for i := range cfg.Auth {
 			if cfg.Auth[i].CloudGRPC == cloudGRPC {
@@ -95,15 +91,14 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 		if len(matches) == 0 {
 			return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
 		}
-		if cfg.DefaultOrgID != 0 {
-			var preferred *AuthConfig
+		// The current context wins when it lives on this endpoint; otherwise the
+		// flag alone cannot name an org, so fall back to the operator-preferred
+		// session for the endpoint's first org (not the oldest login).
+		if cfg.CurrentContext != "" {
 			for _, m := range matches {
-				if len(m.Certificates) > 0 && int32(m.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
-					preferred = preferAuth(preferred, m)
+				if m.Name == cfg.CurrentContext {
+					return authWithCerts(m)
 				}
-			}
-			if preferred != nil {
-				return authWithCerts(preferred)
 			}
 		}
 		var preferred *AuthConfig
@@ -127,22 +122,12 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 	if len(cfg.Auth) == 1 {
 		return authWithCerts(&cfg.Auth[0])
 	}
-	if cfg.DefaultOrgID != 0 {
-		var preferred *AuthConfig
-		for i := range cfg.Auth {
-			a := &cfg.Auth[i]
-			if len(a.Certificates) > 0 && int32(a.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
-				preferred = preferAuth(preferred, a)
-			}
+	if cfg.CurrentContext != "" {
+		if a, ok := cfg.ContextByName(cfg.CurrentContext); ok {
+			return authWithCerts(a)
 		}
-		if preferred != nil {
-			return authWithCerts(preferred)
-		}
-		// DefaultOrgID set but no matching session; fall through so the user
-		// can still operate (e.g. the session was removed).
-	}
-	if def, ok := cfg.DefaultAuth(); ok {
-		return authWithCerts(def)
+		// Stale CurrentContext (its session was removed); fall through to the
+		// picker or error rather than silently using another context.
 	}
 	if pick != nil {
 		picked, err := pick(cfg)
@@ -151,7 +136,7 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 		}
 		return authWithCerts(picked)
 	}
-	return nil, fmt.Errorf("%w; pass --cloud-grpc or run 'wendy auth use' to choose a default", ErrMultipleSessions)
+	return nil, fmt.Errorf("%w; pass --cloud-grpc or run 'wendy auth use' to choose a context", ErrMultipleSessions)
 }
 
 // authWithCerts rejects sessions with no certificate material.

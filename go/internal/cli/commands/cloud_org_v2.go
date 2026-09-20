@@ -117,8 +117,8 @@ func listCloudOrganizationsV2Impl(ctx context.Context, auth *config.AuthConfig) 
 // (WDY-1840).
 var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg *config.Config, management bool) (string, error) {
 	picker := tui.NewPickerWithTitleAndColumns("Select an organisation", authPickerColumns)
-	if cfg.DefaultCloudGRPC == auth.CloudGRPC {
-		picker.DefaultKey = cfg.DefaultTenantUUID
+	if cur, ok := cfg.ContextByName(cfg.CurrentContext); ok && cur.CloudGRPC == auth.CloudGRPC {
+		picker.DefaultKey = cur.OrganizationKey()
 	}
 	picker.OnSetDefault = func(item tui.PickerItem) string {
 		if err := persistSessionDefault(auth.CloudGRPC + "::" + item.Value.(string)); err != nil {
@@ -132,9 +132,7 @@ var pickCloudOrgV2 = func(orgs []*pb.Organization, auth *config.AuthConfig, cfg 
 			if err != nil {
 				return fmt.Sprintf("Could not clear default: %v", err)
 			}
-			c.DefaultCloudGRPC = ""
-			c.DefaultOrgID = 0
-			c.DefaultTenantUUID = ""
+			c.CurrentContext = ""
 			_ = config.Save(c)
 			return "Default cleared."
 		}

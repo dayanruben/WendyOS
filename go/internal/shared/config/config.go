@@ -19,9 +19,9 @@ type Config struct {
 	// per-project: the right build host depends on which network the developer is
 	// sitting on, not on the repository.
 	DefaultBuildHost string `json:"defaultBuildHost,omitempty"`
-	// DefaultCloudGRPC names the auth session (by its gRPC endpoint) used when
-	// several sessions exist and no --cloud-grpc flag is given. Empty means no
-	// default; resolution then falls back to an interactive picker or an error.
+	// DefaultCloudGRPC is a pre-context auth-selection field, read once by
+	// ensureContexts to seed CurrentContext during migration and no longer
+	// written (see CurrentContext).
 	DefaultCloudGRPC   string `json:"defaultCloudGRPC,omitempty"`
 	LastCLIUpdateCheck string `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
 	AvailableCLIUpdate string `json:"availableCLIUpdate,omitempty"` // tag of a newer release, if any
@@ -61,9 +61,15 @@ type Config struct {
 	// tracking ids awaiting a fix, the last status-poll time, and pending
 	// fix notices to surface on the next run. Nil until first used.
 	CrashReport *CrashReportConfig `json:"crashReport,omitempty"`
-	// DefaultOrgID is the organization used when a command needs to target a
-	// specific org and the user belongs to more than one. Zero means no default;
-	// the CLI will then show a picker or use the sole available org.
+	// CurrentContext names the active auth context (an AuthConfig.Name). It is the
+	// single selector for which session cloud/device commands use; `wendy auth
+	// use <context>` writes it. Empty with several contexts means "unset" — the
+	// resolver then shows a picker or errors.
+	CurrentContext string `json:"currentContext,omitempty"`
+	// DefaultOrgID is the remembered device-enroll target organization (a
+	// separate axis from auth-session selection, chosen from the cloud's full
+	// org list — see org_picker.go). It is also read once by ensureContexts to
+	// seed CurrentContext during migration.
 	DefaultOrgID int32 `json:"defaultOrgId,omitempty"`
 	// DefaultTenantUUID selects a PKI organization on DefaultCloudGRPC.
 	DefaultTenantUUID string `json:"defaultTenantUUID,omitempty"`
@@ -71,6 +77,10 @@ type Config struct {
 
 // AuthConfig holds authentication details for a cloud environment.
 type AuthConfig struct {
+	// Name is the human context name (`wendy auth use <Name>`). Assigned by
+	// ensureContexts: the first login is "default"; others get a derived,
+	// unique name. Renamable via `wendy auth rename`.
+	Name           string            `json:"name,omitempty"`
 	CloudDashboard string            `json:"cloudDashboard"`
 	CloudGRPC      string            `json:"cloudGRPC"`
 	APIKey         string            `json:"apiKey,omitempty"`
@@ -206,6 +216,10 @@ func Load() (*Config, error) {
 			}
 		}
 	}
+	// Assign context names and, on first load of a pre-context config, seed
+	// CurrentContext from the legacy default fields. In-memory only; the next
+	// Save persists it. No re-login: existing sessions become named contexts.
+	ensureContexts(&cfg)
 	return &cfg, nil
 }
 

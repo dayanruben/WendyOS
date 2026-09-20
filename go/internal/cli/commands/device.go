@@ -1043,11 +1043,11 @@ func resolveAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	// A default that points at a removed session is treated as unset; warn so
-	// the user understands why the picker appeared instead of auto-selecting.
-	if cloudGRPC == "" && cfg.DefaultCloudGRPC != "" {
-		if _, ok := cfg.DefaultAuth(); !ok {
-			fmt.Fprintf(os.Stderr, "warning: default session %s no longer exists; clear it with 'wendy auth default --clear'\n", cfg.DefaultCloudGRPC)
+	// A current context that points at a removed session is treated as unset;
+	// warn so the user understands why the picker appeared instead of auto-selecting.
+	if cloudGRPC == "" && cfg.CurrentContext != "" {
+		if _, ok := cfg.ContextByName(cfg.CurrentContext); !ok {
+			fmt.Fprintf(os.Stderr, "warning: current context %q no longer exists; clear it with 'wendy auth default --clear'\n", cfg.CurrentContext)
 		}
 	}
 	var pick config.SessionPicker

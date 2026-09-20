@@ -273,9 +273,9 @@ func performOIDCLogin(ctx context.Context, opts oidcLoginOptions) error {
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
 	cfg.AddAuth(authEntry)
-	if cfg.DefaultCloudGRPC == "" {
-		cfg.DefaultCloudGRPC = opts.CloudGRPC
-	}
+	// Name the new session as a context; the first login becomes "default" and
+	// current. A later login does not change the current context.
+	cfg.EnsureContexts()
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving OAuth session and certificates: %w", err)
 	}

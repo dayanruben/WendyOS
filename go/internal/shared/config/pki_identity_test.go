@@ -58,26 +58,27 @@ func TestUUIDOrganizationsDoNotCollapseToZero(t *testing.T) {
 	}
 	a := makeAuth(identityTenant)
 	b := makeAuth("2558fd76-afc7-466e-9613-6b715296a526")
-	cfg := &Config{DefaultCloudGRPC: "cloud:443"}
+	cfg := &Config{}
 	cfg.AddAuth(a)
 	cfg.AddAuth(b)
 	if len(cfg.Auth) != 2 {
 		t.Fatal("UUID organizations were merged")
 	}
-	cfg.DefaultTenantUUID = b.Certificates[0].TenantUUID()
+	ensureContexts(cfg)
+	// Selecting the second UUID org by context resolves to it on both the
+	// no-flag and shared-endpoint flag paths.
+	cfg.CurrentContext = cfg.Auth[1].Name
 	for _, endpoint := range []string{"", "cloud:443"} {
 		got, err := ResolveAuth(cfg, endpoint, nil)
 		if err != nil || got.OrganizationKey() != b.OrganizationKey() {
-			t.Fatalf("default resolved wrong UUID: %v", err)
+			t.Fatalf("context resolved wrong UUID: %v", err)
 		}
 	}
-	cfg.DefaultTenantUUID = ""
-	got, err := ResolveAuth(cfg, "", nil)
-	if err != nil || got.OrganizationKey() != a.OrganizationKey() {
-		t.Fatal("unselected UUID displaced first organization")
-	}
+	// With no context chosen, an empty legacy-identity entry sharing the endpoint
+	// must not displace the real PKI identity (operator-preference fallback).
+	cfg.CurrentContext = ""
 	cfg.Auth = append([]AuthConfig{{CloudGRPC: "cloud:443", Certificates: []CertificateInfo{{OrganizationID: 0}}}}, cfg.Auth...)
-	got, err = ResolveAuth(cfg, "cloud:443", nil)
+	got, err := ResolveAuth(cfg, "cloud:443", nil)
 	if err != nil || got.OrganizationKey() != a.OrganizationKey() {
 		t.Fatal("empty legacy identity displaced PKI identity")
 	}
