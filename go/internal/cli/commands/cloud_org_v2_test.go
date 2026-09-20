@@ -115,11 +115,11 @@ func TestAuthPickerUUIDKeysAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved := load()
-	if saved.DefaultOrgID != 0 || saved.DefaultTenantUUID != b.Certificates[0].TenantUUID() {
-		t.Fatal("UUID default was not saved")
+	if saved.CurrentContext == "" {
+		t.Fatal("UUID context was not saved")
 	}
 	selected, err := config.ResolveAuth(saved, "", nil)
 	if err != nil || selected.OrganizationKey() != b.OrganizationKey() {
-		t.Fatal("persisted default changed organizations")
+		t.Fatal("persisted context changed organizations")
 	}
 }
