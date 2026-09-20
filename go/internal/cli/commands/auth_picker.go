@@ -189,11 +189,11 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 	picker.OnUnsetDefault = func() (string, error) {
 		c, err := config.Load()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("could not clear context: %w", err)
 		}
 		c.CurrentContext = ""
 		if err := config.Save(c); err != nil {
-			return "", err
+			return "", fmt.Errorf("could not clear context: %w", err)
 		}
 		return "Current context cleared.", nil
 	}
