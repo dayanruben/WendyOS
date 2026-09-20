@@ -52,6 +52,7 @@ func newAuthCmd() *cobra.Command {
 		newAuthRefreshCertsCmd(),
 		newAuthStatusCmd(),
 		newAuthUseCmd(),
+		newAuthRenameCmd(),
 		newAuthDefaultCmd(),
 		newAuthListOrgsCmd(),
 	)
@@ -72,78 +73,91 @@ func newAuthLoginCmd() *cobra.Command {
 	var identityResource string
 	var identityEndpoint string
 	var printClaims bool
+	var legacy bool
 
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Without --api-key: opens a browser for authentication, creates an operator CSR, obtains its certificate, and saves it to config.\n" +
+		Long: "Signs in to Wendy Cloud. By default this is the OIDC flow: pass --email to discover your realm (or --issuer to name it), sign in with authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
 			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
-			"With --email: discovers your wendy-auth organization, signs in with authorization code + PKCE, obtains the certificate directly from pki-core, and saves a refreshable Cloud API session. --issuer skips email discovery.",
+			"With --legacy: uses the old Wendy Cloud dashboard enrollment callback (cloud.wendy.sh). Kept for the previous cloud only.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if issuer != "" || email != "" {
-				if apiKey != "" {
-					return fmt.Errorf("OIDC and --api-key select different login modes; pass only one")
-				}
-				if authBase == "" {
-					authBase = defaultDevAuthBase
-				}
-				if issuer == "" {
-					var err error
-					issuer, err = discoverOIDCIssuer(cmd.Context(), authBase, email)
-					if err != nil {
-						return err
-					}
+			// Old cloud-dashboard flow, only behind the explicit marker.
+			if legacy {
+				if apiKey != "" || issuer != "" || email != "" {
+					return fmt.Errorf("--legacy selects the old cloud-dashboard login and cannot be combined with --api-key, --issuer, or --email")
 				}
 				if cloudDashboard == "" {
-					cloudDashboard = defaultDevCloudDashboard
+					cloudDashboard = defaultCloudDashboard
 				}
 				if cloudGRPC == "" {
-					cloudGRPC = defaultDevCloudGRPC
+					cloudGRPC = defaultCloudGRPC
 				}
-				if resource == "" {
-					resource = defaultDevCloudResource
+				if !strings.HasPrefix(cloudDashboard, "http://") && !strings.HasPrefix(cloudDashboard, "https://") {
+					cloudDashboard = "https://" + cloudDashboard
 				}
-				if identityResource == "" {
-					identityResource = defaultPKIIdentityResource
-				}
-				if identityEndpoint == "" {
-					identityEndpoint = defaultDevPKIIdentityEndpoint
-				}
-				return performOIDCLogin(cmd.Context(), oidcLoginOptions{
-					Issuer:           issuer,
-					ClientID:         clientID,
-					CloudResource:    resource,
-					IdentityResource: identityResource,
-					IdentityEndpoint: identityEndpoint,
-					CloudURL:         cloudDashboard,
-					CloudGRPC:        cloudGRPC,
-					PrintClaims:      printClaims,
-				})
+				return performLogin(cmd.Context(), cloudDashboard, cloudGRPC)
 			}
+
+			// Self-hosted pki-core with a bearer key.
 			if apiKey != "" {
+				if issuer != "" || email != "" {
+					return fmt.Errorf("OIDC and --api-key select different login modes; pass only one")
+				}
 				if cloudGRPC == "" {
 					return fmt.Errorf("--cloud-grpc is required for local authentication")
 				}
 				return performLocalLogin(cmd.Context(), cloudGRPC, apiKey, orgID)
 			}
 
+			// Default: new-cloud OIDC. A realm identifier is required; without
+			// one we stop here rather than silently fall back to the old prod
+			// cloud (that path is now only reachable with --legacy).
+			if authBase == "" {
+				authBase = defaultDevAuthBase
+			}
+			if issuer == "" {
+				if email == "" {
+					return fmt.Errorf("provide --email to discover your realm, or --issuer to name it; use --legacy for the old cloud-dashboard login")
+				}
+				var err error
+				issuer, err = discoverOIDCIssuer(cmd.Context(), authBase, email)
+				if err != nil {
+					return err
+				}
+			}
 			if cloudDashboard == "" {
-				cloudDashboard = defaultCloudDashboard
+				cloudDashboard = defaultDevCloudDashboard
 			}
 			if cloudGRPC == "" {
-				cloudGRPC = defaultCloudGRPC
+				cloudGRPC = defaultDevCloudGRPC
 			}
-			if !strings.HasPrefix(cloudDashboard, "http://") && !strings.HasPrefix(cloudDashboard, "https://") {
-				cloudDashboard = "https://" + cloudDashboard
+			if resource == "" {
+				resource = defaultDevCloudResource
 			}
-			return performLogin(cmd.Context(), cloudDashboard, cloudGRPC)
+			if identityResource == "" {
+				identityResource = defaultPKIIdentityResource
+			}
+			if identityEndpoint == "" {
+				identityEndpoint = defaultDevPKIIdentityEndpoint
+			}
+			return performOIDCLogin(cmd.Context(), oidcLoginOptions{
+				Issuer:           issuer,
+				ClientID:         clientID,
+				CloudResource:    resource,
+				IdentityResource: identityResource,
+				IdentityEndpoint: identityEndpoint,
+				CloudURL:         cloudDashboard,
+				CloudGRPC:        cloudGRPC,
+				PrintClaims:      printClaims,
+			})
 		},
 	}
 
 	cmd.Flags().StringVar(&cloudDashboard, "cloud", "", "Cloud dashboard URL")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint, or local pki-core address (host:port) when using --api-key")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer API key for local pki-core authentication")
-	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID (used with --api-key)")
+	cmd.Flags().Int32Var(&orgID, "org", 1, "Organization ID for --api-key local login. For Wendy Cloud, each login is stored as an auth context; switch with 'wendy auth use <context>'.")
 	cmd.Flags().StringVar(&issuer, "issuer", "", "wendy-auth realm issuer URL, e.g. https://auth.wendy.sh/realms/acme (enables OIDC login)")
 	cmd.Flags().StringVar(&email, "email", "", "Email address used to discover your organization and sign in with wendy-auth")
 	cmd.Flags().StringVar(&authBase, "auth", defaultDevAuthBase, "wendy-auth base URL used with --email")
@@ -152,6 +166,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
 	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint (used with OIDC login)")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
+	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh) instead of the default OIDC sign-in")
 	return cmd
 }
 
@@ -347,6 +362,9 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 
 	cfg.AddAuth(authEntry)
+	// Name the new session as a context; the first login becomes "default" and
+	// current. A later login does not change the current context.
+	cfg.EnsureContexts()
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
@@ -482,6 +500,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 	}
 
 	cfg.AddAuth(authEntry)
+	cfg.EnsureContexts()
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -614,19 +633,15 @@ func refreshAllCerts(ctx context.Context) error {
 }
 
 // firstAuthEntryForRelogin returns the stored auth entry a re-login should target
-// — the default session when one is set, otherwise the first entry — or nil when
+// — the current context when one is set, otherwise the first entry — or nil when
 // there is nothing stored (the caller then falls back to the built-in defaults).
 func firstAuthEntryForRelogin() *config.AuthConfig {
 	cfg, err := config.Load()
 	if err != nil || len(cfg.Auth) == 0 {
 		return nil
 	}
-	if cfg.DefaultCloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cfg.DefaultCloudGRPC {
-				return &cfg.Auth[i]
-			}
-		}
+	if a, ok := cfg.ContextByName(cfg.CurrentContext); ok {
+		return a
 	}
 	return &cfg.Auth[0]
 }
@@ -734,6 +749,8 @@ type authStatusCert struct {
 // authStatusSession is one stored cloud session in `auth status --json`. It
 // carries the same facts as the human rendering below; keep the two in step.
 type authStatusSession struct {
+	Context        string          `json:"context,omitempty"`
+	Current        bool            `json:"current,omitempty"`
 	Cloud          string          `json:"cloud"`
 	CloudGRPC      string          `json:"cloudGrpc,omitempty"`
 	UserID         string          `json:"userId,omitempty"`
@@ -804,6 +821,13 @@ func newAuthStatusCmd() *cobra.Command {
 			}
 
 			for _, auth := range cfg.Auth {
+				marker := ""
+				if auth.Name != "" && auth.Name == cfg.CurrentContext {
+					marker = " (current)"
+				}
+				if auth.Name != "" {
+					fmt.Fprintf(out, "Context: %s%s\n", auth.Name, marker)
+				}
 				endpoint := authStatusEndpoint(auth)
 				fmt.Fprintf(out, "Cloud:  %s\n", endpoint)
 				if auth.CloudGRPC != "" && auth.CloudGRPC != endpoint {
@@ -854,6 +878,8 @@ func writeAuthStatusJSON(w io.Writer, cfg *config.Config, now time.Time) error {
 	}
 	for _, auth := range cfg.Auth {
 		session := authStatusSession{
+			Context:   auth.Name,
+			Current:   auth.Name != "" && auth.Name == cfg.CurrentContext,
 			Cloud:     authStatusEndpoint(auth),
 			CloudGRPC: auth.CloudGRPC,
 		}
@@ -969,9 +995,9 @@ func authSessionLabels(cfg *config.Config) []string {
 
 func newAuthUseCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "use [selector]",
-		Short: "Set the default Wendy Cloud session",
-		Long:  "Sets the default session used when several exist and no --cloud-grpc flag is given. The selector is an organization ID or a substring of the gRPC endpoint or dashboard URL. With no selector in an interactive terminal, a picker is shown.",
+		Use:   "use [context]",
+		Short: "Switch the current auth context",
+		Long:  "Switches the auth context used by cloud and device commands. The argument is a context name (see 'wendy auth status'); an organization ID or an endpoint/dashboard substring is also accepted for the session it names. With no argument in an interactive terminal, a picker is shown.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -984,13 +1010,16 @@ func newAuthUseCmd() *cobra.Command {
 
 			var chosen *config.AuthConfig
 			if len(args) == 1 {
-				chosen, err = matchAuthSelector(cfg, args[0])
-				if err != nil {
+				// A context name is the primary selector; fall back to the legacy
+				// org-id / endpoint-substring match so existing scripts keep working.
+				if a, ok := cfg.ContextByName(args[0]); ok {
+					chosen = a
+				} else if chosen, err = matchAuthSelector(cfg, args[0]); err != nil {
 					return err
 				}
 			} else {
 				if !isInteractiveTerminal() {
-					return fmt.Errorf("provide a selector (org ID or endpoint substring) when not running interactively")
+					return fmt.Errorf("provide a context name when not running interactively")
 				}
 				chosen, err = pickAuthSessionFn(cfg)
 				if err != nil {
@@ -999,22 +1028,63 @@ func newAuthUseCmd() *cobra.Command {
 			}
 
 			if len(chosen.Certificates) == 0 {
-				return fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", chosen.CloudGRPC)
+				return fmt.Errorf("auth context %q has no certificates; re-run 'wendy auth login'", chosen.Name)
 			}
-			// Persist the org alongside the endpoint: several orgs can share
-			// one endpoint (multiple orgs on the production cloud), and the
-			// endpoint alone resolved to whichever of them was logged into
-			// first — silently overriding the org the user just selected.
-			cfg.DefaultCloudGRPC = chosen.CloudGRPC
-			cfg.DefaultOrgID = int32(chosen.Certificates[0].OrganizationID)
-			cfg.DefaultTenantUUID = chosen.Certificates[0].TenantUUID()
-			if cfg.DefaultTenantUUID != "" {
-				cfg.DefaultOrgID = 0
+			cfg.CurrentContext = chosen.Name
+			if err := config.Save(cfg); err != nil {
+				return fmt.Errorf("saving config: %w", err)
+			}
+			fmt.Println(tui.SuccessMessage(fmt.Sprintf("Switched to context %q (%s).", chosen.Name, authSessionLabel(chosen))))
+			return nil
+		},
+	}
+}
+
+func newAuthRenameCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rename [old] <new>",
+		Short: "Rename an auth context",
+		Long:  "Renames an auth context. With one argument, renames the current context; with two, renames <old> to <new>. Context names are how 'wendy auth use' selects a session.",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if len(cfg.Auth) == 0 {
+				return fmt.Errorf("not logged in; run 'wendy auth login' first")
+			}
+
+			var oldName, newName string
+			if len(args) == 2 {
+				oldName, newName = strings.TrimSpace(args[0]), strings.TrimSpace(args[1])
+			} else {
+				oldName, newName = cfg.CurrentContext, strings.TrimSpace(args[0])
+				if oldName == "" {
+					return fmt.Errorf("no current context to rename; pass both the old and new name")
+				}
+			}
+			if newName == "" {
+				return fmt.Errorf("new context name must not be empty")
+			}
+			if newName == oldName {
+				return fmt.Errorf("context is already named %q", newName)
+			}
+			target, ok := cfg.ContextByName(oldName)
+			if !ok {
+				return fmt.Errorf("no auth context named %q", oldName)
+			}
+			if _, taken := cfg.ContextByName(newName); taken {
+				return fmt.Errorf("a context named %q already exists", newName)
+			}
+			target.Name = newName
+			if cfg.CurrentContext == oldName {
+				cfg.CurrentContext = newName
 			}
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
-			fmt.Println(tui.SuccessMessage(fmt.Sprintf("Default session set to %s.", authSessionLabel(chosen))))
+			fmt.Println(tui.SuccessMessage(fmt.Sprintf("Renamed context %q to %q.", oldName, newName)))
 			return nil
 		},
 	}
@@ -1024,62 +1094,38 @@ func newAuthDefaultCmd() *cobra.Command {
 	var clear bool
 	cmd := &cobra.Command{
 		Use:   "default",
-		Short: "Show or clear the default Wendy Cloud session",
+		Short: "Show or clear the current auth context",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			if clear {
-				cfg.DefaultCloudGRPC = ""
-				cfg.DefaultOrgID = 0
-				cfg.DefaultTenantUUID = ""
+				cfg.CurrentContext = ""
 				if err := config.Save(cfg); err != nil {
 					return fmt.Errorf("saving config: %w", err)
 				}
-				fmt.Println(tui.SuccessMessage("Default session cleared."))
+				fmt.Println(tui.SuccessMessage("Current context cleared."))
 				return nil
 			}
-			if cfg.DefaultCloudGRPC == "" && cfg.DefaultOrgID == 0 {
-				fmt.Println("No default session set.")
+			if cfg.CurrentContext == "" {
+				fmt.Println("No current context set.")
 				return nil
 			}
-			// The default org is what actually disambiguates sessions when
-			// several orgs share one endpoint, so show its session first.
-			if cfg.DefaultOrgID != 0 {
-				for i := range cfg.Auth {
-					a := &cfg.Auth[i]
-					if len(a.Certificates) > 0 && int32(a.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
-						fmt.Printf("Default session: %s\n", authSessionLabel(a))
-						return nil
-					}
-				}
-			}
-			if cfg.DefaultCloudGRPC == "" {
-				// Only a stale org default remains (its session is gone).
-				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session for org %d no longer exists; clearing it.", cfg.DefaultOrgID)))
-				cfg.DefaultOrgID = 0
-				cfg.DefaultTenantUUID = ""
-				if err := config.Save(cfg); err != nil {
-					return fmt.Errorf("saving config: %w", err)
-				}
-				return nil
-			}
-			def, ok := cfg.DefaultAuth()
+			cur, ok := cfg.ContextByName(cfg.CurrentContext)
 			if !ok {
-				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session %s no longer exists; clearing it.", cfg.DefaultCloudGRPC)))
-				cfg.DefaultCloudGRPC = ""
-				cfg.DefaultOrgID = 0
-				cfg.DefaultTenantUUID = ""
+				// The named context's session is gone; self-heal by clearing it.
+				fmt.Println(tui.WarningMessage(fmt.Sprintf("Current context %q no longer exists; clearing it.", cfg.CurrentContext)))
+				cfg.CurrentContext = ""
 				if err := config.Save(cfg); err != nil {
 					return fmt.Errorf("saving config: %w", err)
 				}
 				return nil
 			}
-			fmt.Printf("Default session: %s\n", authSessionLabel(def))
+			fmt.Printf("Current context: %s (%s)\n", cfg.CurrentContext, authSessionLabel(cur))
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&clear, "clear", false, "Unset the default session")
+	cmd.Flags().BoolVar(&clear, "clear", false, "Unset the current context")
 	return cmd
 }

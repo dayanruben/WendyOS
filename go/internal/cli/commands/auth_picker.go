@@ -5,11 +5,9 @@ package commands
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
@@ -140,33 +138,28 @@ func authPickerItems(cfg *config.Config, orgNames map[string]string) []tui.Picke
 	return items
 }
 
-// persistSessionDefault stores the picker's highlighted session ("endpoint" or
-// "endpoint::orgID" key) as the default. Both halves are persisted: the org ID
-// is what actually disambiguates sessions when several orgs share one endpoint
-// — persisting only the endpoint made the default resolve to whichever of them
-// was logged into first, not the one the user picked.
+// persistSessionDefault makes the picker's highlighted session the current
+// context. The picker key collapses a legacy/operator pair into one row, so the
+// context set is the operator-preferred entry for that key — the row shown.
 func persistSessionDefault(key string) error {
 	c, err := config.Load()
 	if err != nil {
 		return err
 	}
-	endpoint := key
-	orgID := 0
-	tenant := ""
-	if idx := strings.Index(key, "::"); idx >= 0 {
-		endpoint = key[:idx]
-		if n, convErr := strconv.Atoi(key[idx+2:]); convErr == nil {
-			orgID = n
-		} else if _, err := uuid.Parse(key[idx+2:]); err == nil {
-			tenant = key[idx+2:]
-		} else {
-			return fmt.Errorf("invalid organization identifier")
+	var chosen *config.AuthConfig
+	for i := range c.Auth {
+		if authSessionKey(&c.Auth[i]) != key {
+			continue
 		}
-
+		cand := &c.Auth[i]
+		if chosen == nil || (chosen.OAuthIssuer == "" && cand.OAuthIssuer != "") {
+			chosen = cand
+		}
 	}
-	c.DefaultCloudGRPC = endpoint
-	c.DefaultOrgID = int32(orgID)
-	c.DefaultTenantUUID = tenant
+	if chosen == nil {
+		return fmt.Errorf("selected session no longer exists")
+	}
+	c.CurrentContext = chosen.Name
 	return config.Save(c)
 }
 
@@ -178,26 +171,9 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	picker := tui.NewPickerWithTitleAndColumns("Select an organisation", authPickerColumns)
-	// Compute the default key from the stored default org ID (preferred) or
-	// the legacy DefaultCloudGRPC field so both code-paths work.
-	if cfg.DefaultTenantUUID != "" && cfg.DefaultCloudGRPC != "" {
-		picker.DefaultKey = strings.ToLower(cfg.DefaultCloudGRPC + "::" + cfg.DefaultTenantUUID)
-	}
-	if cfg.DefaultOrgID != 0 {
-		for i := range cfg.Auth {
-			if key := authSessionKey(&cfg.Auth[i]); strings.HasSuffix(key, fmt.Sprintf("::%d", cfg.DefaultOrgID)) {
-				picker.DefaultKey = strings.ToLower(key)
-				break
-			}
-		}
-	}
-	if picker.DefaultKey == "" && cfg.DefaultCloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cfg.DefaultCloudGRPC {
-				picker.DefaultKey = strings.ToLower(authSessionKey(&cfg.Auth[i]))
-				break
-			}
-		}
+	// Highlight the current context's row.
+	if cur, ok := cfg.ContextByName(cfg.CurrentContext); ok {
+		picker.DefaultKey = strings.ToLower(authSessionKey(cur))
 	}
 
 	picker.OnSetDefault = func(item tui.PickerItem) (string, error) {
@@ -206,20 +182,16 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 			return "", fmt.Errorf("no auth session selected")
 		}
 		if err := persistSessionDefault(key); err != nil {
-			return "", fmt.Errorf("could not save default: %w", err)
+			return fmt.Sprintf("Could not switch context: %v", err)
 		}
-		return fmt.Sprintf("Default set to %s.", item.Name), nil
+		return fmt.Sprintf("Switched to %s.", item.Name)
 	}
-	picker.OnUnsetDefault = func() (string, error) {
-		c, err := config.Load()
-		if err != nil {
-			return "", err
+	picker.OnUnsetDefault = func() string {
+		if c, err := config.Load(); err == nil {
+			c.CurrentContext = ""
+			_ = config.Save(c)
 		}
-		c.DefaultCloudGRPC, c.DefaultOrgID, c.DefaultTenantUUID = "", 0, ""
-		if err := config.Save(c); err != nil {
-			return "", err
-		}
-		return "Default cleared.", nil
+		return "Current context cleared."
 	}
 
 	// Snapshot the rows before background lookups; the caller can use its
