@@ -78,11 +78,15 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Wendy Cloud or a local pki-core instance",
-		Long: "Signs in to Wendy Cloud. By default this is the OIDC flow: pass --email to discover your realm (or --issuer to name it), sign in with authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
+		Long: "Signs in to Wendy Cloud. For now, defaults to the legacy dashboard login (cloud.wendy.sh). For the OIDC flow, pass --email to discover your realm (or --issuer to name it), sign in with authorization code + PKCE, obtain an operator certificate directly from pki-core, and save a refreshable Cloud API session.\n" +
 			"With --api-key: issues a certificate from a self-hosted pki-core instance using a Bearer API key.\n" +
 			"With --legacy: uses the old Wendy Cloud dashboard enrollment callback (cloud.wendy.sh). Kept for the previous cloud only.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Old cloud-dashboard flow, only behind the explicit marker.
+			// Temporarily default to legacy login until the new cloud is ready.
+			// Explicit OIDC or local authentication options keep their existing behavior.
+			if !cmd.Flags().Changed("legacy") && email == "" && issuer == "" && apiKey == "" {
+				legacy = true
+			}
 			if legacy {
 				if apiKey != "" || issuer != "" || email != "" {
 					return fmt.Errorf("--legacy selects the old cloud-dashboard login and cannot be combined with --api-key, --issuer, or --email")
@@ -110,9 +114,7 @@ func newAuthLoginCmd() *cobra.Command {
 				return performLocalLogin(cmd.Context(), cloudGRPC, apiKey, orgID)
 			}
 
-			// Default: new-cloud OIDC. A realm identifier is required; without
-			// one we stop here rather than silently fall back to the old prod
-			// cloud (that path is now only reachable with --legacy).
+			// OIDC login requires an email address or an explicit realm issuer.
 			if authBase == "" {
 				authBase = defaultDevAuthBase
 			}
@@ -166,7 +168,7 @@ func newAuthLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&identityResource, "pki-resource", defaultPKIIdentityResource, "RFC 8707 pki-core identity resource (used with OIDC login)")
 	cmd.Flags().StringVar(&identityEndpoint, "pki-identity-endpoint", defaultDevPKIIdentityEndpoint, "pki-core operator identity CSR endpoint (used with OIDC login)")
 	cmd.Flags().BoolVar(&printClaims, "print-claims", false, "Print the decoded access-token claims after login (used with --issuer)")
-	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh) instead of the default OIDC sign-in")
+	cmd.Flags().BoolVar(&legacy, "legacy", false, "Use the old Wendy Cloud dashboard enrollment flow (cloud.wendy.sh) (the temporary default unless --email, --issuer, or --api-key is provided)")
 	return cmd
 }
 

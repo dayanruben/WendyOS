@@ -5,13 +5,13 @@
 > context commands (`use`, `rename`, `default`, `refresh-certs`) remain under
 > `wendy auth`.
 
-Signing in to Wendy Cloud uses the OIDC flow by default. Provide your email address:
+Signing in to Wendy Cloud temporarily uses the legacy dashboard flow by default. To use the OIDC flow, provide your email address:
 
 ```bash
 wendy cloud login --email you@example.com
 ```
 
-A bare `wendy cloud login` (no `--email`, `--issuer`, or `--legacy`) stops and asks for `--email` or `--issuer` rather than silently targeting a cloud environment.
+A bare `wendy cloud login` uses the legacy dashboard flow at `cloud.wendy.sh`. Explicit `--email` or `--issuer` selects OIDC; `--api-key` selects local authentication.
 
 The CLI asks `auth.dev.wendy.sh` for the email's home realm, opens that realm's authorization page, and completes authorization code + PKCE through a loopback callback. It first requests the `https://pki.wendy.sh/identity` audience, creates a PKCS#10 CSR with the same key bound to the token and DPoP proof, and sends it directly to `https://identity.dev.pki.wendy.sh/v1/identity/certificate`. It then rotates the refresh-token family to the `https://cloud.dev.wendy.sh/api` audience and stores the resulting mTLS certificate alongside the Cloud access token, rotating refresh token, and DPoP key using the platform credential store. Cloud is not involved in certificate issuance.
 

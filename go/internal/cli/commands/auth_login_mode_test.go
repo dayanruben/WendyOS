@@ -7,7 +7,7 @@ import (
 )
 
 // TestAuthLoginModeSelection covers the login mode switch (WDY-3163): the
-// default is new-cloud OIDC, the old dashboard flow is only behind --legacy,
+// temporary default is legacy, explicit OIDC options select the new cloud,
 // and every guarded combination errors before any network call. Cases here
 // deliberately avoid the paths that dial wendy-auth/pki-core.
 func TestAuthLoginModeSelection(t *testing.T) {
@@ -17,8 +17,8 @@ func TestAuthLoginModeSelection(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "bare login no longer falls back to prod",
-			args:    nil,
+			name:    "disabling legacy requires an OIDC realm",
+			args:    []string{"--legacy=false"},
 			wantErr: "provide --email",
 		},
 		{

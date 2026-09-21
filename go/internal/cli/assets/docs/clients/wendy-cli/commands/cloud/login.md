@@ -13,14 +13,15 @@ wendy cloud login --legacy
 ## Description
 
 `wendy cloud login` is identical to [`wendy auth login`](../auth/login.md) — it
-reuses the same implementation. By default it runs the OIDC flow: it discovers
+reuses the same implementation. For now, it defaults to the legacy dashboard
+flow at `cloud.wendy.sh`. With `--email` or `--issuer`, it runs the OIDC flow: it discovers
 your realm from `--email` (or takes `--issuer` directly), completes authorization
 code + PKCE through a loopback callback, obtains an operator certificate from
 pki-core, and stores it with a refreshable Cloud API session. Subsequent commands
 use the certificate automatically.
 
-A bare `wendy cloud login` with no `--email`, `--issuer`, or `--legacy` stops and
-asks for one, so it never silently targets a cloud environment.
+A bare `wendy cloud login` uses legacy login. `--api-key` continues to select
+local authentication.
 
 Pass `--legacy` to use the old Wendy Cloud dashboard enrollment callback
 (`cloud.wendy.sh`) instead. It is kept only for the previous cloud.
