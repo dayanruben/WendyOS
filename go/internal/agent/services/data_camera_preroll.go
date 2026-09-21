@@ -419,8 +419,7 @@ func (a *armedCameraSource) activate(session data.CaptureSession) (*cameraCaptur
 	}
 	mappings, err := os.OpenFile(filepath.Join(dir, "clock_samples.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
-		index.Close()
-		return nil, false, err
+		return nil, false, errors.Join(err, index.Close())
 	}
 
 	// If arming lost its producer (the camera faulted or stopped mid-arm), the
@@ -430,9 +429,7 @@ func (a *armedCameraSource) activate(session data.CaptureSession) (*cameraCaptur
 		hub, subID, frames, joinErr := a.video.joinHub(context.Background(), a.key, &agentpb.StreamVideoRequest{DeviceId: a.devID})
 		if joinErr != nil {
 			if len(preRoll) == 0 {
-				index.Close()
-				mappings.Close()
-				return nil, false, joinErr
+				return nil, false, errors.Join(joinErr, index.Close(), mappings.Close())
 			}
 		} else {
 			a.hub, a.subID, a.frames = hub, subID, frames
