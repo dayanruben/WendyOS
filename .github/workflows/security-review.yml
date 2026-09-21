@@ -52,6 +52,29 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
+      - name: Bootstrap pinned batched reviewer when absent from base
+        if: env.IS_DEPENDABOT != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWER_REVISION: 07d673b352356476ef113f7434db35881554fdac
+        run: |
+          set -euo pipefail
+          if [ -f .github/scripts/review_diff.py ]; then
+            exit 0
+          fi
+          # The introducing PR cannot use batching from a base that predates it.
+          # Fetch only the reviewed automation from this immutable revision,
+          # never application code or scripts from the event's mutable head.
+          bootstrap_dir="$(mktemp -d)"
+          for filename in security_review.py security_review_test.py review_diff.py review_diff_test.py; do
+            gh api --method GET \
+              "repos/wendylabsinc/WendyOS/contents/.github/scripts/$filename" \
+              -f ref="$REVIEWER_REVISION" --jq '.content' \
+              | base64 --decode > "$bootstrap_dir/$filename"
+            test -s "$bootstrap_dir/$filename"
+          done
+          cp "$bootstrap_dir/"*.py .github/scripts/
+
       - name: Fetch immutable review history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -329,11 +352,7 @@ jobs:
       - name: Test security review automation
         if: env.IS_DEPENDABOT != 'true'
         run: |
-          # The trusted base predates this helper while this PR bootstraps it.
-          # Always run the base security suite; test the helper once it exists there.
-          if [ -f .github/scripts/review_diff_test.py ]; then
-            python3 .github/scripts/review_diff_test.py
-          fi
+          python3 .github/scripts/review_diff_test.py
           python3 .github/scripts/security_review_test.py
 
       - name: Validate complete review input
