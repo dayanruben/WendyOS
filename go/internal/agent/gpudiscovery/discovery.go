@@ -75,11 +75,10 @@ func Discover(root string) []Device {
 			}
 		}
 	}
-	// CUDA requires host driver evidence, not just a PCI vendor or toolkit.
-	cuda := exists("/dev/nvidiactl") || exists("/dev/nvhost-gpu") || exists("/dev/nvhost-ctrl-gpu")
-	for _, pattern := range []string{"/usr/lib*/libcuda.so*", "/usr/lib/*/libcuda.so*", "/usr/lib/*/tegra/libcuda.so*", "/usr/lib/*/nvidia*/libcuda.so*"} {
-		cuda = cuda || len(glob(pattern)) > 0
-	}
+	// Driver nodes only: libcuda.so outlives the module that created it. Kept in
+	// step with nvidiaDeviceGlobs, the node set the gpu entitlement grants.
+	cuda := slices.ContainsFunc([]string{"/dev/nvidia*", "/dev/nvhost-*gpu", "/dev/nvgpu/igpu*/*"},
+		func(pattern string) bool { return len(glob(pattern)) > 0 })
 	// No qualcomm case: FastRPC evidences the Hexagon NPU, not the Adreno.
 	for i := range devices {
 		switch devices[i].Vendor {
