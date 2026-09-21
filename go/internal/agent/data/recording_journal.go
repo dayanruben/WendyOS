@@ -209,14 +209,12 @@ func (j *recordingJournal) recover() error {
 			}
 			if e == io.ErrUnexpectedEOF {
 				if e = f.Truncate(seg.size); e != nil {
-					f.Close()
-					return e
+					return errors.Join(e, f.Close())
 				}
 				break
 			}
 			if e != nil {
-				f.Close()
-				return fmt.Errorf("recover recording: %w", e)
+				return errors.Join(fmt.Errorf("recover recording: %w", e), f.Close())
 			}
 			stamp := time.Unix(0, r.ReceiptUnixNanos)
 			if currentBoot != "unavailable" && r.ReceiptBootId == currentBoot && r.ReceiptBoottimeNanos >= 0 && r.ReceiptBoottimeNanos <= bootNow {
@@ -234,8 +232,7 @@ func (j *recordingJournal) recover() error {
 		}
 		// Recovery may find a complete write whose acknowledgement was lost or
 		// whose previous sync failed. Re-sync before any duplicate acknowledgement.
-		e = j.syncFile(f)
-		f.Close()
+		e = errors.Join(j.syncFile(f), f.Close())
 		if e != nil {
 			return e
 		}

@@ -220,7 +220,7 @@ class CameraNode:
             arg = ctypes.c_uint32(V4L2_BUF_TYPE_VIDEO_CAPTURE)
             fcntl.ioctl(self._fd, VIDIOC_STREAMOFF, arg)
         except OSError:
-            pass
+            log.debug("stream-off failed during camera cleanup", exc_info=True)
         for m in self._maps:
             m.close()
         self._maps.clear()

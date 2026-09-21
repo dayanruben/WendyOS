@@ -115,3 +115,18 @@ func TestDownloadErrorCodes(t *testing.T) {
 		t.Fatalf("out-of-range offset: code = %s, want InvalidArgument (%v)", status.Code(err), err)
 	}
 }
+
+func TestDataStartRejectsNegativeUTCUncertainty(t *testing.T) {
+	manager, err := data.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewDataService(manager)
+	_, err = service.Start(context.Background(), &agentpbv2.DataStartRequest{RequireUtcUncertaintyNanos: -1})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Start error = %v, want InvalidArgument", err)
+	}
+	if manager.Status() != nil {
+		t.Fatal("invalid request started a capture")
+	}
+}

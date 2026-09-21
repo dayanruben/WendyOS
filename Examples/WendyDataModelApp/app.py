@@ -311,7 +311,7 @@ def main() -> None:
         # budget; frames_with_reconnect has already said why.
         log.info("no more frames from %s; shutting down", source_id)
     except KeyboardInterrupt:
-        pass
+        log.info("interrupted by user; shutting down")
     finally:
         sensors.close()
         client.close()

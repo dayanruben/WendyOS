@@ -259,6 +259,9 @@ func (s *DataService) Sources(ctx context.Context, _ *agentpbv2.DataSourcesReque
 }
 
 func (s *DataService) Start(ctx context.Context, req *agentpbv2.DataStartRequest) (*agentpbv2.DataEpisode, error) {
+	if req.GetRequireUtcUncertaintyNanos() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "require_utc_uncertainty_nanos must be non-negative")
+	}
 	cal := map[string][]byte{}
 	for _, c := range req.GetCalibrations() {
 		cal[c.GetSource()] = c.GetContents()

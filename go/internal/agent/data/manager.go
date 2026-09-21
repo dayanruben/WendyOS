@@ -1008,7 +1008,7 @@ func recordConsensus(dir string, mf *Manifest, c timesync.Consensus) {
 	}
 }
 
-func appendRoughtimeEvidence(dir string, c timesync.Consensus) error {
+func appendRoughtimeEvidence(dir string, c timesync.Consensus) (retErr error) {
 	b, err := json.Marshal(c)
 	if err != nil {
 		return err
@@ -1017,7 +1017,7 @@ func appendRoughtimeEvidence(dir string, c timesync.Consensus) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		return err
 	}
@@ -1331,12 +1331,12 @@ func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration
 // to hold the pre-roll flush to a single fsync rather than one per record.
 var syncFile = func(f *os.File) error { return f.Sync() }
 
-func appendJSONL(path string, b []byte) error {
+func appendJSONL(path string, b []byte) (retErr error) {
 	f, e := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	if _, e = f.Write(append(b, '\n')); e != nil {
 		return e
 	}

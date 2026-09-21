@@ -187,16 +187,14 @@ func appendRecording(path string, r *recordingpb.StoredRecord) error {
 	}
 	before, err := f.Stat()
 	if err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	if err = WriteRecording(f, r); err != nil {
 		rollback := f.Truncate(before.Size())
 		if rollback == nil {
 			rollback = f.Sync()
 		}
-		f.Close()
-		return errors.Join(err, rollback)
+		return errors.Join(err, rollback, f.Close())
 	}
 	// Episode files are flushed at seal. Durable acceptance comes from the
 	// independent journal sync, not this episode copy.
@@ -223,17 +221,15 @@ func (m *Manager) bufferStreamLocked(r *recordingpb.StoredRecord) {
 		m.streamPreRoll = m.streamPreRoll[1:]
 	}
 }
-func (m *Manager) flushStreamPreRoll(dir string, origin int64, window time.Duration) (uint64, *int64, error) {
+func (m *Manager) flushStreamPreRoll(dir string, origin int64, window time.Duration) (count uint64, earliest *int64, retErr error) {
 	if window <= 0 || window > preRollWindow {
 		window = preRollWindow
 	}
 	currentBoot := bootID()
-	var count uint64
-	var earliest *int64
 	var file *os.File
 	defer func() {
 		if file != nil {
-			file.Close()
+			retErr = errors.Join(retErr, file.Close())
 		}
 	}()
 	for _, entry := range m.streamPreRoll {
@@ -271,7 +267,7 @@ func (m *Manager) flushStreamPreRoll(dir string, origin int64, window time.Durat
 
 // repairRecordingTail only discards a torn final frame. Complete frames with
 // a bad checksum are corruption, not an excuse to discard acknowledged data.
-func repairRecordingTail(path string) error {
+func repairRecordingTail(path string) (retErr error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -279,7 +275,7 @@ func repairRecordingTail(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	var offset int64
 	for {
 		_, n, e := ReadRecording(f)
