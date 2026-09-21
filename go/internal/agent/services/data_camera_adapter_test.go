@@ -401,7 +401,7 @@ func newExplicitlyHeldHub(t *testing.T, video *VideoService) (hub *deviceHub, vi
 // A capture that asserts no parameters keeps the old fallback: it joins the
 // running hub at whatever parameters it has and reports them as achieved.
 func TestParameterlessCaptureFallsBackToExistingParameters(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
 	adapter := &cameraDataAdapter{video: video}
 
@@ -426,7 +426,7 @@ func TestParameterlessCaptureFallsBackToExistingParameters(t *testing.T) {
 // A capture with explicit campaign parameters conflicting with a hub held at
 // another consumer's explicit parameters is refused by name, never downgraded.
 func TestExplicitCaptureRefusedAgainstExplicitlyHeldHub(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
 	defer existing.unsubscribe(viewerID)
 	adapter := &cameraDataAdapter{video: video}
@@ -451,7 +451,7 @@ func TestExplicitCaptureRefusedAgainstExplicitlyHeldHub(t *testing.T) {
 // is deliberately below the smallest source framerate, so the request asserts
 // nothing at the source and the cap is enforced adapter-side.
 func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
 	defer existing.unsubscribe(viewerID)
 	adapter := &cameraDataAdapter{video: video}
@@ -502,7 +502,7 @@ func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
 // refusal is delivered at Stop as that source's manifest entry, naming who
 // holds the camera and at what parameters.
 func TestStartRecordsRefusalAndContinuesEpisode(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	existing, viewerID, _ := newExplicitlyHeldHub(t, video)
 	defer existing.unsubscribe(viewerID)
 	adapter := &cameraDataAdapter{video: video}

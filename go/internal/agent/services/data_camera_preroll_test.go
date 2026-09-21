@@ -175,7 +175,7 @@ func newDefaultHub(t *testing.T, video *VideoService, path string) (*deviceHub, 
 // explicit-parameter holder, and never restarts the producer, so it plays
 // correctly with the parameter-precedence hub-state model.
 func TestArmingIsNonOwningAndDoesNotForceTakeover(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	hub, viewerID := newDefaultHub(t, video, "/dev/video0")
 	adapter := &cameraDataAdapter{video: video}
 
@@ -204,7 +204,7 @@ func TestArmingIsNonOwningAndDoesNotForceTakeover(t *testing.T) {
 // trigger, and the triggered episode opens with those frames at negative
 // offsets on the same subscription that then continues live.
 func TestArmedCampaignFlushesPreRollOnTrigger(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	hub, _ := newDefaultHub(t, video, "/dev/video0")
 	adapter := &cameraDataAdapter{video: video}
 
@@ -276,7 +276,7 @@ func TestPreRollFlushLosesNoFramesWhileWriting(t *testing.T) {
 	const preRollFrames = 4
 	const liveFrames = 12
 
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	hub, _ := newDefaultHub(t, video, "/dev/video0")
 	subID, frames, err := hub.subscribe()
 	if err != nil {
@@ -413,7 +413,7 @@ func TestPreRollRingRestartsWhenOneGOPExceedsTheByteCap(t *testing.T) {
 // A mid-arm producer restart must not lose the drops it had already counted,
 // and the armed period's drops must be reported apart from the episode's own.
 func TestArmedDropsAreCarriedAndReportedSeparately(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	hub, _ := newDefaultHub(t, video, "/dev/video0")
 	adapter := &cameraDataAdapter{video: video}
 	source := data.Source{ID: "v4l2:/dev/video0", Kind: "camera"}
@@ -463,7 +463,7 @@ func TestArmedDropsAreCarriedAndReportedSeparately(t *testing.T) {
 // A reattach during arming must keep the count it had already accumulated
 // rather than zeroing it the moment after adding to it.
 func TestArmedSourceKeepsDropsAcrossAReattach(t *testing.T) {
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	hub, _ := newDefaultHub(t, video, "/dev/video0")
 	subID, frames, err := hub.subscribe()
 	if err != nil {

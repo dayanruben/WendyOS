@@ -2993,7 +2993,7 @@ func gstStreamEnd(readErr error, timedOut, sawChunk bool, ctxErr error) error {
 // slice of a byte stream, not an access unit, so dropping one truncates whichever
 // unit was in flight; shedding load cannot happen here.
 func pumpEncodedStream(ctx context.Context, r io.Reader, codec agentpb.VideoCodec,
-	broadcast func([]byte, uint64, agentpb.VideoCodec) bool, onFirstChunk func()) error {
+	broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, onFirstChunk func()) error {
 	const chunkSize = 256 * 1024
 	buf := make([]byte, chunkSize)
 	first := true

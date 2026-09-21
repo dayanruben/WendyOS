@@ -15,7 +15,7 @@ import (
 // running for that camera so a pump joins it instead of opening a device.
 func newTwoPlaneTestService(t *testing.T) (*VideoService, *fakeLoopback, *deviceHub) {
 	t.Helper()
-	video := NewVideoService(context.Background(), zap.NewNop())
+	video := NewVideoService(context.Background(), zap.NewNop(), nil)
 	loop := newFakeLoopback()
 	video.loopback = loop
 	video.globDevices = func() ([]string, error) { return []string{"/dev/video0"}, nil }

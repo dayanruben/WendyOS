@@ -260,7 +260,7 @@ func TestCameraCaptureIndexCarriesSampleIdentity(t *testing.T) {
 // It is also an entitlement question: an allowlist naming "ipcamera:0" must not
 // silently grant /dev/video0.
 func TestSensorSourceIDAliasesAreRefused(t *testing.T) {
-	svc := NewVideoService(context.Background(), zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop(), nil)
 	defer svc.Shutdown()
 
 	if !svc.SupportsSensorSource("v4l2:/dev/video0") {
@@ -405,7 +405,7 @@ func TestSensorReattachGateSkipsToRandomAccess(t *testing.T) {
 // producer over. The subscription reattaches to the replacement hub and the
 // app's new stream starts on a random-access unit.
 func TestSensorSubscriptionReattachesAfterCaptureTakeover(t *testing.T) {
-	svc := NewVideoService(context.Background(), zap.NewNop())
+	svc := NewVideoService(context.Background(), zap.NewNop(), nil)
 	defer svc.Shutdown()
 	fp := installFakeProducers(svc)
 	ctx := context.Background()
