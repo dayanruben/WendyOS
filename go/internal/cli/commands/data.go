@@ -641,7 +641,7 @@ func stagedFilePath(root, rel string) (string, error) {
 	return p, nil
 }
 
-func downloadOne(ctx context.Context, c agentpbv2.DataServiceClient, id, root, rel string, size int64, wantHash string) error {
+func downloadOne(ctx context.Context, c agentpbv2.DataServiceClient, id, root, rel string, size int64, wantHash string) (err error) {
 	p, e := stagedFilePath(root, rel)
 	if e != nil {
 		return e
@@ -653,7 +653,7 @@ func downloadOne(ctx context.Context, c agentpbv2.DataServiceClient, id, root, r
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	defer func() { err = errors.Join(err, f.Close()) }()
 	st, e := f.Stat()
 	if e != nil {
 		return e

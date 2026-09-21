@@ -96,14 +96,16 @@ func syncRecordingDirectory(path string) error {
 // No remote acknowledgement is sent until both file contents and its directory
 // entry are durable. On a failed acknowledgement keep the local file: the device
 // may already have reclaimed it. A retry may export duplicates, never less data.
-func exportRecordingFile(ctx context.Context, client agentpbv2.DataServiceClient, req *agentpbv2.DataRecordingExportRequest, output string) (int, error) {
+func exportRecordingFile(ctx context.Context, client agentpbv2.DataServiceClient, req *agentpbv2.DataRecordingExportRequest, output string) (count int, err error) {
 	f, err := os.OpenFile(output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}
 	durable := false
 	defer func() {
-		f.Close()
+		if f != nil {
+			err = errors.Join(err, f.Close())
+		}
 		if !durable {
 			os.Remove(output)
 		}
@@ -112,7 +114,6 @@ func exportRecordingFile(ctx context.Context, client agentpbv2.DataServiceClient
 	if err != nil {
 		return 0, err
 	}
-	count := 0
 	for {
 		r, err := stream.Recv()
 		if err == io.EOF {
@@ -129,7 +130,9 @@ func exportRecordingFile(ctx context.Context, client agentpbv2.DataServiceClient
 	if err = f.Sync(); err != nil {
 		return count, err
 	}
-	if err = f.Close(); err != nil {
+	err = f.Close()
+	f = nil
+	if err != nil {
 		return count, err
 	}
 	if err = syncRecordingDirectory(filepath.Dir(output)); err != nil {
