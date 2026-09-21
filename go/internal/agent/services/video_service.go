@@ -356,6 +356,7 @@ func (e nativeH264NotSupported) Error() string { return e.msg }
 // at broadcast time. stream.Send() serialises the proto synchronously before returning,
 // so reading frame.data without a per-subscriber copy is safe.
 type videoFrame struct {
+	decoderInit   []byte // immutable WebM initialization; not part of the sample payload
 	data          []byte
 	tsNs          uint64
 	codec         agentpb.VideoCodec
@@ -441,6 +442,7 @@ type hubSubscriber struct {
 
 // deviceHub multiplexes one camera producer to multiple gRPC subscribers.
 type deviceHub struct {
+	webmInit webmInitialization
 	mu       sync.Mutex
 	subs     map[int]*hubSubscriber
 	subDrops map[int]uint64
@@ -734,6 +736,9 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	defer h.mu.Unlock()
 	if len(h.subs) == 0 {
 		return false
+	}
+	if frame.codec == agentpb.VideoCodec_VIDEO_CODEC_VP8 {
+		frame.decoderInit = h.webmInit.feed(frame.data)
 	}
 	for id, sub := range h.subs {
 		if sub.closed || sub.raw != raw {

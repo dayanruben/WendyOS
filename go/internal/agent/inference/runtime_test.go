@@ -208,3 +208,17 @@ func TestRuntimeDownloadRejectsOversizedArchiveEntry(t *testing.T) {
 		t.Fatalf("unexpected executable: %v", err)
 	}
 }
+
+func TestRuntimeEnvironmentDoesNotForwardAgentSecrets(t *testing.T) {
+	for _, key := range []string{"WENDY_TOKEN", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "PYTHONPATH"} {
+		t.Setenv(key, "agent-secret")
+	}
+	root := t.TempDir()
+	env := strings.Join(runtimeEnvironment(root), "\n")
+	if strings.Contains(env, "agent-secret") {
+		t.Fatal("agent environment leaked into model worker")
+	}
+	if !strings.Contains(env, "HOME="+filepath.Join(root, "home")) {
+		t.Fatal("model uses agent home")
+	}
+}

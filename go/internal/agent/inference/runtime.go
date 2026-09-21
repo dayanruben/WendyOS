@@ -40,12 +40,13 @@ var uvArtifacts = map[string]struct{ target, sha string }{
 func Supported() bool { _, ok := uvArtifacts[runtime.GOOS+"/"+runtime.GOARCH]; return ok }
 
 type Input struct {
-	SourceID      string `json:"source_id"`
-	Generation    uint64 `json:"generation"`
-	Encoding      string `json:"encoding,omitempty"`
-	Payload       []byte `json:"payload,omitempty"`
-	DroppedBefore uint64 `json:"dropped_before,omitempty"`
-	End           bool   `json:"end,omitempty"`
+	SourceID       string `json:"source_id"`
+	Generation     uint64 `json:"generation"`
+	Encoding       string `json:"encoding,omitempty"`
+	Initialization []byte `json:"initialization,omitempty"`
+	Payload        []byte `json:"payload,omitempty"`
+	DroppedBefore  uint64 `json:"dropped_before,omitempty"`
+	End            bool   `json:"end,omitempty"`
 }
 
 type Detection struct {
@@ -208,7 +209,11 @@ func (f *ManagedFactory) Start(ctx context.Context, config data.CampaignInferenc
 	childCtx, cancel := context.WithCancel(ctx)
 	command := exec.CommandContext(childCtx, uv, "run", "--project", dir, "--frozen", "--no-dev", "--no-build", "--managed-python", "--python", "3.12", "python", "-u", filepath.Join(dir, "worker.py"))
 	command.Dir = dir
-	command.Env = append(os.Environ(), "UV_CACHE_DIR="+filepath.Join(f.Root, "cache"), "UV_PYTHON_INSTALL_DIR="+filepath.Join(f.Root, "python"), "HF_HOME="+filepath.Join(f.Root, "models"), "UV_NO_PROGRESS=1", "TOKENIZERS_PARALLELISM=false", "OMP_NUM_THREADS=2")
+	if err := os.MkdirAll(filepath.Join(f.Root, "home"), 0700); err != nil {
+		cancel()
+		return nil, fmt.Errorf("creating model runtime home: %w", err)
+	}
+	command.Env = runtimeEnvironment(f.Root)
 	configureProcess(command)
 	stderr := &tailBuffer{}
 	command.Stderr = stderr
@@ -331,3 +336,21 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func (b *tailBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return string(b.b) }
+
+// runtimeEnvironment deliberately excludes agent tokens, cloud credentials,
+// Python injection settings and the agent's home/configuration directories.
+func runtimeEnvironment(root string) []string {
+	env := []string{
+		"HOME=" + filepath.Join(root, "home"),
+		"UV_CACHE_DIR=" + filepath.Join(root, "cache"),
+		"UV_PYTHON_INSTALL_DIR=" + filepath.Join(root, "python"),
+		"HF_HOME=" + filepath.Join(root, "models"),
+		"UV_NO_PROGRESS=1", "TOKENIZERS_PARALLELISM=false", "OMP_NUM_THREADS=2",
+	}
+	for _, key := range []string{"PATH", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}

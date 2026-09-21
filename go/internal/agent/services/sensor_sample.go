@@ -17,6 +17,7 @@ type SensorSample struct {
 	// UncertaintyNanos is the bracket half-width.
 	BootNanos        int64
 	UncertaintyNanos int64
+	DecoderInit      []byte // demuxer initialization, separate from recorded sample bytes
 	Payload          []byte
 	Encoding         string
 	// SelfContained reports that Payload holds exactly one whole encoded unit.

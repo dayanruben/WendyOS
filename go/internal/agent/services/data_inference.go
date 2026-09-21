@@ -348,7 +348,7 @@ func (j *campaignInferenceJob) stream(ctx context.Context, session inference.Ses
 					err = errors.New("camera sample exceeds inference limit of 8MiB")
 					break
 				}
-				err = session.Send(inference.Input{SourceID: sourceID, Generation: generation, Encoding: sample.Encoding, Payload: sample.Payload, DroppedBefore: sample.DroppedBefore})
+				err = session.Send(inference.Input{SourceID: sourceID, Generation: generation, Encoding: sample.Encoding, Payload: sample.Payload, Initialization: sample.DecoderInit, DroppedBefore: sample.DroppedBefore})
 				if err != nil {
 					break
 				}

@@ -70,9 +70,11 @@ class StreamBytes(io.RawIOBase):
 
 
 class Decoder:
-    def __init__(self, source_id, generation, encoding):
+    def __init__(self, source_id, generation, encoding, initialization=b""):
         self.source_id, self.generation, self.encoding = source_id, generation, encoding
         self.stream = StreamBytes()
+        if initialization:
+            self.stream.feed(initialization)
         self.lock = threading.Lock()
         self.latest = None
         self.last_scored = 0
@@ -177,7 +179,15 @@ def run(config, detector):
                         decoder.stop()
                         decoder = None
                     if decoder is None:
-                        decoder = Decoder(source_id, generation, encoding)
+                        initialization = base64.b64decode(item.get("initialization", ""), validate=True)
+                        if len(initialization) > 1 << 20:
+                            raise ValueError("WebM initialization exceeds 1MiB")
+                        # Initial subscribers already receive the EBML header in
+                        # the payload. Late joins and decoder resets need the
+                        # producer's cached header before libav can resynchronize.
+                        if encoding != "vp8" or payload.startswith(b"\x1a\x45\xdf\xa3"):
+                            initialization = b""
+                        decoder = Decoder(source_id, generation, encoding, initialization)
                         decoders[source_id] = decoder
                     if not decoder.stream.feed(payload):
                         # Never splice an encoded stream after losing bytes. The next
