@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -64,7 +66,12 @@ export:
 	if manager.Status() != nil || !adapter.stopped {
 		t.Fatal("campaign did not stop after after_trigger")
 	}
+	// Capture stops before the detached episode finishes sealing on disk.
 	manifest, failures, err := manager.Inspect(episode.GetId(), true)
+	for errors.Is(err, os.ErrNotExist) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		manifest, failures, err = manager.Inspect(episode.GetId(), true)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
