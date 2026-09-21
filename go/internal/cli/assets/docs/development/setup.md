@@ -4,7 +4,7 @@
 
 ### Go
 
-The module requires **Go 1.26.6** or later. The exact version is pinned in `go.mod` at the repo root, which is the authority — read it from there rather than trusting this page. The CI workflows use `actions/setup-go` with `go-version-file: go.mod`, so the version is always read from that file — follow the same practice locally.
+Use the Go version declared in the repo root’s `go.mod`. The CI workflows use `actions/setup-go` with `go-version-file: go.mod`, so the version is always read from that file — follow the same practice locally.
 
 ```sh
 go version   # should match or exceed the `go` line in go.mod

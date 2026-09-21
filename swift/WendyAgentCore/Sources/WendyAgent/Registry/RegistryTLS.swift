@@ -35,7 +35,7 @@ enum RegistryTLS {
         let deviceScope = ClientCertAuthorizer.scope(fromLeafPEM: certs.certPEM)
         if deviceScope == nil {
             logger.error(
-                "Could not determine device tenant from its own certificate; the registry push listener will reject all clients (fail closed). Re-provision the device to recover."
+                "Could not determine device identity scope from its own certificate; the registry push listener will reject all clients (fail closed). Re-provision the device to recover."
             )
         }
         let rawOrgEnforcement = environment["WENDY_MTLS_ORG_ENFORCEMENT"]
