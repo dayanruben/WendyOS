@@ -381,51 +381,6 @@ def user_prompt(metadata: dict[str, Any], diff: str, repo: str) -> str:
     return json.dumps({"repository": repo, "number": metadata["number"], "title": metadata.get("title", ""), "body": metadata.get("body") or "", "batch": metadata.get("review_batch", {"number": 1, "total": 1}), "diff": diff, "numbered_diff": numbered_diff(diff), "structural_evidence": structural}, ensure_ascii=False)
 
 
-def output_schema() -> dict[str, Any]:
-    """Constrain the response shape instead of relying on prompt compliance."""
-    # Structured outputs support types, enums, and required fields, but not
-    # numerical bounds or maximum lengths. Keep those checks, and validation
-    # of actual changed-code evidence, in validate_payload.
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["risk", "decisions"],
-        "properties": {
-            "risk": {"type": "string", "enum": sorted(RISKS)},
-            "decisions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["category", "title", "change", "compatibility", "impact", "locations"],
-                    "properties": {
-                        "category": {"type": "string", "enum": sorted(CATEGORIES)},
-                        "title": {"type": "string"},
-                        "change": {"type": "string"},
-                        "compatibility": {"type": "string"},
-                        "impact": {"type": "string", "enum": sorted(IMPACTS)},
-                        "locations": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": ["path", "side", "line", "end_line"],
-                                "properties": {
-                                    "path": {"type": "string"},
-                                    "side": {"type": "string", "enum": ["head", "base"]},
-                                    "line": {"type": "integer"},
-                                    "end_line": {"type": "integer"},
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    }
-
-
 def _text(value: Any, field: str, maximum: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise ReviewError(f"Model response has an invalid {field}")
@@ -536,7 +491,6 @@ def review_model(metadata: dict[str, Any], diff: str, repo: str, model: str) -> 
                 output_config={"format": {"type": "json_schema", "schema": schema}},
                 system=[{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": prompt}],
-                output_config={"format": {"type": "json_schema", "schema": output_schema()}},
             )
         except Exception as error:
             # Provider exceptions can include request bodies or credentials.

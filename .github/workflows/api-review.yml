@@ -38,7 +38,6 @@ jobs:
           path: review-automation
           sparse-checkout: .github/scripts
           persist-credentials: false
-          fetch-depth: 0
 
       - name: Bootstrap batched review automation when absent from base
         env:

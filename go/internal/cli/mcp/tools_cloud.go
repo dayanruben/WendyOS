@@ -236,12 +236,12 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn, asset, target, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
+	conn, device, target, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
 	s.setConnection(conn, "cloud", target)
-	return okText(fmt.Sprintf("connected to %s via cloud", asset.GetName())), nil
+	return okText(fmt.Sprintf("connected to %s via cloud", device.GetName())), nil
 }
 
 func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -443,7 +443,7 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 	// so ping RTT is measured with an agent-RPC round-trip over the authorized
 	// tunnel, mirroring the CLI. Legacy sessions keep the v1 datagram echo.
 	if isV2Session(auth) {
-		conn, device, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), deviceName, stringParam(req, "broker_url"))
+		conn, device, _, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), deviceName, stringParam(req, "broker_url"))
 		if err != nil {
 			return cloudErrResult(err), nil
 		}

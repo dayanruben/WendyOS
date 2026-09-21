@@ -18,41 +18,6 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-func TestCloudHILPickerShowsSingletonAndPreservesExplicitSelection(t *testing.T) {
-	previousInteractive, previousPicker := isInteractiveTerminalFn, runCloudDevicePicker
-	t.Cleanup(func() { isInteractiveTerminalFn, runCloudDevicePicker = previousInteractive, previousPicker })
-	isInteractiveTerminalFn = func() bool { return true }
-	assets := []*cloudpb.Asset{cloudAssetFixture(41, "jetson")}
-	calls := 0
-	runCloudDevicePicker = func(m cloudDiscoverModel) (cloudDiscoverModel, error) {
-		calls++
-		if m.purpose != hilInferencePicker || !strings.Contains(m.View(), "HIL INFERENCE") {
-			t.Fatal("HIL picker lost its purpose")
-		}
-		if !m.pickerMode || len(m.assets) != 1 {
-			t.Fatal("picker lost its roster")
-		}
-		m.selected = m.assets[0]
-		return m, nil
-	}
-	for _, name := range []string{"", "jetson"} {
-		asset, err := pickCloudDeviceFromRoster(withDevicePickerPurpose(context.Background(), hilInferencePicker), &config.AuthConfig{}, name, "", assets, true)
-		if err != nil || asset.GetId() != 41 {
-			t.Fatalf("asset=%v err=%v", asset, err)
-		}
-	}
-	if calls != 1 {
-		t.Fatalf("picker opened %d times, want only unnamed selection", calls)
-	}
-	runCloudDevicePicker = func(m cloudDiscoverModel) (cloudDiscoverModel, error) {
-		m.quitting = true
-		return m, nil
-	}
-	if _, err := pickCloudDeviceFromRoster(context.Background(), &config.AuthConfig{}, "", "", assets, true); !errors.Is(err, ErrUserCancelled) {
-		t.Fatalf("picker cancellation was not preserved: %v", err)
-	}
-}
-
 func TestCloudContextSupportsFreshTokenOnlySession(t *testing.T) {
 	auth := &config.AuthConfig{
 		APIKey:         "access-token",
@@ -76,6 +41,41 @@ func TestDialCloudGRPCSupportsTokenOnlyPublicTLS(t *testing.T) {
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestCloudHILPickerShowsSingletonAndPreservesExplicitSelection(t *testing.T) {
+	previousInteractive, previousPicker := isInteractiveTerminalFn, runCloudDevicePicker
+	t.Cleanup(func() { isInteractiveTerminalFn, runCloudDevicePicker = previousInteractive, previousPicker })
+	isInteractiveTerminalFn = func() bool { return true }
+	assets := []*cloudpb.Asset{cloudAssetFixture(41, "jetson")}
+	calls := 0
+	runCloudDevicePicker = func(m cloudDiscoverModel) (cloudDiscoverModel, error) {
+		calls++
+		if m.purpose != hilInferencePicker || !strings.Contains(m.View(), "HIL INFERENCE") {
+			t.Fatal("HIL picker lost its purpose")
+		}
+		if !m.pickerMode || len(m.devices) != 1 {
+			t.Fatal("picker lost its roster")
+		}
+		m.selected = m.devices[0].legacy
+		return m, nil
+	}
+	for _, name := range []string{"", "jetson"} {
+		asset, err := pickCloudDeviceFromRoster(withDevicePickerPurpose(context.Background(), hilInferencePicker), &config.AuthConfig{}, name, "", assets, true)
+		if err != nil || asset.GetId() != 41 {
+			t.Fatalf("asset=%v err=%v", asset, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("picker opened %d times, want only unnamed selection", calls)
+	}
+	runCloudDevicePicker = func(m cloudDiscoverModel) (cloudDiscoverModel, error) {
+		m.quitting = true
+		return m, nil
+	}
+	if _, err := pickCloudDeviceFromRoster(context.Background(), &config.AuthConfig{}, "", "", assets, true); !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("picker cancellation was not preserved: %v", err)
 	}
 }
 

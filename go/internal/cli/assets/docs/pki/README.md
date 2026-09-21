@@ -250,6 +250,17 @@ wendy device enroll \
   --name my-device
 ```
 
+› **Plaintext dial (local pki-core only):** the agent's enrollment dial is TLS
+› by default for every address, and a cloud host given without a port resolves
+› to `:443` (it used to resolve to the plaintext `:50051`, which is what sent
+› enrollment tokens in cleartext — WDY-2799). A local pki-core serving
+› plaintext gRPC therefore needs two things: its port named explicitly, as
+› above, and `WENDY_CLOUD_INSECURE=1` set **in the agent's environment on the
+› device** — the agent performs this dial, so setting the variable in your own
+› shell has no effect. The agent logs a warning naming the target address
+› whenever the variable is active, because the enrollment token is a bearer
+› credential. Never set it on a real device.
+
 After this, `wendy device version`, `wendy run`, and other device commands automatically use the mTLS port (plaintext port + 1) when the device's Avahi advertisement includes `tls=true`.
 
 > **Note:** The end-to-end test helper `go run ./cmd/local-pki-test` passes

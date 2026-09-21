@@ -108,8 +108,6 @@ Plain snapshots include a `STATE` column. JSON snapshots have this shape:
 `host.battery` is omitted entirely on a device with no battery, and
 `secondsRemaining` is omitted when the device reports no usable
 charge/discharge rate.
-
-
 - `host.gpus` is omitted on devices that report no GPU.
 - `host.thermalZones` is omitted when the agent has no readable temperature source.
 - `host.maximumTemperature` is the hottest valid thermal-zone or GPU reading and is omitted when no temperature is available.

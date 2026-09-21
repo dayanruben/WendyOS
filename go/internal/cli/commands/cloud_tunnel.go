@@ -158,12 +158,15 @@ func connectCloudDiscoveryDevice(ctx context.Context, auth *config.AuthConfig, a
 	if err != nil {
 		return nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
+	expectedIdentity := &certs.WendyIdentity{OrgID: int32(cert.OrganizationID), EntityType: "asset", EntityID: asset.key}
+	if asset.v2 != nil {
+		expectedIdentity.TenantUUID = cert.TenantUUID()
+		expectedIdentity.Principal = "spiffe://wendy.sh/tenant/" + cert.TenantUUID() + "/device/" + asset.key
+	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
-		ChainPEM:      cert.PemCertificateChain,
-		ExpectedOrgID: int32(cert.OrganizationID),
-		ExpectedIdentity: &certs.WendyIdentity{
-			OrgID: int32(cert.OrganizationID), EntityType: "asset", EntityID: strconv.FormatInt(int64(asset.GetId()), 10),
-		},
+		ChainPEM:         cert.PemCertificateChain,
+		ExpectedOrgID:    int32(cert.OrganizationID),
+		ExpectedIdentity: expectedIdentity,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
@@ -336,7 +339,12 @@ func (d cloudDiscoveryDevice) openTunnel(ctx context.Context, brokerConn *grpc.C
 
 func pipeBrokerTunnel(recv func() ([]byte, bool, error), send func([]byte, bool) error, closeSend func() error) net.Conn {
 	local, remote := net.Pipe()
+	// A non-EOF end of the broker stream is the broker's verdict on this
+	// tunnel (unauthorized caller, asset offline, ...). Record it on the local
+	// end so whatever rides on the pipe reports that verdict instead of a bare
+	// EOF from the closed pipe.
 	tunnel := clouddefaults.NewBrokerTunnelConn(local)
+
 	go func() {
 		defer remote.Close()
 		for {

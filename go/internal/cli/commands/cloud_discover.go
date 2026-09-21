@@ -196,10 +196,10 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "d":
 			cursor := m.table.Cursor()
-			if cursor < 0 || cursor >= len(m.assets) {
+			if cursor < 0 || cursor >= len(m.devices) {
 				return m, nil
 			}
-			key, err := cloudDeviceDefault(m.auth, m.assets[cursor])
+			key, err := cloudDiscoveryDeviceDefault(m.auth, m.devices[cursor])
 			if err == nil {
 				err = saveDefaultDevice(key)
 			}
@@ -208,7 +208,7 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashMessage = err.Error()
 			} else {
 				m.defaultDevice = key
-				m.flashMessage = fmt.Sprintf("Default device set to %s.", m.assets[cursor].GetName())
+				m.flashMessage = fmt.Sprintf("Default device set to %s.", m.devices[cursor].GetName())
 				m.refreshTable()
 			}
 			return m, clearFlashAfter(3 * time.Second)
@@ -336,10 +336,7 @@ func (m cloudDiscoverModel) View() string {
 	if len(m.devices) > 0 {
 		sb.WriteString(m.table.View() + "\n")
 		for _, asset := range m.devices {
-			if asset.legacy == nil {
-				continue
-			}
-			if key, err := cloudDeviceDefault(m.auth, asset.legacy); err == nil && key == m.defaultDevice {
+			if key, err := cloudDiscoveryDeviceDefault(m.auth, asset); err == nil && key == m.defaultDevice {
 				sb.WriteString(m.viewLine(dimStyle.Render("  ✦ default device")) + "\n")
 				break
 			}
@@ -375,10 +372,7 @@ func (m cloudDiscoverModel) View() string {
 func (m *cloudDiscoverModel) refreshTable() {
 	rows := cloudDiscoveryTableRows(m.devices, m.versions)
 	for i, asset := range m.devices {
-		if asset.legacy == nil {
-			continue
-		}
-		if key, err := cloudDeviceDefault(m.auth, asset.legacy); err == nil && key == m.defaultDevice {
+		if key, err := cloudDiscoveryDeviceDefault(m.auth, asset); err == nil && key == m.defaultDevice {
 			rows[i][0] = "✦"
 		}
 	}

@@ -152,7 +152,7 @@ class PayloadTests(unittest.TestCase):
         ]
         malformed.extend([dict(location, url="https://example.com"), None, "go/network.go:5", [location]])
         for value in malformed:
-            with self.subTest(location=value), self.assertRaisesRegex(api_review.ReviewError, "invalid code location$"):
+            with self.subTest(location=value), self.assertRaisesRegex(api_review.ReviewError, "invalid code location"):
                 self.validate(decision(locations=[value]))
 
     def test_file_level_locations_require_structural_evidence(self):
@@ -321,7 +321,7 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(location["additionalProperties"])
         self.assertNotIn("tools", create.call_args.kwargs)
 
-    def test_model_request_enforces_complete_location_objects(self):
+    def test_model_request_enforces_complete_evidence_objects(self):
         message = types.SimpleNamespace(stop_reason="end_turn", content=[types.SimpleNamespace(type="text", text='{"risk":"low","decisions":[]}')])
         _, create = self.call_model(message)
         output_format = create.call_args.kwargs["output_config"]["format"]
@@ -337,7 +337,7 @@ class ModelTests(unittest.TestCase):
         for object_schema, fields in (
             (schema, {"risk", "decisions"}),
             (item, {"category", "title", "change", "compatibility", "impact", "locations"}),
-            (location, {"path", "side", "line", "end_line"}),
+            (location, {"evidence_id"}),
         ):
             with self.subTest(fields=fields):
                 self.assertEqual(object_schema["type"], "object")
@@ -346,14 +346,12 @@ class ModelTests(unittest.TestCase):
                 self.assertIs(object_schema["additionalProperties"], False)
         for field in ("title", "change", "compatibility"):
             self.assertEqual(item["properties"][field]["type"], "string")
-        self.assertEqual(location["properties"]["path"]["type"], "string")
-        for field in ("line", "end_line"):
-            self.assertEqual(location["properties"][field]["type"], "integer")
+        self.assertEqual(location["properties"]["evidence_id"]["type"], "integer")
+        self.assertEqual(location["properties"]["evidence_id"]["enum"], [1, 2])
         for property_schema, values in (
             (schema["properties"]["risk"], {"low", "mid", "high"}),
             (item["properties"]["category"], {"network", "protobuf", "storage", "config", "cli", "other"}),
             (item["properties"]["impact"], {"additive", "breaking", "behavioral"}),
-            (location["properties"]["side"], {"head", "base"}),
         ):
             with self.subTest(values=values):
                 self.assertEqual(property_schema["type"], "string")

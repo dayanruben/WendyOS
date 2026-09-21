@@ -60,14 +60,15 @@ type clearedPin struct {
 func newDeviceUnpinCmd() *cobra.Command {
 	return &cobra.Command{
 		Hidden: true,
-		Use:   "unpin <hostname|identity>",
-		Short: "Clear the recorded identity pin for a device",
+		Use:    "unpin <hostname|identity>",
+		Short:  "Clear the recorded identity pin for a device",
 		Long: "Clear the recorded identity pin for a device, so the next connection to it\n" +
 			"records a fresh identity instead of being challenged against the old one.\n" +
 			"Accepts either the hostname you connect to or the identity a refusal\n" +
 			"prints (spiffe://wendy.sh/tenant/<uuid>/device/<id>, or the legacy\n" +
 			"urn:wendy:org:<org>:asset:<id>).\n" +
-			"Use this after an intentional unenrollment, reflash, factory reset, or move to another organization —\n" +
+			"Use this after an intentional unenrollment, reflash, factory reset,\n" +
+			"or move to another organization —\n" +
 			"anything that made 'wendy device unpin' the CLI's own suggestion.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
