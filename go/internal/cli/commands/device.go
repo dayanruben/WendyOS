@@ -235,6 +235,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var partitions []*agentpb.DiskPartition
 			var containerStorage *agentpb.DiskPartition
 			var gpuCapabilities []*agentpb.GpuCapabilities
+			var npuBackends []string
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU, hasNPU bool
 			var providerInfo *providers.ProviderDeviceInfo
@@ -275,6 +276,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuArch = resp.GetGpuArch()
 				hasNPU = resp.GetHasNpu()
 				npuVendor = resp.GetNpuVendor()
+				npuBackends = resp.GetNpuBackends()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
 				memTotalBytes = resp.GetMemTotalBytes()
@@ -390,6 +392,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if npuVendor != "" {
 					out["npuVendor"] = npuVendor
 				}
+				if len(npuBackends) > 0 {
+					out["npuBackends"] = npuBackends
+				}
 				if len(netInterfaces) > 0 {
 					ifaces := make([]map[string]any, len(netInterfaces))
 					for i, iface := range netInterfaces {
@@ -471,11 +476,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 			if hasNPU {
-				vendor := npuVendor
-				if vendor == "" {
-					vendor = "unknown"
-				}
-				fmt.Printf("%s %s\n", tui.Dim("NPU:"), tui.Value(vendor))
+				fmt.Printf("%s %s\n", tui.Dim("NPU:"), tui.Value(formatNPU(npuVendor, npuBackends)))
 			}
 			if providerInfo != nil {
 				fmt.Printf("%s %s\n", tui.Dim("WASM Apps:"), tui.Value(yesNo(providerInfo.WasmAppSupport)))

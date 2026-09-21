@@ -80,15 +80,7 @@ func Discover(root string) []Device {
 	for _, pattern := range []string{"/usr/lib*/libcuda.so*", "/usr/lib/*/libcuda.so*", "/usr/lib/*/tegra/libcuda.so*", "/usr/lib/*/nvidia*/libcuda.so*"} {
 		cuda = cuda || len(glob(pattern)) > 0
 	}
-	// The Qualcomm Hexagon NPU (Dragonwing) is reached over FastRPC, and its
-	// non-secure nodes are the app-usable transport: that is the driver-level
-	// evidence for the qnn backend, the same bar /dev/nvidiactl sets for CUDA.
-	// The root-only "-secure" nodes are the signed-PD path and prove nothing
-	// about what an app can reach. The npu entitlement supplies the runtime from
-	// the host, so a usable node is the whole requirement.
-	qnn := slices.ContainsFunc(glob("/dev/fastrpc-*"), func(node string) bool {
-		return !strings.HasSuffix(node, "-secure")
-	})
+	// No qualcomm case: FastRPC evidences the Hexagon NPU, not the Adreno.
 	for i := range devices {
 		switch devices[i].Vendor {
 		case "nvidia":
@@ -98,10 +90,6 @@ func Discover(root string) []Device {
 		case "amd":
 			if exists("/dev/kfd") {
 				devices[i].ComputeBackends = []string{"rocm"}
-			}
-		case "qualcomm":
-			if qnn {
-				devices[i].ComputeBackends = []string{"qnn"}
 			}
 		}
 	}
