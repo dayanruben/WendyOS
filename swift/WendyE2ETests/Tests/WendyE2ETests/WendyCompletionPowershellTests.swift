@@ -51,12 +51,12 @@ struct `'wendy completion powershell'` {
     }
 
     /**
-     The generated script completes top-level commands, nested commands,
-     local flags, inherited global flags, and documented aliases using the
-     syntax of the target shell.
+     The generated script completes visible top-level and nested commands,
+     local flags, and inherited global flags using the syntax of the target
+     shell. Hidden compatibility commands are not offered as candidates.
      */
     @Test
-    func `includes commands, flags, and aliases`() async throws {
+    func `includes visible commands and flags while hiding compatibility paths`() async throws {
         try await self.scenario.run { cli, _ in
             try await cli.sh("wendy completion powershell") { result in
 
@@ -70,7 +70,9 @@ struct `'wendy completion powershell'` {
 
                 #expect(result.status.isSuccess)
                 #expect(result.stdout.contains("wifi"))
-                #expect(result.stdout.contains("bluetooth"))
+                #expect(result.stdout.contains("pair\t"))
+                #expect(!result.stdout.contains("bluetooth\t"))
+                #expect(!result.stdout.contains("bt\t"))
             }
 
             try await cli.sh("wendy __complete device version --") { result in
