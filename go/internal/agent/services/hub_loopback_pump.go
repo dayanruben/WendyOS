@@ -19,22 +19,9 @@ import (
 // Linux device with the module loaded (the ioctls themselves). Tests inject a
 // fake; the Linux build injects the real V4L2 OUTPUT writer.
 type loopbackFrameWriter interface {
-	// WriteFrame queues one whole access unit on the node's OUTPUT queue,
-	// stamping it with boottimeNanos, and returns the sequence the KERNEL
-	// assigned to it.
-	//
-	// The two directions are deliberate and not symmetric. Returning the
-	// kernel's sequence rather than accepting one from the caller is the whole
-	// basis of the binding: v4l2loopback overwrites any sequence a writer
-	// supplies with its own write_position, and hands the result back on the
-	// same ioctl. The timestamp goes the other way, because the module copies a
-	// nonzero writer timestamp through to the reader verbatim and flags it as
-	// writer-supplied. See hub_loopback_binding.go for the full reasoning.
-	//
-	// boottimeNanos is the frame's canonical CLOCK_BOOTTIME receipt, the same
-	// value the binding and FrameIdentity carry, so the in-band stamp and the
-	// control plane can never disagree about a frame.
-	WriteFrame(data []byte, boottimeNanos int64) (sequence uint32, err error)
+	// WriteFrame carries the hub's sample ID in the writer-supplied timestamp
+	// and returns the independently assigned kernel sequence for drop accounting.
+	WriteFrame(data []byte, sampleID uint64) (sequence uint32, err error)
 	// Close releases the node. The node itself outlives the writer.
 	Close() error
 }
@@ -359,7 +346,7 @@ func (p *hubLoopbackPump) pumpFrom(ctx context.Context, hub *deviceHub, subID in
 			// records and FrameIdentity publishes, read from the one frame
 			// object, so the in-band value and the control-plane value cannot
 			// drift apart.
-			seq, err := writer.WriteFrame(frame.data, frame.receiptBootNanos)
+			seq, err := writer.WriteFrame(frame.data, frame.sampleID)
 			if err != nil {
 				// A failed write is NOT a dropped frame: the kernel did not advance
 				// its counter and we record no binding, so the sample is simply

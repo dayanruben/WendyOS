@@ -127,14 +127,13 @@ class InputManifestTests(unittest.TestCase):
 class GeneratedExclusionTests(unittest.TestCase):
     """Generated files must not spend the byte budget or reach the reviewer."""
 
-    GLOBS = ("go/proto/gen/**", "*.pb.go", "*_grpc.pb.go")
+    GLOBS = security_review.DEFAULT_GENERATED_GLOBS
 
     def test_generated_paths_are_recognized(self) -> None:
         for path in (
             "go/proto/gen/agentpb/v2/data_service.pb.go",
             "go/proto/gen/agentpb/v2/data_service_grpc.pb.go",
             "go/proto/gen/anything.txt",
-            "some/other/place/thing.pb.go",
         ):
             self.assertTrue(
                 security_review.is_generated_path(path, self.GLOBS), path
@@ -143,6 +142,7 @@ class GeneratedExclusionTests(unittest.TestCase):
     def test_hand_written_paths_are_not_excluded(self) -> None:
         for path in (
             "go/internal/agent/data/manager.go",
+            "some/other/place/thing.pb.go",
             "go/proto/wendy/agent/services/v2/data_service.proto",
             "docs/why-pb.go.md",
             ".github/scripts/security_review.py",
@@ -151,31 +151,17 @@ class GeneratedExclusionTests(unittest.TestCase):
                 security_review.is_generated_path(path, self.GLOBS), path
             )
 
-    def test_gitattributes_patterns_are_read(self) -> None:
-        globs = security_review.gitattributes_generated_globs(
-            "# comment\n"
-            "swift/Sources/*/Proto/**/*.pb.swift linguist-generated=true\n"
-            "vendor/** linguist-generated\n"
-            "keep/me.go -linguist-generated\n"
-            "also/keep.go linguist-generated=false\n"
-            "unrelated.go text eol=lf\n"
-        )
-        self.assertEqual(
-            globs, ("swift/Sources/*/Proto/**/*.pb.swift", "vendor/**")
-        )
-        self.assertTrue(
-            security_review.is_generated_path(
-                "swift/Sources/WendyAgent/Proto/v2/agent.pb.swift", globs
-            )
-        )
-
-    def test_repo_gitattributes_marks_generated_go_protos(self) -> None:
-        globs = security_review.generated_globs(MODULE_PATH.parents[2])
-        self.assertTrue(
-            security_review.is_generated_path(
-                "go/proto/gen/agentpb/shared.pb.go", globs
-            )
-        )
+    def test_pr_attributes_cannot_hide_hand_written_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / ".gitattributes").write_text("secret.go linguist-generated=true\n*.go linguist-generated=true\n")
+            with patch("pathlib.Path.cwd", return_value=root):
+                globs = security_review.generated_globs()
+                self.assertFalse(security_review.is_generated_path("secret.go", globs))
+                self.assertFalse(security_review.is_generated_path("internal/secret.pb.go", globs))
+                self.assertTrue(security_review.is_generated_path("go/proto/gen/agentpb/shared.pb.go", globs))
+                prepared, _ = security_review.partition_generated(diff("secret.go").decode())
+                self.assertIn("secret.go", prepared)
 
     def test_sections_rejoin_byte_for_byte(self) -> None:
         raw = (diff("go/a.go") + diff("go/proto/gen/b.pb.go")).decode()

@@ -1,20 +1,8 @@
-"""Read frames from the agent-fed camera node, with their identity.
+"""Read agent-fed loopback frames and their exact hub sample IDs.
 
-The agent owns the physical camera and feeds a v4l2loopback node that this app
-opens. Two things follow from that, and they are the whole reason this module
-exists instead of a bare cv2.VideoCapture:
-
-  * The app is not an independent second reader. The frame it scores is the
-    frame the episode recorded, so a prediction can name its input and the join
-    resolves.
-  * Identity rides in-band. The agent writes the frame's canonical
-    CLOCK_BOOTTIME receipt into the V4L2 buffer timestamp, which v4l2loopback
-    preserves. cv2 does not expose that field, so this module drives V4L2
-    directly and hands the timestamp back with the pixels.
-
-The buffer's `sequence` is NOT identity: v4l2loopback overwrites it with its own
-counter on QBUF. Gaps are still meaningful as a dropped-frame signal, which is
-what dropped_before reports, but the boottime is what names the sample.
+The copied V4L2 timestamp carries sample_id = tv_sec*1e6 + tv_usec, not a
+clock reading. The kernel sequence is independent and detects reader drops.
+The app records its own dequeue time separately from the sample identity.
 """
 
 from __future__ import annotations
@@ -26,7 +14,7 @@ import mmap
 import os
 import select
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -125,19 +113,14 @@ class Frame:
 
     image: np.ndarray
     source_id: str
-    boottime_nanos: int
+    boottime_nanos: int  # App dequeue time, not the agent capture time.
+    sample_id: int
     dropped_before: int = 0
-    sample_ids: list = field(default_factory=list)
 
     def input_refs(self):
-        """The provenance join: what this prediction was computed from.
+        """Reference the same source and sample ID as the episode ledger."""
+        return [{"source_id": self.source_id, "sample_id": self.sample_id}]
 
-        The agent names the sample by its canonical boottime, so that is the
-        reference. It is microsecond-truncated by struct timeval, which is
-        exact rather than lossy: 1e9 divides by 1000, so the value here is
-        always the recorded boottime with its sub-microsecond digits dropped.
-        """
-        return [{"source_id": self.source_id, "boottime_nanos": self.boottime_nanos}]
 
 
 class CameraNode:
@@ -199,14 +182,19 @@ class CameraNode:
         try:
             payload = self._maps[buf.index][: buf.bytesused]
             image = self._decode(payload)
-            boottime = buf.timestamp.tv_sec * 1_000_000_000 + buf.timestamp.tv_usec * 1_000
+            if buf.flags & 0xE000 != 0x4000:
+                raise RuntimeError("camera node did not preserve the agent sample ID")
+            sample_id = buf.timestamp.tv_sec * 1_000_000 + buf.timestamp.tv_usec
+            if not 0 <= buf.timestamp.tv_usec < 1_000_000 or not 0 < sample_id < 1 << 64:
+                raise RuntimeError("camera node returned an invalid sample ID")
+            boottime = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
             dropped = 0
             if self._last_sequence is not None:
                 gap = buf.sequence - self._last_sequence - 1
                 dropped = gap if gap > 0 else 0
             self._last_sequence = buf.sequence
             return Frame(image=image, source_id=self.source_id,
-                         boottime_nanos=boottime, dropped_before=dropped)
+                         boottime_nanos=boottime, sample_id=sample_id, dropped_before=dropped)
         finally:
             fcntl.ioctl(self._fd, VIDIOC_QBUF, buf)
 

@@ -188,50 +188,21 @@ func (w *v4l2OutputWriter) configure() error {
 	return nil
 }
 
-// WriteFrame copies one access unit into the next buffer, stamps it with the
-// frame's canonical CLOCK_BOOTTIME receipt and queues it, returning the
-// sequence the kernel assigned.
-//
-// # The sequence is the kernel's, and only the kernel's
-//
-// The returned value is read back out of the ioctl's own buffer struct, and
-// that is the entire basis of the binding: v4l2loopback overwrites whatever
-// sequence a writer supplies with its internal write_position and copies the
-// result back before advancing that counter, so this value names THIS frame and
-// is authoritative. Nothing here may substitute a locally computed number for
-// the SEQUENCE; doing so would reintroduce precisely the arrival-order
-// assumption the design exists to avoid.
-//
-// # The timestamp, by contrast, is ours
-//
-// The same v0.15.4 QBUF handler that clobbers the sequence passes the timestamp
-// through untouched whenever a writer supplies a nonzero one:
-//
-//	} else {
-//	        bufd->buffer.timestamp = buf->timestamp;
-//	        bufd->buffer.flags |= V4L2_BUF_FLAG_TIMESTAMP_COPY;
-//	        bufd->buffer.flags &= ~V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-//	}
-//
-// (the if branch it belongs to takes the module's own clock only when the
-// writer's timestamp is zero and the COPY flag is not already latched). On the
-// read side vidioc_dqbuf's CAPTURE branch copies the whole buffer struct out
-// and unset_flags clears only QUEUED and DONE, so both the value and the COPY
-// flag reach the reader intact.
-//
-// So this queues the frame's canonical boottime receipt, truncated to whole
-// microseconds by struct timeval. The truncation is exact, not approximate:
-// 1e9 is divisible by 1000, so sec*1e6 + usec == boottimeNanos/1000 always. A
-// consumer derives the expected value from FrameIdentity.boottime_nanos by that
-// same division and needs no extra field on the wire to do it.
-//
-// This is a SECONDARY key and a cross-check, not a replacement for the
-// sequence. Microseconds cannot collide at any realistic frame rate (30 frames
-// per second is roughly 33,333 microseconds apart), but the sequence remains
-// the primary join because it is the number a reader gets on the same struct it
-// dequeues, and because it, not the timestamp, is what makes reader-side drops
-// visible as a gap.
-func (w *v4l2OutputWriter) WriteFrame(data []byte, boottimeNanos int64) (uint32, error) {
+// setLoopbackSampleID encodes the exact hub ID in the copied timeval. This is
+// an identity carrier, not a clock: readers recover tv_sec*1e6 + tv_usec.
+// Splitting before conversion preserves all 64 bits without nanosecond overflow.
+func setLoopbackSampleID(buffer *v4l2Buf, sampleID uint64) {
+	*(*int64)(unsafe.Pointer(&buffer[24])) = int64(sampleID / 1_000_000)
+	*(*int64)(unsafe.Pointer(&buffer[32])) = int64(sampleID % 1_000_000)
+}
+
+// WriteFrame carries the hub sample ID in the nonzero writer timestamp that
+// v4l2loopback copies verbatim to CAPTURE buffers. The kernel sequence remains
+// separate and is used only for the binding table and reader drop accounting.
+func (w *v4l2OutputWriter) WriteFrame(data []byte, sampleID uint64) (uint32, error) {
+	if sampleID == 0 {
+		return 0, fmt.Errorf("loopback frame requires a nonzero sample ID")
+	}
 	if len(w.buffers) == 0 {
 		return 0, fmt.Errorf("loopback node %s has no buffers", w.file.Name())
 	}
@@ -251,7 +222,7 @@ func (w *v4l2OutputWriter) WriteFrame(data []byte, boottimeNanos int64) (uint32,
 	qbuf.setMemory(v4l2MemoryMmap)
 	v4l2BufSetBytesUsed(&qbuf, uint32(len(data)))
 	v4l2BufSetField(&qbuf, v4l2FieldNone)
-	qbuf.setTimestampNanos(boottimeNanos)
+	setLoopbackSampleID(&qbuf, sampleID)
 	qbuf.setFlags(v4l2BufFlagTimestampCopy)
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(w.file.Fd()), vidiocQbuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
 		return 0, fmt.Errorf("VIDIOC_QBUF on %s: %w", w.file.Name(), errno)

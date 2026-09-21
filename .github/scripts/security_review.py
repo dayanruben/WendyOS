@@ -79,11 +79,9 @@ class ReviewError(RuntimeError):
 # the .proto diff itself still shows.
 DEFAULT_GENERATED_GLOBS = (
     "go/proto/gen/**",
-    "*.pb.go",
-    "*_grpc.pb.go",
+    "swift/Sources/*/Proto/**/*.pb.swift",
+    "swift/Sources/*/Proto/**/*.grpc.swift",
 )
-GITATTRIBUTES_NAME = ".gitattributes"
-LINGUIST_GENERATED = "linguist-generated"
 DIFF_SECTION_RE = re.compile(r"^diff --git ", re.MULTILINE)
 
 
@@ -120,42 +118,9 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(out) + r"\Z")
 
 
-def gitattributes_generated_globs(text: str) -> tuple[str, ...]:
-    """Read the patterns a .gitattributes marks linguist-generated.
-
-    Parsed here rather than shelled out to `git check-attr` so the rule is the
-    same one a reader of the file sees, and so the script stays runnable outside
-    a checkout (its own tests included).
-    """
-    globs: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split()
-        pattern, attributes = fields[0], fields[1:]
-        for attribute in attributes:
-            name, _, value = attribute.partition("=")
-            if name.lstrip("-!") != LINGUIST_GENERATED:
-                continue
-            # "-attr" and "attr=false" unset it; a bare name or "=true" sets it.
-            if name.startswith("-") or value.lower() in {"false", "0"}:
-                break
-            globs.append(pattern)
-            break
-    return tuple(globs)
-
-
-def generated_globs(repo_root: str | pathlib.Path | None = None) -> tuple[str, ...]:
-    """The built-in conventions plus whatever .gitattributes marks generated."""
-    root = pathlib.Path(repo_root) if repo_root is not None else pathlib.Path.cwd()
-    attributes = root / GITATTRIBUTES_NAME
-    from_file: tuple[str, ...] = ()
-    if attributes.is_file():
-        from_file = gitattributes_generated_globs(
-            attributes.read_text(encoding="utf-8", errors="replace")
-        )
-    return tuple(dict.fromkeys(DEFAULT_GENERATED_GLOBS + from_file))
+def generated_globs() -> tuple[str, ...]:
+    """Fixed generated roots only; PR-controlled attributes are not policy."""
+    return DEFAULT_GENERATED_GLOBS
 
 
 def is_generated_path(path: str, globs: tuple[str, ...]) -> bool:

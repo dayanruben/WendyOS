@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// TestV4L2BufferTimestampSetterRoundTrip pins the in-band frame identity the
-// two-plane data path writes onto every buffer it queues.
+// TestV4L2BufferTimestampSetterRoundTrip checks the generic clock setter.
+// Loopback identity uses the separate sample ID encoding tested below.
 //
 // This is a byte-layout test on purpose, and it asserts the RAW BYTES rather
 // than only round-tripping through the accessors. v4l2Buf is a fixed-size array
@@ -51,16 +51,6 @@ func TestV4L2BufferTimestampSetterRoundTrip(t *testing.T) {
 		t.Errorf("timestampNanos() = %d, want %d", got, wantTruncated)
 	}
 
-	// The identity a consumer relies on: it derives the expected buffer
-	// timestamp from FrameIdentity.boottime_nanos by dividing by 1000, with no
-	// second field on the wire. That works only because 1e9 divides evenly by
-	// 1000, which makes the truncation exact rather than approximate.
-	sec := int64(binary.LittleEndian.Uint64(buffer[24:32]))
-	usec := int64(binary.LittleEndian.Uint64(buffer[32:40]))
-	if got, want := sec*1_000_000+usec, nanos/1000; got != want {
-		t.Errorf("sec*1e6+usec = %d, want boottime_nanos/1000 = %d", got, want)
-	}
-
 	// And the flag that tells a reader the timestamp is the writer's own rather
 	// than a clock the module read for us.
 	buffer.setFlags(v4l2BufFlagTimestampCopy)
@@ -71,5 +61,20 @@ func TestV4L2BufferTimestampSetterRoundTrip(t *testing.T) {
 	// adjacent fields in the same 88-byte array.
 	if got := buffer.timestampNanos(); got != wantTruncated {
 		t.Errorf("timestampNanos() = %d after setFlags, want %d", got, wantTruncated)
+	}
+}
+
+func TestLoopbackSampleIDWireEncoding(t *testing.T) {
+	for _, id := range []uint64{1, 999999, 1000000, 12345678, 1<<64 - 1} {
+		var buffer v4l2Buf
+		setLoopbackSampleID(&buffer, id)
+		sec := binary.LittleEndian.Uint64(buffer[24:32])
+		usec := binary.LittleEndian.Uint64(buffer[32:40])
+		if usec >= 1000000 || sec*1000000+usec != id {
+			t.Fatalf("lost sample ID %d: %d/%d", id, sec, usec)
+		}
+		if buffer.sequence() != 0 || buffer.flags() != 0 {
+			t.Fatal("sample ID changed neighboring fields")
+		}
 	}
 }

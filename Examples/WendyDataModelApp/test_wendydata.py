@@ -224,7 +224,7 @@ class _FakeNode:
 
 
 def _frame(boottime):
-    return wendyframes.Frame(image=None, source_id="fake", boottime_nanos=boottime)
+    return wendyframes.Frame(image=None, source_id="fake", boottime_nanos=boottime, sample_id=boottime)
 
 
 class TestFreshestFrames(unittest.TestCase):
@@ -310,3 +310,23 @@ class TestResilientFrames(unittest.TestCase):
                 if len(got) == 2:
                     break
         self.assertEqual(got, [7, 8])
+
+
+class TestFramePredictionIdentity(unittest.TestCase):
+    def test_dequeued_sample_reaches_prediction(self):
+        node = object.__new__(wendyframes.CameraNode)
+        node._fd, node._maps, node._last_sequence = 42, [b"pixels"], None
+        node.source_id = "v4l2:/dev/video0"
+        node._decode = lambda payload: payload
+        def ioctl(fd, request, buffer):
+            if request == wendyframes.VIDIOC_DQBUF:
+                buffer.index, buffer.bytesused, buffer.flags = 0, 6, 0x4000
+                buffer.timestamp.tv_sec, buffer.timestamp.tv_usec = 12, 345678
+                buffer.sequence = 99
+        with unittest.mock.patch.object(wendyframes.fcntl, "ioctl", side_effect=ioctl), \
+             unittest.mock.patch.object(wendyframes.time, "CLOCK_BOOTTIME", 7, create=True), \
+             unittest.mock.patch.object(wendyframes.time, "clock_gettime_ns", return_value=987654321000):
+            frame = node.read()
+        record = wendydata.build_prediction("model", "v1", 0.5, [], inputs=frame.input_refs())
+        self.assertEqual(record["inputs"], [{"source_id": node.source_id, "sample_id": 12345678}])
+        self.assertEqual(frame.boottime_nanos, 987654321000)

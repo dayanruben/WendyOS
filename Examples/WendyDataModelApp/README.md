@@ -28,9 +28,11 @@ The harness feeds the model, and the episode records exactly what it fed
 it.
 
 1. The app reads the agent-fed v4l2loopback node and gets, with each frame,
-   the agent's `CLOCK_BOOTTIME` receipt in the V4L2 buffer timestamp. That
-   timestamp is the frame's identity, and the episode records the same
-   value, so a prediction can name the frame it scored.
+   the hub's `sample_id` encoded as `tv_sec * 1000000 + tv_usec` in the
+   copied V4L2 timestamp. This field carries identity, not clock time.
+   Predictions reference the episode ledger's `(source_id, sample_id)`.
+   The app's dequeue time is separate. This requires the matching agent
+   writer; older writers that stamp clock time are incompatible.
 2. Because the app reads that node rather than `/dev/video0`, it is one
    more consumer of the producer the campaign's capture adapter consumes.
    Video4Linux2 admits a single holder of a capture device; the agent is

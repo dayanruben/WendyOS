@@ -264,7 +264,7 @@ def main() -> None:
                     "the harness dropped %d frame(s) before %s@%d: the model is not keeping up",
                     sensor_frame.dropped_before,
                     sensor_frame.source_id,
-                    sensor_frame.boottime_nanos,
+                    sensor_frame.sample_id,
                 )
             now = time.monotonic()
             if now < next_score_at:
@@ -290,7 +290,7 @@ def main() -> None:
                 {
                     "frame_width": frame.shape[1],
                     "frame_height": frame.shape[0],
-                    "sensor_boottime_nanos": sensor_frame.boottime_nanos,
+                    "frame_read_boottime_nanos": sensor_frame.boottime_nanos,
                     "frames_skipped_since_last_prediction": skipped,
                 },
                 inputs=sensor_frame.input_refs(),

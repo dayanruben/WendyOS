@@ -29,10 +29,10 @@ func observedLogger() (*zap.Logger, *observer.ObservedLogs) {
 type fakeLoopbackWriter struct {
 	nextSeq uint32
 	writes  [][]byte
-	// stamps records the boottime the pump handed to each write, in the same
+	// stamps records the sample ID the pump handed to each write, in the same
 	// order as writes, so a test can assert the in-band identity the real writer
 	// would put on the v4l2 buffer.
-	stamps []int64
+	stamps []uint64
 	// failOn holds write indices (0-based) that should return an error.
 	failOn map[int]bool
 	closed bool
@@ -42,14 +42,14 @@ func newFakeLoopbackWriter(base uint32) *fakeLoopbackWriter {
 	return &fakeLoopbackWriter{nextSeq: base, failOn: map[int]bool{}}
 }
 
-func (f *fakeLoopbackWriter) WriteFrame(data []byte, boottimeNanos int64) (uint32, error) {
+func (f *fakeLoopbackWriter) WriteFrame(data []byte, sampleID uint64) (uint32, error) {
 	if f.failOn[len(f.writes)] {
 		f.writes = append(f.writes, nil)
-		f.stamps = append(f.stamps, boottimeNanos)
+		f.stamps = append(f.stamps, sampleID)
 		return 0, errors.New("simulated write failure")
 	}
 	f.writes = append(f.writes, append([]byte(nil), data...))
-	f.stamps = append(f.stamps, boottimeNanos)
+	f.stamps = append(f.stamps, sampleID)
 	seq := f.nextSeq
 	// The kernel advances its counter only for a frame it actually accepted.
 	f.nextSeq++
@@ -177,17 +177,8 @@ func TestPumpCarriesCanonicalIdentity(t *testing.T) {
 	}
 }
 
-// TestPumpStampsWriterWithCanonicalBoottime pins the in-band half of the
-// identity: the value the pump hands the writer, which the real writer puts in
-// the v4l2 buffer's timestamp, is the frame's canonical CLOCK_BOOTTIME receipt
-// and nothing else.
-//
-// It must be the SAME number the binding publishes. A pump that stamped a
-// locally read clock instead would still produce a plausible-looking timestamp
-// on the node, and a consumer cross-checking a sequence join against it would
-// then reject frames that were correctly identified. The whole value of the
-// in-band stamp is that it agrees with the control plane by construction.
-func TestPumpStampsWriterWithCanonicalBoottime(t *testing.T) {
+// The writer must carry the hub ID, independently of receipt time and kernel sequence.
+func TestPumpStampsWriterWithCanonicalSampleID(t *testing.T) {
 	hub, subID, frames := newPumpTestHub(t)
 	writer := newFakeLoopbackWriter(7)
 	pump := newHubLoopbackPump(zap.NewNop(), "v4l2:/dev/video0", "/dev/video200")
@@ -202,19 +193,16 @@ func TestPumpStampsWriterWithCanonicalBoottime(t *testing.T) {
 	if len(writer.stamps) != 1 {
 		t.Fatalf("writer saw %d stamps, want 1", len(writer.stamps))
 	}
-	if writer.stamps[0] != wantBoot {
-		t.Fatalf("writer was stamped %d, want the frame's canonical receipt %d",
-			writer.stamps[0], wantBoot)
+	if writer.stamps[0] != 11 {
+		t.Fatalf("writer was stamped %d, want hub sample ID 11", writer.stamps[0])
 	}
 
-	// And the published identity carries the same number, so a consumer that
-	// derives the expected buffer timestamp as boottime_nanos/1000 will match
-	// what the node actually carries.
+	// The binding retains both the original receipt time and sample identity.
 	binding, ok := pump.Bindings().Lookup(7)
 	if !ok {
 		t.Fatal("binding not recorded")
 	}
-	if binding.BootNanos != writer.stamps[0] {
+	if binding.SampleID != writer.stamps[0] || binding.BootNanos != wantBoot {
 		t.Fatalf("binding boot=%d but writer stamped %d; the two planes disagree",
 			binding.BootNanos, writer.stamps[0])
 	}

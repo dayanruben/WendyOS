@@ -67,18 +67,11 @@ import (
 // V4L2_BUF_FLAG_QUEUED and V4L2_BUF_FLAG_DONE, so both the timestamp and the
 // COPY flag reach the reading application intact.
 //
-// So identity does ride in-band after all, just not in the field the naive
-// design wanted. The pump stamps each buffer with the frame's canonical
-// CLOCK_BOOTTIME receipt truncated to whole microseconds by struct timeval,
-// which is the same number FrameIdentity.boottime_nanos carries divided by
-// 1000; the truncation is exact because 1e9 divides evenly by 1000. A consumer
-// can therefore check every frame it dequeues against the identity it resolved,
-// with no extra field on the wire and no side channel needed for the check.
-//
-// The sequence remains the PRIMARY join key and the timestamp is a secondary
-// one. Two reasons: the sequence is what makes an application-side drop visible
-// (see drop case 2 below), which a timestamp cannot do, and the sequence is
-// exact where microseconds are truncated. Nothing below changes.
+// The pump encodes the exact hub sample ID as tv_sec*1e6 + tv_usec. This
+// writer timestamp is an identity carrier, not a clock. The app can reference
+// the episode's (source_id, sample_id) directly, without a timestamp lookup.
+// The kernel sequence remains useful for drop accounting and the binding
+// table. Canonical receipt time stays in the binding and episode ledger.
 //
 // # What is sound instead: observe the kernel's number, publish the mapping
 //
