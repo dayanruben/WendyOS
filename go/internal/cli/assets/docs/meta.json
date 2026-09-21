@@ -1,18 +1,28 @@
 {
   "title": "Documentation",
   "pages": [
+    "---Get started---",
     "index",
-    "installation/developer-machine-setup",
+    "get-started",
     "installation",
+    "---Build apps---",
     "guides",
-    "device",
+    "---Hardware---",
     "hardware",
+    "---Debug & observe---",
     "remote-debugging",
-    "integrations",
-    "security",
+    "errors",
     "faq",
+    "---Deploy & manage---",
+    "device",
     "cloud",
-    "---",
+    "security",
+    "---Robotics---",
+    "integrations",
+    "---Concepts---",
+    "concepts",
+    "---Reference---",
+    "reference",
     "advanced"
   ]
 }
