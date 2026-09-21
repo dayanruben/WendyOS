@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,5 +182,29 @@ func TestManagedRuntimeSmoke(t *testing.T) {
 		case <-timer.C:
 			t.Fatalf("runtime did not detect people on every feed: %v", detected)
 		}
+	}
+}
+
+func TestRuntimeDownloadRejectsOversizedArchiveEntry(t *testing.T) {
+	var archive bytes.Buffer
+	gz := gzip.NewWriter(&archive)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "unrelated", Mode: 0600, Size: 257 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	// Only the oversized header is needed: reject before reading its body.
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(archive.Bytes())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive.Bytes()) }))
+	defer server.Close()
+	destination := filepath.Join(t.TempDir(), "uv")
+	err := installUV(context.Background(), server.URL, hex.EncodeToString(hash[:]), "test", destination)
+	if err == nil || !strings.Contains(err.Error(), "decompressed limit") {
+		t.Fatalf("expected expansion limit, got %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("unexpected executable: %v", err)
 	}
 }

@@ -13,6 +13,14 @@ fires on the app's edge-triggered `person_detected` event, or on demand with
 catalog with upload state `uploaded`, which only flips after `CommitEpisode`
 verifies every file hash server-side.
 
+For agent-managed inference without deploying a model application, use
+`Examples/WendyDataPeople/campaign.yaml`. Its `inference` block installs a pinned
+Hugging Face object-detection model and applies it to `camera: "*"`; campaign
+inspect reports startup and per-camera state. The steps below retain the
+separate model-app path used for this hardware demo. See the
+[campaign YAML reference](clients/wendy-cli/commands/data.md#inference) for the
+managed runtime requirements, event behavior, and notification settings.
+
 Placeholders used throughout, to be replaced with your own values:
 
 | Placeholder | What it is |

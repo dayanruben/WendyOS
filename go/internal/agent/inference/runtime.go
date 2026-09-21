@@ -166,11 +166,18 @@ func installUV(ctx context.Context, url, checksum, target, destination string) e
 		return err
 	}
 	defer reader.Close()
-	tr := tar.NewReader(reader)
+	expanded := &io.LimitedReader{R: reader, N: (256 << 20) + 1}
+	tr := tar.NewReader(expanded)
 	for {
 		header, err := tr.Next()
+		if expanded.N <= 0 {
+			return errors.New("campaign runtime archive exceeds 256MiB decompressed limit")
+		}
 		if err != nil {
 			return fmt.Errorf("campaign runtime archive missing uv: %w", err)
+		}
+		if header.Size >= expanded.N {
+			return errors.New("campaign runtime archive exceeds 256MiB decompressed limit")
 		}
 		if header.Name != "uv-"+target+"/uv" {
 			continue

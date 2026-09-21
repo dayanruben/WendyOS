@@ -149,13 +149,14 @@ deployment instead (see the `notify` section below).
 | `export` | yes | Annotation integration lifecycle intent. |
 | `models` | no | Map of model name to deployed version, copied into Episodes. |
 | `privacy` | no | List of declared transforms with optional revisions. |
-| `notify` | no | Optional cloud-side notification intent; see below. |
+| `inference` | no | Agent-managed Hugging Face object detection; see below. |
+| `notify` | no | Episode-commit notification intent or immediate event/detection delivery; see below. |
 
 Each `sources` item selects exactly one source:
 
 | Source | Description |
 |---|---|
-| `camera: <selector>` | A stable source ID, `/dev/videoN` path, or unambiguous name fragment. `front` and `default` select the only healthy camera when exactly one exists. |
+| `camera: <selector>` | A stable source ID, `/dev/videoN` path, or unambiguous name fragment. `front` and `default` select the only healthy camera when exactly one exists. `camera: "*"` selects every healthy camera, including cameras discovered after deployment. Quote the wildcard in YAML. |
 | `ros2: <topic>` | A ROS 2 topic name such as `/lidar/points`. Selects that topic on every healthy ROS 2 graph publishing it, and the episode records that topic and nothing else. A topic no healthy graph publishes is an error. A full per-topic source ID such as `ros2:rmw_cyclonedds_cpp:domain-42:/lidar/points` selects that one source. A domain-level source ID such as `ros2:rmw_cyclonedds_cpp:domain-42`, or any other value, selects the whole DDS domain and records all of it. Requested topics are retained separately in the manifest either way. |
 | `telemetry: true` | Includes device telemetry. |
 
@@ -274,19 +275,51 @@ The `upload` and `retention` blocks:
 | `upload.max_rate` | no | Upload bandwidth cap in bytes per second; plain integers and rates such as `5MB/s` are accepted. |
 | `retention.local_quota` | no | Declared on-device episode storage bound in bytes; plain integers and sizes such as `10GiB` are accepted. Stored with the plan; this release enforces only the device-wide quota and deployment prints a warning. |
 
-The optional `notify` block:
+### Inference
+
+An `inference` block runs object detection in the agent without a separate model
+application. The agent installs its managed Python runtime and downloads the
+pinned Hugging Face checkpoint on first use; this requires network access and
+disk space outside the episode quota. Remote model code is disabled.
 
 | Field | Required | Description |
 |---|---|---|
-| `notify.on` | yes | The event to notify on. `episode_committed` is the only supported value; anything else is a deploy-time error. |
+| `model` | yes | `owner/repository` or `https://huggingface.co/owner/repository`; a Transformers object-detection checkpoint. |
+| `revision` | yes | Lowercase, 40-character Hugging Face commit SHA. Branch names are rejected. |
+| `labels` | yes | 1–32 unique, nonempty model labels, each at most 128 bytes. |
+| `threshold` | yes | Detection confidence in `(0, 1]`. |
+| `rate` | yes | Frames per second per camera in `(0, 30]`. |
+| `event` | yes | Event emitted on detection; 1–128 letters, numbers, `.`, `-`, or `_`. |
+| `clear_after` | yes | Continuous absence needed to clear presence; positive duration, at most 24h. |
+| `cooldown` | yes | Minimum interval between detection events; positive duration, at most 24h. |
+| `enabled` | no | Defaults to `true`; `false` keeps the configuration but stops inference. |
 
-The `notify` block is inert on the device. It rides verbatim in each committed
-episode manifest (under `trigger.notify`), and the cloud ingest service reads
-it there to decide whether to send a notification; devices never open a
-network connection because of it. Unlike the rest of the document, unknown
-keys inside `notify` do not fail deployment: the cloud side may understand
-keys an older agent does not, so deployment prints a warning naming each
-unrecognized key and ignores it.
+Use the inference event in `capture.triggers` to record an episode. Predictions
+and events are attributed to `sh.wendy.campaign.<name>`. Campaign inspect reports
+`inference_status`, including runtime state, per-camera state and notification
+errors. Temporary camera loss retains presence/cooldown state so reconnecting
+does not produce a duplicate detection.
+
+See [the all-camera people example](https://github.com/wendylabsinc/WendyOS/tree/main/Examples/WendyDataPeople)
+for a complete campaign. Campaign revision hashing now uses revision schema 2,
+which includes inference and notification settings. Existing plans receive new
+revision hashes when redeployed; the YAML `version` remains `1`.
+
+### Notifications
+
+| Field | Required | Description |
+|---|---|---|
+| `notify.on` | yes | `episode_committed`, `detection`, or `event`. |
+| `notify.event` | for `event` | Exact named application or inference event to match. |
+| `notify.webhook` | for `event`/`detection` | HTTP(S) endpoint without embedded credentials or a URL fragment. |
+
+`episode_committed` is cloud-side intent carried in the committed manifest;
+it does not open a device-side notification connection. `detection` requires
+an inference block and sends an immediate notification when presence is detected.
+`event` also works for matching application events, independently of episode
+capture triggers. Immediate notifications use a bounded queue and retries;
+delivery failures appear in `inference_status.notification_error` and agent logs.
+Unknown keys inside `notify` warn at deployment and are ignored.
 
 ```yaml
 version: 1

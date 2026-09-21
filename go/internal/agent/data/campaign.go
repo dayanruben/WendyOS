@@ -223,11 +223,11 @@ func (n *CampaignNotify) UnmarshalYAML(node *yaml.Node) error {
 			}
 		case "event":
 			if err := node.Content[i+1].Decode(&n.Event); err != nil {
-				return err
+				return fmt.Errorf("notify.event: %w", err)
 			}
 		case "webhook":
 			if err := node.Content[i+1].Decode(&n.Webhook); err != nil {
-				return err
+				return fmt.Errorf("notify.webhook: %w", err)
 			}
 		default:
 			n.UnknownKeys = append(n.UnknownKeys, key)

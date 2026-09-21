@@ -228,7 +228,7 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			delete(j.status.Sources, id)
 			j.mu.Unlock()
 			delete(sources, id)
-			delete(presence, id)
+			// Keep presence and cooldown across temporary camera loss.
 		}
 		for _, source := range j.owner.service.manager.Sources(ctx) {
 			if source.Kind == "camera" && !source.Healthy {
@@ -243,7 +243,9 @@ func (j *campaignInferenceJob) run(ctx context.Context) error {
 			child, stop := context.WithCancel(ctx)
 			done := make(chan struct{})
 			sources[id] = inferenceSource{stop, done}
-			presence[id] = &inferencePresence{}
+			if presence[id] == nil {
+				presence[id] = &inferencePresence{}
+			}
 			changed = true
 			go func(id string) { defer close(done); j.stream(child, session, id) }(id)
 		}
@@ -515,8 +517,8 @@ func (m *campaignInferenceManager) notifyEvent(campaign data.Campaign, record da
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	job := m.jobs[campaign.Name]
+	m.mu.Unlock()
 	if job == nil || job.campaign.Revision != campaign.Revision {
 		return
 	}
