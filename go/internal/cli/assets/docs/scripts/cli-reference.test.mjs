@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commandFlags, commandRoute, renderCommand } from './cli-reference.mjs';
+import { commandFlags, commandPages, commandRoute, renderCommand } from './cli-reference.mjs';
 
 const commands = [
   { path: 'wendy', use: 'wendy', persistent_flags: [{ name: 'device', type: 'string', usage: 'Target' }] },
@@ -28,4 +28,10 @@ test('maps command groups and leaf commands to stable routes', () => {
   assert.equal(commandRoute('wendy'), 'reference/cli');
   assert.equal(commandRoute('wendy device info'), 'reference/cli/device/info');
   assert.match(renderCommand(commands[0], commands), /\[wendy device\]\(\/docs\/reference\/cli\/device\)/);
+});
+
+test('leaf commands are direct links while command groups remain expandable', () => {
+  assert.deepEqual(commandPages(commands[0], commands), ['index', 'device']);
+  assert.deepEqual(commandPages(commands[1], commands), ['index', '...info']);
+  assert.deepEqual(commandPages(commands[2], commands), ['index']);
 });

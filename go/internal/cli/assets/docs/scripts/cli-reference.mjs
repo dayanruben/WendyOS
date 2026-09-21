@@ -6,6 +6,16 @@ const text = (value = '') => value.replaceAll('&', '&amp;').replaceAll('<', '&lt
 const cell = (value = '') => text(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
 export const commandRoute = (name) => `reference/cli${name === 'wendy' ? '' : '/' + name.split(' ').slice(1).join('/')}`;
 
+// A command with no subcommands is a page, not an expandable folder.
+export function commandPages(command, commands) {
+  return ['index', ...commands
+    .filter((c) => c.path.split(' ').slice(0, -1).join(' ') === command.path)
+    .map((c) => {
+      const hasChildren = commands.some((child) => child.path.split(' ').slice(0, -1).join(' ') === c.path);
+      return `${hasChildren ? '' : '...'}${c.path.split(' ').at(-1)}`;
+    })];
+}
+
 export function commandFlags(command, commands) {
   const flags = new Map();
   const parts = command.path.split(' ');
@@ -55,10 +65,9 @@ export async function writeCLIReference(docsRoot, contentRoot, publicRoot, norma
     } catch { /* Not every command has a hand-written explanation. */ }
     await mkdir(path.join(contentRoot, route), { recursive: true });
     await writeFile(path.join(contentRoot, file), normalize(renderCommand(command, commands, detailsURL), file));
-    const children = commands.filter((c) => c.path.split(' ').slice(0, -1).join(' ') === command.path);
     await writeFile(path.join(contentRoot, route, 'meta.json'), JSON.stringify({
       title: command.path === 'wendy' ? 'Wendy CLI' : command.path.split(' ').at(-1),
-      pages: ['index', ...children.map((c) => c.path.split(' ').at(-1))],
+      pages: commandPages(command, commands),
     }, null, 2));
   }
 }

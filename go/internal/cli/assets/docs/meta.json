@@ -11,7 +11,7 @@
     "...hardware",
     "---Debug & observe---",
     "...remote-debugging",
-    "errors",
+    "...errors",
     "faq",
     "---Deploy & manage---",
     "device",
@@ -20,7 +20,7 @@
     "---Robotics---",
     "...integrations",
     "---Concepts---",
-    "concepts",
+    "...concepts",
     "---Reference---",
     "...reference",
     "advanced"
