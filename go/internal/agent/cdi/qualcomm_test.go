@@ -3,6 +3,7 @@ package cdi
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -119,7 +120,7 @@ func TestApplyQualcommNPURuntime_InjectsTransportAtOwnPrefix(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a bind at %s, mounts = %+v", qualcommNPUPrefix, spec.Mounts)
 	}
-	if m.Source != qualcommNPUStageDir || !contains(m.Options, "ro") {
+	if m.Source != qualcommNPUStageDir || !slices.Contains(m.Options, "ro") {
 		t.Errorf("unexpected mount %+v", m)
 	}
 

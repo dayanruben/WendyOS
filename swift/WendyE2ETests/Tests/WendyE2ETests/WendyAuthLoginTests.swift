@@ -18,7 +18,7 @@ struct `'wendy auth login'` {
             try await cli.sh("wendy auth login --help") { result in
                 let stdout = result.stdout
                 #expect(result.status.isSuccess)
-                #expect(stdout.contains("opens a browser for authentication"))
+                #expect(stdout.contains("Signs in to Wendy Cloud"))
                 #expect(stdout.contains("wendy auth login [flags]"))
                 #expect(stdout.contains("--api-key"))
                 #expect(stdout.contains("--cloud"))
