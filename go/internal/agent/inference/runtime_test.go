@@ -222,3 +222,44 @@ func TestRuntimeEnvironmentDoesNotForwardAgentSecrets(t *testing.T) {
 		t.Fatal("model uses agent home")
 	}
 }
+
+func TestValidCachedUV(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "uv")
+	good := []byte("verified executable")
+	digest := sha256.Sum256(good)
+	checksum := hex.EncodeToString(digest[:])
+	check := func(want bool) {
+		t.Helper()
+		valid, err := validCachedUV(path, checksum)
+		if err != nil || valid != want {
+			t.Fatalf("validCachedUV = %v, %v; want %v", valid, err, want)
+		}
+	}
+	check(false)
+	if err := os.WriteFile(path, good, 0700); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+	if err := os.WriteFile(path, []byte("modified executable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.WriteFile(path, good, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, good, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+}

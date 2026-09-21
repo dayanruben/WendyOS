@@ -134,8 +134,9 @@ A complete plan is in `Examples/WendyDataCampaign` in the WendyOS repository.
 ## Campaign YAML reference
 
 A campaign file contains exactly one YAML document. Unknown fields are
-rejected, with one exception: unknown keys inside the `notify` block warn at
-deployment instead (see the `notify` section below).
+rejected, with one exception: unknown keys inside `notify` warn at deployment
+and are ignored when `notify.on` is `episode_committed`. The immediate modes
+(`event` and `detection`) reject unknown `notify` keys.
 
 | Top-level field | Required | Description |
 |---|---|---|
@@ -319,7 +320,8 @@ an inference block and sends an immediate notification when presence is detected
 `event` also works for matching application events, independently of episode
 capture triggers. Immediate notifications use a bounded queue and retries;
 delivery failures appear in `inference_status.notification_error` and agent logs.
-Unknown keys inside `notify` warn at deployment and are ignored.
+Unknown keys inside `notify` are rejected for `event` and `detection`.
+For `episode_committed`, they warn at deployment and are ignored.
 
 ```yaml
 version: 1

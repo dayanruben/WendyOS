@@ -31,10 +31,10 @@ var assets embed.FS
 
 const uvVersion = "0.10.9"
 
-var uvArtifacts = map[string]struct{ target, sha string }{
-	"linux/amd64":  {"x86_64-unknown-linux-gnu", "20d79708222611fa540b5c9ed84f352bcd3937740e51aacc0f8b15b271c57594"},
-	"linux/arm64":  {"aarch64-unknown-linux-gnu", "cc0c5a8573e7d6d78aecb954e0a62b5c0d18217bb81f1e19363b428c57a9962a"},
-	"darwin/arm64": {"aarch64-apple-darwin", "a92f61e9ac9b0f29668c15f56152e4a60143fca148ff5bfadb86718472c3f376"},
+var uvArtifacts = map[string]struct{ target, sha, binarySHA string }{
+	"linux/amd64":  {"x86_64-unknown-linux-gnu", "20d79708222611fa540b5c9ed84f352bcd3937740e51aacc0f8b15b271c57594", "8f8aa2a27b00bf3b35880b2e943bb8fd58714abe0981f8467b90e75faab41131"},
+	"linux/arm64":  {"aarch64-unknown-linux-gnu", "cc0c5a8573e7d6d78aecb954e0a62b5c0d18217bb81f1e19363b428c57a9962a", "2452f3680578ab0e1bee5e035dcac2486445770ac4ccc98cefc743c5740c352f"},
+	"darwin/arm64": {"aarch64-apple-darwin", "a92f61e9ac9b0f29668c15f56152e4a60143fca148ff5bfadb86718472c3f376", "bc50ab0e90f24491f0e794f5b8649722f8fd2bf483c53490c012b41b89151ef9"},
 }
 
 func Supported() bool { _, ok := uvArtifacts[runtime.GOOS+"/"+runtime.GOARCH]; return ok }
@@ -96,14 +96,17 @@ func (f *ManagedFactory) prepare(ctx context.Context) (string, string, error) {
 		return "", "", err
 	}
 	uv := filepath.Join(root, "uv-"+uvVersion)
-	if _, err := os.Stat(uv); errors.Is(err, os.ErrNotExist) {
+	valid, err := validCachedUV(uv, artifact.binarySHA)
+	if err != nil {
+		return "", "", err
+	}
+	if !valid {
 		url := "https://github.com/astral-sh/uv/releases/download/" + uvVersion + "/uv-" + artifact.target + ".tar.gz"
 		if err := installUV(ctx, url, artifact.sha, artifact.target, uv); err != nil {
 			return "", "", err
 		}
-	} else if err != nil {
-		return "", "", err
 	}
+
 	hash := sha256.New()
 	files := []string{"worker.py", "pyproject.toml", "uv.lock"}
 	for _, name := range files {
@@ -137,6 +140,31 @@ func (f *ManagedFactory) prepare(ctx context.Context) (string, string, error) {
 		}
 	}
 	return uv, dir, nil
+}
+
+// Binary digests are derived from the corresponding checksum-verified release
+// archives. A writable sidecar checksum would not authenticate cached contents.
+func validCachedUV(path, checksum string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() > 128<<20 {
+		return false, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.LimitReader(file, (128<<20)+1)); err != nil {
+		return false, err
+	}
+	return hex.EncodeToString(hash.Sum(nil)) == checksum, nil
 }
 
 func installUV(ctx context.Context, url, checksum, target, destination string) error {
