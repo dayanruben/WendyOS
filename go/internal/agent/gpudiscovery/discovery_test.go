@@ -37,6 +37,8 @@ func TestDiscoverVendorsAndCompute(t *testing.T) {
 		{"nvidia", "0x10de", "nvidia", "/dev/nvidiactl", []string{"cuda"}},
 		{"nvidia", "0x10de", "nvgpu", "/dev/nvhost-ctrl-gpu", []string{"cuda"}},
 		{"nvidia", "", "tegra", "/dev/nvgpu/igpu0/ctrl", []string{"cuda"}},
+		// The PCI id names a nouveau card, so it is still an NVIDIA GPU — just
+		// one with no CUDA.
 		{"nvidia", "0x10de", "nouveau", "", []string{}},
 		{"amd", "0x1002", "amdgpu", "/dev/kfd", []string{"rocm"}},
 	} {

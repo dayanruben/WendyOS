@@ -101,7 +101,9 @@ func vendorID(id string) string {
 
 func driverVendor(driver string) string {
 	switch strings.ToLower(driver) {
-	case "nvidia", "nouveau", "nvgpu", "tegra":
+	// nouveau is absent on purpose: it is PCI-only, so the vendor id always names
+	// the card, and listing it here would only imply the proprietary stack.
+	case "nvidia", "nvgpu", "tegra":
 		return "nvidia"
 	case "amdgpu", "radeon":
 		return "amd"
