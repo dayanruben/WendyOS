@@ -6,11 +6,11 @@
     "get-started",
     "installation",
     "---Build apps---",
-    "guides",
+    "...guides",
     "---Hardware---",
-    "hardware",
+    "...hardware",
     "---Debug & observe---",
-    "remote-debugging",
+    "...remote-debugging",
     "errors",
     "faq",
     "---Deploy & manage---",
@@ -18,11 +18,11 @@
     "cloud",
     "security",
     "---Robotics---",
-    "integrations",
+    "...integrations",
     "---Concepts---",
     "concepts",
     "---Reference---",
-    "reference",
+    "...reference",
     "advanced"
   ]
 }
