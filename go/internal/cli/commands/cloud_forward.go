@@ -161,16 +161,7 @@ func serveSelectedTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *
 		cliLogln("Cloud tunnel failed: %v", err)
 		return
 	}
-	defer tunnel.Close()
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(tunnel, tcpConn); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(tcpConn, tunnel); done <- struct{}{} }()
-	select {
-	case <-ctx.Done():
-	case <-done:
-	}
-	_ = tcpConn.Close()
-	_ = tunnel.Close()
+	relayTunnel(ctx, tcpConn, tunnel)
 }
 
 func serveTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) {
@@ -180,8 +171,13 @@ func serveTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.Cli
 	if err != nil {
 		return
 	}
-	defer tunnelConn.Close()
+	relayTunnel(ctx, tcpConn, tunnelConn)
+}
 
+// Keep the return path alive after the caller finishes sending its request.
+func relayTunnel(ctx context.Context, tcpConn, tunnelConn io.ReadWriteCloser) {
+	defer tcpConn.Close()
+	defer tunnelConn.Close()
 	done := make(chan struct{}, 2)
 	relay := func(dst io.Writer, src io.Reader) {
 		defer func() { done <- struct{}{} }()
@@ -189,6 +185,11 @@ func serveTunnelConn(ctx context.Context, tcpConn net.Conn, brokerConn *grpc.Cli
 	}
 	go relay(tunnelConn, tcpConn)
 	go relay(tcpConn, tunnelConn)
-	<-done
-	<-done // wait for both directions before closing connections
+	for range 2 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+		}
+	}
 }
