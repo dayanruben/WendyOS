@@ -59,7 +59,7 @@ func rejectUnsupportedMacRunProject(projectType, platform string) error {
 		return errors.New(macPlatformMismatchMessage(platform))
 	}
 	switch projectType {
-	case "swift", "xcode", "docker", "python", "compose", "multi-service":
+	case "swift", "xcode", "docker", "python", "compose", "multi-service", "native-process":
 		return nil
 	default:
 		return fmt.Errorf("unable to detect project type for a Mac target: %q", projectType)
@@ -486,16 +486,27 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 // selection actually needs one. Watch sessions pass their already-selected
 // target so every cycle stays pinned to the same device and connection.
 func resolveStagefileGPUTarget(ctx context.Context, cwd string, target *SelectedDevice, opts runOptions) (*SelectedDevice, error) {
-	if target != nil || opts.gpuArch != "" || !stagefile.NeedsGPUTarget(cwd) {
+	if target != nil || opts.gpuArch != "" {
+		return target, nil
+	}
+	needsGPU := stagefile.NeedsGPUTarget(cwd)
+	if opts.dockerfile != "" {
+		needsGPU = stagefile.NeedsGPUTargetFile(cwd, opts.dockerfile)
+	}
+	if !needsGPU {
 		return target, nil
 	}
 	return resolveRunTarget(ctx, runResolveOptions(opts)...)
 }
 
 type runOptions struct {
-	buildType  string
-	dockerfile string
-	builder    string
+	// Managed robot provisioning owns its QMP mapping and HTTP identity check.
+	// The public run command never sets this option.
+	managedRobot     bool
+	buildType        string
+	dockerfile       string
+	builder          string
+	stagefileBackend string
 	// buildHost names a WendyOS device that builds the image instead of this
 	// machine. Empty means build locally, and every existing local path must be
 	// unaffected when it is empty.
@@ -584,6 +595,7 @@ func validateChunkingMode(mode string) error {
 
 func newRunCmd() *cobra.Command {
 	var opts runOptions
+	var hilDevice string
 	var watch bool
 	var debounceMS int
 	var verbose bool
@@ -592,10 +604,27 @@ func newRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "Build and run application on a WendyOS device",
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
+		Args:  optionalRunDeviceArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWithInterruptContext(cmd.Context(), func(runCtx context.Context) error {
 				if err := validateEnvFlag(opts.env); err != nil {
 					return err
+				}
+				if cmd.Flags().Changed("hil") && watch {
+					return fmt.Errorf("HIL cannot be combined with --watch")
+				}
+				if cmd.Flags().Changed("build-host") && strings.TrimSpace(opts.buildHost) == "" {
+					if strings.TrimSpace(opts.builder) != "" {
+						return errBuilderWithBuildHost
+					}
+					host, err := selectRunBuildHost(runCtx, opts.yes)
+					if err != nil {
+						return err
+					}
+					opts.buildHost = host
+				}
+				if cmd.Flags().Changed("hil") {
+					return runHILCommand(runCtx, opts, strings.TrimSpace(hilDevice))
 				}
 				if watch {
 					// In watch mode, hide build output unless a build fails (unless
@@ -609,10 +638,14 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
+	cmd.Flags().StringVar(&hilDevice, "hil", "", "Run hardware in the loop; omit the device to open a cloud picker, or use --hil=DEVICE")
+	cmd.Flags().Lookup("hil").NoOptDefVal = optionalDevicePickerValue
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
+	cmd.Flags().StringVar(&opts.stagefileBackend, "stagefile-backend", "", "Stagefile compiler backend: dockerfile (default) or llb")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
-	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
+	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "Build on another WendyOS device; omit the device to open a picker, or use --build-host=DEVICE")
+	cmd.Flags().Lookup("build-host").NoOptDefVal = optionalDevicePickerValue
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
@@ -631,6 +664,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change, streaming logs between deploys (same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")
+
+	cmd.SetUsageTemplate(strings.ReplaceAll(cmd.UsageTemplate(), ".LocalFlags.FlagUsages |", ".LocalFlags.FlagUsages | optionalRunDeviceUsage |"))
 
 	return cmd
 }
@@ -721,6 +756,11 @@ func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...res
 		return target, nil
 	}
 	if errors.Is(err, ErrUserCancelled) {
+		return nil, err
+	}
+	// The user picked a local VM. Falling back to a cloud device here would
+	// deploy their app to an entirely different machine and report success.
+	if errors.Is(err, errSimulatorUnavailable) {
 		return nil, err
 	}
 
@@ -818,15 +858,22 @@ func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
+	ctx = withDevicePickerPurpose(ctx, mainDevicePicker)
 	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
 		return fmt.Errorf("resolving working directory: %w", err)
 	}
-	if _, err := normalizeImageBuilder(opts.builder); err != nil {
+	normalizedBuilder, err := normalizeImageBuilder(opts.builder)
+	if err != nil {
 		return err
 	}
+	useLLB, err := stagefileBackendLLB(opts.stagefileBackend, normalizedBuilder)
+	if err != nil {
+		return err
+	}
+	ctx = withStagefileBackend(ctx, opts.stagefileBackend)
 	if opts.maxConcurrency < 0 {
 		return fmt.Errorf("--max-concurrency must be >= 0 (0 = default limit of 4)")
 	}
@@ -838,6 +885,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	opts.buildHost = buildHost
+	if useLLB && opts.buildHost != "" {
+		return fmt.Errorf("--stagefile-backend=llb cannot yet be combined with --build-host: remote build agents currently accept Dockerfile definitions")
+	}
 
 	// A comma-separated --device names a fleet. Split it HERE, before anything
 	// resolves a device: deviceFlag is what target resolution and the cloud
@@ -869,6 +919,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		if err := validateDockerfileName(opts.dockerfile); err != nil {
 			return fmt.Errorf("--dockerfile: %w", err)
 		}
+		opts.dockerfile = filepath.Clean(opts.dockerfile)
 		if _, err := confinedDockerfilePath(cwd, opts.dockerfile); err != nil {
 			return fmt.Errorf("--dockerfile: %w", err)
 		}
@@ -907,7 +958,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// For docker-type projects, resolve which build file to use before
 	// connecting to the target — so the picker shows regardless of whether
 	// we end up on the agent path or a provider path (Docker, etc.).
-	if projectType == "docker" && opts.dockerfile == "" {
+	if projectType == "docker" && (opts.dockerfile == "" || stagefile.IsSourceName(opts.dockerfile)) {
 		// Exception: a Stagefile with a cuda: stage compiles against the GPU
 		// architecture of the device it is being deployed to, so for those
 		// projects the device has to come first. Only they pay for it, and
@@ -1012,6 +1063,10 @@ func runCommand(ctx context.Context, opts runOptions) error {
 				opts.dockerfile = resolved
 			}
 		}
+	}
+
+	if projectType == "native-process" && target.Agent == nil {
+		return fmt.Errorf("run.command requires a native Darwin agent target")
 	}
 
 	// Provider-based run path.
@@ -1166,6 +1221,13 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		return fmt.Errorf("marshaling app config: %w", err)
 	}
 	createReq.AppConfig = appConfigData
+	if createReq.Env == nil {
+		createReq.Env = mergeEnvEntries(resolveServiceEnv(appCfg), opts.env)
+	}
+	createReq.RestartPolicy = resolveRestartPolicy(opts)
+	if appCfg.Run != nil && appCfg.Run.Cwd != "" {
+		createReq.WorkingDir = appCfg.Run.Cwd
+	}
 
 	if appCfg.Brewfile != "" {
 		cliLogln("Will apply Brewfile on target Mac.")
@@ -1241,8 +1303,13 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
 	go func() {
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-runCtx.Done():
+			return
+		}
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
 			AppName: appCfg.ContainerName(),
@@ -1250,6 +1317,9 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		runCancel()
 	}()
 
+	runner := &serviceHookRunner{conn: conn, opts: opts}
+	defer func() { runCancel(); runner.reap() }()
+	hookFired := false
 	for {
 		resp, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -1260,6 +1330,10 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 				break
 			}
 			return fmt.Errorf("receiving container output: %w", recvErr)
+		}
+		if resp.GetStarted() != nil && !hookFired {
+			hookFired = true
+			runner.startAsync(runCtx, appCfg)
 		}
 		if out := resp.GetStdoutOutput(); out != nil {
 			_, _ = os.Stdout.Write(out.GetData())
@@ -1377,7 +1451,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:      userArgs,
 		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
 		// env (discovery peers). Fleet env is appended last so it wins on key clash.
-		Env: append(resolveServiceEnv(appCfg), opts.env...),
+		Env: mergeEnvEntries(resolveServiceEnv(appCfg), opts.env),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1515,6 +1589,12 @@ func assembleSwiftPMSyncEntries(binaryPath, cwd string, appCfg *appconfig.AppCon
 }
 
 func resolveRunProjectType(dir, requestedType string) (string, error) {
+	if cfg, err := appconfig.LoadFromFile(filepath.Join(dir, "wendy.json")); err == nil && cfg.Run != nil && cfg.Run.Command != "" {
+		if requestedType != "" {
+			return "", fmt.Errorf("run.command cannot be combined with --build-type")
+		}
+		return "native-process", nil
+	}
 	if strings.TrimSpace(requestedType) == "" {
 		return detectProjectType(dir)
 	}
@@ -1892,6 +1972,13 @@ func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device 
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	mark := phaseTimer()
+	if !opts.managedRobot {
+		var err error
+		appCfg, err = prepareRobotAppConfig(conn, appCfg, opts.env)
+		if err != nil {
+			return err
+		}
+	}
 	if opts.isWatch() && !opts.detach {
 		if err := opts.watchState.ensureLogStream(conn, appCfg.AppID); err != nil {
 			return err
@@ -1906,6 +1993,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		return runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts)
 	}
 
+	if !opts.managedRobot {
+		if err := prepareVMAppPorts(ctx, conn, appCfg); err != nil {
+			return err
+		}
+	}
 	// Detect project type and ensure a build file exists when needed.
 	projectType, err := resolveRunProjectType(cwd, opts.buildType)
 	if err != nil {
@@ -1931,6 +2023,17 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		if err := rejectUnsupportedMacRunProject(projectType, platform); err != nil {
 			return err
 		}
+	}
+
+	if isContainerPlatform(platform) && projectType != "compose" {
+		printMissingNetworkWarnings(appCfg)
+	}
+
+	if appCfg.Run != nil && appCfg.Run.Command != "" {
+		if !strings.EqualFold(agentOS, "darwin") || platformOS(platform) != "darwin" {
+			return fmt.Errorf("run.command requires a native Darwin agent target")
+		}
+		return runNativeCommandWithAgent(ctx, conn, cwd, appCfg, opts, versionResp)
 	}
 
 	// Xcode projects: always use the local-build + file-sync path (darwin only).
@@ -2022,7 +2125,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// wendy.json env plus --env and fleet-injected env, appended last so they win
 	// on key clash. Feeds the remote-build path below, the fingerprint, and
 	// whichever local deploy path runs.
-	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
+	deployEnv := mergeEnvEntries(resolveServiceEnv(appCfg), opts.env)
 
 	// Remote build: hand the build to another WendyOS device, which pushes the
 	// finished image straight into this device's registry over the mesh. Placed
@@ -2038,13 +2141,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// entirely for darwin agents and go straight to the registry push below.
 	isDarwinAgent := strings.EqualFold(agentOS, appconfig.PlatformDarwin)
 
-	// Detached fast path: when nothing that affects the image has changed since
+	// Fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
 	// just ensure the existing container is running. Best-effort — a missing or
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, deployEnv)
 	if hashErr == nil {
 		var basesPinned bool
 		basesPinned, hashErr = dockerfileBasesContentPinned(cwd, opts.dockerfile)
@@ -2056,10 +2159,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if hashErr == nil {
 		desiredHash, hashErr = computeDeployDesiredHash(inputHash, appCfg, opts.userArgs, deployEnv, resolveRestartPolicy(opts))
 	}
-	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
-		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
+	if !isDarwinAgent && !opts.deploy && hashErr == nil {
+		if done, err := tryDeployFastPath(ctx, conn, appCfg, deviceKey, desiredHash, opts); done {
 			mark("fast-path (skipped build)")
-			return nil
+			return err
 		}
 	}
 
@@ -2097,16 +2200,21 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		// image's layers, even on a later failure, so the fallback branch below
 		// can size the registry push it's about to fall back to (WDY-2432).
 		var stats chunkDeployStats
-		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts, &stats)
-		ociHint = hint
-		if err == nil {
+		deployed := false
+		onStarted := func(diffIDs []string) {
+			deployed = true
 			if hashErr == nil {
-				// Record the layer diff IDs we deployed so the next run's fast path
-				// can verify the device still holds this content before skipping the
-				// build (WDY-1824).
+				// Persist at the agent's Started acknowledgement. Log streaming can
+				// last indefinitely or be canceled after a successful deployment.
 				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: desiredHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
-			return nil
+		}
+		_, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts, &stats, onStarted)
+		ociHint = hint
+		if err == nil || deployed {
+			// Once started, a log-stream failure must not trigger another build
+			// and deployment through the registry fallback.
+			return err
 		} else if isChunkDeployCancellation(ctx, err) {
 			// The deploy was cancelled — either the context (e.g. `wendy watch`
 			// superseded it with a newer change) or the user backing out of the
@@ -2170,7 +2278,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// unsupported builder combination, ...) falls straight through to the
 	// normal rebuild below exactly as if this block were absent.
 	pushed := false
-	if ociHint != nil && registryPushWouldUseDocker(opts.builder) {
+	_, directLLBFallback, directLLBErr := directStagefileLLBPlan(ctx, cwd, opts.dockerfile, imageBuilderDocker)
+	if directLLBErr != nil {
+		return directLLBErr
+	}
+	if ociHint != nil && (directLLBFallback || registryPushWouldUseDocker(opts.builder)) {
 		if err := tryPushExistingOCILayout(ctx, conn, regPort, ociHint, repo); err == nil {
 			cliSuccess("Reused already-built image for the registry push (skipped a redundant rebuild)")
 			pushed = true
@@ -2310,6 +2422,29 @@ func sortedEnvEntries(env map[string]string) []string {
 	return out
 }
 
+// mergeEnvEntries applies already-expanded environments in precedence order.
+// CLI values are literal, including empty values; repeated keys use the last
+// value. Sorting and deduplication make fingerprints describe the actual env.
+func mergeEnvEntries(layers ...[]string) []string {
+	merged := map[string]string{}
+	for _, entries := range layers {
+		for _, entry := range entries {
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				merged[key] = value
+			}
+		}
+	}
+	return sortedEnvEntries(merged)
+}
+
+func effectiveServiceEnvs(appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, overrides []string) map[string][]string {
+	envs := make(map[string][]string, len(services))
+	for name, svc := range services {
+		envs[name] = mergeEnvEntries(expandServiceEnv(appCfg, svc), overrides)
+	}
+	return envs
+}
+
 // expandServiceEnv resolves the env for one service of a multi-service app:
 // the app-level env is the default and the service's own env overrides it key
 // by key, matching how a service's resources override the app's.
@@ -2368,6 +2503,12 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	}
 	cliLogln("Container %s created.", containerDisplayName(appCfg))
 
+	return startExistingContainer(ctx, conn, appCfg, opts)
+}
+
+// startExistingContainer starts a previously created container without building
+// or recreating it, preserving the usual readiness, hook, and output lifecycle.
+func startExistingContainer(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig, opts runOptions) error {
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
 			AppName: appCfg.ContainerName(),
@@ -2439,8 +2580,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	// Announce + post-start hook, gated on readiness; the hook is tied to runCtx
 	// so Ctrl+C kills it.
-	var postStartCmd *exec.Cmd
-	postStartCmd = runPostStartIfReady(runCtx, runCtx, conn, appCfg, runOptions{})
+	runner := &serviceHookRunner{conn: conn, opts: opts}
+	defer func() { runCancel(); runner.reap() }()
+	hookFired := false
 
 	gotFirstResponse := false
 	// Set when the stream ends on a genuine failure (as opposed to a clean
@@ -2483,6 +2625,10 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			break
 		}
 		gotFirstResponse = true
+		if resp.GetStarted() != nil && !hookFired {
+			hookFired = true
+			runner.startAsync(runCtx, appCfg)
+		}
 		if out := resp.GetStdoutOutput(); out != nil {
 			_, _ = os.Stdout.Write(out.GetData())
 		}
@@ -2494,9 +2640,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	// Cancel runCtx to terminate the postStart hook if it's still running,
 	// then wait for it to exit so we don't leave orphan processes.
 	runCancel()
-	if postStartCmd != nil {
-		_ = postStartCmd.Wait()
-	}
+	runner.reap()
 	if runErr != nil {
 		return runErr
 	}
@@ -2610,6 +2754,9 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		return ""
 	}
 	ip := bestReachableIP(resp.GetNetworkInterfaces())
+	if name, err := userVMForConnection(conn); err == nil && name != "" {
+		ip = "127.0.0.1"
+	}
 	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, httpPort, readiness)
 	if url == "" {
 		return ""
@@ -2731,7 +2878,7 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		return nil
 	}
 
-	err := waitForReadiness(ctx, readiness, hookHost)
+	err := waitForAttachedReadiness(ctx, conn, appCfg, hookHost)
 	rp("  ↳ runcontainer: readiness wait")
 	if err != nil {
 		if ctx.Err() == nil {
@@ -2775,6 +2922,9 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 // wait on or kill. Returns nil when no cli command is configured (regardless
 // of whether openURL was fired).
 func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostname, serviceName string) *exec.Cmd {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if appCfg.Hooks == nil || appCfg.Hooks.PostStart == nil {
 		return nil
 	}
@@ -2792,6 +2942,9 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 	}
 
 	if hook.CLI == "" {
+		return nil
+	}
+	if ctx.Err() != nil {
 		return nil
 	}
 
@@ -2869,6 +3022,12 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 // Started message triggers readiness + the host-side postStart hook (again
 // mirroring startAndStreamContainer), then log streaming continues.
 func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	return streamRunContainerWithStarted(ctx, conn, stream, appCfg, opts, nil)
+}
+
+// onStarted commits deployment state before readiness or long-lived logs. It
+// runs once, only after the agent confirms that the container has started.
+func streamRunContainerWithStarted(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions, onStarted func()) error {
 	// The attached-mode postStart hook is tied to hookCtx so it is terminated
 	// when the stream ends (matching startAndStreamContainer's runCtx handling).
 	// Cleanup runs in a defer so the hook is killed and reaped on every exit
@@ -2879,14 +3038,10 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 	// hooks. They have completely different causes when one is slow.
 	rc := phaseTimer()
 	hookCtx, hookCancel := context.WithCancel(ctx)
-	var postStartCmd *exec.Cmd
-	defer func() {
-		hookCancel()
-		if postStartCmd != nil {
-			_ = postStartCmd.Wait()
-		}
-	}()
+	runner := &serviceHookRunner{conn: conn, opts: opts}
+	defer func() { hookCancel(); runner.reap() }()
 	hookFired := false
+	started := false
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -2896,6 +3051,12 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
+			if !started {
+				started = true
+				if onStarted != nil && !opts.deploy {
+					onStarted()
+				}
+			}
 			rc("  ↳ runcontainer: device create+start")
 			if opts.deploy {
 				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
@@ -2919,7 +3080,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 					opts.watchState.reapCommand(cmd)
 					return nil
 				}
-				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, appCfg, runOptions{})
+				runner.startAsync(hookCtx, appCfg)
 			}
 			continue
 		}
@@ -2929,6 +3090,9 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 		if out := resp.GetStderrOutput(); out != nil {
 			_, _ = os.Stderr.Write(out.GetData())
 		}
+	}
+	if !started {
+		return fmt.Errorf("agent closed the stream before confirming the container started")
 	}
 	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
@@ -3065,7 +3229,7 @@ type ociReuseHint struct {
 // soon as a layer read succeeds — including on failure paths below that point
 // — so a caller whose overall deploy still fails can decide how to handle a
 // registry-push fallback without re-reading the layers itself.
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions, stats *chunkDeployStats) ([]string, *ociReuseHint, error) {
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions, stats *chunkDeployStats, onStarted func([]string)) ([]string, *ociReuseHint, error) {
 	mark := phaseTimer()
 	var hint *ociReuseHint
 
@@ -3129,7 +3293,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		sf, nativeEligible := nativeBuildEligibility(cwd, dockerfile)
 		var depsHash string
 		if nativeEligible {
-			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, resolvedStagefileBackend(ctx), buildArgs, sf); hashErr == nil {
 				depsHash = h
 			} else {
 				nativeEligible = false
@@ -3296,7 +3460,11 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return nil, hint, err
 	}
-	if err := streamRunContainer(rpcCtx, pushConn, stream, appCfg, opts); err != nil {
+	if err := streamRunContainerWithStarted(rpcCtx, pushConn, stream, appCfg, opts, func() {
+		if onStarted != nil {
+			onStarted(layerDiffIDs(headers))
+		}
+	}); err != nil {
 		mark("runcontainer (assemble+create+start[+readiness])")
 		return nil, hint, err
 	}

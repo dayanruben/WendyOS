@@ -16,6 +16,10 @@ on:
         description: "Publish artifacts and create a stable release"
         type: boolean
         default: false
+      skip_integration_tests:
+        description: "Skip macOS hardware integration tests"
+        type: boolean
+        default: false
 
 concurrency:
   group: build-${{ github.ref }}
@@ -577,6 +581,8 @@ jobs:
           # USB access for Jetson recovery flashing (`wendy os install`).
           install -m644 packaging/linux/udev/70-wendy-jetson.rules \
             pkgroot/wendy/usr/lib/udev/rules.d/70-wendy-jetson.rules
+          install -m644 packaging/linux/udev/70-wendy-qualcomm.rules \
+            pkgroot/wendy/usr/lib/udev/rules.d/70-wendy-qualcomm.rules
           # libusb is statically linked into wendy (LGPL-2.1): ship its notice.
           install -m644 NOTICE pkgroot/wendy/usr/share/doc/wendy/NOTICE
           install -m755 ./wendy-agent-linux-${{ matrix.goarch }}/wendy-agent \
@@ -637,6 +643,7 @@ jobs:
             --deb-recommends "nerdctl" \
             --deb-recommends "network-manager | connman" \
             --deb-recommends "bluez" \
+            --deb-recommends "v4l2loopback-dkms (>= 0.15.0)" \
             --config-files /etc/default/wendy-agent \
             --config-files /etc/wendy-agent/config.json \
             --config-files /etc/avahi/services/wendy-agent.service \
@@ -688,6 +695,7 @@ jobs:
             --depends "systemd" \
             --depends "ca-certificates" \
             --depends "avahi" \
+            --rpm-tag "Recommends: v4l2loopback >= 0.15.0" \
             --config-files /etc/default/wendy-agent \
             --config-files /etc/wendy-agent/config.json \
             --config-files /etc/avahi/services/wendy-agent.service \
@@ -710,6 +718,7 @@ jobs:
           dpkg-deb -I "$WENDY_DEB" | grep -E "Depends:.*usbutils"
           dpkg-deb -I "$WENDY_DEB" | grep -E "Depends:.*ca-certificates"
           dpkg-deb -c "$WENDY_DEB" | grep "usr/lib/udev/rules.d/70-wendy-jetson.rules" > /dev/null
+          dpkg-deb -c "$WENDY_DEB" | grep "usr/lib/udev/rules.d/70-wendy-qualcomm.rules" > /dev/null
           dpkg-deb -c "$WENDY_DEB" | grep "usr/share/doc/wendy/NOTICE" > /dev/null
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*containerd"
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*dbus"
@@ -728,6 +737,7 @@ jobs:
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^ca-certificates" > /dev/null
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^avahi" > /dev/null
           rpm -qpl "$WENDY_RPM" | grep "/usr/lib/udev/rules.d/70-wendy-jetson.rules" > /dev/null
+          rpm -qpl "$WENDY_RPM" | grep "/usr/lib/udev/rules.d/70-wendy-qualcomm.rules" > /dev/null
           rpm -qpl "$WENDY_RPM" | grep "/usr/share/doc/wendy/NOTICE" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendy-agent.service" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/default/wendy-agent" > /dev/null
@@ -782,7 +792,7 @@ jobs:
           Expand-Archive "wendy-cli-windows-${{ matrix.goarch }}-${{ needs.determine-version.outputs.version }}.zip" -DestinationPath .
 
       - name: Azure login (OIDC)
-        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -1015,6 +1025,7 @@ jobs:
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_integration_tests
     uses: ./.github/workflows/integration-tests.yml
     with:
       platform: macos
@@ -1053,7 +1064,7 @@ jobs:
           } >> $GITHUB_ENV
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: ${{ needs.determine-version.outputs.version }}
           tag_name: ${{ needs.determine-version.outputs.tag_name }}

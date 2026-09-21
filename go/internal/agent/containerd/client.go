@@ -82,12 +82,21 @@ type restartSuppressor interface {
 	Suppress(containerName string) func()
 }
 
+// dbusProxyManager is the narrow lifecycle surface containerd needs. Keeping
+// it as an interface lets the reboot/start path be tested without launching a
+// real xdg-dbus-proxy process.
+type dbusProxyManager interface {
+	Start(context.Context, string) (string, error)
+	Stop(string) error
+	StopAll()
+}
+
 type Client struct {
 	client                  *containerd.Client
 	logger                  *zap.Logger
 	namespace               string
 	mu                      sync.Mutex
-	proxyManager            *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	proxyManager            dbusProxyManager // nil if xdg-dbus-proxy is not available
 	systemAPISocketProvider AppSystemAPISocketProvider
 
 	// cameraLoopbackProvider is the VideoService camera-loopback API (Task
@@ -411,12 +420,10 @@ func (c *Client) hydrateIsolationLocked(appID string, labels map[string]string) 
 	if c.appIsolation == nil {
 		c.appIsolation = make(map[string]string)
 	}
-	if c.appIsolation[appID] != "" {
+	if _, loaded := c.appIsolation[appID]; loaded {
 		return // already set (live create or earlier hydrate) — never override
 	}
-	if v := labels[labelKeyIsolation]; v != "" {
-		c.appIsolation[appID] = v
-	}
+	c.appIsolation[appID] = labels[labelKeyIsolation]
 }
 
 // recordServiceIP stores the CNI-assigned IP for a service. Caller must hold c.mu.
@@ -1319,6 +1326,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 				zap.String("app_id", appID), zap.Error(cdiErr))
 		}
 	}
+	if needsQualcommNPURuntime(appCfg) {
+		c.applyQualcommNPURuntime(spec)
+	}
 
 	var systemAPISocketDir string
 	systemAPIRefOwned := false
@@ -1446,6 +1456,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
+	if identities := captureSerialIdentities(appCfg.Entitlements); len(identities) > 0 {
+		encoded, err := json.Marshal(identities)
+		if err != nil {
+			return fmt.Errorf("encoding serial device identities: %w", err)
+		}
+		labels[labelKeySerialIdentities] = string(encoded)
+	}
 	if desiredNetworkIdentity != "" {
 		labels[labelKeyNetworkIdentity] = desiredNetworkIdentity
 		if reusedNetworkSandbox != nil {
@@ -1681,12 +1698,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 		c.appServices[appID] = appCfg.Services
 	}
-	if appCfg.Isolation != "" {
-		if c.appIsolation == nil {
-			c.appIsolation = make(map[string]string)
-		}
-		c.appIsolation[appID] = appCfg.Isolation
+	if c.appIsolation == nil {
+		c.appIsolation = make(map[string]string)
 	}
+	// An empty value is authoritative too: a redeploy can remove isolation.
+	// Hydration must not revive old sibling labels during group replacement.
+	c.appIsolation[appID] = appCfg.Isolation
 
 	return nil
 }
@@ -1946,6 +1963,8 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+	} else {
+		return nil, fmt.Errorf("reading container labels before start: %w", lerr)
 	}
 	// The parsed name above can be ambiguous when app IDs contain underscores;
 	// repeat the check after authoritative labels resolve the actual app ID.
@@ -1955,6 +1974,18 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
 	isolation := c.getIsolation(appID)
+
+	// Resources created under /run disappear across reboot even though
+	// containerd preserves the container and its OCI spec. If this start fails
+	// after recreating a proxy, release it again unless the complete start
+	// lifecycle (including network setup) succeeds below.
+	dbusProxyStartedForTask := false
+	dbusProxyContainerName := container.ID()
+	defer func() {
+		if dbusProxyStartedForTask && c.proxyManager != nil {
+			_ = c.proxyManager.Stop(dbusProxyContainerName)
+		}
+	}()
 
 	// Sandbox verification can self-exec CNI CHECK, query netlink, and tear down
 	// mounts/IPAM. None of that may run under the global client mutex; the keyed
@@ -1971,13 +2002,40 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 	// must be recreated here, before container.NewTask below processes the
 	// spec's mounts, or the runtime's bind mount fails and the container never
 	// starts again. The gates are the exact persisted resolv.conf mount sources,
-	// so a Spec load failure just skips the hooks.
+	// Bluetooth mount, and serial device mounts, so a Spec load failure just
+	// skips the recovery hooks (NewTask will report an invalid stored spec).
 	storedSpec, storedSpecErr := container.Spec(ctx)
 	if storedSpecErr == nil {
+		// Managed virtual robot VMs may use legacy netfilter kernels. Prepare their
+		// fixed firewall modules on the host before the confined bootstrap;
+		// this path also runs after VM reboot and never holds c.mu.
+		if err := prepareGo2KernelModulesForStart(ctx, containerLabels, storedSpec); err != nil {
+			return nil, fmt.Errorf("preparing managed robot kernel support: %w", err)
+		}
 		c.recreateHostResolvConfForStart(storedSpec.Mounts)
 		c.recreateMeshResolvConfForStart(storedSpec.Mounts)
+
+		started, proxyErr := c.ensureDBusProxyForStart(ctx, dbusProxyContainerName, storedSpec.Mounts)
+		if proxyErr != nil {
+			return nil, proxyErr
+		}
+		dbusProxyStartedForTask = started
+
+		identities, identityErr := decodeSerialIdentities(containerLabels[labelKeySerialIdentities])
+		if identityErr != nil {
+			return nil, fmt.Errorf("loading serial device identities for %q: %w", appName, identityErr)
+		}
+		changed, serialErr := refreshSerialMountsForStart(storedSpec, identities)
+		if serialErr != nil {
+			return nil, fmt.Errorf("refreshing serial devices for %q: %w", appName, serialErr)
+		}
+		if changed {
+			if updateErr := container.Update(ctx, withUpdatedContainerSpec(storedSpec)); updateErr != nil {
+				return nil, fmt.Errorf("persisting refreshed serial devices for %q: %w", appName, updateErr)
+			}
+		}
 	} else {
-		c.logger.Warn("could not load container spec to recreate managed resolv.conf before start",
+		c.logger.Warn("could not load container spec to recreate managed start resources",
 			zap.String("app_name", appName), zap.Error(storedSpecErr))
 	}
 
@@ -2290,7 +2348,7 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 				// c.appIsolation[appID] during the window between CNI ADD and this
 				// re-lock. If the app is already gone, discard the IP silently rather
 				// than writing stale state (SOC2-CC6, NIST-SI-16, ISO27001-A.8).
-				if c.appIsolation[appID] == "" {
+				if _, loaded := c.appIsolation[appID]; !loaded {
 					c.mu.Unlock()
 					c.logger.Warn("CNI ADD: app already stopped before IP could be recorded, discarding IP",
 						zap.String(logfields.AppID, appID), zap.String("ip", ip))
@@ -2391,6 +2449,9 @@ func (c *Client) startContainer(ctx context.Context, appName string, stdin io.Re
 		}
 	}
 
+	// The fully configured Bluetooth task now owns the proxy until stop/delete.
+	// Do not let the failure-only defer above tear it down on the successful path.
+	dbusProxyStartedForTask = false
 	c.logger.Info("Container started", zap.String("app_name", appName))
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
@@ -2851,6 +2912,22 @@ func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 // oci package's hook of the same name.
 var boardDetect = board.Detect
 
+// applyQualcommNPURuntime bind-mounts the host's Qualcomm AI runtime into an
+// npu-entitled container; a board with no DSP is left untouched.
+func (c *Client) applyQualcommNPURuntime(spec *localoci.Spec) {
+	result := cdi.ApplyQualcommNPURuntime(spec)
+	if !result.HasDSP {
+		// No grantable FastRPC node, so the entitlement is inert on this board.
+		return
+	}
+	if !result.TransportApplied {
+		c.logger.Warn("npu entitlement granted but Qualcomm FastRPC transport was not applied",
+			zap.Int("mounts", result.Mounts))
+		return
+	}
+	c.logger.Info("Applied Qualcomm NPU runtime", zap.Int("mounts", result.Mounts))
+}
+
 // needsNvidiaCDI reports whether CreateContainer should apply the host's
 // NVIDIA CDI spec (library mounts, extra device nodes, driver env vars) to
 // this app's OCI spec. Both the explicit gpu entitlement AND — on a Jetson —
@@ -2878,6 +2955,14 @@ func needsNvidiaCDI(appCfg *appconfig.AppConfig) bool {
 	// the two in step, and keeps a Raspberry Pi display app — which has no NVIDIA
 	// anything — out of applyNvidiaCDI's "no CDI spec found" warning path.
 	return appCfg.HasEntitlement(appconfig.EntitlementDisplay) && boardDetect().IsJetson()
+}
+
+// needsQualcommNPURuntime reports whether the container should receive the host's
+// Qualcomm AI runtime. The npu entitlement grants the FastRPC transport and the
+// dma-buf heap but no userspace to drive them, so without this an entitled app holds
+// a DSP it cannot reach.
+func needsQualcommNPURuntime(appCfg *appconfig.AppConfig) bool {
+	return appCfg.HasEntitlement(appconfig.EntitlementNPU)
 }
 
 // entitlementsUseHostNetwork reports whether the entitlements put the container
@@ -4215,6 +4300,21 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 		if err != nil {
 			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
 			continue
+		}
+
+		// An agent-only restart leaves containerd tasks running, but Close stops
+		// the agent-owned xdg-dbus-proxy processes. Restore the socket in the
+		// persisted bind-mount source even when the monitor will not restart the
+		// already-running task.
+		running := c.containerIsRunning(ctx, ctr)
+		if running {
+			if spec, specErr := ctr.Spec(ctx); specErr != nil {
+				c.logger.Warn("Could not inspect running container start resources",
+					zap.String("id", ctr.ID()), zap.Error(specErr))
+			} else if _, proxyErr := c.restoreDBusProxyForRunningTask(ctx, ctr.ID(), running, spec.Mounts); proxyErr != nil {
+				c.logger.Error("Could not restore running container D-Bus proxy",
+					zap.String("id", ctr.ID()), zap.Error(proxyErr))
+			}
 		}
 
 		// Rehydrate c.appIsolation from the persisted label BEFORE the monitor's

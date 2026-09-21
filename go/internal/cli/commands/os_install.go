@@ -234,6 +234,38 @@ type pickerDevice struct {
 	Manifest   *deviceManifest // cached manifest for Linux devices
 }
 
+// installedFromFlashBundle reports whether a device's manifest image is a flash
+// bundle rather than a writable disk image. Such a device must not reach the
+// generic download or tour flows, which would treat the bundle as an image and
+// could write it to a disk. (Thor's generic path is a real .img.zip.)
+//
+// The device-type prefix is a floor, not a fallback, so the manifest can only
+// widen the set: a new EDL board is excluded without a code change here.
+func installedFromFlashBundle(dev deviceInfo) bool {
+	if isFlashBundleDeviceType(dev.Key) {
+		return true
+	}
+	if dev.Manifest == nil {
+		return false
+	}
+	for _, v := range []string{dev.LatestVersion, dev.NightlyVersion} {
+		if v == "" {
+			continue
+		}
+		if ver, ok := dev.Manifest.Versions[v]; ok {
+			return !supportedInstallMode(ver.InstallMode)
+		}
+	}
+	return false
+}
+
+// isFlashBundleDeviceType reports whether a device type is flashed from a bundle
+// whatever its manifest says. The publisher does not yet write install_mode for
+// the EDL boards it already ships, so the device type has to carry the rule.
+func isFlashBundleDeviceType(deviceType string) bool {
+	return strings.HasPrefix(deviceType, dragonwingDeviceTypePrefix)
+}
+
 // pickLinuxDevice fetches available Linux devices from the manifest and presents
 // an interactive picker. Returns the selected device key and its deviceInfo.
 func pickLinuxDevice() (string, deviceInfo, error) {
@@ -248,7 +280,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	deviceMap := make(map[string]deviceInfo)
 
 	for _, dev := range devices {
-		if dev.LatestVersion == "" {
+		if dev.LatestVersion == "" || installedFromFlashBundle(dev) {
 			continue
 		}
 		deviceMap[dev.Key] = dev
@@ -325,6 +357,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
 		}
 		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
+	}
+
+	// The Dragonwing flashes over EDL from a qcomflash bundle, not to a drive.
+	if board, ok := dragonwingBoardFor(flagDeviceType); ok {
+		if err := checkDragonwingFlags(board, rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
+			return err
+		}
+		return installDragonwing(ctx, board, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
 	}
 	fmt.Println("Fetching available devices...")
 
@@ -497,6 +537,21 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
 	}
 
+	// Same for the Dragonwing: the picker reaches here with the flag empty, so
+	// route it away from the disk-image flow that would dd the bundle onto a drive.
+	if board, ok := dragonwingBoardFor(selected); ok {
+		if err := checkDragonwingFlags(board, rootfsOnly, flagDrive, noBmap, yesOverwriteInternal, storageOverride); err != nil {
+			return err
+		}
+		return installDragonwing(ctx, board, flagVersion, nightly, force, prNumber, wifi, deviceName, preOpts)
+	}
+	// A flash-bundle board with no registry entry has no install path here, and
+	// falling through would write its bundle to a drive. A version that declares
+	// the same through install_mode is refused by checkInstallMode below.
+	if isFlashBundleDeviceType(selected) {
+		return fmt.Errorf("%s installs from a flash bundle this version of wendy cannot write; update wendy", selected)
+	}
+
 	if selected == linuxDesktopValue {
 		return installDesktop(ctx, preOpts, deviceName, linuxDesktopMachineLabel)
 	}
@@ -521,6 +576,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	ver, ok := device.Manifest.Versions[selectedVersion]
 	if !ok {
 		return fmt.Errorf("version %q not found for %s", selectedVersion, device.Name)
+	}
+	if err := checkInstallMode(selectedVersion, ver.InstallMode); err != nil {
+		return err
 	}
 	if rootfsOnly && !isT234RecoveryDevice(selected) {
 		return fmt.Errorf("--rootfs-only is supported only for Jetson Orin recovery targets")
@@ -1485,6 +1543,22 @@ func manifestStorage(v deviceVersion, st StorageType, mediaFixed bool, override 
 	}
 }
 
+// supportedInstallMode reports whether a version's artifact is one this build
+// can write: an unknown mode means it is not a writable disk image.
+func supportedInstallMode(mode string) bool {
+	return mode == "" || mode == "recovery"
+}
+
+// checkInstallMode rejects a version this build cannot install. It runs before
+// anything is elevated, confirmed or enrolled, so nothing is left behind.
+func checkInstallMode(version, mode string) error {
+	if supportedInstallMode(mode) {
+		return nil
+	}
+	return fmt.Errorf("version %s installs in %q mode, which this version of wendy cannot perform; update wendy",
+		version, mode)
+}
+
 // storageChoiceAmbiguous reports whether the image variant for a USB target
 // can't be determined from bus and media signals alone, so the caller should
 // ask the user which slot the drive is for. It is only ambiguous when the bus
@@ -1884,6 +1958,21 @@ func isGzipFile(path string) bool {
 	return err == nil && magic[0] == 0x1f && magic[1] == 0x8b
 }
 
+// VM downloads and content-addressed cache entries have extensionless format
+// names (.img/.image). Identify ZIP containers by their signature as well.
+func isZipFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return string(magic[:]) == "PK\x03\x04" || string(magic[:]) == "PK\x05\x06" || string(magic[:]) == "PK\x07\x08"
+}
+
 // openOSImageStream resolves the cached file for deviceKey+img, then returns
 // a streaming reader over the image bytes. The caller must Close it.
 func openOSImageStream(deviceKey string, img *imageInfo) (*imageStream, error) {
@@ -1891,23 +1980,14 @@ func openOSImageStream(deviceKey string, img *imageInfo) (*imageStream, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.HasSuffix(strings.ToLower(cachePath), ".zip") {
-		return streamZipImageEntry(cachePath)
-	}
-	if isGzipFile(cachePath) {
-		return streamGzipImage(cachePath)
-	}
-	if isZstdFile(cachePath) {
-		return streamZstdImage(cachePath)
-	}
-	return openRawImageStream(cachePath)
+	return openLocalImageStream(cachePath)
 }
 
 // openLocalImageStream opens an arbitrary local file for streaming.
-// If the path ends in .zip it finds the first image entry inside it.
-// Otherwise it opens the file directly as a reader.
+// ZIP, gzip and zstd are detected by content, independently of cache filenames.
+// ZIP archives yield their first image entry; other files are raw disk images.
 func openLocalImageStream(imagePath string) (*imageStream, error) {
-	if strings.HasSuffix(strings.ToLower(imagePath), ".zip") {
+	if strings.HasSuffix(strings.ToLower(imagePath), ".zip") || isZipFile(imagePath) {
 		return streamZipImageEntry(imagePath)
 	}
 	if isGzipFile(imagePath) {

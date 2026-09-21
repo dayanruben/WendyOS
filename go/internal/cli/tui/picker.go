@@ -185,6 +185,14 @@ type PickerSetMsg struct {
 	Items []PickerItem
 }
 
+// PickerRemoveMsg drops the item whose DedupKey (or Name, when it has none)
+// matches Key, case-insensitively like every other key comparison here. It is
+// how a discovery source takes a row back -- a LAN sighting that turned out to
+// be a local VM. An unknown key is a no-op.
+type PickerRemoveMsg struct {
+	Key string
+}
+
 // PickerModel is a Bubble Tea model that presents a live-updating list of
 // items and lets the user select one with arrow keys + Enter.
 type PickerModel struct {
@@ -196,14 +204,15 @@ type PickerModel struct {
 	MergeItem func(existing *PickerItem, incoming PickerItem)
 
 	// OnSetDefault is called when the user presses 'd' on the highlighted item.
-	// The return value is shown as a flash confirmation; return "" for no message.
+	// The message is shown as a flash confirmation. An error preserves the
+	// previous default marker and is displayed instead of a success message.
 	// If nil, 'd' is ignored.
-	OnSetDefault func(item PickerItem) string
+	OnSetDefault func(item PickerItem) (string, error)
 
 	// OnUnsetDefault is called when the user presses 'x'.
-	// The return value is shown as a flash confirmation; return "" for no message.
+	// An error preserves the previous default marker and is displayed to the user.
 	// If nil, 'x' is ignored.
-	OnUnsetDefault func() string
+	OnUnsetDefault func() (string, error)
 
 	// OnRemoveItem is called when the user presses 'r' on the highlighted item.
 	// Returns (flash message, isError, replacement).
@@ -212,6 +221,28 @@ type PickerModel struct {
 	// If replacement is nil and isError is true, the row is kept unchanged.
 	// If nil, 'r' is ignored.
 	OnRemoveItem func(item PickerItem) (string, bool, *PickerItem)
+
+	// OnCreateItem is called when the user presses 'c'. Returning quit=true
+	// closes the picker, which an action needing the terminal to itself must
+	// do: creating a VM downloads an image behind its own progress program,
+	// and two Bubble Tea programs cannot share a terminal.
+	// If nil, 'c' is ignored.
+	OnCreateItem func() (flash string, quit bool)
+
+	// OnEnrollItem is called when the user presses 'e' on the highlighted item.
+	// Returning quit=true closes the picker so enrollment can use the terminal.
+	// If nil, 'e' is ignored. Filterable pickers use 'e' as filter text instead.
+	OnEnrollItem func(item PickerItem) (flash string, quit bool)
+
+	// OnStopItem runs asynchronously when the user presses 's'. It must not
+	// mutate the model, and should honor its owner's cancellation context.
+	// Returns (flash message, isError). If nil, 's' is ignored.
+	OnStopItem   func(item PickerItem) (string, bool)
+	stoppingName string
+
+	// RemoveHint is the wording for 'r' in the header, for a picker whose rows
+	// are not cloud credentials. Empty keeps the default.
+	RemoveHint string
 
 	// OnCopyItem is called when the user presses Enter. The callback should
 	// perform the copy operation (e.g. write to clipboard) and return a flash
@@ -309,6 +340,12 @@ func NewPickerWithTitleAndColumns(title string, columns []PickerColumn) PickerMo
 
 func (m PickerModel) Init() tea.Cmd { return m.spinner.Tick }
 
+// SetDefaultKey refreshes the marker after another picker tab changes it.
+func (m *PickerModel) SetDefaultKey(key string) {
+	m.DefaultKey = key
+	m.refreshTable()
+}
+
 // anyProbePending reports whether any item still has a probe in flight, i.e.
 // whether the spinner has anything to animate.
 func (m PickerModel) anyProbePending() bool {
@@ -320,8 +357,18 @@ func (m PickerModel) anyProbePending() bool {
 	return false
 }
 
+type pickerStopResultMsg struct {
+	flash   string
+	isError bool
+}
+
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case pickerStopResultMsg:
+		m.stoppingName = ""
+		m.flashMessage, m.flashIsError = msg.flash, msg.isError
+		m.refreshTable()
+		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -362,19 +409,66 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if dk == "" {
 						dk = strings.ToLower(item.Name)
 					}
-					m.DefaultKey = dk
-					m.flashMessage = m.OnSetDefault(item)
-					m.flashIsError = false
+					var err error
+					m.flashMessage, err = m.OnSetDefault(item)
+					m.flashIsError = err != nil
+					if err != nil {
+						m.flashMessage = err.Error()
+					} else {
+						m.DefaultKey = dk
+					}
 					m.refreshTable()
 				}
 			}
 			return m, nil
 		case key == "x" && !m.Filterable:
 			if m.OnUnsetDefault != nil {
-				m.DefaultKey = ""
-				m.flashMessage = m.OnUnsetDefault()
-				m.flashIsError = false
+				var err error
+				m.flashMessage, err = m.OnUnsetDefault()
+				m.flashIsError = err != nil
+				if err != nil {
+					m.flashMessage = err.Error()
+				} else {
+					m.DefaultKey = ""
+				}
 				m.refreshTable()
+			}
+			return m, nil
+		case key == "c" && !m.Filterable:
+			if m.OnCreateItem != nil {
+				flash, quit := m.OnCreateItem()
+				m.flashMessage = flash
+				m.flashIsError = false
+				if quit {
+					return m, tea.Quit
+				}
+			}
+			return m, nil
+		case key == "s" && !m.Filterable:
+			if m.OnStopItem != nil && m.stoppingName == "" {
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					item, stop := visible[idx], m.OnStopItem
+					m.stoppingName = item.Name
+					m.flashMessage = ""
+					return m, func() tea.Msg {
+						flash, isError := stop(item)
+						return pickerStopResultMsg{flash: flash, isError: isError}
+					}
+				}
+			}
+			return m, nil
+		case key == "e" && !m.Filterable:
+			if m.OnEnrollItem != nil {
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					flash, quit := m.OnEnrollItem(visible[idx])
+					m.flashMessage = flash
+					m.flashIsError = false
+					if quit {
+						return m, tea.Quit
+					}
+				}
 			}
 			return m, nil
 		case key == "r" && !m.Filterable:
@@ -516,6 +610,12 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PickerDoneMsg:
 		m.scanning = false
 
+	case PickerRemoveMsg:
+		cursorKey := m.currentCursorKey()
+		if m.removeItemByKey(strings.ToLower(msg.Key)) {
+			m.refreshTableWithCursorKey(cursorKey)
+		}
+
 	case PickerSetMsg:
 		cursorKey := m.currentCursorKey()
 		m.items = nil
@@ -563,7 +663,8 @@ func (m PickerModel) View() string {
 	if m.Filterable {
 		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", " + enterAction + ", esc quit)"
 	}
-	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil {
+	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil ||
+		m.OnCreateItem != nil || m.OnStopItem != nil || (m.OnEnrollItem != nil && !m.Filterable) {
 		extras := ""
 		if m.OnSetDefault != nil {
 			extras += ", d set default"
@@ -571,8 +672,21 @@ func (m PickerModel) View() string {
 		if m.OnUnsetDefault != nil {
 			extras += ", x clear default"
 		}
+		if m.OnEnrollItem != nil && !m.Filterable {
+			extras += ", e enroll"
+		}
+		if m.OnCreateItem != nil {
+			extras += ", c create"
+		}
+		if m.OnStopItem != nil {
+			extras += ", s stop"
+		}
 		if m.OnRemoveItem != nil {
-			extras += ", r remove creds"
+			label := m.RemoveHint
+			if label == "" {
+				label = "remove creds"
+			}
+			extras += ", r " + label
 		}
 		hint = " (↑/↓ navigate" + scrollHint + ", " + enterAction + extras + ", q quit)"
 	}
@@ -601,6 +715,9 @@ func (m PickerModel) View() string {
 
 	sb.WriteString(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()) + "\n")
 
+	if m.stoppingName != "" {
+		sb.WriteString(m.viewLine("  Stopping "+m.stoppingName+"… (waiting for guest shutdown)") + "\n")
+	}
 	if m.flashMessage != "" {
 		style := lipgloss.NewStyle().Foreground(ColorPrimary)
 		if m.flashIsError {

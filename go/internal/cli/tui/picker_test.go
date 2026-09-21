@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,22 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 )
+
+func TestPickerFailedDefaultSavePreservesMarker(t *testing.T) {
+	m := NewPicker()
+	m.DefaultKey = "previous"
+	m.OnSetDefault = func(PickerItem) (string, error) { return "", errors.New("cannot save config") }
+	m.OnUnsetDefault = func() (string, error) { return "", errors.New("cannot save config") }
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "new", DedupKey: "new"}}})
+	m = updated.(PickerModel)
+	for _, key := range []rune{'d', 'x'} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		m = updated.(PickerModel)
+		if m.DefaultKey != "previous" || !m.flashIsError || m.flashMessage != "cannot save config" {
+			t.Fatalf("failed save changed UI state: key=%q error=%t message=%q", m.DefaultKey, m.flashIsError, m.flashMessage)
+		}
+	}
+}
 
 func TestPickerModel_SelectsFromTable(t *testing.T) {
 	m := NewPickerWithTitle("Select a WiFi network")
@@ -45,6 +62,47 @@ func TestPickerModel_SelectsFromTable(t *testing.T) {
 	}
 	if got := pm.Selected().Value.(string); got != "beta" {
 		t.Fatalf("selected value = %q, want %q", got, "beta")
+	}
+}
+
+func TestPickerStopRunsOutsideUpdateAndRemainsResponsive(t *testing.T) {
+	m := NewPickerWithTitle("Simulators")
+	called := false
+	m.OnStopItem = func(item PickerItem) (string, bool) {
+		called = true
+		if item.Name != "alpha" {
+			t.Fatalf("stopped wrong row: %s", item.Name)
+		}
+		return "Stopped alpha.", false
+	}
+	u, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha"}, {Name: "beta"}}})
+	m = u.(PickerModel)
+	u, stop := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = u.(PickerModel)
+	if called || stop == nil {
+		t.Fatal("stop ran synchronously or was not scheduled")
+	}
+	if !strings.Contains(m.View(), "Stopping alpha") {
+		t.Fatal("no shutdown progress")
+	}
+	u, duplicate := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if duplicate != nil {
+		t.Fatal("scheduled duplicate shutdown")
+	}
+	m = u.(PickerModel)
+	u, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = u.(PickerModel)
+	if m.table.Cursor() != 1 || !strings.Contains(m.View(), "Stopping alpha") {
+		t.Fatal("navigation lost progress")
+	}
+	u, quit := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if quit == nil || !u.(PickerModel).Cancelled() {
+		t.Fatal("cannot quit during shutdown")
+	}
+	u, _ = m.Update(stop())
+	m = u.(PickerModel)
+	if !called || m.stoppingName != "" || !strings.Contains(m.View(), "Stopped alpha.") {
+		t.Fatal("stop result not applied")
 	}
 }
 
@@ -556,8 +614,8 @@ func TestPickerModel_ShowsSelectedHintAtBottom(t *testing.T) {
 func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
-	m.OnSetDefault = func(item PickerItem) string { return "" }
-	m.OnUnsetDefault = func() string { return "" }
+	m.OnSetDefault = func(item PickerItem) (string, error) { return "", nil }
+	m.OnUnsetDefault = func() (string, error) { return "", nil }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
@@ -637,8 +695,8 @@ func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 func TestPickerModel_DKeySetsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	var setItem PickerItem
-	m.OnSetDefault = func(item PickerItem) string { setItem = item; return "" }
-	m.OnUnsetDefault = func() string { return "" }
+	m.OnSetDefault = func(item PickerItem) (string, error) { setItem = item; return "", nil }
+	m.OnUnsetDefault = func() (string, error) { return "", nil }
 
 	// Add items.
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
@@ -663,8 +721,8 @@ func TestPickerModel_XKeyClearsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
 	var unsetCalled bool
-	m.OnSetDefault = func(item PickerItem) string { return "" }
-	m.OnUnsetDefault = func() string { unsetCalled = true; return "" }
+	m.OnSetDefault = func(item PickerItem) (string, error) { return "", nil }
+	m.OnUnsetDefault = func() (string, error) { unsetCalled = true; return "", nil }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
@@ -773,6 +831,106 @@ func TestPickerModel_DXIgnoredWithoutCallbacks(t *testing.T) {
 	view := pm.View()
 	if strings.Contains(view, "d set default") {
 		t.Error("d/x hint should not appear without callbacks")
+	}
+}
+
+func TestPickerModel_EnrollHighlightedItem(t *testing.T) {
+	for _, quit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "flash", true: "quit"}[quit], func(t *testing.T) {
+			m := sectionedPicker(t)
+			for i := 0; i < 2; i++ {
+				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+				m = updated.(PickerModel)
+			}
+			var enrolled PickerItem
+			m.OnEnrollItem = func(item PickerItem) (string, bool) {
+				enrolled = item
+				return "Enrollment requested.", quit
+			}
+			m.flashIsError = true
+
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+			m = updated.(PickerModel)
+			if enrolled.Value != "c5" {
+				t.Fatalf("enrolled value = %v, want c5 (highlighted row after section header)", enrolled.Value)
+			}
+			if m.Selected() != nil || m.Cancelled() {
+				t.Fatal("enrollment must not select a device or mark the picker cancelled")
+			}
+			if !strings.Contains(m.View(), "Enrollment requested.") || m.flashIsError {
+				t.Fatal("enrollment confirmation must be rendered without stale error styling")
+			}
+			if quit {
+				if cmd == nil {
+					t.Fatal("expected enrollment to close the picker")
+				}
+				if _, ok := cmd().(tea.QuitMsg); !ok {
+					t.Fatal("expected a quit command")
+				}
+			} else if cmd != nil {
+				t.Fatal("enrollment flash must leave the picker open")
+			}
+		})
+	}
+}
+
+func TestPickerModel_EnrollRequiresSelectableItem(t *testing.T) {
+	for _, name := range []string{"empty", "section header"} {
+		t.Run(name, func(t *testing.T) {
+			m := NewPicker()
+			if name == "section header" {
+				m = sectionedPicker(t)
+				m.table.SetCursor(0)
+			}
+			m.OnEnrollItem = func(PickerItem) (string, bool) {
+				t.Fatal("enrollment called without a selectable item")
+				return "", true
+			}
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+			m = updated.(PickerModel)
+			if cmd != nil || m.Selected() != nil || m.Cancelled() || m.flashMessage != "" {
+				t.Fatal("enrollment without a selectable item must leave the picker open and unchanged")
+			}
+		})
+	}
+}
+
+func TestPickerModel_EnrollHintAndAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		callback   bool
+		filterable bool
+		wantHint   bool
+	}{
+		{name: "unavailable"},
+		{name: "available", callback: true, wantHint: true},
+		{name: "filterable", callback: true, filterable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := sectionedPicker(t)
+			m.Filterable = tc.filterable
+			called := false
+			if tc.callback {
+				m.OnEnrollItem = func(PickerItem) (string, bool) {
+					called = true
+					return "", false
+				}
+			}
+			if got := strings.Contains(m.View(), ", e enroll"); got != tc.wantHint {
+				t.Fatalf("enroll hint present = %v, want %v", got, tc.wantHint)
+			}
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+			m = updated.(PickerModel)
+			if called != tc.wantHint {
+				t.Fatalf("enrollment called = %v, want %v", called, tc.wantHint)
+			}
+			if cmd != nil || m.Selected() != nil || m.Cancelled() {
+				t.Fatal("picker unexpectedly closed or selected an item")
+			}
+			if tc.filterable && m.filter != "e" {
+				t.Fatalf("filter = %q, want e", m.filter)
+			}
+		})
 	}
 }
 

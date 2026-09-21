@@ -13,12 +13,14 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
+	"github.com/wendylabsinc/wendy/go/internal/agent/gpudiscovery"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // SystemHardwareDiscoverer discovers hardware by probing the Linux sysfs/devfs/procfs.
 type SystemHardwareDiscoverer struct {
 	logger             *zap.Logger
+	discoverGPUs       func() []gpudiscovery.Device
 	classifyTransport  func(base string) (camera.Transport, string)
 	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 }
@@ -62,8 +64,8 @@ func (d *SystemHardwareDiscoverer) Discover(ctx context.Context, categoryFilter 
 	return caps, nil
 }
 
-// discoverGPU checks for NVIDIA and DRM GPU devices, and reports whether the
-// accelerator's driver is actually answering.
+// discoverGPU uses the same injectable discovery as device metadata and reports
+// whether the accelerator's driver is actually answering.
 //
 // The driver entry is the point of the probe: every other signal here — and the
 // has-GPU flag on device info — reports that hardware is *present*, which stays
@@ -71,42 +73,16 @@ func (d *SystemHardwareDiscoverer) Discover(ctx context.Context, categoryFilter 
 // right" has, until now, had nothing to read but presence, and has reasonably
 // concluded from it that the hardware was fine.
 func (d *SystemHardwareDiscoverer) discoverGPU(ctx context.Context) []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
-	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
-
-	// NVIDIA devices.
-	for i := 0; i < 16; i++ {
-		path := fmt.Sprintf("/dev/nvidia%d", i)
-		if _, err := os.Stat(path); err == nil {
-			caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
-				Category:    "gpu",
-				DevicePath:  path,
-				Description: fmt.Sprintf("NVIDIA GPU %d", i),
-			})
-		}
+	probe := d.discoverGPUs
+	if probe == nil {
+		probe = gpudiscovery.Host
 	}
-
-	// DRM devices.
-	drmPath := "/sys/class/drm"
-	entries, err := os.ReadDir(drmPath)
-	if err == nil {
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), "card") && !strings.Contains(entry.Name(), "-") {
-				devPath := filepath.Join("/dev/dri", entry.Name())
-				name := entry.Name()
-
-				// Try to read device model.
-				labelPath := filepath.Join(drmPath, entry.Name(), "device", "label")
-				if data, err := os.ReadFile(labelPath); err == nil {
-					name = strings.TrimSpace(string(data))
-				}
-
-				caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
-					Category:    "gpu",
-					DevicePath:  devPath,
-					Description: name,
-				})
-			}
-		}
+	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
+	for _, gpu := range probe() {
+		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+			Category: "gpu", DevicePath: gpu.Path, Description: strings.TrimSpace(gpu.Vendor + " GPU " + gpu.Driver),
+			Properties: map[string]string{"vendor": gpu.Vendor, "driver": gpu.Driver, "compute_backends": strings.Join(gpu.ComputeBackends, ",")},
+		})
 	}
 
 	if health, ok := ProbeGPUDriver(ctx); ok {

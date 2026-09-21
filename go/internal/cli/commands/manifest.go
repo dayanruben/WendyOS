@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -99,6 +100,12 @@ type deviceVersion struct {
 	EMMCFlashpackChecksum  string `json:"emmc_flashpack_checksum"`
 	EMMCFlashpackSizeBytes int64  `json:"emmc_flashpack_size_bytes"`
 
+	// Dragonwing EDL bundle; newer boards publish only here so older CLIs
+	// fail resolution instead of silently downloading the wrong artifact.
+	QcomflashPath      string `json:"qcomflash_path"`
+	QcomflashChecksum  string `json:"qcomflash_checksum"`
+	QcomflashSizeBytes int64  `json:"qcomflash_size_bytes"`
+
 	// Driver add-ons (systemd-sysext .raw) published for this OS version, one per
 	// (name, kernel). Written by the publisher's --extension-file; the CLI resolves
 	// install-by-name against these. Mirrors the publisher's ExtensionMetadata.
@@ -165,10 +172,12 @@ type deviceInfo struct {
 // imageInfo describes a downloadable OS image.
 type imageInfo struct {
 	DownloadURL string
+	Checksum    string
 	ImageSize   int64
 	Version     string
 	BmapURL     string
 	ZstURL      string
+	ZstChecksum string
 	// Storage is the resolved manifest variant ("sd"/"nvme"/""), used to keep
 	// the on-disk cache keyed per variant so an SD download and an NVMe download
 	// of the same device+version never collide on one cache file.
@@ -179,12 +188,12 @@ func fetchMainManifest() (*mainManifest, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(gcsBaseURL + "/manifests/master.json")
 	if err != nil {
-		return nil, fmt.Errorf("fetching main manifest: %w", err)
+		return nil, fmt.Errorf("fetching main manifest: %w: %w", ErrManifestUnreachable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("manifest returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%w: manifest returned status %d", ErrManifestUnreachable, resp.StatusCode)
 	}
 
 	var m mainManifest
@@ -199,12 +208,12 @@ func fetchDeviceManifest(path string) (*deviceManifest, error) {
 	url := gcsBaseURL + "/" + path
 	resp, err := client.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("fetching device manifest: %w", err)
+		return nil, fmt.Errorf("fetching device manifest: %w: %w", ErrManifestUnreachable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("device manifest returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%w: device manifest returned status %d", ErrManifestUnreachable, resp.StatusCode)
 	}
 
 	var dm deviceManifest
@@ -270,7 +279,7 @@ func fetchPRMainManifest(pr int) (*mainManifest, error) {
 	url := gcsBaseURL + "/" + prBasePath(pr) + "manifests/master.json"
 	resp, err := client.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("fetching PR %d manifest: %w", pr, err)
+		return nil, fmt.Errorf("fetching PR %d manifest: %w: %w", pr, ErrManifestUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -278,7 +287,7 @@ func fetchPRMainManifest(pr int) (*mainManifest, error) {
 		return nil, fmt.Errorf("no build found for PR %d — is the build still running or the PR closed?", pr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("PR %d manifest returned status %d", pr, resp.StatusCode)
+		return nil, fmt.Errorf("%w: PR %d manifest returned status %d", ErrManifestUnreachable, pr, resp.StatusCode)
 	}
 
 	var m mainManifest
@@ -357,6 +366,11 @@ func getImageInfo(dm *deviceManifest, ver, storage string) (*imageInfo, error) {
 	if !ok {
 		return nil, fmt.Errorf("version %s not found in device manifest", ver)
 	}
+	// Guarding here rather than at the write covers `os download` and the VM
+	// path too, which also resolve an image through this.
+	if err := checkInstallMode(ver, v.InstallMode); err != nil {
+		return nil, err
+	}
 	t := resolveTriple(v, storage)
 	if t.imagePath == "" && t.zstPath == "" {
 		return nil, fmt.Errorf("version %s has no %s image artifact", ver, storage)
@@ -367,6 +381,13 @@ func getImageInfo(dm *deviceManifest, ver, storage string) (*imageInfo, error) {
 		ImageSize:   t.imageSize,
 		Version:     ver,
 		Storage:     storage,
+	}
+	// Select checksums from the same artifact triple, including legacy fallback.
+	info.Checksum, info.ZstChecksum = v.Checksum, v.ZstChecksum
+	if storage == "nvme" && v.NVMEPath != "" {
+		info.Checksum, info.ZstChecksum = v.NVMEChecksum, v.NVMEZstChecksum
+	} else if storage == "sd" && v.SDPath != "" {
+		info.Checksum, info.ZstChecksum = v.SDChecksum, v.SDZstChecksum
 	}
 	if t.bmapPath != "" {
 		info.BmapURL = gcsBaseURL + "/" + t.bmapPath
@@ -556,12 +577,15 @@ type thorFlashpackInfo struct {
 	Version   string
 }
 
-// getThorFlashpackInfo fetches the jetson-agx-thor manifest and returns the flashpack
-// artifact for version (or the latest stable / nightly when version is ""). When
-// pr > 0 it resolves against the per-PR manifest (pr/<N>/) written by the
-// wendyos-builder publish-pr job instead of the released master manifest; the
-// flashpack path there is already pr-prefixed, so the download URL is correct.
-func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackInfo, error) {
+// ErrManifestUnreachable marks a manifest that could not be reached — a
+// transport failure or a server error. A 404 is deliberately excluded: it means
+// the build does not exist, which must not license flashing a cached one.
+var ErrManifestUnreachable = errors.New("manifest unreachable")
+
+// resolveDeviceArtifact fetches deviceType's manifest and resolves which
+// version to install: the explicit one, or the latest stable / nightly, or the
+// PR build when pr > 0 (pr/<N>/, written by the wendyos-builder publish-pr job).
+func resolveDeviceArtifact(deviceType, version string, nightly bool, pr int) (*deviceManifest, string, error) {
 	var main *mainManifest
 	var err error
 	if pr > 0 {
@@ -570,31 +594,40 @@ func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackI
 		main, err = fetchMainManifest()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("fetching manifest: %w", err)
+		return nil, "", fmt.Errorf("fetching manifest: %w", err)
 	}
-	dev, ok := main.Devices[thorDeviceType]
+	dev, ok := main.Devices[deviceType]
 	if !ok || dev.ManifestPath == "" {
 		if pr > 0 {
-			return nil, fmt.Errorf("%s not built by PR %d", thorDeviceType, pr)
+			return nil, "", fmt.Errorf("%s not built by PR %d", deviceType, pr)
 		}
-		return nil, fmt.Errorf("%s not found in manifest", thorDeviceType)
+		return nil, "", fmt.Errorf("%s not found in manifest", deviceType)
 	}
 	dm, err := fetchDeviceManifest(dev.ManifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("fetching device manifest: %w", err)
+		return nil, "", fmt.Errorf("fetching device manifest: %w", err)
 	}
 	if version == "" {
-		if pr > 0 {
+		switch {
+		case pr > 0:
 			version = prDeviceVersion(dev)
-		} else {
+		case nightly && dev.LatestNightly != "":
+			version = dev.LatestNightly
+		default:
 			version = dev.Latest
-			if nightly && dev.LatestNightly != "" {
-				version = dev.LatestNightly
-			}
 		}
 	}
 	if version == "" {
-		return nil, fmt.Errorf("no version available for %s", thorDeviceType)
+		return nil, "", fmt.Errorf("no version available for %s", deviceType)
+	}
+	return dm, version, nil
+}
+
+// getThorFlashpackInfo resolves the USB-recovery flashpack for a Thor version.
+func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackInfo, error) {
+	dm, version, err := resolveDeviceArtifact(thorDeviceType, version, nightly, pr)
+	if err != nil {
+		return nil, err
 	}
 	v, ok := dm.Versions[version]
 	if !ok {
@@ -607,6 +640,75 @@ func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackI
 		URL:       gcsBaseURL + "/" + v.FlashpackPath,
 		Checksum:  v.FlashpackChecksum,
 		SizeBytes: v.FlashpackSizeBytes,
+		Version:   version,
+	}, nil
+}
+
+// dragonwingBundleInfo is the resolved qcomflash bundle download for a version.
+type dragonwingBundleInfo struct {
+	URL       string
+	Checksum  string
+	SizeBytes int64
+	Version   string
+}
+
+func getDragonwingBundleInfo(board dragonwingBoard, version string, nightly bool, pr int) (*dragonwingBundleInfo, error) {
+	dm, version, err := resolveDeviceArtifact(board.deviceType, version, nightly, pr)
+	if err != nil {
+		return nil, err
+	}
+	return dragonwingBundleFrom(dm, board, version)
+}
+
+// dragonwingBundleFrom picks the bundle for version out of a fetched manifest,
+// split from the fetch so the selection is testable.
+func dragonwingBundleFrom(dm *deviceManifest, board dragonwingBoard, version string) (*dragonwingBundleInfo, error) {
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found for %s", version, board.deviceType)
+	}
+	path, sum, size := v.QcomflashPath, v.QcomflashChecksum, v.QcomflashSizeBytes
+	var missing []string
+	if path == "" {
+		missing = append(missing, "qcomflash_path")
+	}
+	if sum == "" {
+		missing = append(missing, "qcomflash_checksum")
+	}
+	if size <= 0 {
+		missing = append(missing, "qcomflash_size_bytes")
+	}
+	switch len(missing) {
+	case 0:
+	case 3:
+		// No dedicated triple at all: an IQ-8275 bundle is also published
+		// under the generic image fields.
+		path, sum, size = v.Path, v.Checksum, v.SizeBytes
+	default:
+		// Falling back from a half-published triple would fetch a different
+		// artifact, and a size of zero skips the disk-space pre-flight the
+		// ~23x extraction depends on.
+		return nil, fmt.Errorf("version %s publishes an incomplete flash bundle: %s missing from the manifest",
+			version, strings.Join(missing, ", "))
+	}
+	// The generic fallback is held to the dedicated triple's bar: a size of zero
+	// skips the disk-space pre-flight, and the extraction then dies with ENOSPC
+	// part way through instead of refusing before the download.
+	var unusable []string
+	if path == "" {
+		unusable = append(unusable, "path")
+	}
+	if size <= 0 {
+		unusable = append(unusable, "size_bytes")
+	}
+	if len(unusable) > 0 {
+		return nil, fmt.Errorf("version %s has no usable flash bundle in the manifest: %s missing",
+			version, strings.Join(unusable, ", "))
+	}
+	return &dragonwingBundleInfo{
+		URL:       gcsBaseURL + "/" + path,
+		Checksum:  sum,
+		SizeBytes: size,
 		Version:   version,
 	}, nil
 }

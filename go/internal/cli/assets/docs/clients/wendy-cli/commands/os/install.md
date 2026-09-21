@@ -54,12 +54,12 @@ and the serial console is active. They are for testing the PR on hardware —
 **never flash a PR image to a production device.** Artifacts are deleted when
 the PR is closed.
 
-`--pr` is supported for Linux disk-image devices and for Jetson recovery — Orin
-(Nano/AGX) and AGX Thor. PR builds publish recovery flashpacks into the
-`pr/<N>/` sandbox, so `--pr` can drive a full recovery install (QSPI+storage for
-Orin, QSPI+NVMe for Thor) as well as `--pr --rootfs-only` raw imaging on Orin. It
-is not supported for ESP32 targets (Wendy Lite firmware is not built by the
-per-PR pipeline).
+`--pr` is supported for Linux disk-image devices, for Jetson recovery (Orin
+Nano/AGX and AGX Thor) and for the Dragonwing EDL flash. PR builds publish
+recovery flashpacks into the `pr/<N>/` sandbox, so `--pr` can drive a full
+recovery install (QSPI+storage for Orin, QSPI+NVMe for Thor) as well as
+`--pr --rootfs-only` raw imaging on Orin. It is not supported for ESP32
+targets (Wendy Lite firmware is not built by the per-PR pipeline).
 `--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
 image path.
 
@@ -103,7 +103,7 @@ The CLI implements the ESP32 ROM bootloader protocol directly over the USB seria
 
 The device reboots automatically using the reset sequence appropriate to its native USB or UART transport. Before flashing, the CLI embeds the selected WiFi credentials, device name, and pre-enrollment state into the firmware image's `wendy_conf` partition.
 
-To provision WiFi after first boot, use `wendy device setup` or the BLE provisioning flow — see [BLE connectivity](../../../../wendy-agent/connectivity/ble.md).
+To provision WiFi after first boot, use `wendy device wifi connect`.
 
 ---
 
@@ -143,7 +143,7 @@ Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor`
 2. **Stage 2 partition flash** — flashes QSPI and the internal NVMe through the Thor flashing gadget. Expect around 25 minutes: USB transfers and device-side writes are deliberately serialized (concurrent USB access could crash the flash tooling, most notably on macOS), so this stage does not parallelize.
 3. **Power-cycle** — after a successful flash, power-cycle the Thor out of recovery mode to boot WendyOS.
 
-The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS, Linux, and Windows. On Windows, the first flash installs a WinUSB driver for the Jetson recovery device — expect a one-time administrator (UAC) prompt.
+The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. On Windows, installing or updating the USB driver requires administrator approval (UAC).
 
 ### Stage 2 flash errors and recovery
 
@@ -157,6 +157,21 @@ A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI p
 | `USB access denied opening the flashing gadget` | Linux: install the wendy udev rule (USB vendor 0955) or run with sudo. macOS: quit whatever holds the gadget (e.g. `adb kill-server`). |
 
 Every failure prints the path of the full flash log (`thor-flash-<timestamp>.log`), which contains the complete tooling output.
+
+## Dragonwing path
+
+```sh
+wendy install --device-type dragonwing-iq-8275
+wendy install --device-type dragonwing-iq-9075
+```
+
+Connect the USB0 (USB-C) port, power off, set DIP switch 3 ON, and power on. Wendy downloads and verifies the bundle, then reads the board's chip id before writing anything and refuses the flash if it belongs to a different Dragonwing. A board that does not answer, or reports an id Wendy does not know, is flashed anyway after a caution — verification only happens when the board answers. Set DIP switch 3 OFF and power-cycle after success.
+
+**An EDL flash is a factory reset.** Both OS slots, the config partition and `/data` are rewritten, so device identity, cloud enrollment, saved Wi-Fi and application data are discarded and the board comes back as a new device.
+
+`/data` is blanked rather than overwritten: the flash clears the head of the filesystem and the device recreates it on first boot. That makes the old contents unreachable, but it is not a secure erase — blocks behind the superblock are only overwritten as they are reused. Do not rely on it before handing a board to someone else.
+
+Provisioning works as it does on Thor: the bundle ships no config image, so wendy builds one on the host and programs it into the config partition. `--wifi`, `--device-name` and `--pre-enroll` all apply, and a freshly downloaded `wendy-agent` is seeded on every flash.
 
 ## Linux Desktop / Headless Mac path
 
@@ -207,7 +222,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--nightly` | false | Use nightly/pre-release builds |
-| `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path; Linux disk-image devices only) |
+| `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path; not supported for ESP32 targets) |
 | `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`; not supported for ESP32 targets: `esp32-c5`, `esp32-c6`, `esp32-c61`, `esp32-p4`, `esp32-s3`) |
 | `--version` | latest | WendyOS version to install (Linux only) |
 | `--drive` | interactive | Target drive path (e.g. `/dev/disk4`) |

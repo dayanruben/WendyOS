@@ -50,9 +50,10 @@ func newDeviceCmd() *cobra.Command {
 	}
 
 	cmd.AddGroup(
-		&cobra.Group{ID: "common", Title: "Common Commands:"},
+		&cobra.Group{ID: "monitor", Title: "Monitoring:"},
+		&cobra.Group{ID: "apps", Title: "Applications:"},
 		&cobra.Group{ID: "manage", Title: "Device Management:"},
-		&cobra.Group{ID: "hardware", Title: "Hardware:"},
+		&cobra.Group{ID: "hardware", Title: "Hardware & Connections:"},
 	)
 
 	addToGroup := func(groupID string, cmds ...*cobra.Command) {
@@ -62,20 +63,22 @@ func newDeviceCmd() *cobra.Command {
 		}
 	}
 
-	// Common Commands: the subcommands used in everyday workflows, surfaced at
-	// the top in rough order of usefulness.
-	addToGroup("common",
-		newAppsCmd(),
-		newDriversCmd(),
+	addToGroup("monitor",
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
-		newROS2Cmd(),
-		newFoxgloveCmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
 	)
+	addToGroup("apps",
+		newAppsCmd(),
+		newROS2Cmd(),
+		newFoxgloveCmd(),
+		newDeviceCacheCmd(),
+		newVolumesCmd(),
+	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
+		newDriversCmd(),
 		newDeviceAttachCmd(),
 		newDeviceShellCmd(),
 		newDeprecatedDeviceVersionCmd(),
@@ -90,10 +93,10 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceRenameCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
-		newDeviceCacheCmd(),
-		newVolumesCmd(),
 	)
 	addToGroup("hardware",
+		newDevicePairCmd(),
+		newDeviceUnpairCmd(),
 		newWifiCmd(),
 		newBluetoothCmd(),
 		newAudioCmd(),
@@ -137,7 +140,7 @@ func newDevicePushAgentCmd() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
+			ctx := robotAgentMaintenanceContext(cmd.Context())
 			binaryData, err := os.ReadFile(args[0])
 			if err != nil {
 				return fmt.Errorf("reading agent binary %q: %w", args[0], err)
@@ -148,7 +151,6 @@ func newDevicePushAgentCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
-			addr := hostPort(conn.Host, defaultAgentPort)
 
 			h := sha256.Sum256(binaryData)
 			sha256Hex := hex.EncodeToString(h[:])
@@ -165,7 +167,7 @@ func newDevicePushAgentCmd() *cobra.Command {
 			conn.Close()
 
 			fmt.Fprint(os.Stderr, "Waiting for agent to restart...")
-			newConn, err := waitForAgentRestart(ctx, addr)
+			newConn, err := reconnectAgentAfterRestart(ctx, conn)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, " failed.")
 				return fmt.Errorf("agent did not come back after update: %w", err)
@@ -208,7 +210,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:    use,
-		Short:  "Show agent version, OS, architecture, GPU, and hardware info for the target device",
+		Short:  "Show agent version, OS, architecture, GPU, NPU, and hardware info for the target device",
 		Hidden: deprecated,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -226,13 +228,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			defer target.Close()
 
-			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
+			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch, npuVendor string
 			var diskUsedBytes, diskTotalBytes *int64
 			var memTotalBytes int64
 			var cpuCount uint32
 			var partitions []*agentpb.DiskPartition
+			var containerStorage *agentpb.DiskPartition
+			var gpuCapabilities []*agentpb.GpuCapabilities
 			var netInterfaces []*agentpb.NetworkInterface
-			var hasGPU bool
+			var hasGPU, hasNPU bool
 			var providerInfo *providers.ProviderDeviceInfo
 			// nil for mains-powered devices, for agents predating the field,
 			// and for the BLE/provider paths that never report one.
@@ -269,11 +273,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				jetpackVersion = resp.GetJetpackVersion()
 				cudaVersion = resp.GetCudaVersion()
 				gpuArch = resp.GetGpuArch()
+				hasNPU = resp.GetHasNpu()
+				npuVendor = resp.GetNpuVendor()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
 				memTotalBytes = resp.GetMemTotalBytes()
 				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
+				containerStorage = resp.GetContainerStorage()
+				gpuCapabilities = resp.GetGpuCapabilities()
 				netInterfaces = resp.GetNetworkInterfaces()
 				battery = resp.GetBattery()
 			} else if target.External != nil && target.Provider != nil {
@@ -340,6 +348,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if cpuCount > 0 {
 					out["cpuCount"] = cpuCount
 				}
+				if containerStorage != nil {
+					out["containerStorage"] = map[string]any{"mountpoint": containerStorage.GetMountpoint(), "filesystem": containerStorage.GetFilesystem(), "device": containerStorage.GetDevice(), "usedBytes": containerStorage.GetUsedBytes(), "totalBytes": containerStorage.GetTotalBytes()}
+				}
+				if len(gpuCapabilities) > 0 {
+					out["gpuCapabilities"] = gpuCapabilitiesJSON(gpuCapabilities)
+				}
 				if len(partitions) > 0 {
 					parts := make([]map[string]any, len(partitions))
 					for i, p := range partitions {
@@ -353,7 +367,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					}
 					out["partitions"] = parts
 				}
-				if alert, ok := highDiskUsage(partitions, diskUsedBytes, diskTotalBytes); ok {
+				if alert, ok := highDiskUsage(partitions, diskUsedBytes, diskTotalBytes, containerStorage); ok {
 					out["diskWarning"] = map[string]any{
 						"mountpoint":       alert.Mountpoint,
 						"usedPercent":      alert.UsedPercent,
@@ -371,6 +385,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 				if gpuArch != "" {
 					out["gpuArch"] = gpuArch
+				}
+				out["hasNpu"] = hasNPU
+				if npuVendor != "" {
+					out["npuVendor"] = npuVendor
 				}
 				if len(netInterfaces) > 0 {
 					ifaces := make([]map[string]any, len(netInterfaces))
@@ -422,12 +440,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			if storageMedium != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Storage:"), tui.Value(storageMedium))
 			}
-			if len(partitions) > 0 {
-				fmt.Print(formatPartitionTable(partitions))
+			if len(partitions) > 0 || containerStorage != nil {
+				fmt.Print(formatPartitionTable(partitions, containerStorage))
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
 				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
 			}
-			if alert, ok := highDiskUsage(partitions, diskUsedBytes, diskTotalBytes); ok {
+			if alert, ok := highDiskUsage(partitions, diskUsedBytes, diskTotalBytes, containerStorage); ok {
 				fmt.Println(tui.WarningMessage(diskUsageWarningText(alert)))
 			}
 			if len(netInterfaces) > 0 {
@@ -439,6 +457,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					vendor = "unknown"
 				}
 				fmt.Printf("%s %s\n", tui.Dim("GPU:"), tui.Value(vendor))
+				if compute := formatGPUCompute(gpuCapabilities); compute != "" {
+					fmt.Printf("%s %s\n", tui.Dim("GPU Compute:"), tui.Value(compute))
+				}
 				if jetpackVersion != "" {
 					fmt.Printf("%s %s\n", tui.Dim("JetPack:"), tui.Value(jetpackVersion))
 				}
@@ -448,6 +469,13 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if gpuArch != "" {
 					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
+			}
+			if hasNPU {
+				vendor := npuVendor
+				if vendor == "" {
+					vendor = "unknown"
+				}
+				fmt.Printf("%s %s\n", tui.Dim("NPU:"), tui.Value(vendor))
 			}
 			if providerInfo != nil {
 				fmt.Printf("%s %s\n", tui.Dim("WASM Apps:"), tui.Value(yesNo(providerInfo.WasmAppSupport)))
@@ -502,9 +530,10 @@ func yesNo(v bool) string {
 
 func newDeviceSetDefaultCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "set-default [hostname]",
-		Short: "Set the default device hostname",
-		Args:  cobra.MaximumNArgs(1),
+		Hidden: true,
+		Use:    "set-default [device]",
+		Short:  "Set a local, cloud or simulator device as the default",
+		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var device string
 			if len(args) > 0 {
@@ -515,6 +544,10 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 					return err
 				}
 				device = sel
+			}
+			_, isCloud, selectorErr := parseCloudDeviceSelector(device)
+			if selectorErr != nil {
+				return selectorErr
 			}
 
 			cfg, err := config.Load()
@@ -528,6 +561,11 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Default device set to: %s\n", tui.Device(device))
+			// Cloud identity is scoped by endpoint, organization and asset ID.
+			// It has no LAN hostname pin to clear or repopulate.
+			if isCloud {
+				return nil
+			}
 
 			// Naming a device here is an explicit assertion that this is the one
 			// the user means, so any pin recorded for it is dropped first: that
@@ -588,7 +626,7 @@ func newDeviceGetDefaultCmd() *cobra.Command {
 // pickDeviceForDefault runs the interactive device picker and returns a
 // hostname or provider key suitable for storing as the default device.
 func pickDeviceForDefault(ctx context.Context) (string, error) {
-	selected, err := pickDevice(ctx, nil, false, false)
+	selected, err := pickDevice(ctx, nil, false, false, false)
 	if err != nil {
 		return "", err
 	}
@@ -616,6 +654,9 @@ func pickDeviceForDefault(ctx context.Context) (string, error) {
 func defaultDeviceNameFor(selected *SelectedDevice) (string, error) {
 	if selected == nil {
 		return "", fmt.Errorf("no device selected")
+	}
+	if selected.DefaultSelector != "" {
+		return selected.DefaultSelector, nil
 	}
 	if selected.Agent != nil {
 		if selected.PinKey != "" {
@@ -765,7 +806,7 @@ func newDeviceEnrollCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
+			conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressPickerEnroll())
 			if err != nil {
 				return err
 			}
@@ -2032,7 +2073,17 @@ func reconnectAgentAfterRestart(ctx context.Context, conn *grpcclient.AgentConne
 	if conn != nil && conn.Reconnect != nil {
 		return conn.Reconnect(ctx)
 	}
-	return waitForAgentRestart(ctx, hostPort(conn.Host, defaultAgentPort))
+	if conn == nil {
+		return nil, fmt.Errorf("cannot reconnect without the original device")
+	}
+	if conn.SimulatorName != "" {
+		return waitForSimulatorAgent(ctx, conn.SimulatorName, conn.Addr, 60*time.Second)
+	}
+	addr := conn.Addr
+	if addr == "" {
+		addr = hostPort(conn.Host, defaultAgentPort)
+	}
+	return waitForAgentRestart(ctx, addr)
 }
 
 // osUpdateOutcome reports what `device update`'s OS-update step did, so the
@@ -2323,7 +2374,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 			"--pr N applies the OS image built by wendyos-builder PR #N instead of the manifest's latest — an unhardened debug build for testing PRs on hardware; it also works over the cloud tunnel. --pr cannot be combined with --artifact-url or --json. " +
 			"macOS agents receive the signed app-bundle zip (wendy-agent-macos-<arch>.zip) instead of a Linux binary; --binary accepts one of those zips for dev pushes to a Mac agent.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
+			ctx := robotAgentMaintenanceContext(cmd.Context())
 
 			if prNumber > 0 {
 				if artifactURL != "" {
@@ -3098,6 +3149,12 @@ func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentCo
 	if previous != nil && previous.Reconnect != nil {
 		return previous.Reconnect
 	}
+	if previous != nil && previous.SimulatorName != "" {
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			conn, _, err := connectSimulatorAgent(waitCtx, previous.SimulatorName, previous.Addr)
+			return conn, err
+		}
+	}
 
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
@@ -3112,7 +3169,10 @@ func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentCo
 	}
 
 	if previous != nil && previous.Host != "" {
-		addr := hostPort(previous.Host, defaultAgentPort)
+		addr := previous.Addr
+		if addr == "" {
+			addr = hostPort(previous.Host, defaultAgentPort)
+		}
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectResolvedAgentWithProvisionedHint(waitCtx, previous.Host, addr, false, func() bool { return false })
 		}

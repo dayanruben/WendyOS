@@ -378,7 +378,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 
 	var progressErr error
 	if prog != nil {
-		final, runErr := prog.Run()
+		final, runErr := runBuildProgressProgram(prog)
 		if runErr != nil {
 			cancelBuild()
 			progressErr = fmt.Errorf("compose build progress TUI: %w", runErr)
@@ -782,10 +782,10 @@ func composeAppConfig(projectName, serviceName string, svc composeService, numSe
 	var entitlements []appconfig.Entitlement
 
 	// Network entitlement.
-	if svc.NetworkMode == "host" {
+	if svc.NetworkMode == "host" || svc.NetworkMode == "none" || svc.NetworkMode == "bridge" {
 		entitlements = append(entitlements, appconfig.Entitlement{
 			Type: appconfig.EntitlementNetwork,
-			Mode: "host",
+			Mode: svc.NetworkMode,
 		})
 	} else if len(svc.Ports) > 0 {
 		var ports []appconfig.PortMapping
@@ -1233,7 +1233,33 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return err
 		}
 	}
+	networkOrder, err := serviceOrder(cfg)
+	if err != nil {
+		return err
+	}
+	networkConfigs := make([]*appconfig.AppConfig, 0, len(networkOrder))
+	for _, name := range networkOrder {
+		networkConfigs = append(networkConfigs, svcCfgs[name])
+	}
+	printMissingNetworkWarnings(networkConfigs...)
+	serviceEnvs := make(map[string][]string, len(cfg.Services))
+	for name, svc := range cfg.Services {
+		var serviceConfig *appconfig.ServiceConfig
+		if companion != nil {
+			serviceConfig = companion.Services[name]
+		}
+		// Compose supplies service values; the companion can override those,
+		// and global CLI values are applied last to every service.
+		serviceEnvs[name] = mergeEnvEntries(expandServiceEnv(companion, nil), composeEnv(svc), expandServiceEnv(nil, serviceConfig), opts.env)
+	}
 	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
+	portConfigs := []*appconfig.AppConfig{companion}
+	for _, svc := range svcCfgs {
+		portConfigs = append(portConfigs, svc)
+	}
+	if err := prepareVMAppPorts(ctx, conn, portConfigs...); err != nil {
+		return err
+	}
 
 	// App-level lifecycle fallback: only a companion wendy.json can declare
 	// top-level HTTP/readiness/hooks for a compose project (x-wendy is
@@ -1296,7 +1322,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...); err != nil {
 				return fmt.Errorf("service %s: %w", name, err)
 			}
-			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, allBuildArgs, composeEnv(svc))
+			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, resolvedStagefileBackend(ctx), allBuildArgs, serviceEnvs[name])
 			if err != nil {
 				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
 			}
@@ -1315,7 +1341,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			restartPolicy = composeRestartPolicy(svc.Restart)
 		}
 		cmd, extraArgs := composeArgv(svc)
-		desiredHash, hashErr := composeServiceWatchHash(imageIdentity, appCfg, cmd, extraArgs, restartPolicy, composeEnv(svc))
+		desiredHash, hashErr := composeServiceWatchHash(imageIdentity, appCfg, cmd, extraArgs, restartPolicy, serviceEnvs[name])
 		if hashErr == nil && contentPinned {
 			desiredHashes[name] = desiredHash
 			candidates[name] = watchServiceCandidate{appID: appCfg.AppID, containerName: appCfg.ContainerName(), desiredHash: desiredHash}
@@ -1443,7 +1469,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			Cmd:           cmd,
 			RestartPolicy: restartPolicy,
 			UserArgs:      extraArgs,
-			Env:           composeEnv(svc),
+			Env:           serviceEnvs[name],
 		}
 
 		cliLogln("Creating container for service %s (%s)...", name, appCfg.ContainerName())
@@ -1613,6 +1639,8 @@ func composeStartWatch(ctx context.Context, conn *grpcclient.AgentConnection, or
 // owns Ctrl+C handling and cancels runCtx after stopping the services.
 func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter, opts runOptions) error {
 	runner := &serviceHookRunner{conn: conn, opts: opts}
+	appHookCtx, appHookCancel := context.WithCancel(runCtx)
+	defer appHookCancel()
 	var appName string
 	if len(ordered) > 0 && svcCfgs[ordered[0]] != nil {
 		appName = svcCfgs[ordered[0]].AppID
@@ -1636,6 +1664,9 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 		wg.Add(1)
 		go func(serviceName, containerID string, svcCfg, lifecycleCfg *appconfig.AppConfig) {
 			defer wg.Done()
+			serviceCtx, serviceCancel := context.WithCancel(runCtx)
+			defer serviceCancel()
+			defer appHookCancel()
 			markStarted := sync.OnceFunc(startedWg.Done)
 			defer markStarted()
 			outW := stdoutWriters[serviceName]
@@ -1717,7 +1748,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 					// slow or failing probe never stalls this log loop.
 					hookFired = true
 					markStarted()
-					runner.startAsync(runCtx, lifecycleCfg)
+					runner.startAsync(serviceCtx, lifecycleCfg)
 				}
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
@@ -1742,7 +1773,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 	runner.spawn(func() {
 		startedWg.Wait()
 		if runCtx.Err() == nil {
-			runner.runOne(runCtx, runCtx, appLevelCfg)
+			runner.runOne(appHookCtx, runCtx, appLevelCfg)
 		}
 	})
 

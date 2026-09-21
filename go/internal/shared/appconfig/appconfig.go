@@ -2,6 +2,7 @@
 package appconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -36,6 +37,7 @@ const (
 	EntitlementBluetooth = "bluetooth"
 	EntitlementVideo     = "video"
 	EntitlementGPU       = "gpu"
+	EntitlementNPU       = "npu"
 	EntitlementPersist   = "persist"
 	EntitlementAudio     = "audio"
 	EntitlementCamera    = "camera"
@@ -72,6 +74,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementBluetooth,
 	EntitlementVideo,
 	EntitlementGPU,
+	EntitlementNPU,
 	EntitlementPersist,
 	EntitlementAudio,
 	EntitlementCamera,
@@ -108,6 +111,7 @@ var allowedKeys = map[string][]string{
 	EntitlementBluetooth:     {"type", "mode"},
 	EntitlementVideo:         {"type", "mode", "allowlist"},
 	EntitlementGPU:           {"type"},
+	EntitlementNPU:           {"type"},
 	EntitlementPersist:       {"type", "name", "path"},
 	EntitlementAudio:         {"type"},
 	EntitlementCamera:        {"type", "mode", "allowlist", "user", "password"},
@@ -144,7 +148,9 @@ type FileSyncEntry struct {
 
 // RunConfig holds runtime configuration applied when the app is started.
 type RunConfig struct {
-	Args []string `json:"args,omitempty"`
+	Command string   `json:"command,omitempty"`
+	Cwd     string   `json:"cwd,omitempty"`
+	Args    []string `json:"args,omitempty"`
 }
 
 // ROS2Config holds ROS 2 runtime configuration for a container.
@@ -242,7 +248,8 @@ var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
-	AppID string `json:"appId"`
+	AppID string     `json:"appId"`
+	HIL   *HILConfig `json:"hil,omitempty"`
 	// ServiceName is set when this AppConfig describes a single service within
 	// a multi-service app.  When non-empty the agent uses the
 	// {appId}_{serviceName} container naming convention (WDY-878).
@@ -306,6 +313,36 @@ type ReadinessConfig struct {
 // TCPSocketProbe checks readiness by dialing a TCP port.
 type TCPSocketProbe struct {
 	Port int `json:"port"`
+}
+
+// HILConfig describes the inference project used by run --hil.
+// Project, Inputs and SimulatorBuildFile are relative to the simulator project.
+// BuildFile and BuildFilesByGPUArch are relative to the inference project.
+type HILConfig struct {
+	Project             string            `json:"project"`
+	Inputs              []string          `json:"inputs"`
+	BuildFile           string            `json:"buildFile"`
+	BuildFilesByGPUArch map[string]string `json:"buildFilesByGPUArch,omitempty"`
+	SimulatorBuildFile  string            `json:"simulatorBuildFile"`
+	Port                int               `json:"port"`
+	URLEnv              string            `json:"urlEnv"`
+	HealthPath          string            `json:"healthPath"`
+	HealthSchema        string            `json:"healthSchema,omitempty"`
+	TokenEnv            string            `json:"tokenEnv,omitempty"`
+	Env                 map[string]string `json:"env,omitempty"`
+}
+
+// UnmarshalJSON rejects HIL typos before they can silently disable protocol checks.
+func (c *HILConfig) UnmarshalJSON(data []byte) error {
+	type plain HILConfig
+	var parsed plain
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&parsed); err != nil {
+		return fmt.Errorf("hil: %w", err)
+	}
+	*c = HILConfig(parsed)
+	return nil
 }
 
 // HooksConfig holds optional lifecycle hook commands.
@@ -617,6 +654,11 @@ func ValidateReadiness(prefix string, r *ReadinessConfig) error {
 
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
+	if c.Run != nil {
+		if err := c.validateNativeRun(); err != nil {
+			return err
+		}
+	}
 	if err := ValidateAppID(c.AppID); err != nil {
 		return err
 	}
@@ -988,6 +1030,7 @@ func ValidateJSON(data []byte) []string {
 	}
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
 	warnings = append(warnings, validateHooksJSON(raw["hooks"], "hooks")...)
+	warnings = append(warnings, validateReadinessJSON(raw["readiness"], "readiness")...)
 	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
 
 	// Validate service-level entitlements, frameworks, and hooks when a
@@ -1008,6 +1051,7 @@ func ValidateJSON(data []byte) []string {
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
 				warnings = append(warnings, validateHooksJSON(svc["hooks"], fmt.Sprintf("services[%q].hooks", name))...)
+				warnings = append(warnings, validateReadinessJSON(svc["readiness"], fmt.Sprintf("services[%q].readiness", name))...)
 			}
 
 			// A top-level hooks.postStart.agent has no app-level container to
@@ -1277,4 +1321,17 @@ func (a *AppConfig) GetROS2Config() *ROS2Config {
 		return nil
 	}
 	return a.Frameworks.ROS2
+}
+
+func validateReadinessJSON(data json.RawMessage, prefix string) []string {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	warnings := unknownKeyWarnings(raw, prefix, jsonFieldNames(reflect.TypeOf(ReadinessConfig{})))
+	var tcp map[string]json.RawMessage
+	if json.Unmarshal(raw["tcpSocket"], &tcp) == nil {
+		warnings = append(warnings, unknownKeyWarnings(tcp, prefix+".tcpSocket", jsonFieldNames(reflect.TypeOf(TCPSocketProbe{})))...)
+	}
+	return warnings
 }

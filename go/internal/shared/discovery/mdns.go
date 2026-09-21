@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +35,8 @@ type MDNSService struct {
 // then "id" then falls back to the resolved display name; mTLS is signaled
 // by tls=="true"; assetid/orgid are accepted only when they parse as
 // positive integers (0 or unparseable stays the zero value, meaning
-// unknown/unprovisioned); and "name" becomes the friendly mesh name.
+// unknown/unprovisioned); "name" becomes the friendly mesh name; and
+// "devicetype" is the agent's board id, kept until a probe verifies it.
 //
 // A sighting that carries neither a hostname nor a usable displayname TXT
 // record falls back to the DNS-SD instance name for both the display name and
@@ -70,6 +72,9 @@ func lanDeviceFromService(svc MDNSService) models.LANDevice {
 		IsWendyDevice:    true,
 		NetworkInterface: svc.InterfaceName,
 	}
+	if dev.IPAddress != "" {
+		dev.Addresses = []string{dev.IPAddress}
+	}
 	if v, ok := svc.TXTRecords["assetid"]; ok {
 		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
 			dev.AssetID = int32(n)
@@ -83,7 +88,31 @@ func lanDeviceFromService(svc MDNSService) models.LANDevice {
 	if v, ok := svc.TXTRecords["name"]; ok {
 		dev.MeshName = v
 	}
+	// The agent stamps its board id here so a sighting can be classified
+	// before any probe -- in particular a local VM, whose announcement may
+	// carry an address nothing on the host can reach.
+	if v, ok := svc.TXTRecords["devicetype"]; ok {
+		dev.DeviceType = v
+	}
+	if v, ok := svc.TXTRecords["caps"]; ok {
+		for _, c := range strings.Split(v, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				dev.Caps = append(dev.Caps, c)
+			}
+		}
+	}
+	// Back-compat: the legacy sensorlink=true TXT record is superseded by
+	// caps=sensors, but old devices still advertise it alone.
+	if v, ok := svc.TXTRecords["sensorlink"]; ok && v == "true" && !contains(dev.Caps, "sensors") {
+		dev.Caps = append(dev.Caps, "sensors")
+	}
+	dev.Sensorlink = contains(dev.Caps, "sensors")
 	return dev
+}
+
+// contains reports whether ss contains s.
+func contains(ss []string, s string) bool {
+	return slices.Contains(ss, s)
 }
 
 // parseTXTRecord decodes a DNS-SD TXT record from its wire format: a sequence
