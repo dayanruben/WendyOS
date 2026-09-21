@@ -621,9 +621,7 @@ func (s *CloudNotificationSender) connectionFor(
 		return s.connection, nil
 	}
 
-	certBundle := append([]byte(certPEM), '\n')
-	certBundle = append(certBundle, []byte(chainPEM)...)
-	certificate, err := tls.X509KeyPair(certBundle, keyData)
+	certificate, err := certs.TLSKeyPair(certPEM, chainPEM, string(keyData))
 	if err != nil {
 		return nil, fmt.Errorf("parse device notification client certificate: %w", err)
 	}

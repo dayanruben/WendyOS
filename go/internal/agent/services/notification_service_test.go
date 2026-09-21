@@ -855,3 +855,17 @@ func TestAppSystemAPISocketManagerRecreatesSocketInStableDirectory(t *testing.T)
 		t.Fatal("Agent restart replaced the mounted System API directory inode")
 	}
 }
+
+func TestNotificationConnectionNormalizesCertificateChain(t *testing.T) {
+	key, keyPEM := deviceProofTestKeyPEM(t)
+	leaf := deviceProofTestCertificatePEM(t, key, deviceProofTestCertificateSerial)
+	block, _ := pem.Decode([]byte(leaf))
+	block.Bytes = append(block.Bytes, 0, 0)
+	padded := string(pem.EncodeToMemory(block))
+	sender := NewCloudNotificationSender(zap.NewNop(), nil)
+	conn, err := sender.connectionFor("localhost:443", padded, padded, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+}

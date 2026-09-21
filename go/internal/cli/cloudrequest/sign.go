@@ -8,7 +8,6 @@ import (
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -77,10 +76,7 @@ func newSigner(auth *config.AuthConfig) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading Cloud request-signing key: %w", err)
 	}
-	pair, err := tls.X509KeyPair(
-		[]byte(certInfo.PemCertificate+"\n"+certInfo.PemCertificateChain),
-		[]byte(privateKeyPEM),
-	)
+	pair, err := certs.TLSKeyPair(certInfo.PemCertificate, certInfo.PemCertificateChain, privateKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("loading Cloud request-signing certificate: %w", err)
 	}

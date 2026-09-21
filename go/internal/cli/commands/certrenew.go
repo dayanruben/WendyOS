@@ -376,7 +376,9 @@ var persistRenewedCertificate = func(auth *config.AuthConfig, updated config.Cer
 		return fmt.Errorf("loading config: %w", err)
 	}
 	for i := range cfg.Auth {
-		if cfg.Auth[i].CloudGRPC == auth.CloudGRPC && cfg.Auth[i].CloudDashboard == auth.CloudDashboard {
+		if cfg.Auth[i].CloudGRPC == auth.CloudGRPC && cfg.Auth[i].CloudDashboard == auth.CloudDashboard &&
+			cfg.Auth[i].OAuthIssuer == auth.OAuthIssuer &&
+			cfg.Auth[i].OrganizationKey() == auth.OrganizationKey() {
 			if len(cfg.Auth[i].Certificates) == 0 {
 				cfg.Auth[i].Certificates = []config.CertificateInfo{updated}
 			} else {

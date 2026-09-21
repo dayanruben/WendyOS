@@ -336,3 +336,17 @@ func TestCheckMTLS_TenantEnforcement(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckMTLSRejectsUnknownDeviceScope(t *testing.T) {
+	for _, mode := range []OrgMode{OrgModeGrace, OrgModeStrict} {
+		for _, leaf := range []*x509.Certificate{
+			buildLeaf(leafOptions{}),
+			buildLeaf(leafOptions{commonName: "sh/wendy/7/5"}),
+			buildLeaf(leafOptions{uris: []*url.URL{mustParseURL(t, "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/operator/alice")}}),
+		} {
+			if err := CheckMTLS(ctxWithLeaf(leaf), zap.NewNop(), certs.Scope{}, mode); status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("mode %s accepted unknown device scope: %v", mode, err)
+			}
+		}
+	}
+}

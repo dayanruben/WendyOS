@@ -1,5 +1,12 @@
 # Device enrollment with an OIDC account
 
+Direct ACME enrollment is experimental and disabled by default on the agent.
+Notifications, mesh routing, and legacy Avahi identity advertisements still
+require numeric organization and asset IDs. Use legacy enrollment for those
+services. For development, explicitly set `WENDY_EXPERIMENTAL_ACME_ENROLLMENT=1`
+in the agent environment before attempting OIDC enrollment. The agent rejects
+disabled enrollment before generating keys or spending EAB credentials.
+
 ```sh
 wendy device enroll --name sim
 ```
@@ -10,10 +17,9 @@ Cloud enrollment-token RPC and `--org` override. `wendy cloud enroll-device`
 is an alias with the same behavior.
 
 The CLI uses the selected session's tenant; it does not list organizations.
-`--org` is rejected for OIDC enrollment. Device names become permanent SPIFFE
-identities and may contain paths such as `fleet-a/box-01`. Each segment must
-contain 1–64 ASCII letters, digits, dots, underscores or hyphens; empty segments,
-`.` and `..` are invalid.
+`--org` is rejected for OIDC enrollment. The CLI generates a UUID for the
+permanent SPIFFE device identity. The discovery name is a separate, renameable
+DNS label; renaming it does not change the certificate identity.
 
 ## Automatic credential handoff
 

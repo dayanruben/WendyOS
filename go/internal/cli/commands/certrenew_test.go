@@ -363,3 +363,38 @@ func TestEnsureFreshCertificateDerivesTheRenewEndpoint(t *testing.T) {
 		t.Fatalf("unexpected renewal endpoint %q", endpoint)
 	}
 }
+
+func TestPersistRenewedCertificateSelectsExactSession(t *testing.T) {
+	const tenantA = "11111111-1111-4111-8111-111111111111"
+	const tenantB = "22222222-2222-4222-8222-222222222222"
+	session := func(issuer, tenant string, org int) config.AuthConfig {
+		principal := ""
+		if tenant != "" {
+			principal = "spiffe://wendy.sh/tenant/" + tenant + "/operator/alice"
+		}
+		return config.AuthConfig{CloudGRPC: "api.example:443", CloudDashboard: "https://cloud.example", OAuthIssuer: issuer,
+			Certificates: []config.CertificateInfo{{PrincipalURI: principal, OrganizationID: org, PemCertificate: "original"}}}
+	}
+	for _, entries := range [][]config.AuthConfig{
+		{session("issuer-a", tenantA, 0), session("issuer-b", tenantA, 0), session("issuer-b", tenantB, 0)},
+		{session("", "", 7), session("", "", 8)},
+	} {
+		load := seedConfig(t, &config.Config{Auth: entries})
+		selected := entries[len(entries)-1]
+		updated := selected.Certificates[0]
+		updated.PemCertificate = "renewed"
+		if err := persistRenewedCertificate(&selected, updated); err != nil {
+			t.Fatal(err)
+		}
+		got := load()
+		for i, auth := range got.Auth {
+			want := "original"
+			if i == len(entries)-1 {
+				want = "renewed"
+			}
+			if auth.Certificates[0].PemCertificate != want {
+				t.Fatalf("session %d: got %q, want %q", i, auth.Certificates[0].PemCertificate, want)
+			}
+		}
+	}
+}

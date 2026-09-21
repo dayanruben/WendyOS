@@ -321,11 +321,11 @@ func TestEnrollmentRequestUsesFreshReplayID(t *testing.T) {
 	}
 }
 
-// Model the large opaque ML-DSA intermediates returned by PKI. They belong in
+// Model the large ML-DSA certificate chain returned by PKI. They belong in
 // the enrollment artifact body, but Cloud only validates the leaf from metadata.
 func TestCloudSignatureOmitsLargeIssuerChain(t *testing.T) {
 	auth, _, leafDER := testAuth(t)
-	issuerDER := make([]byte, 7500)
+	issuerDER := leafDER
 	auth.Certificates[0].PemCertificateChain = strings.Repeat(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuerDER})), 3)
 	signer, err := newSigner(auth)
 	if err != nil {
@@ -384,5 +384,27 @@ func TestCloudSignatureOmitsLargeIssuerChain(t *testing.T) {
 	chain := header(string(artifact))
 	if len(chain) != 4 || chain[0] != certs[0] || chain[1] != base64.StdEncoding.EncodeToString(issuerDER) {
 		t.Fatal("enrollment body lost its issuer chain")
+	}
+}
+
+func TestSignerNormalizesCertificateChain(t *testing.T) {
+	auth, _, _ := testAuth(t)
+	block, _ := pem.Decode([]byte(auth.Certificates[0].PemCertificate))
+	block.Bytes = append(block.Bytes, 0, 0)
+	padded := string(pem.EncodeToMemory(block))
+	auth.Certificates[0].PemCertificate = padded
+	auth.Certificates[0].PemCertificateChain = padded
+	signer, err := newSigner(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, encoded := range signer.x5c {
+		der, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := x509.ParseCertificate(der); err != nil {
+			t.Fatalf("signer retained malformed DER: %v", err)
+		}
 	}
 }

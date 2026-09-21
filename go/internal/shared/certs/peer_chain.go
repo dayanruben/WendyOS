@@ -95,7 +95,10 @@ func VerifyPeerCertificateChain(leaf *x509.Certificate, peers, roots []*x509.Cer
 }
 
 func permitsUsage(cert *x509.Certificate, usage x509.ExtKeyUsage) bool {
-	if len(cert.ExtKeyUsage) == 0 && len(cert.UnknownExtKeyUsage) == 0 {
+	if len(cert.UnknownExtKeyUsage) != 0 {
+		return false
+	}
+	if len(cert.ExtKeyUsage) == 0 {
 		return true
 	}
 	for _, eku := range cert.ExtKeyUsage {

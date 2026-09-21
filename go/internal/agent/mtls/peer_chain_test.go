@@ -14,7 +14,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
 
-func signPeerTestCertificate(t *testing.T, child, issuer *x509.Certificate, key circlSign.PrivateKey) *x509.Certificate {
+func signPeerTestCertificate(t *testing.T, child, issuer *x509.Certificate, key circlSign.PrivateKey, edits ...func(*tbsCertificate)) *x509.Certificate {
 	t.Helper()
 	var tbs tbsCertificate
 	if _, err := asn1.Unmarshal(child.RawTBSCertificate, &tbs); err != nil {
@@ -29,6 +29,9 @@ func signPeerTestCertificate(t *testing.T, child, issuer *x509.Certificate, key 
 		if ext.Id.Equal(eku.Id) {
 			tbs.Extensions[i] = eku
 		}
+	}
+	for _, edit := range edits {
+		edit(&tbs)
 	}
 	der, err := asn1.Marshal(tbs)
 	if err != nil {
@@ -102,5 +105,41 @@ func TestPeerMLDSAIntermediateChains(t *testing.T) {
 	}
 	if err := serverVerify(tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}); err == nil {
 		t.Fatal("missing issuer accepted")
+	}
+}
+
+func TestDirectMLDSAChainsEnforcePolicy(t *testing.T) {
+	critical := func(tbs *tbsCertificate) {
+		tbs.Extensions = append(tbs.Extensions, pkix.Extension{Id: asn1.ObjectIdentifier{1, 2, 3, 4}, Critical: true, Value: []byte{5, 0}})
+	}
+	for _, target := range []string{"valid", "leaf", "issuer"} {
+		t.Run(target, func(t *testing.T) {
+			root, key := buildMLDSACACert(t, pkix.Name{CommonName: "root"}, true)
+			root = signPeerTestCertificate(t, root, root, key)
+			if target == "issuer" {
+				root = signPeerTestCertificate(t, root, root, key, critical)
+			}
+			leaf := buildMLDSALeafCert(t, root, key)
+			var edits []func(*tbsCertificate)
+			if target == "leaf" {
+				edits = append(edits, critical)
+			}
+			leaf = signPeerTestCertificate(t, leaf, root, key, edits...)
+			// An empty standard pool forces the client callback through its
+			// custom verifier even on Go versions with native ML-DSA support.
+			client := buildVerifyPeerCertificate(x509.NewCertPool(), []*x509.Certificate{root}, nil, time.Time{})
+			clientErr := client([][]byte{leaf.Raw}, nil)
+			rootPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}))
+			server, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{ChainPEM: rootPEM})
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverErr := server(tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}})
+			for name, err := range map[string]error{"client": clientErr, "server": serverErr} {
+				if (err == nil) != (target == "valid") {
+					t.Fatalf("%s result for %s chain: %v", name, target, err)
+				}
+			}
+		})
 	}
 }

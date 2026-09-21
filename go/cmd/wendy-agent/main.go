@@ -706,18 +706,9 @@ func main() {
 		expectedScope, haveScope := certs.ScopeFromCertPEM(certPEM)
 		effectiveMode := orgMode
 		if orgMode != interceptor.OrgModeOff && !haveScope {
-			// Fail safe: the device cannot determine its own tenant, so it cannot
-			// meaningfully compare a client's tenant against it. Rather than brick the
-			// device (rejecting all clients) or silently enforce against an unknown
-			// self-tenant, disable enforcement for this server and log loudly.
-			//
-			// A pki-core-issued leaf reaches here with a tenant SPIFFE principal
-			// and no urn:wendy org, which certs.ScopeFromCertPEM reads as a known
-			// scope — so an ACME-enrolled or renewed device no longer trips this
-			// branch and no longer disarms enforcement fleet-wide (WDY-2968).
-			logger.Error("cannot determine device tenant from own certificate; mTLS enforcement DISABLED for this server",
+			logger.Error("cannot determine device identity scope; refusing to start mTLS server",
 				zap.String("configuredMode", orgMode.String()))
-			effectiveMode = interceptor.OrgModeOff
+			return
 		}
 		if effectiveMode != interceptor.OrgModeOff {
 			logger.Info("mTLS server enforcing tenant",

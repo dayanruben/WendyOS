@@ -247,10 +247,7 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 				logCertRejection(logger, leaf, stdErr, realNow, effectiveNow)
 				return stdErr
 			}
-			mldsaErr := verifyMLDSAClientCert(leaf, caCerts, realNow, effectiveNow)
-			if mldsaErr != nil && len(peerCAs) > 0 {
-				mldsaErr = certs.VerifyPeerCertificateChain(leaf, peerCAs, caCerts, x509.ExtKeyUsageClientAuth, realNow, effectiveNow)
-			}
+			mldsaErr := certs.VerifyPeerCertificateChain(leaf, peerCAs, caCerts, x509.ExtKeyUsageClientAuth, realNow, effectiveNow)
 			if mldsaErr != nil {
 				logCertRejection(logger, leaf, mldsaErr, realNow, effectiveNow)
 				return mldsaErr

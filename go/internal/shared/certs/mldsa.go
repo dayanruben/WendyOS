@@ -298,14 +298,9 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 			if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
 				return stdErr
 			}
-			if mldsaErr := verifyMLDSAServerCert(leaf, caCerts); mldsaErr != nil {
-				if len(cs.PeerCertificates) < 2 {
-					return mldsaErr
-				}
-				now := time.Now()
-				if err := VerifyPeerCertificateChain(leaf, cs.PeerCertificates[1:], caCerts, x509.ExtKeyUsageServerAuth, now, now); err != nil {
-					return err
-				}
+			now := time.Now()
+			if err := VerifyPeerCertificateChain(leaf, cs.PeerCertificates[1:], caCerts, x509.ExtKeyUsageServerAuth, now, now); err != nil {
+				return err
 			}
 		}
 

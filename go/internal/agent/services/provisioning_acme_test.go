@@ -12,6 +12,8 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func acmeProvisionRequest() *agentpbv2.StartACMEProvisioningRequest {
@@ -23,6 +25,7 @@ func acmeProvisionRequest() *agentpbv2.StartACMEProvisioningRequest {
 
 func stubACMEEnroll(t *testing.T, fn func(context.Context, acmeenroll.Config, string, []byte) (string, string, error)) {
 	t.Helper()
+	t.Setenv("WENDY_EXPERIMENTAL_ACME_ENROLLMENT", "1")
 	old := acmeEnrollDevice
 	acmeEnrollDevice = fn
 	t.Cleanup(func() { acmeEnrollDevice = old })
@@ -152,5 +155,25 @@ func TestACMEProvisioningStateFailureDoesNotCommit(t *testing.T) {
 	}
 	if _, _, _, enrolled := svc.ProvisioningInfo(); enrolled {
 		t.Fatal("failed state write marked the agent enrolled")
+	}
+}
+
+func TestACMEProvisioningRequiresExplicitOptIn(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewProvisioningService(zap.NewNop(), dir)
+	stubACMEEnroll(t, func(context.Context, acmeenroll.Config, string, []byte) (string, string, error) {
+		t.Fatal("disabled enrollment must not spend EAB credentials")
+		return "", "", nil
+	})
+	t.Setenv("WENDY_EXPERIMENTAL_ACME_ENROLLMENT", "")
+	_, err := NewProvisioningServiceV2(svc).StartACMEProvisioning(context.Background(), acmeProvisionRequest())
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unexpected result: %v", err)
+	}
+	if _, _, _, enrolled := svc.ProvisioningInfo(); enrolled {
+		t.Fatal("disabled enrollment committed state")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "device-key.pem")); !os.IsNotExist(err) {
+		t.Fatal("disabled enrollment generated a key")
 	}
 }

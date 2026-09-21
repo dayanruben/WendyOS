@@ -158,6 +158,9 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger, expected certs.Scope, mo
 	if mode == OrgModeOff {
 		return nil
 	}
+	if !expected.Known() {
+		return status.Error(codes.PermissionDenied, "device identity scope is unavailable")
+	}
 	scope, known, err := certs.ScopeFromCert(leaf)
 	switch {
 	case err != nil:
