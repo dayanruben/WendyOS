@@ -500,3 +500,28 @@ func TestAgentInferenceEventNotificationWithoutModelOrUpload(t *testing.T) {
 		t.Fatal("notification created an episode")
 	}
 }
+
+func TestModelFreeCampaignInspectIncludesNotificationError(t *testing.T) {
+	campaign, err := data.ParseCampaign(inferenceTestYAML(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign.Inference = nil
+	campaign.Revision = "notification-only"
+	campaign.Notify.On = data.NotifyOnEvent
+	service := &DataService{}
+	service.inference = &campaignInferenceManager{jobs: map[string]*campaignInferenceJob{
+		campaign.Name: {campaign: campaign, status: data.InferenceStatus{State: "running", NotificationError: "delivery failed"}},
+	}}
+	message, err := service.campaignMessage(campaign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspected data.Campaign
+	if err := json.Unmarshal(message.PlanJson, &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected.InferenceStatus == nil || inspected.InferenceStatus.NotificationError != "delivery failed" || inspected.InferenceStatus.State != "running" {
+		t.Fatalf("missing model-free notification status: %+v", inspected.InferenceStatus)
+	}
+}

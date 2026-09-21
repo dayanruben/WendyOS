@@ -160,7 +160,7 @@ func (j *campaignInferenceJob) supervise(ctx context.Context) {
 	go func() { defer close(notifyDone); j.notifications(ctx, j.queue) }()
 	defer func() { cancel(); <-notifyDone }()
 	if !j.campaign.Inference.IsEnabled() {
-		j.setState("disabled", nil)
+		j.setState("running", nil)
 		<-ctx.Done()
 		return
 	}
@@ -477,11 +477,12 @@ func (j *campaignInferenceJob) notifications(ctx context.Context, queue <-chan D
 }
 
 func (s *DataService) campaignMessage(campaign data.Campaign) (*agentpbv2.DataCampaign, error) {
-	if campaign.Inference != nil {
+	eventNotifications := campaign.Notify != nil && campaign.Notify.On == data.NotifyOnEvent
+	if campaign.Inference != nil || eventNotifications {
 		campaign.InferenceStatus = &data.InferenceStatus{State: "disabled"}
-		if campaign.Inference.IsEnabled() {
+		if campaign.Inference.IsEnabled() || eventNotifications {
 			if s.inference == nil {
-				campaign.InferenceStatus = &data.InferenceStatus{State: "error", Error: "agent inference runtime is unavailable"}
+				campaign.InferenceStatus = &data.InferenceStatus{State: "error", Error: "agent campaign runtime is unavailable"}
 			} else {
 				campaign.InferenceStatus = s.inference.snapshot(campaign.Name, campaign.Revision)
 				if campaign.InferenceStatus.State == "stopped" {
