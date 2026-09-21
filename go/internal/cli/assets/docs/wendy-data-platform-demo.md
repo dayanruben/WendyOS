@@ -288,13 +288,11 @@ Enrollment is untouched by the demo, so there is nothing to restore there.
   proof is the commit-gated `uploaded` state plus a direct ClickHouse read.
 - The graphics processing unit (GPU) variant of the app, using
   `onnxruntime-gpu`, has not been exercised; the demo runs the CPU path.
-- The app sensor socket authenticates a caller by the app-private mount, the
-  group-2000 gate and the 0750 directory only. It performs no
-  peer-credential check, so it does not yet have the `SO_PEERCRED` plus cgroup
-  attribution the app data socket gained; a process in group 2000 that can
-  reach another app's sensor socket path would be served, and that app's
-  entitlement allowlist is what would be applied. The fix is the data socket's
-  `verifyPeer` behind an accept-time wrapper on the sensor listener.
+- Model apps read camera data through the entitlement-mounted V4L2 loopback
+  nodes. There is no per-app sensor listener in this implementation. Application
+  recording writes use the app data socket, which checks Linux peer credentials
+  and cgroup app identity before accepting records. Camera reads are controlled
+  by the container's device mounts and camera entitlement.
 - ROS 2 sources report `healthy: true` unconditionally
   (`data_ros2_adapter.go`, `ros2DataSource`): nothing probes the Data
   Distribution Service (DDS) graph, so a dead domain enumerates as healthy.

@@ -340,8 +340,8 @@ func main() {
 	defer cancel()
 
 	// The video service is constructed before the app socket managers because it
-	// owns the camera producer the sensor sockets subscribe apps to, and every
-	// per-app sensor socket must be built with that provider already registered.
+	// owns the camera producer shared by capture, inference, and app loopback
+	// nodes, so it must exist before the capture adapters are registered.
 	discoveryPool := rtps.NewPool()
 	defer discoveryPool.Close()
 	var videoROSRuntime []services.ROS2Runtime
