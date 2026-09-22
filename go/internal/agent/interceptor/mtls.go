@@ -147,7 +147,8 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger, expected certs.Scope, mo
 	// Subject CN is omitted: it may contain a username or device identifier, logging
 	// it on every call creates a high-volume PII stream that conflicts with
 	// data-minimisation requirements.
-	logger.Debug("mTLS peer authenticated",
+	// This checks credentials from the existing connection, not a new handshake.
+	logger.Debug("RPC using authenticated mTLS peer",
 		zap.String("remote", peerAddr(ctx)),
 		zap.String("serial", leaf.SerialNumber.String()),
 	)
